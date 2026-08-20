@@ -110,9 +110,11 @@ lanes:
 
 1. `get_operating_briefing` + `get_market_index` (+ `get_fx_rate`) — load regime
    and the prior session's decisions.
-2. `analyze_stock_batch(symbols ≤ 10, mode=quick, include_position=true)` — RSI,
-   honest consensus (upside), support/resistance (Bollinger band, fib, volume
-   profile), and per-account position.
+2. `analyze_stock_batch(symbols ≤ 10, mode=quick)` — RSI and support/resistance
+   (Bollinger band, fib, volume profile) from the last CLOSED daily candle
+   (`current_price` is stale, not live — call `get_quote` for a live price).
+   `include_position` is accepted for compatibility but ignored by quick
+   (ROB-1311); consensus/recommendation/position require `quick=False`.
 3. `get_intraday_investor_flow(symbol)` — the foreign-flow gate (today's slot +
    the confirmed multi-day net-buy history / foreign-holding burn-down embedded
    by ROB-626/640).

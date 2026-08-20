@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -114,7 +114,9 @@ async def _add_action(
     return row
 
 
-def _add_mock_counterfactual_ledger(db: AsyncSession, *, symbol: str, correlation_id: str):
+def _add_mock_counterfactual_ledger(
+    db: AsyncSession, *, symbol: str, correlation_id: str
+):
     from app.models.trading import InstrumentType
 
     db.add(
@@ -188,7 +190,6 @@ _REMOVED_QUICK_FIELDS = (
 
 
 def test_claude_md_enumerates_removed_quick_fields():
-    text = handlers.__file__  # noop import anchor; real read below
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -197,7 +198,9 @@ def test_claude_md_enumerates_removed_quick_fields():
     section = claude_md[section_start : section_start + 4000]
 
     missing = [field for field in _REMOVED_QUICK_FIELDS if field not in section]
-    assert not missing, f"CLAUDE.md ROB-1311 section is missing removed fields: {missing}"
+    assert not missing, (
+        f"CLAUDE.md ROB-1311 section is missing removed fields: {missing}"
+    )
     assert "get_quote" in section
 
 
@@ -205,7 +208,9 @@ def test_mcp_readme_enumerates_removed_quick_fields():
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
-    readme = (repo_root / "app" / "mcp_server" / "README.md").read_text(encoding="utf-8")
+    readme = (repo_root / "app" / "mcp_server" / "README.md").read_text(
+        encoding="utf-8"
+    )
     section_start = readme.index("analyze_stock_batch(symbols")
     section = readme[section_start : section_start + 3000]
 
@@ -299,7 +304,9 @@ async def test_quick_decision_history_default_excludes_mock_counterfactual(
         account_mode="kis_mock",
         lesson="MIRROR COUNTERFACTUAL LESSON",
     )
-    await _add_action(db_session, retrospective_id=retro_drop.id, action="mirror action")
+    await _add_action(
+        db_session, retrospective_id=retro_drop.id, action="mirror action"
+    )
 
     keep_corr = f"legacy-mock:{uuid.uuid4()}"
     retro_keep = await _add_retro(
@@ -309,7 +316,9 @@ async def test_quick_decision_history_default_excludes_mock_counterfactual(
         account_mode="kis_mock",
         lesson="LEGACY MOCK LESSON",
     )
-    await _add_action(db_session, retrospective_id=retro_keep.id, action="legacy mock action")
+    await _add_action(
+        db_session, retrospective_id=retro_keep.id, action="legacy mock action"
+    )
     await db_session.flush()
 
     ctx = await analysis_quick._load_decision_history_batch(
@@ -410,7 +419,9 @@ async def test_quick_decision_history_open_actions_respect_byte_budget(
         db_session, [(raw, "equity_kr")]
     )
     row = ctx[sym.upper()]
-    payload_bytes = len(json.dumps(row["open_actions"], ensure_ascii=False).encode("utf-8"))
+    payload_bytes = len(
+        json.dumps(row["open_actions"], ensure_ascii=False).encode("utf-8")
+    )
     assert payload_bytes <= 3072
     assert row["open_actions_meta"]["count"] == len(row["open_actions"])
 
@@ -443,8 +454,9 @@ async def test_quick_batch_partial_success_when_one_symbol_is_unresolvable(
     assert "005930" in result["results"]
     assert "000660" in result["results"]
     assert "error" in result["results"]["$$$bad$$$"]
-    assert result["summary"]["successful"] + result["summary"]["failed"] == (
-        result["summary"]["total_symbols"]
+    assert (
+        result["summary"]["successful"] + result["summary"]["failed"]
+        == (result["summary"]["total_symbols"])
     )
 
 

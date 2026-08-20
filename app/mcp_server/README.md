@@ -259,6 +259,17 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     The quick path does not run news, profile, provider earnings, consensus,
     recommendation, or holdings work; `include_position` is accepted for
     compatibility and ignored in quick mode.
+  - **`current_price` is NOT live.** It is the close of the most recent
+    CLOSED daily candle (`data_state="stale"`,
+    `data_state_reason="db_only_projection"`). Call `get_quote` for a live
+    price or live session/NXT-tradability state.
+  - **Removed from the quick contract (PR #1915, deep/`quick=False`-only now):**
+    `nxt_tradable`/`nxt_tradable_source`/`nxt_tradable_asof`/`nxt_tradable_stale`
+    (ROB-668), `price_source`/`session`/`session_state`/`krx_prev_close`/
+    `change_pct` (ROB-725/ROB-888), `venue`/`quote_asof`/`delayed` (quote
+    provenance), `price_data_state` (ROB-1048), `fresh_artifact_exists`
+    (ROB-648), and `consensus`/`recommendation`/`position` (holdings). Use
+    `get_quote` for the live-price/session-provenance fields.
   - Use `quick=False` when consensus, recommendation, news, profile, provider
     earnings,
     peers, or the complete full-analysis payload is explicitly required.

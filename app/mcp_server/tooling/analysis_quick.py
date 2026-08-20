@@ -9,12 +9,14 @@ then computes the small projection in process.  Full analysis remains in
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import and_, case, select
 
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.earnings_context import _compact_earnings
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_fibonacci,
@@ -35,10 +37,21 @@ from app.models.review import (
 )
 from app.services.daily_candles.read_service import rows_to_frame
 from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
+from app.services.decision_history import (
+    _ACTIVE_ACTION_STATUSES,
+    ACTION_TEXT_LIMIT,
+    ISSUE_ID_LIMIT,
+    MAX_OPEN_ACTIONS,
+    OPEN_ACTIONS_BYTE_BUDGET,
+    OWNER_LIMIT,
+    _truncate_field,
+    _visibility_predicate,
+)
 from app.services.halt_detection import (
     HALTED_SUSPECT_DATA_STATE,
     classify_ohlcv_frame,
 )
+from app.services.trade_journal.retrospective_type import sql_is_learning_eligible
 
 QUICK_HTTP_REQUEST_LIMIT = 0
 # Three equity/crypto candle groups plus the bounded decision-history and
@@ -290,11 +303,20 @@ async def _load_decision_history_batch(
             await session.execute(
                 select(TradeRetrospective)
                 .where(TradeRetrospective.symbol.in_(db_symbols))
+                .where(_visibility_predicate(account_mode))
+                .where(sql_is_learning_eligible())
                 .order_by(TradeRetrospective.created_at.desc())
             )
         )
         .scalars()
         .all()
+    )
+
+    today_kst = now_kst().date()
+    overdue_expr = and_(
+        TradeRetrospectiveAction.status.in_(_ACTIVE_ACTION_STATUSES),
+        TradeRetrospectiveAction.due_kst_date.isnot(None),
+        TradeRetrospectiveAction.due_kst_date < today_kst,
     )
     actions = (
         await session.execute(
@@ -304,8 +326,15 @@ async def _load_decision_history_batch(
                 TradeRetrospectiveAction.retrospective_id == TradeRetrospective.id,
             )
             .where(TradeRetrospective.symbol.in_(db_symbols))
-            .where(TradeRetrospectiveAction.status.in_(("open", "in_progress")))
-            .order_by(TradeRetrospectiveAction.updated_at.desc())
+            .where(TradeRetrospectiveAction.status.in_(_ACTIVE_ACTION_STATUSES))
+            .where(_visibility_predicate(account_mode))
+            .order_by(
+                case((overdue_expr, 0), else_=1),
+                case((TradeRetrospectiveAction.status == "in_progress", 0), else_=1),
+                TradeRetrospectiveAction.due_kst_date.asc().nullslast(),
+                TradeRetrospectiveAction.updated_at.desc(),
+                TradeRetrospectiveAction.id.asc(),
+            )
         )
     ).all()
     forecasts = (
@@ -399,11 +428,9 @@ async def _load_decision_history_batch(
     for row in retrospectives:
         symbol = key_for(getattr(row, "symbol", None))
         target = per_symbol.get(symbol)
-        if (
-            account_mode == "kis_mock"
-            and getattr(row, "account_mode", None) != "kis_mock"
-        ):
-            continue
+        # Visibility (kis_mock exact / default excludes mock-counterfactual)
+        # and learning-eligibility (excludes intake rows) are enforced in SQL
+        # above via `_visibility_predicate` / `sql_is_learning_eligible`.
         if target is None or _looks_like_smoke(
             getattr(row, "created_by_profile", None),
             getattr(row, "strategy_key", None),
@@ -434,35 +461,68 @@ async def _load_decision_history_batch(
                 }
             )
 
+    # Rows arrive pre-sorted by the SQL ORDER BY (overdue -> in_progress ->
+    # due ASC NULLS LAST -> updated_at DESC -> id ASC), same as the canonical
+    # per-symbol `_open_actions` order. Bucket by symbol first, preserving
+    # that order, then apply the MAX_OPEN_ACTIONS cap + byte budget per
+    # symbol exactly like the canonical helper (ROB-884).
+    per_symbol_actions: dict[str, list[dict[str, Any]]] = {
+        symbol: [] for symbol in per_symbol
+    }
+    per_symbol_action_truncated: dict[str, bool] = dict.fromkeys(per_symbol, False)
     for action, retro in actions:
         symbol = key_for(getattr(retro, "symbol", None))
-        target = per_symbol.get(symbol)
-        if (
-            account_mode == "kis_mock"
-            and getattr(retro, "account_mode", None) != "kis_mock"
-        ):
-            continue
-        if target is None or _looks_like_smoke(
+        if symbol not in per_symbol_actions or _looks_like_smoke(
             getattr(retro, "created_by_profile", None),
             getattr(retro, "strategy_key", None),
             getattr(retro, "correlation_id", None),
         ):
             continue
-        if len(target["open_actions"]) >= 5:
-            target["open_actions_meta"]["truncated"] = True
-            continue
         due = getattr(action, "due_kst_date", None)
-        target["open_actions"].append(
+        status = getattr(action, "status", None)
+        is_overdue = (
+            status in _ACTIVE_ACTION_STATUSES and due is not None and due < today_kst
+        )
+        orig_action = getattr(action, "action", None) or ""
+        orig_owner = getattr(action, "owner", None) or ""
+        orig_issue = getattr(action, "issue_id", None) or ""
+        if (
+            len(orig_action) > ACTION_TEXT_LIMIT
+            or len(orig_owner) > OWNER_LIMIT
+            or len(orig_issue) > ISSUE_ID_LIMIT
+        ):
+            per_symbol_action_truncated[symbol] = True
+        per_symbol_actions[symbol].append(
             {
                 "action_id": str(getattr(action, "id", "")),
-                "action": str(getattr(action, "action", "") or "")[:220],
-                "status": getattr(action, "status", None),
-                "owner": str(getattr(action, "owner", "") or "")[:80] or None,
-                "issue_id": str(getattr(action, "issue_id", "") or "")[:32] or None,
+                "action": _truncate_field(
+                    getattr(action, "action", None), ACTION_TEXT_LIMIT
+                ),
+                "status": status,
+                "owner": _truncate_field(getattr(action, "owner", None), OWNER_LIMIT),
+                "issue_id": _truncate_field(
+                    getattr(action, "issue_id", None), ISSUE_ID_LIMIT
+                ),
                 "due_kst_date": due.isoformat() if due else None,
-                "overdue": False,
+                "overdue": is_overdue,
             }
         )
+
+    for symbol, items in per_symbol_actions.items():
+        truncated = per_symbol_action_truncated[symbol]
+        if len(items) > MAX_OPEN_ACTIONS:
+            items = items[:MAX_OPEN_ACTIONS]
+            truncated = True
+        while items:
+            payload = json.dumps(items, ensure_ascii=False).encode("utf-8")
+            if len(payload) <= OPEN_ACTIONS_BYTE_BUDGET:
+                break
+            items.pop()
+            truncated = True
+        target = per_symbol[symbol]
+        target["open_actions"] = items
+        target["open_actions_meta"]["truncated"] = truncated
+        target["open_actions_meta"]["count"] = len(items)
 
     for row in forecasts:
         target = per_symbol.get(key_for(getattr(row, "symbol", None)))

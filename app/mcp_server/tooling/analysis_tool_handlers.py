@@ -914,6 +914,13 @@ def _summarize_analysis_result(
     compact summary carries a ``position`` field — a LIST (one entry per holding
     account, because a symbol may be held in multiple accounts e.g. toss+samsung)
     or ``None`` when not held.
+
+    ROB-1311: no longer wired into ``analyze_stock_batch_impl`` (quick=True is
+    a DB-only projection; quick=False passes results through unformatted).
+    Retained — with its ``_attach_*`` siblings below — as the full-analysis
+    compact-summary contract for any future non-quick compact caller and for
+    the ROB-541/711/722/648/725/888/1048 regression suites that pin its field
+    semantics directly.
     """
     # If result is an error, pass through unchanged
     if "error" in analysis:
@@ -1002,6 +1009,9 @@ async def _attach_fresh_artifact_hints(
     the analysis. Complementary to the ROB-638 fetch-layer cache (cross-call);
     this surfaces cross-session persisted artifacts. Fail-open: any DB/lookup
     error leaves results untouched.
+
+    ROB-1311: no longer called from ``analyze_stock_batch_impl`` — see
+    ``_summarize_analysis_result`` docstring.
     """
     symbols = [
         sym
@@ -1052,6 +1062,9 @@ async def _attach_decision_history(
     Batched (one session for all symbols), fail-open — any DB/lookup error
     leaves results untouched. Only the compact contract calls this. Error rows
     (dicts carrying "error") are skipped.
+
+    ROB-1311: no longer called from ``analyze_stock_batch_impl`` — see
+    ``_summarize_analysis_result`` docstring.
     """
     if not any(
         isinstance(row, dict) and "error" not in row for row in results.values()
@@ -1088,6 +1101,9 @@ async def _attach_earnings(
     signal (has_upcoming=False), so US/KR equity rows always receive an
     ``earnings`` field; crypto/error rows are skipped. KR ingestion freshness is
     computed at most once per batch and threaded into each build call.
+
+    ROB-1311: no longer called from ``analyze_stock_batch_impl`` — see
+    ``_summarize_analysis_result`` docstring.
     """
     if not any(
         isinstance(row, dict) and "error" not in row for row in results.values()
@@ -1137,9 +1153,11 @@ async def analyze_stock_batch_impl(
         market: Optional market override
         include_peers: Whether to include peer analysis
         quick: If True, return compact summary; if False, return full analysis
-        include_position: ROB-541 — when True (default) and quick=True, attach a
-            per-account holdings 'position' array (or null) to each compact
-            summary via a SINGLE batched holdings fetch.
+        include_position: Accepted for schema compatibility only and has no
+            effect on the output (ROB-1311). Neither quick=True (DB-only
+            projection, no holdings lookup) nor quick=False (this call always
+            passes include_position=False to `_run_batch_analysis`) attaches
+            a `position` field. Use `get_holdings` for per-account positions.
         refresh: ROB-638 — when True, bypass the fetch-layer provider cache
             read (consensus/valuation/profile are re-fetched fresh and the
             fresh values are written back to the cache).
@@ -1158,29 +1176,42 @@ async def analyze_stock_batch_impl(
         # accepted for schema compatibility, but holdings/order surfaces are
         # deliberately outside this fast lane.
         del include_position
-        # Resolve once up front. The canonical list is the sole source of
-        # truth for both the batch loader and the result map; this prevents
-        # lower-case/``A``-prefixed inputs from becoming lookup misses.
+        # Resolve once up front, PER SYMBOL so one unresolvable entry (typo,
+        # delisted ticker, unsupported format) never aborts the whole batch —
+        # it becomes a single error row instead (ROB-1311 R2 / B4). The
+        # canonical list is the sole source of truth for both the batch
+        # loader and the result map; this prevents lower-case/``A``-prefixed
+        # inputs from becoming lookup misses.
         # The batch loader is the quick equivalent of `_attach_decision_history`
         # and `_attach_earnings`; neither per-symbol attach loop is used here.
         normalized_symbols: list[str] = []
+        resolve_errors: dict[str, str] = {}
         for raw_symbol in symbols:
-            normalized = analysis_screening._normalize_symbol_input(raw_symbol, market)
-            market_type, canonical = analysis_screening._resolve_market_type(
-                normalized, market
-            )
+            try:
+                normalized = analysis_screening._normalize_symbol_input(
+                    raw_symbol, market
+                )
+                market_type, canonical = analysis_screening._resolve_market_type(
+                    normalized, market
+                )
+            except Exception as exc:
+                resolve_errors[str(raw_symbol)] = str(exc)
+                continue
             if market_type == "equity_us":
                 canonical = canonical.upper()
             normalized_symbols.append(canonical)
+
         projection_kwargs: dict[str, Any] = {"market": market}
         if decision_history_account_mode is not None:
             projection_kwargs["decision_history_account_mode"] = (
                 decision_history_account_mode
             )
-        projection = await _load_quick_projection_batch(
-            normalized_symbols, **projection_kwargs
+        projection = (
+            await _load_quick_projection_batch(normalized_symbols, **projection_kwargs)
+            if normalized_symbols
+            else {}
         )
-        results = {
+        results: dict[str, Any] = {
             symbol: projection.get(
                 symbol,
                 {
@@ -1191,6 +1222,15 @@ async def analyze_stock_batch_impl(
             )
             for symbol in normalized_symbols
         }
+        for raw_symbol, err in resolve_errors.items():
+            results.setdefault(
+                raw_symbol,
+                {"symbol": raw_symbol, "error": err, "data_state": "missing"},
+            )
+        # total_symbols/successful/failed are all derived from the same
+        # (deduplicated-by-canonical-key) `results` mapping, so the three
+        # figures always stay arithmetically consistent even when the input
+        # list contains alias/duplicate symbols (ROB-1311 R2 SHOULD item).
         successful = sum("error" not in row for row in results.values())
         errors = [
             f"{symbol}: {row['error']}"
@@ -1200,7 +1240,7 @@ async def analyze_stock_batch_impl(
         return {
             "results": results,
             "summary": {
-                "total_symbols": len(normalized_symbols),
+                "total_symbols": len(results),
                 "successful": successful,
                 "failed": len(results) - successful,
                 "errors": errors,

@@ -554,6 +554,21 @@ recommendation/holdings와 provider 기반 earnings는 quick에서 실행하지 
 `quick=False` 는 기존 `analysis_screening._analyze_stock_impl`
 → `analysis_analyze.analyze_stock_impl` 호출과 full output을 유지한다.
 
+🔴 **`current_price`는 라이브 시세가 아니다.** quick의 `current_price`는
+`daily_candles`의 가장 최근 **마감된** 일봉 종가이며 `data_state="stale"`,
+`data_state_reason="db_only_projection"`로 항상 스탬프된다. 라이브 가격·세션
+상태(NXT 체결가능 등)가 필요하면 반드시 `get_quote`를 호출할 것 — quick만으로
+판단하지 말 것.
+
+**PR #1915 축소 필드 (quick 전용, `quick=False`는 불변)**: 구 quick 요약이
+가지고 있던 `nxt_tradable`/`nxt_tradable_source`/`nxt_tradable_asof`/
+`nxt_tradable_stale`(ROB-668) · `price_source`/`session`/`session_state`/
+`krx_prev_close`/`change_pct`(ROB-725/ROB-888) · `venue`/`quote_asof`/`delayed`
+(quote provenance) · `price_data_state`(ROB-1048) · `fresh_artifact_exists`
+(ROB-648) · `consensus`/`recommendation`/`position`/뉴스/profile/provider
+earnings는 전부 quick allowlist에서 제거됐다. 라이브 가격/세션 provenance가
+필요하면 `get_quote`를 사용할 것 — quick은 그 값들을 더 이상 담지 않는다.
+
 🔴 ROB-1236: quick도 모든 심볼의 일봉 이력을 반드시 읽고 `classify_ohlcv_frame`을
 적용한다. 동결 3세션이면 `data_state=halted_suspect`, RSI와 supports/resistances는
 null이며 `halt_suspect` 근거를 보존한다. DB 장애는 해당 행을 `missing`으로 남기며
