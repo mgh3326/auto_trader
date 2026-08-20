@@ -669,9 +669,9 @@ def _legacy_projection_home_response():
     from app.schemas.invest_home import (
         Account,
         CashAmounts,
+        Holding,
         HomeSummary,
         InvestHomeResponse,
-        Holding,
     )
 
     def account(
