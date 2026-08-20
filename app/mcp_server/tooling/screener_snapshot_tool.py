@@ -281,6 +281,7 @@ async def _build_snapshot_page(
     offset: int,
     held_symbols: set[tuple[str, str]] | None = None,
     holdings_meta: dict[str, Any] | None = None,
+    snapshot_only: bool = False,
 ) -> dict[str, Any]:
     """Build + filter + paginate a snapshot page — the DB-only core shared by
     ``screen_stocks_snapshot_impl`` (no enrichment) and ``screen_stocks_enrich_impl``
@@ -302,6 +303,13 @@ async def _build_snapshot_page(
     run analyst-count filtering before paginating), ``eff_offset``, ``eff_limit``,
     ``total_available``, ``error`` (short-circuit dict to return verbatim, or
     None).
+
+    ``snapshot_only`` (default False, set True by ``screen_stocks_snapshot_impl``
+    only) is threaded straight into ``build_screener_results`` — it fails a
+    preset/market combination closed to an empty DB result rather than falling
+    through to ``ScreenerService.list_screening`` (the generic live provider).
+    ``screen_stocks_enrich_impl`` omits it (default False) and keeps the
+    pre-existing live-fallback behavior for the presets that need it.
     """
     from app.services.invest_view_model.screener_filters import (
         ScreenerFilterCondition,
@@ -385,6 +393,7 @@ async def _build_snapshot_page(
                     market=market,
                     session=db,
                     filter_overrides=conditions or None,
+                    snapshot_only=snapshot_only,
                 )
                 raw_payload = resp.model_dump(mode="json")
                 merged_results = _merge_rows(
@@ -626,6 +635,7 @@ async def screen_stocks_snapshot_impl(
         sort=sort,
         limit=limit,
         offset=offset,
+        snapshot_only=True,
     )
     if built.get("error") is not None:
         return built["error"]

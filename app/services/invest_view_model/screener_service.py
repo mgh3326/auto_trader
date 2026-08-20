@@ -2299,10 +2299,22 @@ async def build_screener_results(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     session: AsyncSession | None = None,
     filter_overrides: list[Any] | None = None,
+    snapshot_only: bool = False,
 ) -> ScreenerResultsResponse:
     """ROB-439: ``filter_overrides`` (list[ScreenerFilterCondition]) lets a caller
     adjust/add conditions over the preset's base snapshot (None = preset default).
-    Pilot: consecutive_gainers threads loosen/tighten thresholds into the loader."""
+    Pilot: consecutive_gainers threads loosen/tighten thresholds into the loader.
+
+    ROB-1309: ``snapshot_only=True`` (used by ``screen_stocks_snapshot``) fails
+    closed to an empty DB-backed result + explicit warning for ANY preset/market
+    combination that isn't already snapshot-backed above — it never calls
+    ``screening_service.list_screening`` (the generic live/tvscreener provider
+    path). This closes the gap for presets that either have no snapshot branch
+    at all (e.g. US ``growth_expectation``) or whose loader can return ``None``
+    on a missing/stale partition (e.g. ``consecutive_gainers``,
+    ``crypto_high_volume``) and would otherwise fall through to a live call.
+    Callers that need that live fallback (currently only ``screen_stocks_enrich``,
+    the explicit live-enrichment tool) pass the default ``snapshot_only=False``."""
     requested_market = _normalize_market(market)
     preset = get_preset(preset_id, requested_market)
     if preset is None:
@@ -2687,6 +2699,19 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "암호화폐 선물 지표 스냅샷이 아직 적재되지 않아 해당 후보를 표시할 수 없습니다."
+
+    if snapshot_only and _snapshot_check_result is None:
+        # ROB-1309: screen_stocks_snapshot must be DB-only for every option
+        # combination it supports — never call the generic live/tvscreener
+        # provider below, even for presets with no dedicated snapshot branch
+        # or whose loader returned None (missing/stale partition).
+        _snapshot_check_result = []
+        _snapshot_state_override = _snapshot_state_override or "missing"
+        _snapshot_empty_warning = (
+            "screen_stocks_snapshot은 DB 스냅샷 전용 도구이며 이 프리셋/시장 "
+            "조합은 아직 스냅샷을 지원하지 않아 실시간 조회로 대체하지 않습니다. "
+            "실시간 조회가 필요하면 screen_stocks_enrich를 사용하세요."
+        )
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
