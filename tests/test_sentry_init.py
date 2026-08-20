@@ -824,6 +824,74 @@ def test_before_send_transaction_preserves_tools_call_span_while_scrubbing_paylo
 
 
 @pytest.mark.unit
+def test_before_send_transaction_scrubs_nested_contexts_and_extra():
+    """ROB-1305 follow-up: the scrub boundary must reach every nested
+    transaction payload location (contexts/extra), not just request/spans."""
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "contexts": {
+            "trace": {
+                "trace_id": "abc123def456abc123def456abc123d",
+                "span_id": "1122334455667788",
+                "op": "http.server",
+                "status": "ok",
+            },
+            "response": {
+                "headers": {"Authorization": "Bearer FAKE_CTX_RESPONSE_TOKEN"},
+            },
+            "custom": {"nested": {"api_key": "FAKE_CTX_CUSTOM_SECRET"}},
+        },
+        "extra": {
+            "debug_headers": {"Authorization": "Bearer FAKE_EXTRA_TOKEN_123"},
+        },
+        "start_timestamp": 1000.0,
+        "timestamp": 1000.5,
+        "spans": [
+            {"op": "db.sql.query", "description": "SELECT 1", "status": "ok"},
+        ],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    assert kept["contexts"]["response"]["headers"]["Authorization"] == "[Filtered]"
+    assert kept["contexts"]["custom"]["nested"]["api_key"] == "[Filtered]"
+    assert kept["extra"]["debug_headers"]["Authorization"] == "[Filtered]"
+
+    # Structure — trace context, span count, timing — must be preserved.
+    trace = kept["contexts"]["trace"]
+    assert trace["trace_id"] == "abc123def456abc123def456abc123d"
+    assert trace["span_id"] == "1122334455667788"
+    assert trace["op"] == "http.server"
+    assert trace["status"] == "ok"
+    assert len(kept["spans"]) == 1
+    assert kept["spans"][0]["description"] == "SELECT 1"
+    assert kept["start_timestamp"] == 1000.0
+    assert kept["timestamp"] == 1000.5
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_leading_query_string_secret():
+    """ROB-1305 follow-up: a query_string serialized without a leading '?'
+    (Sentry's own request.query_string shape) must still be scrubbed when
+    the very first parameter is the sensitive one."""
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "request": {
+            "query_string": "token=FAKE_LEADING_QS_TOKEN_999&symbol=AAPL",
+        },
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    query_string = kept["request"]["query_string"]
+    assert "FAKE_LEADING_QS_TOKEN_999" not in query_string
+    assert "symbol=AAPL" in query_string
+
+
+@pytest.mark.unit
 def test_capture_exception_adds_masked_context(monkeypatch):
     scope_mock = Mock()
     context_manager = Mock()
