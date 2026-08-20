@@ -823,8 +823,12 @@ async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
     scope = portfolio_holdings.portfolio_snapshot_scope(
         user_id=1, include_paper=False, paper_sources=None
     )
-    await cache.put(scope, serialize_portfolio_snapshot(_legacy_projection_home_response()))
-    monkeypatch.setattr(portfolio_holdings, "get_shared_portfolio_snapshot_cache", lambda: cache)
+    await cache.put(
+        scope, serialize_portfolio_snapshot(_legacy_projection_home_response())
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "get_shared_portfolio_snapshot_cache", lambda: cache
+    )
 
     seen_symbols: list[str] = []
 
@@ -836,7 +840,9 @@ async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
         )
         return {("crypto", "KRW-BTC"): 123.0}, [], {}, {}
 
-    monkeypatch.setattr(portfolio_holdings, "_fetch_price_map_for_positions", fake_price_map)
+    monkeypatch.setattr(
+        portfolio_holdings, "_fetch_price_map_for_positions", fake_price_map
+    )
 
     positions, errors, _, _ = await portfolio_holdings._collect_portfolio_positions(
         account=None,
@@ -852,7 +858,9 @@ async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
 
 
 @pytest.mark.unit
-def test_portfolio_snapshot_serializer_drops_reconstructible_sellability_fields() -> None:
+def test_portfolio_snapshot_serializer_drops_reconstructible_sellability_fields() -> (
+    None
+):
     from app.services.portfolio_snapshot import serialize_portfolio_snapshot
 
     payload = serialize_portfolio_snapshot(_legacy_projection_home_response())
@@ -928,9 +936,7 @@ async def test_corrupt_whole_snapshot_fallback_is_singleflight_across_facades():
     redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
     cache_a = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
     cache_b = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
-    scope = portfolio_snapshot_scope(
-        user_id=1, include_paper=False, paper_sources=None
-    )
+    scope = portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
     await cache_a.put(scope, {"schema_version": 999, "response": {}})
 
     service_a = InvestHomeService(
