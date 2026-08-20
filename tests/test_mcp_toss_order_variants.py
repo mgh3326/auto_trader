@@ -703,6 +703,153 @@ async def test_us_sell_modify_preflight_compares_inherited_original_quantity(
 
 
 @pytest.mark.asyncio
+async def test_place_sell_runs_nxt_before_fresh_sellable_and_post(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    events: list[str] = []
+
+    async def fake_warnings(*args, **kwargs):
+        events.append("warnings")
+        return SimpleNamespace(ok=True, warnings=[], error_message=None)
+
+    async def fake_opposite(*args, **kwargs):
+        events.append("opposite")
+        return None
+
+    async def fake_loss(*args, **kwargs):
+        events.append("loss")
+        return None
+
+    async def fake_nxt(*args, **kwargs):
+        events.append("nxt")
+        return None
+
+    monkeypatch.setattr(otv, "check_warnings_guard", fake_warnings)
+    monkeypatch.setattr(otv, "_opposite_pending_error", fake_opposite)
+    monkeypatch.setattr(otv, "_sell_loss_guard", fake_loss)
+    monkeypatch.setattr(otv, "_nxt_preflight_context", fake_nxt)
+
+    mock_client = MockTossClient(monkeypatch)
+    original_sellable = mock_client.sellable_quantity
+    original_place = mock_client.place_order
+
+    async def fresh_sellable(*, symbol):
+        events.append("sellable")
+        return await original_sellable(symbol=symbol)
+
+    async def post(payload):
+        events.append("post")
+        return await original_place(payload)
+
+    monkeypatch.setattr(mock_client, "sellable_quantity", fresh_sellable)
+    monkeypatch.setattr(mock_client, "place_order", post)
+
+    warm_cache = TossSellableCache(
+        ttl_seconds=600,
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+    )
+    await warm_cache.put("005930", Decimal("999"))
+    monkeypatch.setattr(otv, "get_shared_sellable_cache", lambda: warm_cache)
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="005930",
+        side="sell",
+        quantity="1",
+        price="50000",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert mock_client.sellable_calls == ["005930"]
+    assert events == ["warnings", "opposite", "loss", "nxt", "sellable", "post"]
+
+
+@pytest.mark.asyncio
+async def test_modify_sell_runs_nxt_before_fresh_sellable_and_replacement_post(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    events: list[str] = []
+
+    async def fake_loss(*args, **kwargs):
+        events.append("loss")
+        return None
+
+    async def fake_nxt(*args, **kwargs):
+        events.append("nxt")
+        return None
+
+    monkeypatch.setattr(otv, "_sell_loss_guard", fake_loss)
+    monkeypatch.setattr(otv, "_nxt_preflight_context", fake_nxt)
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "005930",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("50000"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "KRW",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+    original_sellable = mock_client.sellable_quantity
+    original_modify = mock_client.modify_order
+
+    async def fresh_sellable(*, symbol):
+        events.append("sellable")
+        return await original_sellable(symbol=symbol)
+
+    async def replacement(order_id, payload):
+        events.append("post")
+        return await original_modify(order_id, payload)
+
+    monkeypatch.setattr(mock_client, "sellable_quantity", fresh_sellable)
+    monkeypatch.setattr(mock_client, "modify_order", replacement)
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="50000",
+        new_quantity="5",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert mock_client.sellable_calls == ["005930"]
+    assert events == ["loss", "nxt", "sellable", "post"]
+
+
+@pytest.mark.asyncio
 async def test_place_order_blocks_opposite_pending_before_post(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings

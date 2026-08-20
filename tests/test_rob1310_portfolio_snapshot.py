@@ -806,7 +806,7 @@ def test_cached_home_projection_preserves_legacy_mcp_contracts() -> None:
     assert upbit["account"] == "upbit"
 
     manual = by_symbol["035930"]
-    assert manual["account"] == "toss"
+    assert manual["account"] == "toss_수동"
     assert manual["account_name"] == "Toss 수동"
 
 
@@ -965,6 +965,88 @@ async def test_production_cached_mcp_projection_preserves_source_contracts():
 
 
 @pytest.mark.asyncio
+async def test_cached_toss_manual_projection_does_not_merge_unpriced_beta_into_alpha(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.schemas.invest_home import HomeSummary, InvestHomeResponse
+    from app.services import invest_home_readers as readers
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    alpha = SimpleNamespace(
+        id=101,
+        broker_account_id=101,
+        broker_account=SimpleNamespace(
+            id=101, broker_type="toss", account_name="Broker Alpha"
+        ),
+        ticker="005930",
+        market_type="KR",
+        display_name="Alpha Samsung",
+        quantity=1,
+        avg_price=50_000,
+    )
+    beta = SimpleNamespace(
+        id=102,
+        broker_account_id=102,
+        broker_account=SimpleNamespace(
+            id=102, broker_type="toss", account_name="Broker Beta"
+        ),
+        ticker="000660",
+        market_type="KR",
+        display_name="Beta SK Hynix",
+        quantity=1,
+        avg_price=60_000,
+    )
+
+    class _ManualService:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id):
+            return [alpha, beta]
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _ManualService)
+    quote_service = SimpleNamespace(
+        fetch_kr_prices=AsyncMock(return_value={"005930": 55_000.0}),
+        fetch_us_prices=AsyncMock(return_value={}),
+    )
+    manual_result = await readers.ManualHomeReader(
+        db=None, quote_service=quote_service
+    ).fetch(user_id=1)
+    response = InvestHomeResponse(
+        homeSummary=HomeSummary(
+            includedSources=["toss_manual"],
+            excludedSources=[],
+            totalValueKrw=55_000,
+        ),
+        accounts=manual_result.accounts,
+        holdings=manual_result.holdings,
+        groupedHoldings=[],
+    )
+
+    cache = PortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+    )
+    scope = portfolio_holdings.portfolio_snapshot_scope(
+        user_id=1, include_paper=False, paper_sources=None
+    )
+    await cache.put(scope, serialize_portfolio_snapshot(response))
+
+    positions, errors = await portfolio_holdings._collect_whole_portfolio_positions(
+        cache=cache,
+        user_id=1,
+    )
+
+    assert errors == []
+    by_symbol = {position["symbol"]: position for position in positions}
+    assert by_symbol["005930"]["account"] == "broker_alpha"
+    assert by_symbol["000660"]["account"] == "broker_beta"
+    assert by_symbol["000660"]["account_name"] == "Broker Beta"
+
+
+@pytest.mark.asyncio
 async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
     monkeypatch,
 ):
@@ -1011,6 +1093,59 @@ async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
     assert positions[0]["current_price"] == pytest.approx(123.0)
 
 
+@pytest.mark.asyncio
+async def test_cached_mcp_projection_includes_upbit_dust_from_hidden_home_holdings():
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.schemas.invest_home import Holding
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    response = _legacy_projection_home_response()
+    response.holdings = [
+        holding for holding in response.holdings if holding.source != "upbit"
+    ]
+    response.meta.hiddenHoldings = [
+        Holding(
+            holdingId="upbit:hidden:BTC",
+            accountId="upbit_account",
+            source="upbit",
+            accountKind="live",
+            symbol="BTC",
+            market="CRYPTO",
+            assetType="crypto",
+            assetCategory="crypto",
+            displayName="BTC",
+            quantity=0.001,
+            averageCost=100_000_000,
+            costBasis=100_000,
+            currency="KRW",
+            valueNative=100.0,
+            valueKrw=100.0,
+            pnlKrw=None,
+            pnlRate=None,
+            priceState="missing",
+        )
+    ]
+    cache = PortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+    )
+    scope = portfolio_holdings.portfolio_snapshot_scope(
+        user_id=1, include_paper=False, paper_sources=None
+    )
+    await cache.put(scope, serialize_portfolio_snapshot(response))
+
+    positions, errors = await portfolio_holdings._collect_whole_portfolio_positions(
+        cache=cache,
+        user_id=1,
+    )
+
+    assert errors == []
+    dust = [position for position in positions if position["symbol"] == "KRW-BTC"]
+    assert len(dust) == 1
+    assert dust[0]["quantity"] == pytest.approx(0.001)
+
+
 @pytest.mark.unit
 def test_portfolio_snapshot_serializer_drops_reconstructible_sellability_fields() -> (
     None
@@ -1026,6 +1161,43 @@ def test_portfolio_snapshot_serializer_drops_reconstructible_sellability_fields(
         assert "pendingSellQuantity" not in holding
         assert not any("sellable" in str(key).lower() for key in holding)
         assert not any("pending_sell" in str(key).lower() for key in holding)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "forbidden_fields",
+    [
+        {"pending_sell_quantity": "0"},
+        {"sellableQuantity": "1"},
+        {"metadata": {"nested": {"sellable": "1"}}},
+        {"sellable_quantity": None},
+    ],
+)
+def test_toss_snapshot_cache_parser_rejects_all_sellable_key_shapes(
+    forbidden_fields,
+):
+    from app.services.toss_portfolio_service import _position_from_snapshot_cache
+
+    raw = {
+        "account": "toss",
+        "account_name": "Toss",
+        "broker": "toss",
+        "source": "toss_api",
+        "instrument_type": "equity_us",
+        "market": "us",
+        "symbol": "AAPL",
+        "name": "Apple",
+        "quantity": "1",
+        "avg_buy_price": "100",
+        "current_price": "110",
+        "evaluation_amount": "110",
+        "profit_loss": "10",
+        "profit_rate": "10",
+    }
+    raw.update(forbidden_fields)
+
+    with pytest.raises(ValueError, match="sellable"):
+        _position_from_snapshot_cache(raw)
 
 
 @pytest.mark.asyncio
@@ -1067,6 +1239,62 @@ async def test_process_shared_snapshot_renews_slow_owner_lease_without_duplicate
 
     assert owner_payload == waiter_payload == {"held_pairs": [["us", "AAPL"]]}
     assert calls == {"owner": 1, "waiter": 0}
+
+
+@pytest.mark.asyncio
+async def test_process_shared_snapshot_renewing_hung_owner_has_bounded_wait():
+    import time
+
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=0.1,
+        wait_timeout_seconds=0.05,
+        poll_interval_seconds=0.01,
+    )
+    cache_b = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=0.1,
+        wait_timeout_seconds=0.05,
+        poll_interval_seconds=0.01,
+    )
+    owner_started = asyncio.Event()
+    never = asyncio.Event()
+    calls = {"owner": 0, "waiter": 0}
+
+    async def owner_fetch() -> dict[str, object]:
+        calls["owner"] += 1
+        owner_started.set()
+        await never.wait()
+        return {"winner": "A"}
+
+    async def waiter_fetch() -> dict[str, object]:
+        calls["waiter"] += 1
+        return {"winner": "B"}
+
+    owner_task = asyncio.create_task(cache_a.get_or_fetch("hung-owner", owner_fetch))
+    await asyncio.wait_for(owner_started.wait(), timeout=1)
+    waiter_task = asyncio.create_task(cache_b.get_or_fetch("hung-owner", waiter_fetch))
+    started = time.monotonic()
+    try:
+        try:
+            result = await asyncio.wait_for(waiter_task, timeout=0.35)
+        except TimeoutError:
+            elapsed = time.monotonic() - started
+            assert elapsed < 0.30, "waiter escaped only via the outer test timeout"
+            assert calls["waiter"] == 0
+        else:
+            assert result == {"winner": "B"}
+            assert calls["waiter"] == 1
+    finally:
+        if not owner_task.done():
+            owner_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner_task
 
 
 @pytest.mark.asyncio
@@ -1154,9 +1382,7 @@ async def test_process_shared_snapshot_discards_lost_owner_result_for_recovery_w
         await release_recovery.wait()
         return {"winner": "B"}
 
-    owner_task = asyncio.create_task(
-        cache_a.get_or_fetch("fenced-owner", owner_fetch)
-    )
+    owner_task = asyncio.create_task(cache_a.get_or_fetch("fenced-owner", owner_fetch))
     await asyncio.wait_for(owner_started.wait(), timeout=1)
 
     async def stopped_renewal(_scope: str, _token: str) -> bool:
@@ -1457,3 +1683,73 @@ async def test_calendar_cold_snapshot_surfaces_explicit_503_metadata(monkeypatch
         "unavailable_reason": "held_key_projection_missing_or_invalid",
         "manual_pairs_available": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_calendar_cold_manual_db_failure_is_typed_503_without_live_fanout(
+    monkeypatch,
+):
+    from datetime import date
+
+    from fastapi import HTTPException
+
+    from app.routers import invest_api
+    from app.services.invest_home_service import InvestHomeService
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    calls = {"kis": 0, "upbit": 0, "toss_api": 0}
+
+    class _ExplodingLiveReader:
+        def __init__(self, source: str):
+            self.source = source
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            raise AssertionError("calendar must not run full live home readers")
+
+    class _BrokenManualKeyReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must use held-key read only")
+
+        async def fetch_held_pairs(self, *, user_id):
+            raise RuntimeError("fake manual DB unavailable")
+
+    service = InvestHomeService(
+        kis_reader=_ExplodingLiveReader("kis"),
+        upbit_reader=_ExplodingLiveReader("upbit"),
+        manual_reader=_BrokenManualKeyReader(),
+        toss_api_reader=_ExplodingLiveReader("toss_api"),
+        snapshot_cache=PortfolioSnapshotCache(
+            redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+            ttl_seconds=5,
+        ),
+    )
+    monkeypatch.setattr(
+        invest_api,
+        "build_relation_resolver",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        invest_api,
+        "build_calendar",
+        AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await invest_api.get_calendar(
+            user=SimpleNamespace(id=1),
+            service=service,
+            db=object(),
+            from_date=date(2026, 8, 20),
+            to_date=date(2026, 8, 21),
+            tab="all",
+            include_paper=False,
+            paper_sources=None,
+        )
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail["error_code"] == "portfolio_snapshot_unavailable"
+    assert caught.value.detail["source"] == "portfolio_snapshot"
+    assert caught.value.detail["manual_pairs_available"] is False
+    assert caught.value.detail["unavailable_reason"]
+    assert calls == {"kis": 0, "upbit": 0, "toss_api": 0}
