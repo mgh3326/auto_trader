@@ -1,4 +1,4 @@
-"""ROB-1286 §5 / AC3 — trading-session and intraday-window gate (KR only).
+"""ROB-1286 / ROB-1304 — market-specific session gate.
 
 Which calendar, and why not the other one
 -----------------------------------------
@@ -39,9 +39,13 @@ up as a reason on the tick rather than as silence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from app.services.market_events.session_calendar import trading_session_status
+from app.services.market_events.session_calendar import (
+    regular_session_bounds,
+    trading_session_status,
+)
 
 __all__ = [
     "KST",
@@ -52,6 +56,7 @@ __all__ = [
 ]
 
 KST = timezone(timedelta(hours=9))
+ET = ZoneInfo("America/New_York")
 
 # KR regular session (ROB-1286 설계 1항: 09:00~15:30 KST). End is exclusive.
 SESSION_START_KST = time(9, 0)
@@ -66,9 +71,10 @@ class GateDecision:
     reason: str
     session_status: str
     kst_date: str
+    market_date: str
 
 
-def evaluate_gate(*, now: datetime) -> GateDecision:
+def evaluate_gate(*, now: datetime, market: str = "kr") -> GateDecision:
     """Decide whether a repricing tick may run at ``now``.
 
     ``now`` must be timezone-aware; a naive value is a caller bug and is
@@ -78,9 +84,24 @@ def evaluate_gate(*, now: datetime) -> GateDecision:
     if now.tzinfo is None:
         raise ValueError("evaluate_gate requires a timezone-aware 'now'")
 
-    local = now.astimezone(KST)
-    kst_date = local.date().isoformat()
-    status = trading_session_status("kr", local.date())
+    kst_date = now.astimezone(KST).date().isoformat()
+    if market == "crypto":
+        # Crypto is 24/7. Applying an equity holiday calendar here would
+        # silently strand a valid fire every weekend and US/KR holiday.
+        return GateDecision(
+            should_run=True,
+            reason="ok_24x7",
+            session_status="open_24x7",
+            kst_date=kst_date,
+            market_date=now.astimezone(UTC).date().isoformat(),
+        )
+
+    if market not in {"kr", "us"}:
+        raise ValueError(f"unsupported watch repricing market {market!r}")
+
+    local = now.astimezone(KST if market == "kr" else ET)
+    market_date = local.date().isoformat()
+    status = trading_session_status(market, local.date())
 
     if status == "closed":
         return GateDecision(
@@ -88,6 +109,7 @@ def evaluate_gate(*, now: datetime) -> GateDecision:
             reason="market_closed",
             session_status=status,
             kst_date=kst_date,
+            market_date=market_date,
         )
     if status != "open":
         # Fail-closed on an unclassifiable date -- see the module docstring.
@@ -96,6 +118,34 @@ def evaluate_gate(*, now: datetime) -> GateDecision:
             reason="session_status_indeterminate",
             session_status=status,
             kst_date=kst_date,
+            market_date=market_date,
+        )
+
+    if market == "us":
+        bounds = regular_session_bounds("us", local.date())
+        if bounds is None:
+            return GateDecision(
+                should_run=False,
+                reason="session_bounds_indeterminate",
+                session_status="unknown",
+                kst_date=kst_date,
+                market_date=market_date,
+            )
+        opened_at, closed_at = bounds
+        if not opened_at <= now.astimezone(UTC) < closed_at:
+            return GateDecision(
+                should_run=False,
+                reason="outside_regular_session",
+                session_status=status,
+                kst_date=kst_date,
+                market_date=market_date,
+            )
+        return GateDecision(
+            should_run=True,
+            reason="ok",
+            session_status=status,
+            kst_date=kst_date,
+            market_date=market_date,
         )
 
     clock = local.timetz().replace(tzinfo=None)
@@ -105,6 +155,7 @@ def evaluate_gate(*, now: datetime) -> GateDecision:
             reason="outside_intraday_window",
             session_status=status,
             kst_date=kst_date,
+            market_date=market_date,
         )
 
     return GateDecision(
@@ -112,4 +163,5 @@ def evaluate_gate(*, now: datetime) -> GateDecision:
         reason="ok",
         session_status=status,
         kst_date=kst_date,
+        market_date=market_date,
     )

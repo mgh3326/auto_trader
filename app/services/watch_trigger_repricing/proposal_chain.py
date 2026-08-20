@@ -222,7 +222,9 @@ async def create_proposal_for_fire(
                 "event_uuid": request.event_uuid,
                 "spawn_key": request.spawn_key,
                 "kst_date": request.kst_date,
+                "market_date": request.market_date,
                 "session_label": request.label,
+                "trigger_evidence": dict(request.trigger_evidence),
             },
         )
     except Exception as exc:  # noqa: BLE001 - unknown is not "no"

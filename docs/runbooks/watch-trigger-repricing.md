@@ -1,6 +1,6 @@
-# 워치 발화 트리거 구동 재판정 (ROB-1286 / §93차 A안)
+# 워치 발화 트리거 구동 재판정 (ROB-1286 / ROB-1304)
 
-워치 발화(`review.investment_watch_events`)를 장중에 폴링해, 미소비
+워치 발화(`review.investment_watch_events`)를 시장별 거래 가능 시간에 폴링해, 미소비
 `review_required` 이벤트를 종목 한정 재판정 세션으로 전환한다. 목적은 **제안
 생성 지연 단축**이다.
 
@@ -189,6 +189,80 @@ needs_reconcile` + 응답 `needsReconcile[]` 로 **운영자 과제로 표면화
 
 `prefect` 는 프로젝트 의존성이 아니므로 로직은 prefect 없이 import·테스트된다
 (`test_prefect_is_not_imported_anywhere_in_the_package`).
+
+### 5.1 시장별 게이트 (ROB-1304)
+
+이 체인은 `market` 한 값으로 시장을 구분한다. KR 규칙을 US·crypto에 복사하지 않는다.
+
+| 시장 | 발화 가능 시간 | 거래일/세션 근거 | 심볼·통화 주의 |
+|---|---|---|---|
+| `kr` | XKRX 정규장 09:00–15:30 KST | 기존 XKRX offline calendar | DB KR 심볼, KRW 가격 |
+| `us` | XNYS regular session의 실제 open~close, close 배타 | `exchange_calendars` XNYS; early close 포함 | DB 기준 `BRK.B` 유지(`app/core/symbol.py` 전용 변환), USD 가격 |
+| `crypto` | 24/7 | equity calendar을 적용하지 않음 | `KRW-BTC` 같은 거래쌍 유지, quote currency는 쌍에서 읽음 |
+
+US가 KST 23:00에도 실행될 수 있는 것은 XNYS가 열려 있기 때문이다. 반대로 US
+after-hours는 이 체인의 범위 밖이다. crypto는 주말·공휴일에도 유효하며
+`ok_24x7`로 명시된다. 미지의 market은 fail-closed (`ValueError`)다.
+
+`kstDate`는 기존 감사 호환 필드다. 새 `marketDate`는 KR은 KST, US는 ET,
+crypto는 UTC 날짜를 기록하므로 이를 거래일 판단에 혼용하지 않는다.
+
+### 5.2 짧은 알림과 증거 보존
+
+operator/운영 레포는 알림을 한 줄로 렌더링할 수 있다. 그러나 auto_trader가
+보존하는 원문 증거를 축약하거나 재계산해 덮어써서는 안 된다. poller는 이벤트의
+`market`, `symbol`, `metric`, `operator`, `threshold`, `thresholdHigh`,
+`thresholdKey`, `currentValue`, `firedAt`를 `triggerEvidence`로 snapshot한다.
+원본은 `review.investment_watch_events`에 남고, proposal 생성 시 같은 snapshot이
+`review.order_proposals.rationale.trigger_evidence`에 남는다. 즉 표시 축소와
+기록 축소는 별개다.
+
+이 PR은 auto_trader만 바꾼다. 운영 레포에는 다음 후속 변경이 필요하지만 여기서
+커밋하거나 적용하지 않는다.
+
+- market별 tick 호출(`market=kr|us|crypto`)과 배포 시 arm 절차
+- 한 줄 renderer 및 원본 `triggerEvidence` 열람 링크/첨부
+- `eventUuid`/`spawnKey`를 키로 하는 cross-path delivery dedupe와 관측 대시보드
+
+### 5.3 §110차 배포 전환 계획: 기존 watch-alert triage 대체
+
+이 절은 **머지 절차가 아니라 배포 절차**다. 이 PR이 머지되어도 기존
+watch-alert triage poller/launchd는 계속 동작한다. 스케줄러·cron·TaskIQ·Prefect
+등록과 env arm은 이 PR에 없다.
+
+#### 배포 순서 — 무엇을 언제 끄는가
+
+1. 운영 레포에서 새 market별 consumer와 dedupe 관측을 배포하되, 새 consumer는
+   delivery를 기록만 하고 발송은 하지 않는 shadow 상태로 둔다. 기존 triage는 그대로
+   실행한다.
+2. KR·US·crypto 각각에서 source event, `triggerEvidence`, proposal/decline
+   completion, dedupe key가 관측되는지 확인한다. 오류·quarantine·unmapped가 0인지
+   확인한다.
+3. 동일한 배포 변경에서 기존 watch-alert triage poller/launchd를 **중지**하고,
+   새 consumer의 실제 발송을 **활성화**한다. 둘의 순서는 중지 → activation이며,
+   activation 전 기존 프로세스의 단일 인스턴스 종료를 확인한다.
+4. 전환 뒤 첫 시장 세션(KR/US)과 crypto 24시간 구간을 관측한다. auto_trader의
+   `WATCH_TRIGGER_REPRICING_ENABLED`는 운영 승인 전까지 default-off를 유지한다.
+
+#### 롤백 조건과 방법
+
+다음 중 하나면 즉시 새 consumer 발송을 끄고 기존 triage를 재가동한다: 중복
+`eventUuid` 발송, 발화 대비 completion 누락/unmapped, `spawn_ambiguous` 또는
+quarantine 미화해결, US 세션 밖 실행, crypto 주말 fire 누락, `triggerEvidence`의
+조건·값·시각 누락/불일치, 혹은 새 consumer의 전송 실패가 기존 경로보다 지속된다.
+
+롤백은 주문/승인 정책 변경이 아니다. 새 consumer의 send arm을 끄고, 기존 poller를
+단일 인스턴스로 복구하고, watermark를 되돌리지 않은 채 `eventUuid` dedupe 상태를
+보존한다. 누락/중복 후보는 source event에서 재조사한다.
+
+#### 동시 구간과 중복 방지
+
+shadow 단계에서는 두 경로가 동시에 실행될 수 있지만 **기존 triage만 발송**한다.
+새 경로는 `eventUuid`와 결정적 `spawnKey`를 저장해 would-send만 기록한다. 실제
+발송 단계에는 동시 구간을 만들지 않는다. 불가피한 겹침(프로세스 종료 지연 등)은
+공유 durable dedupe key `eventUuid`를 send 전에 원자적으로 claim하고, 성공 후에만
+delivery를 기록해 막는다. 메모리 watermark·표시 텍스트·심볼만을 키로 dedupe하면
+재시작·문구 축소·동일 심볼 다중 threshold에서 중복을 막지 못하므로 사용하지 않는다.
 
 ---
 

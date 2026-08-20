@@ -173,6 +173,7 @@ class TickResult:
             "gateReason": self.gate.reason,
             "sessionStatus": self.gate.session_status,
             "kstDate": self.gate.kst_date,
+            "marketDate": self.gate.market_date,
             "spawned": [
                 {
                     "eventUuid": o.request.event_uuid,
@@ -277,7 +278,7 @@ async def run_repricing_tick(
     """Run one tick. Starts no session unless a live spawner is injected."""
     spawner = spawner if spawner is not None else DrySessionSpawner()
 
-    gate = evaluate_gate(now=now)
+    gate = evaluate_gate(now=now, market=market)
     if not gate.should_run:
         logger.info(
             "watch_trigger_repricing: tick skipped (reason=%s, session=%s, date=%s)",
@@ -342,7 +343,9 @@ async def run_repricing_tick(
             symbol=event.symbol,
             market=event.market,
             kst_date=gate.kst_date,
+            market_date=gate.market_date,
             label=session_label(event.symbol, now=now),
+            trigger_evidence=dict(event.trigger_evidence),
         )
 
         disposition, detail = await _attempt_spawn(spawner=spawner, request=request)

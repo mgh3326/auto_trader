@@ -47,6 +47,13 @@ class WatchEventRow(Protocol):
     outcome: str
     delivery_status: str
     delivered_at: datetime | None
+    metric: str
+    operator: str
+    threshold: Any
+    threshold_high: Any
+    threshold_key: str
+    current_value: Any
+    created_at: datetime
 
 
 class WatchEventSource(Protocol):
