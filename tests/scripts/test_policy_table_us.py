@@ -289,6 +289,39 @@ def test_alpaca_account_mode_is_lab_not_default_paper() -> None:
 
 
 @pytest.mark.unit
+def test_averaging_levels_use_shared_math_only_when_position_inputs_exist() -> None:
+    """A(k) is populated for holdings and explicitly absent without cost inputs."""
+
+    held_payload = us_adapter.compute_policy_table(_sample_raw())
+    held_row = next(row for row in held_payload["rows"] if row["symbol"] == "AAPL")
+    assert held_payload["config"]["averaging_k_levels"] == [
+        Decimal("0.05"),
+        Decimal("0.10"),
+    ]
+    assert set(held_row["A_buy_side"]["averaging_math"]) == {
+        "k_5pct",
+        "k_10pct",
+    }
+
+    raw = _sample_raw()
+    unheld_payload = us_adapter.compute_policy_table(
+        us_adapter.RawInputs(
+            as_of=raw.as_of,
+            holdings=[],
+            watch_alerts=raw.watch_alerts,
+            universe_pool=raw.universe_pool,
+            snapshot_partition_date=raw.snapshot_partition_date,
+            snapshot_breadth=raw.snapshot_breadth,
+            universe_symbols=raw.universe_symbols,
+            candles=raw.candles,
+            market_cap_fill_stats=raw.market_cap_fill_stats,
+        )
+    )
+    unheld_row = next(row for row in unheld_payload["rows"] if row["symbol"] == "AAPL")
+    assert unheld_row["A_buy_side"]["averaging_math"] is None
+
+
+@pytest.mark.unit
 def test_no_order_tool_imports_in_policy_table_tree() -> None:
     """Static AST: scripts/policy_table must not import order placement modules."""
 
