@@ -24,6 +24,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -935,3 +936,107 @@ async def test_quick_decision_history_batch_failure_log_excludes_exception_paylo
             assert fake_secret not in formatted, (
                 "exc_info must not be attached with the raw exception traceback"
             )
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage — two edge cases the R3 populated-row tests above did
+# not pin: lesson truncation actually crossing the 220-char boundary with the
+# canonical ellipsis marker, and a prior-decision row whose SMOKE marker
+# lives only on `status` (not `rationale`). Runtime behavior for both is
+# already correct as of `02bd221cf` (canonical `_truncate`/`_is_smoke` reuse);
+# these are coverage-only additions, not a defect RED/GREEN pair.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quick_prior_lesson_over_limit_truncated_with_ellipsis_like_canonical(
+    db_session: AsyncSession,
+):
+    assert analysis_quick is not None
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+    long_lesson = "레슨 " * 100  # well past the canonical 220-char limit
+    await _add_retro(db_session, symbol=sym, lesson=long_lesson)
+    await db_session.flush()
+
+    canonical_ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+    assert canonical_ctx is not None
+    canonical_lessons = canonical_ctx["prior_lessons"]
+
+    quick_ctx = await analysis_quick._load_decision_history_batch(
+        db_session, [(raw, "equity_kr")]
+    )
+    quick_lessons = quick_ctx[sym.upper()]["prior_lessons"]
+
+    assert quick_lessons == canonical_lessons
+    assert quick_lessons == [_truncate(long_lesson)]
+    assert quick_lessons[0].endswith("…"), (
+        "an over-limit lesson must carry the canonical ellipsis truncation marker"
+    )
+    assert len(quick_lessons[0]) == 220
+
+
+class _FakePriorRowSession:
+    """Fake AsyncSession returning one fabricated (never persisted) row for
+    the prior-decisions query and empty results for every other query
+    `_load_decision_history_batch` issues.
+
+    `investment_report_items.status` is CHECK-constrained to
+    ``proposed|approved|denied|deferred|activated|expired`` — none of which
+    can ever carry a "smoke" marker, so a real committed row can never
+    exercise canonical `_is_smoke(rationale, status)`'s status-branch for
+    this table. This fake exercises the real `_load_decision_history_batch`
+    code path (attribute reads + `_is_smoke` call) against a fabricated row
+    instead of a real DB insert.
+    """
+
+    def __init__(self, prior_rows: list[Any]) -> None:
+        self._prior_rows = prior_rows
+
+    async def execute(self, statement: object, params: object | None = None):
+        text = str(statement)
+
+        class _Result:
+            def __init__(self, rows: list[Any]) -> None:
+                self._rows = rows
+
+            def scalars(self) -> _Result:
+                return self
+
+            def all(self) -> list[Any]:
+                return self._rows
+
+        if "investment_report_items" in text:
+            return _Result(self._prior_rows)
+        return _Result([])
+
+
+@pytest.mark.asyncio
+async def test_quick_prior_decision_status_smoke_marker_excludes_row():
+    assert analysis_quick is not None
+    from types import SimpleNamespace
+
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+
+    smoke_row = SimpleNamespace(
+        symbol=sym,
+        rationale="ordinary rationale, no marker here",
+        status="smoke_test_status",
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        intent="buy_review",
+        side="buy",
+        decision_bucket="new_buy_candidate",
+        confidence=Decimal("70"),
+    )
+    session = _FakePriorRowSession([smoke_row])
+
+    ctx = await analysis_quick._load_decision_history_batch(
+        session, [(raw, "equity_kr")]
+    )
+
+    assert sym.upper() not in ctx or not ctx[sym.upper()]["prior_decisions"], (
+        "a prior-decision row whose SMOKE marker lives only on `status` "
+        "(not `rationale`) must still be excluded, matching canonical "
+        "`_is_smoke(rationale, status)`"
+    )
