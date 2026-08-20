@@ -12,6 +12,7 @@ from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.models.manual_holdings import MarketType
+from app.services.analyst_normalizer import consensus_has_stale_window_inputs
 from app.services.domain_errors import DomainServiceError
 
 if TYPE_CHECKING:
@@ -572,8 +573,9 @@ def build_recommendation_for_equity(
     score = 0
     max_score = 0
 
-    # ROB-486: 컨센서스 평균 목표가가 현재가 대비 임계 이하(음수 upside)면
-    # count 기반 buy 가산 차단 + 최종 buy 강등에 사용.
+    # ROB-486/1300: 컨센서스 평균 목표가가 현재가 대비 임계 이하이거나
+    # stale-window 입력이 섞였으면 count 기반 buy 가산 차단 + 최종 buy 강등에 쓴다.
+    # The latter keeps publishing suppression from turning into a buy signal.
     consensus_target_exceeded = False
     consensus_demotion_reason: str | None = None
 
@@ -603,16 +605,22 @@ def build_recommendation_for_equity(
         )
         total = _to_optional_consensus_count(consensus.get("total_count"))
 
-        upside_pct = _to_optional_consensus_upside(consensus.get("upside_pct"))
-        if (
-            upside_pct is not None
-            and upside_pct <= CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT
-        ):
+        if consensus_has_stale_window_inputs(consensus):
             consensus_target_exceeded = True
             consensus_demotion_reason = (
-                "Analyst target below current price "
-                f"(upside {upside_pct:.1f}%) — target_exceeded"
+                "Analyst consensus has stale-window inputs — upside unavailable"
             )
+        else:
+            upside_pct = _to_optional_consensus_upside(consensus.get("upside_pct"))
+            if (
+                upside_pct is not None
+                and upside_pct <= CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT
+            ):
+                consensus_target_exceeded = True
+                consensus_demotion_reason = (
+                    "Analyst target below current price "
+                    f"(upside {upside_pct:.1f}%) — target_exceeded"
+                )
 
         if (
             total is not None
@@ -642,10 +650,14 @@ def build_recommendation_for_equity(
                             f"Analyst consensus bullish ({buy_count} buy vs {sell_count} sell)"
                         )
             elif buy_ratio > 0.4:
-                score += 1
-                reasoning_parts.append(
-                    f"Analyst consensus moderate ({buy_count} buy vs {sell_count} sell)"
-                )
+                if consensus_target_exceeded:
+                    if consensus_demotion_reason is not None:
+                        reasoning_parts.append(consensus_demotion_reason)
+                else:
+                    score += 1
+                    reasoning_parts.append(
+                        f"Analyst consensus moderate ({buy_count} buy vs {sell_count} sell)"
+                    )
             elif sell_ratio > 0.6:
                 score -= 2
                 reasoning_parts.append(

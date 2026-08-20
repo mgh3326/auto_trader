@@ -414,6 +414,7 @@ async def test_stock_detail_consensus_applies_recency_window_like_tool():
     # ROB-1300: remaining-window 3,000 is not a silent refresh of mixed stale.
     assert response.consensus.avgTargetPrice is None
     assert response.consensus.upsidePct is None
+    assert "analyst_consensus_stale_window_inputs" in response.warnings
 
 
 @pytest.mark.asyncio

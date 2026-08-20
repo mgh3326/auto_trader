@@ -71,6 +71,20 @@ caps. The upside stage is fail-closed on ROB-486 window metadata
 broker evidence, a reached `budget` stage is always `deferred` and
 `actionable_count` is always zero.
 
+## Consensus-window scope and limits
+
+This is a window-membership gate, not a maximum-age guarantee. It fails only
+when existing ROB-486 metadata says a **dated** opinion fell outside the
+configured opinion window. An all-in-window set can still be near that window's
+cutoff, and ROB-488 keeps undated rows fail-open while exposing
+`rows_undated`; neither condition is reclassified as fresh by this runbook.
+`limit` and `opinion_window_months` change the observed opinion set for the
+general `get_investment_opinions` surface, so consumers must not retry with a
+smaller limit or wider window to manufacture a numeric upside. This fanout's
+own fresh revalidation uses its fixed provider call and reports the metadata it
+received. The gate does not cover TVScreener-provided KR `avg_target`/
+`upside_pct` fields, which do not carry ROB-486 opinion-window metadata.
+
 ## KR regular-session missing-freshness contract
 
 The following is a synthetic unit-test fixture for the historic KR
