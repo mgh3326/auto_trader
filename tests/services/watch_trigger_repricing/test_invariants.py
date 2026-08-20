@@ -24,12 +24,17 @@ PACKAGE_FILES = sorted(PACKAGE.glob("*.py"))
 # and the claim store the one allowed to write -- to its own table only.
 READ_SEAM = PACKAGE / "event_source.py"
 CLAIM_WRITER = PACKAGE / "db_claim_store.py"
+# ROB-1290: the boundary is crossed for real now, so exactly one file may
+# import the tool that crosses it. Same shape as READ_SEAM, and it is a
+# *narrow* exemption -- every other forbidden fragment still applies here.
+WRITE_SEAM = PACKAGE / "proposal_chain.py"
+BOUNDARY_MODULE = "app.mcp_server.tooling.order_proposal_tools"
 
 FORBIDDEN_IMPORT_FRAGMENTS = (
     "app.services.brokers",
     "app.services.order_proposals",
     "app.mcp_server.tooling.orders",
-    "app.mcp_server.tooling.order_proposal_tools",
+    BOUNDARY_MODULE,
     "app.services.kis_trading_service",
     "app.services.trade_journal",
 )
@@ -88,16 +93,19 @@ def test_package_files_are_the_expected_set() -> None:
         "__init__.py",
         "arming.py",
         "capability.py",
+        "chain_spawner.py",
         "claims.py",
         "consumption.py",
         "db_claim_store.py",
         "entrypoint.py",
         "event_source.py",
         "gate.py",
+        "judgement.py",
         "lifecycle.py",
         "live_contract.py",
         "orchestrator.py",
         "poller.py",
+        "proposal_chain.py",
         "selection.py",
         "spawn.py",
     }
@@ -107,6 +115,8 @@ def test_package_files_are_the_expected_set() -> None:
 # The approval machinery cannot be reached, relaxed, or read from here
 # ---------------------------------------------------------------------------
 def test_no_broker_or_approval_imports() -> None:
+    """The write seam may import the boundary tool. Nothing else may, and it
+    may import nothing else from the forbidden list either."""
     offenders: list[str] = []
     for path, tree in _trees():
         for node in ast.walk(tree):
@@ -117,9 +127,71 @@ def test_no_broker_or_approval_imports() -> None:
             else:
                 continue
             for name in names:
+                if path == WRITE_SEAM and name == BOUNDARY_MODULE:
+                    continue
                 if any(f in name for f in FORBIDDEN_IMPORT_FRAGMENTS):
                     offenders.append(f"{path.name}:{node.lineno} {name}")
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-1290 — the boundary is crossed, exactly once, from exactly one file
+# ---------------------------------------------------------------------------
+def _boundary_importers() -> dict[str, list[str]]:
+    """path name -> names imported from the boundary tool module."""
+    found: dict[str, list[str]] = {}
+    for path, tree in _trees():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == BOUNDARY_MODULE:
+                found.setdefault(path.name, []).extend(a.name for a in node.names)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == BOUNDARY_MODULE:
+                        found.setdefault(path.name, []).append("<module>")
+    return found
+
+
+def test_exactly_one_file_imports_the_boundary_tool() -> None:
+    assert _boundary_importers() == {WRITE_SEAM.name: ["order_proposal_create"]}
+
+
+def test_the_write_seam_actually_calls_the_boundary() -> None:
+    """The ROB-1286 gap, asserted structurally.
+
+    r3 named ``order_proposal_create`` in a string, a docstring and an
+    allowlist, and never called it, so "the chain reaches a proposal" was a
+    sentence. This walks the seam's AST for a call whose callee resolves to
+    the imported boundary name -- prose and allowlist entries cannot
+    satisfy it.
+    """
+    from app.services.watch_trigger_repricing.capability import EXECUTION_BOUNDARY
+
+    tree = ast.parse(WRITE_SEAM.read_text())
+    # The seam resolves the callable through one helper, so accept either a
+    # direct call or a return of the bare name from that resolver.
+    referenced = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == EXECUTION_BOUNDARY
+    ]
+    assert referenced, f"{WRITE_SEAM.name} never references {EXECUTION_BOUNDARY}"
+
+    awaited_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+    ]
+    assert awaited_calls, "the seam must await the boundary call"
+
+
+def test_the_boundary_name_is_not_reachable_from_any_other_package_file() -> None:
+    """A second importer would make the seam a convention, not a control."""
+    other = [
+        p.name
+        for p in PACKAGE_FILES
+        if p != WRITE_SEAM and "order_proposal_tools" in _code_tokens(p)
+    ]
+    assert other == []
 
 
 def test_approval_gate_settings_are_never_referenced() -> None:
@@ -295,19 +367,82 @@ def test_settings_gate_defaults_off() -> None:
     assert Settings.model_fields["WATCH_TRIGGER_REPRICING_ENABLED"].default is False
 
 
-def test_exactly_one_migration_is_added_and_it_is_additive() -> None:
-    """§101차 ①: the claims table, and nothing else."""
+def test_this_feature_migrates_only_its_own_table() -> None:
+    """§101차 ①: the claims table, and nothing else.
+
+    ROB-1290 r2 adds a second migration (the ``awaiting_reconcile`` state,
+    which is what stops an ambiguous fire being re-judged after the TTL).
+    Counting files was always a proxy for the property that matters, so
+    this asserts the property directly and for *every* migration this
+    feature owns: exactly one table is ever created, no other table is
+    named, and ``review.investment_watch_events`` is never touched.
+    """
     versions = REPO_ROOT / "alembic" / "versions"
-    mine = [
+    mine = sorted(
         p
         for p in versions.glob("*.py")
         if "watch_event_repricing_claims" in p.read_text()
+    )
+    assert [p.name for p in mine] == [
+        "20260819_rob1286_repricing_claims.py",
+        "20260820_rob1290_awaiting_reconcile_state.py",
     ]
-    assert len(mine) == 1, [p.name for p in mine]
 
-    source = mine[0].read_text()
-    # Additive: creates its own table, alters nobody else's.
-    assert source.count("op.create_table(") == 1
-    for destructive in ("op.drop_column", "op.alter_column", "op.drop_constraint"):
-        assert destructive not in source.split("def downgrade")[0]
-    assert "investment_watch_events" not in _code_tokens(mine[0])
+    # Across the whole set, the table is created exactly once.
+    assert sum(p.read_text().count("op.create_table(") for p in mine) == 1
+
+    for path in mine:
+        # The feature never reads or writes the fire table.
+        assert "investment_watch_events" not in _code_tokens(path), path.name
+        # No other table is named anywhere in the migration.
+        tree = ast.parse(path.read_text())
+        table_like = {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and ("watch_event" in node.value or "review." in node.value)
+        }
+        for literal in table_like:
+            assert "watch_event_repricing_claims" in literal, (
+                f"{path.name} names another table: {literal!r}"
+            )
+
+    # Which statements each migration actually emits is asserted against the
+    # rendered DDL in ``test_migration_render.py`` -- reading the source
+    # cannot catch a name mangled by alembic's naming convention.
+
+
+def test_the_second_migration_alters_nothing_but_one_check_constraint() -> None:
+    """Additive in the sense that matters: it widens, it does not remove."""
+    source = (
+        REPO_ROOT
+        / "alembic"
+        / "versions"
+        / "20260820_rob1290_awaiting_reconcile_state.py"
+    ).read_text()
+    upgrade = source.split("def downgrade")[0]
+
+    for destructive in ("op.drop_column", "op.alter_column", "op.drop_table"):
+        assert destructive not in upgrade
+    # It replaces the state CHECK, and only that one.
+    assert upgrade.count("op.drop_constraint(") == 1
+    assert upgrade.count("op.create_check_constraint(") == 1
+    assert "ck_watch_event_repricing_claims_state" in source
+    # The widened set is a strict superset of the old one.
+    assert "awaiting_reconcile" in source
+    for kept in (
+        "started",
+        "proposal_created",
+        "rejected_with_reason",
+        "expired_unprocessed",
+    ):
+        assert kept in source
+
+
+def test_the_model_check_matches_the_lifecycle_enum() -> None:
+    """The DB's spelling of the states and the code's cannot drift."""
+    from app.models.watch_event_repricing_claims import _LIFECYCLE_STATES
+    from app.services.watch_trigger_repricing.lifecycle import ClaimLifecycle
+
+    assert set(_LIFECYCLE_STATES) == {m.value for m in ClaimLifecycle}

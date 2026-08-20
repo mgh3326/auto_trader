@@ -49,6 +49,8 @@ from app.services.watch_trigger_repricing.consumption import (
     project_claim_state,
 )
 from app.services.watch_trigger_repricing.lifecycle import (
+    NON_RECLAIMABLE_STATES,
+    RESOLVED_LIFECYCLE_STATES,
     ClaimLifecycle,
     SessionOutcome,
 )
@@ -171,11 +173,12 @@ class InMemoryClaimStore:
             latest = self._latest(event_uuid)
             if latest is None:
                 return project_claim_state(claim_found=False, store_available=True)
-            if latest.state in (
-                ClaimLifecycle.PROPOSAL_CREATED,
-                ClaimLifecycle.REJECTED_WITH_REASON,
-            ):
+            if latest.state in RESOLVED_LIFECYCLE_STATES:
                 return ConsumptionState.CONSUMED
+            if latest.state is ClaimLifecycle.AWAITING_RECONCILE:
+                # Terminal and a fault: nobody knows whether a proposal
+                # exists, so no consumer may take it (r2 / BLOCKER 2).
+                return ConsumptionState.QUARANTINED
             return project_claim_state(
                 claim_found=latest.is_live(now=now), store_available=True
             )
@@ -209,12 +212,13 @@ class InMemoryClaimStore:
             if latest is not None:
                 if latest.is_live(now=now):
                     return None
-                if latest.state in (
-                    ClaimLifecycle.PROPOSAL_CREATED,
-                    ClaimLifecycle.REJECTED_WITH_REASON,
-                ):
-                    # Already resolved. Re-judging is the double-proposal
-                    # direction.
+                if latest.state in NON_RECLAIMABLE_STATES:
+                    # Already resolved, or terminally ambiguous. Re-judging
+                    # either is the double-proposal direction: the first
+                    # produced a proposal, or *may* have and nobody knows.
+                    # Note this is checked after ``is_live``, which is a
+                    # lease question -- a terminal outlives its lease by
+                    # design, so no clock can walk this refusal back.
                     return None
             # Stands in for UNIQUE (symbol) WHERE state = 'started'. r2
             # NEW BLOCKER 2: without this, two ticks holding the same empty

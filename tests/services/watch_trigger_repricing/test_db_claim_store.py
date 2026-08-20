@@ -231,3 +231,54 @@ async def test_database_rejects_proposal_terminal_without_proposal_id(store) -> 
         with pytest.raises(IntegrityError):
             await session.commit()
         await session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# ROB-1290 — release, which the durable store never implemented
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_release_hands_the_fire_back_and_the_next_tick_can_reclaim(
+    store,
+) -> None:
+    """The branch no shipped spawner could reach until the chain existed.
+
+    ``release`` was on the ClaimStore protocol and only the in-memory
+    rehearsal store implemented it, so the first spawner able to prove a
+    clean failure would have raised ``AttributeError`` mid-tick.
+    """
+    event = _uuid(20)
+    handle = await store.try_claim(
+        event_uuid=event, symbol="005930", market="kr", claimed_by="t", now=NOW
+    )
+    assert handle is not None
+
+    await store.release(handle, reason="spawn_not_started")
+
+    # The fire looks untouched ...
+    assert await store.state_for(event, now=NOW) is ConsumptionState.UNCLAIMED
+    # ... the symbol slot is free ...
+    assert await store.active_symbols(now=NOW) == frozenset()
+    # ... and a later tick can take it for real.
+    again = await store.try_claim(
+        event_uuid=event, symbol="005930", market="kr", claimed_by="t2", now=NOW
+    )
+    assert again is not None
+    await store.finalise(again, proposal_created("pid-20"))
+    outcomes = await store.outcomes_for([event])
+    assert outcomes[event].state is ClaimLifecycle.PROPOSAL_CREATED
+
+
+@pytest.mark.asyncio
+async def test_release_is_fenced_against_a_stale_owner(store) -> None:
+    event = _uuid(21)
+    handle = await store.try_claim(
+        event_uuid=event, symbol="000660", market="kr", claimed_by="t", now=NOW
+    )
+    assert handle is not None
+    await store.finalise(handle, rejected("judged and declined"))
+
+    # The same handle must not be able to delete its own terminal.
+    with pytest.raises(ClaimNotHeld):
+        await store.release(handle, reason="spawn_not_started")
+    outcomes = await store.outcomes_for([event])
+    assert outcomes[event].state is ClaimLifecycle.REJECTED_WITH_REASON

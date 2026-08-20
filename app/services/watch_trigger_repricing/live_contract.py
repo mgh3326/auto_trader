@@ -41,7 +41,7 @@ r2 escape. Only closed equality rules out both.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, final, runtime_checkable
 
 from app.services.watch_trigger_repricing.capability import (
     PROPOSAL_ONLY_TOOLS,
@@ -56,6 +56,7 @@ from app.services.watch_trigger_repricing.spawn import (
 __all__ = [
     "LiveSessionSpawner",
     "LiveSpawnerContractViolation",
+    "ProposalChainGrant",
     "assert_exact_grant",
     "assert_live_spawner_contract",
 ]
@@ -83,6 +84,61 @@ def assert_exact_grant(granted: frozenset[str] | set[str], *, who: str) -> None:
     )
 
 
+# Minted nowhere but :meth:`LiveSessionSpawner.__init__`. A module-private
+# sentinel is what makes :class:`ProposalChainGrant` unforgeable *by
+# accident*: writing ``ProposalChainGrant(object())`` raises, so a spawner
+# that skipped the base class cannot hand one to the write seam. It is not
+# a defence against deliberate private access, and does not claim to be --
+# what it buys is that the bypass cannot be written without reaching into
+# another module's underscore name, which is a reviewable act rather than
+# an oversight.
+_GRANT_ISSUER: Final[object] = object()
+
+
+@final
+class ProposalChainGrant:
+    """Proof that a spawner's tool grant was checked at construction.
+
+    §101차 ③ asked for the attestation to be enforced "in the protocol or
+    the constructor" rather than in a runbook. This is the value that makes
+    that enforcement reach further than the spawner object itself: the
+    execution boundary (:mod:`.proposal_chain`) requires one, and the only
+    way to obtain one is to construct a :class:`LiveSessionSpawner`
+    subclass, whose ``__init__`` refuses any grant that is not exactly
+    :data:`~.capability.PROPOSAL_ONLY_TOOLS`.
+
+    So "wire a spawner that creates proposals while skipping the grant
+    check" is not a runtime risk to be tested for -- it is code that cannot
+    be written without failing at the constructor.
+    """
+
+    __slots__ = ("_tools", "_who")
+
+    def __init__(
+        self, issuer: object, *, who: str, tools: frozenset[str] | set[str]
+    ) -> None:
+        if issuer is not _GRANT_ISSUER:
+            raise LiveSpawnerContractViolation(
+                "ProposalChainGrant is minted only by LiveSessionSpawner.__init__; "
+                "constructing one directly is exactly the bypass that check exists "
+                "to prevent"
+            )
+        assert_exact_grant(tools, who=who)
+        self._who = who
+        self._tools = frozenset(tools)
+
+    @property
+    def who(self) -> str:
+        return self._who
+
+    @property
+    def tools(self) -> frozenset[str]:
+        return self._tools
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return f"ProposalChainGrant(who={self._who!r}, tools={len(self._tools)})"
+
+
 @runtime_checkable
 class ReconcilingLiveSpawner(Protocol):
     """The shape the arming gate insists on for anything not dry."""
@@ -108,9 +164,30 @@ class LiveSessionSpawner(ABC):
     """
 
     def __init__(self) -> None:
-        assert_exact_grant(
-            self.declared_grant(), who=f"{type(self).__name__}.declared_grant()"
+        who = f"{type(self).__name__}.declared_grant()"
+        declared = frozenset(self.declared_grant())
+        assert_exact_grant(declared, who=who)
+        self._proposal_chain_grant = ProposalChainGrant(
+            _GRANT_ISSUER, who=who, tools=declared
         )
+
+    @property
+    def proposal_chain_grant(self) -> ProposalChainGrant:
+        """The capability token :mod:`.proposal_chain` demands.
+
+        Raises rather than returning ``None`` when a subclass skipped
+        ``super().__init__()``: a spawner whose grant was never checked must
+        not be able to reach the execution boundary by being falsy in the
+        right place.
+        """
+        grant = getattr(self, "_proposal_chain_grant", None)
+        if grant is None:
+            raise LiveSpawnerContractViolation(
+                f"{type(self).__name__} never ran LiveSessionSpawner.__init__, so "
+                "its tool grant was never checked and it holds no proposal-chain "
+                "grant"
+            )
+        return grant
 
     @property
     def is_dry(self) -> bool:
@@ -146,9 +223,11 @@ class LiveSessionSpawner(ABC):
 def assert_live_spawner_contract(spawner: object) -> None:
     """Gate check for a non-dry spawner.
 
-    Structural *and* nominal: the protocol check catches a duck-typed object
-    that implements the methods, and the base-class check catches one that
-    implements them without ever running the constructor's grant check.
+    Three layers, because each catches something the others miss: the
+    protocol check catches a duck-typed object that implements the methods,
+    the base-class check catches one that implements them without
+    inheriting the constructor's grant check, and the grant check catches a
+    subclass that inherited it and then skipped ``super().__init__()``.
     """
     if not isinstance(spawner, ReconcilingLiveSpawner):
         missing = [
@@ -167,3 +246,17 @@ def assert_live_spawner_contract(spawner: object) -> None:
             "tool grant is checked at construction; implementing the methods "
             "without the base class skips that check"
         )
+    # r2 SHOULD 1: inheriting the base is not the same as having *run* it. A
+    # subclass whose ``__init__`` skips ``super().__init__()`` never had its
+    # grant checked and holds no token, and arming used to accept it -- the
+    # failure only arrived later, when the write seam asked for the grant.
+    # Fail-closed either way, but "rejected at the boundary" is what the
+    # contract claims, so check it at the boundary.
+    grant = getattr(spawner, "_proposal_chain_grant", None)
+    if not isinstance(grant, ProposalChainGrant):
+        raise LiveSpawnerContractViolation(
+            f"{type(spawner).__name__} holds no proposal-chain grant, so "
+            "LiveSessionSpawner.__init__ never ran and its tool grant was "
+            "never checked"
+        )
+    assert_exact_grant(grant.tools, who=f"{type(spawner).__name__} (armed)")

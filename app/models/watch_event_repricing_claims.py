@@ -60,6 +60,9 @@ _LIFECYCLE_STATES = (
     "proposal_created",
     "rejected_with_reason",
     "expired_unprocessed",
+    # ROB-1290 / r2 BLOCKER 2: an ambiguous spawn is terminal so the TTL
+    # cannot walk it back into a re-claim. See ``ClaimLifecycle``.
+    "awaiting_reconcile",
 )
 _STATES_SQL = ", ".join(f"'{state}'" for state in _LIFECYCLE_STATES)
 

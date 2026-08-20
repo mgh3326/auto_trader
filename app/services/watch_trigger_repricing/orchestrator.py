@@ -48,10 +48,16 @@ implements :class:`~.spawn.ReconcilableSpawner`, the tick asks it whether a
 session with this event's deterministic ``spawn_key`` exists, and a
 definite answer resolves to CONSUMED or released exactly as above. Only an
 undecidable result is quarantined, and quarantine is chosen with its cost
-stated: **one event's latency, in exchange for never double-spawning into
-the approval lane**. It is not silent -- a quarantined event is logged at
-ERROR and returned in ``TickResult.needs_reconcile``, so it surfaces as an
-operator task rather than as an event that quietly stopped existing.
+stated: **this fire is not judged at all until a human looks, in exchange
+for never double-proposing into the approval lane**. It is not silent -- a
+quarantined event is written to the ``awaiting_reconcile`` terminal, logged
+at ERROR, and returned in ``TickResult.needs_reconcile``, so it surfaces as
+an operator task rather than as an event that quietly stopped existing.
+
+r2 / BLOCKER 2 corrected the cost statement above. r1 said "one event's
+latency" while leaving the claim ``STARTED``, which is the state the lease
+expires -- so the fire *was* retried, thirty minutes later, automatically.
+The terminal is what makes the sentence true.
 
 r3 (§101차 ③) closes that last sentence: a live spawner without
 ``reconcile`` is no longer "under pressure" to implement it -- it cannot be
@@ -66,6 +72,7 @@ judged nothing and gave no reason has not finished.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -74,11 +81,13 @@ from typing import Any
 
 from app.services.watch_trigger_repricing.claims import (
     DEFAULT_LEASE,
+    ClaimNotHeld,
     ClaimStore,
     ClaimStoreUnavailable,
     InMemoryClaimStore,
 )
 from app.services.watch_trigger_repricing.gate import GateDecision, evaluate_gate
+from app.services.watch_trigger_repricing.lifecycle import awaiting_reconcile
 from app.services.watch_trigger_repricing.selection import (
     DEFAULT_ROUND_CAP,
     CandidateEvent,
@@ -193,7 +202,7 @@ class TickResult:
         }
 
 
-def _resolve_ambiguity(
+async def _resolve_ambiguity(
     *,
     spawner: SessionSpawner,
     request: SpawnRequest,
@@ -210,6 +219,8 @@ def _resolve_ambiguity(
         return SpawnDisposition.AMBIGUOUS, f"{detail}; spawner cannot reconcile"
     try:
         verdict = spawner.reconcile(request)
+        if inspect.isawaitable(verdict):
+            verdict = await verdict
     except Exception as exc:  # noqa: BLE001 - a failed readback stays ambiguous
         logger.exception(
             "watch_trigger_repricing: reconcile failed for spawn_key=%s",
@@ -221,14 +232,23 @@ def _resolve_ambiguity(
     return SpawnDisposition.AMBIGUOUS, f"{detail}; reconcile inconclusive"
 
 
-def _attempt_spawn(
+async def _attempt_spawn(
     *,
     spawner: SessionSpawner,
     request: SpawnRequest,
 ) -> tuple[SpawnDisposition, str]:
-    """Call the spawner and classify what it actually proved."""
+    """Call the spawner and classify what it actually proved.
+
+    ``spawn`` may be sync or async. The dry rehearsal spawners are sync
+    because they do nothing; a spawner that actually reaches
+    ``order_proposal_create`` is necessarily async, and awaiting here is
+    what lets the *same* orchestrator drive both rather than growing a
+    second, less-tested tick for the live path.
+    """
     try:
         outcome = spawner.spawn(request)
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
     except SpawnNotStarted as exc:
         # The only exception that proves a clean failure.
         return SpawnDisposition.NOT_STARTED, f"spawn_not_started: {exc}"
@@ -325,9 +345,9 @@ async def run_repricing_tick(
             label=session_label(event.symbol, now=now),
         )
 
-        disposition, detail = _attempt_spawn(spawner=spawner, request=request)
+        disposition, detail = await _attempt_spawn(spawner=spawner, request=request)
         if disposition is SpawnDisposition.AMBIGUOUS:
-            disposition, detail = _resolve_ambiguity(
+            disposition, detail = await _resolve_ambiguity(
                 spawner=spawner, request=request, detail=detail
             )
 
@@ -352,10 +372,32 @@ async def run_repricing_tick(
             )
             continue
 
-        # AMBIGUOUS and undecidable. Hold the claim so it cannot double
-        # spawn, and shout so it cannot silently vanish. The lease still
-        # runs, so if nothing reconciles it the TTL sweep records
-        # EXPIRED_UNPROCESSED -- an unjudged fire, named as such.
+        # AMBIGUOUS and undecidable. r2 / BLOCKER 2: r1 held the claim in
+        # STARTED and said in a log line that it would not be retried --
+        # but STARTED is the state the lease expires, so thirty minutes
+        # later the TTL wrote EXPIRED_UNPROCESSED and the next tick
+        # re-claimed and re-judged the fire. If the first create had
+        # committed and only its acknowledgement was lost, that is two
+        # proposals from one fire. Writing the terminal makes the refusal
+        # a property of the row rather than a promise in a log.
+        try:
+            await store.finalise(handle, awaiting_reconcile())
+        except ClaimNotHeld:
+            # The lease already rolled over to another claimant. Do not
+            # fight it: the current owner's row is authoritative, and the
+            # event is still reported below.
+            logger.exception(
+                "watch_trigger_repricing: could not quarantine event %s; the "
+                "claim is no longer held by this owner",
+                event.event_uuid,
+            )
+        except ClaimStoreUnavailable:
+            logger.exception(
+                "watch_trigger_repricing: could not quarantine event %s; the "
+                "claim store is unavailable, so the lease may still expire and "
+                "the fire may be re-judged",
+                event.event_uuid,
+            )
         logger.error(
             "watch_trigger_repricing: AMBIGUOUS spawn for event %s (symbol=%s, "
             "spawn_key=%s): %s -- claim quarantined, needs operator "

@@ -48,6 +48,7 @@ a decidable answer via :meth:`ReconcilableSpawner.reconcile`.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -173,11 +174,15 @@ class SessionSpawner(Protocol):
         """True only if this spawner structurally cannot start a session.
 
         Read fail-closed by the orchestrator: an implementation that does
-        not answer is assumed live.
+        not answer is assumed live. Note that :mod:`.arming` decides
+        dryness by *type* and ignores this answer entirely -- it is kept as
+        documentation of intent, not as a gate.
         """
         ...
 
-    def spawn(self, request: SpawnRequest) -> SpawnOutcome: ...
+    def spawn(
+        self, request: SpawnRequest
+    ) -> SpawnOutcome | Awaitable[SpawnOutcome]: ...
 
 
 @runtime_checkable
@@ -189,7 +194,9 @@ class ReconcilableSpawner(Protocol):
     STARTED/NOT_STARTED on the same tick.
     """
 
-    def reconcile(self, request: SpawnRequest) -> SpawnDisposition: ...
+    def reconcile(
+        self, request: SpawnRequest
+    ) -> SpawnDisposition | Awaitable[SpawnDisposition]: ...
 
 
 @dataclass

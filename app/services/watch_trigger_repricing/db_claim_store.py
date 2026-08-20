@@ -52,10 +52,14 @@ from app.services.watch_trigger_repricing.consumption import (
     project_claim_state,
 )
 from app.services.watch_trigger_repricing.lifecycle import (
+    NON_RECLAIMABLE_STATES,
     TERMINAL_LIFECYCLE_STATES,
     ClaimLifecycle,
     SessionOutcome,
 )
+
+# Spelled as raw values once, for the SQL-facing comparisons below.
+_NON_RECLAIMABLE_VALUES = tuple(state.value for state in NON_RECLAIMABLE_STATES)
 
 __all__ = ["DatabaseClaimStore"]
 
@@ -88,6 +92,10 @@ class DatabaseClaimStore:
             # the TTL terminal, which explicitly means "nobody judged it".
             if row.state == ClaimLifecycle.EXPIRED_UNPROCESSED:
                 return project_claim_state(claim_found=False, store_available=True)
+            if row.state == ClaimLifecycle.AWAITING_RECONCILE:
+                # Unknown, not done. Blocks every consumer and is reported
+                # for operator reconciliation (r2 / BLOCKER 2).
+                return ConsumptionState.QUARANTINED
             return ConsumptionState.CONSUMED
         return project_claim_state(
             claim_found=row.lease_expires_at > now, store_available=True
@@ -181,12 +189,13 @@ class DatabaseClaimStore:
                         finalised_at=now,
                     )
                 )
-            if latest is not None and latest.state in (
-                ClaimLifecycle.PROPOSAL_CREATED.value,
-                ClaimLifecycle.REJECTED_WITH_REASON.value,
-            ):
-                # Already resolved. Never re-judge a fire that produced an
-                # outcome -- that is the double-proposal direction.
+            if latest is not None and latest.state in _NON_RECLAIMABLE_VALUES:
+                # Already resolved, or terminally ambiguous. Never re-judge
+                # a fire that produced an outcome, or one that *may* have
+                # produced a proposal nobody could confirm -- both are the
+                # double-proposal direction. r2 / BLOCKER 2: this branch is
+                # reached before any lease arithmetic, so TTL expiry cannot
+                # undo it.
                 return None
 
             generation = (latest.generation + 1) if latest is not None else 1
@@ -248,6 +257,47 @@ class DatabaseClaimStore:
                     f"claim {handle.event_uuid}#{handle.generation} is not held by "
                     f"this owner (lease rolled over, or already terminal); "
                     "refusing to write over the current claimant"
+                )
+            await session.commit()
+
+    async def release(self, handle: ClaimHandle, *, reason: str) -> None:
+        """Hand a claim back after a *proven* clean failure to start.
+
+        ROB-1290: this method was on the :class:`~.claims.ClaimStore`
+        protocol and implemented only by the in-memory rehearsal store. No
+        shipped spawner could return ``NOT_STARTED`` -- the dry one always
+        answers ``DRY`` -- so the orchestrator's release branch had never
+        run against the durable store, and the first spawner that could
+        prove a clean failure would have hit ``AttributeError`` mid-tick
+        and left the claim held until its lease expired.
+
+        Deletes the row rather than writing a terminal, exactly as the
+        in-memory store does: nothing was judged, so the fire must look
+        untouched to the next tick, and the row must stop occupying the
+        per-symbol partial-unique slot. The release is not silent -- the
+        orchestrator logs it and reports the event with its reason -- and
+        the evidence that matters (that no proposal exists) is the absence
+        of a proposal row, not the absence of this one.
+
+        Fenced like :meth:`finalise`: a rolled-over owner matches no row
+        and raises rather than deleting the current claimant's work, or an
+        already-written ``expired_unprocessed`` terminal.
+        """
+        async with self.session_factory() as session:  # type: ignore[operator]
+            result = await session.execute(
+                sa.delete(_TABLE).where(
+                    _TABLE.event_uuid == uuid.UUID(handle.event_uuid),
+                    _TABLE.generation == handle.generation,
+                    _TABLE.owner_token == uuid.UUID(handle.owner_token),
+                    _TABLE.state == ClaimLifecycle.STARTED.value,
+                )
+            )
+            if result.rowcount == 0:
+                await session.rollback()
+                raise ClaimNotHeld(
+                    f"claim {handle.event_uuid}#{handle.generation} is not held by "
+                    f"this owner (lease rolled over, or already terminal); "
+                    f"refusing to release it (reason={reason!r})"
                 )
             await session.commit()
 

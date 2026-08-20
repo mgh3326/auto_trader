@@ -28,8 +28,18 @@ The package is deliberately split so the risky part is pure and testable:
 ``selection``
     Pure dedup + concurrency + per-round cap, with overflow surfaced.
 ``spawn``
-    Session spawner port. The shipped implementation is dry: it records
-    what *would* be spawned and never starts a session.
+    Session spawner port, plus the dry rehearsal implementations: they
+    record what *would* be spawned and never start a session.
+``judgement``
+    The closed union a session may answer with -- propose, or decline with
+    a reason. There is no third member, so an analysis-only outcome is not
+    expressible.
+``proposal_chain``
+    The **write seam** (ROB-1290). The one file allowed to import and call
+    ``order_proposal_create``, mirroring ``event_source`` on the read side.
+``chain_spawner``
+    The live spawner that runs a re-judgement in-process and crosses that
+    seam, so a fire actually becomes a proposal row.
 ``orchestrator``
     The tick: gate -> poll -> claim -> spawn -> resolve the claim against
     what the spawn actually proved.
@@ -44,12 +54,15 @@ from __future__ import annotations
 
 __all__ = [
     "capability",
+    "chain_spawner",
     "claims",
     "consumption",
     "event_source",
     "gate",
+    "judgement",
     "orchestrator",
     "poller",
+    "proposal_chain",
     "selection",
     "spawn",
 ]
