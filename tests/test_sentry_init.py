@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from sentry_sdk.types import Event, Log
+from sentry_sdk.types import Breadcrumb, Event, Log
 
 import app.monitoring.sentry as sentry_module
 
@@ -589,6 +589,236 @@ def test_before_send_transaction_keeps_non_mcp_transactions():
     assert kept is event
     assert kept is not None
     assert kept.get("transaction") == "GET /api/v1/orders"
+
+
+@pytest.mark.unit
+def test_sentry_pii_and_mcp_prompts_default_off():
+    """ROB-1305: repo defaults must not opt into PII/prompt capture."""
+    pii_field = sentry_module.settings.__class__.model_fields["SENTRY_SEND_DEFAULT_PII"]
+    prompts_field = sentry_module.settings.__class__.model_fields[
+        "SENTRY_MCP_INCLUDE_PROMPTS"
+    ]
+    assert pii_field.default is False
+    assert prompts_field.default is False
+
+
+@pytest.mark.unit
+def test_init_sentry_threads_explicit_pii_and_prompt_config(monkeypatch):
+    """Explicit env/config values must still reach sentry_sdk.init/MCPIntegration."""
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_DSN", "https://key@sentry/1")
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_SEND_DEFAULT_PII", True)
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_MCP_INCLUDE_PROMPTS", True)
+    mock_init = Mock()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+
+    result = sentry_module.init_sentry("test-service", enable_mcp=True)
+
+    assert result is True
+    _, kwargs = mock_init.call_args
+    assert kwargs["send_default_pii"] is True
+    mcp_integrations = [
+        integration
+        for integration in kwargs["integrations"]
+        if type(integration).__name__ == "MCPIntegration"
+    ]
+    assert len(mcp_integrations) == 1
+    assert mcp_integrations[0].include_prompts is True
+
+
+@pytest.mark.unit
+def test_before_send_scrubs_query_secret_and_stack_frame_locals():
+    """ROB-1305: nested headers/query/locals with fake secrets must be filtered."""
+    event: Event = {
+        "request": {
+            "url": "https://broker.example/api?app_key=FAKE_APP_KEY_123&symbol=AAPL",
+            "headers": {"Authorization": "Bearer FAKE.BEARER.TOKEN"},
+        },
+        "exception": {
+            "values": [
+                {
+                    "type": "ValueError",
+                    "value": "boom",
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "filename": "client.py",
+                                "vars": {
+                                    "app_secret": "FAKE_SECRET_VALUE",
+                                    "url": (
+                                        "https://broker.example/x?"
+                                        "access_token=FAKE_ACCESS_TOKEN_XYZ"
+                                    ),
+                                },
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+
+    sanitized = sentry_module._before_send(event, {})
+
+    assert sanitized is not None
+    request = sanitized["request"]
+    assert "FAKE_APP_KEY_123" not in request["url"]
+    assert request["headers"]["Authorization"] == "[Filtered]"
+
+    frame_vars = sanitized["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]
+    assert frame_vars["app_secret"] == "[Filtered]"
+    assert "FAKE_ACCESS_TOKEN_XYZ" not in frame_vars["url"]
+
+
+@pytest.mark.unit
+def test_before_send_scrubs_telegram_bot_token_in_log_message():
+    event: Event = {
+        "logger": "httpx",
+        "message": (
+            "HTTP Request: POST https://api.telegram.org/bot"
+            "111111111:FAKE-TEST-TOKEN-NOT-REAL/sendMessage"
+        ),
+    }
+
+    sanitized = sentry_module._before_send(event, {})
+
+    assert sanitized is not None
+    assert "FAKE-TEST-TOKEN-NOT-REAL" not in sanitized["message"]
+    assert "api.telegram.org/bot[REDACTED]" in sanitized["message"]
+
+
+@pytest.mark.unit
+def test_before_breadcrumb_scrubs_telegram_bot_token_in_url():
+    crumb: Breadcrumb = {
+        "category": "httplib",
+        "message": (
+            "https://api.telegram.org/bot222222222:ANOTHER-FAKE-TOKEN/sendMessage"
+        ),
+        "data": {"url": "https://api.telegram.org/bot222222222:ANOTHER-FAKE-TOKEN/sendMessage"},
+    }
+
+    sanitized = sentry_module._before_breadcrumb(crumb, {})
+
+    assert sanitized is not None
+    assert "ANOTHER-FAKE-TOKEN" not in sanitized["message"]
+    assert "ANOTHER-FAKE-TOKEN" not in sanitized["data"]["url"]
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_non_mcp_span_description_and_data():
+    """ROB-1305: httpx/other spans (not just mcp.server) must be scrubbed."""
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "contexts": {
+            "trace": {
+                "trace_id": "abc123def456abc123def456abc123d",
+                "span_id": "1122334455667788",
+                "op": "http.server",
+                "status": "ok",
+            }
+        },
+        "start_timestamp": 1000.0,
+        "timestamp": 1000.5,
+        "spans": [
+            {
+                "op": "http.client",
+                "description": (
+                    "GET https://broker.example/v1/quote?"
+                    "api_key=FAKE_QUOTE_API_KEY_9999&symbol=AAPL"
+                ),
+                "span_id": "aaaa1111bbbb2222",
+                "trace_id": "abc123def456abc123def456abc123d",
+                "start_timestamp": 1000.1,
+                "timestamp": 1000.2,
+                "status": "ok",
+                "data": {
+                    "http.request.header.authorization": "Bearer FAKE_HTTPX_TOKEN",
+                    "nested": {"app_secret": "FAKE_NESTED_SECRET"},
+                },
+            }
+        ],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    span = kept["spans"][0]
+    assert "FAKE_QUOTE_API_KEY_9999" not in span["description"]
+    assert "symbol=AAPL" in span["description"]
+    assert span["data"]["http.request.header.authorization"] == "[Filtered]"
+    assert span["data"]["nested"]["app_secret"] == "[Filtered]"
+
+    # Structure — trace/span identity, timing, op, status — must be preserved.
+    assert span["op"] == "http.client"
+    assert span["span_id"] == "aaaa1111bbbb2222"
+    assert span["trace_id"] == "abc123def456abc123def456abc123d"
+    assert span["start_timestamp"] == 1000.1
+    assert span["timestamp"] == 1000.2
+    assert span["status"] == "ok"
+    assert kept["contexts"]["trace"]["trace_id"] == "abc123def456abc123def456abc123d"
+    assert kept["start_timestamp"] == 1000.0
+    assert kept["timestamp"] == 1000.5
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_request_headers_and_query():
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "request": {
+            "url": "https://internal.example/api?token=FAKE_REQUEST_TOKEN_555",
+            "headers": {"Cookie": "session=FAKE_SESSION_COOKIE"},
+        },
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    assert "FAKE_REQUEST_TOKEN_555" not in kept["request"]["url"]
+    assert kept["request"]["headers"]["Cookie"] == "[Filtered]"
+
+
+@pytest.mark.unit
+def test_before_send_transaction_preserves_tools_call_span_while_scrubbing_payload():
+    """ROB-1305/D5: mcp.server span + tools/call rename must survive scrubbing
+    alongside an unrelated performance span, with sensitive payload removed."""
+    event: Event = {
+        "transaction": "POST http://127.0.0.1:8765/mcp",
+        "spans": [
+            {
+                "op": "mcp.server",
+                "span_id": "cccc3333dddd4444",
+                "data": {
+                    "mcp.tool.name": "get_news",
+                    "mcp.method.name": "tools/call",
+                    "mcp.request.argument.api_key": "FAKE_MCP_API_KEY_777",
+                    "mcp.tool.result.content": (
+                        '{"success":true,"token":"FAKE_RESULT_TOKEN_888"}'
+                    ),
+                },
+            },
+            {
+                "op": "db.sql.query",
+                "description": "SELECT 1",
+                "span_id": "eeee5555ffff6666",
+                "status": "ok",
+            },
+        ],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    assert kept["transaction"] == "tools/call get_news"
+    spans = kept["spans"]
+    mcp_span = next(s for s in spans if s["op"] == "mcp.server")
+    assert mcp_span["span_id"] == "cccc3333dddd4444"
+    assert mcp_span["data"]["mcp.request.argument.api_key"] == "[Filtered]"
+    assert "FAKE_RESULT_TOKEN_888" not in mcp_span["data"]["mcp.tool.result.content"]
+
+    other_span = next(s for s in spans if s["op"] == "db.sql.query")
+    assert other_span["span_id"] == "eeee5555ffff6666"
+    assert other_span["status"] == "ok"
+    assert other_span["description"] == "SELECT 1"
 
 
 @pytest.mark.unit
