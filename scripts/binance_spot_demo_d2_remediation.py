@@ -243,12 +243,27 @@ async def _run(args: argparse.Namespace) -> int:
             report = await writer.execute(confirm=bool(args.confirm))
             await session.commit()
     finally:
-        await execution.aclose()
+        # Two separate try/finally layers, not one block. Sharing a block meant
+        # a raising ``aclose()`` skipped the release entirely, so the one path
+        # where the lease is most likely to be stuck was also the one that
+        # produced no release evidence at all.
+        try:
+            await execution.aclose()
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            close_error = repr(exc)
+        else:
+            close_error = None
         lease_release_evidence = await _release_lease(lease)
+        if close_error is not None:
+            lease_release_evidence["execution_client_close_error"] = close_error
 
     body = report.as_evidence()
     body["lease_release"] = lease_release_evidence
     _emit(body)
+    if lease_release_evidence.get("execution_client_close_error"):
+        # The lease evidence exists either way; a failed close is still a
+        # runtime failure an operator has to look at.
+        return 2
     if not lease_release_evidence.get("released"):
         # A lease that cannot be proven released leaves the account coordinated
         # by a process that is exiting. That is fail-closed rather than

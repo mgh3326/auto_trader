@@ -90,6 +90,7 @@ tests/services/action_report/snapshot_backed/test_collectors.py
 tests/services/action_report/snapshot_backed/test_no_self_authored_invalidation.py
 tests/services/action_report/snapshot_backed/test_pending_orders_collector.py
 tests/services/analysis_snapshot_bundle/test_capture.py
+tests/services/brokers/binance/demo/test_ledger_durable_claim.py
 tests/services/brokers/binance/demo/test_ledger_futures_product.py
 tests/services/brokers/binance/demo/test_ledger_service.py
 tests/services/brokers/binance/demo_scalping/test_contract.py

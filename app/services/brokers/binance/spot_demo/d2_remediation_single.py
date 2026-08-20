@@ -211,6 +211,7 @@ class D2ReasonCode(StrEnum):
     LEASE_NOT_A_CAPABILITY = "d2_lease_not_a_capability"
     LEASE_SCOPE_MISMATCH = "d2_lease_scope_mismatch"
     LEDGER_REQUIRED = "d2_ledger_required"
+    CLAIM_NOT_DURABLE = "d2_claim_not_durable"
     WRITER_FREEZE_VIOLATED = "d2_writer_freeze_violated"
     ACCOUNT_TRUTH_DRIFT = "d2_account_truth_drift"
     PRIOR_ATTEMPT_UNRESOLVED = "d2_prior_attempt_unresolved"
@@ -251,6 +252,10 @@ class D2LeaseNotHeld(D2RemediationError):
 
 class D2LedgerRequired(D2RemediationError):
     """No durable ledger; the dispatch path is unreachable without one."""
+
+
+class D2ClaimNotDurable(D2RemediationError):
+    """The pre-send claim did not survive its own commit, so nothing may send."""
 
 
 class D2AccountTruthDrift(D2RemediationError):
@@ -1479,13 +1484,12 @@ class D2RemediationSingleWriter:
 
     async def _dispatch_one(self, op: D2PlannedOperation) -> D2DispatchOutcome:
         order = op.order
-        # The durable fence, checked before anything else: has this exact bound
-        # order been attempted, in this process or any earlier one?
-        prior = await self._ledger.get_by_client_order_id(op.client_order_id)
+        # The durable fence, read through an independent transaction so it sees
+        # what *other processes* committed rather than this session's own
+        # uncommitted work: has this exact bound order been attempted before?
+        prior = await self._ledger.committed_lifecycle_state(op.client_order_id)
         if prior is not None:
-            return await self._resolve_prior_attempt(
-                op, prior_state=prior.lifecycle_state
-            )
+            return await self._resolve_prior_attempt(op, prior_state=prior)
 
         instrument_id = await self._ledger.resolve_or_create_instrument(
             venue=D2_VENUE,
@@ -1494,7 +1498,13 @@ class D2RemediationSingleWriter:
             base_asset=order.asset,
             quote_asset=D2_QUOTE_ASSET,
         )
-        await self._ledger.record_planned(
+        # Record, then execute — never the other way round. The claim is
+        # committed in its own transaction *before* any broker call, so a
+        # process that dies between the POST and its own commit still leaves the
+        # row a restart needs. Writing into the caller's transaction and
+        # committing afterwards, as this did before, meant exactly that crash
+        # window erased the fence and the restart re-sent.
+        await self._ledger.commit_planned_claim(
             instrument_id=instrument_id,
             product=D2_PRODUCT,
             venue_host=D2_VENUE_HOST,
@@ -1506,6 +1516,19 @@ class D2RemediationSingleWriter:
             extra_metadata=self._evidence_metadata(op),
             now=self._now_fn(),
         )
+        # Prove the claim is durable by reading it back out of a *different*
+        # transaction. A ledger whose writes go nowhere fails here, before the
+        # broker is touched: requiring the type was never the same as requiring
+        # the effect.
+        observed = await self._ledger.committed_lifecycle_state(op.client_order_id)
+        if observed != "planned":
+            raise D2ClaimNotDurable(
+                D2ReasonCode.CLAIM_NOT_DURABLE,
+                f"{op.operation_id}: the pre-send claim for "
+                f"{op.client_order_id!r} is not visible outside its own "
+                f"transaction (read back {observed!r}). Refusing to send an "
+                "order no restart could recognise.",
+            )
         await self._ledger.record_previewed(
             client_order_id=op.client_order_id, now=self._now_fn()
         )
@@ -1605,8 +1628,11 @@ class D2RemediationSingleWriter:
     def _echo_from_status(
         self, op: D2PlannedOperation, status_body: Mapping[str, Any]
     ) -> SpotDemoOrderSubmitResult:
+        # No default for clientOrderId. Substituting the id we asked about would
+        # manufacture the very evidence the echo check is supposed to demand.
+        raw_cid = status_body.get("clientOrderId")
         return SpotDemoOrderSubmitResult(
-            client_order_id=str(status_body.get("clientOrderId", op.client_order_id)),
+            client_order_id="" if raw_cid is None else str(raw_cid),
             broker_order_id=str(status_body.get("orderId", "")),
             symbol=str(status_body.get("symbol", "")),
             side=str(status_body.get("side", "")),
@@ -1633,11 +1659,34 @@ class D2RemediationSingleWriter:
         DTO fields, so they are read from there. Their *absence* is a failure,
         not a pass: a response that cannot prove the sealed price has not
         proved it.
+
+        The same applies to *which order* the response is about. Matching
+        contents are not identity — the shared Demo account can carry another
+        order with the same symbol, side, quantity, and price — so the echoed
+        ``clientOrderId`` must equal the deterministic id we sent, and a broker
+        order id must be present. Without both, this response might describe
+        someone else's order and we would be booking it as ours.
         """
 
         order = op.order
         raw = result.raw_response_redacted or {}
         mismatches: list[str] = []
+        if result.client_order_id != op.client_order_id:
+            mismatches.append(
+                f"clientOrderId {result.client_order_id!r} != {op.client_order_id!r}"
+            )
+        echoed_cid = raw.get("clientOrderId")
+        if echoed_cid is None:
+            mismatches.append(
+                "broker response carries no clientOrderId — this response is "
+                "not proven to be about our order"
+            )
+        elif str(echoed_cid) != op.client_order_id:
+            mismatches.append(
+                f"raw clientOrderId {echoed_cid!r} != {op.client_order_id!r}"
+            )
+        if not str(result.broker_order_id or "").strip():
+            mismatches.append("broker response carries no orderId")
         if result.symbol != order.symbol:
             mismatches.append(f"symbol {result.symbol!r} != {order.symbol!r}")
         if result.side != order.side:
@@ -1836,6 +1885,7 @@ __all__ = [
     "D2AccountTruthDrift",
     "D2BlindRetryRefused",
     "D2BoundOrder",
+    "D2ClaimNotDurable",
     "D2DispatchNotAuthorized",
     "D2DispatchOutcome",
     "D2DryRunReport",

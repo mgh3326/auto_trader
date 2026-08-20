@@ -280,7 +280,7 @@ class FakeExecutionClient:
         }
 
     def _echo(self, order: Any, cid: str, index: int) -> dict[str, Any]:
-        body = {
+        body: dict[str, Any] = {
             "symbol": order.symbol,
             "side": order.side,
             "type": order.order_type,
@@ -362,8 +362,17 @@ class FakeLedger(BinanceDemoLedgerService):
             return None
         return type("Row", (), {"lifecycle_state": state})()
 
+    async def committed_lifecycle_state(self, client_order_id: str) -> str | None:
+        return self.states.get(client_order_id)
+
     async def resolve_or_create_instrument(self, **kwargs: Any) -> int:
         return 1
+
+    async def commit_planned_claim(self, **kwargs: Any) -> str:
+        cid = kwargs["client_order_id"]
+        self.states[cid] = "planned"
+        self.calls.append(("planned", cid))
+        return str(cid)
 
     async def record_planned(self, **kwargs: Any) -> Any:
         cid = kwargs["client_order_id"]
@@ -393,6 +402,42 @@ class FakeLedger(BinanceDemoLedgerService):
         cid = kwargs["client_order_id"]
         self.states[cid] = "anomaly"
         self.calls.append(("anomaly", cid))
+        return None
+
+
+class NoOpLedger(BinanceDemoLedgerService):
+    """A real subclass whose writes go nowhere.
+
+    The verifier's B3 point: requiring the *type* is not requiring the
+    *effect*. This is the object the round-2 isinstance guard happily accepted.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def committed_lifecycle_state(self, client_order_id: str) -> str | None:
+        return None
+
+    async def get_by_client_order_id(self, client_order_id: str) -> Any:
+        return None
+
+    async def resolve_or_create_instrument(self, **kwargs: Any) -> int:
+        return 1
+
+    async def commit_planned_claim(self, **kwargs: Any) -> str:
+        self.calls.append("commit_planned_claim")
+        return str(kwargs["client_order_id"])
+
+    async def record_previewed(self, **kwargs: Any) -> Any:
+        return None
+
+    async def record_validated(self, **kwargs: Any) -> Any:
+        return None
+
+    async def record_submitted(self, **kwargs: Any) -> Any:
+        return None
+
+    async def record_anomaly(self, **kwargs: Any) -> Any:
         return None
 
 
@@ -476,6 +521,27 @@ class FakeLockAuthority:
         raise AssertionError("termination must not be needed in these tests")
 
 
+#: A grant carries the loop its session is bound to. Sync tests have no running
+#: loop, and ``asyncio.get_event_loop()`` outside one is order-dependent — it
+#: succeeds or raises depending on whether an earlier async test happened to
+#: leave a loop set on the thread. One inert loop keeps these tests independent
+#: of collection order.
+_SENTINEL_LOOP = asyncio.new_event_loop()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_sentinel_loop() -> Any:
+    yield
+    _SENTINEL_LOOP.close()
+
+
+def _bound_loop() -> asyncio.AbstractEventLoop:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return _SENTINEL_LOOP
+
+
 def make_lease(
     keys: tuple[int, ...] | None = None,
 ) -> tuple[PostgresAdvisoryKeysetLease, AdvisoryLeaseGrant]:
@@ -488,7 +554,7 @@ def make_lease(
         backend_pid=authority.backend_pid,
         database_oid=authority.database_oid,
         connection_token="lockconn:test",
-        event_loop=asyncio.get_event_loop(),
+        event_loop=_bound_loop(),
     )
     lease = PostgresAdvisoryKeysetLease(connection=authority, grant=grant)  # type: ignore[arg-type]
     return lease, grant
@@ -1700,3 +1766,177 @@ async def test_a_backdated_now_fn_cannot_revive_an_expired_authority(
     with pytest.raises(D2DispatchNotAuthorized):
         await writer.execute(confirm=True)
     assert client.submit_calls == []
+
+
+# --------------------------------------------------------------------------
+# Round 3 — B2-durable, B3-effect, B5-identity, B6-env
+# --------------------------------------------------------------------------
+
+
+class SequencedLedger(FakeLedger):
+    """Records the global order of ledger writes against broker calls."""
+
+    def __init__(self, sequence: list[str]) -> None:
+        super().__init__()
+        self.sequence = sequence
+
+    async def commit_planned_claim(self, **kwargs: Any) -> str:
+        self.sequence.append(f"claim_committed:{kwargs['client_order_id']}")
+        return await super().commit_planned_claim(**kwargs)
+
+    async def committed_lifecycle_state(self, client_order_id: str) -> str | None:
+        self.sequence.append(f"claim_read_back:{client_order_id}")
+        return await super().committed_lifecycle_state(client_order_id)
+
+
+class SequencedClient(FakeExecutionClient):
+    def __init__(self, sequence: list[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.sequence = sequence
+
+    async def submit_order(self, **kwargs: Any) -> SpotDemoOrderSubmitResult:
+        self.sequence.append(f"submit:{kwargs['client_order_id']}")
+        return await super().submit_order(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_b2_durable_the_claim_is_committed_before_the_broker_is_called(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Record, then execute — not the other way round.
+
+    Round 2 wrote the claim into the caller's transaction and let the CLI commit
+    after ``execute()`` returned, so the whole send happened inside a window
+    where nothing was durable yet.
+    """
+
+    sequence: list[str] = []
+    client = SequencedClient(sequence)
+    writer = build_writer(
+        tmp_path,
+        monkeypatch,
+        client=client,  # type: ignore[arg-type]
+        ledger=SequencedLedger(sequence),
+        authorized=True,
+    )
+    await writer.execute(confirm=True)
+
+    for order in D2_BOUND_ORDERS:
+        cid = order.client_order_id
+        commit_at = sequence.index(f"claim_committed:{cid}")
+        submit_at = sequence.index(f"submit:{cid}")
+        readbacks = [i for i, e in enumerate(sequence) if e == f"claim_read_back:{cid}"]
+        assert commit_at < submit_at, sequence
+        # The durability read-back also precedes the send.
+        assert any(commit_at < i < submit_at for i in readbacks), sequence
+
+
+@pytest.mark.asyncio
+async def test_b3_effect_a_no_op_ledger_subclass_is_refused_before_any_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verifier's B3: an isinstance guard checks the type, not the effect.
+
+    ``NoOpLedger`` is a genuine ``BinanceDemoLedgerService`` subclass whose
+    writes go nowhere. Round 2 accepted it. It is now caught by reading the
+    claim back out of an independent transaction, before the broker is touched.
+    """
+
+    client = FakeExecutionClient()
+    ledger = NoOpLedger()
+    writer = build_writer(
+        tmp_path, monkeypatch, client=client, ledger=ledger, authorized=True
+    )
+    with pytest.raises(d2.D2ClaimNotDurable) as exc:
+        await writer.execute(confirm=True)
+    assert exc.value.reason_code is D2ReasonCode.CLAIM_NOT_DURABLE
+    assert "commit_planned_claim" in ledger.calls  # it was asked
+    assert client.submit_calls == []  # and nothing was sent
+    assert client.order_test_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({"clientOrderId": "someone-elses-order"}, "clientOrderId"),
+        ({"clientOrderId": None}, "carries no clientOrderId"),
+        ({"orderId": ""}, "carries no orderId"),
+    ],
+)
+async def test_b5_identity_a_response_about_another_order_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    override: dict[str, Any],
+    needle: str,
+) -> None:
+    """The verifier's ``MUTANT_BROKER_CLIENT_ORDER_ID_ECHO``.
+
+    Matching contents are not identity. The shared Demo account can hold another
+    order with the same symbol, side, quantity, and price, so a response is only
+    ours if it says so.
+    """
+
+    client = FakeExecutionClient(echo_overrides=override)
+    writer = build_writer(tmp_path, monkeypatch, client=client, authorized=True)
+    with pytest.raises(D2RemediationError) as exc:
+        await writer.execute(confirm=True)
+    assert exc.value.reason_code is D2ReasonCode.BROKER_ECHO_MISMATCH
+    assert needle in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_b5_identity_readback_no_longer_supplies_the_id_it_should_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 2's readback converter defaulted a missing ``clientOrderId`` to the
+    id it was looking for, manufacturing the evidence the check demanded."""
+
+    client = FakeExecutionClient(
+        submit_error=TimeoutError("reset"),
+        echo_overrides={"clientOrderId": None},
+    )
+    writer = build_writer(tmp_path, monkeypatch, client=client, authorized=True)
+    with pytest.raises(D2RemediationError) as exc:
+        await writer.execute(confirm=True)
+    assert exc.value.reason_code is D2ReasonCode.BROKER_ECHO_MISMATCH
+    assert "clientOrderId" in str(exc.value)
+
+
+def test_b6_env_no_gate_helper_accepts_an_injected_environment() -> None:
+    """Sweep, not a spot check: nothing on the gate path takes an env mapping."""
+
+    import scripts.binance_spot_demo_d2_remediation as cli
+
+    for module in (d2, cli):
+        for name, obj in vars(module).items():
+            if not inspect.isfunction(obj) or obj.__module__ != module.__name__:
+                continue
+            params = set(inspect.signature(obj).parameters)
+            assert not params & {"environ", "env", "environment"}, (
+                f"{module.__name__}.{name} takes an injectable environment"
+            )
+    assert inspect.signature(d2.d2_remediation_enabled).parameters == {}
+    assert "os.environ" in inspect.getsource(d2.d2_remediation_enabled)
+    assert "os.environ" in inspect.getsource(cli._gates_armed)
+
+
+def test_the_lease_release_is_not_skipped_when_the_client_close_raises() -> None:
+    """SHOULD from round 2's review.
+
+    ``aclose()`` and the lease release shared one ``finally``, so a raising
+    close skipped the release and emitted no release evidence — on exactly the
+    path where the lease is most likely to be stuck.
+    """
+
+    source = Path("scripts/binance_spot_demo_d2_remediation.py").read_text(
+        encoding="utf-8"
+    )
+    finally_block = source.split("    finally:", 1)[1]
+    close_at = finally_block.index("await execution.aclose()")
+    release_at = finally_block.index("_release_lease(lease)")
+    guard_at = finally_block.index("except Exception")
+    # The close is wrapped, and the release comes after the guard rather than
+    # after an unguarded await.
+    assert close_at < guard_at < release_at, finally_block[:600]
+    assert "execution_client_close_error" in source

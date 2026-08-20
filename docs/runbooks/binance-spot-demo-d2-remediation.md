@@ -124,15 +124,37 @@ Neither step is something this repository can do to itself.
 
 ## 5a. The durable replay fence
 
+**Record, then execute.** The claim row is committed in its own transaction
+*before* any broker call, and read back through a second, independent
+transaction to prove it landed. Only then is anything sent.
+
+The earlier ordering was the other way round: the claim was written into the
+CLI's transaction and committed after `execute()` returned, so a process that
+died between the signed POST and its own commit left no row at all — and the
+restart, seeing nothing, re-sent. Measured on a throwaway database with a child
+killed by `os._exit(9)` immediately after the POST:
+
+```text
+old ordering:  fence_row_after_kill = None       -> restart would re-send
+new ordering:  fence_row_after_kill = 'planned'  -> restart goes to readback
+```
+
+The read-back is deliberately *not* done through the writing session. A session
+can see its own flushed-but-uncommitted rows, so reading there would call a
+flush durable. Going out to a separate transaction means a state that comes
+back has survived a commit and is visible to any other process — which is also
+why a ledger whose writes go nowhere fails here, before the broker is touched.
+Requiring the ledger's *type* was never the same as requiring its *effect*.
+
 The `client_order_id` is derived from the seal and the order
 (`d2rem-<24 hex>`), not minted per run. Three consequences:
 
-- a restarted process computes the same id, so the ledger recognises the prior
-  attempt and the writer reads the broker instead of sending;
+- a restarted process computes the same id, so the committed claim is found;
 - Binance rejects a duplicate `newClientOrderId` while the original is live, so
   there is a second fence outside this repository;
-- a changed price or quantity is a different id, so the fence cannot be
-  confused by an unrelated order.
+- `uq_binance_demo_ledger_open_root` is unique on `(product, instrument_id)`
+  across the open lifecycle states, so the database itself refuses a second
+  open root for the same instrument — a third fence, free.
 
 A ledger row with no matching broker record is **unresolvable** and halts the
 run. "Never arrived" and "arrived then vanished" look identical from here, and
@@ -146,8 +168,11 @@ only one of them is safe to act on.
   anomaly and the run halts before the next order.
 * **Broker echo mismatch**: a response describing a different symbol, side,
   type, quantity, **price**, or **timeInForce** is a failure, not cosmetic
-  drift. A response that omits price or timeInForce is also a failure: it has
-  not proved the sealed values.
+  drift. So is one whose **`clientOrderId`** is not the deterministic id we
+  sent, or which carries no **`orderId`**: matching contents are not identity,
+  and the shared Demo account can hold another order with the same symbol,
+  side, quantity, and price. A response that omits any of these has not proved
+  the sealed values — absence is a failure, not a pass.
 * **Account drift**: a resting order this one-shot did not place, or any
   balance that differs from the seal, stops the run before the first POST.
   This writer has no cancel path, so clearing a foreign order is an operator
@@ -158,7 +183,10 @@ only one of them is safe to act on.
   construction.
 * **Unreleased lease**: the CLI releases the lease last, after the proof
   epochs, and exits 2 if the release could not be *proven*. A stuck lease is
-  reported with its hold id rather than swallowed.
+  reported with its hold id rather than swallowed. The client close and the
+  lease release sit in **separate** try/finally layers, so a raising `aclose()`
+  cannot skip the release — that was the one path where the lease was most
+  likely to be stuck and least likely to be reported.
 
 ## 7. Known limits
 
@@ -167,14 +195,18 @@ only one of them is safe to act on.
   account without contending for it. That is why the writer also re-attests per
   submit and reads the *account-wide* open-order book before dispatching and in
   both proof epochs — and why none of those closes the hole, only narrows it.
-* **Residual in-process bypasses.** The gates stop a mistaken caller and a
-  doctored file; they do not stop code running inside this process that is
-  determined to lie. Specifically: a caller can build a real
-  `PostgresAdvisoryKeysetLease` over a fabricated `LockAuthorityConnection`, can
-  subclass `BinanceDemoLedgerService` with no-op writes, can mutate `os.environ`,
-  and can monkeypatch module constants. Each of those is what the *tests* do,
-  which is the honest way to say it. Closing them would require the lease and
-  the ledger to prove themselves to something outside the process.
+* 🔴 **What these gates do and do not cover.** They stop accidental misuse, a
+  wrong parameter, a doctored payload file, a drifted account, a lying broker
+  response, and a re-send after a crash. They do **not** stop deliberate forgery
+  by code running inside the same process. A caller already executing in this
+  process can read `_AUTHORITY_TOKEN` and build a `SealedAuthority` that never
+  saw a file, can construct a real `PostgresAdvisoryKeysetLease` over a
+  fabricated lock authority, can subclass `BinanceDemoLedgerService`, and can
+  mutate `os.environ` or any module constant. No writer-level gate closes that
+  in Python — such a caller can simply call the broker client directly and skip
+  this module altogether. The threat-model question of whether that matters is
+  with the operator; this runbook states the limit rather than claiming a
+  guarantee that does not exist.
 * **Balance drift is checked by exact equality**, so any movement on the three
   sealed assets since the snapshot stops the run. That is deliberate — the seal
   either describes the account or it does not — but it means a stale seal fails

@@ -345,6 +345,86 @@ class BinanceDemoLedgerService:
                     now=now,
                 )
 
+    # ------------------------------------------------------------------
+    # Durable claim surface (ROB-298 / D2) — independently committed.
+    #
+    # ``record_planned`` writes into the *caller's* transaction and only
+    # flushes, so a caller that sends to a broker and then dies before its own
+    # commit leaves no row at all. For a writer whose whole safety argument is
+    # "a restart must see the prior attempt", that ordering is backwards: the
+    # claim has to be committed *before* the send, in a transaction the caller
+    # cannot roll back.
+    #
+    # These two methods use the same independent-session machinery
+    # ``reserve_root_planned`` already relies on. They are additive; every
+    # existing method keeps its current transaction semantics.
+    #
+    # Deliberately not named ``record_*``. That prefix is a signed contract
+    # (ROB-1271 C3-4): the ``record_*`` set *is* the writer/state map, one
+    # method per typed lifecycle state, and a second method writing ``planned``
+    # would make the map ambiguous at exactly the place a reader is told to
+    # read it off. This is a durable claim, not a state transition.
+    # ------------------------------------------------------------------
+
+    async def commit_planned_claim(
+        self,
+        *,
+        instrument_id: int,
+        product: str,
+        venue_host: str,
+        client_order_id: str,
+        side: str,
+        order_type: str,
+        qty: Decimal,
+        price: Decimal | None,
+        notional_usdt: Decimal | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        now: dt.datetime,
+    ) -> str:
+        """Insert a ``planned`` row and **commit it** in its own transaction.
+
+        Returns the committed row's ``client_order_id`` rather than the ORM
+        object: the object belongs to a session that closes here, and handing it
+        back would invite a caller to read it after detachment.
+        """
+        if product not in _ALLOWED_PRODUCTS:
+            raise BinanceDemoInvalidProduct(
+                f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
+            )
+        self._reject_premature_fill_metadata(extra_metadata)
+        factory = self._get_reservation_session_factory()
+        async with factory() as claim_session:
+            async with claim_session.begin():
+                row = await BinanceDemoLedgerRepository(claim_session).insert_planned(
+                    instrument_id=instrument_id,
+                    product=product,
+                    venue_host=venue_host,
+                    client_order_id=client_order_id,
+                    side=side,
+                    order_type=order_type,
+                    qty=qty,
+                    price=price,
+                    notional_usdt=notional_usdt,
+                    extra_metadata=extra_metadata,
+                    now=now,
+                )
+                return str(row.client_order_id)
+
+    async def committed_lifecycle_state(self, client_order_id: str) -> str | None:
+        """Read one row's state through an **independent** transaction.
+
+        Reading through the owner session would see the owner's own uncommitted
+        work, which is exactly what a durability check must not do. Going out to
+        a separate transaction means a returned state is one that survived a
+        commit and is visible to any other process.
+        """
+        factory = self._get_reservation_session_factory()
+        async with factory() as read_session:
+            row = await BinanceDemoLedgerRepository(
+                read_session
+            ).get_by_client_order_id(client_order_id)
+            return None if row is None else str(row.lifecycle_state)
+
     async def _transition(
         self,
         *,
