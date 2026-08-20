@@ -36,6 +36,39 @@ def _unique_order_id(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:12]}"
 
 
+@pytest.fixture
+def allow_nxt_premarket_price():
+    """Opt out of the module default so a test can exercise the NXT probe itself."""
+
+
+@pytest.fixture(autouse=True)
+def _default_no_nxt_premarket_price(request, monkeypatch):
+    """ROB-1296: default the best-effort NXT pre-market probe to "no price".
+
+    ``order_validation._premarket_nxt_price_for_kr`` only fires while
+    ``kr_market_data_state()`` reports the KR pre-market window, so it made this
+    module's KR order tests *wall-clock dependent*: run before 09:00 KST they
+    fetched a live NXT orderbook from openapi.koreainvestment.com, run later they
+    did not. Every test here patches ``_fetch_quote_equity_kr`` and asserts against
+    that KRX quote, so "no NXT book" is the contract they already intend — two
+    tests below already say so explicitly, and their own patch still wins because
+    it is applied after this fixture.
+
+    ``None`` is the function's own documented answer for "no NXT book", not a
+    fabricated success: it is what the real call returns outside pre-market.
+    ``TestPremarketNxtPricing`` covers the probe itself and opts out.
+    """
+
+    if "allow_nxt_premarket_price" in request.fixturenames:
+        return
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_premarket_nxt_price_for_kr",
+        AsyncMock(return_value=None),
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _ensure_live_order_ledger_schema(db_session):
     """ROB-407: live US/crypto orders write to review.live_order_ledger directly.
@@ -765,6 +798,7 @@ async def test_kis_overseas_order_payload_fields_buy(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("allow_nxt_premarket_price")
 class TestPremarketNxtPricing:
     """ROB-463: KR pre-market orders price off the live NXT orderbook, not the
     stale KRX previous close."""
@@ -2666,6 +2700,25 @@ async def test_place_order_paper_market_sell_rejected():
 async def test_place_order_limit_still_works_after_market_block(monkeypatch):
     """Policy change must not regress the limit path."""
     tools = build_tools()
+
+    # ROB-1296: the crypto dry-run path runs a balance precheck through
+    # upbit_service. Left unmocked it reached api.upbit.com for real; the
+    # failure was merely tolerated, so the leak was invisible. Model the
+    # funded-account contract this assertion assumes, matching the idiom used
+    # by the high-amount crypto tests above.
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 50_000_000.0}),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
+        ),
+    )
+
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="buy",

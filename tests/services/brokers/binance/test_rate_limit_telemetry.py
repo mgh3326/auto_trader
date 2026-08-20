@@ -14,6 +14,13 @@ from app.services.brokers.binance.rate_limit_telemetry import (
 )
 from app.services.brokers.binance.rest_client import BinancePublicRestClient
 
+# ROB-1296: this module is a provider *boundary* suite -- it drives the real
+# client functions against a mocked HTTP layer, which is exactly what the
+# autouse provider seams replace. Opt out so the code under test is the real
+# thing. The transport backstop and the socket guard both stay in force, so
+# opting out here still cannot reach a network.
+pytestmark = pytest.mark.usefixtures("allow_external_providers")
+
 
 def test_parses_used_weight_and_order_count() -> None:
     snap = parse_rate_limit_headers(

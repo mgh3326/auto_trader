@@ -5,6 +5,38 @@ from sqlalchemy import delete
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _offline_reconcile_spot_fx(monkeypatch):
+    """ROB-1296: default the USD/KRW reconcile-spot capture to "unavailable".
+
+    ``capture_reconcile_spot_fx`` swallows fetch errors and reports
+    ``fx_rate_source="unavailable"``, so an unmocked call reached
+    ``open.er-api.com`` for real and the failure was silently absorbed — the
+    tests below already assert ``"unavailable"``, they just got there by way of
+    a live network round trip. This states that outcome explicitly instead of
+    depending on the network being unreachable. It is not a fabricated success:
+    "unavailable" is precisely what these tests observe today. Tests that need a
+    real rate patch ``capture_reconcile_spot_fx`` themselves and still win,
+    because ``patch.object`` inside the test body applies after this fixture.
+    """
+
+    from app.mcp_server.tooling import live_order_ledger as _ll
+    from app.mcp_server.tooling.fx_pnl import (
+        FX_PNL_ACCURACY_UNAVAILABLE,
+        FX_RATE_SOURCE_UNAVAILABLE,
+        FxRateCapture,
+    )
+
+    async def _unavailable() -> FxRateCapture:
+        return FxRateCapture(
+            rate=None,
+            fx_rate_source=FX_RATE_SOURCE_UNAVAILABLE,
+            fx_pnl_accuracy=FX_PNL_ACCURACY_UNAVAILABLE,
+        )
+
+    monkeypatch.setattr(_ll, "capture_reconcile_spot_fx", _unavailable)
+
+
 @pytest.mark.unit
 def test_live_order_ledger_model_shape():
     from app.models.review import LiveOrderLedger

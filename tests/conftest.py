@@ -7,6 +7,7 @@ import contextlib
 import os
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +16,8 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 
+from tests import _external_http_boundary as external_http_boundary
+from tests import _provider_boundaries as provider_boundaries
 from tests._run_owned_database import (
     DATABASE_NAME_ENV as _XDIST_DATABASE_NAME_ENV,
 )
@@ -50,6 +53,7 @@ _DATABASE_FIXTURE_NAMES = frozenset(
     }
 )
 _SCHEMA_METRICS_KEY = pytest.StashKey[list[dict[str, object]]]()
+_EXTERNAL_HTTP_KEY = pytest.StashKey["Counter[str]"]()
 _KIS_DEFAULT_SCOPE_PARTS = (
     "/brokers/kis/",
     "/services/brokers/kis/",
@@ -474,6 +478,175 @@ def _block_tvscreener_http_boundary(request, monkeypatch):
 
 
 @pytest.fixture
+def allow_external_providers():
+    """Opt out of the provider-seam stubs (the transport backstop still applies)."""
+
+
+@pytest.fixture(autouse=True)
+def _block_external_provider_calls(request, monkeypatch):
+    """ROB-1296: stop each external provider at its call-root, not at the socket.
+
+    ``_block_external_http_boundary`` below is the fail-closed backstop; this is
+    the actual fix. Without it a default ``not live`` run still *built* requests
+    to openapi.koreainvestment.com, api.upbit.com, api.finnhub.io, data.krx.co.kr,
+    finance.naver.com, api.coingecko.com and open.er-api.com — the backstop
+    merely refused them one layer later, which moves the leak rather than closing
+    it. With both in place the boundary counter should list only this suite's own
+    ``.invalid`` probes.
+
+    Each seam raises the transport error an unreachable host already produced, so
+    caller behaviour is unchanged and no payload is invented. See
+    tests/_provider_boundaries.py for the seam list and the reasoning.
+    """
+    if provider_boundaries.OPT_OUT_FIXTURE in set(request.fixturenames) or (
+        request.node.get_closest_marker("live")
+        and request.config.getoption("--run-live", default=False)
+    ):
+        yield
+        return
+
+    undo = provider_boundaries.install(monkeypatch)
+    try:
+        yield
+    finally:
+        undo()
+
+
+@pytest.fixture
+def allow_external_http():
+    """Opt out of the default external-HTTP boundary block.
+
+    For a test that must drive httpx's real-network transport (typically with its
+    own monkeypatched stand-in). Opting out does not make the network reachable:
+    the ROB-1880 socket guard still refuses any non-loopback address.
+    """
+
+
+@pytest.fixture(autouse=True)
+def _block_external_http_boundary(request, monkeypatch):
+    """ROB-1296: turn a leaked external request into a clean, counted error.
+
+    The socket guard already refuses these connections, so this changes *how*
+    they fail, not *whether* they leave. It patches only httpx's real-network
+    transports and the ``requests`` adapter, and raises the exception type a
+    blocked connect already produces -- ``httpx.ConnectError`` /
+    ``requests.ConnectionError`` -- so every ``except httpx.HTTPError``, retry
+    and fail-open branch behaves exactly as it does today. No success is
+    fabricated and no test's contract moves.
+
+    ``ASGITransport`` (FastAPI ``TestClient``), ``WSGITransport``,
+    ``MockTransport``, respx and any custom transport are untouched, and loopback
+    stays reachable for local test servers.
+
+    This is a backstop, not a substitute for mocking: it stops the default suite
+    from *attempting* an external request, but a provider call that matters
+    should still be stubbed at its call site (see ``_patch_us_finnhub_fanout`` in
+    tests/test_mcp_fundamentals_tools.py). Blocked hosts are counted and printed
+    in the terminal summary so a newly under-mocked provider shows up instead of
+    quietly failing soft. tests/test_rob1296_external_http_boundary.py pins all
+    of this.
+    """
+    if not external_http_boundary.boundary_is_active(
+        has_live_marker=request.node.get_closest_marker("live") is not None,
+        run_live=bool(request.config.getoption("--run-live", default=False)),
+        fixturenames=request.fixturenames,
+    ):
+        return
+
+    import httpx
+    import requests
+
+    original_async = httpx.AsyncHTTPTransport.handle_async_request
+    original_sync = httpx.HTTPTransport.handle_request
+    original_requests_send = requests.adapters.HTTPAdapter.send
+
+    async def _blocked_async(self, request_, *args, **kwargs):
+        host = request_.url.host
+        if external_http_boundary.is_loopback_host(host):
+            return await original_async(self, request_, *args, **kwargs)
+        external_http_boundary.record_block(host)
+        raise httpx.ConnectError(
+            f"{external_http_boundary.MESSAGE} [{host}]", request=request_
+        )
+
+    def _blocked_sync(self, request_, *args, **kwargs):
+        host = request_.url.host
+        if external_http_boundary.is_loopback_host(host):
+            return original_sync(self, request_, *args, **kwargs)
+        external_http_boundary.record_block(host)
+        raise httpx.ConnectError(
+            f"{external_http_boundary.MESSAGE} [{host}]", request=request_
+        )
+
+    def _blocked_requests(self, request_, *args, **kwargs):
+        host = requests.compat.urlparse(request_.url).hostname or ""
+        if external_http_boundary.is_loopback_host(host):
+            return original_requests_send(self, request_, *args, **kwargs)
+        external_http_boundary.record_block(host)
+        raise requests.ConnectionError(f"{external_http_boundary.MESSAGE} [{host}]")
+
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", _blocked_async
+    )
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked_sync)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", _blocked_requests)
+
+    # curl_cffi is a libcurl binding: it is neither an httpx transport nor a
+    # ``requests`` adapter, and libcurl calls ``connect(2)`` from C, so the socket
+    # guard's monkeypatches cannot reach it either. yfinance uses it, which meant
+    # 29 non-live tests were reaching query1.finance.yahoo.com for real while both
+    # counters reported zero. Blocked here at the one Python-level chokepoint
+    # every curl_cffi request passes through.
+    for session_class in external_http_boundary.curl_session_classes():
+        monkeypatch.setattr(
+            session_class,
+            "request",
+            external_http_boundary.build_curl_request_blocker(session_class),
+        )
+
+
+@pytest.fixture
+def allow_kis_daily_candle_fetch():
+    """Opt out of the default KIS daily-candle boundary block."""
+
+
+@pytest.fixture(autouse=True)
+def _block_kis_daily_candle_boundary(request, monkeypatch):
+    """ROB-1296: keep the daily-candle cache-miss fallback off the network.
+
+    ``_cache_first_kr`` (and the daily-candle sync service) fall back to
+    ``fetch_kr_daily_unclamped`` -> KIS whenever the DB cache is cold, which it
+    always is in a fresh test database. Callers treat that fetch as best-effort
+    and fall back to whatever rows they already had, so the failure never
+    surfaced — it just cost a real request to openapi.koreainvestment.com from
+    tests that only care about names, freshness flags, or price targets.
+
+    Raising the same class of error the fallback already handles keeps observable
+    behaviour identical while removing the socket. A test that genuinely covers
+    the KIS fetch path requests ``allow_kis_daily_candle_fetch`` (and supplies
+    its own stub).
+    """
+    if "allow_kis_daily_candle_fetch" in request.fixturenames:
+        return
+    if request.node.get_closest_marker("live") and request.config.getoption(
+        "--run-live"
+    ):
+        return
+
+    async def _blocked(*_args, **_kwargs):
+        raise RuntimeError(
+            "KIS daily-candle fetch is disabled during pytest; stub "
+            "fetch_kr_daily_unclamped or request allow_kis_daily_candle_fetch "
+            "for boundary/live tests."
+        )
+
+    monkeypatch.setattr(
+        "app.services.daily_candles.kis_daily_fetcher.fetch_kr_daily_unclamped",
+        _blocked,
+    )
+
+
+@pytest.fixture
 def mock_auth_middleware_db():
     """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""
     with patch("app.middleware.auth.AsyncSessionLocal") as mock:
@@ -591,6 +764,10 @@ pytest_plugins = ["pytest_asyncio", "tests._investment_reports_helpers"]
 def pytest_configure(config):
     """Configure pytest with custom markers."""
     config.stash[_SCHEMA_METRICS_KEY] = []
+    config.stash[_EXTERNAL_HTTP_KEY] = Counter()
+    # Process-global counter: reset per session so a nested or repeated session
+    # in the same interpreter reports its own traffic, not the parent's.
+    external_http_boundary.reset()
     config.addinivalue_line(
         "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
     )
@@ -602,22 +779,35 @@ def pytest_configure(config):
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
-    """Forward per-worker schema metrics to the xdist controller."""
+    """Forward per-worker schema metrics and HTTP-boundary evidence upward."""
 
     worker_output = getattr(session.config, "workeroutput", None)
     if worker_output is not None:
         worker_output["auto_trader_schema_metrics"] = session.config.stash[
             _SCHEMA_METRICS_KEY
         ]
+        worker_output["auto_trader_external_http_blocks"] = (
+            external_http_boundary.snapshot()
+        )
+        return
+    for host, count in external_http_boundary.snapshot().items():
+        session.config.stash[_EXTERNAL_HTTP_KEY][host] += count
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node, error) -> None:  # noqa: ARG001
     metrics = node.workeroutput.get("auto_trader_schema_metrics", [])
     node.config.stash[_SCHEMA_METRICS_KEY].extend(metrics)
+    for host, count in node.workeroutput.get(
+        "auto_trader_external_http_blocks", {}
+    ).items():
+        node.config.stash[_EXTERNAL_HTTP_KEY][str(host)] += int(count)
 
 
 def pytest_terminal_summary(terminalreporter) -> None:
+    blocked = dict(terminalreporter.config.stash[_EXTERNAL_HTTP_KEY])
+    terminalreporter.write_line(external_http_boundary.format_summary(blocked))
+
     metrics = terminalreporter.config.stash[_SCHEMA_METRICS_KEY]
     if not metrics:
         return

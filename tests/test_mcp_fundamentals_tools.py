@@ -73,6 +73,46 @@ def build_tools():
 # ---------------------------------------------------------------------------
 
 
+def _patch_us_finnhub_fanout(monkeypatch, symbol: str = "AAPL") -> None:
+    """Mock the Finnhub leaves that ``analyze_stock(market="us")`` fans out to.
+
+    ROB-1296: the socket guard no longer exempts `integration`, so these stop
+    being silent live Finnhub calls and become blocked connections. The profile
+    client and ``fetch_news_finnhub``'s ``AsyncRetrying`` loop then burn their
+    full retry-with-backoff budget on every test — seconds of sleep for values
+    these assertions never read. Patch both leaves deterministically rather than
+    letting a retry loop absorb the block.
+    """
+
+    async def _news(
+        requested_symbol: str, market: str, limit: int
+    ) -> dict[str, object]:
+        _ = requested_symbol, market, limit
+        return {"items": [], "source": "finnhub"}
+
+    async def _profile(requested_symbol: str) -> dict[str, object]:
+        return {
+            "symbol": requested_symbol,
+            "instrument_type": "equity_us",
+            "source": "finnhub",
+            "name": f"{requested_symbol} Test Corp",
+            "ticker": requested_symbol,
+            "country": "US",
+            "currency": "USD",
+            "exchange": "NASDAQ",
+            "ipo_date": "1980-12-12",
+            "market_cap": 1_000_000.0,
+            "shares_outstanding": 1_000.0,
+            "sector": "Technology",
+            "website": "",
+            "logo": "",
+            "phone": "",
+        }
+
+    _patch_runtime_attr(monkeypatch, "_fetch_company_profile_finnhub", _profile)
+    _patch_runtime_attr(monkeypatch, "_fetch_news_finnhub", _news)
+
+
 @pytest.mark.asyncio
 class TestAnalyzeStock:
     """Test analyze_stock tool."""
@@ -566,6 +606,7 @@ class TestAnalyzeStock:
             monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
         )
         _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+        _patch_us_finnhub_fanout(monkeypatch)
 
         result = await tools["analyze_stock"]("AAPL", market="us")
 
@@ -620,6 +661,7 @@ class TestAnalyzeStock:
             monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
         )
         _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+        _patch_us_finnhub_fanout(monkeypatch, symbol)
 
         result = await tools["analyze_stock"](symbol, market="us")
 
@@ -1233,6 +1275,10 @@ class TestGetCompanyProfile:
 # ---------------------------------------------------------------------------
 
 
+# ROB-1296: drives the real yfinance collector against stubbed yfinance
+# objects, so the provider seam would replace the code under test. The
+# curl_cffi transport backstop and the socket guard both stay in force.
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 class TestGetValuation:
     """Test get_valuation tool."""
@@ -1723,6 +1769,26 @@ class TestGetKimchiPremium:
             upbit_service,
             "fetch_multiple_current_prices",
             mock_upbit,
+        )
+
+        # ROB-1296: only the Upbit leg is under test here, but the Binance and
+        # USD/KRW legs of the same fan-out ran for real. The sibling tests drive
+        # both through a mocked httpx client; this one asserts nothing about
+        # them, so stub them directly rather than letting them reach the network.
+        async def mock_binance_prices(symbols):
+            _ = symbols
+            return {"BTCUSDT": 102_000.50}
+
+        async def mock_exchange_rate():
+            return 1450.0
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver, "_fetch_binance_prices", mock_binance_prices
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_exchange_rate_usd_krw",
+            mock_exchange_rate,
         )
 
         result = await tools["get_kimchi_premium"]("BTC")
@@ -3556,6 +3622,10 @@ class TestGetCryptoProfile:
 # ---------------------------------------------------------------------------
 
 
+# ROB-1296: drives the real yfinance collector against stubbed yfinance
+# objects, so the provider seam would replace the code under test. The
+# curl_cffi transport backstop and the socket guard both stay in force.
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 class TestGetInvestmentOpinions:
     """Test get_investment_opinions tool."""
@@ -4316,11 +4386,20 @@ class TestScreenEnrichmentHelpers:
         assert "recommendation" not in result
 
 
+# ROB-1296: drives the real yfinance collector against stubbed yfinance
+# objects, so the provider seam would replace the code under test. The
+# curl_cffi transport backstop and the socket guard both stay in force.
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 async def test_analyze_stock_us_reuses_preloaded_yfinance_analyst_snapshot(
     monkeypatch,
 ):
     tools = build_tools()
+    # This test opts out of the provider seams so it can drive the real yfinance
+    # collector, which also un-stubs the Finnhub half of the same fan-out. It
+    # asserts nothing about Finnhub, so stub that leaf explicitly rather than
+    # letting it reach the transport backstop.
+    _patch_us_finnhub_fanout(monkeypatch, "AAPL")
     yf_calls = {"info": 0, "targets": 0, "recommendations": 0, "ud": 0}
 
     async def mock_fetch_ohlcv(symbol, market_type, count):

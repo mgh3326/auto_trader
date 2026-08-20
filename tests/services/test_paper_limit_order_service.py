@@ -4,6 +4,12 @@ Heavy integration tests against the shared ``db_session`` fixture (Postgres
 ``public`` schemas pre-built via ``Base.metadata.create_all``). OHLCV fetch
 is monkeypatched to return canned bars, so these tests do not require live
 Upbit connectivity.
+
+ROB-1296: that last sentence was aspirational. Canned bars cover the fill
+decision, but booking a crypto fill also calls
+``PaperTradingService._fetch_current_price`` -> ``fetch_multiple_current_prices``,
+which reached ``api.upbit.com`` for real. The autouse fixture below closes that
+second path so the docstring is now accurate.
 """
 
 from __future__ import annotations
@@ -18,6 +24,24 @@ import pytest
 from app.core.timezone import now_kst
 from app.services.paper_limit_order_service import PaperLimitOrderService
 from app.services.paper_trading_service import PaperTradingService
+
+
+@pytest.fixture(autouse=True)
+def _offline_crypto_spot_prices(monkeypatch):
+    """Serve the crypto spot price these paper fills need, without Upbit.
+
+    ``_fetch_current_price`` raises when a crypto price is missing, so leaving
+    this unmocked did not merely skip a lookup — it pushed the booking path down
+    an error branch that happened not to change these assertions. A deterministic
+    quote models the funded, priceable account the tests describe.
+    """
+
+    async def _prices(symbols):
+        return dict.fromkeys(symbols, 90_000_000.0)
+
+    monkeypatch.setattr(
+        "app.services.paper_trading_service.fetch_multiple_current_prices", _prices
+    )
 
 
 def _candle(low: Decimal, high: Decimal, timestamp: dt.datetime | None = None) -> Any:

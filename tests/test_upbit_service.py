@@ -7,6 +7,13 @@ import pytest
 import app.services.brokers.upbit.client as upbit
 from app.services import upbit_symbol_universe_service
 
+# ROB-1296: this module is a provider *boundary* suite -- it drives the real
+# client functions against a mocked HTTP layer, which is exactly what the
+# autouse provider seams replace. Opt out so the code under test is the real
+# thing. The transport backstop and the socket guard both stay in force, so
+# opting out here still cannot reach a network.
+pytestmark = pytest.mark.usefixtures("allow_external_providers")
+
 
 @pytest.fixture(autouse=True)
 def reset_upbit_ticker_cache_state():

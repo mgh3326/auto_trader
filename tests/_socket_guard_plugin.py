@@ -39,13 +39,42 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         raise pytest.UsageError(str(error)) from error
 
 
+def live_exemption_is_armed(config: pytest.Config) -> bool:
+    """Return whether the operator explicitly armed the live-network lane.
+
+    ``--run-live`` is registered by ``tests/conftest.py``. The guard plugin is
+    loaded via ``-p`` before any conftest and is also active for pytest subtrees
+    that never register the option (``research/**``, ``--noconftest`` probes), so
+    the lookup must degrade to "not armed" instead of raising.
+    """
+
+    try:
+        return bool(config.getoption("--run-live", default=False))
+    except ValueError:  # pragma: no cover - defensive: option table absent
+        return False
+
+
+def item_is_exempt(item: pytest.Item) -> bool:
+    """Exempt only an explicitly ``live`` item under an explicit ``--run-live``.
+
+    ROB-1296: ``integration`` alone no longer grants external network access.
+    Integration tests talk to loopback PostgreSQL/Redis, which the address
+    allowlist already permits without any marker exemption, so the marker was
+    granting far more reach than the boundary it was meant to describe. A
+    ``live`` marker without ``--run-live`` is skipped by ``tests/conftest.py``
+    and stays fully blocked here as well, so both halves are required.
+    """
+
+    return bool(item.get_closest_marker("live")) and live_exemption_is_armed(
+        item.config
+    )
+
+
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
-    """Allow explicit integration/live items while retaining import-time default deny."""
+    """Allow an armed live item only; retain default deny everywhere else."""
 
-    exempt = bool(
-        item.get_closest_marker("integration") or item.get_closest_marker("live")
-    )
+    exempt = item_is_exempt(item)
     previous = socket_guard.set_current_test_exempt(exempt)
     try:
         socket_guard.assert_installed()
