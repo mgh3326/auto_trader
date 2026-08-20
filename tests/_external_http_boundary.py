@@ -76,3 +76,48 @@ def format_summary(counts: dict[str, int]) -> str:
         f"ROB-1296 external HTTP boundary: {sum(counts.values())} blocked "
         f"requests across {len(counts)} hosts -- {hosts}"
     )
+
+
+def curl_session_classes() -> tuple[type, ...]:
+    """Every ``curl_cffi`` session class whose ``request`` must be intercepted.
+
+    Returned rather than hard-coded so an environment without ``curl_cffi``
+    installed simply has nothing to patch, and so the async variant is covered
+    when the installed version provides one.
+    """
+
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:  # pragma: no cover - curl_cffi is a hard dependency here
+        return ()
+
+    classes = []
+    for name in ("Session", "AsyncSession"):
+        candidate = getattr(curl_requests, name, None)
+        if isinstance(candidate, type):
+            classes.append(candidate)
+    return tuple(classes)
+
+
+def build_curl_request_blocker(session_class: type):
+    """Wrap ``session_class.request`` so non-loopback hosts fail closed.
+
+    Raises ``curl_cffi``'s own ``ConnectionError`` -- what an unreachable host
+    already produces through this client -- so callers land in the same
+    ``except`` branch they do today.
+    """
+
+    from urllib.parse import urlsplit
+
+    from curl_cffi.requests import errors as curl_errors
+
+    original = session_class.request
+
+    def _blocked(self, method, url, *args, **kwargs):
+        host = urlsplit(str(url)).hostname or ""
+        if is_loopback_host(host):
+            return original(self, method, url, *args, **kwargs)
+        record_block(host)
+        raise curl_errors.RequestsError(f"{MESSAGE} [{host}]")
+
+    return _blocked

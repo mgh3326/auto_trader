@@ -40,6 +40,15 @@ MESSAGE: Final = (
     "provider at its call site, or request allow_external_providers."
 )
 OPT_OUT_FIXTURE: Final = "allow_external_providers"
+SEAM_MARKER: Final = "__rob1296_seam__"
+"""Attribute stamped on every replacement, naming the seam it stands in for."""
+
+
+def seam_marker(value: object) -> str | None:
+    """Return the seam name a replacement stands in for, else ``None``."""
+
+    return getattr(value, SEAM_MARKER, None)
+
 
 # (attribute, modules binding it) — defining module first is not required; every
 # listed module is rebound to the same replacement.
@@ -94,6 +103,43 @@ SEAM_TARGETS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
         "fetch_sector_peers",
         ("app.services.naver_finance", "app.services.naver_finance.valuation"),
     ),
+    # yfinance / Yahoo. These go out over curl_cffi (libcurl), which no other
+    # layer can see: not an httpx transport, not a ``requests`` adapter, and its
+    # ``connect(2)`` happens in C below the socket guard. All four are fail-open
+    # enrichment paths, so raising the transport error they already handle keeps
+    # behaviour identical. (The session *builder* is deliberately not seamed --
+    # see SYNC_SEAM_TARGETS.)
+    ("_collect_yfinance_snapshot", ("app.mcp_server.tooling.analysis_analyze",)),
+    (
+        "_fetch_valuation_yfinance",
+        (
+            "app.mcp_server.tooling.analysis_analyze",
+            "app.mcp_server.tooling.fundamentals._valuation",
+            "app.mcp_server.tooling.fundamentals_sources_yfinance",
+        ),
+    ),
+    (
+        "_fetch_investment_opinions_yfinance",
+        (
+            "app.mcp_server.tooling.analysis_analyze",
+            "app.mcp_server.tooling.fundamentals._valuation",
+            "app.mcp_server.tooling.fundamentals_sources_yfinance",
+        ),
+    ),
+    (
+        "_fetch_investment_opinions_yfinance_screen",
+        ("app.mcp_server.tooling.fundamentals_sources_yfinance",),
+    ),
+    # Yahoo market-data client (also curl_cffi under the hood).
+    ("fetch_ohlcv", ("app.services.brokers.yahoo.client",)),
+    ("fetch_52w_high_date", ("app.services.brokers.yahoo.client",)),
+    ("fetch_price", ("app.services.brokers.yahoo.client",)),
+    (
+        "fetch_fast_info",
+        ("app.services.brokers.yahoo.client", "app.services.market_data.service"),
+    ),
+    ("fetch_prepost_quote", ("app.services.brokers.yahoo.client",)),
+    ("fetch_fundamental_info", ("app.services.brokers.yahoo.client",)),
     # CoinGecko / alternative.me / Binance public.
     (
         "fetch_btc_dominance",
@@ -124,6 +170,18 @@ SEAM_TARGETS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
         ),
     ),
 )
+
+# Synchronous seams. Same contract as ``SEAM_TARGETS`` but the replacement is a
+# plain function, because these are called outside a coroutine.
+#
+# Empty on purpose. yfinance/Yahoo was the obvious candidate -- it goes out over
+# curl_cffi (libcurl), which no other layer could see -- but seaming
+# ``build_yfinance_tracing_session`` breaks the many tests that already stub
+# ``yfinance.Ticker``/``download`` correctly and merely need a session *object*
+# to hand through. curl_cffi exposes a single Python chokepoint
+# (``Session.request``), so it is intercepted at the transport backstop instead,
+# which blocks and counts without preventing construction.
+SYNC_SEAM_TARGETS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = ()
 
 # Methods patched on a class rather than a module.
 ASYNC_METHOD_SEAMS: Final = (
@@ -175,14 +233,52 @@ def install(monkeypatch) -> Callable[[], None]:
 
     import httpx
 
-    def _async_blocked(label: str):
+    def _async_blocked(label: str, *, seam: str | None = None):
         async def _blocked(*_args, **_kwargs):
             raise httpx.ConnectError(f"{MESSAGE} [{label}]")
 
+        # Stable marker so the completeness contract can spot a *stale*
+        # replacement, not just a module still holding the original. A module
+        # imported for the first time while the seams were installed aliases the
+        # replacement at import time; monkeypatch restores the modules it patched,
+        # but not that late consumer, which would otherwise be invisible to an
+        # original-identity scan.
+        _blocked.__dict__[SEAM_MARKER] = seam if seam is not None else label
         return _blocked
 
+    # Import every target *before* patching anything. A consumer that does
+    # ``from x import y`` at module load and is first imported after ``x`` was
+    # already patched binds the replacement permanently: ``monkeypatch`` records
+    # that replacement as the "original" and restores it, leaving a stale seam
+    # behind for the rest of the session.
+    for _, module_paths in SEAM_TARGETS:
+        for module_path in module_paths:
+            importlib.import_module(module_path)
+    for _, module_paths in SYNC_SEAM_TARGETS:
+        for module_path in module_paths:
+            importlib.import_module(module_path)
+    for module_path, class_name, _ in ASYNC_METHOD_SEAMS:
+        _ = class_name
+        importlib.import_module(module_path)
+    for module_path, _ in FINNHUB_CLIENT_FACTORIES:
+        importlib.import_module(module_path)
+
     for attribute, module_paths in SEAM_TARGETS:
-        replacement = _async_blocked(attribute)
+        replacement = _async_blocked(attribute, seam=attribute)
+        for module_path in module_paths:
+            module = importlib.import_module(module_path)
+            if hasattr(module, attribute):
+                monkeypatch.setattr(module, attribute, replacement)
+
+    def _sync_blocked(label: str, *, seam: str):
+        def _blocked(*_args, **_kwargs):
+            raise httpx.ConnectError(f"{MESSAGE} [{label}]")
+
+        _blocked.__dict__[SEAM_MARKER] = seam
+        return _blocked
+
+    for attribute, module_paths in SYNC_SEAM_TARGETS:
+        replacement = _sync_blocked(attribute, seam=attribute)
         for module_path in module_paths:
             module = importlib.import_module(module_path)
             if hasattr(module, attribute):

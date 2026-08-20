@@ -15,6 +15,13 @@ import pytest
 
 from app.services.brokers.yahoo.client import _roe_to_percent
 
+# ROB-1296: this module is a provider *boundary* suite -- it drives the real
+# Yahoo client functions against stubbed yfinance objects, which is exactly what
+# the autouse provider seams replace. Opt out so the code under test is the real
+# thing. The curl_cffi transport backstop and the socket guard both stay in
+# force, so opting out here still cannot reach a network.
+pytestmark = pytest.mark.usefixtures("allow_external_providers")
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize(

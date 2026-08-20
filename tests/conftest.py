@@ -591,6 +591,19 @@ def _block_external_http_boundary(request, monkeypatch):
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked_sync)
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", _blocked_requests)
 
+    # curl_cffi is a libcurl binding: it is neither an httpx transport nor a
+    # ``requests`` adapter, and libcurl calls ``connect(2)`` from C, so the socket
+    # guard's monkeypatches cannot reach it either. yfinance uses it, which meant
+    # 29 non-live tests were reaching query1.finance.yahoo.com for real while both
+    # counters reported zero. Blocked here at the one Python-level chokepoint
+    # every curl_cffi request passes through.
+    for session_class in external_http_boundary.curl_session_classes():
+        monkeypatch.setattr(
+            session_class,
+            "request",
+            external_http_boundary.build_curl_request_blocker(session_class),
+        )
+
 
 @pytest.fixture
 def allow_kis_daily_candle_fetch():

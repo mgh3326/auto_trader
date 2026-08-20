@@ -1275,6 +1275,10 @@ class TestGetCompanyProfile:
 # ---------------------------------------------------------------------------
 
 
+# ROB-1296: drives the real yfinance collector against stubbed yfinance
+# objects, so the provider seam would replace the code under test. The
+# curl_cffi transport backstop and the socket guard both stay in force.
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 class TestGetValuation:
     """Test get_valuation tool."""
@@ -3618,6 +3622,10 @@ class TestGetCryptoProfile:
 # ---------------------------------------------------------------------------
 
 
+# ROB-1296: drives the real yfinance collector against stubbed yfinance
+# objects, so the provider seam would replace the code under test. The
+# curl_cffi transport backstop and the socket guard both stay in force.
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 class TestGetInvestmentOpinions:
     """Test get_investment_opinions tool."""
@@ -4378,11 +4386,20 @@ class TestScreenEnrichmentHelpers:
         assert "recommendation" not in result
 
 
+# ROB-1296: drives the real yfinance collector against stubbed yfinance
+# objects, so the provider seam would replace the code under test. The
+# curl_cffi transport backstop and the socket guard both stay in force.
+@pytest.mark.usefixtures("allow_external_providers")
 @pytest.mark.asyncio
 async def test_analyze_stock_us_reuses_preloaded_yfinance_analyst_snapshot(
     monkeypatch,
 ):
     tools = build_tools()
+    # This test opts out of the provider seams so it can drive the real yfinance
+    # collector, which also un-stubs the Finnhub half of the same fan-out. It
+    # asserts nothing about Finnhub, so stub that leaf explicitly rather than
+    # letting it reach the transport backstop.
+    _patch_us_finnhub_fanout(monkeypatch, "AAPL")
     yf_calls = {"info": 0, "targets": 0, "recommendations": 0, "ud": 0}
 
     async def mock_fetch_ohlcv(symbol, market_type, count):

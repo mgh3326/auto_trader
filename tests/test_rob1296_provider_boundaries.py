@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 import sys
+import types
 import warnings
 
 import httpx
@@ -54,54 +55,162 @@ def _import_entire_app() -> list[str]:
     return failures
 
 
+def _all_seam_targets() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Async and sync seams share one alias contract -- both can go stale."""
+
+    return (
+        *provider_boundaries.SEAM_TARGETS,
+        *provider_boundaries.SYNC_SEAM_TARGETS,
+    )
+
+
+def _undeclared_holders() -> dict[str, list[str]]:
+    """Modules holding a seam's function that ``SEAM_TARGETS`` does not declare.
+
+    Two kinds of holder count, and missing either one is a false green:
+
+    * a module still bound to the **original** function — the plain stale-alias
+      case, where the seam simply never reached that consumer;
+    * a module bound to a **replacement** — a consumer first imported *while* the
+      seams were installed, which aliased the stand-in at import time.
+      ``monkeypatch`` restores the modules it patched, not that late consumer, so
+      the stale replacement survives teardown and an original-identity scan walks
+      straight past it.
+
+    Detection is therefore identity-or-marker, which makes it independent of the
+    order tests happened to run in.
+    """
+
+    undeclared: dict[str, list[str]] = {}
+    for attribute, module_paths in _all_seam_targets():
+        declared = set(module_paths)
+        originals = {
+            path: getattr(importlib.import_module(path), attribute, None)
+            for path in sorted(declared)
+        }
+        original = originals[sorted(declared)[0]]
+
+        holders = sorted(
+            name
+            for name, module in list(sys.modules.items())
+            if module is not None
+            and name.startswith("app.")
+            and (
+                getattr(module, attribute, None) is original
+                or provider_boundaries.seam_marker(getattr(module, attribute, None))
+                == attribute
+            )
+        )
+        extra = [name for name in holders if name not in declared]
+        if extra:
+            undeclared[attribute] = extra
+    return undeclared
+
+
+def test_declared_seam_modules_share_one_original_identity(
+    allow_external_providers,
+) -> None:
+    """Every declared alias of a seam must be the *same* object.
+
+    If two declared modules held different functions, patching them would only
+    look complete: one of them would be a different provider entirely.
+    """
+
+    _ = allow_external_providers
+    _import_entire_app()
+
+    mismatched: dict[str, dict[str, str]] = {}
+    for attribute, module_paths in _all_seam_targets():
+        values = {
+            path: getattr(importlib.import_module(path), attribute, None)
+            for path in module_paths
+        }
+        first = values[module_paths[0]]
+        if any(value is not first for value in values.values()):
+            mismatched[attribute] = {
+                path: f"{getattr(value, '__module__', '?')}.{getattr(value, '__qualname__', value)}"
+                for path, value in values.items()
+            }
+    assert mismatched == {}
+
+
 def test_seam_targets_cover_every_binding_module(allow_external_providers) -> None:
-    """No module may hold the real function while its siblings are seamed.
+    """No module may hold a seam's function while its siblings are seamed.
 
     A half-patched seam is worse than none: the leak just moves to whichever
     consumer was missed. If this fails, add the reported module to
     ``SEAM_TARGETS`` -- do not widen an allowlist or drop the seam.
 
-    This test **opts out of the provider fixture on purpose**. With the seams
-    installed, an undeclared consumer that still holds the original would not
-    match the replacement and would go unnoticed -- precisely the defect being
-    hunted. Comparing original identities makes the result independent of which
-    modules happened to be imported before the fixture ran.
+    This test **opts out of the provider fixture on purpose** so the declared
+    modules hold their originals. See ``_undeclared_holders`` for why detection
+    matches on identity *or* marker.
     """
 
     _ = allow_external_providers
     failures = _import_entire_app()
     assert failures == [], f"could not import app modules to check: {failures}"
 
-    for attribute, module_paths in provider_boundaries.SEAM_TARGETS:
+    for attribute, module_paths in _all_seam_targets():
         for module_path in module_paths:
             value = getattr(importlib.import_module(module_path), attribute, None)
             assert value is not None
-            assert getattr(value, "__module__", "").startswith("app."), (
+            assert provider_boundaries.seam_marker(value) is None, (
                 f"{module_path}.{attribute} is still a seam replacement; this "
                 "test must run with the provider fixture opted out"
             )
 
-    missing: dict[str, list[str]] = {}
-    for attribute, module_paths in provider_boundaries.SEAM_TARGETS:
-        declared = set(module_paths)
-        original = getattr(
-            importlib.import_module(next(iter(sorted(declared)))), attribute
-        )
-        holders = sorted(
-            name
-            for name, module in list(sys.modules.items())
-            if module is not None
-            and name.startswith("app.")
-            and getattr(module, attribute, None) is original
-        )
-        undeclared = [name for name in holders if name not in declared]
-        if undeclared:
-            missing[attribute] = undeclared
-
+    missing = _undeclared_holders()
     assert missing == {}, (
         "SEAM_TARGETS is missing consumer aliases; add them to "
         f"tests/_provider_boundaries.py: {missing}"
     )
+
+
+def test_detector_reports_a_late_consumer_holding_a_stale_replacement(
+    allow_external_providers,
+) -> None:
+    """Negative control for the marker half of the detector.
+
+    Synthesises the exact shape the identity-only scan missed: an ``app.*``
+    module that is not declared and holds a *replacement* rather than the
+    original, as a module first imported during a seamed test would.
+    """
+
+    _ = allow_external_providers
+    _import_entire_app()
+    assert _undeclared_holders() == {}
+
+    async def _stale_replacement(*_args, **_kwargs):  # pragma: no cover - never run
+        raise AssertionError("unreachable")
+
+    _stale_replacement.__dict__[provider_boundaries.SEAM_MARKER] = "fetch_orderbook"
+
+    module_name = "app._rob1296_synthetic_late_consumer"
+    synthetic = types.ModuleType(module_name)
+    synthetic.fetch_orderbook = _stale_replacement
+    sys.modules[module_name] = synthetic
+    try:
+        assert _undeclared_holders() == {"fetch_orderbook": [module_name]}
+    finally:
+        del sys.modules[module_name]
+
+    assert _undeclared_holders() == {}
+
+
+def test_install_stamps_the_seam_marker_on_every_declared_module() -> None:
+    """Ties ``install`` to the detector: real replacements must carry the marker.
+
+    Runs *without* the opt-out, so the seams are live. If ``install`` ever stopped
+    stamping, ``_undeclared_holders`` would lose its stale-replacement branch
+    silently.
+    """
+
+    for attribute, module_paths in _all_seam_targets():
+        for module_path in module_paths:
+            value = getattr(importlib.import_module(module_path), attribute, None)
+            assert provider_boundaries.seam_marker(value) == attribute, (
+                f"{module_path}.{attribute} is not a marked seam replacement"
+            )
 
 
 def test_declared_seam_modules_all_expose_their_attribute() -> None:

@@ -12,6 +12,7 @@ work, and the allowed cases run against in-process transports.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -338,3 +339,52 @@ def test_reported_counter_survives_an_xdist_run(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["active"] is True
     assert report["blocked_attempts"] == 0
+
+
+# --------------------------------------------------------------------------
+# curl_cffi (libcurl) — neither an httpx transport nor a requests adapter
+# --------------------------------------------------------------------------
+
+
+def test_curl_cffi_requests_are_blocked_and_counted() -> None:
+    """The layer the other two could not see.
+
+    ``curl_cffi`` binds libcurl, so it is not an httpx transport, not a
+    ``requests`` adapter, and its ``connect(2)`` happens in C where the socket
+    guard's monkeypatches cannot reach. yfinance uses it, which is how 29
+    non-live tests were reaching query1.finance.yahoo.com for real while every
+    counter read zero.
+    """
+
+    from curl_cffi.requests import Session
+
+    host = "rob1296-curl.invalid"
+    before = boundary.snapshot()
+    with Session() as session:
+        with pytest.raises(Exception, match="External HTTP is disabled"):
+            session.get(f"https://{host}/probe", timeout=3)
+    after = boundary.snapshot()
+
+    assert after.get(host, 0) == before.get(host, 0) + 1
+
+
+def test_curl_cffi_session_classes_are_discovered() -> None:
+    """Both sync and async session classes must be intercepted."""
+
+    names = {cls.__name__ for cls in boundary.curl_session_classes()}
+    assert "Session" in names
+    assert "AsyncSession" in names
+
+
+def test_curl_cffi_loopback_is_not_blocked() -> None:
+    """Local test servers must stay reachable through curl_cffi too."""
+
+    from curl_cffi.requests import Session
+
+    before = boundary.snapshot()
+    with Session() as session:
+        with contextlib.suppress(Exception):
+            # Nothing is listening; what matters is that the guard did not
+            # intercept it, so the counter must not move.
+            session.get("http://127.0.0.1:1/probe", timeout=1)
+    assert boundary.snapshot() == before
