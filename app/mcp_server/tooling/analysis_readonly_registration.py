@@ -75,6 +75,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "screen_stocks_snapshot",
     "discover_buy_candidates_fanout",
     "evaluate_buy_gate_ab_shadow",
+    "get_spike_attribution",
     "get_krx_session_health",
     "get_top_stocks",
     "get_news",
