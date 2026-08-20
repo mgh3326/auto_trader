@@ -728,8 +728,7 @@ async def test_manual_reader_preserves_all_supported_broker_accounts(
     accounts = {account.accountId: account for account in result.accounts}
     assert set(accounts) == {str(account_id) for account_id, *_ in broker_rows}
     assert {
-        accounts[str(account_id)].displayName
-        for account_id, *_ in broker_rows
+        accounts[str(account_id)].displayName for account_id, *_ in broker_rows
     } == {account_name for _, _, account_name, _ in broker_rows}
     assert {holding.accountId for holding in result.holdings} == set(accounts)
 
