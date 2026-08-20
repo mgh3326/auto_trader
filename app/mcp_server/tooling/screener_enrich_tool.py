@@ -216,7 +216,15 @@ def _raw_opinion_fetcher_with_negative_cache(
     call, unlike the per-page sector/consensus fetchers used by
     `enrich_snapshot_page`. This wraps the SAME kind="consensus" negative
     cache bucket as `_opinion_provider_with_negative_cache` — a failure
-    recorded by one path is honored by the other."""
+    recorded by one path is honored by the other.
+
+    Round-3 fix: `handle_get_investment_opinions` is awaited inside a
+    try/except HERE, not left bare — a raise must be caught at this
+    boundary, because `resolve_consensus` (the caller of this
+    `opinion_fetcher`) has its own outer try/except that would otherwise
+    swallow the exception before this wrapper's negcache bookkeeping
+    (record_failure / excluded.append) ever runs, silently disabling the
+    negative cache for exactly the timeout/rate-limit case it exists for."""
     kind = "consensus"
 
     async def _wrapped(*, symbol: str, market: str, limit: int = 10) -> dict[str, Any]:
@@ -240,9 +248,29 @@ def _raw_opinion_fetcher_with_negative_cache(
             handle_get_investment_opinions,
         )
 
-        result = await handle_get_investment_opinions(
-            symbol=symbol, market=market, limit=limit
-        )
+        try:
+            result = await handle_get_investment_opinions(
+                symbol=symbol, market=market, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 — round-3 fix: a raise here must
+            # be caught HERE, not left to propagate into
+            # analyst_consensus_cache.resolve_consensus's own outer
+            # try/except, which would swallow it before this wrapper's
+            # negcache bookkeeping (record_failure/excluded.append) runs.
+            recorded = await negcache.record_failure(
+                redis_client, kind=kind, market=market, symbol=symbol, exc=exc
+            )
+            excluded.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "kind": kind,
+                    "reason": "fetch_failed",
+                    "errorClass": recorded.error_class,
+                    "consecutiveFailures": recorded.consecutive_failures,
+                }
+            )
+            return {"error": str(exc) or "analyst_consensus_unavailable"}
         consensus = (
             (result or {}).get("consensus") if isinstance(result, dict) else None
         )
