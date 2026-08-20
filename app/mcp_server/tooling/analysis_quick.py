@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 from typing import Any
 
 import pandas as pd
@@ -42,9 +43,13 @@ from app.services.decision_history import (
     _ACTIVE_ACTION_STATUSES,
     ACTION_TEXT_LIMIT,
     ISSUE_ID_LIMIT,
+    MAX_FILLS,
+    MAX_LESSONS,
     MAX_OPEN_ACTIONS,
     OPEN_ACTIONS_BYTE_BUDGET,
     OWNER_LIMIT,
+    _is_smoke,
+    _truncate,
     _truncate_field,
     _visibility_predicate,
 )
@@ -53,6 +58,8 @@ from app.services.halt_detection import (
     classify_ohlcv_frame,
 )
 from app.services.trade_journal.retrospective_type import sql_is_learning_eligible
+
+logger = logging.getLogger(__name__)
 
 QUICK_HTTP_REQUEST_LIMIT = 0
 # Three equity/crypto candle groups plus the bounded decision-history and
@@ -229,10 +236,6 @@ def _date_iso(value: Any) -> str | None:
     return value.date().isoformat() if hasattr(value, "date") else str(value)
 
 
-def _looks_like_smoke(*values: Any) -> bool:
-    return any("smoke" in str(value).lower() for value in values if value is not None)
-
-
 def _quick_fill(source: str, row: Any) -> dict[str, Any]:
     return {
         "date": _date_iso(getattr(row, "trade_date", None)),
@@ -381,7 +384,7 @@ async def _load_decision_history_batch(
     # kis_mock lane must only ever surface its own shadow-fill evidence, never
     # live-broker fills, matching canonical `decision_history._recent_fills`.
     # One query either way — never both — so this stays within the DB budget.
-    fill_rows: list[tuple[str, Any]] = []
+    fill_rows: list[tuple[str, Any, float | None, str | None]] = []
     if account_mode == "kis_mock":
         from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
 
@@ -464,7 +467,9 @@ async def _load_decision_history_batch(
     for row in prior_rows:
         symbol = key_for(getattr(row, "symbol", None))
         target = per_symbol.get(symbol)
-        if target is None or _looks_like_smoke(getattr(row, "rationale", None)):
+        rationale = getattr(row, "rationale", None)
+        status = getattr(row, "status", None)
+        if target is None or _is_smoke(rationale, status):
             continue
         target["prior_decisions"].append(
             {
@@ -477,7 +482,7 @@ async def _load_decision_history_batch(
                     if getattr(row, "confidence", None) is not None
                     else None
                 ),
-                "rationale": getattr(row, "rationale", None),
+                "rationale": _truncate(rationale),
             }
         )
         target["prior_decisions"] = target["prior_decisions"][:6]
@@ -488,7 +493,7 @@ async def _load_decision_history_batch(
         # Visibility (kis_mock exact / default excludes mock-counterfactual)
         # and learning-eligibility (excludes intake rows) are enforced in SQL
         # above via `_visibility_predicate` / `sql_is_learning_eligible`.
-        if target is None or _looks_like_smoke(
+        if target is None or _is_smoke(
             getattr(row, "created_by_profile", None),
             getattr(row, "strategy_key", None),
             getattr(row, "correlation_id", None),
@@ -496,8 +501,8 @@ async def _load_decision_history_batch(
         ):
             continue
         lesson = getattr(row, "lesson", None)
-        if lesson and len(target["prior_lessons"]) < 3:
-            target["prior_lessons"].append(str(lesson)[:219])
+        if lesson and lesson.strip() and len(target["prior_lessons"]) < MAX_LESSONS:
+            target["prior_lessons"].append(_truncate(lesson))
         if len(target["realized_outcomes"]) < 5:
             target["realized_outcomes"].append(
                 {
@@ -529,7 +534,7 @@ async def _load_decision_history_batch(
     per_symbol_action_truncated: dict[str, bool] = dict.fromkeys(per_symbol, False)
     for action, retro in actions:
         symbol = key_for(getattr(retro, "symbol", None))
-        if symbol not in per_symbol_actions or _looks_like_smoke(
+        if symbol not in per_symbol_actions or _is_smoke(
             getattr(retro, "created_by_profile", None),
             getattr(retro, "strategy_key", None),
             getattr(retro, "correlation_id", None),
@@ -598,14 +603,30 @@ async def _load_decision_history_batch(
         )
         target["open_claims"] = target["open_claims"][:5]
 
+    # Bucket by symbol first, then sort each bucket globally by trade_date
+    # (matching canonical `_recent_fills`'s combined sort-then-slice), rather
+    # than capping during the KIS -> generic-live -> Toss iteration order —
+    # a source-then-cap approach can drop newer generic-live/Toss evidence in
+    # favor of older KIS rows.
+    per_symbol_fills: dict[
+        str, list[tuple[Any, str, Any, float | None, str | None]]
+    ] = {symbol: [] for symbol in per_symbol}
     for source, row, filled_qty, status in fill_rows:
-        target = per_symbol.get(key_for(getattr(row, "symbol", None)))
-        if target is None or len(target["recent_fills"]) >= 6:
+        symbol = key_for(getattr(row, "symbol", None))
+        if symbol not in per_symbol_fills:
             continue
-        if source == "kis_mock":
-            target["recent_fills"].append(_quick_mock_fill(row, filled_qty, status))
-        else:
-            target["recent_fills"].append(_quick_fill(source, row))
+        per_symbol_fills[symbol].append(
+            (getattr(row, "trade_date", None), source, row, filled_qty, status)
+        )
+
+    for symbol, rows in per_symbol_fills.items():
+        rows.sort(key=lambda t: (t[0] is not None, t[0]), reverse=True)
+        target = per_symbol[symbol]
+        for _trade_date, source, row, filled_qty, status in rows[:MAX_FILLS]:
+            if source == "kis_mock":
+                target["recent_fills"].append(_quick_mock_fill(row, filled_qty, status))
+            else:
+                target["recent_fills"].append(_quick_fill(source, row))
 
     for symbol, context in per_symbol.items():
         has_signal = any(
@@ -734,7 +755,8 @@ async def load_quick_projection_batch(
             decision_history = await _load_decision_history_batch(
                 session, symbols, account_mode=decision_history_account_mode
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("quick decision_history batch injection skipped: %s", exc)
             decision_history = {}
         try:
             earnings = await _load_earnings_batch(session, symbols)
