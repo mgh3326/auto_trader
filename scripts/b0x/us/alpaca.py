@@ -57,6 +57,14 @@ LANE: Final[str] = ALPACA_PAPER_LAB_ACCOUNT_MODE
 MARKET: Final[str] = "us"
 QUOTE_CURRENCY: Final[str] = "USD"
 B0XU_CORRELATION_PREFIX: Final[str] = "b0xu-"
+# The Alpaca lab profile prefixes server-issued manual and automated IDs with
+# ``dlab-``.  These IDs predate B0-X, but are native evidence for the same
+# explicitly selected lab account when stored as lifecycle correlations.
+DLAB_CORRELATION_PREFIX: Final[str] = "dlab-"
+LAB_EXECUTION_CORRELATION_PREFIXES: Final[tuple[str, ...]] = (
+    B0XU_CORRELATION_PREFIX,
+    DLAB_CORRELATION_PREFIX,
+)
 
 # Contract §4 US column.  The locked envelope holds the $450 ceiling; these
 # two values are the signed lower edge and B0's selected point within the band.
@@ -310,19 +318,19 @@ def _parse_datetime(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.UTC)
 
 
-def _b0xu_executions(items: list[dict[str, Any]]) -> tuple[LedgerExecution, ...]:
+def _lab_executions(items: list[dict[str, Any]]) -> tuple[LedgerExecution, ...]:
     parsed: list[LedgerExecution] = []
     for row in items:
         correlation = str(row.get("lifecycle_correlation_id") or "").strip()
-        if not correlation.startswith(B0XU_CORRELATION_PREFIX):
+        if not correlation.startswith(LAB_EXECUTION_CORRELATION_PREFIXES):
             continue
         if row.get("account_mode") != LANE:
-            raise LabTruthReadError("b0xu ledger row is not bound to alpaca_paper_lab")
+            raise LabTruthReadError("lab ledger row is not bound to alpaca_paper_lab")
         if str(row.get("record_kind") or "") != "execution":
             continue
         side = str(row.get("side") or "").strip().lower()
         if side not in {"buy", "sell"}:
-            raise LabTruthReadError("b0xu execution has an unknown side")
+            raise LabTruthReadError("lab execution has an unknown side")
         parsed.append(
             LedgerExecution(
                 correlation_id=correlation,
@@ -390,11 +398,13 @@ def _attribute_positions(
         events = events_by_symbol.get(position.symbol, [])
         if not events:
             foreign.append(position.symbol)
-            failures.append(f"{position.symbol}: no b0xu execution correlation")
+            failures.append(
+                f"{position.symbol}: no recognized lab execution correlation"
+            )
             continue
         if any(event.filled_qty is None for event in events):
             foreign.append(position.symbol)
-            failures.append(f"{position.symbol}: b0xu fill quantity unavailable")
+            failures.append(f"{position.symbol}: lab fill quantity unavailable")
             continue
 
         signed_qty = sum(
@@ -408,7 +418,7 @@ def _attribute_positions(
         if signed_qty != position.quantity or signed_qty <= 0:
             foreign.append(position.symbol)
             failures.append(
-                f"{position.symbol}: broker quantity does not exactly match b0xu fills"
+                f"{position.symbol}: broker quantity does not exactly match lab fills"
             )
             continue
 
@@ -581,7 +591,7 @@ async def read_fresh_truth(
     ledger_items = ledger_response.get("items")
     if not isinstance(ledger_items, list):
         raise LabTruthReadError("ledger items malformed")
-    executions = _b0xu_executions(ledger_items)
+    executions = _lab_executions(ledger_items)
     positions = tuple(sorted(raw_positions, key=lambda position: position.symbol))
     open_orders = tuple(sorted(raw_orders, key=lambda order: order.broker_order_id))
     own_open_orders, foreign_open_orders = _classify_open_orders(

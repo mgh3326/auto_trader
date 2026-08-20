@@ -109,7 +109,9 @@ def _table() -> PolicyTable:
 
 
 @pytest.mark.asyncio
-async def test_fresh_truth_uses_lab_only_and_attributes_by_b0xu_correlation() -> None:
+async def test_fresh_truth_uses_lab_only_and_attributes_by_known_correlation_prefix() -> (
+    None
+):
     readers, calls = _readers(
         positions=[
             {
@@ -139,7 +141,7 @@ async def test_fresh_truth_uses_lab_only_and_attributes_by_b0xu_correlation() ->
             {
                 "account_mode": alpaca.LANE,
                 "record_kind": "execution",
-                "lifecycle_correlation_id": "b0xu-aapl-buy",
+                "lifecycle_correlation_id": "dlab-rob73-aapl",
                 "client_order_id": "dlab-rob842a-aapl",
                 "broker_order_id": "b0xu-open",
                 "execution_symbol": "AAPL",
@@ -175,9 +177,46 @@ async def test_fresh_truth_uses_lab_only_and_attributes_by_b0xu_correlation() ->
     assert [order.broker_order_id for order in fresh.foreign_open_orders] == [
         "foreign-open"
     ]
-    # No b0xu execution exists on NOW's UTC day, which is a provable bootstrap
-    # zero—not an inferred P&L calculation.
+    # No recognized lab execution exists on NOW's UTC day, which is a provable
+    # bootstrap zero—not an inferred P&L calculation.
     assert fresh.realized_pnl_today == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_unlinked_fake_lab_position_remains_contaminated() -> None:
+    """A position without a recognized ledger link must still block submission."""
+
+    readers, _ = _readers(
+        positions=[
+            {
+                "symbol": "FAKE",
+                "qty": "1",
+                "qty_available": "1",
+                "avg_entry_price": "100",
+            }
+        ],
+        ledger=[
+            {
+                "account_mode": alpaca.LANE,
+                "record_kind": "execution",
+                "lifecycle_correlation_id": "not-a-recognized-lab-prefix",
+                "client_order_id": "not-a-recognized-lab-prefix",
+                "broker_order_id": "unrelated-order",
+                "execution_symbol": "FAKE",
+                "side": "buy",
+                "filled_qty": "1",
+                "filled_avg_price": "100",
+                "created_at": "2026-08-09T15:00:00+00:00",
+            }
+        ],
+    )
+
+    fresh = await alpaca.read_fresh_truth(now=NOW, readers=readers)
+
+    assert fresh.foreign_position_symbols == ("FAKE",)
+    assert fresh.position_linkage_failures == (
+        "FAKE: no recognized lab execution correlation",
+    )
 
 
 @pytest.mark.asyncio
