@@ -259,8 +259,9 @@ def _load_shard_manifest(path: Path) -> list[str]:
         )
     if files != sorted(files):
         raise ShardPlanError(
-            f"{path}: entries are not in canonical sorted order (sort the affected "
-            "manifest at its LC_ALL=C position, then inspect the diff)"
+            f"{path}: entries are not in canonical sorted order (place the entry at "
+            "its LC_ALL=C sorted position, or run LC_ALL=C sort on the affected "
+            "file; see docs/runbooks/ci-file-shard-manifests.md §4)"
         )
     return files
 

@@ -368,8 +368,8 @@ jobs:
     # .call_durations.json (weight source) + the current authoritative
     # collection -- if the weekly refresh rebuilt .call_durations.json but
     # never regenerated the manifests from it, LPT balance would silently
-    # drift out of sync with reality between scheduled duration refreshes
-    # (exact-cover would still hold, since file membership is unaffected by
+    # drift out of sync with reality with no duration-refresh workflow left
+    # to correct it (exact-cover would still hold, since file membership is unaffected by
     # weight drift, but the "keep predicted shard weight spread low" intent
     # this planner exists for would quietly rot). Regenerate here, from the
     # same freshly-built artifact and the same authoritative capture this
@@ -517,7 +517,7 @@ jobs:
           `ci_shards/weights.json` from the same fresh measurement and the
           same authoritative capture, self-checked with `... check`
           immediately after — so shard balance never drifts out of sync with
-          reality between scheduled duration refreshes (exact-cover is unaffected
+          reality unless the duration-refresh workflow corrects it (exact-cover is unaffected
           either way; this keeps the *balance*, not just correctness,
           current).
 

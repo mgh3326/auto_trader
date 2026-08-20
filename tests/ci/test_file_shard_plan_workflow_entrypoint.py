@@ -30,6 +30,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNBOOK_PATH = REPO_ROOT / "docs/runbooks/ci-file-shard-manifests.md"
 
 DIRECT_SCRIPT_INVOCATION = "python3 scripts/ci/file_shard_plan.py"
 MODULE_SAFE_INVOCATION = "python3 -m scripts.ci.file_shard_plan"
@@ -150,3 +151,24 @@ def test_duration_refresh_regenerates_ci_shards_in_the_same_pr() -> None:
         "ci_shards/weights.json",
     ):
         assert expected in add_paths
+
+
+def test_runbook_keeps_full_regeneration_in_ci_not_local_verification() -> None:
+    """Normal test-file PRs must not be sent to a destructive local generate.
+
+    This is a text contract because the error mode is instructional: a future
+    editor can leave planner behavior unchanged yet reintroduce the unsafe
+    recipe that overwrites all committed manifests for a one-file addition.
+    """
+    text = RUNBOOK_PATH.read_text(encoding="utf-8")
+    section_seven = text.split("## 7. Verifying locally", 1)[1].split(
+        "## 8. Explicitly unchanged", 1
+    )[0]
+    assert "file_shard_plan generate" not in section_seven
+    assert "--manifest-dir ci_shards" not in section_seven
+    normalized_section = " ".join(section_seven.split())
+    assert (
+        "Full-regeneration idempotence is self-checked in CI by the "
+        "duration-refresh workflow's `Validate regenerated file-shard manifests` step"
+        in normalized_section
+    )
