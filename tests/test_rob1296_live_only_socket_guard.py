@@ -992,9 +992,20 @@ def test_loopback_resolution_is_permitted(host: str) -> None:
 
 @pytest.mark.parametrize("host", [None, "", b""])
 def test_passive_resolution_is_permitted(host: object) -> None:
-    """``host=None`` is a passive lookup for a local bind; it never leaves."""
+    """A passive lookup for a local bind must not be refused by the guard.
 
-    assert socket.getaddrinfo(host, 0, type=socket.SOCK_STREAM)
+    Asserts the guard's *decision*, not the resolver's success: glibc raises
+    ``gaierror`` for an empty host while macOS resolves it to loopback, so
+    calling ``getaddrinfo`` here would test the platform rather than the policy.
+    """
+
+    socket_guard._assert_resolution_allowed(host)
+
+
+def test_wildcard_resolution_still_works_end_to_end() -> None:
+    """``host=None`` is the portable spelling, so exercise it for real."""
+
+    assert socket.getaddrinfo(None, 0, type=socket.SOCK_STREAM)
 
 
 def test_blocked_resolution_is_counted_under_its_own_operation() -> None:
