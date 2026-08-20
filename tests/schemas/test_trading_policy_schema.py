@@ -151,7 +151,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-21.1"
+    assert doc.version == "2026-08-21.2"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1013,6 +1013,16 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     current_dump["user_stances"][0]["implications"][1] = baseline_dump["user_stances"][
         0
     ]["implications"][1]
+
+    # §129차 (2026-08-21) — one additional additive delta: the cash-conditioned
+    # buy.new_entry_overflow rule. (The stance prose delta it rides on is the
+    # same implications[1] string already normalized by the §127차 block above,
+    # whose substring pin remains satisfied.)
+    assert "buy.new_entry_overflow" not in baseline_dump["decision_rules"]
+    assert current_dump["decision_rules"]["buy.new_entry_overflow"]["exclusions"] == [
+        "budget_consumption_entry",
+    ]
+    del current_dump["decision_rules"]["buy.new_entry_overflow"]
 
     normalized_current_dump = deepcopy(current_dump)
     for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:

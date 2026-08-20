@@ -9,9 +9,9 @@
 # 저항 기반 매도 티어에 하나도 매칭되지 않아 익절 경로가 소멸한다. 그 공백만
 # 닫는 폴백 티어 sell.trim_preplace.breakeven_extension_ladder 를 신설한다.
 # 저항 티어의 대체가 아니며, exclusions.no_resistance_reference 는 유지된다.
-version: "2026-08-21.1"
+version: "2026-08-21.2"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden)"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed)"
 
 authority:
   scope: judgment_policy_only
@@ -41,13 +41,11 @@ posture:
 
 # ROB-871 — master-gated by ORDER_PROPOSALS_AUTO_APPROVE=false. Caps use the
 # settlement currency for each market (KRW for kr/crypto, USD for us).
-# TOSS-AUTO-FULL (§51): KR per-order uses the upper bound of
-# ``buy.per_symbol_notional_krw_range`` [200000, 400000]; US uses the upper
-# bound of ``buy.per_symbol_notional_usd_range`` [150, 450].  The daily cap is
-# that upper bound × the one-new-entry limit stated at
-# ``user_stances[0].implications[0]`` ("동시 신규 최대 1종목"), hence KRW
-# 400000 and USD 450.  This comment intentionally records the derivation
-# without touching the separately owned buy/sell policy tiers.
+# TOSS-AUTO-FULL (§51, historical): the original caps were derived from the
+# per-symbol notional bands × the then "동시 신규 최대 1종목" stance. That
+# derivation is superseded — caps are now set directly by §106차 below, and
+# slot semantics live in the stance (§127차: 2 slots) plus
+# ``buy.new_entry_overflow`` (§129차). This comment records the lineage only.
 order_proposals:
   auto_approve:
     min_distance_pct: 3
@@ -414,6 +412,31 @@ decision_rules:
     exclusions:
       - breakout_chase
       - market_order_momentum_add
+
+  # §129차 (2026-08-21) — 표준 2슬롯 초과 후보의 현금 연동 오버플로.
+  # 품질 게이트는 하나도 낮추지 않는다 — 개수 제한만 현금 조건부로 푼다.
+  buy.new_entry_overflow:
+    lanes: [buy]
+    semantics: >-
+      Advisory (§129차). When more candidates pass EVERY standard buy gate
+      than the two standard new-entry slots, additional entries are allowed
+      only if, after funding slots 1 and 2, remaining orderable cash still
+      covers a full standard tranche. Overflow entries are sized at 0.5x the
+      standard tranche, taken in gate-fitness rank order, and labeled
+      "overflow" in the session report. No gate, sector cap, or theme cap is
+      relaxed. Overflow never exists to consume budget (ROB-1031): zero
+      passing candidates still means zero orders, and an overflow entry is
+      never promoted from a gate-failing candidate.
+    tiers:
+      - id: new_entry_overflow
+        conditions:
+          all_standard_buy_gates_pass: true
+          standard_slots_exhausted: true
+          remaining_cash_covers_full_tranche: true
+        action: additional_new_entry
+        sizing: "0.5x standard tranche; gate-fitness rank order; label overflow in report"
+    exclusions:
+      - budget_consumption_entry
 
   sell.trim_preplace:
     lanes: [sell]
@@ -812,7 +835,7 @@ user_stances:
     stance: "AI 수요는 실사용 관점에서 실재. 단, (a)가치 포착은 가격결정력 보유 종목에 편중될 수 있고 (b)고베타 반도체는 테제가 맞아도 중간 낙폭이 크다"
     implications:
       - "AI/반도체 급락일: 패닉 동조 매도 금지 (보유분은 기존 리스크 규칙으로만 판단)"
-      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 2종목(§127차 2026-08-21 상향, 종전 1), 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
+      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 2종목(§127차 2026-08-21 상향, 종전 1) + 현금 연동 오버플로 ×0.5(§129차, buy.new_entry_overflow), 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
       - "테마 내 선택 시 가격결정력 보유 종목 우선. 커머디티형은 공급제약 증거 있을 때만"
       - "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
     risk_scenario: "효율 충격 — 저비용 고성능 모델 확산으로 프런티어 capex 지불의사 재평가. 판정 이벤트 = 하이퍼스케일러 capex 가이던스"
