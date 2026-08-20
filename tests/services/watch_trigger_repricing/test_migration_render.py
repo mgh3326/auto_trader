@@ -65,7 +65,7 @@ def _contain_alembic_logging_config():
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-BEFORE = "20260819_rob1286_claims"
+BEFORE = "20260820_rob1283_bucket"  # re-parented by 0820 head linearization (#1918)
 AFTER = "20260820_rob1290_reconcile"
 CONSTRAINT = "ck_watch_event_repricing_claims_state"
 TABLE = "review.watch_event_repricing_claims"

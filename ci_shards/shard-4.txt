@@ -229,9 +229,13 @@ tests/services/us_dual_paper/test_mcp_preview_tool.py
 tests/services/us_dual_paper/test_no_mutation_imports.py
 tests/services/watch_trigger_repricing/test_atomicity_fencing.py
 tests/services/watch_trigger_repricing/test_capability_profile.py
+tests/services/watch_trigger_repricing/test_e2e_chain_creates_proposals.py
 tests/services/watch_trigger_repricing/test_lifecycle_completion.py
 tests/services/watch_trigger_repricing/test_live_spawner_contract.py
+tests/services/watch_trigger_repricing/test_migration_render.py
+tests/services/watch_trigger_repricing/test_migration_roundtrip.py
 tests/services/watch_trigger_repricing/test_permission_wiring.py
+tests/services/watch_trigger_repricing/test_proposal_chain.py
 tests/services/watch_trigger_repricing/test_real_server_surface.py
 tests/test_alpaca_paper_config.py
 tests/test_alpaca_paper_dev_smoke_safety.py

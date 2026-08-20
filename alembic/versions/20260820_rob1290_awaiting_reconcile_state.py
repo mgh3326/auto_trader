@@ -42,7 +42,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260820_rob1290_reconcile"
-down_revision: str | Sequence[str] | None = "20260819_rob1286_claims"
+down_revision: str | Sequence[str] | None = "20260820_rob1283_bucket"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
