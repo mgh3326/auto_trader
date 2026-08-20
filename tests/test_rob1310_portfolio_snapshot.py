@@ -1753,3 +1753,46 @@ async def test_calendar_cold_manual_db_failure_is_typed_503_without_live_fanout(
     assert caught.value.detail["manual_pairs_available"] is False
     assert caught.value.detail["unavailable_reason"]
     assert calls == {"kis": 0, "upbit": 0, "toss_api": 0}
+
+
+@pytest.mark.asyncio
+async def test_manual_held_key_failure_does_not_log_exception_secret(caplog):
+    from app.services.invest_home_service import (
+        InvestHomeService,
+        PortfolioSnapshotUnavailableError,
+    )
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    sentinel = "fake-manual-secret-ROB1310"
+
+    class _BrokenManualKeyReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("held-key path must not call full manual fetch")
+
+        async def fetch_held_pairs(self, *, user_id):
+            raise RuntimeError(f"database password={sentinel}")
+
+    class _NoLiveReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("held-key path must not call live readers")
+
+    service = InvestHomeService(
+        kis_reader=_NoLiveReader(),
+        upbit_reader=_NoLiveReader(),
+        manual_reader=_BrokenManualKeyReader(),
+        toss_api_reader=_NoLiveReader(),
+        snapshot_cache=PortfolioSnapshotCache(
+            redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+            ttl_seconds=5,
+        ),
+    )
+
+    with caplog.at_level("WARNING", logger="app.services.invest_home_service"):
+        with pytest.raises(PortfolioSnapshotUnavailableError) as caught:
+            await service.get_held_pairs(user_id=1)
+
+    assert caught.value.reason == "held_key_projection_unavailable"
+    for record in caplog.records:
+        assert sentinel not in record.getMessage()
+        assert sentinel not in repr(record.args)
+        assert sentinel not in repr(record.exc_info)
