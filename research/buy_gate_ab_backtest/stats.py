@@ -95,13 +95,17 @@ def _paired_difference(
         diffs.append(median(pooled_left) - median(pooled_right))
     if not diffs:
         return {"n_shared_dates": len(shared), "median_diff_ci95": None}
+    # The point estimate must live on the same population the interval was
+    # resampled from — shared dates only. Pooling every date here and only
+    # shared dates in the bootstrap produced a point estimate whose sign
+    # disagreed with its own interval.
+    point_left = [value for date in shared for value in left[date]]
+    point_right = [value for date in shared for value in right[date]]
     return {
         "n_shared_dates": len(shared),
-        "median_diff_point": round(
-            median([value for values in left.values() for value in values])
-            - median([value for values in right.values() for value in values]),
-            6,
-        ),
+        "n_left": len(point_left),
+        "n_right": len(point_right),
+        "median_diff_point": round(median(point_left) - median(point_right), 6),
         "median_diff_ci95": [
             round(float(np.percentile(diffs, 2.5)), 6),
             round(float(np.percentile(diffs, 97.5)), 6),
