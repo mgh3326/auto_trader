@@ -457,7 +457,10 @@ class InvestHomeService:
         except Exception:
             # Remove an invalid entry, then re-enter the shared cache-aside
             # path so concurrent facades share the recovery fetch as well.
-            await self._snapshot_cache.delete(scope)
+            await self._snapshot_cache.delete(
+                scope,
+                expected_payload=payload,
+            )
             payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
             try:
                 return deserialize_portfolio_snapshot(payload)
@@ -465,7 +468,10 @@ class InvestHomeService:
                 # A repeatedly invalid upstream payload must not become a
                 # synthetic home or sellable value; retain bounded direct
                 # read-only recovery after the shared retry.
-                await self._snapshot_cache.delete(scope)
+                await self._snapshot_cache.delete(
+                    scope,
+                    expected_payload=payload,
+                )
                 return await self._get_home_uncached(
                     user_id=user_id,
                     include_paper=include_paper,
@@ -503,7 +509,10 @@ class InvestHomeService:
             try:
                 return held_pairs_from_portfolio_snapshot(payload)
             except Exception:
-                await self._snapshot_cache.delete(scope)
+                await self._snapshot_cache.delete(
+                    scope,
+                    expected_payload=payload,
+                )
 
         manual_reader = self._manual
         manual_pairs: list[tuple[str, str]] = []
@@ -621,13 +630,20 @@ class InvestHomeService:
         manual_holdings = _filter_manual_holdings_for_toss_api(
             manual_result.holdings, toss_api_holdings
         )
-        accounts.extend(manual_result.accounts)
+        manual_account_ids = {holding.accountId for holding in manual_holdings}
+        manual_accounts = [
+            account
+            for account in manual_result.accounts
+            if account.accountId in manual_account_ids
+        ]
+        accounts.extend(manual_accounts)
         holdings.extend(manual_holdings)
         if manual_result.warning is not None:
             warnings.append(manual_result.warning)
-        toss_account = build_manual_account_from_holdings(manual_holdings)
-        if toss_account is not None:
-            accounts.append(toss_account)
+        if not manual_result.accounts:
+            toss_account = build_manual_account_from_holdings(manual_holdings)
+            if toss_account is not None:
+                accounts.append(toss_account)
 
         if include_paper:
             for reader in self._paper_readers:
@@ -774,13 +790,20 @@ class InvestHomeService:
             manual_holdings = _filter_manual_holdings_for_toss_api(
                 manual_result.holdings, toss_api_holdings
             )
-            accounts.extend(manual_result.accounts)
+            manual_account_ids = {holding.accountId for holding in manual_holdings}
+            manual_accounts = [
+                account
+                for account in manual_result.accounts
+                if account.accountId in manual_account_ids
+            ]
+            accounts.extend(manual_accounts)
             holdings.extend(manual_holdings)
             if manual_result.warning is not None:
                 warnings.append(manual_result.warning)
-            toss_account = build_manual_account_from_holdings(manual_holdings)
-            if toss_account is not None:
-                accounts.append(toss_account)
+            if not manual_result.accounts:
+                toss_account = build_manual_account_from_holdings(manual_holdings)
+                if toss_account is not None:
+                    accounts.append(toss_account)
 
             if include_paper:
                 for reader in self._paper_readers:

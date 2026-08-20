@@ -896,6 +896,72 @@ class ManualHomeReader:
                     )
                 )
 
+            manual_accounts: list[Account] = []
+            account_names = {
+                str(h.broker_account_id): str(
+                    getattr(h.broker_account, "account_name", None) or "기본 계좌"
+                )
+                for h in toss_holdings
+            }
+            for account_id, account_name in account_names.items():
+                account_holdings = [
+                    holding for holding in holdings if holding.accountId == account_id
+                ]
+                valued = [
+                    holding
+                    for holding in account_holdings
+                    if holding.valueKrw is not None
+                ]
+                if not valued:
+                    # Preserve the existing no-quote behavior: the service
+                    # will synthesize its bounded manual account only when no
+                    # per-account valuation is available.
+                    continue
+                value_krw = sum(
+                    holding.valueKrw
+                    for holding in valued
+                    if holding.valueKrw is not None
+                )
+                converted_costs: list[float | None] = []
+                for holding in valued:
+                    if holding.costBasis is None:
+                        converted_costs.append(None)
+                    elif holding.currency == "KRW":
+                        converted_costs.append(holding.costBasis)
+                    elif holding.currency == "USD" and usd_krw_rate:
+                        converted_costs.append(holding.costBasis * usd_krw_rate)
+                    else:
+                        converted_costs.append(None)
+                cost_basis_krw = (
+                    sum(cost for cost in converted_costs if cost is not None)
+                    if converted_costs
+                    and all(cost is not None for cost in converted_costs)
+                    else None
+                )
+                pnl_krw = (
+                    value_krw - cost_basis_krw if cost_basis_krw is not None else None
+                )
+                pnl_rate = (
+                    pnl_krw / cost_basis_krw
+                    if pnl_krw is not None and cost_basis_krw > 0
+                    else None
+                )
+                manual_accounts.append(
+                    Account(
+                        accountId=account_id,
+                        displayName=account_name,
+                        source="toss_manual",
+                        accountKind="manual",
+                        includedInHome=True,
+                        valueKrw=value_krw,
+                        costBasisKrw=cost_basis_krw,
+                        pnlKrw=pnl_krw,
+                        pnlRate=pnl_rate,
+                        cashBalances=CashAmounts(),
+                        buyingPower=CashAmounts(),
+                    )
+                )
+
             manual_warning: InvestHomeWarning | None = None
             if partial_valuation_failure:
                 manual_warning = InvestHomeWarning(
@@ -910,7 +976,7 @@ class ManualHomeReader:
                 )
 
             return _SourceFetchResult(
-                accounts=[],
+                accounts=manual_accounts,
                 holdings=holdings,
                 warning=manual_warning,
             )

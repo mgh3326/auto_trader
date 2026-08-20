@@ -962,12 +962,12 @@ async def _collect_whole_portfolio_positions(
     try:
         response = deserialize_portfolio_snapshot(payload)
     except Exception:
-        await cache.delete(scope)
+        await cache.delete(scope, expected_payload=payload)
         payload = await cache.get_or_fetch(scope, fetch_payload)
         try:
             response = deserialize_portfolio_snapshot(payload)
         except Exception:
-            await cache.delete(scope)
+            await cache.delete(scope, expected_payload=payload)
             response = deserialize_portfolio_snapshot(await fetch_payload())
 
     positions = portfolio_snapshot_to_mcp_positions(response)

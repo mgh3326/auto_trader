@@ -1463,6 +1463,17 @@ async def _toss_place_order_impl(
     ) is not None:
         return mutation_gate
 
+    if side == "sell" and quantity_dec is None:
+        # Toss's orderAmount-only SELL shape has no broker-authoritative
+        # quantity contract. Do not synthesize one from holdings, snapshots,
+        # or sellable caches; reject before entering any broker mutation path.
+        return {
+            "success": False,
+            **base_response,
+            "error": "SELL orders require an explicit quantity.",
+            "error_code": "sell_quantity_required",
+        }
+
     async def execute_order(client: TossReadClient):
         sellable_evidence: dict[str, Any] = {}
         # Guard: Warnings check

@@ -109,13 +109,46 @@ class TossPortfolioSnapshotCache:
             self._mark_degraded()
             logger.warning("Toss portfolio snapshot cache SET failed: %s", exc)
 
-    async def delete(self, scope: str) -> None:
+    async def delete(
+        self,
+        scope: str,
+        *,
+        expected_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Delete a cache entry, optionally only if it is unchanged.
+
+        Recovery callers pass the corrupt payload they observed. The
+        compare-and-delete path prevents a delayed observer from deleting a
+        newer valid replacement written by another facade (the ABA race).
+        The unqualified form remains best-effort invalidation for callers that
+        do not have an observed value.
+        """
         if self._redis is None:
-            return
+            return False
+        cache_key = self._cache_key(scope)
         try:
-            await self._redis.delete(self._cache_key(scope))
+            if expected_payload is None:
+                return bool(await self._redis.delete(cache_key))
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(cache_key)
+                raw = await pipe.get(cache_key)
+                if raw is None:
+                    return False
+                try:
+                    current = json.loads(raw)
+                except (TypeError, ValueError):
+                    return False
+                if current != expected_payload:
+                    return False
+                pipe.multi()
+                pipe.delete(cache_key)
+                deleted = await pipe.execute()
+                return bool(deleted and deleted[0])
+        except WatchError:
+            return False
         except Exception as exc:  # noqa: BLE001 — invalidation is best effort
             logger.warning("Toss portfolio snapshot cache DEL failed: %s", exc)
+            return False
 
     async def _acquire(self, scope: str) -> str | None:
         if not self.usable:
@@ -183,13 +216,38 @@ class TossPortfolioSnapshotCache:
             if not await self._renew(scope, token):
                 return
 
+    async def _fetch_as_owner(
+        self,
+        scope: str,
+        token: str,
+        fetcher: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        renewal_task = asyncio.create_task(self._renew_until_done(scope, token))
+        try:
+            # Another writer may have completed between the initial GET and
+            # lock acquisition.
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+            payload = await fetcher()
+            if isinstance(payload, dict):
+                await self.put(scope, payload)
+            return payload
+        finally:
+            renewal_task.cancel()
+            try:
+                await renewal_task
+            except asyncio.CancelledError:
+                pass
+            await self._release(scope, token)
+
     async def _lock_remaining_seconds(self, scope: str) -> float | None:
         """Return the current lock lease, or ``None`` when Redis is unavailable.
 
         A waiter may extend its initial bounded polling window while the owner
-        still holds a live lease.  The lease is the distributed ownership
-        boundary; after it expires, a direct fetch is the bounded crash
-        recovery path.
+        still holds a live lease. The lease is the distributed ownership
+        boundary; after it expires, waiters re-enter bounded ownership
+        acquisition before using direct crash recovery.
         """
 
         if not self.usable or self._redis is None:
@@ -230,36 +288,43 @@ class TossPortfolioSnapshotCache:
 
         token = await self._acquire(scope)
         if token is not None:
-            renewal_task = asyncio.create_task(self._renew_until_done(scope, token))
-            try:
-                # Another writer may have completed between the initial GET and
-                # lock acquisition.
-                cached = await self.get(scope)
-                if cached is not None:
-                    return cached
-                payload = await fetcher()
-                if isinstance(payload, dict):
-                    await self.put(scope, payload)
-                return payload
-            finally:
-                renewal_task.cancel()
-                try:
-                    await renewal_task
-                except asyncio.CancelledError:
-                    pass
-                await self._release(scope, token)
+            return await self._fetch_as_owner(scope, token, fetcher)
 
         if not self.usable:
             return await fetcher()
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._wait_timeout_seconds
+        recovery_attempts = 0
+        max_recovery_attempts = 2
         while True:
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
             remaining = deadline - loop.time()
             if remaining <= 0:
                 lock_remaining = await self._lock_remaining_seconds(scope)
-                if lock_remaining is None or lock_remaining <= 0:
-                    break
+                if lock_remaining is None:
+                    return await fetcher()
+                if lock_remaining <= 0:
+                    # A dead owner must not make every waiter independently
+                    # fetch. Re-enter SET NX so exactly one waiter becomes
+                    # the bounded crash-recovery owner.
+                    if recovery_attempts >= max_recovery_attempts:
+                        return await fetcher()
+                    recovery_attempts += 1
+                    recovery_token = await self._acquire(scope)
+                    if recovery_token is not None:
+                        return await self._fetch_as_owner(
+                            scope, recovery_token, fetcher
+                        )
+                    if not self.usable:
+                        return await fetcher()
+                    deadline = loop.time() + max(
+                        self._wait_timeout_seconds,
+                        self._poll_interval_seconds,
+                    )
+                    continue
                 # A positive PTTL is proof that some owner still has a live
                 # lease.  Follow that lease rather than using a fixed total
                 # deadline: a renewal moves the next observation forward,
@@ -268,15 +333,11 @@ class TossPortfolioSnapshotCache:
                 deadline = loop.time() + lock_remaining
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    break
+                    continue
             await asyncio.sleep(min(self._poll_interval_seconds, remaining))
             cached = await self.get(scope)
             if cached is not None:
                 return cached
-
-        # The owner may have failed or Redis may be unhealthy.  Returning a
-        # direct upstream result is safer than inventing a stale sellable value.
-        return await fetcher()
 
 
 _shared_portfolio_snapshot_cache: TossPortfolioSnapshotCache | None = None

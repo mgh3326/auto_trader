@@ -484,24 +484,59 @@ async def fetch_toss_portfolio_snapshot(
                     snapshot_cache.get_or_fetch("cash", fetch_cash_payload)
                 )
 
+            positions_payload: dict[str, Any] | None = None
             try:
                 positions_payload = await position_task
                 positions = _positions_from_snapshot_cache(positions_payload)
             except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
                 logger.warning("Toss portfolio snapshot cache read failed: %s", exc)
-                await snapshot_cache.delete("positions")
-                positions_payload = await fetch_positions_payload()
-                positions = _positions_from_snapshot_cache(positions_payload)
+                if isinstance(positions_payload, dict):
+                    await snapshot_cache.delete(
+                        "positions",
+                        expected_payload=positions_payload,
+                    )
+                positions_payload = await snapshot_cache.get_or_fetch(
+                    "positions",
+                    fetch_positions_payload,
+                )
+                try:
+                    positions = _positions_from_snapshot_cache(positions_payload)
+                except Exception:
+                    await snapshot_cache.delete(
+                        "positions",
+                        expected_payload=positions_payload,
+                    )
+                    positions = _positions_from_snapshot_cache(
+                        await fetch_positions_payload()
+                    )
 
             cash_snapshot = TossCashSnapshot()
             if cash_task is not None:
+                cash_payload: dict[str, Any] | None = None
                 try:
-                    cash_snapshot = _cash_from_snapshot_cache(await cash_task)
+                    cash_payload = await cash_task
+                    cash_snapshot = _cash_from_snapshot_cache(cash_payload)
                 except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
                     logger.warning("Toss cash snapshot cache read failed: %s", exc)
-                    await snapshot_cache.delete("cash")
-                    cash_payload = await fetch_cash_payload()
-                    cash_snapshot = _cash_from_snapshot_cache(cash_payload)
+                    if isinstance(cash_payload, dict):
+                        await snapshot_cache.delete(
+                            "cash",
+                            expected_payload=cash_payload,
+                        )
+                    cash_payload = await snapshot_cache.get_or_fetch(
+                        "cash",
+                        fetch_cash_payload,
+                    )
+                    try:
+                        cash_snapshot = _cash_from_snapshot_cache(cash_payload)
+                    except Exception:
+                        await snapshot_cache.delete(
+                            "cash",
+                            expected_payload=cash_payload,
+                        )
+                        cash_snapshot = _cash_from_snapshot_cache(
+                            await fetch_cash_payload()
+                        )
 
             return TossPortfolioSnapshot(
                 positions=positions,

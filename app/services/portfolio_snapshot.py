@@ -12,7 +12,10 @@ import hashlib
 from typing import Any
 
 from app.core.symbol import to_db_symbol
-from app.mcp_server.tooling.shared import normalize_position_symbol
+from app.mcp_server.tooling.shared import (
+    canonical_account_id,
+    normalize_position_symbol,
+)
 from app.schemas.invest_home import InvestHomeResponse
 
 PORTFOLIO_SNAPSHOT_SCHEMA_VERSION = 1
@@ -142,7 +145,27 @@ def _mcp_account_details(
     default_account, default_name = source_defaults.get(
         source, (str(holding.accountId), "기본 계좌")
     )
+    if source in {"kis", "upbit", "toss_api"}:
+        return default_account, default_name
+
     account = account_by_id.get(str(holding.accountId)) or account_by_source.get(source)
+    if source in {"toss_manual", "pension_manual", "isa_manual"}:
+        account_name = (
+            str(account.displayName).strip()
+            if account is not None and str(account.displayName).strip()
+            else default_name
+        )
+        broker = {
+            "toss_manual": "toss",
+            "pension_manual": "samsung",
+            "isa_manual": "toss",
+        }.get(source, default_account)
+        # The historic synthetic Toss manual account is the default account;
+        # named manual accounts retain the existing canonical helper contract.
+        canonical_name = (
+            "기본 계좌" if account_name in {"", "Toss 수동"} else account_name
+        )
+        return canonical_account_id(broker, canonical_name), account_name
     return (
         default_account,
         account.displayName if account is not None else default_name,
@@ -150,7 +173,23 @@ def _mcp_account_details(
 
 
 def _mcp_profit_loss(holding: Any) -> float | None:
+    source = str(holding.source)
+    if source in {"upbit", "toss_manual", "pension_manual", "isa_manual"}:
+        return None
     if str(holding.market) == "US":
+        if (
+            holding.pnlKrw is not None
+            and holding.valueKrw is not None
+            and holding.valueNative is not None
+            and holding.valueNative > 0
+        ):
+            # KIS/Toss Home readers retain broker P/L in native units only
+            # after converting it to KRW. Reuse the observed FX ratio to
+            # recover that exact native amount instead of recomputing from
+            # rounded valueNative-costBasis.
+            fx_rate = holding.valueKrw / holding.valueNative
+            if fx_rate > 0:
+                return float(holding.pnlKrw / fx_rate)
         if holding.valueNative is None or holding.costBasis is None:
             return None
         return float(holding.valueNative - holding.costBasis)
@@ -158,8 +197,14 @@ def _mcp_profit_loss(holding: Any) -> float | None:
 
 
 def _mcp_profit_rate(holding: Any) -> float | None:
+    source = str(holding.source)
+    if source in {"upbit", "toss_manual", "pension_manual", "isa_manual"}:
+        return None
     if holding.pnlRate is None:
         return None
+    if source == "toss_api":
+        # Toss Home's reader carries the broker percentage-point unit already.
+        return float(holding.pnlRate)
     # InvestHome stores ratios (0.00714 == 0.714%); the legacy MCP contract
     # exposes percentage points (0.714). Keep the conversion at this seam.
     return float(holding.pnlRate * 100.0)
