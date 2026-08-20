@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -283,14 +284,13 @@ async def test_holdings_home_and_briefing_share_one_slow_whole_snapshot_owner(
     from app.services import invest_home_readers
     from app.services.invest_home_service import _SourceFetchResult
 
+    # ROB-1310's initial partial-Toss implementation has no whole-cache
+    # module. Detect that optional module without turning baseline collection
+    # into an ImportError; the same production entrypoints must still run and
+    # RED on the upstream call-count assertion below.
     whole_snapshot = None
-    try:
+    if importlib.util.find_spec("app.services.portfolio_snapshot_cache") is not None:
         from app.services import portfolio_snapshot_cache as whole_snapshot
-    except ModuleNotFoundError:
-        # ROB-1310's initial partial-Toss implementation has no whole-cache
-        # module. The same production entrypoints still run and must RED on the
-        # upstream call-count assertion below.
-        pass
 
     calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
     owner_started = asyncio.Event()
@@ -515,10 +515,8 @@ async def test_calendar_entrypoint_reads_held_snapshot_without_full_reader_calls
     from app.services.invest_home_service import _SourceFetchResult
 
     whole_snapshot = None
-    try:
+    if importlib.util.find_spec("app.services.portfolio_snapshot_cache") is not None:
         from app.services import portfolio_snapshot_cache as whole_snapshot
-    except ModuleNotFoundError:
-        pass
 
     calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
 
