@@ -170,6 +170,7 @@ def test_declared_total_never_reaches_the_shortfall_expression() -> None:
         if stripped.startswith(("shortfall =", "operational_gap =", "required =")):
             assert "declared" not in stripped, stripped
 
+
 def test_declaration_is_never_added_to_available_required_or_shortfall() -> None:
     service_src = (ROOT / "app/services/funding_advisory/service.py").read_text(
         encoding="utf-8"
