@@ -110,6 +110,70 @@ async def test_kis_reader_excludes_cash_from_value_and_converts_usd(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("fx_rate", "native_value"),
+    [(None, 110.0), (1_300.0, 0.0)],
+)
+async def test_kis_us_native_pnl_survives_fx_unavailable_or_zero_value(
+    monkeypatch: pytest.MonkeyPatch,
+    fx_rate: float | None,
+    native_value: float,
+) -> None:
+    class _KISAccount:
+        async def fetch_my_stocks(self, *, is_overseas: bool) -> list[dict[str, Any]]:
+            return []
+
+        async def inquire_integrated_margin(self) -> dict[str, Any]:
+            return {
+                "stck_cash_objt_amt": "100000",
+                "stck_cash100_max_ord_psbl_amt": "50000",
+                "usd_balance": 50.0,
+                "usd_ord_psbl_amt": 40.0,
+            }
+
+        async def fetch_my_overseas_stocks(
+            self, *, exchange_code: str
+        ) -> list[dict[str, Any]]:
+            assert exchange_code == "NASD"
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple",
+                    "ovrs_cblc_qty": "1",
+                    "ord_psbl_qty": "1",
+                    "pchs_avg_pric": "100",
+                    "frcr_pchs_amt1": "100",
+                    "ovrs_stck_evlu_amt": str(native_value),
+                    "frcr_evlu_pfls_amt": "10",
+                    "evlu_pfls_rt": "10",
+                }
+            ]
+
+    class _KISClient:
+        def __init__(self) -> None:
+            self.account = _KISAccount()
+
+    monkeypatch.setattr(readers, "SafeKISClient", _KISClient)
+    if fx_rate is None:
+
+        async def _fx() -> float:
+            raise RuntimeError("fake FX unavailable")
+
+    else:
+
+        async def _fx() -> float:
+            return fx_rate
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.KISHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    holding = result.holdings[0]
+    assert getattr(holding, "pnlNative", None) == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_kis_reader_emits_provider_phase_spans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -611,6 +675,63 @@ async def test_manual_reader_preserves_distinct_broker_accounts_in_home_model(
     assert accounts["101"].valueKrw == pytest.approx(55_000)
     assert accounts["102"].valueKrw == pytest.approx(65_000)
     assert {holding.accountId for holding in result.holdings} == {"101", "102"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_preserves_all_supported_broker_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker_rows = [
+        (201, "toss", "Toss Main", "005930"),
+        (202, "kis", "KIS Main", "000660"),
+        (203, "upbit", "Upbit Main", "KRW-BTC"),
+        (204, "samsung", "Samsung Main", "035720"),
+    ]
+    holdings = [
+        SimpleNamespace(
+            id=account_id,
+            broker_account_id=account_id,
+            broker_account=SimpleNamespace(
+                id=account_id,
+                broker_type=broker_type,
+                account_name=account_name,
+            ),
+            ticker=ticker,
+            market_type=MarketType.KR,
+            display_name=f"{broker_type} holding",
+            quantity=1,
+            avg_price=50_000,
+        )
+        for account_id, broker_type, account_name, ticker in broker_rows
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = AsyncMock(
+        return_value={ticker: 55_000.0 for *_, ticker in broker_rows}
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    accounts = {account.accountId: account for account in result.accounts}
+    assert set(accounts) == {str(account_id) for account_id, *_ in broker_rows}
+    assert {
+        accounts[str(account_id)].displayName
+        for account_id, *_ in broker_rows
+    } == {account_name for _, _, account_name, _ in broker_rows}
+    assert {holding.accountId for holding in result.holdings} == set(accounts)
 
 
 @pytest.mark.asyncio

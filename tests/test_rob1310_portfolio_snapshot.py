@@ -1116,6 +1116,76 @@ async def test_process_shared_snapshot_reacquires_after_expired_owner_without_du
 
 
 @pytest.mark.asyncio
+async def test_process_shared_snapshot_discards_lost_owner_result_for_recovery_winner(
+    monkeypatch,
+):
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=0.1,
+        wait_timeout_seconds=0.02,
+        poll_interval_seconds=0.01,
+    )
+    cache_b = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=0.1,
+        wait_timeout_seconds=0.02,
+        poll_interval_seconds=0.01,
+    )
+    owner_started = asyncio.Event()
+    release_owner = asyncio.Event()
+    recovery_started = asyncio.Event()
+    release_recovery = asyncio.Event()
+    calls: list[str] = []
+
+    async def owner_fetch() -> dict[str, object]:
+        calls.append("A")
+        owner_started.set()
+        await release_owner.wait()
+        return {"winner": "A"}
+
+    async def recovery_fetch() -> dict[str, object]:
+        calls.append("B")
+        recovery_started.set()
+        await release_recovery.wait()
+        return {"winner": "B"}
+
+    owner_task = asyncio.create_task(
+        cache_a.get_or_fetch("fenced-owner", owner_fetch)
+    )
+    await asyncio.wait_for(owner_started.wait(), timeout=1)
+
+    async def stopped_renewal(_scope: str, _token: str) -> bool:
+        return False
+
+    # Simulate A's lease renewal failing after its fetch has already started.
+    monkeypatch.setattr(cache_a, "_renew", stopped_renewal)
+    await asyncio.sleep(0.25)
+
+    recovery_task = asyncio.create_task(
+        cache_b.get_or_fetch("fenced-owner", recovery_fetch)
+    )
+    await asyncio.wait_for(recovery_started.wait(), timeout=1)
+    release_recovery.set()
+    recovery_payload = await recovery_task
+    assert recovery_payload == {"winner": "B"}
+    assert await cache_b.get("fenced-owner") == recovery_payload
+
+    # A resumes after B has become the new owner. Its stale fetch result must
+    # be discarded, and the old caller must observe the same winner as B.
+    release_owner.set()
+    owner_payload = await owner_task
+
+    assert calls == ["A", "B"]
+    assert owner_payload == recovery_payload == {"winner": "B"}
+    assert await cache_a.get("fenced-owner") == recovery_payload
+
+
+@pytest.mark.asyncio
 async def test_corrupt_whole_snapshot_fallback_is_singleflight_across_facades():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
     from app.services.portfolio_snapshot_cache import (
