@@ -20,6 +20,7 @@ Source of truth: herdr-inbox/jobs/ROB-1311-verify-20260820-1458/final.md.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -28,11 +29,16 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
+from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.models.review import (
+    KISLiveOrderLedger,
     KISMockOrderLedger,
+    LiveOrderLedger,
+    TossLiveOrderLedger,
     TradeRetrospective,
     TradeRetrospectiveAction,
 )
+from app.services.decision_history import _truncate, build_decision_context
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
 try:
@@ -112,6 +118,46 @@ async def _add_action(
     db.add(row)
     await db.flush()
     return row
+
+
+async def _make_report(db: AsyncSession, **overrides) -> InvestmentReport:
+    payload = {
+        "report_uuid": uuid.uuid4(),
+        "idempotency_key": f"key-{uuid.uuid4()}",
+        "report_type": "kr_morning",
+        "market": "kr",
+        "market_session": "regular",
+        "account_scope": "kis_mock",
+        "execution_mode": "mock_preview",
+        "created_by_profile": "test",
+        "title": "t",
+        "summary": "s",
+        "status": "draft",
+    }
+    payload.update(overrides)
+    row = InvestmentReport(**payload)
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def _add_item(
+    db: AsyncSession, report_id: int, *, symbol: str, **overrides
+) -> None:
+    payload = {
+        "report_id": report_id,
+        "item_uuid": uuid.uuid4(),
+        "idempotency_key": f"item-{uuid.uuid4()}",
+        "item_kind": "action",
+        "symbol": symbol,
+        "intent": "buy_review",
+        "rationale": "지지선 눌림 재진입",
+        "evidence_snapshot": {},
+        "created_at": datetime(2026, 6, 1, tzinfo=UTC),
+    }
+    payload.update(overrides)
+    db.add(InvestmentReportItem(**payload))
+    await db.flush()
 
 
 def _add_mock_counterfactual_ledger(
@@ -556,7 +602,7 @@ async def test_quick_decision_history_kis_mock_recent_fills_queries_only_mock_le
     assert not session._hit("kis_live_order_ledger"), (
         "kis_mock account_mode must NOT query the live KIS ledger"
     )
-    assert not session._hit(" live_order_ledger"), (
+    assert not session._hit("review.live_order_ledger"), (
         "kis_mock account_mode must NOT query the live order ledger"
     )
     assert not session._hit("toss_live_order_ledger"), (
@@ -578,3 +624,257 @@ async def test_quick_decision_history_non_mock_recent_fills_queries_live_ledgers
     assert not session._hit_mock_fill_query(), (
         "default/live account_mode must NOT query the mock ledger for recent_fills"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-3 correction — independent verifier (herdr-inbox/jobs/
+# ROB-1311-verify-r2-20260820-1530/final.md) found two remaining functional
+# blockers with real DB rows at the R2 fixed point:
+#
+# B5: default/live recent_fills iterates KIS -> generic-live -> Toss and caps
+#     at six DURING that source-ordered iteration, so it can return six older
+#     KIS rows while dropping newer generic-live/Toss evidence. Canonical
+#     `decision_history._recent_fills` collects ALL rows, sorts by trade_date
+#     desc, THEN caps at six (MAX_FILLS). These populated-row tests pin
+#     equality against the canonical helper across the two-source-plus-mock
+#     interleave, and additionally lock the (already-correct) kis_mock
+#     partial-fill parity so a regression there would also be caught.
+#
+# B3: the lesson payload used `str(lesson)[:219]` — no strip/blank-check, no
+#     whitespace normalization, and a different truncation/ellipsis rule than
+#     canonical `_truncate`. The adjacent prior-decision rationale path
+#     returned the raw (untruncated) rationale. These tests pin real-DB
+#     equality against `build_decision_context` for both payload shapes.
+#
+# SHOULD: a swallowed decision-history batch failure must emit a diagnostic
+# (matching the established full-path `logger.debug("decision_history
+# injection skipped: %s", exc)` fail-open observability) while the price
+# projection stays fail-open (unaffected).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_quick_recent_fills_globally_ordered_across_sources_before_cap(
+    db_session: AsyncSession,
+):
+    assert analysis_quick is not None
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+
+    # 6 older KIS fills — enough to fill the per-symbol cap on their own if
+    # the buggy source-then-cap behavior is in play.
+    for i in range(6):
+        db_session.add(
+            KISLiveOrderLedger(
+                trade_date=datetime(2026, 6, 1 + i, tzinfo=UTC),
+                symbol=sym,
+                instrument_type="equity_kr",
+                side="buy",
+                order_type="limit",
+                account_mode="kis_live",
+                broker="kis",
+                status="filled",
+                lifecycle_state="filled",
+                order_no=f"KIS-{raw}-{i}",
+                quantity=Decimal("1"),
+                filled_qty=Decimal("1"),
+                avg_fill_price=Decimal("1000"),
+            )
+        )
+    # Newer generic-live fill than every KIS row above.
+    db_session.add(
+        LiveOrderLedger(
+            trade_date=datetime(2026, 6, 20, tzinfo=UTC),
+            broker="alpaca",
+            account_scope="alpaca_live",
+            market="us",
+            symbol=sym,
+            side="buy",
+            order_kind="market",
+            status="filled",
+            lifecycle_state="filled",
+            order_no=f"LIVE-{raw}",
+            quantity=Decimal("2"),
+            filled_qty=Decimal("2"),
+            avg_fill_price=Decimal("2000"),
+        )
+    )
+    # Newest of all: a Toss fill.
+    db_session.add(
+        TossLiveOrderLedger(
+            trade_date=datetime(2026, 6, 25, tzinfo=UTC),
+            broker="toss",
+            account_mode="toss_live",
+            operation_kind="place",
+            market="kr",
+            symbol=sym,
+            side="buy",
+            order_type="limit",
+            client_order_id=f"TOSS-{raw}",
+            status="filled",
+            quantity=Decimal("3"),
+            filled_qty=Decimal("3"),
+            avg_fill_price=Decimal("3000"),
+        )
+    )
+    await db_session.flush()
+
+    canonical_ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+    assert canonical_ctx is not None
+    canonical_fills = canonical_ctx["recent_fills"]
+
+    quick_ctx = await analysis_quick._load_decision_history_batch(
+        db_session, [(raw, "equity_kr")]
+    )
+    quick_fills = quick_ctx[sym.upper()]["recent_fills"]
+
+    assert quick_fills == canonical_fills, (
+        "quick recent_fills must be globally date-ordered across all live "
+        "ledger sources (not source-then-cap) to equal canonical output"
+    )
+    assert quick_fills[0]["source"] == "toss", (
+        "the newest row (Toss) must lead recent_fills, not be dropped by a "
+        "source-first six-item cap"
+    )
+    assert len(quick_fills) == 6
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_quick_recent_fills_kis_mock_partial_fill_matches_canonical(
+    db_session: AsyncSession,
+):
+    assert analysis_quick is not None
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+    from app.models.trading import InstrumentType
+
+    db_session.add(
+        KISMockOrderLedger(
+            trade_date=datetime(2026, 6, 15, tzinfo=UTC),
+            symbol=sym,
+            instrument_type=InstrumentType.equity_kr,
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("10"),
+            price=Decimal("100.5"),
+            amount=Decimal("1005"),
+            fee=Decimal("0"),
+            currency="KRW",
+            order_no=f"MOCK-{raw}",
+            account_mode="kis_mock",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="fill",
+            last_reconcile_detail={"attributed_fill_qty": "2.5"},
+            mirror_cohort="mock_counterfactual",
+            mirror_source_bucket="place_original",
+            correlation_id=f"mock:{uuid.uuid4()}",
+        )
+    )
+    await db_session.flush()
+
+    canonical_ctx = await build_decision_context(
+        db_session, symbol=raw, market="kr", account_mode="kis_mock"
+    )
+    assert canonical_ctx is not None
+    canonical_fills = canonical_ctx["recent_fills"]
+
+    quick_ctx = await analysis_quick._load_decision_history_batch(
+        db_session, [(raw, "equity_kr")], account_mode="kis_mock"
+    )
+    quick_fills = quick_ctx[sym.upper()]["recent_fills"]
+
+    assert quick_fills == canonical_fills
+    assert quick_fills[0]["status"] == "partial"
+    assert quick_fills[0]["filled_qty"] == 2.5
+
+
+@pytest.mark.asyncio
+async def test_quick_prior_lesson_whitespace_and_truncation_match_canonical(
+    db_session: AsyncSession,
+):
+    assert analysis_quick is not None
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+    await _add_retro(db_session, symbol=sym, lesson="  Alpha\n\tBeta  ")
+    await db_session.flush()
+
+    canonical_ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+    assert canonical_ctx is not None
+    canonical_lessons = canonical_ctx["prior_lessons"]
+
+    quick_ctx = await analysis_quick._load_decision_history_batch(
+        db_session, [(raw, "equity_kr")]
+    )
+    quick_lessons = quick_ctx[sym.upper()]["prior_lessons"]
+
+    assert quick_lessons == canonical_lessons
+    assert quick_lessons == ["Alpha Beta"], (
+        "lesson text must be whitespace-normalized like canonical `_truncate`, "
+        "not a raw str(...)[:219] slice"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quick_prior_decision_rationale_truncated_like_canonical(
+    db_session: AsyncSession,
+):
+    assert analysis_quick is not None
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+    report = await _make_report(db_session)
+    long_rationale = "근거 " * 100  # well past the canonical 220-char limit
+    await _add_item(
+        db_session,
+        report.id,
+        symbol=sym,
+        rationale=long_rationale,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    await db_session.flush()
+
+    canonical_ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+    assert canonical_ctx is not None
+    canonical_rationale = canonical_ctx["prior_decisions"][0]["rationale"]
+
+    quick_ctx = await analysis_quick._load_decision_history_batch(
+        db_session, [(raw, "equity_kr")]
+    )
+    quick_rationale = quick_ctx[sym.upper()]["prior_decisions"][0]["rationale"]
+
+    assert quick_rationale == canonical_rationale
+    assert quick_rationale == _truncate(long_rationale)
+    assert quick_rationale != long_rationale, "rationale must actually be truncated"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_quick_decision_history_batch_failure_logs_diagnostic_and_stays_fail_open(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    assert analysis_quick is not None
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("synthetic decision-history batch failure")
+
+    monkeypatch.setattr(analysis_quick, "_load_decision_history_batch", boom)
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.mcp_server.tooling.analysis_quick"
+    ):
+        result = await analysis_quick.load_quick_projection_batch(
+            [(_uniq_symbol(), "equity_kr")]
+        )
+
+    row = next(iter(result.values()))
+    assert "decision_history" not in row, "must stay fail-open on batch failure"
+    assert row["data_state"] == "missing"
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, (
+        "a swallowed decision-history batch failure must emit a diagnostic, "
+        "matching the established full-path fail-open observability"
+    )
+    assert any("decision" in r.getMessage().lower() for r in warnings)
