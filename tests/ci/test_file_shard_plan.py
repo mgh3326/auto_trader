@@ -279,6 +279,8 @@ def test_validate_exact_cover_reports_all_violations_together() -> None:
     assert "missing from every manifest" in message
     assert "not in current collection" in message
     assert "empty shard" in message
+    assert "minimally edit exactly one" in message
+    assert "reserve `file_shard_plan generate` for the duration-refresh" in message
 
 
 # --------------------------------------------------------------------------
