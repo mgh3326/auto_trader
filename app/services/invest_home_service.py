@@ -39,6 +39,22 @@ _PAPER: frozenset[str] = frozenset(
 _MANUAL: frozenset[str] = frozenset({"toss_manual", "pension_manual", "isa_manual"})
 
 
+class PortfolioSnapshotUnavailableError(RuntimeError):
+    """Calendar held-key data is unavailable without a safe live fallback."""
+
+    error_code = "portfolio_snapshot_unavailable"
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        manual_pairs: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self.reason = reason
+        self.manual_pairs = manual_pairs or []
+        super().__init__(f"{self.error_code}:{reason}")
+
+
 def classify_account_kind(source: str) -> AccountKindLiteral:
     if source in _PAPER:
         return "paper"
@@ -439,15 +455,22 @@ class InvestHomeService:
         try:
             return deserialize_portfolio_snapshot(payload)
         except Exception:
-            # Corrupt entries fail open to one direct read and are removed on a
-            # best-effort basis. No synthetic holdings or sellable values are
-            # constructed from an invalid cache payload.
+            # Remove an invalid entry, then re-enter the shared cache-aside
+            # path so concurrent facades share the recovery fetch as well.
             await self._snapshot_cache.delete(scope)
-            return await self._get_home_uncached(
-                user_id=user_id,
-                include_paper=include_paper,
-                paper_sources=paper_sources,
-            )
+            payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
+            try:
+                return deserialize_portfolio_snapshot(payload)
+            except Exception:
+                # A repeatedly invalid upstream payload must not become a
+                # synthetic home or sellable value; retain bounded direct
+                # read-only recovery after the shared retry.
+                await self._snapshot_cache.delete(scope)
+                return await self._get_home_uncached(
+                    user_id=user_id,
+                    include_paper=include_paper,
+                    paper_sources=paper_sources,
+                )
 
     async def get_held_pairs(
         self,
@@ -459,126 +482,48 @@ class InvestHomeService:
         """Read only held-symbol keys for calendar/signal relation ranking.
 
         This deliberately avoids constructing the full home projection. The
-        Toss reader uses the shared holdings snapshot and never requests
-        sellable quantity; manual holdings remain a DB read. Paper readers are
-        included only when explicitly requested.
+        held-key projection must come from the shared snapshot or the direct
+        manual DB key reader. A cold/invalid/unavailable live snapshot raises a
+        typed error instead of running full broker readers or returning a
+        misleading manual-only subset.
         """
-        if self._snapshot_cache_usable(self._snapshot_cache):
-            from app.services.portfolio_snapshot import (
-                held_pairs_from_portfolio_snapshot,
-                portfolio_snapshot_scope,
-            )
+        from app.services.portfolio_snapshot import (
+            held_pairs_from_portfolio_snapshot,
+            portfolio_snapshot_scope,
+        )
 
-            scope = portfolio_snapshot_scope(
-                user_id=user_id,
-                include_paper=include_paper,
-                paper_sources=paper_sources,
-            )
-            payload = await self._snapshot_cache.get(scope)
-            if payload is not None:
-                try:
-                    return held_pairs_from_portfolio_snapshot(payload)
-                except Exception:
-                    await self._snapshot_cache.delete(scope)
-
-            manual_reader = self._manual
-            if hasattr(manual_reader, "fetch_held_pairs"):
-                held_pairs = await manual_reader.fetch_held_pairs(user_id=user_id)
-            else:
-                held_pairs = []
-
-            if include_paper:
-                for reader in self._paper_readers:
-                    if not hasattr(reader, "fetch_held_pairs"):
-                        continue
-                    reader_source: str = getattr(reader, "source", None) or "kis_mock"
-                    if paper_sources is not None and reader_source not in paper_sources:
-                        continue
-                    held_pairs.extend(await reader.fetch_held_pairs(user_id=user_id))
-            return sorted(
-                {
-                    (str(market).lower(), _normalize_symbol(symbol))
-                    for market, symbol in held_pairs
-                    if str(market).lower() in {"kr", "us", "crypto"}
-                    and str(symbol).strip()
-                }
-            )
-
-        live_sources = ["kis", "upbit"]
-        live_fetchers: list[Awaitable[_SourceFetchResult]] = [
-            _fetch_reader_result(
-                self._kis.fetch,
-                span_name="invest.home.held_pairs.kis",
-                source="kis",
-                user_id=user_id,
-                include_paper=include_paper,
-                paper_sources=paper_sources,
-            ),
-            _fetch_reader_result(
-                self._upbit.fetch,
-                span_name="invest.home.held_pairs.upbit",
-                source="upbit",
-                user_id=user_id,
-                include_paper=include_paper,
-                paper_sources=paper_sources,
-            ),
-        ]
-        if self._toss_api is not None:
-            live_sources.append("toss_api")
-            live_fetchers.append(
-                _fetch_reader_result(
-                    self._toss_api.fetch,
-                    span_name="invest.home.held_pairs.toss_api",
-                    source="toss_api",
-                    user_id=user_id,
-                    include_paper=include_paper,
-                    paper_sources=paper_sources,
-                )
-            )
-
-        results = await asyncio.gather(*live_fetchers)
-        holdings: list[Holding] = []
-        for source, result in zip(live_sources, results, strict=True):
-            if source != "toss_api" or result.holdings or result.accounts:
-                holdings.extend(result.holdings)
-
-        manual_result = await _fetch_reader_result(
-            self._manual.fetch,
-            span_name="invest.home.held_pairs.manual",
-            source="toss_manual",
+        cache_usable = self._snapshot_cache_usable(self._snapshot_cache)
+        scope = portfolio_snapshot_scope(
             user_id=user_id,
             include_paper=include_paper,
             paper_sources=paper_sources,
         )
-        holdings.extend(
-            _filter_manual_holdings_for_toss_api(
-                manual_result.holdings,
-                [holding for holding in holdings if holding.source == "toss_api"],
-            )
-        )
+        payload = await self._snapshot_cache.get(scope) if cache_usable else None
+        if payload is not None:
+            try:
+                return held_pairs_from_portfolio_snapshot(payload)
+            except Exception:
+                await self._snapshot_cache.delete(scope)
 
-        if include_paper:
-            for reader in self._paper_readers:
-                reader_source: str = getattr(reader, "source", None) or "kis_mock"
-                if paper_sources is not None and reader_source not in paper_sources:
-                    continue
-                result = await _fetch_reader_result(
-                    reader.fetch,  # type: ignore[union-attr]
-                    span_name=f"invest.home.held_pairs.{reader_source}",
-                    source=reader_source,
-                    user_id=user_id,
-                    include_paper=True,
-                    paper_sources=paper_sources,
+        manual_reader = self._manual
+        manual_pairs: list[tuple[str, str]] = []
+        if hasattr(manual_reader, "fetch_held_pairs"):
+            manual_pairs = [
+                (str(market).lower(), _normalize_symbol(symbol))
+                for market, symbol in await manual_reader.fetch_held_pairs(
+                    user_id=user_id
                 )
-                holdings.extend(result.holdings)
+                if str(market).lower() in {"kr", "us", "crypto"} and str(symbol).strip()
+            ]
 
-        return sorted(
-            {
-                (str(holding.market).lower(), _normalize_symbol(holding.symbol))
-                for holding in holdings
-                if holding.quantity > 0
-                and str(holding.market).lower() in {"kr", "us", "crypto"}
-            }
+        reason = (
+            "snapshot_cache_unusable"
+            if not cache_usable
+            else "held_key_projection_missing_or_invalid"
+        )
+        raise PortfolioSnapshotUnavailableError(
+            reason,
+            manual_pairs=sorted(set(manual_pairs)),
         )
 
     async def get_home(

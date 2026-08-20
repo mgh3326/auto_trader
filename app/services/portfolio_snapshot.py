@@ -12,9 +12,18 @@ import hashlib
 from typing import Any
 
 from app.core.symbol import to_db_symbol
+from app.mcp_server.tooling.shared import normalize_position_symbol
 from app.schemas.invest_home import InvestHomeResponse
 
 PORTFOLIO_SNAPSHOT_SCHEMA_VERSION = 1
+
+
+def _is_forbidden_snapshot_field(key: object) -> bool:
+    normalized = "".join(char for char in str(key).lower() if char.isalnum())
+    return "sellable" in normalized or normalized in {
+        "pendingsellquantity",
+        "pendingquantity",
+    }
 
 
 def portfolio_snapshot_scope(
@@ -33,7 +42,7 @@ def _strip_sellable_fields(value: Any) -> Any:
         return {
             key: _strip_sellable_fields(item)
             for key, item in value.items()
-            if "sellable" not in str(key).lower()
+            if not _is_forbidden_snapshot_field(key)
         }
     if isinstance(value, list):
         return [_strip_sellable_fields(item) for item in value]
@@ -100,7 +109,7 @@ def held_pairs_from_portfolio_snapshot(
 def _contains_sellable_key(value: Any) -> bool:
     if isinstance(value, dict):
         return any(
-            "sellable" in str(key).lower() or _contains_sellable_key(item)
+            _is_forbidden_snapshot_field(key) or _contains_sellable_key(item)
             for key, item in value.items()
         )
     if isinstance(value, list):
@@ -109,10 +118,51 @@ def _contains_sellable_key(value: Any) -> bool:
 
 
 def _mcp_symbol(symbol: str, instrument_type: str) -> str:
-    normalized = symbol.strip().upper()
+    normalized = normalize_position_symbol(symbol, instrument_type)
     if instrument_type == "equity_us":
         return to_db_symbol(normalized).upper()
     return normalized
+
+
+def _mcp_account_details(
+    *,
+    holding: Any,
+    account_by_id: dict[str, Any],
+    account_by_source: dict[str, Any],
+) -> tuple[str, str]:
+    source_defaults = {
+        "kis": ("kis", "기본 계좌"),
+        "upbit": ("upbit", "기본 계좌"),
+        "toss_api": ("toss", "Toss"),
+        "toss_manual": ("toss", "Toss 수동"),
+        "pension_manual": ("samsung_pension", "삼성 연금"),
+        "isa_manual": ("isa", "ISA"),
+    }
+    source = str(holding.source)
+    default_account, default_name = source_defaults.get(
+        source, (str(holding.accountId), "기본 계좌")
+    )
+    account = account_by_id.get(str(holding.accountId)) or account_by_source.get(source)
+    return (
+        default_account,
+        account.displayName if account is not None else default_name,
+    )
+
+
+def _mcp_profit_loss(holding: Any) -> float | None:
+    if str(holding.market) == "US":
+        if holding.valueNative is None or holding.costBasis is None:
+            return None
+        return float(holding.valueNative - holding.costBasis)
+    return float(holding.pnlKrw) if holding.pnlKrw is not None else None
+
+
+def _mcp_profit_rate(holding: Any) -> float | None:
+    if holding.pnlRate is None:
+        return None
+    # InvestHome stores ratios (0.00714 == 0.714%); the legacy MCP contract
+    # exposes percentage points (0.714). Keep the conversion at this seam.
+    return float(holding.pnlRate * 100.0)
 
 
 def portfolio_snapshot_to_mcp_positions(
@@ -121,6 +171,7 @@ def portfolio_snapshot_to_mcp_positions(
     """Project the canonical home holdings into the bounded MCP position shape."""
 
     accounts = {account.accountId: account for account in response.accounts}
+    accounts_by_source = {str(account.source): account for account in response.accounts}
     instrument_by_market = {
         "KR": "equity_kr",
         "US": "equity_us",
@@ -142,14 +193,18 @@ def portfolio_snapshot_to_mcp_positions(
         broker, source = source_defaults.get(
             holding.source, (holding.source, holding.source)
         )
-        account = accounts.get(holding.accountId)
+        account_id, account_name = _mcp_account_details(
+            holding=holding,
+            account_by_id=accounts,
+            account_by_source=accounts_by_source,
+        )
         current_price = None
         if holding.valueNative is not None and holding.quantity > 0:
             current_price = holding.valueNative / holding.quantity
         positions.append(
             {
-                "account": holding.accountId,
-                "account_name": account.displayName if account else "기본 계좌",
+                "account": account_id,
+                "account_name": account_name,
                 "broker": broker,
                 "source": source,
                 "instrument_type": instrument_type,
@@ -164,12 +219,8 @@ def portfolio_snapshot_to_mcp_positions(
                     if holding.valueNative is not None
                     else None
                 ),
-                "profit_loss": (
-                    float(holding.pnlKrw) if holding.pnlKrw is not None else None
-                ),
-                "profit_rate": (
-                    float(holding.pnlRate) if holding.pnlRate is not None else None
-                ),
+                "profit_loss": _mcp_profit_loss(holding),
+                "profit_rate": _mcp_profit_rate(holding),
             }
         )
     return positions

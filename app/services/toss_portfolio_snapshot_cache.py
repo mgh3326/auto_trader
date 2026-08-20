@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import redis.asyncio as redis
+from redis.exceptions import WatchError
 
 from app.core.config import settings
 
@@ -23,13 +24,6 @@ logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "toss:portfolio:snapshot:v1"
 _LOCK_PREFIX = "toss:portfolio:snapshot:singleflight:v1"
-_RELEASE_LOCK_SCRIPT = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-else
-    return 0
-end
-"""
 
 
 def _key(scope: str) -> str:
@@ -132,7 +126,7 @@ class TossPortfolioSnapshotCache:
                 self._singleflight_key(scope),
                 token,
                 nx=True,
-                ex=max(1, int(self._lock_ttl_seconds)),
+                px=max(1, int(self._lock_ttl_seconds * 1000)),
             )
         except Exception as exc:  # noqa: BLE001 — singleflight fails open
             self._mark_degraded()
@@ -143,15 +137,51 @@ class TossPortfolioSnapshotCache:
     async def _release(self, scope: str, token: str) -> None:
         if self._redis is None:
             return
+        lock_key = self._singleflight_key(scope)
         try:
-            await self._redis.eval(
-                _RELEASE_LOCK_SCRIPT,
-                1,
-                self._singleflight_key(scope),
-                token,
-            )
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(lock_key)
+                if await pipe.get(lock_key) != token:
+                    return
+                pipe.multi()
+                pipe.delete(lock_key)
+                await pipe.execute()
+        except WatchError:
+            # Another owner acquired the key after this lease expired.
+            return
         except Exception:  # noqa: BLE001 — lock expiry is the fallback
             return
+
+    async def _renew(self, scope: str, token: str) -> bool:
+        if not self.usable or self._redis is None:
+            return False
+        lock_key = self._singleflight_key(scope)
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(lock_key)
+                if await pipe.get(lock_key) != token:
+                    return False
+                pipe.multi()
+                pipe.pexpire(
+                    lock_key,
+                    max(1, int(self._lock_ttl_seconds * 1000)),
+                )
+                renewed = await pipe.execute()
+        except WatchError:
+            # The lease expired or changed ownership while being renewed.
+            return False
+        except Exception as exc:  # noqa: BLE001 — renewal failure is fail-open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot lock renewal failed: %s", exc)
+            return False
+        return bool(renewed and renewed[0])
+
+    async def _renew_until_done(self, scope: str, token: str) -> None:
+        interval = max(min(self._lock_ttl_seconds / 3.0, 1.0), 0.05)
+        while True:
+            await asyncio.sleep(interval)
+            if not await self._renew(scope, token):
+                return
 
     async def _lock_remaining_seconds(self, scope: str) -> float | None:
         """Return the current lock lease, or ``None`` when Redis is unavailable.
@@ -174,9 +204,10 @@ class TossPortfolioSnapshotCache:
         if pttl == -2:
             return 0.0
         if pttl == -1:
-            # Our locks always have EX, but preserve a finite bound if a
-            # pre-existing/malformed lock has no expiry.
-            return max(self._lock_ttl_seconds, 0.0)
+            # Our locks always have a lease.  A pre-existing/malformed
+            # immortal lock is not demonstrably live, so fail open rather
+            # than waiting without a bound.
+            return 0.0
         if pttl < 0:
             return 0.0
         return max(float(pttl) / 1000.0, 0.0)
@@ -199,6 +230,7 @@ class TossPortfolioSnapshotCache:
 
         token = await self._acquire(scope)
         if token is not None:
+            renewal_task = asyncio.create_task(self._renew_until_done(scope, token))
             try:
                 # Another writer may have completed between the initial GET and
                 # lock acquisition.
@@ -210,30 +242,30 @@ class TossPortfolioSnapshotCache:
                     await self.put(scope, payload)
                 return payload
             finally:
+                renewal_task.cancel()
+                try:
+                    await renewal_task
+                except asyncio.CancelledError:
+                    pass
                 await self._release(scope, token)
 
         if not self.usable:
             return await fetcher()
 
         loop = asyncio.get_running_loop()
-        wait_started = loop.time()
-        deadline = wait_started + self._wait_timeout_seconds
-        # Never wait past one configured lock lease.  A normal owner can be
-        # slower than the initial waiter budget, while owner death remains
-        # bounded by the same lease.
-        lease_deadline = wait_started + max(
-            self._wait_timeout_seconds, self._lock_ttl_seconds
-        )
+        deadline = loop.time() + self._wait_timeout_seconds
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 lock_remaining = await self._lock_remaining_seconds(scope)
                 if lock_remaining is None or lock_remaining <= 0:
                     break
-                deadline = min(
-                    lease_deadline,
-                    loop.time() + lock_remaining,
-                )
+                # A positive PTTL is proof that some owner still has a live
+                # lease.  Follow that lease rather than using a fixed total
+                # deadline: a renewal moves the next observation forward,
+                # while an owner death or failed renewal lets the lease expire
+                # and bounds the direct-fetch escape.
+                deadline = loop.time() + lock_remaining
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break

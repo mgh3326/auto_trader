@@ -72,7 +72,10 @@ from app.services.invest_benchmark_gap_service import (
 )
 from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_crypto_naver_adapter import build_naver_crypto_reference
-from app.services.invest_home_service import InvestHomeService
+from app.services.invest_home_service import (
+    InvestHomeService,
+    PortfolioSnapshotUnavailableError,
+)
 from app.services.invest_momentum_events.coverage_service import build_momentum_coverage
 from app.services.invest_momentum_events.repository import (
     InvestMomentumEventSnapshotsRepository,
@@ -634,11 +637,22 @@ async def get_calendar(
     # ROB-1310: calendar only needs held-symbol keys. Avoid building the full
     # home projection; Toss uses the shared portfolio snapshot and the manual
     # source remains a read-only DB lookup. includePaper remains explicit.
-    held_pairs = await service.get_held_pairs(
-        user_id=user.id,
-        include_paper=include_paper,
-        paper_sources=_parse_paper_sources(paper_sources),
-    )
+    try:
+        held_pairs = await service.get_held_pairs(
+            user_id=user.id,
+            include_paper=include_paper,
+            paper_sources=_parse_paper_sources(paper_sources),
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
     resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_calendar(
         db=db,
