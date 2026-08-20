@@ -264,6 +264,28 @@ subset 은 제안 못 하는 세션(=분석-온리 산출)이라 **둘 다 거�
 고치는 별도 리뷰가 필요하다. 테스트로 박제했다
 (`test_no_launcher_in_this_repo_can_start_the_profile`).
 
+### 8.1 스텁이 아니라 실 서버로 증명 (ROB-1290 r3 후속)
+
+r3 실측 결론: **in-process 로는 승인 경계를 닫을 수 없다.** subclass·injected
+judge·module-global 교체 앞에서 capability 토큰·`@final`·in-process allowlist 가
+전부 무력했고 raw 콜러블이 남았다. 그래서 경계를 **프로세스 경계 = MCP 서버가
+내주는 도구 집합**에서 증명한다.
+
+| 증거 | 어떻게 |
+|---|---|
+| provision | `build_watch_repricing_server()` — `register_all_tools(profile=WATCH_REPRICING)` 로 실 `FastMCP` 를 세운다 (`on_duplicate="error"`, 프로덕션 `main.py` 와 동일) |
+| 닫힌 등가 | `assert_provisioned_surface()` — 서버가 **실제로 서빙하는** `tools/list`(15개)를 `PROPOSAL_ONLY_TOOLS` 와 `==` 비교. 등록기의 장부가 아니라 세션이 볼 수 있는 유일한 표면이 비교 대상이다 |
+| 서버 거부 | `tools/call place_order` 응답이 `isError=True  "Unknown tool: 'place_order'"`. 클라이언트 필터가 아니다 — 클라이언트는 **받은 적 없는 이름**을 보내고 서버가 거절한다. 레포의 주문 registry 이름 전체를 훑는다 |
+| 공허하지 않음 | 같은 경로·허용 이름(`order_proposal_create`)은 `"Unknown tool"` 이 아니라 **인자 검증** 오류로 실패한다. "전부 실패하는 서버" 가 아니라는 대조군 |
+
+테스트 = `tests/services/watch_trigger_repricing/test_real_server_surface.py`.
+스텁 기반 `test_live_spawner_contract.py` 는 그대로 둔다 — 스텁에는 `tools/list`
+도 호출 경로도 없어서 위 두 질문에 애초에 답할 수 없다.
+
+🔴 **이 절이 증명하지 않는 것**: 스폰된 세션이 *이렇게 세운 서버에* 붙는다는 것.
+런처 배선은 여전히 없다(위 정직한 공백 · §11). 여기까지의 주장은 "프로필로 서버를
+세우면 그 서버는 주문 도구를 내주지 않는다" 이며, provision 은 arm 이 아니다.
+
 ---
 
 ## 9. live spawner 는 계약 없이 배선 불가 (§101차 ③)
