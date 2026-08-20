@@ -7,6 +7,7 @@ statistics with extended fields.
 """
 
 import calendar
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
@@ -200,6 +201,34 @@ def _positive_target_price(opinion: dict[str, Any]) -> int | float | None:
     return None
 
 
+def stale_window_input_count(consensus: Mapping[str, Any]) -> int:
+    """Return ROB-486 window exclusions already recorded on a consensus dict.
+
+    The only freshness criterion ROB-1300 may use is the existing recency
+    window metadata (`rows_excluded_stale` / `stale_opinion_count`). This
+    helper does not invent a tighter TTL.
+    """
+    counts: list[int] = []
+    for key in ("rows_excluded_stale", "stale_opinion_count"):
+        value = consensus.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and value > 0:
+            counts.append(value)
+        if isinstance(value, float) and value > 0:
+            counts.append(int(value))
+    # The two fields are aliases emitted by the same normalizer.  External or
+    # older cached payloads can carry only one (or disagree); choose the
+    # positive maximum so a stale alias can never be hidden by a zero-valued
+    # sibling and turn into a passing upside calculation.
+    return max(counts, default=0)
+
+
+def consensus_has_stale_window_inputs(consensus: Mapping[str, Any]) -> bool:
+    """True when the ROB-486 window already classified some opinions stale."""
+    return stale_window_input_count(consensus) > 0
+
+
 def _is_target_price_outlier(
     target_price: int | float,
     current_price: int | float | None,
@@ -223,13 +252,18 @@ def build_consensus(
 ) -> dict[str, Any]:
     """Build consensus statistics from analyst opinions within a recency window.
 
-    Unified ROB-486 + ROB-488 implementation:
+    Unified ROB-486 + ROB-488 + ROB-1300 implementation:
     - ``as_of`` (ROB-488 compat alias) or ``now`` (ROB-486) set the anchor date.
     - ``window_months`` (ROB-486, default 12) defines the staleness cutoff.
     - Undated opinions are KEPT (fail-open, ROB-488) and counted in the
       ``rows_undated`` metadata so callers can distinguish them.
     - Outlier target prices (+300%/−75% vs current, ROB-488) are excluded
       from aggregates but counts are still credited.
+    - ROB-1300: if any dated opinion falls outside the window, target-price
+      aggregates and ``upside_pct`` stay null. Remaining in-window rows are
+      not a silent refresh of a mixed stale set. Rating counts still come
+      from window survivors (ROB-486). ``target_price_honest`` stays false
+      whenever a stale target or outlier was excluded.
     - Returns both ROB-486 metadata (rows_total/rows_used/rows_excluded_stale/
       rows_undated/newest_opinion_date/window_months) and ROB-488
       metadata (raw_count/stale_opinion_count/target_price_honest/
@@ -328,7 +362,9 @@ def build_consensus(
         "target_price_honest": target_price_excluded_count == 0,
     }
 
-    if target_prices:
+    # ROB-1300: mixed stale inputs must not emit a numeric target/upside.
+    # Remaining-window rows are not a quiet refresh of the 10-row input set.
+    if target_prices and stale_opinion_count == 0:
         consensus["avg_target_price"] = int(sum(target_prices) / len(target_prices))
         sorted_prices = sorted(target_prices)
         n = len(sorted_prices)

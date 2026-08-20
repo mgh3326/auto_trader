@@ -64,8 +64,12 @@ authorized consumer would need to redo tick-floor and all execution gates.
 The literal policy gates remain unchanged and are runtime-pinned: RSI 45;
 moderate, two-family support within 8%; honest upside of at least 40%; support
 discount 5–10%; final anchor distance -15% to -5%; and the 90% / 50% budget
-caps. Because this tool cannot inspect account or broker evidence, a reached
-`budget` stage is always `deferred` and `actionable_count` is always zero.
+caps. The upside stage is fail-closed on ROB-486 window metadata
+(`rows_excluded_stale` / `stale_opinion_count` > 0): leftover
+`avg_target_price` from remaining in-window rows is not a pass
+(`honest_upside_stale_inputs`). Because this tool cannot inspect account or
+broker evidence, a reached `budget` stage is always `deferred` and
+`actionable_count` is always zero.
 
 ## KR regular-session missing-freshness contract
 

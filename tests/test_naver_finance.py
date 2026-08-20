@@ -1032,9 +1032,9 @@ class TestFetchInvestmentOpinions:
         # opinions 리스트에는 stale 행도 참고용으로 그대로 남는다.
         assert result["count"] == 2
         consensus = result["consensus"]
-        assert consensus["avg_target_price"] == 3000
-        assert consensus["median_target_price"] == 3000
-        assert consensus["upside_pct"] == pytest.approx(56.74, abs=0.01)
+        assert consensus["avg_target_price"] is None
+        assert consensus["median_target_price"] is None
+        assert consensus["upside_pct"] is None
         assert consensus["buy_count"] == 1
         assert consensus["total_count"] == 1
         assert consensus["rows_total"] == 2
@@ -1042,6 +1042,7 @@ class TestFetchInvestmentOpinions:
         assert consensus["rows_excluded_stale"] == 1
         assert consensus["rows_undated"] == 0
         assert consensus["window_months"] == 12
+        assert consensus["target_price_honest"] is False
         assert (
             consensus["newest_opinion_date"] == _OPINION_LIST_DATE_RECENT_1.isoformat()
         )

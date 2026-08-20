@@ -19,6 +19,7 @@ from typing import Any
 
 from app.core import analyze_cache
 from app.core.timezone import now_kst
+from app.services.analyst_normalizer import consensus_has_stale_window_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,18 @@ def _recompute_upside(
     consensus: dict[str, Any], price: float | int | None
 ) -> dict[str, Any]:
     out = dict(consensus)
+    if consensus_has_stale_window_inputs(out):
+        # ROB-1300: do not revive a leftover avg/upside from mixed stale inputs.
+        out["avg_target_price"] = None
+        out["median_target_price"] = None
+        out["min_target_price"] = None
+        out["max_target_price"] = None
+        out.pop("upside_pct", None)
+        if price and isinstance(price, (int, float)):
+            out["current_price"] = price
+        else:
+            out.pop("current_price", None)
+        return out
     avg = out.get("avg_target_price")
     if (
         price

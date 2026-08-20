@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.symbol import to_db_symbol
+from app.services.analyst_normalizer import (
+    consensus_has_stale_window_inputs,
+    stale_window_input_count,
+)
 from app.services.trading_policy_service import (
     load_trading_policy,
     policy_version_stamp,
@@ -552,6 +556,20 @@ def _evaluate_funnel(
 
     consensus = fresh.get("consensus")
     consensus_data = consensus if isinstance(consensus, Mapping) else {}
+    if consensus_has_stale_window_inputs(consensus_data):
+        # ROB-1300: a numeric leftover from remaining-window rows is not a
+        # pass. Stale inputs stop the honest-upside calculation.
+        funnel["upside"] = observed_stage(
+            "fail",
+            reason="honest_upside_stale_inputs",
+            rows_excluded_stale=stale_window_input_count(consensus_data),
+            target_price_honest=consensus_data.get("target_price_honest"),
+            newest_opinion_date=consensus_data.get("newest_opinion_date"),
+            calculation_suppressed=True,
+        )
+        for stage in _FUNNEL_STAGE_NAMES[4:]:
+            funnel[stage] = _not_evaluated("upside_failed")
+        return _funnel_result(funnel, freshness)
     target_price = _first_float(
         consensus_data, "avg_target_price", "avgTargetPrice", "target_price"
     )
