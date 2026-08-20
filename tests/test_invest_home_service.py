@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import fakeredis.aioredis
 import pytest
 
-from app.schemas.invest_home import Holding
+from app.schemas.invest_home import Account, Holding
 from app.services.invest_home_service import (
     HOME_INCLUDED_SOURCES,
     build_grouped_holdings,
@@ -1385,6 +1385,146 @@ async def test_get_home_keeps_manual_holding_when_toss_api_does_not_duplicate_sy
 
     assert [h.source for h in result.holdings] == ["toss_api", "toss_manual"]
     assert {h.symbol for h in result.holdings} == {"BRK.B", "AAPL"}
+
+
+@pytest.mark.asyncio
+async def test_get_home_summary_excludes_manual_value_removed_by_toss_api_dedup():
+    """ROB-1310 BLOCKER-1: account/summary totals must match the
+    Toss-API-deduplicated holdings actually published, not the manual
+    reader's unfiltered per-account total.
+
+    The manual reader's ``Account.valueKrw`` is computed from ALL of its
+    holdings before ``InvestHomeService`` drops the ``toss_manual`` row that
+    duplicates a ``toss_api`` position. Publishing that unfiltered total
+    double-counts the duplicate's value against toss_api's own value for the
+    same position. Covers both ``get_home`` (home) and
+    ``build_account_panel_view`` (account-panel).
+    """
+    from app.services.invest_home_service import InvestHomeService
+
+    toss_api_reader = _Reader(
+        accounts=[
+            Account(
+                accountId="toss_api_account",
+                displayName="Toss",
+                source="toss_api",
+                accountKind="live",
+                includedInHome=True,
+                valueKrw=645.18,
+            )
+        ],
+        holdings=[
+            Holding(
+                holdingId="toss_api:BRK.B",
+                accountId="toss_api_account",
+                source="toss_api",
+                accountKind="live",
+                symbol="BRK.B",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Berkshire Hathaway B",
+                quantity=1.5,
+                averageCost=400.0,
+                costBasis=600.0,
+                currency="USD",
+                valueNative=645.18,
+                valueKrw=645.18,
+                sourceOfTruth=True,
+                isTradeable=False,
+                manualOnly=False,
+                sellableQuantity=0.0,
+                referenceQuantity=1.5,
+            )
+        ],
+    )
+    manual_holdings = [
+        _h(
+            holdingId="manual:1",
+            accountId="acct-1",
+            source="toss_manual",
+            accountKind="manual",
+            symbol="BRK.B",
+            market="US",
+            assetType="equity",
+            assetCategory="us_stock",
+            displayName="Berkshire Hathaway B",
+            quantity=1.5,
+            averageCost=400.0,
+            costBasis=600.0,
+            currency="USD",
+            valueNative=645.18,
+            valueKrw=600.0,
+            manualOnly=True,
+            sourceOfTruth=False,
+            isTradeable=False,
+        ),
+        _h(
+            holdingId="manual:2",
+            accountId="acct-1",
+            source="toss_manual",
+            accountKind="manual",
+            symbol="AAPL",
+            market="US",
+            assetType="equity",
+            assetCategory="us_stock",
+            displayName="Apple",
+            quantity=2.0,
+            averageCost=100.0,
+            costBasis=200.0,
+            currency="USD",
+            valueNative=400.0,
+            valueKrw=400.0,
+            manualOnly=True,
+            sourceOfTruth=False,
+            isTradeable=False,
+        ),
+    ]
+    manual_reader = _Reader(
+        accounts=[
+            Account(
+                accountId="acct-1",
+                displayName="Toss 수동",
+                source="toss_manual",
+                accountKind="manual",
+                includedInHome=True,
+                # Unfiltered manual-reader total: BOTH holdings, including
+                # the one that duplicates toss_api's BRK.B position.
+                valueKrw=1000.0,
+                costBasisKrw=800.0,
+                pnlKrw=200.0,
+                pnlRate=0.25,
+            )
+        ],
+        holdings=manual_holdings,
+    )
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=manual_reader,
+        toss_api_reader=toss_api_reader,
+    )
+
+    home = await service.get_home(user_id=1)
+    panel = await service.build_account_panel_view(user_id=1)
+
+    # The BRK.B manual holding was correctly dropped as a toss_api duplicate.
+    assert [h.symbol for h in home.holdings] == ["BRK.B", "AAPL"]
+
+    manual_account_home = next(a for a in home.accounts if a.source == "toss_manual")
+    manual_account_panel = next(
+        a for a in panel.accounts if a.source == "toss_manual"
+    )
+    # Account totals must equal the sum of the manual holdings actually
+    # published (AAPL only == 400.0), not the reader's unfiltered 1000.0.
+    assert manual_account_home.valueKrw == pytest.approx(400.0)
+    assert manual_account_panel.valueKrw == pytest.approx(400.0)
+
+    visible_holdings_total = sum(
+        h.valueKrw for h in home.holdings if h.valueKrw is not None
+    )
+    assert home.homeSummary.totalValueKrw == pytest.approx(visible_holdings_total)
+    assert panel.homeSummary.totalValueKrw == pytest.approx(visible_holdings_total)
 
 
 @pytest.mark.asyncio

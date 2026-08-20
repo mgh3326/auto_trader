@@ -504,6 +504,314 @@ async def test_holdings_home_and_briefing_share_one_slow_whole_snapshot_owner(
 
 
 @pytest.mark.asyncio
+async def test_holdings_home_and_briefing_share_one_healthy_six_second_owner_without_raw_timeout(
+    monkeypatch,
+):
+    """ROB-1310 BLOCKER-2: Sentry measured the whole-portfolio cold compose
+    regime at get_holdings 14.36s / get_operating_briefing p95 16.28s. A
+    healthy owner that takes 6s (well under that measured regime, well over
+    the old ~4s waiter budget) must not make concurrent /invest home or MCP
+    holdings/briefing callers raise a raw/unhandled TimeoutError. This uses
+    the real configured ``settings.portfolio_snapshot_cache_wait_seconds``
+    default rather than overriding it, so the default itself is pinned as
+    sufficient for the measured regime.
+    """
+    from app.core.config import settings
+    from app.mcp_server.tooling import operating_briefing, portfolio_holdings
+    from app.routers import invest_api
+    from app.schemas.invest_home import Holding
+    from app.services import invest_home_readers
+    from app.services import portfolio_snapshot_cache as whole_snapshot
+    from app.services.invest_home_service import _SourceFetchResult
+
+    calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
+    owner_started = asyncio.Event()
+
+    class _Reader:
+        def __init__(self, source: str, holding: Holding | None = None):
+            self.source = source
+            self.holding = holding
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            if self.source == "kis":
+                owner_started.set()
+                await asyncio.sleep(6.0)
+            return _SourceFetchResult(
+                accounts=[], holdings=[self.holding] if self.holding else []
+            )
+
+    holding = Holding(
+        holdingId="kis:005930",
+        accountId="kis-account",
+        source="kis",
+        accountKind="live",
+        symbol="005930",
+        market="KR",
+        assetType="equity",
+        assetCategory="kr_stock",
+        displayName="Samsung",
+        quantity=10,
+        averageCost=70000,
+        costBasis=700000,
+        currency="KRW",
+        valueNative=720000,
+        valueKrw=720000,
+        pnlKrw=20000,
+        pnlRate=20000 / 700000,
+    )
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(invest_home_readers, "SafeKISClient", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        invest_home_readers,
+        "KISHomeReader",
+        lambda db: _Reader("kis", holding),
+    )
+    monkeypatch.setattr(
+        invest_home_readers,
+        "UpbitHomeReader",
+        lambda db: _Reader("upbit"),
+    )
+    monkeypatch.setattr(
+        invest_home_readers,
+        "ManualHomeReader",
+        lambda db, quote_service=None: _Reader("manual"),
+    )
+    monkeypatch.setattr(
+        invest_home_readers,
+        "TossApiHomeReader",
+        lambda: _Reader("toss_api"),
+    )
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = whole_snapshot.PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=settings.portfolio_snapshot_cache_wait_seconds,
+        poll_interval_seconds=0.01,
+    )
+    cache_b = whole_snapshot.PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=settings.portfolio_snapshot_cache_wait_seconds,
+        poll_interval_seconds=0.01,
+    )
+    monkeypatch.setattr(
+        whole_snapshot,
+        "get_shared_portfolio_snapshot_cache",
+        lambda: cache_a,
+    )
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "get_shared_portfolio_snapshot_cache",
+        lambda: cache_b,
+        raising=False,
+    )
+
+    def _position(source: str, broker: str) -> dict[str, object]:
+        return {
+            "account": broker,
+            "account_name": "기본 계좌",
+            "broker": broker,
+            "source": source,
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "Samsung",
+            "quantity": 10.0,
+            "avg_buy_price": 70000.0,
+            "current_price": 72000.0,
+            "evaluation_amount": 720000.0,
+            "profit_loss": 20000.0,
+            "profit_rate": 0.028,
+        }
+
+    async def _collect_kis(*args, **kwargs):
+        calls["kis"] += 1
+        return [_position("kis_api", "kis")], []
+
+    async def _collect_upbit(*args, **kwargs):
+        calls["upbit"] += 1
+        return [], []
+
+    async def _collect_manual(*args, **kwargs):
+        calls["manual"] += 1
+        return [], []
+
+    async def _collect_toss(*args, **kwargs):
+        calls["toss_api"] += 1
+        return [], [], True
+
+    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", _collect_kis)
+    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", _collect_upbit)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_manual_positions", _collect_manual
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_toss_api_positions", _collect_toss
+    )
+
+    class _DbContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _Pending:
+        orders = []
+        as_of = "2026-08-20T00:00:00+00:00"
+        freshness_status = "fresh"
+        unavailable_reason = None
+
+    monkeypatch.setattr(operating_briefing, "AsyncSessionLocal", lambda: _DbContext())
+    monkeypatch.setattr(
+        operating_briefing,
+        "collect_pending_orders_snapshot",
+        AsyncMock(return_value=_Pending()),
+    )
+    monkeypatch.setattr(
+        operating_briefing, "_latest_report_summary", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "_recent_session_context",
+        AsyncMock(return_value={"count": 0, "entries": []}),
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "_recent_analysis_artifacts",
+        AsyncMock(return_value={"count": 0, "artifacts": []}),
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "load_negative_class_health",
+        AsyncMock(return_value=SimpleNamespace(to_dict=lambda: {"status": "ok"})),
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "list_active_watches_impl",
+        AsyncMock(return_value={"count": 0, "active_watches": []}),
+    )
+    monkeypatch.setattr(
+        operating_briefing, "get_account_costs_setting", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        operating_briefing, "policy_version_stamp", lambda: {"version": 1}
+    )
+
+    service = invest_api.get_invest_home_service(db=object())
+    home_task = asyncio.create_task(
+        invest_api.get_home(
+            user=SimpleNamespace(id=1),
+            service=service,
+            include_paper=False,
+            paper_sources=None,
+        )
+    )
+    await owner_started.wait()
+    holdings_task = asyncio.create_task(
+        portfolio_holdings._get_holdings_impl(include_current_price=False)
+    )
+    briefing_task = asyncio.create_task(
+        operating_briefing.get_operating_briefing_impl(
+            market="kr", account_scope="kis_live"
+        )
+    )
+    home, holdings, briefing = await asyncio.gather(
+        home_task, holdings_task, briefing_task
+    )
+
+    assert home.holdings[0].symbol == "005930"
+    assert holdings["total_positions"] == 1
+    assert briefing["success"] is True
+    assert calls == {"kis": 1, "upbit": 1, "toss_api": 1, "manual": 1}
+
+
+@pytest.mark.asyncio
+async def test_home_router_translates_hung_owner_hard_bound_to_sanitized_503(
+    monkeypatch,
+):
+    """ROB-1310 BLOCKER-2: a renewing-but-hung owner remains finitely bounded
+    (see test_process_shared_snapshot_renewing_hung_owner_has_bounded_wait),
+    but the resulting failure must never leak a raw TimeoutError/generic 500
+    out of /invest/api/home. The router must translate it into a sanitized
+    typed 503 whose detail does not echo the original exception's text.
+    """
+    from fastapi import HTTPException
+
+    from app.routers import invest_api
+    from app.services.invest_home_service import InvestHomeService
+
+    class _Reader:
+        async def fetch(self, *, user_id):
+            from app.services.invest_home_service import _SourceFetchResult
+
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _HungCache:
+        usable = True
+
+        async def get_or_fetch(self, scope, fetcher):
+            raise TimeoutError(
+                "portfolio snapshot owner did not complete: internal-secret-token"
+            )
+
+        async def delete(self, scope, *, expected_payload=None):
+            return False
+
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=_Reader(),
+        snapshot_cache=_HungCache(),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await invest_api.get_home(
+            user=SimpleNamespace(id=1),
+            service=service,
+            include_paper=False,
+            paper_sources=None,
+        )
+
+    assert excinfo.value.status_code == 503
+    detail_text = str(excinfo.value.detail)
+    assert "internal-secret-token" not in detail_text
+
+
+@pytest.mark.asyncio
+async def test_mcp_whole_portfolio_collect_translates_hung_owner_hard_bound(
+    monkeypatch,
+):
+    """ROB-1310 BLOCKER-2: the MCP whole-portfolio collector must surface the
+    same sanitized typed availability outcome as the HTTP router, not a raw
+    TimeoutError, when a hung owner exceeds the hard wait bound.
+    """
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.services.invest_home_service import PortfolioSnapshotUnavailableError
+
+    class _HungCache:
+        async def get_or_fetch(self, scope, fetcher):
+            raise TimeoutError(
+                "portfolio snapshot owner did not complete: internal-secret-token"
+            )
+
+        async def delete(self, scope, *, expected_payload=None):
+            return False
+
+    with pytest.raises(PortfolioSnapshotUnavailableError) as excinfo:
+        await portfolio_holdings._collect_whole_portfolio_positions(
+            cache=_HungCache(), user_id=1
+        )
+
+    assert "internal-secret-token" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
 async def test_calendar_entrypoint_reads_held_snapshot_without_full_reader_calls(
     monkeypatch,
 ):

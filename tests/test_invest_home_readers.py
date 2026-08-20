@@ -735,6 +735,86 @@ async def test_manual_reader_preserves_all_supported_broker_accounts(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_manual_account_identity_survives_price_availability_toss_and_non_toss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 SHOULD-1: the DB account identity (id/name/source) must not
+    depend on whether any holding in it currently has a price. Both a Toss
+    and a non-Toss (samsung pension) manual account must keep the same
+    identity whether priced or fully unpriced -- previously an all-unpriced
+    manual account vanished from result.accounts, forcing MCP to fall back
+    to a different hardcoded canonical id/name.
+    """
+
+    broker_toss = SimpleNamespace(id=501, broker_type="toss", account_name="토스 수동계좌")
+    broker_samsung = SimpleNamespace(
+        id=502, broker_type="samsung", account_name="삼성 퇴직연금 DC"
+    )
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=501,
+            broker_account=broker_toss,
+            ticker="005930",
+            market_type=MarketType.KR,
+            display_name="삼성전자",
+            quantity=1,
+            avg_price=70_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=502,
+            broker_account=broker_samsung,
+            ticker="000660",
+            market_type=MarketType.KR,
+            display_name="SK하이닉스",
+            quantity=1,
+            avg_price=100_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    priced_quote_service = MagicMock()
+    priced_quote_service.fetch_kr_prices = AsyncMock(
+        return_value={"005930": 75_000.0, "000660": 105_000.0}
+    )
+    priced_quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    priced_result = await readers.ManualHomeReader(
+        db=None,
+        quote_service=priced_quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+    priced_accounts = {a.accountId: a for a in priced_result.accounts}
+    assert set(priced_accounts) == {"501", "502"}
+    assert priced_accounts["501"].displayName == "토스 수동계좌"
+    assert priced_accounts["501"].source == "toss_manual"
+    assert priced_accounts["502"].displayName == "삼성 퇴직연금 DC"
+    assert priced_accounts["502"].source == "pension_manual"
+    assert priced_accounts["501"].valueKrw == pytest.approx(75_000.0)
+    assert priced_accounts["502"].valueKrw == pytest.approx(105_000.0)
+
+    # No quote_service at all -> every holding stays unpriced.
+    unpriced_result = await readers.ManualHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+    unpriced_accounts = {a.accountId: a for a in unpriced_result.accounts}
+    assert set(unpriced_accounts) == {"501", "502"}
+    assert unpriced_accounts["501"].displayName == "토스 수동계좌"
+    assert unpriced_accounts["501"].source == "toss_manual"
+    assert unpriced_accounts["502"].displayName == "삼성 퇴직연금 DC"
+    assert unpriced_accounts["502"].source == "pension_manual"
+    assert unpriced_accounts["501"].valueKrw == 0.0
+    assert unpriced_accounts["502"].valueKrw == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -762,7 +842,19 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
 
     result = await readers.ManualHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
 
-    assert result.accounts == []
+    # ROB-1310 SHOULD-1: the account identity (id/name/source) must survive
+    # even when nothing in it is priced yet -- it must not vanish (which used
+    # to force a hardcoded fallback identity downstream). The value must
+    # still not be fabricated from cost basis: 0.0 (nothing priced), not a
+    # guess derived from costBasis.
+    assert len(result.accounts) == 1
+    account = result.accounts[0]
+    assert account.accountId == "3"
+    assert account.displayName == "Toss 수동"
+    assert account.source == "toss_manual"
+    assert account.valueKrw == 0.0
+    assert account.costBasisKrw is None
+    assert account.pnlKrw is None
     assert result.holdings[0].costBasis == 700_000
     assert result.holdings[0].valueKrw is None
     assert result.holdings[0].assetCategory == "kr_stock"
