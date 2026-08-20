@@ -13,6 +13,13 @@ kill switch, fail-open behavior, scope, and how to invalidate.
 > separate surface (scoped to holdings ∪ active watch) and is not read or
 > written by this cache.
 
+> **Snapshot/loss-cut limitation.** The durable snapshot schema does not carry
+> `rows_excluded_stale` or `stale_opinion_count`; therefore its loss-cut
+> evidence panel can show null target/upside fields without the stale-window
+> reason. The raw payload may retain that metadata, but the panel does not
+> consume it; a blank numeric field is not evidence that no downside consensus
+> existed.
+
 ---
 
 ## 1. What is cached (and what is NOT)

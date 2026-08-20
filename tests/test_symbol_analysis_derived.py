@@ -110,8 +110,8 @@ def _negative_upside_consensus():
 
 @pytest.mark.unit
 def test_rule_version_bumped_for_upside_demotion():
-    # ROB-486: 스코어링 규칙 변경 → contract-versioned RULE_VERSION 범프.
-    assert RULE_VERSION == "symbol_analysis.derived.v2"
+    # ROB-486/1300: 스코어링 규칙 변경 → contract-versioned RULE_VERSION 범프.
+    assert RULE_VERSION == "symbol_analysis.derived.v3"
 
 
 @pytest.mark.unit
@@ -135,6 +135,28 @@ def test_negative_upside_demotes_rsi_driven_buy():
     )
     assert d.action == "hold"
     assert d.confidence == "low"
+
+
+@pytest.mark.unit
+def test_stale_window_consensus_blocks_count_buy_after_upside_suppression():
+    """ROB-1300 S-A: latent derived copy must match shared.py's stale gate."""
+    stale_consensus = ConsensusData(
+        buy=8,
+        hold=0,
+        sell=0,
+        strong_buy=0,
+        total=8,
+        upside_pct=None,
+        stale_opinion_count=2,
+    )
+    d = derive_recommendation(
+        price=_block(PriceData(100_000.0)),
+        technicals=_block(TechnicalData(rsi14=38.0)),
+        consensus=_block(stale_consensus),
+    )
+    assert d.action == "hold"
+    assert d.confidence == "low"
+    assert d.insufficient_inputs == ()
 
 
 @pytest.mark.unit

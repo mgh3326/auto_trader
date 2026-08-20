@@ -10,6 +10,7 @@ stale/null 이면 확신적 buy/sell 을 금지한다 (ROB-396 증상1).
 
 from __future__ import annotations
 
+from app.services.analyst_normalizer import consensus_has_stale_window_inputs
 from app.services.symbol_analysis.contract import (
     ConsensusData,
     DerivedBlock,
@@ -19,17 +20,23 @@ from app.services.symbol_analysis.contract import (
     TechnicalData,
 )
 
-RULE_VERSION = "symbol_analysis.derived.v2"
+RULE_VERSION = "symbol_analysis.derived.v3"
 
-# ROB-486: shared.py::build_recommendation_for_equity 와 동일 임계값 포팅
-# (services → mcp_server import 금지 — 복제). 컨센서스 평균 목표가 upside 가
-# 이 값(%) 이하면 count 기반 buy 가산을 차단하고 최종 buy 를 hold 로 강등.
+# ROB-486/1300: shared.py::build_recommendation_for_equity 와 동일 임계값 포팅
+# (services → mcp_server import 금지 — 복제). 컨센서스 평균 목표가 downside 또는
+# stale-window 입력은 count 기반 buy 가산을 차단하고 최종 buy 를 hold 로 강등.
 CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT = -10.0
 
 
 def _consensus_target_exceeded(consensus: ConsensusData | None) -> bool:
-    """평균 목표가가 현재가 대비 임계 이상 낮은가 (upside_pct <= -10)."""
-    if consensus is None or consensus.upside_pct is None:
+    """Downside target or stale-window inputs block bullish consensus scoring."""
+    if consensus is None:
+        return False
+    if consensus_has_stale_window_inputs(
+        {"stale_opinion_count": consensus.stale_opinion_count}
+    ):
+        return True
+    if consensus.upside_pct is None:
         return False
     return consensus.upside_pct <= CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT
 
@@ -39,8 +46,8 @@ def _score_action(
 ) -> tuple[int, int]:
     """(score, max_score). shared.build_recommendation_for_equity 와 동일 임계값.
 
-    ROB-486: buy_ratio > 0.6 의 +2 는 컨센서스 목표가 초과(upside <= -10%)면
-    가산하지 않는다.
+    ROB-486/1300: bullish count 가산은 컨센서스 목표가 downside 또는 stale-window
+    입력이면 차단한다.
     """
 
     score = 0
@@ -67,7 +74,8 @@ def _score_action(
             if not _consensus_target_exceeded(consensus):
                 score += 2
         elif buy_ratio > 0.4:
-            score += 1
+            if not _consensus_target_exceeded(consensus):
+                score += 1
         elif sell_ratio > 0.6:
             score -= 2
         elif sell_ratio > 0.4:
@@ -152,7 +160,7 @@ def derive_recommendation(
     else:
         action, confidence = "hold", "low"
 
-    # ROB-486: RSI 단독 +2 등 다른 경로로 buy 가 나와도 목표가 초과면 강등.
+    # ROB-486/1300: RSI 단독 +2 등 다른 경로로 buy 가 나와도 downside/stale면 강등.
     if action == "buy" and _consensus_target_exceeded(cons):
         action, confidence = "hold", "low"
 

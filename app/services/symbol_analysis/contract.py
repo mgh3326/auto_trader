@@ -59,6 +59,7 @@ class ConsensusData:
     target_min: float | None = None
     target_max: float | None = None
     upside_pct: float | None = None
+    stale_opinion_count: int = 0
 
 
 @dataclass(frozen=True)

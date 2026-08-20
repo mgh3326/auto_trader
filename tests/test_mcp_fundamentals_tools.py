@@ -406,6 +406,51 @@ class TestAnalyzeStock:
         assert "stale-window inputs" in recommendation["reasoning"]
         assert "Analyst consensus bullish" not in recommendation["reasoning"]
 
+    async def test_stale_window_moderate_consensus_cannot_promote_buy(self):
+        """ROB-1300 S-B mutant: the moderate +1 bucket is also fail-closed."""
+
+        current_price = 100_000
+        consensus = build_consensus(
+            [
+                {
+                    "rating": "Buy" if index < 4 else "Hold",
+                    "target_price": 85_000,
+                    "date": "2026-08-10",
+                }
+                for index in range(8)
+            ]
+            + [
+                {
+                    "rating": "Buy",
+                    "target_price": 85_000,
+                    "date": "2025-08-10",
+                }
+                for _ in range(2)
+            ],
+            current_price,
+            now=datetime(2026, 8, 20, tzinfo=UTC),
+        )
+        assert consensus["buy_count"] == 4
+        assert consensus["total_count"] == 8
+        assert consensus["avg_target_price"] is None
+        assert consensus["rows_excluded_stale"] == 2
+
+        recommendation = shared.build_recommendation_for_equity(
+            {
+                "quote": {"price": current_price},
+                "indicators": {"indicators": {"rsi": {"14": 38.0}}},
+                "support_resistance": {"supports": [], "resistances": []},
+                "opinions": {"consensus": consensus},
+            },
+            "equity_kr",
+        )
+
+        assert recommendation is not None
+        assert recommendation["action"] == "hold"
+        assert recommendation["confidence"] == "low"
+        assert "stale-window inputs" in recommendation["reasoning"]
+        assert "Analyst consensus moderate" not in recommendation["reasoning"]
+
     async def test_below_market_target_excluded_from_sell_targets_without_demotion(
         self,
     ):

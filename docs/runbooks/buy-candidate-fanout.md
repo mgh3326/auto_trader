@@ -84,6 +84,11 @@ smaller limit or wider window to manufacture a numeric upside. This fanout's
 own fresh revalidation uses its fixed provider call and reports the metadata it
 received. The gate does not cover TVScreener-provided KR `avg_target`/
 `upside_pct` fields, which do not carry ROB-486 opinion-window metadata.
+`target_price_honest` reports target-price exclusions only, not whole-opinion
+freshness: it can be `true` while every target statistic and `upside_pct` is
+null when a dated window-external opinion has no positive target price; consult
+`rows_excluded_stale`/`stale_opinion_count` before treating that combination as
+usable consensus.
 
 ## KR regular-session missing-freshness contract
 
