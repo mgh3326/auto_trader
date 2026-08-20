@@ -103,6 +103,23 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     )
     assert tiers["ultra_near_resistance"]["conditions"]["resistance_near_pct_max"] == 2
     assert tiers["watch_zone"]["action"] == "register_watch"
+    # ROB-1298 §115차 — the zero-named-resistance fallback ships through the
+    # same read tool, last in priority, reusing the existing trim sizing.
+    ladder = tiers["breakeven_extension_ladder"]
+    assert list(tiers)[-1] == "breakeven_extension_ladder"
+    assert ladder["sizing"] == "existing_trim_rule"
+    assert ladder["conditions"]["fresh_named_resistance_count_eq"] == 0
+    assert ladder["conditions"]["markets"] == ["kr", "us", "crypto"]
+    assert ladder["conditions"]["anchor_average_cost_multiples"] == [1.01, 1.05, 1.10]
+    assert ladder["conditions"]["tick_snap_direction"] == "ceil"
+    assert (
+        ladder["conditions"]["anchor_lowest_rung_policy_key"]
+        == "sell.loss_guard_min_multiple"
+    )
+    assert "no_resistance_reference" in rule["exclusions"]
+    assert rule["tie_breaks"]["tier_priority"].endswith(
+        "watch_zone > breakeven_extension_ladder"
+    )
     reserve_trim = tiers["sell.breakeven_reserve_trim"]
     assert reserve_trim["conditions"]["anchor_operator"] == "max"
     assert reserve_trim["conditions"]["anchor_operands"] == [
@@ -198,7 +215,7 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-08-19.2"
+    assert out["version"] == "2026-08-20.1"
     assert out["content_hash"]
 
 

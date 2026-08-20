@@ -69,6 +69,11 @@ class PolicyDecisionRuleTier(BaseModel):
     sizing: str
 
 
+BREAKEVEN_EXTENSION_LADDER_TIER_ID = "breakeven_extension_ladder"
+NO_RESISTANCE_REFERENCE_EXCLUSION = "no_resistance_reference"
+_RESISTANCE_CONDITION_MARKER = "resistance_near_pct"
+
+
 class PolicyDecisionRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -77,6 +82,146 @@ class PolicyDecisionRule(BaseModel):
     tiers: list[PolicyDecisionRuleTier]
     tie_breaks: dict[str, str] = Field(default_factory=dict)
     exclusions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_breakeven_extension_ladder_stays_a_fallback(
+        self,
+    ) -> PolicyDecisionRule:
+        """ROB-1298 §115차 — machine-enforce the fallback contract.
+
+        The §115차 tier closes the zero-fresh-named-resistance profit-take gap.
+        It must stay a *fallback* for that excluded case, never a replacement
+        for the named-resistance tiers and never a route that reopens them by
+        deleting the ``no_resistance_reference`` exclusion. Every invariant the
+        operator forbade drifting is asserted here so the drift fails the build
+        instead of silently shipping.
+        """
+
+        tier_ids = [tier.id for tier in self.tiers]
+        if BREAKEVEN_EXTENSION_LADDER_TIER_ID not in tier_ids:
+            return self
+
+        # NO_EXCLUSION_REMOVAL — the dedicated tier is the only sanctioned fix;
+        # dropping the exclusion is explicitly not.
+        if NO_RESISTANCE_REFERENCE_EXCLUSION not in self.exclusions:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} requires the "
+                f"{NO_RESISTANCE_REFERENCE_EXCLUSION!r} exclusion to be retained"
+            )
+
+        # FALLBACK_ORDER — declared last, so first-match-wins can only reach it
+        # after every named-resistance tier has failed.
+        if tier_ids[-1] != BREAKEVEN_EXTENSION_LADDER_TIER_ID:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must be the last declared "
+                "tier so named-resistance tiers keep priority"
+            )
+        if tier_ids.count(BREAKEVEN_EXTENSION_LADDER_TIER_ID) != 1:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must be declared exactly once"
+            )
+
+        priority = self.tie_breaks.get("tier_priority")
+        if priority is None:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} requires tie_breaks."
+                "tier_priority to state the fallback order"
+            )
+        if [part.strip() for part in priority.split(">")] != tier_ids:
+            raise ValueError(
+                "tie_breaks.tier_priority must match the declared tier order "
+                f"{tier_ids}"
+            )
+
+        tier = self.tiers[-1]
+        conditions = tier.conditions
+
+        # Eligibility — reachable only when the holding has zero fresh named
+        # resistance, i.e. exactly the excluded case.
+        if conditions.get("fresh_named_resistance_count_eq") != 0:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must require "
+                "fresh_named_resistance_count_eq: 0"
+            )
+        if (
+            conditions.get("matched_exclusion_case")
+            != NO_RESISTANCE_REFERENCE_EXCLUSION
+        ):
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must declare "
+                f"matched_exclusion_case: {NO_RESISTANCE_REFERENCE_EXCLUSION}"
+            )
+        if conditions.get("resistance_tier_fallback_only") is not True:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must declare "
+                "resistance_tier_fallback_only: true"
+            )
+        # A resistance-proximity condition here would let the fallback tier
+        # speak about holdings that still have a resistance frame.
+        resistance_keys = [
+            key for key in conditions if _RESISTANCE_CONDITION_MARKER in key
+        ]
+        if resistance_keys:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must not carry "
+                f"resistance-proximity conditions: {resistance_keys}"
+            )
+
+        # SIZING_REUSE — no new quantity rule is invented by this tier.
+        if tier.sizing != "existing_trim_rule":
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must reuse the existing "
+                "trim sizing rule (sizing: existing_trim_rule)"
+            )
+
+        # Anchors — 3 strictly ascending profit-side multiples of average cost,
+        # the lowest of which quotes the existing loss-guard multiple key.
+        if (
+            conditions.get("anchor_lowest_rung_policy_key")
+            != "sell.loss_guard_min_multiple"
+        ):
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} lowest rung must quote "
+                "sell.loss_guard_min_multiple"
+            )
+        multiples = conditions.get("anchor_average_cost_multiples")
+        if not isinstance(multiples, list) or not multiples:
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} requires a non-empty "
+                "anchor_average_cost_multiples list"
+            )
+        if any(
+            not isinstance(value, int | float) or isinstance(value, bool)
+            for value in multiples
+        ):
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} anchor multiples must be numeric"
+            )
+        if conditions.get("rungs_max") != len(multiples):
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} rungs_max must equal the "
+                "number of declared anchor multiples"
+            )
+        if any(value <= 1 for value in multiples):
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} anchor multiples must all "
+                "sit above average cost"
+            )
+        if any(a >= b for a, b in zip(multiples, multiples[1:], strict=False)):
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} anchor multiples must be "
+                "strictly ascending"
+            )
+
+        # A sell-side rung rounds up onto the tick grid; rounding down could
+        # place a rung below the loss-guard anchor it quotes.
+        if conditions.get("tick_snap_direction") != "ceil":
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must snap rungs up "
+                "(tick_snap_direction: ceil)"
+            )
+
+        return self
 
 
 class SupportReserveNetAutoSubmitNotional(BaseModel):
