@@ -225,6 +225,7 @@ tests/services/us_dual_paper/test_capability_matrix.py
 tests/services/us_dual_paper/test_config_flag.py
 tests/services/us_dual_paper/test_kis_mock_preview.py
 tests/services/watch_trigger_repricing/test_db_claim_store.py
+tests/services/watch_trigger_repricing/test_us_crypto_extension.py
 tests/tasks/test_news_relevance_judgment_tasks.py
 tests/test_agent_gateway.py
 tests/test_alembic_revision_ids.py
