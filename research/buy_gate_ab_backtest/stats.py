@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from statistics import median
 from typing import Any
 
 import numpy as np
@@ -25,7 +24,11 @@ BOOTSTRAP_DRAWS = 2000
 SEED = 20260821
 
 
-def _by_date(samples: list[dict[str, Any]], cohort: str, window: str) -> dict[str, list[float]]:
+def _by_date(
+    samples: list[dict[str, Any]], cohort: str, window: str
+) -> dict[str, np.ndarray]:
+    """One float array per decision date. Arrays, not lists: the KR control
+    cohort holds ~312k returns and a list-based pool would dominate runtime."""
     grouped: dict[str, list[float]] = defaultdict(list)
     for row in samples:
         if row["cohort"] != cohort:
@@ -36,27 +39,26 @@ def _by_date(samples: list[dict[str, Any]], cohort: str, window: str) -> dict[st
         grouped[row["decision_date"]].append(
             float(score["primary"]["simple_return_to_close"])
         )
-    return grouped
+    return {date: np.asarray(values, dtype=float) for date, values in grouped.items()}
 
 
 def _cluster_bootstrap(
-    grouped: dict[str, list[float]], rng: np.random.Generator
+    grouped: dict[str, np.ndarray], rng: np.random.Generator
 ) -> dict[str, Any]:
     dates = list(grouped)
     if len(dates) < 2:
         return {"n_clusters": len(dates), "median_ci95": None, "mean_ci95": None}
+    arrays = [grouped[date] for date in dates]
     medians: list[float] = []
     means: list[float] = []
     index = np.arange(len(dates))
     for _ in range(BOOTSTRAP_DRAWS):
         picked = rng.choice(index, size=len(dates), replace=True)
-        pooled: list[float] = []
-        for position in picked:
-            pooled.extend(grouped[dates[position]])
-        if not pooled:
+        pooled = np.concatenate([arrays[position] for position in picked])
+        if pooled.size == 0:
             continue
-        medians.append(median(pooled))
-        means.append(sum(pooled) / len(pooled))
+        medians.append(float(np.median(pooled)))
+        means.append(float(pooled.mean()))
     if not medians:
         return {"n_clusters": len(dates), "median_ci95": None, "mean_ci95": None}
     return {
@@ -73,39 +75,40 @@ def _cluster_bootstrap(
 
 
 def _paired_difference(
-    left: dict[str, list[float]],
-    right: dict[str, list[float]],
+    left: dict[str, np.ndarray],
+    right: dict[str, np.ndarray],
     rng: np.random.Generator,
 ) -> dict[str, Any]:
     """Bootstrap the median gap between two cohorts on the *same* dates."""
     shared = sorted(set(left) & set(right))
     if len(shared) < 2:
         return {"n_shared_dates": len(shared), "median_diff_ci95": None}
+    left_arrays = [left[date] for date in shared]
+    right_arrays = [right[date] for date in shared]
     diffs: list[float] = []
     index = np.arange(len(shared))
     for _ in range(BOOTSTRAP_DRAWS):
         picked = rng.choice(index, size=len(shared), replace=True)
-        pooled_left: list[float] = []
-        pooled_right: list[float] = []
-        for position in picked:
-            pooled_left.extend(left[shared[position]])
-            pooled_right.extend(right[shared[position]])
-        if not pooled_left or not pooled_right:
+        pooled_left = np.concatenate([left_arrays[position] for position in picked])
+        pooled_right = np.concatenate([right_arrays[position] for position in picked])
+        if pooled_left.size == 0 or pooled_right.size == 0:
             continue
-        diffs.append(median(pooled_left) - median(pooled_right))
+        diffs.append(float(np.median(pooled_left) - np.median(pooled_right)))
     if not diffs:
         return {"n_shared_dates": len(shared), "median_diff_ci95": None}
     # The point estimate must live on the same population the interval was
     # resampled from — shared dates only. Pooling every date here and only
     # shared dates in the bootstrap produced a point estimate whose sign
     # disagreed with its own interval.
-    point_left = [value for date in shared for value in left[date]]
-    point_right = [value for date in shared for value in right[date]]
+    point_left = np.concatenate(left_arrays)
+    point_right = np.concatenate(right_arrays)
     return {
         "n_shared_dates": len(shared),
-        "n_left": len(point_left),
-        "n_right": len(point_right),
-        "median_diff_point": round(median(point_left) - median(point_right), 6),
+        "n_left": int(point_left.size),
+        "n_right": int(point_right.size),
+        "median_diff_point": round(
+            float(np.median(point_left) - np.median(point_right)), 6
+        ),
         "median_diff_ci95": [
             round(float(np.percentile(diffs, 2.5)), 6),
             round(float(np.percentile(diffs, 97.5)), 6),
