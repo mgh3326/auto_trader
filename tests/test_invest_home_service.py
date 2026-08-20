@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import fakeredis.aioredis
 import pytest
 
 from app.schemas.invest_home import Holding
@@ -153,6 +154,30 @@ def test_grouped_merges_same_market_assettype_currency_symbol() -> None:
     assert toss.sellableQuantity == 0
     assert toss.pendingSellQuantity == 0
     assert toss.referenceQuantity == 20
+
+
+@pytest.mark.unit
+def test_unknown_sellable_quantity_stays_null_through_grouping_and_serialization():
+    holding = _h(
+        source="toss_api",
+        accountKind="live",
+        symbol="AAPL",
+        market="US",
+        currency="USD",
+        assetCategory="us_stock",
+        sellableQuantity=None,
+    )
+
+    grouped = build_grouped_holdings([holding])
+
+    assert holding.model_dump(mode="json")["sellableQuantity"] is None
+    assert grouped[0].sellableQuantity is None
+    assert grouped[0].sourceBreakdown[0].sellableQuantity is None
+    assert grouped[0].model_dump(mode="json")["sellableQuantity"] is None
+    assert (
+        grouped[0].model_dump(mode="json")["sourceBreakdown"][0]["sellableQuantity"]
+        is None
+    )
 
 
 @pytest.mark.unit
@@ -1078,6 +1103,158 @@ async def test_get_held_pairs_reads_keys_without_building_home_projection():
         ("kr", "005930"),
         ("us", "BRK.B"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_readers():
+    from app.services.invest_home_service import InvestHomeService
+    from app.services.portfolio_snapshot_cache import (
+        PortfolioSnapshotCache,
+        portfolio_snapshot_scope,
+    )
+
+    class _ExplodingReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must not run a full home reader")
+
+    class _ManualKeyReader:
+        def __init__(self):
+            self.held_key_calls = 0
+
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must use the DB held-key projection")
+
+        async def fetch_held_pairs(self, *, user_id):
+            self.held_key_calls += 1
+            return [("kr", "005930")]
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=0.1,
+        poll_interval_seconds=0.01,
+    )
+    scope = portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
+    await cache.put(scope, {"schema_version": 1, "held_pairs": [["us", "AAPL"]]})
+    manual_reader = _ManualKeyReader()
+    service = InvestHomeService(
+        kis_reader=_ExplodingReader(),
+        upbit_reader=_ExplodingReader(),
+        manual_reader=manual_reader,
+        toss_api_reader=_ExplodingReader(),
+        snapshot_cache=cache,
+    )
+
+    assert await service.get_held_pairs(user_id=1) == [("us", "AAPL")]
+    assert manual_reader.held_key_calls == 0
+
+    await cache.delete(scope)
+    assert await service.get_held_pairs(user_id=1) == [("kr", "005930")]
+    assert manual_reader.held_key_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_sellable():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+    from app.services.portfolio_snapshot_cache import (
+        PortfolioSnapshotCache,
+        portfolio_snapshot_scope,
+    )
+
+    calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
+
+    class _CountingReader:
+        def __init__(self, source: str, holding: Holding | None = None):
+            self.source = source
+            self.holding = holding
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            if self.source == "kis":
+                await asyncio.sleep(3.2)
+            return _SourceFetchResult(
+                accounts=[], holdings=[self.holding] if self.holding else []
+            )
+
+    kis_reader = _CountingReader("kis", _h(symbol="005930"))
+    upbit_reader = _CountingReader(
+        "upbit",
+        _h(
+            source="upbit",
+            symbol="KRW-BTC",
+            market="CRYPTO",
+            assetType="crypto",
+            assetCategory="crypto",
+        ),
+    )
+    toss_reader = _CountingReader(
+        "toss_api",
+        _h(
+            source="toss_api",
+            symbol="AAPL",
+            market="US",
+            currency="USD",
+            assetCategory="us_stock",
+            sellableQuantity=None,
+        ),
+    )
+    manual_reader = _CountingReader("manual")
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=3,
+        poll_interval_seconds=0.01,
+    )
+    cache_b = PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=3,
+        poll_interval_seconds=0.01,
+    )
+    service_a = InvestHomeService(
+        kis_reader=kis_reader,
+        upbit_reader=upbit_reader,
+        manual_reader=manual_reader,
+        toss_api_reader=toss_reader,
+        snapshot_cache=cache_a,
+    )
+    service_b = InvestHomeService(
+        kis_reader=kis_reader,
+        upbit_reader=upbit_reader,
+        manual_reader=manual_reader,
+        toss_api_reader=toss_reader,
+        snapshot_cache=cache_b,
+    )
+
+    first, second = await asyncio.gather(
+        service_a.get_home(user_id=1), service_b.get_home(user_id=1)
+    )
+
+    assert first == second
+    assert calls == {"kis": 1, "upbit": 1, "toss_api": 1, "manual": 1}
+    payload = await cache_a.get(
+        portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
+    )
+    assert payload is not None
+
+    def _contains_sellable(value):
+        if isinstance(value, dict):
+            return any(
+                "sellable" in str(key).lower() or _contains_sellable(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(_contains_sellable(item) for item in value)
+        return False
+
+    assert not _contains_sellable(payload)
 
 
 @pytest.mark.asyncio

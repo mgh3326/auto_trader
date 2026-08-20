@@ -535,6 +535,74 @@ async def test_sell_preflight_ignores_warm_cache_and_rechecks_fresh_broker_sella
 
 
 @pytest.mark.asyncio
+async def test_us_sell_modify_preflight_compares_inherited_original_quantity(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("150"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    # Toss US modify rejects new_quantity, so the replacement inherits the
+    # original order quantity. A fresh broker result below that quantity must
+    # fail closed before the replacement POST; None must not skip the compare.
+    mock_client.sellable_quantity_value = Decimal("4")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert mock_client.placed_payloads == []
+    assert result["success"] is False
+    assert result["error_code"] == "fresh_sellable_insufficient"
+
+
+@pytest.mark.asyncio
 async def test_place_order_blocks_opposite_pending_before_post(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
     from app.core.config import settings
