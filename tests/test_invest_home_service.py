@@ -1058,7 +1058,7 @@ class _Reader:
 
 
 @pytest.mark.asyncio
-async def test_get_held_pairs_reads_keys_without_building_home_projection():
+async def test_get_held_pairs_fails_closed_without_snapshot_or_db_key_reader():
     from app.services.invest_home_service import InvestHomeService
 
     service = InvestHomeService(
@@ -1098,11 +1098,11 @@ async def test_get_held_pairs_reads_keys_without_building_home_projection():
         ),
     )
 
-    assert await service.get_held_pairs(user_id=1) == [
-        ("crypto", "KRW-BTC"),
-        ("kr", "005930"),
-        ("us", "BRK.B"),
-    ]
+    with pytest.raises(
+        RuntimeError,
+        match="portfolio_snapshot_unavailable:snapshot_cache_unusable",
+    ):
+        await service.get_held_pairs(user_id=1)
 
 
 @pytest.mark.asyncio
@@ -1152,7 +1152,11 @@ async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_reader
     assert manual_reader.held_key_calls == 0
 
     await cache.delete(scope)
-    assert await service.get_held_pairs(user_id=1) == [("kr", "005930")]
+    with pytest.raises(
+        RuntimeError,
+        match="portfolio_snapshot_unavailable:held_key_projection_missing_or_invalid",
+    ):
+        await service.get_held_pairs(user_id=1)
     assert manual_reader.held_key_calls == 1
 
 
