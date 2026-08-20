@@ -693,7 +693,9 @@ def test_before_breadcrumb_scrubs_telegram_bot_token_in_url():
         "message": (
             "https://api.telegram.org/bot222222222:ANOTHER-FAKE-TOKEN/sendMessage"
         ),
-        "data": {"url": "https://api.telegram.org/bot222222222:ANOTHER-FAKE-TOKEN/sendMessage"},
+        "data": {
+            "url": "https://api.telegram.org/bot222222222:ANOTHER-FAKE-TOKEN/sendMessage"
+        },
     }
 
     sanitized = sentry_module._before_breadcrumb(crumb, {})

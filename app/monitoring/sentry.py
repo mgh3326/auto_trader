@@ -58,7 +58,59 @@ _SENSITIVE_KEYWORDS = (
     "passwd",
     "api_key",
     "apikey",
+    "appkey",
+    "app_key",
+    "access_key",
+    "accesskey",
+    "client_secret",
+    "bot_token",
+    "webhook",
+    "credential",
 )
+
+# ROB-1305: value-shape scrubbing for secrets embedded inside strings (URLs,
+# span descriptions) that key-name filtering above cannot reach because the
+# secret is not itself a dict key — e.g. a Telegram bot token in a URL path,
+# or a KIS/broker API key in a query string captured by the httpx integration.
+_TELEGRAM_BOT_URL_RE = re.compile(
+    r"(?P<prefix>https?://api\.telegram\.org/bot)[^/\s\"']+",
+    flags=re.IGNORECASE,
+)
+_TELEGRAM_BOT_PATH_RE = re.compile(
+    r"(?P<prefix>/bot)[^/\s\"']+"
+    r"(?P<suffix>/(?:sendMessage|editMessageText|answerCallbackQuery|"
+    r"sendPhoto|sendDocument|getMe))",
+    flags=re.IGNORECASE,
+)
+_BEARER_TOKEN_RE = re.compile(r"(?P<prefix>\bBearer\s+)\S+", flags=re.IGNORECASE)
+_URL_BASIC_AUTH_RE = re.compile(
+    r"(?P<prefix>https?://)[^\s/@\"']+:[^\s/@\"']+@", flags=re.IGNORECASE
+)
+_SECRET_QUERY_PARAM_RE = re.compile(
+    r"(?P<prefix>[?&](?:api[_-]?key|app[_-]?key|app[_-]?secret|"
+    r"access[_-]?key|access[_-]?token|secret|token|password|passwd)=)"
+    r"[^&\s\"']+",
+    flags=re.IGNORECASE,
+)
+# Matches an exact secret-named field inside a serialized JSON string, e.g.
+# the JSON text captured in an MCP span's `mcp.tool.result.content` data.
+_JSON_SECRET_FIELD_RE = re.compile(
+    r'(?P<prefix>"(?:authorization|cookie|set-cookie|x-api-key|token|secret|'
+    r"password|passwd|api[_-]?key|app[_-]?key|access[_-]?key|access[_-]?token|"
+    r'client[_-]?secret|bot[_-]?token|webhook|credential)"\s*:\s*")[^"]*(?P<suffix>")',
+    flags=re.IGNORECASE,
+)
+
+
+def _scrub_secret_shapes_in_string(value: str) -> str:
+    """Redact secret-bearing substrings without deleting the surrounding text."""
+    scrubbed = _TELEGRAM_BOT_URL_RE.sub(r"\g<prefix>[REDACTED]", value)
+    scrubbed = _TELEGRAM_BOT_PATH_RE.sub(r"\g<prefix>[REDACTED]\g<suffix>", scrubbed)
+    scrubbed = _BEARER_TOKEN_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
+    scrubbed = _URL_BASIC_AUTH_RE.sub(r"\g<prefix>[REDACTED]@", scrubbed)
+    scrubbed = _SECRET_QUERY_PARAM_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
+    scrubbed = _JSON_SECRET_FIELD_RE.sub(r"\g<prefix>[Filtered]\g<suffix>", scrubbed)
+    return scrubbed
 
 
 def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> bool:
@@ -275,6 +327,9 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
     if isinstance(value, tuple):
         return tuple(_sanitize_in_place(item, parent_key) for item in value)
 
+    if isinstance(value, str):
+        return _scrub_secret_shapes_in_string(value)
+
     return value
 
 
@@ -326,9 +381,28 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
         return event
     is_mcp_transport_transaction = "/mcp" in transaction_name
 
+    request = event.get("request")
+    if isinstance(request, dict):
+        event["request"] = _sanitize_in_place(request)
+
     spans = event.get("spans", [])
     if not isinstance(spans, list):
         spans = []
+
+    # ROB-1305: scrub every span's description/data by key-name and by
+    # secret-value shape (e.g. a token embedded in a URL query string or
+    # path) — this covers non-MCP spans (httpx, sqlalchemy, ...) that the
+    # MCP-specific redaction below never touches. Structure (op, status,
+    # timestamps, span_id/trace_id) is left untouched.
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        description = span.get("description")
+        if isinstance(description, str):
+            span["description"] = _scrub_secret_shapes_in_string(description)
+        span_data = span.get("data")
+        if isinstance(span_data, dict):
+            span["data"] = _sanitize_in_place(span_data)
 
     found_mcp_span = False
     transaction_renamed = False

@@ -610,9 +610,10 @@ class Settings(BaseSettings):
     SENTRY_ENVIRONMENT: str | None = None
     SENTRY_TRACES_SAMPLE_RATE: float = 1.0
     SENTRY_PROFILES_SAMPLE_RATE: float = 1.0
-    SENTRY_SEND_DEFAULT_PII: bool = True
+    # ROB-1305: default-off. PII/prompt capture is opt-in via env, not repo default.
+    SENTRY_SEND_DEFAULT_PII: bool = False
     SENTRY_ENABLE_LOG_EVENTS: bool = True
-    SENTRY_MCP_INCLUDE_PROMPTS: bool = True
+    SENTRY_MCP_INCLUDE_PROMPTS: bool = False
     SENTRY_DEBUG: bool = False
 
     # Monitoring test route exposure
