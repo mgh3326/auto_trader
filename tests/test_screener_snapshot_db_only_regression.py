@@ -254,3 +254,124 @@ async def test_analyst_consensus_cache_hit_skips_provider() -> None:
     assert calls["n"] == 0
     assert result is not None
     assert result["total_count"] == 5
+
+
+# ---------------------------------------------------------------------------
+# ROB-1309 verifier round-1 BLOCKER regression: unlike the tests above, these
+# do NOT monkeypatch `build_screener_results` or `ScreenerService` themselves
+# — they exercise the REAL production builder boundary
+# (`_build_snapshot_page` -> `app.services.invest_view_model.screener_service
+# .build_screener_results` -> `screening_service.list_screening`) and prove
+# that boundary is never crossed for the three preset/market combinations the
+# independent verifier reproduced falling through to the generic live
+# provider: `consecutive_gainers` (KR, loader returns None), US
+# `growth_expectation` (no snapshot branch exists at all), and
+# `crypto_high_volume` (crypto, loader returns None on a missing/stale
+# partition). Only the snapshot loader functions are patched (to simulate a
+# missing/stale partition/branch) — the real `build_screener_results` control
+# flow, including its `snapshot_only` fail-closed gate, runs unmodified.
+# ---------------------------------------------------------------------------
+
+
+def _boom_list_screening(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Spy on the REAL generic-provider entrypoint `ScreenerService.list_screening`
+    — raises if screen_stocks_snapshot ever reaches it, for ANY preset/market."""
+    calls: list[dict[str, Any]] = []
+
+    async def _boom(self, **kwargs: Any):  # noqa: ARG001
+        calls.append(kwargs)
+        raise AssertionError(
+            f"screen_stocks_snapshot must never call the generic live "
+            f"ScreenerService.list_screening provider: {kwargs}"
+        )
+
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService.list_screening", _boom
+    )
+    return calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_screen_stocks_snapshot_consecutive_gainers_fails_closed_not_generic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduces verifier finding #1: consecutive_gainers with a missing/
+    unreadable snapshot partition (loader returns None) must fail closed to
+    an empty DB result — never fall through to the real
+    ScreenerService.list_screening (the generic live/tvscreener path)."""
+    _no_provider_calls_guard(monkeypatch)
+    _boom_kis_positions(monkeypatch)
+    list_screening_calls = _boom_list_screening(monkeypatch)
+
+    async def _no_partition(*_args: Any, **_kwargs: Any):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service"
+        "._load_consecutive_gainers_from_snapshots",
+        _no_partition,
+    )
+    monkeypatch.setattr(snapshot_tool, "_session_factory", lambda: lambda: _FakeCM())
+
+    out = await snapshot_tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+
+    assert list_screening_calls == []
+    assert "error" not in out or out.get("error") is None
+    assert out["results"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_screen_stocks_snapshot_us_growth_expectation_fails_closed_not_generic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduces verifier finding #1: US growth_expectation has NO dedicated
+    snapshot branch at all in build_screener_results — it must still fail
+    closed (via snapshot_only) rather than reaching the real
+    ScreenerService.list_screening."""
+    _no_provider_calls_guard(monkeypatch)
+    _boom_kis_positions(monkeypatch)
+    list_screening_calls = _boom_list_screening(monkeypatch)
+    monkeypatch.setattr(snapshot_tool, "_session_factory", lambda: lambda: _FakeCM())
+
+    out = await snapshot_tool.screen_stocks_snapshot_impl(
+        preset="growth_expectation", market="us"
+    )
+
+    assert list_screening_calls == []
+    assert "error" not in out or out.get("error") is None
+    assert out["results"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_screen_stocks_snapshot_crypto_high_volume_fails_closed_not_generic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduces verifier finding #1: crypto_high_volume with a missing/stale
+    crypto snapshot partition (loader returns None) must fail closed rather
+    than falling through to the real ScreenerService.list_screening."""
+    _no_provider_calls_guard(monkeypatch)
+    _boom_kis_positions(monkeypatch)
+    list_screening_calls = _boom_list_screening(monkeypatch)
+
+    async def _no_partition(*_args: Any, **_kwargs: Any):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service"
+        "._load_crypto_rows_from_snapshots",
+        _no_partition,
+    )
+    monkeypatch.setattr(snapshot_tool, "_session_factory", lambda: lambda: _FakeCM())
+
+    out = await snapshot_tool.screen_stocks_snapshot_impl(
+        preset="crypto_high_volume", market="crypto"
+    )
+
+    assert list_screening_calls == []
+    assert "error" not in out or out.get("error") is None
+    assert out["results"] == []

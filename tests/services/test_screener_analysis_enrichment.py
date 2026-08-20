@@ -405,6 +405,63 @@ async def test_enrich_snapshot_page_adds_consensus_rsi_and_summary(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_enrich_snapshot_page_target_only_us_consensus_survives_to_analysis_context(
+    monkeypatch, session_factory_noop
+):
+    """ROB-1309 verifier BLOCKER #2, end-to-end: Yahoo's common US
+    "target-only" shape (total_count=None, no recommendation counts, but
+    target-price fields populated) must survive through the FULL
+    `enrich_snapshot_page` pipeline into `analysisContext.consensus` — not
+    just the cache layer (see test_analyst_consensus_cache.py), and not via
+    a monkeypatched enrich_snapshot_page (see test_screener_enrich_tool.py).
+    This calls the real function with a fake opinion_provider only."""
+
+    async def _fake_rsi(db, *, market: str, symbols: list[str]) -> dict[str, float]:
+        return {}
+
+    async def _fake_sector(**kwargs):
+        return {}
+
+    async def _fake_opinions(*, symbol: str, market: str, limit: int):
+        assert market == "us"
+        return {
+            "source": "yfinance",
+            "consensus": {
+                "total_count": None,
+                "avg_target_price": 250.0,
+                "current_price": 200.0,
+                "upside_pct": 25.0,
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment._rsi_by_symbol",
+        _fake_rsi,
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment._sector_labels_for_page",
+        _fake_sector,
+    )
+
+    out = await enrich_snapshot_page(
+        rows=[{"symbol": "AAPL", "analystLabel": "-"}],
+        market="us",
+        session_factory=session_factory_noop,
+        opinion_provider=_fake_opinions,
+    )
+
+    assert out["summary"]["consensusSucceeded"] == 1
+    (row,) = out["results"]
+    consensus = row["analysisContext"]["consensus"]
+    assert consensus is not None
+    assert consensus["totalCount"] is None
+    assert consensus["avgTargetPrice"] == pytest.approx(250.0)
+    assert consensus["upsidePct"] == pytest.approx(25.0)
+    assert "analyst_consensus_missing" not in row["analysisContext"]["warnings"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_enrich_snapshot_page_fails_open_when_rsi_lookup_errors(
     monkeypatch, session_factory_noop
 ):
