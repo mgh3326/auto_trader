@@ -23,6 +23,7 @@ reappear.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -161,14 +162,33 @@ def test_runbook_keeps_full_regeneration_in_ci_not_local_verification() -> None:
     recipe that overwrites all committed manifests for a one-file addition.
     """
     text = RUNBOOK_PATH.read_text(encoding="utf-8")
+    section_four = text.split("## 4. Normal test-file change", 1)[1].split(
+        "### 4.1 Duration refresh", 1
+    )[0]
     section_seven = text.split("## 7. Verifying locally", 1)[1].split(
         "## 8. Explicitly unchanged", 1
     )[0]
+
+    # The prohibition sentence itself names `generate`, so inspect executable
+    # shell fences for the destructive command rather than using a raw
+    # substring assertion on all prose.
+    shell_blocks = re.findall(r"```(?:bash)?\n(.*?)```", section_four, flags=re.DOTALL)
+    assert all(
+        not (
+            "file_shard_plan generate" in block and "--manifest-dir ci_shards" in block
+        )
+        for block in shell_blocks
+    )
+
     assert "file_shard_plan generate" not in section_seven
     assert "--manifest-dir ci_shards" not in section_seven
     normalized_section = " ".join(section_seven.split())
     assert (
-        "Full-regeneration idempotence is self-checked in CI by the "
-        "duration-refresh workflow's `Validate regenerated file-shard manifests` step"
+        "Full-regeneration idempotence is locked by the unit tests listed above, "
+        "including `test_cli_generate_twice_is_byte_identical`." in normalized_section
+    )
+    assert (
+        "`Validate regenerated file-shard manifests (exact-cover)` step separately "
+        "confirms that the manifests it just wrote form an exact cover"
         in normalized_section
     )

@@ -369,11 +369,11 @@ jobs:
     # collection -- if the weekly refresh rebuilt .call_durations.json but
     # never regenerated the manifests from it, LPT balance would silently
     # drift out of sync with reality with no duration-refresh workflow left
-    # to correct it (exact-cover would still hold, since file membership is unaffected by
-    # weight drift, but the "keep predicted shard weight spread low" intent
-    # this planner exists for would quietly rot). Regenerate here, from the
-    # same freshly-built artifact and the same authoritative capture this
-    # job already validated .call_durations.json against, so both land in
+    # to correct it (exact-cover would still hold, since file membership is
+    # unaffected by weight drift, but the "keep predicted shard weight spread
+    # low" intent this planner exists for would quietly rot). Regenerate
+    # here from the same freshly-built artifact and authoritative capture
+    # against which this job already validated .call_durations.json, so both land in
     # the same refresh PR in lockstep.
     - name: Regenerate file-shard manifests
       run: |
@@ -516,10 +516,9 @@ jobs:
           generate` summed per file to rebuild `ci_shards/shard-{1..4}.txt` +
           `ci_shards/weights.json` from the same fresh measurement and the
           same authoritative capture, self-checked with `... check`
-          immediately after — so shard balance never drifts out of sync with
-          reality unless the duration-refresh workflow corrects it (exact-cover is unaffected
-          either way; this keeps the *balance*, not just correctness,
-          current).
+          immediately after. This same run refreshes the shard balance alongside
+          the duration data; exact cover is unaffected either way. The workflow
+          keeps the *balance*, not just membership correctness, current.
 
           - recorded `.test_durations` entries: `${{ needs.merge.outputs.before_entries }}` → `${{ needs.merge.outputs.after_entries }}`
 

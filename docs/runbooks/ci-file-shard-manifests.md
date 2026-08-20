@@ -86,12 +86,12 @@ addition. Do not run `file_shard_plan generate` for these cases.
 
 `generate` has no incremental mode. It rebuilds LPT assignment from one global
 `(-weight, path)` ordering and overwrites every manifest. A non-destructive
-measurement found that regenerating with the committed `.call_durations.json`
-still moved `1192/1666` shared files (`71.5%`) between shards; the cause of
-that churn is not asserted here. A one-file add is therefore not a use case for
-full regeneration. Exact-cover checks membership exactly once; it does **not**
-check weight balance. The minimal entry is sufficient for normal test-file work
-and avoids unrelated duration-refresh churn.
+measurement using the committed `.call_durations.json` and a collection derived
+from that artifact (`1666` files) still moved `1192/1666` shared files (`71.5%`)
+between shards; the cause of that churn is not asserted here. A one-file add is
+therefore not a use case for full regeneration. Exact-cover checks membership
+exactly once; it does **not** check weight balance. The minimal entry is
+sufficient for normal test-file work and avoids unrelated duration-refresh churn.
 
 Choose the existing shard with the fewest entries and state that basis in the
 PR. Then verify the exact cover:
@@ -291,12 +291,13 @@ uv run pytest tests/ci/test_file_shard_plan.py \
   scripts/merge_test_durations_test.py \
   scripts/call_durations_test.py \
   tests/ci/test_file_shard_plan_workflow_entrypoint.py -q -ra
-
 ```
 
-Full-regeneration idempotence is self-checked in CI by the duration-refresh
-workflow's `Validate regenerated file-shard manifests` step (§6.1). Local
-reproduction is unnecessary.
+Full-regeneration idempotence is locked by the unit tests listed above,
+including `test_cli_generate_twice_is_byte_identical`. The duration-refresh
+workflow's `Validate regenerated file-shard manifests (exact-cover)` step
+separately confirms that the manifests it just wrote form an exact cover (§6.1).
+Neither requires a local full regeneration.
 
 `mapfile` (used to load a manifest into `pytest`'s argv in both workflows)
 is a bash 4+ builtin, absent from macOS's stock bash 3.2 — local
