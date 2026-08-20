@@ -663,3 +663,338 @@ async def test_briefing_summary_reuses_whole_snapshot_without_source_recollectio
 
     assert result["total_positions"] == 1
     assert result["held_pairs"] == [("kr", "005930")]
+
+
+def _legacy_projection_home_response():
+    from app.schemas.invest_home import (
+        Account,
+        CashAmounts,
+        HomeSummary,
+        InvestHomeResponse,
+        Holding,
+    )
+
+    def account(
+        account_id: str,
+        display_name: str,
+        source: str,
+        account_kind: str = "live",
+    ) -> Account:
+        return Account(
+            accountId=account_id,
+            displayName=display_name,
+            source=source,
+            accountKind=account_kind,
+            includedInHome=True,
+            valueKrw=1_000_000,
+            cashBalances=CashAmounts(),
+            buyingPower=CashAmounts(),
+        )
+
+    return InvestHomeResponse(
+        homeSummary=HomeSummary(
+            includedSources=["kis", "upbit", "toss_manual"],
+            excludedSources=[],
+            totalValueKrw=1_000_000,
+        ),
+        accounts=[
+            account("kis_account", "KIS", "kis"),
+            account("upbit_account", "Upbit", "upbit"),
+            account("toss_manual_account", "Toss 수동", "toss_manual", "manual"),
+        ],
+        holdings=[
+            Holding(
+                holdingId="kis:kr:005930",
+                accountId="kis_account",
+                source="kis",
+                accountKind="live",
+                symbol="005930",
+                market="KR",
+                assetType="equity",
+                assetCategory="kr_stock",
+                displayName="Samsung",
+                quantity=10,
+                averageCost=70_000,
+                costBasis=700_000,
+                currency="KRW",
+                valueNative=705_000,
+                valueKrw=705_000,
+                pnlKrw=5_000,
+                pnlRate=0.00714,
+                sellableQuantity=7,
+                pendingSellQuantity=3,
+            ),
+            Holding(
+                holdingId="kis:us:AAPL",
+                accountId="kis_account",
+                source="kis",
+                accountKind="live",
+                symbol="AAPL",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Apple",
+                quantity=1,
+                averageCost=100,
+                costBasis=100,
+                currency="USD",
+                valueNative=110,
+                valueKrw=14300,
+                pnlKrw=1300,
+                pnlRate=0.1,
+            ),
+            Holding(
+                holdingId="upbit:BTC",
+                accountId="upbit_account",
+                source="upbit",
+                accountKind="live",
+                symbol="BTC",
+                market="CRYPTO",
+                assetType="crypto",
+                assetCategory="crypto",
+                displayName="BTC",
+                quantity=2,
+                averageCost=100,
+                costBasis=200,
+                currency="KRW",
+                valueNative=220,
+                valueKrw=220,
+                pnlKrw=20,
+                pnlRate=0.1,
+            ),
+            Holding(
+                holdingId="manual:99",
+                accountId="42",
+                source="toss_manual",
+                accountKind="manual",
+                symbol="035930",
+                market="KR",
+                assetType="equity",
+                assetCategory="kr_stock",
+                displayName="Manual Kakao",
+                quantity=1,
+                averageCost=50_000,
+                costBasis=50_000,
+                currency="KRW",
+                valueNative=55_000,
+                valueKrw=55_000,
+                pnlKrw=5_000,
+                pnlRate=0.1,
+            ),
+        ],
+        groupedHoldings=[],
+    )
+
+
+@pytest.mark.unit
+def test_cached_home_projection_preserves_legacy_mcp_contracts() -> None:
+    from app.services.portfolio_snapshot import portfolio_snapshot_to_mcp_positions
+
+    positions = portfolio_snapshot_to_mcp_positions(_legacy_projection_home_response())
+    by_symbol = {position["symbol"]: position for position in positions}
+
+    kis_kr = by_symbol["005930"]
+    assert kis_kr["account"] == "kis"
+    assert kis_kr["profit_rate"] == pytest.approx(0.714)
+
+    kis_us = by_symbol["AAPL"]
+    assert kis_us["account"] == "kis"
+    assert kis_us["profit_loss"] == pytest.approx(10.0)
+    assert kis_us["profit_rate"] == pytest.approx(10.0)
+
+    upbit = by_symbol["KRW-BTC"]
+    assert upbit["account"] == "upbit"
+
+    manual = by_symbol["035930"]
+    assert manual["account"] == "toss"
+    assert manual["account_name"] == "Toss 수동"
+
+
+@pytest.mark.asyncio
+async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    scope = portfolio_holdings.portfolio_snapshot_scope(
+        user_id=1, include_paper=False, paper_sources=None
+    )
+    await cache.put(scope, serialize_portfolio_snapshot(_legacy_projection_home_response()))
+    monkeypatch.setattr(portfolio_holdings, "get_shared_portfolio_snapshot_cache", lambda: cache)
+
+    seen_symbols: list[str] = []
+
+    async def fake_price_map(positions):
+        seen_symbols.extend(
+            str(position["symbol"])
+            for position in positions
+            if position["instrument_type"] == "crypto"
+        )
+        return {("crypto", "KRW-BTC"): 123.0}, [], {}, {}
+
+    monkeypatch.setattr(portfolio_holdings, "_fetch_price_map_for_positions", fake_price_map)
+
+    positions, errors, _, _ = await portfolio_holdings._collect_portfolio_positions(
+        account=None,
+        market="crypto",
+        include_current_price=True,
+        user_id=1,
+    )
+
+    assert errors == []
+    assert seen_symbols == ["KRW-BTC"]
+    assert positions[0]["symbol"] == "KRW-BTC"
+    assert positions[0]["current_price"] == pytest.approx(123.0)
+
+
+@pytest.mark.unit
+def test_portfolio_snapshot_serializer_drops_reconstructible_sellability_fields() -> None:
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+
+    payload = serialize_portfolio_snapshot(_legacy_projection_home_response())
+    raw_holdings = payload["response"]["holdings"]
+
+    assert raw_holdings
+    for holding in raw_holdings:
+        assert "sellableQuantity" not in holding
+        assert "pendingSellQuantity" not in holding
+        assert not any("sellable" in str(key).lower() for key in holding)
+        assert not any("pending_sell" in str(key).lower() for key in holding)
+
+
+@pytest.mark.asyncio
+async def test_process_shared_snapshot_renews_slow_owner_lease_without_duplicate_fetch():
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=1,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+    cache_b = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=1,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+    owner_started = asyncio.Event()
+    calls = {"owner": 0, "waiter": 0}
+
+    async def owner_fetch() -> dict[str, object]:
+        calls["owner"] += 1
+        owner_started.set()
+        await asyncio.sleep(1.2)
+        return {"held_pairs": [["us", "AAPL"]]}
+
+    async def waiter_fetch() -> dict[str, object]:
+        calls["waiter"] += 1
+        return {"held_pairs": [["us", "AAPL"]]}
+
+    owner_task = asyncio.create_task(cache_a.get_or_fetch("slow-lease", owner_fetch))
+    await owner_started.wait()
+    waiter_task = asyncio.create_task(cache_b.get_or_fetch("slow-lease", waiter_fetch))
+    owner_payload, waiter_payload = await asyncio.gather(owner_task, waiter_task)
+
+    assert owner_payload == waiter_payload == {"held_pairs": [["us", "AAPL"]]}
+    assert calls == {"owner": 1, "waiter": 0}
+
+
+@pytest.mark.asyncio
+async def test_corrupt_whole_snapshot_fallback_is_singleflight_across_facades():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+    from app.services.portfolio_snapshot_cache import (
+        PortfolioSnapshotCache,
+        portfolio_snapshot_scope,
+    )
+
+    calls = {"kis": 0, "upbit": 0, "manual": 0}
+
+    class _Reader:
+        def __init__(self, source: str):
+            self.source = source
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    cache_b = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    scope = portfolio_snapshot_scope(
+        user_id=1, include_paper=False, paper_sources=None
+    )
+    await cache_a.put(scope, {"schema_version": 999, "response": {}})
+
+    service_a = InvestHomeService(
+        kis_reader=_Reader("kis"),
+        upbit_reader=_Reader("upbit"),
+        manual_reader=_Reader("manual"),
+        snapshot_cache=cache_a,
+    )
+    service_b = InvestHomeService(
+        kis_reader=_Reader("kis"),
+        upbit_reader=_Reader("upbit"),
+        manual_reader=_Reader("manual"),
+        snapshot_cache=cache_b,
+    )
+
+    home_a, home_b = await asyncio.gather(
+        service_a.get_home(user_id=1),
+        service_b.get_home(user_id=1),
+    )
+
+    assert home_a.holdings == home_b.holdings == []
+    assert calls == {"kis": 1, "upbit": 1, "manual": 1}
+
+
+@pytest.mark.asyncio
+async def test_calendar_cold_snapshot_fails_closed_without_live_reader_fanout():
+    from app.services.invest_home_service import InvestHomeService
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    calls = {"kis": 0, "upbit": 0, "toss_api": 0}
+
+    class _ExplodingLiveReader:
+        def __init__(self, source: str):
+            self.source = source
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            raise AssertionError("calendar must not run full live home readers")
+
+    class _ManualKeyReader:
+        held_key_calls = 0
+
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must use the DB held-key projection")
+
+        async def fetch_held_pairs(self, *, user_id):
+            self.held_key_calls += 1
+            return [("kr", "005930")]
+
+    cache = PortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=5,
+    )
+    manual_reader = _ManualKeyReader()
+    service = InvestHomeService(
+        kis_reader=_ExplodingLiveReader("kis"),
+        upbit_reader=_ExplodingLiveReader("upbit"),
+        manual_reader=manual_reader,
+        toss_api_reader=_ExplodingLiveReader("toss_api"),
+        snapshot_cache=cache,
+    )
+
+    with pytest.raises(RuntimeError, match="portfolio_snapshot_unavailable"):
+        await service.get_held_pairs(user_id=1)
+
+    assert calls == {"kis": 0, "upbit": 0, "toss_api": 0}
+    assert manual_reader.held_key_calls == 1
