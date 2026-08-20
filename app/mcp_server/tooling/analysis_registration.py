@@ -29,6 +29,7 @@ from app.mcp_server.tooling.research_pipeline_read import (
     research_summary_get_impl,
     stage_analysis_get_impl,
 )
+from app.mcp_server.tooling.screener_enrich_tool import screen_stocks_enrich_impl
 from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
 from app.mcp_server.tooling.spike_attribution_registration import (
     register_spike_attribution_tools,
@@ -47,6 +48,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_stock_batch",
     "screen_stocks",
     "screen_stocks_snapshot",
+    "screen_stocks_enrich",
     "discover_buy_candidates_fanout",
     "evaluate_buy_gate_ab_shadow",
     "get_spike_attribution",
@@ -438,27 +440,33 @@ def register_analysis_tools(
             "riskContext on each row carries the support kind/strength. "
             "filters=[{field, operator(gte|lte|eq), value}] tune the preset's "
             "thresholds (threaded for consecutive_gainers and crypto). "
-            "exclude_held hides KIS-live portfolio symbols; exclude_watched is "
+            "exclude_held is NOT supported here (ROB-1309: it would require a "
+            "live KIS holdings call, which this DB-only tool never makes) — "
+            "passing it returns the same fail-closed redirectTool= "
+            "screen_stocks_enrich error as min_analyst_count/min_analyst_buy_count; "
+            "isHeld is always false on every returned row. exclude_watched is "
             "accepted for compatibility but currently emits an explicit unsupported "
             "warning in MCP because no user watchlist context is wired. "
             "exclude_symbols hides already-processed symbols. "
-            "min_analyst_count (coverage), min_analyst_buy_count (buy-count), "
-            "min_market_cap (raw marketCapValue), and min/max_market_cap_eok "
+            "min_market_cap (raw marketCapValue) and min/max_market_cap_eok "
             "(float, unit 1억원) apply discovery-quality filters across the result set. "
             "sort='matched_presets_desc' ranks multi-preset intersections first. "
-            "Read-only. Preset sweeps are capped at 5 presets; analyst filters require at most "
-            "200 merged rows before enrichment. "
-            "KR analyst consensus (buy/hold/sell counts + target prices) is cached "
-            "daily per symbol (Redis, KST-date TTL); the displayed target-upside is "
-            "recomputed each call from a fresh price so it stays intraday-current. "
-            "min_analyst_* filters resolve consensus from the cache and only the "
-            "returned page is enriched. "
+            "Read-only. Preset sweeps are capped at 5 presets. "
+            "ROB-1309: this tool is DB-only — it makes ZERO external HTTP calls "
+            "(no sector lazy-fill, no analyst-consensus fetch, no live price "
+            "fetch) and therefore never returns analysisContext/analystLabel and "
+            "never applies min_analyst_count/min_analyst_buy_count (passing "
+            "either returns an explicit error pointing at screen_stocks_enrich "
+            "instead of silently ignoring them or making a network call). Use "
+            "the separate screen_stocks_enrich tool on this tool's returned page "
+            "for KR/US analyst consensus (buy/hold/sell counts + target prices, "
+            "both cached per symbol in Redis with a call-time-fresh target-upside "
+            "recompute), sector labels, RSI14, exclude_held/isHeld (live KIS "
+            "holdings), and min_analyst_* filtering. "
             "priceLabel, changePctLabel, and metricValueLabel are values at the "
             "snapshot time and may be stale by up to one session; before confirming "
             "a top candidate, revalidate it separately (get_quote / "
             "get_support_resistance / analyze_stock_batch). "
-            "analysisContext.rsi14, when present, is the "
-            "separately exposed RSI field. "
             "Results are capped (default 40) and paginated via limit/offset."
         ),
     )
@@ -480,6 +488,81 @@ def register_analysis_tools(
         offset: int = 0,
     ) -> dict[str, Any]:
         return await screen_stocks_snapshot_impl(
+            preset=preset,
+            presets=presets,
+            market=market,
+            filters=filters,
+            exclude_watched=exclude_watched,
+            exclude_held=exclude_held,
+            exclude_symbols=exclude_symbols,
+            min_analyst_count=min_analyst_count,
+            min_analyst_buy_count=min_analyst_buy_count,
+            min_market_cap=min_market_cap,
+            min_market_cap_eok=min_market_cap_eok,
+            max_market_cap_eok=max_market_cap_eok,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+
+    @mcp.tool(
+        name="screen_stocks_enrich",
+        description=(
+            "ROB-1309: live-enrichment counterpart to screen_stocks_snapshot. "
+            "Runs the identical preset/filter/discovery/pagination pipeline as "
+            "screen_stocks_snapshot (same params) and THEN makes external calls: "
+            "KR AND US analyst consensus (buy/hold/sell counts + target prices) "
+            "are BOTH cached per symbol via the same Redis cache-aside "
+            "(provider-local date TTL — KST for KR/Naver, US/Eastern for "
+            "US/yfinance); a cache hit skips the provider entirely on either "
+            "market, and the displayed target-upside is recomputed each call "
+            "from a fresh (lightweight, single-field) price fetch so it stays "
+            "intraday-current; sector labels are lazy-filled (KR Naver / "
+            "US yfinance) and persisted for future calls; RSI14 is computed "
+            "from the persisted snapshot closes; exclude_held/isHeld marking "
+            "makes the one live KIS holdings call that screen_stocks_snapshot "
+            "no longer makes. min_analyst_count (coverage) "
+            "and min_analyst_buy_count (buy-count) filter on resolved consensus "
+            "counts BEFORE pagination (capped at 200 merged rows before "
+            "enrichment); only the returned page is fully enriched. Only call "
+            "this after screen_stocks_snapshot when you actually need analyst "
+            "consensus / sector labels / analyst-count filtering — every call "
+            "fans out one HTTP round-trip per uncached symbol on the page and "
+            "can take tens of seconds for a full page. A symbol whose "
+            "sector/consensus fetch just failed (delisted, renamed, parse-miss, "
+            "rate-limited) is not retried within a bounded retry-suppression "
+            "window; every skip/failure is reported under "
+            "meta.enrichment_excluded (a row whose enrichment fetch merely "
+            "failed/skipped stays in results, only the specific field is "
+            "missing). A symbol with >=3 CONSECUTIVE failures (tracked across "
+            "retry windows) IS removed from results on this call (same "
+            "per-call pattern as meta.halted_suspect_excluded) — non-silent "
+            "via meta.chronic_failure_candidates/meta.chronic_excluded_count, "
+            "and self-healing: the very next successful fetch clears it and "
+            "the symbol returns on a later call. This tool never mutates "
+            "kr_symbol_universe/us_symbol_universe rows directly (no DDL/DML "
+            "to those tables) — only the response's results for this call. "
+            "Read-only wrt broker/order/watch state."
+        ),
+    )
+    async def screen_stocks_enrich(
+        preset: str | None = None,
+        presets: list[str] | None = None,
+        market: Literal["kr", "us", "crypto"] = "kr",
+        filters: list[dict[str, Any]] | None = None,
+        exclude_watched: bool = False,
+        exclude_held: bool = False,
+        exclude_symbols: list[str] | None = None,
+        min_analyst_count: int | None = None,
+        min_analyst_buy_count: int | None = None,
+        min_market_cap: float | None = None,
+        min_market_cap_eok: float | None = None,
+        max_market_cap_eok: float | None = None,
+        sort: Literal["matched_presets_desc"] | None = None,
+        limit: int = 40,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        return await screen_stocks_enrich_impl(
             preset=preset,
             presets=presets,
             market=market,

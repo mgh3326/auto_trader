@@ -194,6 +194,7 @@ tests/services/shadow_replay/test_scoring.py
 tests/services/test_alpaca_paper_anomaly_checks.py
 tests/services/test_alpaca_paper_ledger_lifecycle_fixture.py
 tests/services/test_downside_watch_service.py
+tests/services/test_enrichment_negative_cache.py
 tests/services/test_kis_mock_lifecycle_service.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_live_correlation.py
@@ -375,9 +376,12 @@ tests/test_rob878_decision_history_actions.py
 tests/test_route_request.py
 tests/test_router_preopen.py
 tests/test_router_preopen_news_brief.py
+tests/test_screener_enrich_tool.py
 tests/test_screener_presets_pr2c2.py
 tests/test_screener_router.py
 tests/test_screener_service_investor_flow_chip.py
+tests/test_screener_snapshot_db_only_regression.py
+tests/test_screener_snapshot_halted_suspect_boundary.py
 tests/test_screening_common.py
 tests/test_screening_enrichment.py
 tests/test_screening_kr.py

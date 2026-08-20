@@ -48,6 +48,8 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     "analyze_portfolio": 120.0,
     "screen_stocks": 120.0,
     "screen_stocks_snapshot": 120.0,
+    # ROB-1309: enrichment lives here now (screen_stocks_snapshot is DB-only).
+    "screen_stocks_enrich": 120.0,
     # Single heavy fan-out.
     "analyze_stock": 90.0,
     "get_holdings": 120.0,

@@ -2,6 +2,12 @@
 
 Unit tests with build_screener_results + session factory monkeypatched (no DB):
 filter parsing → conditions, catalog exposure, threading, fail-soft on bad input.
+
+ROB-1309: screen_stocks_snapshot_impl is now DB-only (zero external HTTP by
+default) — enrichment (sector lazy-fill, analyst consensus, RSI) and
+min_analyst_count/min_analyst_buy_count filtering moved to the separate
+screen_stocks_enrich_impl tool; see tests/test_screener_enrich_tool.py and
+tests/test_screener_snapshot_db_only_regression.py for that coverage.
 """
 
 from __future__ import annotations
@@ -40,42 +46,6 @@ def _fake_external_boundaries_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(
         "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
         _empty_positions,
-    )
-
-    async def _no_redis():
-        return None
-
-    async def _identity_enrichment(
-        *,
-        rows: list[dict[str, Any]],
-        market: str,
-        session_factory,
-        opinion_provider=None,
-        fetch_kr_sector=None,
-        fetch_us_sector=None,
-    ) -> dict[str, Any]:
-        del (
-            market,
-            session_factory,
-            opinion_provider,
-            fetch_kr_sector,
-            fetch_us_sector,
-        )
-        return {
-            "results": rows,
-            "summary": {
-                "attempted": len(rows),
-                "consensusSucceeded": 0,
-                "rsiSucceeded": 0,
-                "sectorResolved": 0,
-                "warnings": [],
-            },
-        }
-
-    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _no_redis)
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
-        _identity_enrichment,
     )
 
 
@@ -268,347 +238,6 @@ async def test_offset_paginates_last_partial_page(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_enriches_only_returned_page(monkeypatch) -> None:
-    _patch_build_with_n_results(monkeypatch, 5)
-    captured: dict[str, Any] = {}
-
-    async def _fake_enrich_page(
-        *,
-        rows: list[dict[str, Any]],
-        market: str,
-        session_factory,
-        opinion_provider=None,
-        fetch_kr_sector=None,
-        fetch_us_sector=None,
-    ) -> dict[str, Any]:
-        del opinion_provider, fetch_kr_sector, fetch_us_sector
-        captured["symbols"] = [row["symbol"] for row in rows]
-        captured["market"] = market
-        captured["session_factory"] = session_factory
-        enriched = []
-        for row in rows:
-            enriched.append(
-                {
-                    **row,
-                    "analystLabel": "매수 1 / 보유 0 / 매도 0 · 목표 +10.0%",
-                    "analysisContext": {
-                        "consensus": {
-                            "source": "naver",
-                            "buyCount": 1,
-                            "holdCount": 0,
-                            "sellCount": 0,
-                            "strongBuyCount": 0,
-                            "totalCount": 1,
-                            "avgTargetPrice": 110.0,
-                            "medianTargetPrice": 110.0,
-                            "minTargetPrice": 110.0,
-                            "maxTargetPrice": 110.0,
-                            "upsidePct": 10.0,
-                            "currentPrice": 100.0,
-                        },
-                        "rsi14": 58.0,
-                        "dataState": "fresh",
-                        "warnings": [],
-                    },
-                }
-            )
-        return {
-            "results": enriched,
-            "summary": {
-                "attempted": len(rows),
-                "consensusSucceeded": len(rows),
-                "rsiSucceeded": len(rows),
-                "sectorResolved": 0,
-                "warnings": [],
-            },
-        }
-
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
-        _fake_enrich_page,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers", market="kr", limit=2, offset=1
-    )
-
-    assert captured["symbols"] == ["S1", "S2"]
-    assert captured["market"] == "kr"
-    assert len(out["results"]) == 2
-    assert out["results"][0]["analysisContext"]["rsi14"] == pytest.approx(58.0)
-    assert out["analysisEnrichment"]["attempted"] == 2
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_snapshot_tool_marks_kis_live_held_rows(monkeypatch) -> None:
-    class _HeldResp:
-        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
-            return {
-                "presetId": "consecutive_gainers",
-                "results": [
-                    {
-                        "rank": 1,
-                        "symbol": "005930",
-                        "market": "kr",
-                        "name": "삼성전자",
-                        "isWatched": False,
-                        "isHeld": True,
-                        "matchedPresets": ["consecutive_gainers"],
-                        "marketCapValue": 478_000_000_000_000.0,
-                    }
-                ],
-                "warnings": [],
-            }
-
-    async def _fake_build(**kwargs: Any) -> _HeldResp:
-        resolver = kwargs["resolver"]
-        assert resolver.relation("kr", "005930") == "held"
-        return _HeldResp()
-
-    async def _fake_collect_kis_positions(
-        market_filter: str | None, *, is_mock: bool = False
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        assert market_filter == "equity_kr"
-        assert is_mock is False
-        return ([{"market": "kr", "symbol": "005930"}], [])
-
-    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
-    monkeypatch.setattr(
-        "app.services.screener_service.ScreenerService", lambda: object()
-    )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build,
-    )
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
-        _fake_collect_kis_positions,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers",
-        market="kr",
-        limit=10,
-    )
-
-    assert out["results"][0]["isHeld"] is True
-    assert "holdings" in out
-    assert out["holdings"]["source"] == "kis_live"
-    assert out["holdings"]["held_count"] == 1
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_snapshot_tool_marks_us_kis_live_held_rows(monkeypatch) -> None:
-    class _HeldResp:
-        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
-            return {
-                "presetId": "high_yield_value",
-                "results": [
-                    {
-                        "rank": 1,
-                        "symbol": "BRK.B",
-                        "market": "us",
-                        "name": "Berkshire Hathaway",
-                        "isWatched": False,
-                        "isHeld": True,
-                    }
-                ],
-                "warnings": [],
-            }
-
-    async def _fake_build(**kwargs: Any) -> _HeldResp:
-        resolver = kwargs["resolver"]
-        assert resolver.relation("us", "BRK/B") == "held"
-        return _HeldResp()
-
-    async def _fake_collect_kis_positions(
-        market_filter: str | None, *, is_mock: bool = False
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        assert market_filter == "equity_us"
-        assert is_mock is False
-        return ([{"market": "us", "symbol": "BRK.B"}], [])
-
-    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
-    monkeypatch.setattr(
-        "app.services.screener_service.ScreenerService", lambda: object()
-    )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build,
-    )
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
-        _fake_collect_kis_positions,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="high_yield_value",
-        market="us",
-        limit=10,
-    )
-
-    assert out["results"][0]["isHeld"] is True
-    assert out["holdings"]["held_count"] == 1
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(
-    monkeypatch,
-) -> None:
-    class _Resp:
-        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
-            return {
-                "presetId": "consecutive_gainers",
-                "results": [{"rank": 1, "symbol": "005930", "market": "kr"}],
-                "warnings": [],
-            }
-
-    async def _fake_build(**_kwargs: Any) -> _Resp:
-        return _Resp()
-
-    async def _fail_collect_kis_positions(
-        market_filter: str | None, *, is_mock: bool = False
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        del market_filter, is_mock
-        raise RuntimeError("kis unavailable")
-
-    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
-    monkeypatch.setattr(
-        "app.services.screener_service.ScreenerService", lambda: object()
-    )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build,
-    )
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
-        _fail_collect_kis_positions,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers",
-        market="kr",
-    )
-
-    assert out["results"][0]["symbol"] == "005930"
-    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
-    assert out["holdings"]["source"] == "kis_live"
-    assert out["holdings"]["status"] == "error"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_snapshot_tool_holdings_error_tuple_warns_and_keeps_results(
-    monkeypatch,
-) -> None:
-    class _Resp:
-        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
-            return {
-                "presetId": "consecutive_gainers",
-                "results": [{"rank": 1, "symbol": "005930", "market": "kr"}],
-                "warnings": [],
-            }
-
-    async def _fake_build(**_kwargs: Any) -> _Resp:
-        return _Resp()
-
-    async def _collect_with_errors(
-        market_filter: str | None, *, is_mock: bool = False
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        assert market_filter == "equity_kr"
-        assert is_mock is False
-        return (
-            [],
-            [{"source": "kis", "market": "kr", "error": "token expired"}],
-        )
-
-    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
-    monkeypatch.setattr(
-        "app.services.screener_service.ScreenerService", lambda: object()
-    )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build,
-    )
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
-        _collect_with_errors,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers",
-        market="kr",
-        exclude_held=True,
-    )
-
-    assert out["results"][0]["symbol"] == "005930"
-    assert out["holdings"]["status"] == "error"
-    assert out["holdings"]["held_count"] == 0
-    assert out["holdings"]["warning_count"] == 1
-    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_snapshot_tool_holdings_partial_tuple_warns_and_marks_rows(
-    monkeypatch,
-) -> None:
-    class _Resp:
-        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
-            return {
-                "presetId": "consecutive_gainers",
-                "results": [
-                    {"rank": 1, "symbol": "005930", "market": "kr"},
-                    {"rank": 2, "symbol": "000660", "market": "kr"},
-                ],
-                "warnings": [],
-            }
-
-    async def _fake_build(**kwargs: Any) -> _Resp:
-        resolver = kwargs["resolver"]
-        assert resolver.relation("kr", "005930") == "held"
-        assert resolver.relation("kr", "000660") == "none"
-        return _Resp()
-
-    async def _collect_partial(
-        market_filter: str | None, *, is_mock: bool = False
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        assert market_filter == "equity_kr"
-        assert is_mock is False
-        return (
-            [{"symbol": "005930", "market": "kr"}],
-            [{"source": "kis", "market": "us", "error": "temporary failure"}],
-        )
-
-    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
-    monkeypatch.setattr(
-        "app.services.screener_service.ScreenerService", lambda: object()
-    )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build,
-    )
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
-        _collect_partial,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers",
-        market="kr",
-    )
-
-    assert out["holdings"]["status"] == "partial"
-    assert out["holdings"]["held_count"] == 1
-    assert out["holdings"]["warning_count"] == 1
-    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
 async def test_snapshot_tool_merges_multiple_presets(monkeypatch) -> None:
     async def _fake_build(**kwargs: Any) -> Any:
         pid = kwargs["preset_id"]
@@ -734,7 +363,10 @@ async def test_snapshot_tool_multi_preset_pagination_counts_merged_symbols(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
+async def test_snapshot_tool_filters_exclude_watched(monkeypatch) -> None:
+    """ROB-1309: exclude_held moved to screen_stocks_enrich (fail-closed here
+    — see test_snapshot_tool_exclude_held_rejected_fail_closed below)."""
+
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
             return {
@@ -766,58 +398,79 @@ async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
     )
     assert [r["symbol"] for r in out["results"]] == ["S2", "S3"]
 
-    # Exclude held -> S2 gone
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_snapshot_tool_exclude_held_rejected_fail_closed(monkeypatch) -> None:
+    """ROB-1309: exclude_held requires a live KIS holdings call — the DB-only
+    tool rejects it fail-closed (same redirectTool pattern as
+    min_analyst_count) instead of silently no-op'ing or calling KIS."""
+
+    async def _boom_positions(market_filter, *, is_mock=False):  # noqa: ARG001
+        raise AssertionError(
+            "screen_stocks_snapshot must not call KIS holdings even when "
+            "exclude_held=True is passed"
+        )
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _boom_positions,
+    )
+
     out = await tool.screen_stocks_snapshot_impl(
         preset="consecutive_gainers", market="kr", exclude_held=True
     )
-    assert [r["symbol"] for r in out["results"]] == ["S1", "S3"]
+
+    assert out["results"] == []
+    assert "error" in out
+    assert out["redirectTool"] == "screen_stocks_enrich"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_snapshot_tool_reports_excluded_held_count(monkeypatch) -> None:
-    """ROB-543 Slice B: the count of rows dropped by exclude_held is surfaced as
-    excluded_held_count (0 when exclude_held is off)."""
+async def test_snapshot_tool_is_held_always_false_no_holdings_call(
+    monkeypatch,
+) -> None:
+    """ROB-1309: without exclude_held, screen_stocks_snapshot still never
+    calls KIS — isHeld resolves to false/none for every row and
+    holdings.status reports 'skipped' (not 'ok', which would imply a live
+    check actually happened)."""
 
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
             return {
                 "presetId": "consecutive_gainers",
-                "results": [
-                    {"symbol": "S1", "isWatched": False, "isHeld": True},
-                    {"symbol": "S2", "isWatched": False, "isHeld": True},
-                    {"symbol": "S3", "isWatched": False, "isHeld": False},
-                ],
+                "results": [{"symbol": "005930", "isHeld": False}],
                 "warnings": [],
             }
+
+    async def _fake_build(**kwargs: Any) -> _Resp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("kr", "005930") == "none"
+        return _Resp()
+
+    async def _boom_positions(market_filter, *, is_mock=False):  # noqa: ARG001
+        raise AssertionError("must not call KIS holdings by default")
 
     monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
     monkeypatch.setattr(
         "app.services.screener_service.ScreenerService", lambda: object()
     )
-
-    async def _fake_build_async(**kwargs: Any) -> _Resp:
-        return _Resp()
-
     monkeypatch.setattr(
         "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build_async,
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _boom_positions,
     )
 
-    # exclude_held=True drops the two held rows → count == 2
     out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers", market="kr", exclude_held=True
-    )
-    assert [r["symbol"] for r in out["results"]] == ["S3"]
-    assert out["excluded_held_count"] == 2
-    assert out["discoveryFilters"]["exclude_held"] is True
-
-    # exclude_held=False (default) → no rows dropped → count == 0
-    out2 = await tool.screen_stocks_snapshot_impl(
         preset="consecutive_gainers", market="kr"
     )
-    assert out2["excluded_held_count"] == 0
-    assert len(out2["results"]) == 3
+
+    assert out["holdings"]["status"] == "skipped"
+    assert out["holdings"]["held_count"] == 0
 
 
 @pytest.mark.unit
@@ -895,7 +548,11 @@ async def test_snapshot_tool_excludes_explicit_symbols(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None:
+async def test_snapshot_tool_filters_market_cap(monkeypatch) -> None:
+    """ROB-1309: min_analyst_* moved to screen_stocks_enrich_impl (see
+    tests/test_screener_enrich_tool.py); this DB-only tool still applies
+    market-cap filters without any enrichment."""
+
     class _Resp:
         def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
             return {
@@ -910,49 +567,6 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
     async def _fake_build(**_kwargs: Any) -> _Resp:
         return _Resp()
 
-    async def _fake_enrich_page(
-        *,
-        rows: list[dict[str, Any]],
-        market: str,
-        session_factory,
-        opinion_provider=None,
-        fetch_kr_sector=None,
-        fetch_us_sector=None,
-    ) -> dict[str, Any]:
-        del (
-            market,
-            session_factory,
-            opinion_provider,
-            fetch_kr_sector,
-            fetch_us_sector,
-        )
-        # S1 has 2 buy ratings, S2 has 0
-        enriched = []
-        for r in rows:
-            buy_count = 2 if r["symbol"] == "S1" else 0
-            total_count = 2 if r["symbol"] == "S1" else 1
-            enriched.append(
-                {
-                    **r,
-                    "analysisContext": {
-                        "consensus": {
-                            "buyCount": buy_count,
-                            "totalCount": total_count,
-                        }
-                    },
-                }
-            )
-        return {
-            "results": enriched,
-            "summary": {
-                "attempted": len(rows),
-                "consensusSucceeded": 1,
-                "rsiSucceeded": 0,
-                "sectorResolved": 0,
-                "warnings": [],
-            },
-        }
-
     monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
     monkeypatch.setattr(
         "app.services.screener_service.ScreenerService", lambda: object()
@@ -961,34 +575,10 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
         "app.services.invest_view_model.screener_service.build_screener_results",
         _fake_build,
     )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
-        _fake_enrich_page,
-    )
 
     # Min market cap 3000억 -> S2 gone
     out = await tool.screen_stocks_snapshot_impl(
         preset="consecutive_gainers", market="kr", min_market_cap_eok=3000
-    )
-    assert [r["symbol"] for r in out["results"]] == ["S1"]
-
-    # ROB-686: min_analyst_* now resolves counts via the cache-aside resolver
-    # BEFORE enrichment, so stub resolve_consensus_counts directly (the
-    # _fake_enrich_page consensus stub above is no longer the filter input).
-    async def _fake_counts(*, symbols, market, redis_client=None, memo=None, **kw):
-        return {
-            "S1": {"totalCount": 2, "buyCount": 2},
-            "S2": {"totalCount": 1, "buyCount": 0},
-        }
-
-    monkeypatch.setattr(
-        "app.services.invest_view_model.analyst_consensus_cache.resolve_consensus_counts",
-        _fake_counts,
-    )
-
-    # Min analyst buy 1 -> S2 gone
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers", market="kr", min_analyst_buy_count=1
     )
     assert [r["symbol"] for r in out["results"]] == ["S1"]
 
@@ -997,12 +587,6 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
         preset="consecutive_gainers", market="kr", min_market_cap=300_000_000_000.0
     )
     assert [r["symbol"] for r in out["results"]] == ["S1"]
-
-    # Total analyst coverage can pass even when buyCount is 0.
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers", market="kr", min_analyst_count=1
-    )
-    assert [r["symbol"] for r in out["results"]] == ["S1", "S2"]
 
 
 @pytest.mark.unit
@@ -1102,111 +686,3 @@ async def test_snapshot_tool_rejects_too_many_presets() -> None:
     assert "error" in out
     assert "maximum is 5" in out["error"]
     assert out["results"] == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_snapshot_tool_analyst_filter_rejects_large_unpaged_enrichment(
-    monkeypatch,
-) -> None:
-    class _Resp:
-        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
-            return {
-                "presetId": "consecutive_gainers",
-                "results": [
-                    {"symbol": f"S{i}", "marketCapValue": 1.0} for i in range(201)
-                ],
-                "warnings": [],
-            }
-
-    async def _fake_build(**_kwargs: Any) -> _Resp:
-        return _Resp()
-
-    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
-    monkeypatch.setattr(
-        "app.services.screener_service.ScreenerService", lambda: object()
-    )
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_service.build_screener_results",
-        _fake_build,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers",
-        market="kr",
-        min_analyst_count=1,
-    )
-
-    assert "error" in out
-    assert "analyst enrichment row cap" in out["error"]
-    assert out["results"] == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_min_analyst_filters_via_counts_and_enriches_only_page(
-    monkeypatch,
-) -> None:
-    _patch_build_with_n_results(monkeypatch, 5)  # symbols S0..S4
-
-    async def _fake_counts(*, symbols, market, redis_client=None, memo=None, **kw):
-        # S0,S1,S2 qualify (>=3), S3,S4 do not
-        return {
-            s: {"totalCount": (3 if i < 3 else 1), "buyCount": (2 if i < 3 else 0)}
-            for i, s in enumerate(symbols)
-        }
-
-    monkeypatch.setattr(
-        "app.services.invest_view_model.analyst_consensus_cache.resolve_consensus_counts",
-        _fake_counts,
-    )
-
-    enriched_symbols: list[list[str]] = []
-
-    async def _fake_enrich_page(
-        *,
-        rows: list[dict[str, Any]],
-        market: str,
-        session_factory,
-        opinion_provider=None,
-        fetch_kr_sector=None,
-        fetch_us_sector=None,
-    ) -> dict[str, Any]:
-        del (
-            market,
-            session_factory,
-            opinion_provider,
-            fetch_kr_sector,
-            fetch_us_sector,
-        )
-        enriched_symbols.append([r["symbol"] for r in rows])
-        return {
-            "results": [
-                {**r, "analystLabel": "x", "analysisContext": {}} for r in rows
-            ],
-            "summary": {
-                "attempted": len(rows),
-                "consensusSucceeded": 0,
-                "rsiSucceeded": 0,
-                "sectorResolved": 0,
-                "warnings": [],
-            },
-        }
-
-    monkeypatch.setattr(
-        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
-        _fake_enrich_page,
-    )
-
-    out = await tool.screen_stocks_snapshot_impl(
-        preset="consecutive_gainers",
-        market="kr",
-        min_analyst_count=3,
-        limit=2,
-        offset=0,
-    )
-    # 3 qualified, page of 2
-    assert out["pagination"]["total_available"] == 3
-    assert len(out["results"]) == 2
-    # enrichment saw ONLY the 2 returned page rows, not all matched/qualified rows
-    assert enriched_symbols == [["S0", "S1"]]

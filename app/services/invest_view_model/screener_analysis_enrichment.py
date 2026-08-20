@@ -67,46 +67,62 @@ def normalize_consensus_payload(
         return None, ["analyst_consensus_unavailable"]
 
     total = _to_int(raw.get("total_count") or raw.get("totalCount"))
-    if total is None or total <= 0:
+    buy_count = _to_int(raw.get("buy_count") or raw.get("buyCount"))
+    hold_count = _to_int(raw.get("hold_count") or raw.get("holdCount"))
+    sell_count = _to_int(raw.get("sell_count") or raw.get("sellCount"))
+    strong_buy_count = _to_int(raw.get("strong_buy_count") or raw.get("strongBuyCount"))
+    avg_target_price = _to_float(
+        raw.get("avg_target_price") or raw.get("avgTargetPrice")
+    )
+    median_target_price = _to_float(
+        raw.get("median_target_price") or raw.get("medianTargetPrice")
+    )
+    min_target_price = _to_float(
+        raw.get("min_target_price") or raw.get("minTargetPrice")
+    )
+    max_target_price = _to_float(
+        raw.get("max_target_price") or raw.get("maxTargetPrice")
+    )
+    upside_pct = _to_float(raw.get("upside_pct") or raw.get("upsidePct"))
+
+    # ROB-1309 fix: mirror analyst_consensus_cache._is_meaningful_consensus —
+    # a row carrying only current_price is a quote, not a consensus, but
+    # Yahoo's common US "target-only" shape (total_count=None, target-price
+    # fields populated) IS meaningful and must survive to analysisContext
+    # instead of being discarded as analyst_consensus_missing just because
+    # there's no recommendation count.
+    if all(
+        v is None
+        for v in (
+            total,
+            buy_count,
+            hold_count,
+            sell_count,
+            strong_buy_count,
+            avg_target_price,
+            median_target_price,
+            min_target_price,
+            max_target_price,
+            upside_pct,
+        )
+    ):
         return None, ["analyst_consensus_missing"]
 
     stale_window_inputs = consensus_has_stale_window_inputs(raw)
     consensus = ScreenerAnalysisConsensus(
         source=payload.get("source") or payload.get("provider"),
-        buyCount=_to_int(raw.get("buy_count") or raw.get("buyCount")),
-        holdCount=_to_int(raw.get("hold_count") or raw.get("holdCount")),
-        sellCount=_to_int(raw.get("sell_count") or raw.get("sellCount")),
-        strongBuyCount=_to_int(
-            raw.get("strong_buy_count") or raw.get("strongBuyCount")
-        ),
+        buyCount=buy_count,
+        holdCount=hold_count,
+        sellCount=sell_count,
+        strongBuyCount=strong_buy_count,
         totalCount=total,
-        avgTargetPrice=(
-            None
-            if stale_window_inputs
-            else _to_float(raw.get("avg_target_price") or raw.get("avgTargetPrice"))
-        ),
-        medianTargetPrice=(
-            None
-            if stale_window_inputs
-            else _to_float(
-                raw.get("median_target_price") or raw.get("medianTargetPrice")
-            )
-        ),
-        minTargetPrice=(
-            None
-            if stale_window_inputs
-            else _to_float(raw.get("min_target_price") or raw.get("minTargetPrice"))
-        ),
-        maxTargetPrice=(
-            None
-            if stale_window_inputs
-            else _to_float(raw.get("max_target_price") or raw.get("maxTargetPrice"))
-        ),
-        upsidePct=(
-            None
-            if stale_window_inputs
-            else _to_float(raw.get("upside_pct") or raw.get("upsidePct"))
-        ),
+        # ROB-1309: reuse parsed fields so target-only US consensus survives.
+        # ROB-1300: still fail-closed-null stale window target/upside fields.
+        avgTargetPrice=None if stale_window_inputs else avg_target_price,
+        medianTargetPrice=None if stale_window_inputs else median_target_price,
+        minTargetPrice=None if stale_window_inputs else min_target_price,
+        maxTargetPrice=None if stale_window_inputs else max_target_price,
+        upsidePct=None if stale_window_inputs else upside_pct,
         currentPrice=_to_float(raw.get("current_price") or raw.get("currentPrice")),
     )
 

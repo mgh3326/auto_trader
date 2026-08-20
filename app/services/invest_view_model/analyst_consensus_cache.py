@@ -1,12 +1,17 @@
-"""ROB-686 — KR analyst-consensus Redis cache-aside for the snapshot screener.
+"""ROB-686 — KR/US analyst-consensus Redis cache-aside for the snapshot screener.
 
 Caches the DAILY-STABLE analyst consensus (buy/hold/sell/total counts + target
-prices) per (market, symbol, KST-date) so screen_stocks_snapshot stops re-scraping
-Naver research pages (company_list/company_read) on every call. The volatile
-current_price/upside_pct are stripped before caching and recomputed on the
-returned page from a fresh price (see cached_opinion_provider). KR only; US
-(yfinance) is not cached. Fail-open + hermetic: reuses app.core.analyze_cache's
-Redis client + TTL, guarded by settings.analyze_fetch_cache_enabled.
+prices) per (market, symbol, provider-local-date) so screen_stocks_enrich stops
+re-scraping Naver research pages (company_list/company_read) / re-fetching
+yfinance analyst_price_targets+recommendations+upgrades_downgrades+info on every
+call. The volatile current_price/upside_pct are stripped before caching and
+recomputed on the returned page from a fresh (lightweight) price fetch — see
+cached_opinion_provider. KR uses the Naver-provider KST-date bucket; US
+(ROB-1309) uses the yfinance-provider US/Eastern-date bucket
+(analyze_cache.PROVIDER_YFINANCE) with a cheap `fetch_fast_info` price refresh
+instead of a full yfinance ticker re-pull. Fail-open + hermetic: reuses
+app.core.analyze_cache's Redis client + TTL, guarded by
+settings.analyze_fetch_cache_enabled.
 """
 
 from __future__ import annotations
@@ -24,6 +29,14 @@ from app.services.analyst_normalizer import consensus_has_stale_window_inputs
 logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "screener_consensus"
+
+# ROB-1309: which analyze_cache provider bucket (date/TZ + TTL policy) backs
+# the cache-aside for each market. Markets not in this map are never cached
+# (fail-open: resolve_consensus falls through to a live fetch every time).
+_PROVIDER_BY_MARKET: dict[str, str] = {
+    "kr": analyze_cache.PROVIDER_NAVER,
+    "us": analyze_cache.PROVIDER_YFINANCE,
+}
 
 _STABLE_CONSENSUS_FIELDS: frozenset[str] = frozenset(
     {
@@ -49,18 +62,51 @@ _STABLE_CONSENSUS_FIELDS: frozenset[str] = frozenset(
 
 
 def _consensus_cache_key(market: str, symbol: str, now: datetime | None = None) -> str:
-    date_part = analyze_cache._provider_date_for_key(analyze_cache.PROVIDER_NAVER, now)
-    return f"{_KEY_PREFIX}:{analyze_cache.PROVIDER_NAVER}:{symbol.upper()}:{date_part}"
+    provider = _PROVIDER_BY_MARKET[(market or "").strip().lower()]
+    date_part = analyze_cache._provider_date_for_key(provider, now)
+    return f"{_KEY_PREFIX}:{provider}:{symbol.upper()}:{date_part}"
 
 
 def _strip_volatile(consensus: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in consensus.items() if k in _STABLE_CONSENSUS_FIELDS}
 
 
+_COUNT_FIELDS = (
+    "buy_count",
+    "hold_count",
+    "sell_count",
+    "strong_buy_count",
+    "total_count",
+)
+_TARGET_FIELDS = (
+    "avg_target_price",
+    "median_target_price",
+    "max_target_price",
+    "min_target_price",
+    "upside_pct",
+)
+
+
+def _is_meaningful_consensus(consensus: dict[str, Any]) -> bool:
+    """Mirrors the offline snapshot builder's gate
+    (app/services/analyst_consensus_snapshots/builder.py::_payload_from_consensus)
+    — checkpoint fix (ROB-1309): a row carrying only current_price is a
+    quote, not a consensus, but a row carrying target-price fields WITHOUT
+    recommendation counts (Yahoo's common "target-only" shape) IS meaningful
+    and must not be discarded/treated as "unavailable" just because
+    total_count is None. The old `isinstance(total_count, int)` gate here
+    was stricter than the codebase's own established precedent and would
+    silently regress target-only US consensus to unavailable/uncached."""
+    return any(consensus.get(f) is not None for f in (*_COUNT_FIELDS, *_TARGET_FIELDS))
+
+
 async def get_cached_consensus(
     redis_client: Any, market: str, symbol: str
 ) -> dict[str, Any] | None:
-    if redis_client is None or (market or "").strip().lower() != "kr":
+    if (
+        redis_client is None
+        or (market or "").strip().lower() not in _PROVIDER_BY_MARKET
+    ):
         return None
     key = _consensus_cache_key(market, symbol)
     try:
@@ -80,14 +126,15 @@ async def get_cached_consensus(
 async def set_cached_consensus(
     redis_client: Any, market: str, symbol: str, consensus: dict[str, Any]
 ) -> None:
-    if redis_client is None or (market or "").strip().lower() != "kr":
+    market_norm = (market or "").strip().lower()
+    if redis_client is None or market_norm not in _PROVIDER_BY_MARKET:
         return
-    total = consensus.get("total_count")
-    if not isinstance(total, int) or total <= 0:
-        return  # never cache a degraded/empty consensus
+    if not _is_meaningful_consensus(consensus):
+        return  # never cache a degraded/empty (quote-only) consensus
     try:
         now = now_kst()
-        ttl = analyze_cache._fetch_cache_ttl_seconds(analyze_cache.PROVIDER_NAVER, now)
+        provider = _PROVIDER_BY_MARKET[market_norm]
+        ttl = analyze_cache._fetch_cache_ttl_seconds(provider, now)
         if ttl <= 0:
             return
         serialized = json.dumps(
@@ -120,7 +167,8 @@ async def resolve_consensus(
 
         opinion_fetcher = handle_get_investment_opinions
 
-    if market_norm == "kr":
+    cacheable = market_norm in _PROVIDER_BY_MARKET
+    if cacheable:
         cached = await get_cached_consensus(redis_client, market_norm, symbol)
         if cached is not None:
             if memo is not None:
@@ -130,19 +178,18 @@ async def resolve_consensus(
     stable: dict[str, Any] | None = None
     try:
         # limit=10 preserves the existing filter/page ceiling (see interface note);
-        # do NOT bump this — a higher cap triples cold company_read.naver fetches.
+        # do NOT bump this — a higher cap triples cold company_read.naver /
+        # yfinance ticker fetches.
         payload = await opinion_fetcher(symbol=symbol, market=market_norm, limit=10)
         consensus = (
             (payload or {}).get("consensus") if isinstance(payload, dict) else None
         )
-        if isinstance(consensus, dict) and isinstance(
-            consensus.get("total_count"), int
-        ):
-            if market_norm == "kr":
+        if isinstance(consensus, dict) and _is_meaningful_consensus(consensus):
+            if cacheable:
                 await set_cached_consensus(redis_client, market_norm, symbol, consensus)
                 stable = _strip_volatile(consensus)
             else:
-                stable = consensus  # US: not cached, returned as-is
+                stable = consensus  # uncached market: returned as-is
     except Exception as exc:  # noqa: BLE001 — fail-open
         logger.debug("resolve_consensus live fetch failed %s: %s", symbol, exc)
         stable = None
@@ -225,7 +272,10 @@ async def cached_opinion_provider(
     opinion_fetcher: Any = None,
 ) -> dict[str, Any]:
     market_norm = (market or "").strip().lower()
-    if market_norm != "kr":
+    if market_norm not in _PROVIDER_BY_MARKET:
+        # Uncached market (e.g. crypto is never reached here in practice —
+        # the screener enrichment loop only calls this for kr/us — but stay
+        # fail-open/passthrough for anything else rather than erroring).
         from app.mcp_server.tooling.fundamentals._valuation import (
             handle_get_investment_opinions,
         )
@@ -245,12 +295,29 @@ async def cached_opinion_provider(
         return {"error": "analyst_consensus_unavailable"}
 
     if price_fetcher is None:
-        from app.services.naver_finance.investor import _fetch_current_price
-
-        price_fetcher = _fetch_current_price
+        price_fetcher = _default_price_fetcher(market_norm)
     try:
         price = await price_fetcher(symbol)
     except Exception:  # noqa: BLE001 — fail-open, no stale upside
         price = None
 
-    return {"source": "naver", "consensus": _recompute_upside(stable, price)}
+    source = "naver" if market_norm == "kr" else "yfinance"
+    return {"source": source, "consensus": _recompute_upside(stable, price)}
+
+
+def _default_price_fetcher(market_norm: str) -> Any:
+    """A cheap, single-symbol current-price fetch for upside recompute on a
+    consensus cache hit — deliberately NOT the full opinions/analyst-target
+    fetch (that's the whole point of caching the stable fields)."""
+    if market_norm == "kr":
+        from app.services.naver_finance.investor import _fetch_current_price
+
+        return _fetch_current_price
+
+    async def _us_price(symbol: str) -> float | None:
+        from app.services.brokers.yahoo.client import fetch_fast_info
+
+        info = await fetch_fast_info(symbol)
+        return info.get("close")
+
+    return _us_price

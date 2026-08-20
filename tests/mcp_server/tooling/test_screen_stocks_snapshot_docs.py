@@ -22,6 +22,11 @@ def test_discovery_tool_descriptions_guide_selection_and_snapshot_freshness():
     mcp = _FakeMCP()
     register_analysis_tools(mcp)
     snapshot_desc = mcp.descriptions["screen_stocks_snapshot"].lower()
+    # ROB-1309: screen_stocks_snapshot is DB-only now — analyst consensus /
+    # RSI enrichment live in the separate screen_stocks_enrich tool, which
+    # this description points callers at rather than describing inline.
+    assert "screen_stocks_enrich" in snapshot_desc
+    assert "zero external http" in snapshot_desc
     assert "consensus" in snapshot_desc
     assert "cache" in snapshot_desc or "cached" in snapshot_desc
     assert "screen_stocks" in snapshot_desc
@@ -30,11 +35,15 @@ def test_discovery_tool_descriptions_guide_selection_and_snapshot_freshness():
     assert "priceLabel".lower() in snapshot_desc
     assert "changepctlabel" in snapshot_desc
     assert "metricvaluelabel" in snapshot_desc
-    assert "analysiscontext.rsi14" in snapshot_desc
-    assert " and rsi are " not in snapshot_desc
     assert "one session" in snapshot_desc
     assert "get_quote" in snapshot_desc
     assert "analyze_stock_batch" in snapshot_desc
+
+    enrich_desc = mcp.descriptions["screen_stocks_enrich"].lower()
+    assert "screen_stocks_snapshot" in enrich_desc
+    assert "consensus" in enrich_desc
+    assert "sector" in enrich_desc
+    assert "enrichment_excluded" in enrich_desc
 
     screen_desc = mcp.descriptions["screen_stocks"].lower()
     assert "krx_session_expired" in screen_desc
