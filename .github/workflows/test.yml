@@ -156,9 +156,16 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.13"]
-        # Duration-based shards via pytest-split (.test_durations is committed;
-        # refresh it with test-durations-refresh.yml). Unrecorded new tests
-        # fall back to an even-split assumption until the next refresh.
+        # ROB-1312: each matrix shard runs the fixed, committed file list in
+        # ci_shards/shard-<group>.txt instead of a runtime pytest-split
+        # `--splits/--group` selection. The four manifests are a deterministic
+        # LPT bin-packing over .call_durations.json weights (regenerate via
+        # `python3 -m scripts.ci.file_shard_plan generate`, see
+        # docs/runbooks/ci-file-shard-manifests.md). Exact-cover (every
+        # non-live collected test file in exactly one manifest, none stale) is
+        # validated once per run in the taskiq-smoke job, not redundantly
+        # here -- a full-suite collect-only in all four jobs would defeat the
+        # point of removing duplicate full-suite collection.
         group: [1, 2, 3, 4]
 
     services:
@@ -246,10 +253,17 @@ jobs:
       # subset of app/, so a per-shard threshold would fail spuriously.
       # Coverage gating lives in Codecov (uploads from all shards are merged
       # per commit).
+      #
+      # ROB-1312: file list comes from the committed manifest via `mapfile`
+      # (never `$(cat ...)` -- that would word-split on whitespace/globs in
+      # a path). A missing/unreadable manifest fails this step immediately
+      # (redirection failure under the shell's default `-e`), before `set +e`
+      # below takes effect.
       run: |
         mkdir -p .artifacts/socket-guard
+        mapfile -t SHARD_FILES < "ci_shards/shard-${{ matrix.group }}.txt"
         set +e
-        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --socket-guard-report ".artifacts/socket-guard/summary-shard${{ matrix.group }}.json" 2>&1 | tee pytest-output.log
+        uv run pytest "${SHARD_FILES[@]}" -m "not live" -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --socket-guard-report ".artifacts/socket-guard/summary-shard${{ matrix.group }}.json" 2>&1 | tee pytest-output.log
         status=${PIPESTATUS[0]}
         if [ "$status" -ne 0 ]; then
           {
@@ -324,6 +338,42 @@ jobs:
       run: |
         chmod +x scripts/setup-test-env.sh
         bash scripts/setup-test-env.sh
+
+    # ROB-1312: the single, independent full-suite authoritative collection
+    # for this run's exact-cover check. Deliberately done exactly once, here,
+    # not repeated in each of the four `test` matrix jobs -- doing it four
+    # times would defeat the whole point of removing duplicate full-suite
+    # collection (fresh-artifact CI timing showed ~68-71s per shard for this
+    # step alone). taskiq-smoke is a required check, doesn't already collect
+    # the suite, and already has `uv sync --group test` + env setup, so a
+    # failure here fails a required check directly -- no new job/name, no
+    # branch-protection change, and (unlike a non-required job) it cannot be
+    # green-merged past. Collect-only does not touch Postgres/Redis (verified
+    # locally without a DB running); output is deliberately NOT deduplicated
+    # (`sort`, not `sort -u`) so a genuine duplicate collection is visible to
+    # the parser instead of silently erased before it can be caught.
+    - name: Record authoritative test collection
+      run: |
+        set -euo pipefail
+        uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
+          2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
+          > authoritative-collected-nodes.txt
+        test -s authoritative-collected-nodes.txt
+
+    - name: Validate file-shard manifests (exact-cover)
+      run: |
+        python3 -m scripts.ci.file_shard_plan check \
+          --collected authoritative-collected-nodes.txt \
+          --manifest-dir ci_shards \
+          --shard-count 4
+
+    - name: Upload authoritative collection manifest
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: authoritative-collected-nodes-pr
+        path: authoritative-collected-nodes.txt
+        if-no-files-found: warn
 
     - name: TaskIQ worker smoke test
       run: |
