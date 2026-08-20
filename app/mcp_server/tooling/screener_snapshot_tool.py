@@ -16,8 +16,9 @@ filtering / pagination logic it shares with the live-enrichment tool lives in
 lazy-fill, analyst-consensus fetching, and any other provider network calls
 were moved out to the explicit `screen_stocks_enrich` MCP tool
 (`app/mcp_server/tooling/screener_enrich_tool.py`) — see that module's
-docstring and `docs/runbooks/screener-snapshot-vs-enrich.md` for the full
-before/after contract. This tool's only network-adjacent call is the KIS-live
+docstring and the root `CLAUDE.md` "screen_stocks_snapshot / screen_stocks_enrich
+MCP 도구 분리 (ROB-1309)" section for the full before/after contract. This
+tool's only network-adjacent call is the KIS-live
 holdings lookup used for `isHeld` marking (`_collect_kis_positions`), which
 predates ROB-1309, is bounded (one call, not a per-row fan-out), and is
 explicitly out of this issue's scope (W2 — holdings/portfolio code).
