@@ -224,7 +224,7 @@ jobs:
 
     - name: Build call-phase duration artifact
       run: |
-        python scripts/call_durations.py build \
+        python -m scripts.call_durations build \
           --shard duration-artifacts/call-durations-shard-1.json \
           --shard duration-artifacts/call-durations-shard-2.json \
           --shard duration-artifacts/call-durations-shard-3.json \
@@ -242,7 +242,7 @@ jobs:
       # (ROB-1295). A validate failure here means build_artifact and
       # validate_freshness disagree — treat that as a bug, not driftable.
       run: |
-        python scripts/call_durations.py validate \
+        python -m scripts.call_durations validate \
           --artifact .call_durations.json \
           --collected duration-artifacts/collected-shard-1.txt \
           --collected duration-artifacts/collected-shard-2.txt \
