@@ -178,6 +178,12 @@ tests/services/research/test_rob984_cp3_transaction_coordinator.py
 tests/services/research/test_strategy_experiment_registry.py
 tests/services/scalping_reviews/test_rollup.py
 tests/services/social_sentiment_probe/test_models.py
+tests/services/spike_attribution/test_attribute.py
+tests/services/spike_attribution/test_cache_first_consumption.py
+tests/services/spike_attribution/test_detect.py
+tests/services/spike_attribution/test_hooks.py
+tests/services/spike_attribution/test_precompute.py
+tests/services/spike_attribution/test_scoring.py
 tests/services/test_account_routing.py
 tests/services/test_alpaca_paper_ledger_claim.py
 tests/services/test_alpaca_paper_market_evidence.py
