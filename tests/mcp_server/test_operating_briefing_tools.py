@@ -194,7 +194,7 @@ async def test_get_operating_briefing_composes_all_sections(
             ],
         }
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
@@ -280,7 +280,7 @@ async def test_get_operating_briefing_surfaces_per_account_routability(
     async def fake_session_context(db, *, market, account_scope, limit):
         return {"count": 0, "entries": []}
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
@@ -364,7 +364,7 @@ async def test_get_operating_briefing_fail_opens_optional_sections(
     async def boom(*args, **kwargs):
         raise RuntimeError("section boom")
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "_latest_report_summary", ok_latest_report)
     monkeypatch.setattr(ob, "_recent_session_context", ok_session_context)
@@ -548,7 +548,7 @@ async def test_get_operating_briefing_reads_active_watch_and_session_context(
     async def fake_pending(db, *, market, account_scope):
         return EmptyPendingSnapshot()
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
 
     db_session.add(
@@ -658,7 +658,7 @@ async def test_get_operating_briefing_accounts_include_cost_profile(monkeypatch)
     async def fake_session_context(*args, **kwargs):
         return {"count": 0, "entries": []}
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
@@ -718,7 +718,7 @@ async def test_get_operating_briefing_degrades_when_cost_profile_setting_fails(
     async def fake_account_costs():
         raise RuntimeError("cost settings unavailable")
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
@@ -780,7 +780,7 @@ async def test_operating_briefing_supports_trading_scoreboards(monkeypatch) -> N
     async def fake_delta(db, **kwargs):
         return {"paired_count": 42, "overall_delta": {}, "caveats": []}
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)

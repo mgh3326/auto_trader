@@ -146,6 +146,8 @@ class MockTossClient:
         self.prices_list = []
         self.warnings_list = []
         self.get_order_calls = 0
+        self.sellable_calls = []
+        self.sellable_quantity_value = Decimal("10")
 
         if monkeypatch:
             monkeypatch.setattr(
@@ -177,6 +179,10 @@ class MockTossClient:
         for item in self.holdings_list:
             items.append(SimpleNamespace(**item))
         return SimpleNamespace(items=items, raw_overview={})
+
+    async def sellable_quantity(self, *, symbol):
+        self.sellable_calls.append(symbol)
+        return SimpleNamespace(sellable_quantity=self.sellable_quantity_value)
 
     async def list_orders(self, *, status, symbol=None, **kwargs):
         from types import SimpleNamespace
@@ -459,6 +465,73 @@ async def test_place_sell_blocks_below_avg_floor_for_limit_and_market(monkeypatc
     )
     assert res_market["success"] is False
     assert "below average purchase price floor" in res_market["error"]
+
+
+@pytest.mark.asyncio
+async def test_sell_preflight_ignores_warm_cache_and_rechecks_fresh_broker_sellable(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100.0"),
+            "last_price": Decimal("110.0"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("4")
+
+    # A stale display cache must never authorize a sell larger than the fresh
+    # broker quantity.
+    warm_cache = TossSellableCache(
+        ttl_seconds=600,
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+    )
+    await warm_cache.put("AAPL", Decimal("10"))
+    monkeypatch.setattr(otv, "get_shared_sellable_cache", lambda: warm_cache)
+    monkeypatch.setattr(otv, "_invalidate_sellable_after_sell_mutation", AsyncMock())
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(
+            return_value={
+                "ledger_id": 1,
+                "broker_status": "accepted",
+                "fill_recorded": False,
+                "journal_created": False,
+            }
+        ),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity="5",
+        price="110",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert "sellable" in result["error"].lower()
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert mock_client.placed_payloads == []
 
 
 @pytest.mark.asyncio

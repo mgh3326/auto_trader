@@ -70,7 +70,10 @@ class _FakeTossClient:
 async def test_fetch_toss_portfolio_snapshot_maps_holdings_sellable_and_cash() -> None:
     client = _FakeTossClient()
 
-    snapshot = await fetch_toss_portfolio_snapshot(client=client)
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=client,
+        need_sellable=True,
+    )
 
     assert client.closed is False
     assert client.sellable_calls == ["BRK.B"]
@@ -96,7 +99,10 @@ async def test_fetch_toss_portfolio_snapshot_keeps_position_when_sellable_fails(
         async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
             raise RuntimeError(f"sellable failed for {symbol}")
 
-    snapshot = await fetch_toss_portfolio_snapshot(client=Client())
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=Client(),
+        need_sellable=True,
+    )
 
     assert snapshot.positions[0].sellable_quantity is None
     assert snapshot.errors == [
@@ -148,14 +154,14 @@ async def test_fetch_toss_portfolio_snapshot_skips_sellable_when_not_needed() ->
 
 
 @pytest.mark.asyncio
-async def test_fetch_toss_portfolio_snapshot_default_still_fetches_sellable() -> None:
+async def test_fetch_toss_portfolio_snapshot_default_skips_sellable() -> None:
     client = _FakeTossClient()
 
     snapshot = await fetch_toss_portfolio_snapshot(client=client)
 
-    # Default is unchanged: sellable is fetched and mapped.
-    assert client.sellable_calls == ["BRK.B"]
-    assert snapshot.positions[0].sellable_quantity == Decimal("1.25")
+    # General portfolio reads must not fan out to Toss ORDER_INFO.
+    assert client.sellable_calls == []
+    assert snapshot.positions[0].sellable_quantity is None
 
 
 @pytest.mark.asyncio
@@ -314,10 +320,10 @@ async def test_fetch_toss_portfolio_snapshot_skips_cash_when_not_needed() -> Non
     assert client.buying_power_calls == []
     assert snapshot.cash_krw is None
     assert snapshot.cash_usd is None
-    # Holdings + sellable still resolve normally.
+    # Holdings resolve normally; sellability is deliberately omitted.
     assert len(snapshot.positions) == 1
     assert snapshot.positions[0].symbol == "BRK.B"
-    assert snapshot.positions[0].sellable_quantity == Decimal("1.25")
+    assert snapshot.positions[0].sellable_quantity is None
     assert snapshot.errors == []
 
 

@@ -1656,7 +1656,7 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert holding.sourceOfTruth is True
     assert holding.isTradeable is False
     assert holding.manualOnly is False
-    assert holding.sellableQuantity == 0.0
+    assert holding.sellableQuantity is None
     assert holding.referenceQuantity == 1.5
 
 
@@ -1734,8 +1734,8 @@ async def test_toss_api_home_reader_buying_power_fail_open_when_cash_missing(
 
 @pytest.mark.asyncio
 async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch):
-    """ROB-549: with Toss live mutations armed, toss_api holdings become tradeable
-    and surface the API-provided sellable_quantity instead of discarding it."""
+    """A routed Toss holding remains tradeable, but read paths do not expose
+    a sellable quantity sourced from the shared snapshot."""
     from decimal import Decimal
 
     from app.core.config import settings as _cfg
@@ -1781,8 +1781,8 @@ async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch
 
     holding = result.holdings[0]
     assert holding.isTradeable is True
-    assert holding.sellableQuantity == 1.25
-    assert holding.pendingSellQuantity == pytest.approx(0.25)  # qty 1.5 - sellable 1.25
+    assert holding.sellableQuantity is None
+    assert holding.pendingSellQuantity == 0.0
 
 
 @pytest.mark.asyncio
@@ -1841,9 +1841,9 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutations,expected_need", [(False, False), (True, True)])
+@pytest.mark.parametrize("mutations", [False, True])
 async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
-    monkeypatch, mutations, expected_need
+    monkeypatch, mutations
 ):
     from decimal import Decimal
 
@@ -1870,8 +1870,9 @@ async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
 
     await readers.TossApiHomeReader().fetch(user_id=1)
 
-    # ROB-685: mutations off (default) => reader discards sellable anyway => skip fetch.
-    assert captured["need_sellable"] is expected_need
+    # ROB-1310: mutation enablement never turns a general home read into an
+    # ORDER_INFO sellable fan-out.
+    assert captured["need_sellable"] is False
 
 
 @pytest.mark.asyncio
@@ -1885,7 +1886,6 @@ async def test_toss_api_home_reader_passes_sellable_cache_when_mutations_on(
     from app.core.config import settings as _cfg
     from app.services import invest_home_readers as readers
     from app.services.toss_portfolio_service import TossPortfolioSnapshot
-    from app.services.toss_sellable_cache import TossSellableCache
 
     captured: dict[str, object] = {}
 
@@ -1905,14 +1905,10 @@ async def test_toss_api_home_reader_passes_sellable_cache_when_mutations_on(
 
     await readers.TossApiHomeReader().fetch(user_id=1)
 
-    if mutations:
-        # mutations armed => cache is threaded so repeated loads reuse it.
-        assert isinstance(captured["sellable_cache"], TossSellableCache)
-        assert captured["need_sellable"] is True
-    else:
-        # mutations off => ROB-685 skip, no cache needed.
-        assert captured["sellable_cache"] is None
-        assert captured["need_sellable"] is False
+    # The shared portfolio snapshot is the read model; the per-symbol
+    # sellable cache is reserved for order-adjacent invalidation/preflight.
+    assert captured["sellable_cache"] is None
+    assert captured["need_sellable"] is False
 
 
 @pytest.mark.asyncio
