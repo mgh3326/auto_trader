@@ -115,9 +115,7 @@ def _fake_build(monkeypatch: pytest.MonkeyPatch, results: list[dict[str, Any]]) 
     async def _build(**_kwargs: Any):
         return _resp(results)
 
-    monkeypatch.setattr(
-        snapshot_tool, "_session_factory", lambda: lambda: _FakeCM()
-    )
+    monkeypatch.setattr(snapshot_tool, "_session_factory", lambda: lambda: _FakeCM())
     monkeypatch.setattr(
         "app.services.screener_service.ScreenerService", lambda: object()
     )

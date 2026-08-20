@@ -368,6 +368,30 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 
 **안전 경계**: TaskIQ 반복 스케줄 없음. 브로커/주문/감시 mutation 없음. DB write는 `InvestScreenerSnapshotsRepository.upsert`만 허용.
 
+### screen_stocks_snapshot / screen_stocks_enrich MCP 도구 분리 (ROB-1309)
+
+Sentry 실측(p50 38.11s / p95 54.73s, 호출당 ~214 HTTP call, 120s 예산 내 타임아웃 8건)에서
+`screen_stocks_snapshot`이 기본 경로에서 매 호출마다 섹터 lazy-fill + 애널리스트 컨센서스 +
+실시간가 fetch를 무조건 수행하던 것이 원인으로 확인되어, 두 도구로 분리했습니다.
+
+| | `screen_stocks_snapshot` (기존 이름, 계약 변경) | `screen_stocks_enrich` (신규) |
+|---|---|---|
+| 기본 동작 | **DB-only** — `invest_screener_snapshots`/`invest_crypto_screener_snapshots` 읽기 + 필터/페이지네이션만 | 동일 preset/filter/pagination 파이프라인 실행 후 라이브 enrichment |
+| HTTP 호출 | **0회** (KR/US/crypto 전부) — 섹터 lazy-fill 없음, 애널리스트 컨센서스 fetch 없음, quoteSummary/timeseries/crumb 없음, 실시간가 fetch 없음 | 심볼당 섹터(KR Naver/US yfinance) + 애널리스트 컨센서스(KR Redis 캐시-어사이드, US live) + 실시간가 fetch |
+| `min_analyst_count`/`min_analyst_buy_count` | **거부** — `{"error": ..., "redirectTool": "screen_stocks_enrich"}` fail-closed (무시하거나 네트워크 호출하지 않음) | 지원 — 페이지네이션 전에 컨센서스 COUNT를 해석해 필터링 |
+| 응답의 `analysisContext`/`analystLabel` | 없음 | 있음 (`enrich_snapshot_page` 결과) |
+| write 부작용 | 없음 (KIS-live 보유종목 조회 1회는 ROB-1309 이전부터 존재하는 `isHeld` 표시용 bounded call — enrichment 아님) | 섹터 lazy-fill이 기존 `symbol_sectors_service`(ROB-512) 경로로 씀. `invest_screener_snapshots` 자체에 대한 쓰기는 없음(그 테이블의 유일한 writer는 여전히 `InvestScreenerSnapshotsRepository.upsert`이며, 오프라인 스냅샷 빌더/flow 전용 — 이 두 MCP 도구 어느 쪽도 호출하지 않음) |
+| 음성 캐시 | 해당 없음 | 있음 — `app/services/invest_view_model/enrichment_negative_cache.py` (Redis TTL 30분, 에러 분류, 연속 실패 카운트). 실패/스킵은 `meta.enrichment_excluded`에 항상 명시적으로 보고(행 자체는 절대 조용히 제거하지 않음), 3회 이상 연속 실패는 `meta.chronic_failure_candidates`에 advisory로만 표시(유니버스 자동 삭제/mutation 없음) |
+| 공유 로직 | `app/mcp_server/tooling/screener_snapshot_tool.py::_build_snapshot_page` (DB-only 빌드/필터/페이지네이션) | 위 함수를 그대로 재사용 |
+
+**구현**: `app/mcp_server/tooling/screener_snapshot_tool.py`(DB-only 도구 + 공유 빌더),
+`app/mcp_server/tooling/screener_enrich_tool.py`(신규 enrichment 도구),
+`app/services/invest_view_model/enrichment_negative_cache.py`(신규 음성 캐시).
+
+**주의**: `halted_suspect`(ROB-1236) 시맨틱은 이 분리와 무관합니다 — `screen_stocks_snapshot`/
+`screen_stocks_enrich` 어느 쪽도 `halt_filter.py`/`analysis_analyze.py`/`buy_candidate_fanout.py`를
+import하거나 건드리지 않습니다(halted_suspect 판정은 `screen_stocks`/`analyze_stock` 전용 경로).
+
 **ROB-207 activation:** `POST /trading/api/research-reports/ingest/bulk` is the news-ingestor → auto_trader bridge (token-authed via `RESEARCH_REPORTS_INGEST_TOKEN`). `GET /trading/api/research-reports/freshness` returns the readiness signal. A TaskIQ task `research_reports.ingest_bulk_smoke` is registered but ships **scheduleless**; production recurrence lives in `robin-prefect-automations` and remains `paused=true` until the unpause checklist in `docs/runbooks/research-reports-integration.md` is satisfied. Production cutover (`paused=false`) is approval-gated.
 
 ### Hermes Report Generation (ROB-287)

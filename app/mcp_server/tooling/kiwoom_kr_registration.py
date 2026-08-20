@@ -198,6 +198,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "save_trade_retrospective",
         "screen_stocks",
         "screen_stocks_snapshot",
+        "screen_stocks_enrich",
         "search_symbol",
         "session_context_append",
         "session_context_get_recent",

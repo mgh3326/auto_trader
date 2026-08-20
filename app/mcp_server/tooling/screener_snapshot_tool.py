@@ -8,11 +8,23 @@ ScreenerFilterDefinition catalog + build_screener_results path the web screener 
 Read-only: build_screener_results never mutates broker/order/watch state. Filters
 currently thread through the consecutive_gainers loader (ROB-439 PR2); other presets
 return their default snapshot results (and say so), expanding as more presets get wired.
+
+ROB-1309: `screen_stocks_snapshot_impl` is DB-only by contract — it makes zero
+external HTTP calls for any (market, preset) combination. The row-building /
+filtering / pagination logic it shares with the live-enrichment tool lives in
+`_build_snapshot_page` below (imported by `screener_enrich_tool.py`). Sector
+lazy-fill, analyst-consensus fetching, and any other provider network calls
+were moved out to the explicit `screen_stocks_enrich` MCP tool
+(`app/mcp_server/tooling/screener_enrich_tool.py`) — see that module's
+docstring and `docs/runbooks/screener-snapshot-vs-enrich.md` for the full
+before/after contract. This tool's only network-adjacent call is the KIS-live
+holdings lookup used for `isHeld` marking (`_collect_kis_positions`), which
+predates ROB-1309, is bounded (one call, not a per-row fan-out), and is
+explicitly out of this issue's scope (W2 — holdings/portfolio code).
 """
 
 from __future__ import annotations
 
-import functools
 import logging
 from typing import Any, Literal, cast
 
@@ -185,45 +197,42 @@ def _filter_min_market_cap_with_warning(
 _DEFAULT_RESULT_LIMIT = 40
 _MAX_RESULT_LIMIT = 200
 _MAX_PRESET_SWEEP_COUNT = 5
+# ROB-1309: analyst-enrichment row cap moved to screener_enrich_tool (the only
+# consumer of analyst-count filtering now). Re-exported here for backward
+# compatibility with anything importing it from this module.
 _MAX_ANALYST_ENRICHMENT_ROWS = 200
 
 
-async def screen_stocks_snapshot_impl(
+async def _build_snapshot_page(
     *,
-    preset: str | None = None,
-    presets: list[str] | None = None,
-    market: str = "kr",
-    filters: list[dict[str, Any]] | None = None,
-    exclude_watched: bool = False,
-    exclude_held: bool = False,
-    exclude_symbols: list[str] | None = None,
-    min_analyst_count: int | None = None,
-    min_analyst_buy_count: int | None = None,
-    min_market_cap: float | None = None,
-    min_market_cap_eok: float | None = None,
-    max_market_cap_eok: float | None = None,
-    sort: Literal["matched_presets_desc"] | None = None,
-    limit: int = _DEFAULT_RESULT_LIMIT,
-    offset: int = 0,
+    preset: str | None,
+    presets: list[str] | None,
+    market: str,
+    filters: list[dict[str, Any]] | None,
+    exclude_watched: bool,
+    exclude_held: bool,
+    exclude_symbols: list[str] | None,
+    min_market_cap: float | None,
+    min_market_cap_eok: float | None,
+    max_market_cap_eok: float | None,
+    sort: Literal["matched_presets_desc"] | None,
+    limit: int,
+    offset: int,
 ) -> dict[str, Any]:
-    """Run a screener preset over its base snapshot with adjustable AND-filters.
+    """Build + filter + paginate a snapshot page — the DB-only core shared by
+    ``screen_stocks_snapshot_impl`` (no enrichment) and ``screen_stocks_enrich_impl``
+    (enrichment layered on top of this function's ``page``/``all_results``).
 
-    filters: list of {"field", "operator" (gte|lte|eq), "value"} conditions applied
-    on top of the preset's starting set (adjust same field, add new). Returns the
-    screener payload plus availableFilters (the adjustable catalog) and appliedFilters.
+    Makes ZERO external HTTP calls: DB reads (invest_screener_snapshots via
+    build_screener_results) plus one bounded KIS-live holdings lookup for
+    isHeld marking (pre-existing, out of ROB-1309 scope — see module docstring).
 
-    exclude_watched/held: ROB-515 discovery workflow — hide already-processed symbols.
-    exclude_symbols: explicit symbols to remove after dedupe.
-    min_analyst_count: ROB-515 quality filter — consensus total coverage threshold.
-    min_analyst_buy_count: backward-compatible buy-count threshold.
-    min_market_cap: raw numeric marketCapValue threshold (KRW for KR, USD for US).
-    min/max_market_cap_eok: ROB-515 size filter — unit is 1억원 (KRW).
-
-    sort: "matched_presets_desc" ranks multi-preset intersections first.
-
-    limit/offset: ROB-465 — results are capped (default 40, max 200) and paginated
-    at the tool boundary to keep responses inside the MCP token budget. The full
-    match count and a next_offset cursor are reported under ``pagination``.
+    Returns a dict with keys: ``payload`` (the response dict sans results/
+    pagination/enrichment), ``page`` (the paginated row slice), ``all_results``
+    (full filtered/sorted set, pre-pagination — enrichment callers need this to
+    run analyst-count filtering before paginating), ``eff_offset``, ``eff_limit``,
+    ``total_available``, ``error`` (short-circuit dict to return verbatim, or
+    None).
     """
     from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
     from app.services.invest_view_model.screener_filters import (
@@ -236,17 +245,21 @@ async def screen_stocks_snapshot_impl(
 
     preset_ids = _normalize_preset_ids(preset, presets)
     if not preset_ids:
-        return {"error": "preset or presets must not be empty", "results": []}
+        return {
+            "error": {"error": "preset or presets must not be empty", "results": []}
+        }
 
     if len(preset_ids) > _MAX_PRESET_SWEEP_COUNT:
         return {
-            "error": (
-                "too many presets for screen_stocks_snapshot sweep; "
-                f"maximum is {_MAX_PRESET_SWEEP_COUNT}"
-            ),
-            "preset": preset,
-            "presets": preset_ids,
-            "results": [],
+            "error": {
+                "error": (
+                    "too many presets for screen_stocks_snapshot sweep; "
+                    f"maximum is {_MAX_PRESET_SWEEP_COUNT}"
+                ),
+                "preset": preset,
+                "presets": preset_ids,
+                "results": [],
+            }
         }
 
     # ROB-515: mark 'held' rows in screener results via KIS live positions.
@@ -303,10 +316,12 @@ async def screen_stocks_snapshot_impl(
             )
         except (KeyError, TypeError) as exc:
             return {
-                "error": f"invalid filter entry {entry!r}: {exc}",
-                "preset": preset,
-                "availableFilters": available,
-                "results": [],
+                "error": {
+                    "error": f"invalid filter entry {entry!r}: {exc}",
+                    "preset": preset,
+                    "availableFilters": available,
+                    "results": [],
+                }
             }
 
     merged_results: list[dict[str, Any]] = []
@@ -336,10 +351,12 @@ async def screen_stocks_snapshot_impl(
                     threaded_warned_presets.add(pid)
     except ScreenerFilterError as exc:
         return {
-            "error": str(exc),
-            "preset": preset,
-            "availableFilters": available,
-            "results": [],
+            "error": {
+                "error": str(exc),
+                "preset": preset,
+                "availableFilters": available,
+                "results": [],
+            }
         }
 
     # Discovery filters (exclude)
@@ -423,8 +440,6 @@ async def screen_stocks_snapshot_impl(
             "exclude_symbols": [
                 _normalize_symbol_key(s) for s in (exclude_symbols or [])
             ],
-            "min_analyst_count": min_analyst_count,
-            "min_analyst_buy_count": min_analyst_buy_count,
             "min_market_cap": min_market_cap,
             "min_market_cap_eok": min_market_cap_eok,
             "max_market_cap_eok": max_market_cap_eok,
@@ -442,88 +457,7 @@ async def screen_stocks_snapshot_impl(
     total_available = len(all_results)
     eff_limit = max(1, min(int(limit), _MAX_RESULT_LIMIT))
     eff_offset = max(0, int(offset))
-
-    # ROB-686: per-call memo shared by both the counts resolver and the page
-    # enrichment provider so a symbol resolved once (cache/live) is never
-    # re-fetched within the same tool call.
-    memo: dict[str, Any] = {}
-
-    # ROB-686: min_analyst_* now resolves consensus COUNTS once via the KR
-    # Redis cache-aside (bounded by _MAX_ANALYST_ENRICHMENT_ROWS), filters,
-    # paginates, and only THEN full-enriches the returned page — replacing the
-    # old ROB-515 behavior of live-enriching the entire matched set (up to 200
-    # rows) before pagination.
-    if min_analyst_count is not None or min_analyst_buy_count is not None:
-        if len(all_results) > _MAX_ANALYST_ENRICHMENT_ROWS:
-            return {
-                "error": (
-                    "analyst enrichment row cap exceeded; narrow presets, "
-                    "market-cap filters, or exclude_symbols before applying analyst filters"
-                ),
-                "preset": preset,
-                "presets": preset_ids,
-                "results": [],
-                "pagination": {
-                    "total_available": len(all_results),
-                    "returned_count": 0,
-                    "offset": eff_offset,
-                    "limit": eff_limit,
-                    "has_more": False,
-                    "next_offset": None,
-                },
-            }
-
-        from app.core import analyze_cache
-        from app.services.invest_view_model import analyst_consensus_cache
-
-        redis_client = await analyze_cache._get_redis_client()
-        matched_symbols = [
-            str(r.get("symbol") or "").strip() for r in all_results if r.get("symbol")
-        ]
-        counts = await analyst_consensus_cache.resolve_consensus_counts(
-            symbols=matched_symbols,
-            market=market,
-            redis_client=redis_client,
-            memo=memo,
-        )
-
-        def _passes(row: dict[str, Any]) -> bool:
-            c = counts.get(str(row.get("symbol") or "").strip())
-            if c is None:
-                return False
-            if min_analyst_count is not None and (c.get("totalCount") or 0) < int(
-                min_analyst_count
-            ):
-                return False
-            if min_analyst_buy_count is not None and (c.get("buyCount") or 0) < int(
-                min_analyst_buy_count
-            ):
-                return False
-            return True
-
-        all_results = [r for r in all_results if _passes(r)]
-        total_available = len(all_results)
-        page = all_results[eff_offset : eff_offset + eff_limit]
-
-        from app.services.invest_view_model.screener_analysis_enrichment import (
-            enrich_snapshot_page,
-        )
-
-        enrichment = await enrich_snapshot_page(
-            rows=page,
-            market=market,
-            session_factory=_session_factory(),
-            opinion_provider=functools.partial(
-                analyst_consensus_cache.cached_opinion_provider,
-                redis_client=redis_client,
-                memo=memo,
-            ),
-        )
-        page = enrichment["results"]
-        payload["analysisEnrichment"] = enrichment["summary"]
-    else:
-        page = all_results[eff_offset : eff_offset + eff_limit]
-
+    page = all_results[eff_offset : eff_offset + eff_limit]
     next_offset = eff_offset + len(page)
     payload["results"] = page
     payload["pagination"] = {
@@ -535,25 +469,113 @@ async def screen_stocks_snapshot_impl(
         "next_offset": next_offset if next_offset < total_available else None,
     }
 
-    if min_analyst_count is None and min_analyst_buy_count is None:
-        from app.core import analyze_cache
-        from app.services.invest_view_model import analyst_consensus_cache
-        from app.services.invest_view_model.screener_analysis_enrichment import (
-            enrich_snapshot_page,
-        )
+    return {
+        "error": None,
+        "payload": payload,
+        "page": page,
+        "all_results": all_results,
+        "eff_offset": eff_offset,
+        "eff_limit": eff_limit,
+        "total_available": total_available,
+        "preset": preset,
+        "preset_ids": preset_ids,
+        "market": market,
+    }
 
-        redis_client = await analyze_cache._get_redis_client()
-        enrichment = await enrich_snapshot_page(
-            rows=page,
-            market=market,
-            session_factory=_session_factory(),
-            opinion_provider=functools.partial(
-                analyst_consensus_cache.cached_opinion_provider,
-                redis_client=redis_client,
-                memo=memo,
+
+async def screen_stocks_snapshot_impl(
+    *,
+    preset: str | None = None,
+    presets: list[str] | None = None,
+    market: str = "kr",
+    filters: list[dict[str, Any]] | None = None,
+    exclude_watched: bool = False,
+    exclude_held: bool = False,
+    exclude_symbols: list[str] | None = None,
+    min_analyst_count: int | None = None,
+    min_analyst_buy_count: int | None = None,
+    min_market_cap: float | None = None,
+    min_market_cap_eok: float | None = None,
+    max_market_cap_eok: float | None = None,
+    sort: Literal["matched_presets_desc"] | None = None,
+    limit: int = _DEFAULT_RESULT_LIMIT,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Run a screener preset over its base snapshot with adjustable AND-filters.
+
+    ROB-1309: this is the DB-only path — it makes ZERO external HTTP calls
+    (sector lazy-fill, analyst-consensus fetch, quoteSummary/timeseries/crumb,
+    etc). Results carry only what's already persisted in the snapshot tables;
+    there is no ``analysisContext``/``analystLabel`` and no sector-lazy-fill
+    ``category`` backfill. For live enrichment (analyst consensus, sector
+    labels, ``min_analyst_count``/``min_analyst_buy_count`` filtering), call
+    the separate ``screen_stocks_enrich`` MCP tool
+    (``app/mcp_server/tooling/screener_enrich_tool.py::screen_stocks_enrich_impl``)
+    on the page this tool returns.
+
+    filters: list of {"field", "operator" (gte|lte|eq), "value"} conditions applied
+    on top of the preset's starting set (adjust same field, add new). Returns the
+    screener payload plus availableFilters (the adjustable catalog) and appliedFilters.
+
+    exclude_watched/held: ROB-515 discovery workflow — hide already-processed symbols.
+    exclude_symbols: explicit symbols to remove after dedupe.
+    min_market_cap: raw numeric marketCapValue threshold (KRW for KR, USD for US).
+    min/max_market_cap_eok: ROB-515 size filter — unit is 1억원 (KRW).
+
+    min_analyst_count / min_analyst_buy_count: NOT supported here (ROB-1309) —
+    passing either returns a fail-closed error pointing at ``screen_stocks_enrich``
+    rather than silently ignoring the filter or making a network call.
+
+    sort: "matched_presets_desc" ranks multi-preset intersections first.
+
+    limit/offset: ROB-465 — results are capped (default 40, max 200) and paginated
+    at the tool boundary to keep responses inside the MCP token budget. The full
+    match count and a next_offset cursor are reported under ``pagination``.
+    """
+    if min_analyst_count is not None or min_analyst_buy_count is not None:
+        return {
+            "error": (
+                "min_analyst_count/min_analyst_buy_count require live analyst-"
+                "consensus enrichment and are no longer supported by "
+                "screen_stocks_snapshot (ROB-1309: DB-only, zero external HTTP "
+                "by default). Call screen_stocks_enrich with the same filters "
+                "instead."
             ),
-        )
-        payload["results"] = enrichment["results"]
-        payload["analysisEnrichment"] = enrichment["summary"]
+            "redirectTool": "screen_stocks_enrich",
+            "preset": preset,
+            "presets": presets,
+            "results": [],
+        }
 
+    built = await _build_snapshot_page(
+        preset=preset,
+        presets=presets,
+        market=market,
+        filters=filters,
+        exclude_watched=exclude_watched,
+        exclude_held=exclude_held,
+        exclude_symbols=exclude_symbols,
+        min_market_cap=min_market_cap,
+        min_market_cap_eok=min_market_cap_eok,
+        max_market_cap_eok=max_market_cap_eok,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    if built.get("error") is not None:
+        return built["error"]
+
+    payload = built["payload"]
+    payload["discoveryFilters"]["min_analyst_count"] = None
+    payload["discoveryFilters"]["min_analyst_buy_count"] = None
+    # ROB-1309: explicit, non-silent contract marker — this tool never enriches.
+    payload["enrichment"] = {
+        "applied": False,
+        "tool": "screen_stocks_enrich",
+        "reason": (
+            "screen_stocks_snapshot is DB-only by contract (ROB-1309); call "
+            "screen_stocks_enrich for sector labels / analyst consensus / "
+            "min_analyst_* filtering."
+        ),
+    }
     return payload
