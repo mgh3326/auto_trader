@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.services.spike_attribution.attribute import build_attribution, record_summary
+from app.services.spike_attribution.cache import lookup as cache_lookup
 from app.services.spike_attribution.catalyst_basis import build_catalyst_basis
 from app.services.spike_attribution.detect import ABS_CHANGE_PCT_MIN, detect_spikes
 from app.services.spike_attribution.forecast_tag import (
@@ -59,6 +60,7 @@ async def get_spike_attribution_impl(
     session_date: str,
     market: str = "kr",
     created_by: str = "",
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     author = (created_by or "").strip()
     if not author:
@@ -75,9 +77,26 @@ async def get_spike_attribution_impl(
     except (AttributeError, ValueError):
         return _error("session_date must be YYYY-MM-DD")
 
+    now = dt.datetime.now(dt.UTC)
     results: list[dict[str, Any]] = []
     async with _session_factory()() as db:
         for symbol in cleaned:
+            # Cache-first (ROB-1303 phase 2). A *fresh* entry answers on its
+            # own. Anything else — missing, stale, unreadable — falls through
+            # to a live computation and carries its cache state with it, so a
+            # cold cache can never be read as "this symbol had no catalyst".
+            cache_read = (
+                cache_lookup(market=market, session_date=as_of, symbol=symbol, now=now)
+                if use_cache
+                else None
+            )
+            if cache_read is not None and cache_read.usable_without_fallback:
+                cached = dict(cache_read.entry.payload) if cache_read.entry else {}
+                cached["cache"] = cache_read.as_dict()
+                cached["served_from"] = "cache"
+                results.append(cached)
+                continue
+
             bars = await load_daily_bars(
                 db,
                 market=market,
@@ -88,9 +107,16 @@ async def get_spike_attribution_impl(
             event, diagnostics = detect_spikes(
                 market=market, symbol=symbol, bars=bars, session_date=as_of
             )
+            cache_block = cache_read.as_dict() if cache_read is not None else None
             if event is None:
                 results.append(
-                    {"symbol": symbol, "spike": False, "diagnostics": diagnostics}
+                    {
+                        "symbol": symbol,
+                        "spike": False,
+                        "diagnostics": diagnostics,
+                        "cache": cache_block,
+                        "served_from": "live",
+                    }
                 )
                 continue
             materials = await load_spike_materials(db, event)
@@ -107,10 +133,12 @@ async def get_spike_attribution_impl(
                         attribution, created_by=author
                     ),
                     "prereg_skipped_reason": prereg_skipped_reason(attribution),
+                    "cache": cache_block,
+                    "served_from": "live",
                 }
             )
 
-    spikes = [row for row in results if row["spike"]]
+    spikes = [row for row in results if row.get("spike")]
     return {
         "success": True,
         "experiment_id": EXPERIMENT_ID,
@@ -119,12 +147,24 @@ async def get_spike_attribution_impl(
         "market": market,
         "session_date": as_of.isoformat(),
         "abs_change_pct_min": str(ABS_CHANGE_PCT_MIN),
+        "cache_first": use_cache,
+        "cache_state_note": (
+            "each result carries cache.state; missing/stale fell back to a "
+            "live computation. A missing entry is NOT evidence that the "
+            "symbol had no catalyst."
+        ),
         "results": results,
         "counts": {
             "examined": len(results),
             "spikes": len(spikes),
-            "attributed": sum(not r["summary"]["unattributed"] for r in spikes),
-            "unattributed": sum(r["summary"]["unattributed"] for r in spikes),
+            "attributed": sum(
+                not (r.get("summary") or {}).get("unattributed", True) for r in spikes
+            ),
+            "unattributed": sum(
+                bool((r.get("summary") or {}).get("unattributed")) for r in spikes
+            ),
+            "served_from_cache": sum(r.get("served_from") == "cache" for r in results),
+            "served_live": sum(r.get("served_from") == "live" for r in results),
         },
         "writes_performed": 0,
         "forecast_save_called": False,

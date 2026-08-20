@@ -29,7 +29,14 @@ _TOOL_DESCRIPTION = (
     "from this tool alone. Observation-only: it writes no row, calls no broker, "
     "and reaches no order, approval, or watch surface. The returned "
     "prereg_forecast_save_kwargs are pre-registered follow-through records; "
-    "forecast_save is yours to call, and this tool never calls it."
+    "forecast_save is yours to call, and this tool never calls it. "
+    "CACHE: each result carries cache.state — fresh (served from the "
+    "pre-attribution cache), stale (an entry exists but is past its refresh "
+    "cadence; age_seconds is given and the answer was recomputed live), or "
+    "missing (nothing was ever precomputed for this symbol, so it was "
+    "computed live). A missing or stale cache is NOT evidence that the "
+    "symbol had no catalyst — that claim requires an actual attribution "
+    "record saying unattributed. Pass use_cache=false to skip the cache."
 )
 
 
@@ -40,12 +47,14 @@ def register_spike_attribution_tools(mcp: FastMCP) -> None:
         session_date: str,
         market: str = "kr",
         created_by: str = "",
+        use_cache: bool = True,
     ) -> dict[str, Any]:
         return await get_spike_attribution_impl(
             symbols,
             session_date=session_date,
             market=market,
             created_by=created_by,
+            use_cache=use_cache,
         )
 
 

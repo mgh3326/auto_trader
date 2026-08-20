@@ -268,6 +268,52 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
         "scoring_authority": "rob-1303-spike-attribution.scoring",
         "do_not_use_forecast_resolve_as_experiment_score": True,
     },
+    # --- phase 2: pre-attribution cache (§120차 부기 2) -------------------
+    # The cache exists so a session does not recompute attribution at decision
+    # time. Its danger is the opposite of stage 1's: an empty or stale cache
+    # read as "no catalyst" is a *different* state from ``unattributed``, and
+    # both look like silence to a consumer. Every read therefore carries a
+    # state, and a miss is never answered with an empty payload.
+    "cache": {
+        "states": ["fresh", "stale", "missing"],
+        "state_rule": (
+            "missing = no entry for this (market, session_date, symbol); "
+            "fresh = age <= expected_refresh_seconds + grace_seconds; "
+            "stale = an entry exists but is older than that"
+        ),
+        "grace_seconds": 120,
+        "expected_refresh_seconds_by_mode": {"preopen": 14400, "intraday": 900},
+        "intraday_cadence_minutes": 15,
+        "preopen_local_time": {"kr": "07:30", "us": "21:30"},
+        "preopen_time_note": "KST wall clock, per the issue body; operator-invoked",
+        # The distinction the whole design turns on.
+        "negative_result_is_a_real_answer": (
+            "a cached entry saying spike=false or unattributed is a computed "
+            "answer and reads as fresh — it is NOT 'missing'"
+        ),
+        "missing_disposition": "report state=missing and fall back to live compute",
+        "silent_empty_response": "forbidden",
+        "stale_disposition": "return the entry WITH its age; caller decides",
+        "unattributed_stays_unattributed_in_cache": True,
+        "cause_invention_by_precompute": "forbidden",
+        # Failure handling: a failed refresh must never look like a fresh one.
+        "failed_refresh_rule": (
+            "never overwrite the last good entry with a failure; record "
+            "last_error / last_error_at / last_success_at on the entry and let "
+            "it age into stale on its own"
+        ),
+        "failure_laundering": "forbidden",
+        "partial_run_disposition": "per-symbol errors are recorded per symbol; "
+        "the run reports attempted/succeeded/failed counts",
+        "store": "json_files_no_migration",
+        "store_rationale": (
+            "analysis_artifacts.kind is CHECK-constrained with no fitting kind, "
+            "so using it needs a migration; an unapplied migration cannot be "
+            "exercised, and this cache must be demonstrable on real data now"
+        ),
+        "scheduler_registration": False,
+        "entry_point": "operator_invoked_cli_only",
+    },
     "forbidden": list(FORBIDDEN),
     "scheduler_registration": False,
     "broker_or_order_surface": False,
@@ -277,7 +323,7 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
 # Recomputed by tests/services/spike_attribution/test_spec_freeze.py.
 # Bump only together with an explicit pre-registration amendment.
 PINNED_SPEC_SHA256: Final = (
-    "373e908f9f4adc84b1d17cb77695019ffaf740f977e3e4224f4417499c9e0f76"
+    "26a0ffd2e53c4b237f6cb672c69ec33527a52d6e14e4d6c26b74193c2df47537"
 )
 
 

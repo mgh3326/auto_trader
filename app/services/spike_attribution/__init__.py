@@ -19,8 +19,17 @@ Two hooks hang off the record, wiring only — no scheduler, no auto-run:
   follow-through so "does an X-driven spike hold?" is scoreable later without
   re-reading the formula favourably.
 
-Nothing in this package writes a row, touches a broker, or reaches an order,
-approval, or watch surface.
+Phase 2 (§120차 부기 2) adds a pre-attribution cache so a session does not
+recompute at decision time. Its hazard is the mirror of stage 1's: a cold or
+stale cache read as "no catalyst" is a different claim from ``unattributed``.
+:mod:`~app.services.spike_attribution.cache` therefore answers every lookup with
+an explicit ``fresh`` / ``stale(age)`` / ``missing`` state, a computed negative
+counts as a real ``fresh`` answer, and
+:mod:`~app.services.spike_attribution.precompute` never lets a failed refresh
+overwrite the last good entry.
+
+Nothing in this package writes a database row, touches a broker, reaches an
+order, approval, or watch surface, or registers a schedule.
 """
 
 from app.services.spike_attribution.attribute import (
@@ -32,6 +41,15 @@ from app.services.spike_attribution.attribute import (
     rule_eligibility,
     scored_class,
 )
+from app.services.spike_attribution.cache import (
+    STATE_FRESH,
+    STATE_MISSING,
+    STATE_STALE,
+    CacheEntry,
+    CacheRead,
+    classify_state,
+)
+from app.services.spike_attribution.cache import lookup as cache_lookup
 from app.services.spike_attribution.catalyst_basis import build_catalyst_basis
 from app.services.spike_attribution.contract import (
     DailyBar,
@@ -48,6 +66,11 @@ from app.services.spike_attribution.detect import (
     session_close_at,
 )
 from app.services.spike_attribution.forecast_tag import build_prereg_forecasts
+from app.services.spike_attribution.precompute import (
+    PrecomputeRun,
+    precompute_session,
+    refresh_symbol,
+)
 from app.services.spike_attribution.scoring import (
     FollowThroughScore,
     aggregate_by_class,
@@ -64,6 +87,16 @@ from app.services.spike_attribution.spec import (
 
 __all__ = [
     "ATTRIBUTION_TYPES",
+    "STATE_FRESH",
+    "STATE_MISSING",
+    "STATE_STALE",
+    "CacheEntry",
+    "CacheRead",
+    "PrecomputeRun",
+    "cache_lookup",
+    "classify_state",
+    "precompute_session",
+    "refresh_symbol",
     "EXPERIMENT_ID",
     "FORBIDDEN",
     "PINNED_SPEC_SHA256",

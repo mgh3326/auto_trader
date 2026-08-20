@@ -132,7 +132,56 @@ required_thesis_evidence: [catalyst_basis, flow_basis]` 는 **코드가 아니�
 채점: `score_event()` → `aggregate_by_class()`. 표본 하한 20 미만이면 집계가
 `cross_class_comparison_allowed=false` 를 돌려주고 유형 간 우열 선언을 막는다.
 
-## 6. 금지
+## 6. 사전 귀속 캐시 (2단, §120차 부기 2)
+
+판단 시점에 매번 재계산하면 주문이 늦는다 → 귀속을 **상시 사전 계산**해 캐시에 둔다.
+
+```bash
+# 장전 프리컴퓨트 (운영자 실행. KR 07:30 / US 21:30 KST — 정본 이슈 본문)
+uv run python -m scripts.precompute_spike_attribution \
+    --date 2026-08-20 --mode preopen --all --limit 200
+
+# 장중 증분 (15분 주기)
+uv run python -m scripts.precompute_spike_attribution \
+    --date 2026-08-20 --mode intraday --symbol 035420 --symbol 035720
+```
+캐시 위치: `SPIKE_ATTRIBUTION_CACHE_DIR` (기본 `.cache/spike_attribution/<market>/<date>/<symbol>.json`).
+🔴 **스케줄러 등록 0.** `--mode` 는 신선도 잣대를 찍을 뿐 아무것도 스케줄하지 않는다.
+정본 AC3(신규 cron 금지)대로 장전 실행은 **ROB-1297 결산 cron 합류가 운영자 몫**이다.
+
+### 6.1 🔴 캐시가 조용히 틀린 답을 주지 못하게 하는 규칙
+
+세션이 캐시를 **먼저** 읽으므로, 캐시가 비었을 때 "카탈리스트 없음"으로 오독되면
+`unattributed`(모른다)와 구별이 안 된다. 그래서 **모든 조회는 상태를 달고 온다**.
+
+| 상태 | 뜻 | 소비 |
+|---|---|---|
+| `fresh` | `age ≤ 모드별 cadence + grace(120s)` | 캐시로 응답 확정 |
+| `stale` | 엔트리는 있으나 cadence 초과 | **age 와 함께** 반환 + 실조회 폴백 |
+| `missing` | 이 (market, date, symbol) 엔트리가 **아예 없음** | 실조회 폴백 |
+
+cadence: `preopen` 14,400s · `intraday` 900s. 같은 나이라도 모드가 다르면 판정이 다르다.
+
+🔴 **이 설계의 핵심 구분**: "계산했더니 급등 아님"·"계산했더니 unattributed" 는 **진짜 답**
+이라 `fresh` 다. `missing` 은 **아무도 계산한 적 없음**뿐이다. 둘을 뭉개는 것이 이 모듈이
+막으려는 바로 그 버그다. 응답에 `missing_is_not_no_catalyst: true` 가 항상 실린다.
+
+🔵 정본의 "miss·stale 이면 실조회 폴백(fail-open)"과 브리프의 "조용한 빈 응답 금지
+(fail-closed)"는 **모순이 아니다** — 같은 금지(캐시 공백을 원인 부재로 세탁 금지)를
+정본은 처방으로, 브리프는 금지로 말한 것이다. 구현은 **둘 다** 만족한다:
+상태를 실어 보내고(fail-closed 방향) 동시에 실조회로 폴백한다(fail-open).
+
+### 6.2 🔴 증분 갱신이 실패하면
+
+- **마지막 성공 엔트리를 덮어쓰지 않는다.** `computed_at`·`payload` 를 그대로 두고
+  `last_error`/`last_error_at`/`last_success_at` 만 찍는다 → 엔트리는 **정직하게 늙어
+  `stale` 이 된다.** 실패를 성공으로 세탁하지 않는다.
+- **한 번도 계산된 적 없는 심볼은 `missing` 으로 남는다.** 빈 엔트리를 쓰지 않는다 —
+  빈 엔트리는 "계산했는데 없음"으로 읽히기 때문이다.
+- 심볼 하나가 실패해도 나머지는 진행된다. 런 결과는 `run_status: ok|partial` +
+  attempted/succeeded/failed 카운트. 🔴 **partial 이면 CLI exit code 1** (성공 위장 금지).
+
+## 7. 금지
 
 - 귀속 레코드 → 제안·주문·워치 승격 **0**.
 - 채점 완료(표본 하한 충족) 전 중간값으로 정책·임계값 변경 논거 삼기 **금지**.
@@ -140,3 +189,5 @@ required_thesis_evidence: [catalyst_basis, flow_basis]` 는 **코드가 아니�
 - 기존 뉴스 판정 파이프라인 규칙 변경 **금지** — auto_trader 코드는 기사를 자동 제외하지
   않는다 (ROB-491). 판정 행이 없으면 `unjudged` 후보로 **보인다**.
 - 스케줄러(TaskIQ/cron/Prefect) 등록 **금지**. CLI/MCP 수동 호출만.
+- 캐시 miss/stale 을 "카탈리스트 없음"으로 보고 **금지** (§6.1).
+- 실패한 증분 갱신을 성공으로 표시 **금지** (§6.2).

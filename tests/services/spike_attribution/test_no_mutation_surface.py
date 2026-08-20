@@ -16,6 +16,7 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 PACKAGE = REPO / "app/services/spike_attribution"
 ENTRY_POINTS = (
     REPO / "scripts/attribute_daily_spikes.py",
+    REPO / "scripts/precompute_spike_attribution.py",
     REPO / "app/mcp_server/tooling/spike_attribution.py",
     REPO / "app/mcp_server/tooling/spike_attribution_registration.py",
 )
@@ -111,3 +112,30 @@ def test_the_package_declares_no_scheduler_registration() -> None:
         assert "spike_attribution" not in path.read_text(), path.name
     for path in REPO.glob("app/tasks/**/*.py"):
         assert "spike_attribution" not in path.read_text(), path.name
+
+
+def test_the_precompute_cli_registers_no_cadence_of_its_own() -> None:
+    """--mode only stamps a freshness yardstick; it must not schedule anything."""
+
+    source = (REPO / "scripts/precompute_spike_attribution.py").read_text()
+    for token in ("crontab", "CronCreate", "schedule(", "add_job", "@broker.task"):
+        assert token not in source, token
+    assert "No schedule is registered" in source
+
+
+def test_the_cache_writes_files_not_database_rows() -> None:
+    import datetime as dt
+
+    from app.services.spike_attribution.precompute import PrecomputeRun
+
+    run = PrecomputeRun(
+        market="kr",
+        session_date=dt.date(2026, 8, 20),
+        mode="preopen",
+        started_at=dt.datetime(2026, 8, 20, tzinfo=dt.UTC),
+        finished_at=dt.datetime(2026, 8, 20, tzinfo=dt.UTC),
+    )
+    payload = run.as_dict()
+    assert payload["db_rows_written"] == 0
+    assert payload["scheduler_registration"] is False
+    assert payload["promote"] is False
