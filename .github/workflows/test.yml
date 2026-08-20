@@ -159,8 +159,9 @@ jobs:
         # ROB-1312: each matrix shard runs the fixed, committed file list in
         # ci_shards/shard-<group>.txt instead of a runtime pytest-split
         # `--splits/--group` selection. The four manifests are a deterministic
-        # LPT bin-packing over .call_durations.json weights (regenerate via
-        # `python3 -m scripts.ci.file_shard_plan generate`, see
+        # LPT bin-packing over .call_durations.json weights (only the duration
+        # refresh workflow regenerates all manifests; a normal test-file PR
+        # minimally adds its path to one sorted manifest, see
         # docs/runbooks/ci-file-shard-manifests.md). Exact-cover (every
         # non-live collected test file in exactly one manifest, none stale) is
         # validated once per run in the taskiq-smoke job, not redundantly

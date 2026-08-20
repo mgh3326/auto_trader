@@ -12,16 +12,19 @@ it.
 
 Two subcommands, deliberately asymmetric:
 
-* ``generate`` -- reads ``.call_durations.json`` (ROB-1295 call-phase
+* ``generate`` -- **duration-refresh workflow only**: reads
+  ``.call_durations.json`` (ROB-1295 call-phase
   telemetry) and a fresh authoritative collect-only node manifest, sums
   per-node weight into per-file weight, and writes four manifests via a
   deterministic largest-processing-time-first (LPT) bin-packing. Overwrites
-  whatever manifests are already on disk.
+  whatever manifests are already on disk. It intentionally has no incremental
+  mode, so a normal PR that merely adds a test file must minimally add that
+  sorted path to one committed manifest instead of running this command.
 * ``check`` -- reads the four committed manifests plus a fresh authoritative
   collect-only node manifest and validates exact cover: every authoritative
   file in exactly one manifest, no duplicates (within or across manifests),
   no stale/unexpected entries, no empty shard. Never writes anything. Fails
-  closed (non-zero exit, actionable message with the regeneration command)
+  closed (non-zero exit, actionable message for a minimal manifest repair)
   on any violation.
 
 Weight fallbacks (explicit, deterministic -- see ``NOT_CALLED_FALLBACK_SECONDS``
@@ -256,8 +259,9 @@ def _load_shard_manifest(path: Path) -> list[str]:
         )
     if files != sorted(files):
         raise ShardPlanError(
-            f"{path}: entries are not in canonical sorted order (regenerate, "
-            "do not hand-edit)"
+            f"{path}: entries are not in canonical sorted order (place the entry at "
+            "its LC_ALL=C sorted position, or run LC_ALL=C sort on the affected "
+            "file; see docs/runbooks/ci-file-shard-manifests.md §4)"
         )
     return files
 
@@ -286,10 +290,11 @@ def write_shard_manifests(manifest_dir: Path, shards: list[list[str]]) -> list[P
 # --------------------------------------------------------------------------
 
 
-REGENERATE_HINT = (
-    "regenerate with: python3 -m scripts.ci.file_shard_plan generate "
-    "--call-durations .call_durations.json --collected <fresh collect-only output> "
-    "--manifest-dir ci_shards"
+EXACT_COVER_HINT = (
+    "for a normal test-file add/remove/rename: minimally edit exactly one "
+    "ci_shards/shard-N.txt at its LC_ALL=C sorted position so every collected "
+    "file appears once; reserve `file_shard_plan generate` for the duration-"
+    "refresh workflow because it recomputes and rewrites all shards"
 )
 
 
@@ -346,7 +351,7 @@ def validate_exact_cover(
         raise ShardPlanError(
             "shard manifest exact-cover check failed:\n- "
             + "\n- ".join(errors)
-            + f"\n\n{REGENERATE_HINT}"
+            + f"\n\n{EXACT_COVER_HINT}"
         )
 
 
@@ -504,7 +509,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     generate_parser = subparsers.add_parser(
         "generate",
-        help="regenerate the four committed shard manifests from fresh inputs",
+        help="duration-refresh only: fully rebalance manifests from fresh inputs",
     )
     generate_parser.add_argument("--call-durations", type=Path, required=True)
     generate_parser.add_argument(

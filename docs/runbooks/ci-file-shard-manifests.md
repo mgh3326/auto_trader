@@ -35,7 +35,7 @@ pytest "${SHARD_FILES[@]}" -m "not live" -n 4 ...
 
 | piece | file | what it is |
 |---|---|---|
-| planner/validator | `scripts/ci/file_shard_plan.py` | `generate` (regenerate the manifests) and `check` (validate exact cover) |
+| planner/validator | `scripts/ci/file_shard_plan.py` | `generate` (full rebalance — duration refresh only) and `check` (validate exact cover) |
 | manifests | `ci_shards/shard-{1..4}.txt` | committed, one test file path per line, sorted |
 | audit report | `ci_shards/weights.json` | predicted per-shard weight/spread, not consumed by `check` |
 | duration merge contract | `scripts/merge_test_durations.py`, `scripts/call_durations.py` | disjoint-shard-collection validation for the weekly refresh |
@@ -76,37 +76,55 @@ the imbalance (e.g. `max=110, min=90` reads as `18.2%` via `/max` but
 reading of the acceptance bar. `weights.json` is an audit artifact only —
 `check` does not read or depend on it.
 
-## 4. Regenerating the manifests
+## 4. Normal test-file change: minimal manifest entry
 
-Any PR that adds, removes, or renames a `tests/**/*.py` file must
-regenerate the manifests in the same PR, or the `taskiq-smoke` required
-check (see §5) fails closed with an actionable diff. Recipe:
+Any normal PR that adds a `tests/**/*.py` file must make the corresponding
+**minimal** change in the same PR: add that path in exactly one
+`ci_shards/shard-N.txt`, at its `LC_ALL=C` sorted position. For a removal,
+delete its existing entry; for a rename, do that deletion plus one sorted
+addition. Do not run `file_shard_plan generate` for these cases.
+
+`generate` has no incremental mode. It rebuilds LPT assignment from one global
+`(-weight, path)` ordering and overwrites every manifest. A non-destructive
+measurement using the committed `.call_durations.json` and a collection derived
+from that artifact (`1666` files) still moved `1192/1666` shared files (`71.5%`)
+between shards; the cause of that churn is not asserted here. A one-file add is
+therefore not a use case for full regeneration. Exact-cover checks membership
+exactly once; it does **not** check weight balance. The minimal entry is
+sufficient for normal test-file work and avoids unrelated duration-refresh churn.
+
+Choose the existing shard with the fewest entries and state that basis in the
+PR. Then verify the exact cover:
 
 ```bash
-uv sync --group test
-bash scripts/setup-test-env.sh
-
 uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
   2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
   > /tmp/collected.txt
 
 # NOTE: `sort`, never `sort -u` — see §6.
 
-python3 -m scripts.ci.file_shard_plan generate \
-  --call-durations .call_durations.json \
+uv run --no-sync python -m scripts.ci.file_shard_plan check \
   --collected /tmp/collected.txt \
   --manifest-dir ci_shards \
   --shard-count 4
 
-git add ci_shards/
+git diff --stat -- ci_shards/
 ```
 
-A brand-new test file has no entry in `.call_durations.json` yet, so it gets
-the mean-duration fallback weight (§3) until the next weekly refresh
-measures it for real — this is expected and does not require waiting for a
-refresh before merging.
+The diff must name only the intended path(s); a new file normally means one
+manifest and one added line. The next duration refresh will measure its
+weight and perform the only permitted full rebalance (§6.1).
 
-### 4.1 Provenance guard: coherence, not correspondence
+If local `check` differs because its collection does not match CI's
+authoritative collection, treat the PR's `taskiq-smoke` result as authoritative.
+Do not run `generate` to make a local check pass.
+
+### 4.1 Duration refresh: full regeneration only
+
+Full regeneration belongs only to the duration-refresh workflow described in
+§6.1, where its fresh inputs and CI self-check live.
+
+### 4.2 Provenance guard: coherence, not correspondence
 
 Before computing any weight, `generate` calls
 `scripts/call_durations.py::validate_artifact_provenance` on the loaded
@@ -247,13 +265,11 @@ it.
 ### 6.1 Same-PR manifest regeneration (durability)
 
 `ci_shards/*.txt` is a deterministic function of `.call_durations.json`
-(weight source, §3) plus the current authoritative collection. If the
-weekly refresh only rebuilt `.call_durations.json` without also
-regenerating the manifests from it, LPT balance would silently drift out of
-sync with reality every week between manual `generate` runs — exact cover
-would still hold (file membership doesn't depend on weight), but the "keep
-predicted shard spread low" purpose this planner exists for would quietly
-rot with nobody noticing.
+(weight source, §3) plus the current authoritative collection. If the weekly
+refresh rebuilt `.call_durations.json` without also regenerating the manifests,
+no duration-refresh workflow would correct the LPT balance. Exact cover would
+still hold (file membership does not depend on weight), but the "keep predicted
+shard spread low" purpose of the planner would quietly rot.
 
 So the `merge` job's "Regenerate file-shard manifests" step re-runs
 `python3 -m scripts.ci.file_shard_plan generate` from that same run's
@@ -275,21 +291,13 @@ uv run pytest tests/ci/test_file_shard_plan.py \
   scripts/merge_test_durations_test.py \
   scripts/call_durations_test.py \
   tests/ci/test_file_shard_plan_workflow_entrypoint.py -q -ra
-
-# Regenerate TWICE from the same inputs and diff the two runs directly
-# (not just against whatever happens to already be on disk/tracked):
-python3 -m scripts.ci.file_shard_plan generate --call-durations .call_durations.json \
-  --collected /tmp/collected.txt --manifest-dir /tmp/ci_shards_run1 --shard-count 4
-python3 -m scripts.ci.file_shard_plan generate --call-durations .call_durations.json \
-  --collected /tmp/collected.txt --manifest-dir /tmp/ci_shards_run2 --shard-count 4
-diff -r /tmp/ci_shards_run1 /tmp/ci_shards_run2   # must be empty
-
-# Then, separately, confirm the committed manifests match what generate
-# produces today (zero tracked diff):
-python3 -m scripts.ci.file_shard_plan generate --call-durations .call_durations.json \
-  --collected /tmp/collected.txt --manifest-dir ci_shards --shard-count 4
-git diff --exit-code -- ci_shards/
 ```
+
+Full-regeneration idempotence is locked by the unit tests listed above,
+including `test_cli_generate_twice_is_byte_identical`. The duration-refresh
+workflow's `Validate regenerated file-shard manifests (exact-cover)` step
+separately confirms that the manifests it just wrote form an exact cover (§6.1).
+Neither requires a local full regeneration.
 
 `mapfile` (used to load a manifest into `pytest`'s argv in both workflows)
 is a bash 4+ builtin, absent from macOS's stock bash 3.2 — local
