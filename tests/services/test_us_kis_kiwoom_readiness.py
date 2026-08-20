@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+from enum import Enum
 
 import pytest
 
@@ -104,7 +105,7 @@ _LIFECYCLE_BLOCKED = "AUTO_READY_BLOCKED_BY_LIFECYCLE"
 
 # Axes ROB-1266 §8 renders.  Their values are pulled from the registry at run
 # time; none of them is written down here.
-_ROB1266_OWNED_AXES = (
+_SCALAR_AXES = (
     "role",
     "lane_status",
     "activation_status",
@@ -112,6 +113,14 @@ _ROB1266_OWNED_AXES = (
     "identity_status",
     "credential_namespace",
 )
+# Axes ROB-1266 §8 renders as a tuple.  These need their own patterns: the
+# whole-tuple rendering and the qualified enum member names are transcriptions,
+# while several individual member *values* are ordinary English words that this
+# contract must be able to use in prose (a lane may not authorise a canary, and
+# saying so is not a restatement of the binding list).  Naming the member —
+# qualified, or by reciting the whole tuple — is what gets forbidden.
+_TUPLE_AXES = ("allowed_hosts", "missing_bindings")
+_ROB1266_OWNED_AXES = _SCALAR_AXES + _TUPLE_AXES
 # Axes whose value is a pure identity token, so any bare occurrence in the
 # document is a restatement regardless of surrounding prose.
 _IDENTITY_AXES = ("role", "lane_status", "credential_namespace")
@@ -154,6 +163,53 @@ def _axis_value(lane_id: str, axis: str) -> str | None:
     if axis == "credential_namespace":
         return _rendered(LANE_CREDENTIAL_NAMESPACES[lane_id])
     return _rendered(getattr(_entry(lane_id), axis))
+
+
+def _axis_members(lane_id: str, axis: str) -> tuple[object, ...]:
+    if axis == "allowed_hosts":
+        return tuple(LANE_ALLOWED_HOSTS[lane_id])
+    return tuple(getattr(_entry(lane_id), axis))
+
+
+def _forbidden_patterns(lane_id: str, axis: str) -> list[tuple[str, str]]:
+    """Every way this axis's registry value could be transcribed, derived.
+
+    Nothing here is hand-written: the members come from the registry at call
+    time, so a value change moves the guard with it.
+    """
+
+    patterns: list[tuple[str, str]] = []
+    if axis in _SCALAR_AXES:
+        value = _axis_value(lane_id, axis)
+        if value is None:
+            return patterns
+        patterns.append(
+            (f"{axis} = {value}", rf"{re.escape(axis)}\s*=\s*{re.escape(value)}")
+        )
+        if axis in _IDENTITY_AXES:
+            patterns.append(
+                (f"bare {value}", rf"(?<![\w.]){re.escape(value)}(?![\w.])")
+            )
+        return patterns
+
+    members = _axis_members(lane_id, axis)
+    if not members:
+        return patterns
+    rendered = [_rendered(m) for m in members]
+    sequence = r"\W+".join(re.escape(r) for r in rendered if r)
+    # The whole tuple, however it is punctuated -- this is the transcription.
+    patterns.append((f"{axis} tuple", sequence))
+    patterns.append((f"{axis} = (...)", rf"{re.escape(axis)}\s*=\s*\("))
+    for member in members:
+        if isinstance(member, Enum):
+            # The qualified form names the member unambiguously; the bare
+            # value does not, so only the qualified form is forbidden.
+            qualified = f"{type(member).__name__}.{member.name}"
+            patterns.append((qualified, re.escape(qualified)))
+        else:
+            # Hosts are distinctive strings; a bare occurrence is a copy.
+            patterns.append((f"bare {member}", rf"(?<![\w.]){re.escape(str(member))}"))
+    return patterns
 
 
 def _blocks(text: str, marker: str) -> dict[str, dict[str, str]]:
@@ -320,18 +376,14 @@ def test_g5_document_does_not_restate_a_registry_axis(
     forbids; cite the path and section instead.
     """
 
-    value = _axis_value(lane, axis)
-    if value is None:
+    patterns = _forbidden_patterns(lane, axis)
+    if not patterns:
         pytest.skip(f"{lane}.{axis} is absent in the registry; nothing to restate")
 
     flat = _flat(doc_text)
-    assert not re.search(rf"{re.escape(axis)}\s*=\s*{re.escape(value)}", flat), (
-        f"{lane}: document restates {axis} = {value}; cite ROB-1266 §8 instead"
-    )
-    if axis in _IDENTITY_AXES:
-        assert not re.search(rf"(?<![\w.]){re.escape(value)}(?![\w.])", flat), (
-            f"{lane}: document contains the bare registry value {value!r} for "
-            f"{axis}; that value is owned by ROB-1266 §8"
+    for why, pattern in patterns:
+        assert not re.search(pattern, flat), (
+            f"{lane}: document restates {axis} ({why}); cite ROB-1266 §8 instead"
         )
 
 
@@ -342,8 +394,15 @@ def test_g6_checker_keeps_no_literal_copy_of_a_registry_value() -> None:
     forbidden = {
         value
         for lane in _LANES
-        for axis in _ROB1266_OWNED_AXES
+        for axis in _SCALAR_AXES
         if (value := _axis_value(lane, axis)) is not None
+    }
+    forbidden |= {
+        rendered
+        for lane in _LANES
+        for axis in _TUPLE_AXES
+        for member in _axis_members(lane, axis)
+        if (rendered := _rendered(member)) is not None
     }
     for value in forbidden:
         assert f'"{value}"' not in source and f"'{value}'" not in source, (

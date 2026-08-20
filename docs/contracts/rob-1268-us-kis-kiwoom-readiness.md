@@ -118,7 +118,7 @@ the rule in §2.  A constrained item is not a partial credit.
 # LIFECYCLE
 lane_id = us.kis.mock
 lifecycle_recovery_owner_status = AUTO_READY_BLOCKED_BY_LIFECYCLE
-recovery_owner = ABSENT (the signed registry records MissingBinding.OWNER for this lane, so no owner exists to name; see rob-1266 §8)
+recovery_owner = ABSENT (this lane's unmet-binding list is owned by rob-1266 §8 and records no bound owner there; that list is not restated here)
 restart_rediscovery_trigger = ABSENT (query exists as OrderSendIntentReservationPort.list_reservations in COORDINATION_SOURCE; no lane-native caller is merged and J3A states there is deliberately no recovery API in this epoch)
 authoritative_readback_operation = PRESENT_CONSTRAINED (KISOverseasOrders.inquire_daily_order_overseas(is_mock=True) dispatching VTTS3035R; not order-id keyed because the overseas order_number filter is ignored, and open-order truth is separately unavailable per rob-1266 §5.1)
 release_if_matches_condition = PRESENT (DurableSendClaimAdapter.release_with_terminal_evidence gated by _terminal_evidence_authorizes in COORDINATION_SOURCE)
@@ -143,7 +143,7 @@ terminal_reconciliation = ABSENT (no lane-separable table; see §5.1)
 # LIFECYCLE
 lane_id = us.kiwoom.mock
 lifecycle_recovery_owner_status = AUTO_READY_BLOCKED_BY_LIFECYCLE
-recovery_owner = ABSENT (the signed registry records MissingBinding.OWNER for this lane, so no owner exists to name; see rob-1266 §8)
+recovery_owner = ABSENT (this lane's unmet-binding list is owned by rob-1266 §8 and records no bound owner there; that list is not restated here)
 restart_rediscovery_trigger = ABSENT (query exists as OrderSendIntentReservationPort.list_reservations in COORDINATION_SOURCE; no lane-native caller is merged and J3A states there is deliberately no recovery API in this epoch)
 authoritative_readback_operation = PRESENT_CONSTRAINED (KiwoomUSAccountClient.get_today_orders api-id ust21510 and get_open_orders api-id ust21050 on path /api/us/acnt; constrained because Market.US_EQUITY is absent from BROKER_CAPABILITIES[Broker.KIWOOM] per rob-1266 §5.3)
 release_if_matches_condition = PRESENT (DurableSendClaimAdapter.release_with_terminal_evidence gated by _terminal_evidence_authorizes in COORDINATION_SOURCE)
