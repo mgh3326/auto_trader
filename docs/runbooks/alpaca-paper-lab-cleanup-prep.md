@@ -1,135 +1,64 @@
-# Alpaca paper lab cleanup — preparation record and execution-contract draft
+# Alpaca paper lab cleanup — corrected preparation record and contract draft
 
-Status: preparation only; it is not an authorization or an execution plan.
+Status: T2 preparation only; not authorization or execution. R2 made no broker API call or broker mutation.
 
-## 1. Sealed account-truth snapshot
+## 1. Evidence and bounded-snapshot limits
 
-Artifact: `alpaca_lab_cleanup_prep_snapshot.v1`.
+The 2026-08-20 bounded epoch (14:45:56.442963–14:45:57.485594 UTC) read the lab account (`efd5…e6cd` masked): UBER qty=1, qty_available=1, average entry price=69.65, and open orders=0. It successfully read account, cash, all positions, open orders (limit=500), and recent ledger (limit=200); neither bound was reached.
 
-| Field | Value |
-| --- | --- |
-| Account mode | `alpaca_paper_lab` |
-| Epoch (UTC) | 2026-08-20T14:45:56.442963+00:00 to 2026-08-20T14:45:57.485594+00:00 (1042.631 ms) |
-| Account identity | `efd5…e6cd` (masked) |
-| Account status / cash / buying power / NAV | ACTIVE / 99930.34 / 399941.37 / 100008.92 |
-| Positions | UBER: qty=1, qty_available=1, avg_entry_price=69.65 |
-| Open orders | 0 |
-| Read result | all five reads succeeded; no retry; neither 500-order nor 200-ledger bound was reached |
-| Broker mutation calls | submit=0, cancel=0, modify=0, close_or_liquidate=0, total=0 |
+The original raw broker responses were not retained, so the previously claimed snapshot digest `54b30c51ff59b2dc3136588ff2461112613137c1f79db825f20dac4cc893a290` cannot be recomputed. It is retired as non-reproducible evidence and cannot bind any execution. The normalized, reviewable reconstruction is [alpaca_lab_cleanup_prep_evidence_r2.json](../../../herdr-inbox/jobs/alpaca-lab-cleanup-prep-20260820-2340/events/alpaca_lab_cleanup_prep_evidence_r2.json), SHA-256 `948f2beb27ac974ab7a47323cf36897b0e13cfe6d796c98d7bfcd4fe30240493`. It is not a fresh broker snapshot. `operator_authorization=null`.
 
-The artifact read, in one bounded concurrent epoch: `alpaca_paper_get_account`,
-`alpaca_paper_get_cash`, `alpaca_paper_list_positions`,
-`alpaca_paper_list_orders(status="open", limit=500)`, and
-`alpaca_paper_ledger_list_recent(limit=200)`.  It stores SHA-256 of each raw
-response, not raw broker payloads, and SHA-256 of canonical JSON with
-`seal.artifact_sha256` omitted from the preimage.  The five response digests,
-in that order, are `c870ebab90f1259dd0800c7e858b11d59c7256e46d38b323091985b6a1455867`,
-`9e053064c78d0282f13e6f2993726e6e42462dc7223445ce2e3e0324883187e4`,
-`fe4653da589ad27d696e354f98ec0593c197efbd5b9102ac6fb8483b89f2a0f1`,
-`9ffd355381d628ef5ad958729bd73ea62a5a3ecfec270ef2ae117c2b4b68b3b7`, and
-`1b99bf5f9a6a6d066331d1b158e99c0b4a52fabb09c807ac43a40005eec2923b`.
-Its artifact SHA-256 is
-`54b30c51ff59b2dc3136588ff2461112613137c1f79db825f20dac4cc893a290`.
+R2 counter: submit=0, cancel=0, modify=0, close_or_liquidate=0, total=0. No code or configuration changed.
 
-`operator_authorization` is `null`.  This hash only identifies this
-observation artifact; it is not an operator signature, approval, or permission
-to mutate the broker account.
+## 2. Corrected residual attribution and enumeration boundaries
 
-## 2. Residual attribution ledger
+### UBER is ledger-linked, but not B0-X-lane linked
 
-| Residual | Quantity / state | Attribution | Evidence | Disposition |
+| Ledger id | Client order id | State | Broker order id | UBER buy evidence (KST) |
 | --- | --- | --- | --- | --- |
-| Position UBER | qty=1; qty_available=1 | **unattributed** | The bounded recent ledger contained 2 rows and zero `b0xu-` execution rows. `scripts/b0x/us/alpaca.py::_attribute_positions` therefore returned `UBER: no b0xu execution correlation`. | Blocker. It is not permission to sell. |
+| 64 | `dlab-rob73-38ca9124b2b93def` | canceled | `1ea64491-65ef-4792-9e22-2795d617bbcc` | requested 1 @50.00; filled 0; created 2026-07-28 22:43:47; canceled 22:43:56 |
+| 66 | `dlab-rob73-9c09364239a8e275` | filled | `bd2694bf-bf80-4445-a5b5-3f84bf63a8e6` | requested 1 @69.70; filled 1.00000000 @69.65000000; created 2026-07-28 23:23:17 |
 
-There were no open-order residuals.  The classification method is exactly the
-implemented B0-X lab reader: `_b0xu_executions`, `_classify_open_orders`, and
-`_attribute_positions` in `scripts/b0x/us/alpaca.py` (SHA-256
-`52783f231ce05ac077d901f0dee0b65ae19b25bc6be69bdf3ea8079c2779cb75`).  A
-position is linked only when the signed quantity from evidence-bearing
-`b0xu-` fills exactly equals the broker quantity; a broker order is linked only
-when exactly one such lifecycle correlation names its broker order ID.  No
-prefix, account name, or plausibility inference was used.
+The filled row matches the bounded broker position on `account_mode=alpaca_paper_lab`, symbol UBER, quantity 1, average entry price 69.65, and broker order ID. Ledger net long is `0 + 1 = 1`, exactly the broker quantity. `derive_client_order_id` in `app/services/alpaca_paper_submit_service.py` emits `dlab-rob73-…` for the lab account. Thus this is **ledger-linked / B0-X-lane-unattributed**, not foreign or generally unattributed.
 
-### Baseline debt (observation only)
+`scripts/b0x/us/alpaca.py::_b0xu_executions` intentionally filters to `b0xu-` correlations before `_attribute_positions`. It answers B0-X experiment-lane ownership, not account-wide provenance. The former document incorrectly promoted its zero-result for `dlab-` rows to “not ours.” The reader is not changed here: expanding a B0-X ownership boundary is a separate design/code task; this round corrects the account-wide interpretation only.
 
-Upstream ROB-1303 adversarial verification reported three default-profile
-Alpaca failures on `origin/main`.  This preparation round did not alter that
-baseline.  A focused read-only test collection directly reproduced one of the
-three under the supplied production environment: 57 passed and
-`tests/test_alpaca_paper_orders_tools.py::test_alpaca_paper_orders_tools_not_registered_default_profile`
-failed because `ALPACA_PAPER_MUTATING_TOOL_NAMES` intersected the registered
-default-profile tools.  The upstream verifier artifact did not supply the
-other two selectors, so they remain explicitly unresolved rather than guessed:
+The recorded cycle `/Users/mgh3326/work/herdr-artifacts/b0x/alpaca_paper_lab/20260814T224344-us-cycle.json` has the same `foreign_position_symbols=["UBER"]` / no-`b0xu-` evidence and `submission_skipped="contaminated lab account state — foreign/unlinked residue blocks submit"`. The stated skip cause is therefore confirmed for that recorded cycle. It proves an attribution-scope defect in the decision input, not that liquidation is necessary.
 
-| Debt ID | Attribution | Evidence | State |
-| --- | --- | --- | --- |
-| `ROB-1303-default-profile-alpaca-01` | default-profile registration environment | focused collection reproduced `tests/test_alpaca_paper_orders_tools.py::test_alpaca_paper_orders_tools_not_registered_default_profile`: mutation-tool set was not disjoint from default registered tools | baseline debt; no fix in this round |
-| `ROB-1303-default-profile-alpaca-02` | unknown | same upstream report | baseline debt; NEEDS_VERIFY |
-| `ROB-1303-default-profile-alpaca-03` | unknown | same upstream report | baseline debt; NEEDS_VERIFY |
+### Enumeration source matrix
 
-## 3. Writer existence review
-
-The only implemented lab-account broker mutation surfaces found were reviewed
-without calling them:
-
-| Surface | Exists | Why it is not named as cleanup writer |
+| Source | Status | Result / limitation |
 | --- | --- | --- |
-| `alpaca_paper_submit_order` / `alpaca_paper_cancel_order` in `app/mcp_server/tooling/alpaca_paper_orders.py` | yes; accepts `account_mode="alpaca_paper_lab"` and requires `confirm=True` for broker mutation | The single-order manual path does not consume this seal or enforce a sealed cleanup target set. |
-| `scripts/b0x/us/alpaca.py::submit_planned_order` / `cancel_own_open_orders` | code exists | Both raise `LabMutationNotWired` without an injected callback; the B0-X runbook §4 says the default production mutation seam is intentionally unwired. |
-| `AlpacaPaperOrderApplication` | yes | It is default-`alpaca_paper`/crypto application plumbing, not a lab cleanup writer bound to this artifact. |
+| Current broker account, positions, open orders | prior bounded epoch | UBER 1; open orders 0 |
+| Recent internal Alpaca ledger | now enumerated | two rows above |
+| Broker closed/filled/canceled history | **not queried** | not enumerated; no broker call is allowed in R2, so no account-wide history completeness claim |
+| `operator_contract.yaml` exception | now enumerated | `alpaca_account_cleanup_20260805`: lab suffix `a9e6cd`, UBER qty=1 |
 
-Therefore **no existing writer satisfies this cleanup contract**.  The later
-execution round has a hard precondition: implement and independently review a
-lab-only cleanup writer that consumes the current seal and rejects any target
-outside it.  It must use `AlpacaPaperLedgerService` for ledger writes; direct
-ledger SQL is not allowed.  This conclusion is based on
-`scripts/b0x/us/alpaca.py`, `scripts/b0x/us/cycle.py`,
-`app/mcp_server/tooling/alpaca_paper_orders.py`,
-`app/services/alpaca_paper_submit_service.py`, and
-`docs/runbooks/b0x-us-cycle.md` (respective SHA-256 values recorded in the
-implementation report).
+The YAML suffix agrees with the masked snapshot suffix. Its exception is one-shot `account_cleanup`, requires client order ID and ledger record, excludes scoring, forbids scope expansion/reuse after execution, and has consumption status **undetermined**. `mock/CLAUDE.md` §1 identifies the YAML as machine-readable authority.
 
-## 4. Draft cleanup execution contract — not authorized
+### Baseline debt
 
-This is a draft for the separate T3 execution round only.
+The known focused failure is `test_alpaca_paper_orders_tools_not_registered_default_profile`. Its cause is `ALPACA_PAPER_DEFAULT_TOOLS_ENABLED=true`, mapping to `settings.alpaca_paper_default_tools_enabled`, which registers the three Alpaca mutation/ledger tools in DEFAULT. Without that setting it passes; CI has no prod env and is unaffected. This is environment-sensitive baseline debt, not a PR regression; no gate changed. The other two upstream debt selectors remain unknown.
 
-1. Preconditions: an operator separately authorizes the round; a reviewed
-   writer from §3 exists; the source snapshot is re-read and re-sealed; and the
-   new seal has `operator_authorization` populated only by that separate
-   authority.  The UBER residual remains blocked until its ownership is proven
-   or an operator resolves it explicitly; unattributed quantity is never an
-   implicit sell authorization.
-2. Freshness: execution must reject an expired seal.  It must re-seal and
-   obtain fresh authorization when the configured TTL elapses or the current
-   position/open-order truth or price/evidence differs from the sealed values.
-   This prevents a stale-price execution such as the previously observed
-   +7.41% divergence.
-3. Freeze and lease: before any broker mutation, acquire an account-scoped
-   cleanup lease/freeze and record the immutable artifact hash.  Failure to
-   acquire it is fail-closed.
-4. Open orders first: read all open orders under the lease.  Any order absent
-   from the sealed set, any read failure, or any attribution ambiguity blocks
-   the entire execution.  The writer may only address a sealed, explicitly
-   authorized order ID.
-5. Binding: each action must bind `(account_mode, symbol, action, quantity,
-   limit/reference price, source broker order ID when applicable, artifact
-   SHA-256)`.  The writer must reject extra, substituted, partial, or
-   unsealed targets.  It must never broaden the symbol set from a fresh read.
-6. Execution and retry: issue at most one broker request for each binding.
-   On timeout, transport failure, or ambiguous response, do **not** blind
-   retry.  Perform bounded readback by broker order ID/client order ID and
-   record the observed state; unresolved evidence remains a blocker.
-7. Double proof: terminal success requires broker readback plus a second
-   account truth read proving the expected open-order/position delta.  Ledger
-   state alone is insufficient; a fill is marked only from broker evidence.
-8. Restore: release the freeze/lease only after the double proof or an
-   explicitly recorded unresolved anomaly.  A failed or ambiguous execution
-   leaves the account frozen for operator disposition.
+## 3. Writer and prior-cleanup review
 
-The draft's verified repository anchors are the B0-X runbook §4 (unwired lab
-mutation seam), `scripts/b0x/us/alpaca.py::read_fresh_truth` (bounded read and
-attribution rules), and `app/mcp_server/tooling/alpaca_paper_orders.py`
-(per-call confirmation and cancel readback).  No repository source containing
-the cited D2 contract text or a `d2_remediation_single` writer was found;
-those D2 clause numbers and enforcement locations are therefore
-**unconfirmed**, not asserted here.
+Manual `alpaca_paper_submit_order`/`alpaca_paper_cancel_order` accepts the lab account but consumes no seal and does not reject unsealed cleanup targets. B0-X submit/cancel defaults are unwired (`LabMutationNotWired`). No existing writer satisfies **this seal-bound cleanup contract**.
+
+The `cleanup-btc-rob85-20260505` and `cleanup-sol-rob85-20260505` ledger precedents reached `final_reconciled` using explicit client IDs and ledger records. They show a historical pattern, not present authority or a compliant writer. Two T3 implementation prerequisites are explicit: a reviewed seal-bound writer and an account-scoped cleanup lease/freeze; neither exists.
+
+The D2 statement is scoped: `d2_remediation_single` was not found **in this auto_trader repository**. The adjacent operator contract names it for Binance remediation, not for Alpaca; no assertion is made about implementation outside this repository.
+
+## 4. Existing-exception comparison — operator decision required
+
+No choice is made here.
+
+| Option | Supporting evidence | Required before T3 |
+| --- | --- | --- |
+| A. Existing exception sufficient | It already names exact lab suffix and `(UBER, qty=1)`, with one-shot client-ID and ledger requirements. | Prove unconsumed; bind current action/qty/price to a fresh snapshot; provide reviewed writer and lease/freeze. YAML has no current side, price, seal hash, or writer. |
+| B. New exception required | Required if prior one-shot was consumed/ambiguous or the action differs from exact account/symbol/quantity scope. | Operator must define a new narrow bound action; no expansion may be inferred from the old entry. |
+
+Two evidence-based paths remain unselected: (1) recognition—repair account-wide attribution consumption so known `dlab-` legacy inventory does not become B0-X contamination, potentially removing the need for liquidation; (2) cleanup—only after the operator resolves A/B and all T3 preconditions, execute the exactly authorized action from a fresh snapshot.
+
+## 5. Draft T3 contract (not authorized)
+
+If the operator selects cleanup: require fresh bounded snapshot and authorization; implemented account lease/freeze; open-order-first read; strict binding of account, symbol, action, qty, price, broker ID and current artifact hash; one request per binding/no blind retry; broker readback plus second account-truth proof; and release only after proof or a recorded anomaly. Any unsealed/extra target or failed read remains fail-closed.
