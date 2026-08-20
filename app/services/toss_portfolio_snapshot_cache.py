@@ -52,6 +52,8 @@ class TossPortfolioSnapshotCache:
         wait_timeout_seconds: float = 3.0,
         poll_interval_seconds: float = 0.05,
         enabled: bool = True,
+        key_prefix: str = _KEY_PREFIX,
+        lock_prefix: str = _LOCK_PREFIX,
     ) -> None:
         self._redis = redis_client
         self._ttl_seconds = float(ttl_seconds)
@@ -59,6 +61,8 @@ class TossPortfolioSnapshotCache:
         self._wait_timeout_seconds = max(float(wait_timeout_seconds), 0.0)
         self._poll_interval_seconds = max(float(poll_interval_seconds), 0.01)
         self._enabled = bool(enabled)
+        self._key_prefix = key_prefix
+        self._lock_prefix = lock_prefix
         self._degraded_until = 0.0
 
     def _mark_degraded(self) -> None:
@@ -73,11 +77,17 @@ class TossPortfolioSnapshotCache:
             and time.monotonic() >= self._degraded_until
         )
 
+    def _cache_key(self, scope: str) -> str:
+        return f"{self._key_prefix}:{scope}"
+
+    def _singleflight_key(self, scope: str) -> str:
+        return f"{self._lock_prefix}:{scope}"
+
     async def get(self, scope: str) -> dict[str, Any] | None:
         if not self.usable:
             return None
         try:
-            raw = await self._redis.get(_key(scope))
+            raw = await self._redis.get(self._cache_key(scope))
         except Exception as exc:  # noqa: BLE001 — read cache fails open
             self._mark_degraded()
             logger.warning("Toss portfolio snapshot cache GET failed: %s", exc)
@@ -97,7 +107,7 @@ class TossPortfolioSnapshotCache:
         try:
             encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
             await self._redis.set(
-                _key(scope),
+                self._cache_key(scope),
                 encoded,
                 ex=max(1, int(self._ttl_seconds)),
             )
@@ -109,7 +119,7 @@ class TossPortfolioSnapshotCache:
         if self._redis is None:
             return
         try:
-            await self._redis.delete(_key(scope))
+            await self._redis.delete(self._cache_key(scope))
         except Exception as exc:  # noqa: BLE001 — invalidation is best effort
             logger.warning("Toss portfolio snapshot cache DEL failed: %s", exc)
 
@@ -119,7 +129,7 @@ class TossPortfolioSnapshotCache:
         token = str(uuid.uuid4())
         try:
             acquired = await self._redis.set(
-                _lock_key(scope),
+                self._singleflight_key(scope),
                 token,
                 nx=True,
                 ex=max(1, int(self._lock_ttl_seconds)),
@@ -137,11 +147,39 @@ class TossPortfolioSnapshotCache:
             await self._redis.eval(
                 _RELEASE_LOCK_SCRIPT,
                 1,
-                _lock_key(scope),
+                self._singleflight_key(scope),
                 token,
             )
         except Exception:  # noqa: BLE001 — lock expiry is the fallback
             return
+
+    async def _lock_remaining_seconds(self, scope: str) -> float | None:
+        """Return the current lock lease, or ``None`` when Redis is unavailable.
+
+        A waiter may extend its initial bounded polling window while the owner
+        still holds a live lease.  The lease is the distributed ownership
+        boundary; after it expires, a direct fetch is the bounded crash
+        recovery path.
+        """
+
+        if not self.usable or self._redis is None:
+            return None
+        try:
+            pttl = await self._redis.pttl(self._singleflight_key(scope))
+        except Exception as exc:  # noqa: BLE001 — lock inspection fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot lock TTL failed: %s", exc)
+            return None
+
+        if pttl == -2:
+            return 0.0
+        if pttl == -1:
+            # Our locks always have EX, but preserve a finite bound if a
+            # pre-existing/malformed lock has no expiry.
+            return max(self._lock_ttl_seconds, 0.0)
+        if pttl < 0:
+            return 0.0
+        return max(float(pttl) / 1000.0, 0.0)
 
     async def get_or_fetch(
         self,
@@ -177,11 +215,28 @@ class TossPortfolioSnapshotCache:
         if not self.usable:
             return await fetcher()
 
-        deadline = asyncio.get_running_loop().time() + self._wait_timeout_seconds
+        loop = asyncio.get_running_loop()
+        wait_started = loop.time()
+        deadline = wait_started + self._wait_timeout_seconds
+        # Never wait past one configured lock lease.  A normal owner can be
+        # slower than the initial waiter budget, while owner death remains
+        # bounded by the same lease.
+        lease_deadline = wait_started + max(
+            self._wait_timeout_seconds, self._lock_ttl_seconds
+        )
         while True:
-            remaining = deadline - asyncio.get_running_loop().time()
+            remaining = deadline - loop.time()
             if remaining <= 0:
-                break
+                lock_remaining = await self._lock_remaining_seconds(scope)
+                if lock_remaining is None or lock_remaining <= 0:
+                    break
+                deadline = min(
+                    lease_deadline,
+                    loop.time() + lock_remaining,
+                )
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
             await asyncio.sleep(min(self._poll_interval_seconds, remaining))
             cached = await self.get(scope)
             if cached is not None:

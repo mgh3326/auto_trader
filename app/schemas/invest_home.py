@@ -124,7 +124,7 @@ class GroupedHolding(BaseModel):
     currency: CurrencyLiteral
     totalQuantity: float
     tradeableQuantity: float = 0.0
-    sellableQuantity: float = 0.0
+    sellableQuantity: float | None = None
     pendingSellQuantity: float = 0.0
     referenceQuantity: float = 0.0
     averageCost: float | None = None

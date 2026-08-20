@@ -1823,10 +1823,19 @@ async def toss_modify_order(
             if mutation_gate is not None:
                 return mutation_gate
             if side == "sell":
+                # Toss US modify rejects ``quantity`` and the replacement
+                # inherits the original order quantity.  The official API
+                # contract does not document a reservation-adjusted delta, so
+                # compare the complete inherited quantity and fail closed when
+                # fresh sellable is lower.  This remains a direct broker
+                # preflight; snapshot/cache data is never sizing authority.
+                preflight_quantity = (
+                    new_quantity_dec if mkt == "kr" else orig_order.quantity
+                )
                 sellable_evidence, sellable_error = await _fresh_sellable_preflight(
                     client,
                     symbol=symbol,
-                    requested_quantity=new_quantity_dec,
+                    requested_quantity=preflight_quantity,
                     base=base_response,
                 )
                 if sellable_error is not None:

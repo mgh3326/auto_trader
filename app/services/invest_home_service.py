@@ -59,15 +59,15 @@ def _is_tradeable_holding(h: Holding) -> bool:
     return h.sourceOfTruth and h.isTradeable and not h.manualOnly
 
 
-def _sellable_quantity(h: Holding) -> float:
+def _sellable_quantity(h: Holding) -> float | None:
     if not _is_tradeable_holding(h):
         return 0.0
     if h.sellableQuantity is not None:
         return max(h.sellableQuantity, 0.0)
-    # Unknown sellability must not be promoted to the full position.  General
-    # home reads intentionally omit Toss sellable data (ROB-1310); order tools
-    # perform their own fresh broker preflight.
-    return 0.0
+    # Unknown sellability must remain unknown. General home reads intentionally
+    # omit Toss sellable data (ROB-1310); order tools perform their own fresh
+    # broker preflight. In particular, None must not become a synthetic zero.
+    return None
 
 
 def _reference_quantity(h: Holding) -> float:
@@ -106,7 +106,12 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
         first = items[0]
         total_qty = sum(h.quantity for h in items)
         tradeable_qty = sum(h.quantity for h in items if _is_tradeable_holding(h))
-        sellable_qty = sum(_sellable_quantity(h) for h in items)
+        sellable_parts = [_sellable_quantity(h) for h in items]
+        sellable_qty: float | None = (
+            None
+            if any(part is None for part in sellable_parts)
+            else sum(part for part in sellable_parts if part is not None)
+        )
         pending_sell_qty = sum(
             h.pendingSellQuantity for h in items if _is_tradeable_holding(h)
         )
@@ -387,12 +392,62 @@ class InvestHomeService:
         manual_reader,
         toss_api_reader=None,
         paper_readers: Sequence[object] | None = None,
+        snapshot_cache=None,
     ) -> None:
         self._kis = kis_reader
         self._upbit = upbit_reader
         self._manual = manual_reader
         self._toss_api = toss_api_reader
         self._paper_readers: Sequence[object] = paper_readers or []
+        self._snapshot_cache = snapshot_cache
+
+    @staticmethod
+    def _snapshot_cache_usable(snapshot_cache) -> bool:
+        return snapshot_cache is not None and bool(
+            getattr(snapshot_cache, "usable", True)
+        )
+
+    async def _get_home_from_snapshot(
+        self,
+        *,
+        user_id: int,
+        include_paper: bool,
+        paper_sources: frozenset[str] | None,
+    ) -> InvestHomeResponse:
+        from app.services.portfolio_snapshot import (
+            deserialize_portfolio_snapshot,
+            portfolio_snapshot_scope,
+            serialize_portfolio_snapshot,
+        )
+
+        scope = portfolio_snapshot_scope(
+            user_id=user_id,
+            include_paper=include_paper,
+            paper_sources=paper_sources,
+        )
+
+        async def fetch_payload() -> dict[str, object]:
+            return serialize_portfolio_snapshot(
+                await self._get_home_uncached(
+                    user_id=user_id,
+                    include_paper=include_paper,
+                    paper_sources=paper_sources,
+                )
+            )
+
+        payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
+        try:
+            return deserialize_portfolio_snapshot(payload)
+        except Exception:
+            # Corrupt entries fail open to one direct read and are removed on a
+            # best-effort basis. No synthetic holdings or sellable values are
+            # constructed from an invalid cache payload.
+            await self._snapshot_cache.delete(scope)
+            return await self._get_home_uncached(
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
 
     async def get_held_pairs(
         self,
@@ -408,6 +463,47 @@ class InvestHomeService:
         sellable quantity; manual holdings remain a DB read. Paper readers are
         included only when explicitly requested.
         """
+        if self._snapshot_cache_usable(self._snapshot_cache):
+            from app.services.portfolio_snapshot import (
+                held_pairs_from_portfolio_snapshot,
+                portfolio_snapshot_scope,
+            )
+
+            scope = portfolio_snapshot_scope(
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
+            payload = await self._snapshot_cache.get(scope)
+            if payload is not None:
+                try:
+                    return held_pairs_from_portfolio_snapshot(payload)
+                except Exception:
+                    await self._snapshot_cache.delete(scope)
+
+            manual_reader = self._manual
+            if hasattr(manual_reader, "fetch_held_pairs"):
+                held_pairs = await manual_reader.fetch_held_pairs(user_id=user_id)
+            else:
+                held_pairs = []
+
+            if include_paper:
+                for reader in self._paper_readers:
+                    if not hasattr(reader, "fetch_held_pairs"):
+                        continue
+                    reader_source: str = getattr(reader, "source", None) or "kis_mock"
+                    if paper_sources is not None and reader_source not in paper_sources:
+                        continue
+                    held_pairs.extend(await reader.fetch_held_pairs(user_id=user_id))
+            return sorted(
+                {
+                    (str(market).lower(), _normalize_symbol(symbol))
+                    for market, symbol in held_pairs
+                    if str(market).lower() in {"kr", "us", "crypto"}
+                    and str(symbol).strip()
+                }
+            )
+
         live_sources = ["kis", "upbit"]
         live_fetchers: list[Awaitable[_SourceFetchResult]] = [
             _fetch_reader_result(
@@ -486,6 +582,25 @@ class InvestHomeService:
         )
 
     async def get_home(
+        self,
+        *,
+        user_id: int,
+        include_paper: bool = False,
+        paper_sources: frozenset[str] | None = None,
+    ) -> InvestHomeResponse:
+        if self._snapshot_cache_usable(self._snapshot_cache):
+            return await self._get_home_from_snapshot(
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
+        return await self._get_home_uncached(
+            user_id=user_id,
+            include_paper=include_paper,
+            paper_sources=paper_sources,
+        )
+
+    async def _get_home_uncached(
         self,
         *,
         user_id: int,
@@ -630,6 +745,19 @@ class InvestHomeService:
         flat ``holdings`` response field and Upbit hidden-counts tracking are
         omitted since the panel UI does not use them.
         """
+        if self._snapshot_cache_usable(self._snapshot_cache):
+            home = await self.get_home(
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
+            return _AccountPanelView(
+                homeSummary=home.homeSummary,
+                accounts=home.accounts,
+                groupedHoldings=home.groupedHoldings,
+                warnings=home.meta.warnings,
+            )
+
         with sentry_sdk.start_span(
             op="invest.account_panel", name="invest.account_panel.build"
         ) as outer:

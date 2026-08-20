@@ -102,6 +102,15 @@ from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
 from app.services.daily_candles.read_service import cache_first_kr
 from app.services.daily_candles.repository import DailyCandlesRepository
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.portfolio_snapshot import (
+    deserialize_portfolio_snapshot,
+    fetch_uncached_portfolio_snapshot_payload,
+    portfolio_snapshot_scope,
+    portfolio_snapshot_to_mcp_positions,
+)
+from app.services.portfolio_snapshot_cache import (
+    get_shared_portfolio_snapshot_cache,
+)
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
     TossPortfolioPosition,
@@ -929,6 +938,42 @@ async def _fetch_price_map_for_positions(
     return price_map, price_errors, error_map, metadata_map
 
 
+async def _collect_whole_portfolio_positions(
+    *,
+    cache,
+    user_id: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read the canonical whole-portfolio snapshot for general consumers."""
+
+    scope = portfolio_snapshot_scope(
+        user_id=user_id,
+        include_paper=False,
+        paper_sources=None,
+    )
+
+    async def fetch_payload() -> dict[str, Any]:
+        return await fetch_uncached_portfolio_snapshot_payload(
+            user_id=user_id,
+            include_paper=False,
+            paper_sources=None,
+        )
+
+    payload = await cache.get_or_fetch(scope, fetch_payload)
+    try:
+        response = deserialize_portfolio_snapshot(payload)
+    except Exception:
+        await cache.delete(scope)
+        payload = await fetch_payload()
+        response = deserialize_portfolio_snapshot(payload)
+
+    positions = portfolio_snapshot_to_mcp_positions(response)
+    errors = [
+        {"source": warning.source, "error": warning.message, "degraded": True}
+        for warning in response.meta.warnings
+    ]
+    return positions, errors
+
+
 async def _collect_portfolio_positions(
     *,
     account: str | None,
@@ -1013,40 +1058,52 @@ async def _collect_portfolio_positions(
         positions.sort(key=lambda p: (p["account"], p["market"], p["symbol"]))
         return positions, errors, market_filter, account
 
-    tasks: list[Any] = []
-    if market_filter != "crypto":
-        if is_mock:
-            tasks.append(_collect_kis_positions(market_filter, is_mock=True))
-        else:
-            tasks.append(_collect_kis_positions(market_filter))
-    if not is_mock:
-        if market_filter in (None, "crypto"):
-            tasks.append(_collect_upbit_positions(market_filter))
-        tasks.append(
-            _collect_manual_positions(user_id=user_id, market_filter=market_filter)
-        )
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
     positions: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-
-    for result in results:
-        if isinstance(result, BaseException):
-            if isinstance(result, UpbitSymbolUniverseLookupError):
-                raise result
-            errors.append({"source": "holdings", "error": str(result)})
-            continue
-        source_positions, source_errors = cast(
-            tuple[list[dict[str, Any]], list[dict[str, Any]]],
-            result,
+    whole_snapshot_used = False
+    snapshot_cache = get_shared_portfolio_snapshot_cache()
+    if not is_mock and not need_sellable and snapshot_cache.usable:
+        positions, errors = await _collect_whole_portfolio_positions(
+            cache=snapshot_cache,
+            user_id=user_id,
         )
-        positions.extend(source_positions)
-        errors.extend(source_errors)
+        whole_snapshot_used = True
+
+    if not whole_snapshot_used:
+        tasks: list[Any] = []
+        if market_filter != "crypto":
+            if is_mock:
+                tasks.append(_collect_kis_positions(market_filter, is_mock=True))
+            else:
+                tasks.append(_collect_kis_positions(market_filter))
+        if not is_mock:
+            if market_filter in (None, "crypto"):
+                tasks.append(_collect_upbit_positions(market_filter))
+            tasks.append(
+                _collect_manual_positions(user_id=user_id, market_filter=market_filter)
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                if isinstance(result, UpbitSymbolUniverseLookupError):
+                    raise result
+                errors.append({"source": "holdings", "error": str(result)})
+                continue
+            source_positions, source_errors = cast(
+                tuple[list[dict[str, Any]], list[dict[str, Any]]],
+                result,
+            )
+            positions.extend(source_positions)
+            errors.extend(source_errors)
 
     toss_api_positions: list[dict[str, Any]] = []
-    toss_api_errors: list[dict[str, Any]] = []
     toss_api_succeeded = False
-    if not is_mock and bool(getattr(settings, "toss_api_enabled", False)):
+    if (
+        not whole_snapshot_used
+        and not is_mock
+        and bool(getattr(settings, "toss_api_enabled", False))
+    ):
         (
             toss_api_positions,
             toss_api_errors,

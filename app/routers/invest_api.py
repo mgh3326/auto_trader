@@ -165,6 +165,9 @@ def get_invest_home_service(
         UpbitHomeReader,
     )
     from app.services.invest_quote_service import InvestQuoteService
+    from app.services.portfolio_snapshot_cache import (
+        get_shared_portfolio_snapshot_cache,
+    )
 
     kis_client = SafeKISClient()
     quote_service = InvestQuoteService(kis_client, db)
@@ -177,6 +180,7 @@ def get_invest_home_service(
         if bool(getattr(settings, "toss_api_enabled", False))
         else None,
         paper_readers=[KISMockHomeReader(), AlpacaPaperHomeReader()],
+        snapshot_cache=get_shared_portfolio_snapshot_cache(),
     )
 
 

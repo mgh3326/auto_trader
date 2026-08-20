@@ -736,6 +736,24 @@ class ManualHomeReader:
         self._service = ManualHoldingsService(db)
         self._quote_service = quote_service
 
+    async def fetch_held_pairs(self, *, user_id: int) -> list[tuple[str, str]]:
+        """Read manual held keys without quote/FX enrichment for calendar."""
+
+        raw_holdings = await self._service.get_holdings_by_user(user_id)
+        pairs: set[tuple[str, str]] = set()
+        for holding in raw_holdings:
+            if (
+                str(getattr(holding.broker_account, "broker_type", "")).lower()
+                != "toss"
+                or float(holding.quantity or 0) <= 0
+            ):
+                continue
+            market = str(holding.market_type).lower()
+            symbol = str(holding.ticker or "").strip().upper()
+            if market in {"kr", "us", "crypto"} and symbol:
+                pairs.add((market, symbol))
+        return sorted(pairs)
+
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
             with sentry_sdk.start_span(

@@ -311,6 +311,13 @@ class Settings(BaseSettings):
     toss_portfolio_snapshot_cache_lock_ttl_seconds: float = 10.0
     toss_portfolio_snapshot_cache_wait_seconds: float = 3.0
 
+    # ROB-1310: composed whole-portfolio read model.  Its Redis namespace is
+    # separate from the narrower Toss positions/cash snapshot above.
+    portfolio_snapshot_cache_enabled: bool = True
+    portfolio_snapshot_cache_ttl_seconds: float = 5.0
+    portfolio_snapshot_cache_lock_ttl_seconds: float = 10.0
+    portfolio_snapshot_cache_wait_seconds: float = 3.0
+
     # ROB-710: per-market layer-order flip for /invest batch current-price reads.
     # False (default) => today's KIS → Toss → snapshot order, byte-identical.
     # True => TOSS batch → KIS per-symbol → snapshot (reserve KIS app-key TPS for
