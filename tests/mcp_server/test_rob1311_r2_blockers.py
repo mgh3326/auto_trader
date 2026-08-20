@@ -878,3 +878,60 @@ async def test_quick_decision_history_batch_failure_logs_diagnostic_and_stays_fa
         "matching the established full-path fail-open observability"
     )
     assert any("decision" in r.getMessage().lower() for r in warnings)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_quick_decision_history_batch_failure_log_excludes_exception_payload(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The diagnostic must never format the raw exception into the log.
+
+    A DB/programming exception's message, args, or repr can carry values the
+    caller never intended to expose (e.g. a connection string, a row value,
+    or — in the worst case — a credential-shaped string an upstream library
+    embedded in an error). The established full-path pattern
+    (`logger.debug("decision_history injection skipped: %s", exc)`) formats
+    the raw exception; the quick path must NOT copy that here — only a fixed
+    message and/or the exception CLASS NAME are safe to log.
+    """
+    assert analysis_quick is not None
+
+    fake_secret = "FAKE_SECRET_TOKEN_rob1311_r3_sentinel_9f3c2a"
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError(f"db error near {fake_secret}")
+
+    monkeypatch.setattr(analysis_quick, "_load_decision_history_batch", boom)
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.mcp_server.tooling.analysis_quick"
+    ):
+        result = await analysis_quick.load_quick_projection_batch(
+            [(_uniq_symbol(), "equity_kr")]
+        )
+
+    row = next(iter(result.values()))
+    assert "decision_history" not in row, "must stay fail-open on batch failure"
+    assert row["data_state"] == "missing"
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "a swallowed decision-history batch failure must emit a diagnostic"
+
+    for record in warnings:
+        assert fake_secret not in record.getMessage(), (
+            "the formatted log message must not contain the raw exception text"
+        )
+        assert fake_secret not in str(record.args), (
+            "the raw exception must not be passed as a lazy-format arg either"
+        )
+        assert fake_secret not in (record.exc_text or ""), (
+            "no traceback/exc_info carrying the raw exception may be attached"
+        )
+        if record.exc_info:
+            import traceback
+
+            formatted = "".join(traceback.format_exception(*record.exc_info))
+            assert fake_secret not in formatted, (
+                "exc_info must not be attached with the raw exception traceback"
+            )
