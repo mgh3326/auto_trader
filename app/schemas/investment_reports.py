@@ -1240,6 +1240,12 @@ class OperatingBriefingResponse(BaseModel):
     policy_version: dict[str, Any] | None = None
     # ROB-734 — realized trading scoreboards/delta. Defaulted for back-compat.
     trading_scoreboards: dict[str, Any] | None = None
+    # ROB-1283 — negative-class (rejected-candidate) recording health, so a
+    # stalled recording contract is visible at run start instead of being
+    # discovered 66 days later. The operator compliance stamp captures this
+    # response verbatim, which is how the guard reaches the stamp. Defaulted
+    # for back-compat.
+    negative_class_recording: dict[str, Any] | None = None
 
 
 class InvestmentReportCreateResponse(BaseModel):

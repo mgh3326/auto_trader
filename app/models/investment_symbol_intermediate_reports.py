@@ -41,19 +41,23 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.models.decision_vocabulary import (
+    DECISION_BUCKETS as _DECISION_BUCKETS,
+)
+from app.models.decision_vocabulary import (
+    sql_in_list,
+)
 
 # --- Single source of truth for the controlled vocabularies (ROB-301 D5). ---
 # The DB CHECK constraints below are BUILT from these tuples, and the Pydantic
 # schema Literals (PR T2) import the same tuples. The three layers therefore
 # cannot drift; ``tests/models/test_investment_symbol_intermediate_reports_model.py``
 # asserts the model CHECK reflects each tuple value.
-DECISION_BUCKETS: tuple[str, ...] = (
-    "new_buy_candidate",
-    "open_action",
-    "completed_or_existing",
-    "deferred_no_action",
-    "risk_watch",
-)
+# ROB-1283 moved this tuple to the leaf module ``app.models.decision_vocabulary``
+# so ``review.trade_forecasts`` can build its CHECK from the same source without
+# importing this module (and thus configuring its investment_stage_runs FK).
+# Re-exported here so existing importers of this name are unaffected.
+DECISION_BUCKETS = _DECISION_BUCKETS
 VERDICTS: tuple[str, ...] = ("buy", "sell", "hold", "risk", "unavailable")
 UNAVAILABLE_REASONS: tuple[str, ...] = ("hermes_omitted", "data_unavailable")
 REPORT_KINDS: tuple[str, ...] = ("final_report_symbol",)
@@ -66,9 +70,9 @@ ACCOUNT_SCOPES: tuple[str, ...] = (
 )
 
 
-def _sql_in(values: tuple[str, ...]) -> str:
-    """Render a tuple as a SQL IN-list literal: ('a','b')."""
-    return ", ".join(f"'{v}'" for v in values)
+# ROB-1283: the renderer moved next to the vocabulary it renders, so a CHECK
+# built here and one built on review.trade_forecasts are produced identically.
+_sql_in = sql_in_list
 
 
 class InvestmentSymbolIntermediateReport(Base):

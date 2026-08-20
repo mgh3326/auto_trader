@@ -29,6 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func, text
 
 from app.models.base import Base
+from app.models.decision_vocabulary import DECISION_BUCKETS, sql_in_list
 from app.models.trading import InstrumentType
 
 
@@ -1462,6 +1463,17 @@ class TradeForecast(Base):
         Index("ix_trade_forecasts_created_by", "created_by"),
         Index("ix_trade_forecasts_correlation_id", "correlation_id"),
         Index("ix_trade_forecasts_report_item_uuid", "report_item_uuid"),
+        # ROB-1283 — the negative class is scored from this column, so the
+        # vocabulary is a DB property, not a convention. Built from the same
+        # DECISION_BUCKETS tuple the report-item CHECK and the Pydantic
+        # schemas use, so the three layers cannot drift.
+        CheckConstraint(
+            "decision_bucket IS NULL OR decision_bucket IN ("
+            + sql_in_list(DECISION_BUCKETS)
+            + ")",
+            name="ck_trade_forecasts_decision_bucket",
+        ),
+        Index("ix_trade_forecasts_decision_bucket", "decision_bucket"),
         {"schema": "review"},
     )
 
@@ -1480,6 +1492,14 @@ class TradeForecast(Base):
     report_uuid: Mapped[str | None] = mapped_column(Text)
     report_item_uuid: Mapped[str | None] = mapped_column(Text)
     correlation_id: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-1283 — the negative class ("we looked and did NOT buy") recorded on
+    # the surface sessions actually call. Report items carry the same
+    # vocabulary, but a forecast row is self-sufficient for scoring: bucket +
+    # resolvable target + review_date + outcome/brier live together, so a
+    # rejected candidate is gradeable even when no report item was created.
+    # NULL means "not classified", never "not a rejection".
+    decision_bucket: Mapped[str | None] = mapped_column(Text)
 
     # Attribution (calibration groups by these labels).
     created_by: Mapped[str] = mapped_column(Text, nullable=False)

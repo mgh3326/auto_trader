@@ -18,7 +18,11 @@ from decimal import Decimal
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
-from app.services.trade_journal.forecast_service import save_forecast
+from app.services.trade_journal.forecast_service import (
+    ForecastValidationError,
+    normalize_report_link,
+    save_forecast,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,22 @@ async def publish_place_time_forecast(
         else _DEFAULT_HORIZON_DAYS
     )
     review_date = (now_kst().date() + timedelta(days=horizon_days)).isoformat()
+    # ROB-1283 — ROB-473 fixed the policy for this link on the order path: it is
+    # audit metadata and must never cost anything upstream. save_forecast is
+    # deliberately strict (a session that typos a link gets a loud error), so
+    # coerce here instead: an unusable link is dropped and the forecast is still
+    # published. Losing the forecast — the actual scoring record — over a bad
+    # audit pointer would be the worse trade.
+    try:
+        linked_item_uuid = normalize_report_link(report_item_uuid, "report_item_uuid")
+    except ForecastValidationError:
+        logger.warning(
+            "live place: dropping unusable report_item_uuid=%r for "
+            "correlation_id=%s; forecast is still published without the link",
+            report_item_uuid,
+            correlation_id,
+        )
+        linked_item_uuid = None
     try:
         async with AsyncSessionLocal() as fdb:
             _action, fc = await save_forecast(
@@ -64,7 +84,7 @@ async def publish_place_time_forecast(
                 horizon=f"P{horizon_days}D",
                 model_label=None,
                 session_label=session_label,
-                report_item_uuid=report_item_uuid,
+                report_item_uuid=linked_item_uuid,
             )
             fid = getattr(fc, "forecast_id", None)
             await fdb.commit()
