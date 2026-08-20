@@ -1792,6 +1792,8 @@ async def test_manual_held_key_failure_does_not_log_exception_secret(caplog):
             await service.get_held_pairs(user_id=1)
 
     assert caught.value.reason == "held_key_projection_unavailable"
+    assert sentinel not in repr(caught.value)
+    assert caught.value.__cause__ is None
     for record in caplog.records:
         assert sentinel not in record.getMessage()
         assert sentinel not in repr(record.args)
