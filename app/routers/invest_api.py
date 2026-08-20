@@ -206,11 +206,22 @@ async def get_home(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> InvestHomeResponse:
-    return await service.get_home(
-        user_id=user.id,
-        include_paper=include_paper,
-        paper_sources=_parse_paper_sources(paper_sources),
-    )
+    try:
+        return await service.get_home(
+            user_id=user.id,
+            include_paper=include_paper,
+            paper_sources=_parse_paper_sources(paper_sources),
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
 
 
 @router.get("/market")
@@ -381,13 +392,24 @@ async def get_account_panel(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> AccountPanelResponse:
-    return await build_account_panel(
-        user_id=user.id,
-        db=db,
-        home_service=service,
-        include_paper=include_paper,
-        paper_sources=_parse_paper_sources(paper_sources),
-    )
+    try:
+        return await build_account_panel(
+            user_id=user.id,
+            db=db,
+            home_service=service,
+            include_paper=include_paper,
+            paper_sources=_parse_paper_sources(paper_sources),
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
 
 
 @router.get("/investor-flow")

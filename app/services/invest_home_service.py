@@ -309,44 +309,102 @@ def _holding_cost_basis_krw(h: Holding) -> float | None:
     return None
 
 
-def build_manual_account_from_holdings(holdings: Iterable[Holding]) -> Account | None:
-    """Build the synthetic Toss/manual account without poisoning home PnL.
+def build_account_from_holdings(
+    *,
+    account_id: str,
+    display_name: str,
+    source: str,
+    holdings: Iterable[Holding],
+) -> Account:
+    """Build a manual Account from a fixed set of holdings.
 
     Only holdings with a reliable current KRW value are included in value/cost/PnL
     math. Unpriced manual holdings stay visible in the holdings list with warnings,
     but they must not fabricate losses by contributing cost basis without value.
+    ``valueKrw`` intentionally sums to ``0.0`` (not fabricated) when nothing in
+    ``holdings`` has a known value — the account identity (id/name/source) is
+    still preserved regardless of pricing (ROB-1310 SHOULD-1).
     """
+
+    holdings = list(holdings)
+    valued_holdings = [h for h in holdings if h.valueKrw is not None]
+    value_krw = sum(h.valueKrw for h in valued_holdings if h.valueKrw is not None)
+
+    converted_costs = [_holding_cost_basis_krw(h) for h in valued_holdings]
+    cost_basis_krw: float | None = None
+    pnl_krw: float | None = None
+    pnl_rate: float | None = None
+    if valued_holdings and all(v is not None for v in converted_costs):
+        cost_basis_krw = sum(v for v in converted_costs if v is not None)
+        pnl_krw = value_krw - cost_basis_krw
+        if cost_basis_krw > 0:
+            pnl_rate = pnl_krw / cost_basis_krw
+
+    return Account(
+        accountId=account_id,
+        displayName=display_name,
+        source=source,  # type: ignore[arg-type]
+        accountKind="manual",
+        includedInHome=True,
+        valueKrw=value_krw,
+        costBasisKrw=cost_basis_krw,
+        pnlKrw=pnl_krw,
+        pnlRate=pnl_rate,
+        cashBalances=Account.model_fields["cashBalances"].default_factory(),
+        buyingPower=Account.model_fields["buyingPower"].default_factory(),
+    )
+
+
+def build_manual_account_from_holdings(holdings: Iterable[Holding]) -> Account | None:
+    """Build the synthetic Toss/manual account without poisoning home PnL."""
 
     toss_holdings = [h for h in holdings if h.source == "toss_manual"]
     if not toss_holdings:
         return None
-
-    valued_holdings = [h for h in toss_holdings if h.valueKrw is not None]
-    toss_value_krw = sum(h.valueKrw for h in valued_holdings if h.valueKrw is not None)
-
-    converted_costs = [_holding_cost_basis_krw(h) for h in valued_holdings]
-    toss_cost_basis_krw: float | None = None
-    toss_pnl_krw: float | None = None
-    toss_pnl_rate: float | None = None
-    if valued_holdings and all(v is not None for v in converted_costs):
-        toss_cost_basis_krw = sum(v for v in converted_costs if v is not None)
-        toss_pnl_krw = toss_value_krw - toss_cost_basis_krw
-        if toss_cost_basis_krw > 0:
-            toss_pnl_rate = toss_pnl_krw / toss_cost_basis_krw
-
-    return Account(
-        accountId="toss_manual_account",
-        displayName="Toss 수동",
+    return build_account_from_holdings(
+        account_id="toss_manual_account",
+        display_name="Toss 수동",
         source="toss_manual",
-        accountKind="manual",
-        includedInHome=True,
-        valueKrw=toss_value_krw,
-        costBasisKrw=toss_cost_basis_krw,
-        pnlKrw=toss_pnl_krw,
-        pnlRate=toss_pnl_rate,
-        cashBalances=Account.model_fields["cashBalances"].default_factory(),
-        buyingPower=Account.model_fields["buyingPower"].default_factory(),
+        holdings=toss_holdings,
     )
+
+
+def recompute_manual_accounts_for_published_holdings(
+    accounts: Iterable[Account],
+    holdings: Iterable[Holding],
+) -> list[Account]:
+    """Recompute manual Account totals from the exact holdings list being published.
+
+    ROB-1310 BLOCKER-1: ``_filter_manual_holdings_for_toss_api`` drops
+    ``toss_manual`` holdings that duplicate a ``toss_api`` holding from the
+    *published* holdings list, but the reader-supplied ``Account.valueKrw``
+    was computed before that filter ran. Recomputing per account from the
+    already-filtered holdings keeps ``homeSummary``/account totals equal to
+    the sum of the holdings actually returned — a duplicate filtered out of
+    one account's holdings is also removed from that account's value, instead
+    of silently double-counting it.
+    """
+
+    holdings_by_account: dict[str, list[Holding]] = {}
+    for holding in holdings:
+        holdings_by_account.setdefault(holding.accountId, []).append(holding)
+
+    out: list[Account] = []
+    for account in accounts:
+        account_holdings = holdings_by_account.get(account.accountId, [])
+        if not account_holdings:
+            # Every holding this account had was filtered out (e.g. fully
+            # duplicated by toss_api); do not publish a stale/empty account.
+            continue
+        out.append(
+            build_account_from_holdings(
+                account_id=account.accountId,
+                display_name=account.displayName,
+                source=account.source,
+                holdings=account_holdings,
+            )
+        )
+    return out
 
 
 @dataclass(frozen=True)
@@ -463,7 +521,18 @@ class InvestHomeService:
             )
 
         for _attempt in range(2):
-            payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
+            try:
+                payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
+            except TimeoutError:
+                # BLOCKER-2: a bounded wait for a healthy-but-slow owner is
+                # correct (see _owner_wait_budget_seconds), but the hard bound
+                # itself must never surface as a raw unhandled TimeoutError to
+                # /invest home or MCP holdings callers. Translate it into the
+                # same typed, sanitized availability contract the calendar
+                # 503 path already uses.
+                raise PortfolioSnapshotUnavailableError(
+                    "owner_wait_exhausted"
+                ) from None
             try:
                 return deserialize_portfolio_snapshot(payload)
             except Exception:
@@ -635,12 +704,9 @@ class InvestHomeService:
         manual_holdings = _filter_manual_holdings_for_toss_api(
             manual_result.holdings, toss_api_holdings
         )
-        manual_account_ids = {holding.accountId for holding in manual_holdings}
-        manual_accounts = [
-            account
-            for account in manual_result.accounts
-            if account.accountId in manual_account_ids
-        ]
+        manual_accounts = recompute_manual_accounts_for_published_holdings(
+            manual_result.accounts, manual_holdings
+        )
         accounts.extend(manual_accounts)
         holdings.extend(manual_holdings)
         if manual_result.warning is not None:
@@ -795,12 +861,9 @@ class InvestHomeService:
             manual_holdings = _filter_manual_holdings_for_toss_api(
                 manual_result.holdings, toss_api_holdings
             )
-            manual_account_ids = {holding.accountId for holding in manual_holdings}
-            manual_accounts = [
-                account
-                for account in manual_result.accounts
-                if account.accountId in manual_account_ids
-            ]
+            manual_accounts = recompute_manual_accounts_for_published_holdings(
+                manual_result.accounts, manual_holdings
+            )
             accounts.extend(manual_accounts)
             holdings.extend(manual_holdings)
             if manual_result.warning is not None:

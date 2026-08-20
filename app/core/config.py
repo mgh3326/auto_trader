@@ -14,6 +14,14 @@ from pydantic_settings import (
 ApiRateLimitEntry = dict[str, int | float]
 ApiRateLimitMap = dict[str, ApiRateLimitEntry]
 
+# ROB-1310 BLOCKER-2: Sentry measured the whole-portfolio cold compose regime
+# at get_holdings 14.36s / get_operating_briefing p95 16.28s. A waiter's wait
+# budget (wait_seconds + a lease-renewal cushion, see
+# TossPortfolioSnapshotCache._owner_wait_budget_seconds) must stay above this
+# regime or every concurrent /invest + MCP reader during a cold compose raises
+# an unhandled TimeoutError while the owner is still healthy and progressing.
+PORTFOLIO_SNAPSHOT_MEASURED_COLD_COMPOSE_REGIME_SECONDS: float = 16.28
+
 
 DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
     "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice": {
@@ -313,10 +321,17 @@ class Settings(BaseSettings):
 
     # ROB-1310: composed whole-portfolio read model.  Its Redis namespace is
     # separate from the narrower Toss positions/cash snapshot above.
+    #
+    # BLOCKER-2: portfolio_snapshot_cache_wait_seconds + the ~1.0s lease
+    # cushion must clear PORTFOLIO_SNAPSHOT_MEASURED_COLD_COMPOSE_REGIME_SECONDS
+    # (the ticket's own measured 14.36-16.28s cold-compose regime), not just
+    # be "a bit bigger than the old 3.0s". 20.0s leaves headroom above the
+    # measured p95 without inheriting an unbounded wait — the hard bound
+    # still fires (typed, sanitized) for a genuinely hung owner.
     portfolio_snapshot_cache_enabled: bool = True
     portfolio_snapshot_cache_ttl_seconds: float = 5.0
     portfolio_snapshot_cache_lock_ttl_seconds: float = 10.0
-    portfolio_snapshot_cache_wait_seconds: float = 3.0
+    portfolio_snapshot_cache_wait_seconds: float = 20.0
 
     # ROB-710: per-market layer-order flip for /invest batch current-price reads.
     # False (default) => today's KIS → Toss → snapshot order, byte-identical.

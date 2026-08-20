@@ -35,7 +35,10 @@ from app.services.brokers.upbit.client import (
     fetch_my_coins,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate
-from app.services.invest_home_service import _SourceFetchResult
+from app.services.invest_home_service import (
+    _SourceFetchResult,
+    build_account_from_holdings,
+)
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
@@ -935,63 +938,25 @@ class ManualHomeReader:
                 )
                 for h in manual_holdings
             }
-            any_valued_holding = any(h.valueKrw is not None for h in holdings)
+            # ROB-1310 SHOULD-1: build one Account per DB manual account
+            # regardless of whether any holding in it (or any manual holding
+            # at all) currently has a known price. The DB account identity
+            # (id/displayName/source) must not depend on price availability —
+            # a temporarily-unpriced account must not flip to a different
+            # hardcoded canonical id/name downstream (MCP projection). The
+            # value math still only counts priced holdings and never
+            # fabricates a value from cost basis (build_account_from_holdings
+            # sums to 0.0, not a guess, when nothing is priced).
             for account_id, account_name in account_names.items():
                 account_holdings = [
                     holding for holding in holdings if holding.accountId == account_id
                 ]
-                valued = [
-                    holding
-                    for holding in account_holdings
-                    if holding.valueKrw is not None
-                ]
-                if not any_valued_holding:
-                    # Preserve the existing all-unpriced behavior: the service
-                    # synthesizes its bounded Toss manual account only when no
-                    # per-account valuation is available at all.
-                    continue
-                value_krw = sum(
-                    holding.valueKrw
-                    for holding in valued
-                    if holding.valueKrw is not None
-                )
-                converted_costs: list[float | None] = []
-                for holding in valued:
-                    if holding.costBasis is None:
-                        converted_costs.append(None)
-                    elif holding.currency == "KRW":
-                        converted_costs.append(holding.costBasis)
-                    elif holding.currency == "USD" and usd_krw_rate:
-                        converted_costs.append(holding.costBasis * usd_krw_rate)
-                    else:
-                        converted_costs.append(None)
-                cost_basis_krw = (
-                    sum(cost for cost in converted_costs if cost is not None)
-                    if converted_costs
-                    and all(cost is not None for cost in converted_costs)
-                    else None
-                )
-                pnl_krw = (
-                    value_krw - cost_basis_krw if cost_basis_krw is not None else None
-                )
-                pnl_rate = (
-                    pnl_krw / cost_basis_krw
-                    if pnl_krw is not None and cost_basis_krw > 0
-                    else None
-                )
                 manual_accounts.append(
-                    Account(
-                        accountId=account_id,
-                        displayName=account_name,
+                    build_account_from_holdings(
+                        account_id=account_id,
+                        display_name=account_name,
                         source=account_sources[account_id],
-                        accountKind="manual",
-                        includedInHome=True,
-                        valueKrw=value_krw,
-                        costBasisKrw=cost_basis_krw,
-                        pnlKrw=pnl_krw,
-                        pnlRate=pnl_rate,
-                        cashBalances=CashAmounts(),
-                        buyingPower=CashAmounts(),
+                        holdings=account_holdings,
                     )
                 )
 

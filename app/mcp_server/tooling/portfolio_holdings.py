@@ -101,6 +101,7 @@ from app.services.brokers.kis.client import KISClient
 from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
 from app.services.daily_candles.read_service import cache_first_kr
 from app.services.daily_candles.repository import DailyCandlesRepository
+from app.services.invest_home_service import PortfolioSnapshotUnavailableError
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.portfolio_snapshot import (
     deserialize_portfolio_snapshot,
@@ -961,7 +962,13 @@ async def _collect_whole_portfolio_positions(
     response = None
     last_error: Exception | None = None
     for _attempt in range(2):
-        payload = await cache.get_or_fetch(scope, fetch_payload)
+        try:
+            payload = await cache.get_or_fetch(scope, fetch_payload)
+        except TimeoutError:
+            # ROB-1310 BLOCKER-2: the bounded owner-wait hard bound must
+            # surface as a sanitized typed availability outcome to MCP
+            # holdings/briefing callers, not a raw TimeoutError.
+            raise PortfolioSnapshotUnavailableError("owner_wait_exhausted") from None
         try:
             response = deserialize_portfolio_snapshot(payload)
             break

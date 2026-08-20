@@ -21,6 +21,7 @@ from app.schemas.investment_reports import (
 from app.schemas.session_context import SessionContextResponse
 from app.services.account_routing import compact_cost_profile
 from app.services.analysis_artifact import AnalysisArtifactService
+from app.services.invest_home_service import PortfolioSnapshotUnavailableError
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
     _advisory_draft_profiles,
@@ -286,9 +287,25 @@ async def get_operating_briefing_impl(
     # ROB-1310: briefing consumes a bounded summary read model. It must not
     # reuse the full holdings projection or fan out to sellable/current-price
     # endpoints; the shared Toss snapshot supplies only the balance metrics.
-    holdings = await _get_portfolio_summary_impl(
-        **_holdings_kwargs(market, effective_scope, False)
-    )
+    try:
+        holdings = await _get_portfolio_summary_impl(
+            **_holdings_kwargs(market, effective_scope, False)
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        # BLOCKER-2: a hung whole-snapshot owner past the hard wait bound
+        # must degrade the briefing's holdings section rather than raise a
+        # raw/unhandled error out of the run-start briefing entrypoint.
+        holdings = {
+            "accounts": [],
+            "errors": [
+                {
+                    "source": "portfolio_snapshot",
+                    "error": exc.error_code,
+                    "unavailable_reason": exc.reason,
+                    "degraded": True,
+                }
+            ],
+        }
     async with AsyncSessionLocal() as db:
         pending = await collect_pending_orders_snapshot(
             db,
