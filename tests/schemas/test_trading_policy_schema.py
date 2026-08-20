@@ -1000,19 +1000,19 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     # inside the stance prose moving 1→2. Strip those and nothing else, and
     # pin both sides' wording so a silent rewrite of either fails here.
     assert "buy.winner_pullback_add" not in baseline_dump["decision_rules"]
-    assert (
-        current_dump["decision_rules"]["buy.winner_pullback_add"]["exclusions"]
-        == ["breakout_chase", "market_order_momentum_add"]
-    )
+    assert current_dump["decision_rules"]["buy.winner_pullback_add"]["exclusions"] == [
+        "breakout_chase",
+        "market_order_momentum_add",
+    ]
     del current_dump["decision_rules"]["buy.winner_pullback_add"]
     assert "동시 신규 최대 1종목" in baseline_dump["user_stances"][0]["implications"][1]
     assert (
         "동시 신규 최대 2종목(§127차 2026-08-21 상향, 종전 1)"
         in current_dump["user_stances"][0]["implications"][1]
     )
-    current_dump["user_stances"][0]["implications"][1] = baseline_dump[
-        "user_stances"
-    ][0]["implications"][1]
+    current_dump["user_stances"][0]["implications"][1] = baseline_dump["user_stances"][
+        0
+    ]["implications"][1]
 
     normalized_current_dump = deepcopy(current_dump)
     for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
