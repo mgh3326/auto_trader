@@ -25,7 +25,7 @@ def test_mutating_pre_registration_changes_hash() -> None:
 
 def test_widening_a_scoring_window_after_the_fact_changes_hash() -> None:
     mutated = deepcopy(PRE_REGISTRATION)
-    mutated["follow_through"]["windows_trading_days"] = [3, 10, 20]
+    mutated["follow_through"]["windows_trading_days"] = [3, 5, 10, 20]
     assert spec_sha256(mutated) != PINNED_SPEC_SHA256
 
 
@@ -33,6 +33,21 @@ def test_lowering_the_sample_floor_changes_hash() -> None:
     mutated = deepcopy(PRE_REGISTRATION)
     mutated["follow_through"]["min_events_per_type_for_comparison"] = 2
     assert spec_sha256(mutated) != PINNED_SPEC_SHA256
+
+
+def test_windows_cover_the_issue_body_d_plus_5() -> None:
+    # ROB-1303's body specifies D+5; [3,5,10] covers it and the earlier [3,10].
+    windows = PRE_REGISTRATION["follow_through"]["windows_trading_days"]
+    assert windows == [3, 5, 10]
+    amendment = PRE_REGISTRATION["follow_through"]["windows_amendment"]
+    assert amendment["from"] == [3, 10]
+    assert amendment["to"] == windows
+    # The amendment is legitimate only because nothing had been scored yet.
+    assert "zero scored events" in amendment["amended_when"]
+    offsets = PRE_REGISTRATION["forecast_tagging"][
+        "review_date_calendar_offset_days_by_window"
+    ]
+    assert set(offsets) == {str(w) for w in windows}
 
 
 def test_operator_enumerated_types_are_all_present() -> None:

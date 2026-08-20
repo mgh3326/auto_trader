@@ -85,7 +85,7 @@ def test_catalyst_basis_is_json_serialisable() -> None:
 
 def test_prereg_forecasts_cover_every_pinned_window() -> None:
     payloads = build_prereg_forecasts(attributed_record(), created_by="test")
-    assert [p["horizon"] for p in payloads] == ["3d", "10d"]
+    assert [p["horizon"] for p in payloads] == ["3d", "5d", "10d"]
     assert {p["session_label"] for p in payloads} == {"rob-1303-spike-attribution"}
     for payload in payloads:
         target = payload["forecast_target"]
@@ -125,8 +125,9 @@ def test_target_price_is_the_retained_boundary_and_direction_follows_the_spike()
 def test_review_dates_are_derived_from_the_spike_session() -> None:
     payloads = build_prereg_forecasts(attributed_record(), created_by="test")
     assert payloads[0]["forecast_start_date"] == "2026-08-20"
-    assert payloads[0]["review_date"] == "2026-08-25"
-    assert payloads[1]["review_date"] == "2026-09-03"
+    assert payloads[0]["review_date"] == "2026-08-25"  # 3d  -> +5 days
+    assert payloads[1]["review_date"] == "2026-08-27"  # 5d  -> +7 days
+    assert payloads[2]["review_date"] == "2026-09-03"  # 10d -> +14 days
 
 
 def test_no_execution_key_can_ride_along() -> None:

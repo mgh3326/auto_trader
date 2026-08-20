@@ -217,7 +217,7 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
     "follow_through": {
         "anchor": "spike_day_close",
         "reference": "prev_close",
-        "windows_trading_days": [3, 10],
+        "windows_trading_days": [3, 5, 10],
         "primary_metric": "retention_ratio",
         "retention_ratio": (
             "(close_at_window_end - prev_close) / (spike_close - prev_close)"
@@ -243,6 +243,20 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
         "bars_after_scoring_as_of_ignored": True,
         "peeking": "forbidden",
         "collection_extension_after_peek": "forbidden",
+        "windows_amendment": {
+            "from": [3, 10],
+            "to": [3, 5, 10],
+            "reason": (
+                "the ROB-1303 issue body specifies D+5; [3,5,10] covers it "
+                "and the previously pinned [3,10]"
+            ),
+            "amended_when": "before any event had been scored (zero scored events)",
+            "legitimacy": (
+                "pre-registration may be amended only while nothing has been "
+                "scored; changing a window after scoring begins would be "
+                "reading a result favourably after the fact"
+            ),
+        },
         "min_events_per_type_for_comparison": 20,
         "below_floor_disposition": "report_counts_only_no_cross_type_comparison",
         "unattributed_is_a_scored_class": True,
@@ -264,7 +278,7 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
             "pre-registered at all rather than recorded as a meaningless row"
         ),
         "outcome_rule_version": "rob1303-retention-ratio-v1",
-        "review_date_calendar_offset_days_by_window": {"3": 5, "10": 14},
+        "review_date_calendar_offset_days_by_window": {"3": 5, "5": 7, "10": 14},
         "scoring_authority": "rob-1303-spike-attribution.scoring",
         "do_not_use_forecast_resolve_as_experiment_score": True,
     },
@@ -323,7 +337,7 @@ PRE_REGISTRATION: Final[dict[str, Any]] = {
 # Recomputed by tests/services/spike_attribution/test_spec_freeze.py.
 # Bump only together with an explicit pre-registration amendment.
 PINNED_SPEC_SHA256: Final = (
-    "26a0ffd2e53c4b237f6cb672c69ec33527a52d6e14e4d6c26b74193c2df47537"
+    "6d32a577427e1d44f15448c3857f7fb0d28698e578f09765d650bbf70ffc74ca"
 )
 
 

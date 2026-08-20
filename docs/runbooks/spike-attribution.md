@@ -33,7 +33,11 @@
 - **follow-through**: 앵커 = 급등일 종가, 기준 = 직전 종가.
   `retention_ratio = (창끝 종가 − 직전종가) / (급등일 종가 − 직전종가)`
   → `extended ≥1.0 > retained ≥0.5 > faded ≥0.0 > reversed`.
-  창 = **3·10 거래일**, 봉 부족은 보간 없이 `unscorable`.
+  창 = **3·5·10 거래일**, 봉 부족은 보간 없이 `unscorable`.
+  🔵 창은 최초 `[3,10]` 으로 봉인했다가 정본(ROB-1303 본문)의 **D+5** 를 포괄하도록
+  `[3,5,10]` 으로 개정했다. **채점된 사건 0건 시점**의 개정이라 정당하며, 개정 이력은
+  `spec.follow_through.windows_amendment` 에 박제돼 있다. 🔴 채점이 시작된 뒤에는
+  창을 바꾸지 마라 — 그건 사후 유리한 해석이다.
 - **표본 하한**: 유형별 채점 가능 표본 **20건** 미만이면 유형 간 비교 자체를 금지한다
   (`cross_class_comparison_allowed=false`). 카운트만 보고한다.
 
@@ -120,7 +124,7 @@ required_thesis_evidence: [catalyst_basis, flow_basis]` 는 **코드가 아니�
 
 ### ⓑ 유형별 follow-through 사전등록 채점
 
-`build_prereg_forecasts()` 가 급등 1건당 창(3d/10d)마다 `forecast_save` 인자를 만든다.
+`build_prereg_forecasts()` 가 급등 1건당 창(3d/5d/10d)마다 `forecast_save` 인자를 만든다.
 귀속 레코드 전문(증거 링크 포함)이 `forecast_target.attribution_record` 로 함께 실린다
 — **별도 테이블을 만들지 않은 이유**: `review.trade_forecasts` 가 이미 학습루프 척추이고
 (CLAUDE.md), 마이그레이션 0 이 더 안전하다.
