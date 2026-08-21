@@ -297,10 +297,11 @@ class SupportReserveNetAddCandidatePolicy(BaseModel):
     @field_validator("k_used")
     @classmethod
     def validate_k_used(cls, value: float) -> float:
-        # §136차 (2026-08-21) 운영자 사이징 결정: 0.10 → 0.20.
-        # 추가분 상한은 여전히 기존 포지션의 20%이며 자격 게이트는 불변.
-        if value != 0.20:
-            raise ValueError("k_used must be 0.20 (§136차; 2026-08-21 전까지 0.10)")
+        # §136차 검토: k는 평단 개선 목표 파라미터(새 평단 ≤ 제안가×(1+k)) —
+        # 키우면 A_limit≤0(NO_ORDER)이 쉬워져 물타기 확대와 정반대로 작동한다.
+        # 그래서 0.10 유지가 §136차의 결론이다.
+        if value != 0.10:
+            raise ValueError("k_used must be 0.10")
         return value
 
 

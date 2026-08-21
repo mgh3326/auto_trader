@@ -278,7 +278,7 @@ def test_support_reserve_net_literal_policy_blocks_are_frozen():
     assert add.r931_review_required == "PASS"
     assert add.r931_review_max_age_days == 7
     assert add.policy_table_max_age_hours == 36
-    assert add.k_used == 0.20
+    assert add.k_used == 0.10
     assert add.sizing_price == "proposed_limit_price"
     assert add.a_limit_lte_zero == "NO_ORDER"
     assert add.partial_A_limit_fill == "FORBIDDEN"
@@ -985,9 +985,6 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     # baseline 원값을 먼저 고정 확인한다.
     reserve_base = baseline["decision_rules"]["buy.support_reserve_net"]
     reserve_cur = current_raw["decision_rules"]["buy.support_reserve_net"]
-    assert reserve_base["add_candidate"]["k_used"] == 0.10
-    assert reserve_cur["add_candidate"]["k_used"] == 0.20
-    reserve_base["add_candidate"]["k_used"] = 0.20
     assert reserve_base["add_candidate"]["max_add_symbols_per_market"] == 1
     reserve_base["add_candidate"]["max_add_symbols_per_market"] = 2
     assert reserve_base["priority_rules"]["max_add_symbols_per_market"] == 1
