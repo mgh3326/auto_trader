@@ -147,18 +147,23 @@ def test_confirm_with_both_gates_armed_still_refuses_the_unsigned_seal(
     assert "dispatch_authorized=false" in reasons
 
 
-def test_the_shipped_registry_leaves_confirm_unreachable(
+def test_the_shipped_registry_reaches_confirm_only_through_the_r8_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No registered payload authorizes dispatch, so there is nothing to run.
+    """Exactly one registered payload authorizes dispatch, and it is r8's.
 
-    This is the structural version of "creates no execution authority": it
-    reads the shipped constant rather than a fixture.
+    The structural version of §134차's "그 외 봉인은 계속 거부한다": read from the
+    shipped constant rather than a fixture, so a registry edit that widens the
+    permission fails here as well as at import.
     """
 
-    assert not any(
-        record.dispatch_authorized for record in d2.D2_KNOWN_SEALED_PAYLOADS.values()
-    )
+    authorized = {
+        digest
+        for digest, record in d2.D2_KNOWN_SEALED_PAYLOADS.items()
+        if record.dispatch_authorized
+    }
+    assert authorized == {d2.D2_R8_EXECUTION_AUTHORITY_SHA256}
+    assert d2.D2_DISPATCH_AUTHORIZED_DIGESTS == authorized
 
 
 @pytest.mark.parametrize(

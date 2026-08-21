@@ -160,7 +160,7 @@ def sealed_payload(*, authorized: bool = False) -> dict[str, Any]:
                     "BTCUSDT",
                     "BTC",
                     "0.00015000",
-                    "69266.01000000",
+                    "75421.27000000",
                     "0.00015957",
                     mutation_authorized=authorized,
                 ),
@@ -168,7 +168,7 @@ def sealed_payload(*, authorized: bool = False) -> dict[str, Any]:
                     "ETHUSDT",
                     "ETH",
                     "0.00520000",
-                    "2248.56000000",
+                    "2368.46000000",
                     "0.00529470",
                     mutation_authorized=authorized,
                 ),
@@ -176,7 +176,7 @@ def sealed_payload(*, authorized: bool = False) -> dict[str, Any]:
                     "USDCUSDT",
                     "USDC",
                     "5000.00000000",
-                    "1.00072000",
+                    "1.00030000",
                     "5000.00000000",
                     mutation_authorized=authorized,
                 ),
@@ -191,9 +191,23 @@ def sealed_payload(*, authorized: bool = False) -> dict[str, Any]:
         },
     }
     if authorized:
+        # A dispatch-authorized payload must also *look* like an execution
+        # authority: since §134차 the writer re-checks which seal a
+        # dispatch-authorized artifact names, so the fixture carries the same
+        # binding block the shipped artifact does.
+        payload["schema_version"] = d2.D2_EXECUTION_AUTHORITY_SCHEMA_VERSION
+        payload["artifact_kind"] = d2.D2_EXECUTION_AUTHORITY_KIND
+        payload["authority_scope"] = d2.D2_EXECUTION_AUTHORITY_SCOPE
+        payload["sealed_snapshot_binding"] = {
+            "snapshot_payload_rewritten": False,
+            "binding_payload_sha256": d2.D2_R8_BINDING_PAYLOAD_SHA256,
+            "artifact_manifest_sha256": d2.D2_R8_ARTIFACT_MANIFEST_SHA256,
+            "snapshot_seal_sha256": d2.D2_SNAPSHOT_SEAL_SHA256,
+            "seal_timestamp_utc": d2.D2_R8_SEAL_TIMESTAMP_UTC,
+        }
         payload["operator_authorization"] = {
-            "section": "§125차",
-            "signature": "operator-resign-fixture",
+            "section": "§134차",
+            "signature": "operator-decision-reference-fixture",
         }
         payload["expiry"] = "2099-01-01T00:00:00Z"
     return payload
@@ -630,7 +644,7 @@ def test_request_params_equal_the_sealed_values_exactly(
             "side": "SELL",
             "type": "LIMIT",
             "quantity": "0.00015000",
-            "price": "69266.01000000",
+            "price": "75421.27000000",
             "timeInForce": "GTC",
         },
         {
@@ -638,7 +652,7 @@ def test_request_params_equal_the_sealed_values_exactly(
             "side": "SELL",
             "type": "LIMIT",
             "quantity": "0.00520000",
-            "price": "2248.56000000",
+            "price": "2368.46000000",
             "timeInForce": "GTC",
         },
         {
@@ -646,7 +660,7 @@ def test_request_params_equal_the_sealed_values_exactly(
             "side": "SELL",
             "type": "LIMIT",
             "quantity": "5000.00000000",
-            "price": "1.00072000",
+            "price": "1.00030000",
             "timeInForce": "GTC",
         },
     ]
@@ -702,8 +716,8 @@ def test_m3_trailing_zero_difference_is_not_a_mutation() -> None:
 def test_m4_price_one_tick_changed_is_refused() -> None:
     mutant = copy.deepcopy(sealed_payload())
     step = mutant["authorized_symbols"]["spot"]["BTCUSDT"]["proposed_one_step"]
-    assert step["proposed_limit_price_floor"] == "69266.01000000"
-    step["proposed_limit_price_floor"] = "69266.02000000"  # tickSize is 0.01
+    assert step["proposed_limit_price_floor"] == "75421.27000000"
+    step["proposed_limit_price_floor"] = "75421.28000000"  # tickSize is 0.01
     with pytest.raises(D2SealBindingMismatch) as exc:
         bind_sealed_orders(mutant)
     assert exc.value.reason_code is D2ReasonCode.SEAL_ORDER_SET_MISMATCH
@@ -894,17 +908,28 @@ async def test_b1_registered_dispatch_authorized_false_blocks_confirm(
         await writer.execute(confirm=True)
 
 
-def test_b1_every_shipped_sealed_payload_is_dispatch_blocked() -> None:
-    """The structural claim: this repository grants no dispatch authority.
+def test_b1_the_shipped_dispatch_permission_is_exactly_one_seal() -> None:
+    """The structural claim, in its §134차 form.
 
-    Not "we checked once" — the shipped map is asserted empty of authorized
-    entries here and again by an import-time tripwire in the module.
+    Before the cutover this asserted the shipped map was *empty* of authorized
+    entries. §134차 authorized one seal and explicitly kept every other one
+    refused, so the assertion becomes closed equality against a one-member set
+    rather than a blanket "none" — and the import-time tripwire checks the same
+    equality, so a second authorized entry cannot be added quietly.
     """
 
     assert d2.D2_KNOWN_SEALED_PAYLOADS
-    assert not any(
-        record.dispatch_authorized for record in d2.D2_KNOWN_SEALED_PAYLOADS.values()
-    )
+    authorized = {
+        digest
+        for digest, record in d2.D2_KNOWN_SEALED_PAYLOADS.items()
+        if record.dispatch_authorized
+    }
+    assert authorized == {d2.D2_R8_EXECUTION_AUTHORITY_SHA256}
+    assert d2.D2_DISPATCH_AUTHORIZED_DIGESTS == authorized
+    # And the two seals that are registered but not authorized stay that way.
+    assert not d2.D2_KNOWN_SEALED_PAYLOADS[
+        d2.D2_R8_BINDING_PAYLOAD_SHA256
+    ].dispatch_authorized
 
 
 @pytest.mark.asyncio
@@ -1247,7 +1272,7 @@ async def test_b4_account_truth_is_read_before_the_first_submit(
 @pytest.mark.parametrize(
     ("override", "needle"),
     [
-        ({"price": "69266.02000000"}, "price"),
+        ({"price": "75421.28000000"}, "price"),
         ({"timeInForce": "IOC"}, "timeInForce"),
         ({"price": None}, "carries no price"),
         ({"timeInForce": None}, "carries no timeInForce"),

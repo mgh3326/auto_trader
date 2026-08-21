@@ -24,15 +24,31 @@ script would have created an *unreviewed* execution surface.  A reviewed,
 narrower one is the correct answer, so this module exists and both CLIs name
 each other.
 
-**No sealed payload in this repository authorizes a dispatch.**
-:data:`D2_KNOWN_SEALED_PAYLOADS` is the complete set of digests
-:func:`load_sealed_authority` will parse; every entry carries
-``dispatch_authorized=False``, and :func:`_assert_closed_order_set` refuses to
-import if one does not.  So a caller entering through these functions — both env
-gates armed, live lease in hand — reaches ``--confirm`` and is refused, because
-there is nothing here to act under.  Granting dispatch takes the operator's
-re-sign (which produces different bytes, hence a different digest) plus a
-reviewed change that registers it.
+**Exactly one sealed object in this repository authorizes a dispatch, and it
+is the r8 execution authority.**  Operator decision §134차 (2026-08-21) reads:
+
+    「§132차가 바인딩한 r8 봉인 — pre_snapshot_hash 4816a1d9…66f830 ·
+      manifest fa7092a3…e8431 · 수량/가격 3건 §132차 원문 — 한정으로 dispatch 를
+      허용한다. 그 외 봉인은 계속 거부한다.」
+
+"그 외 봉인은 계속 거부한다" — *every other seal stays refused* — is the half
+this module has to enforce, so the permission is expressed as a closed set of
+one digest (:data:`D2_DISPATCH_AUTHORIZED_DIGESTS`) rather than as a flag a
+second entry could also carry.  :func:`_assert_closed_order_set` refuses to
+import unless the set of ``dispatch_authorized`` registry entries is *equal* to
+that closed set, so marking any other payload authorized is an import failure
+rather than a quiet dictionary edit.
+
+The r8 snapshot payload itself is **not** the authority and was not rewritten
+to become one: it is registered (digest ``00b975ff…``) with
+``dispatch_authorized=False``, exactly as it was sealed — unsigned, no expiry,
+``mutation_authorized=false`` on all three rows.  The authority is a separate,
+execution-only artifact that *names* the r8 seal by digest
+(``docs/contracts/d2-r8-execution-authority-20260821.json``), and
+:func:`_assert_execution_authority_shape` re-checks that naming from the file's
+own bytes at load time.  A dispatch-authorized payload that binds some other
+snapshot, manifest, or seal timestamp is refused even if its digest were
+somehow registered.
 
 That is a statement about this module's entry points, not about the process.
 See the threat model below.
@@ -154,16 +170,68 @@ D2_EXCEPTION_ID: Final[str] = "binance-demo-remediation-20260820"
 #: ``binding-payload-proposed.json: remediation_id``.
 D2_REMEDIATION_ID: Final[str] = "d2-binance-demo-both-remediation-v2.1-20260818"
 
-#: r7 attempt-2 — the only snapshot this writer will act under.  A payload
+#: r8 attempt-2 — the only snapshot this writer will act under.  A payload
 #: carrying any other hash is refused; there is no override argument.
+#: Transcribed verbatim from operator decision §132차, which re-signed the D2
+#: binding and supersedes §125차.  Not recomputed here.
 D2_PRE_SNAPSHOT_HASH: Final[str] = (
+    "sha256:4816a1d93da8a6e754d46b98d01e70aab9a82c7720bd86e0d5720583cc66f830"
+)
+
+#: The r7 snapshot this writer used to be bound to.  Kept as a named constant
+#: rather than deleted, because :data:`D2_KNOWN_SEALED_PAYLOADS` still registers
+#: the r7 payload — parseable, and refused at :func:`bind_sealed_orders` because
+#: its ``pre_snapshot_hash`` is no longer the bound one.  A silent drop would
+#: turn "superseded" into "unknown digest", which reads like a different fault.
+D2_SUPERSEDED_R7_PRE_SNAPSHOT_HASH: Final[str] = (
     "sha256:5ba70a814654513c745e45c49206f11cf5f5d061478c668f86602af493e6b898"
 )
 
-#: ``r7-snapshot/attempt-2-authoritative.json`` selects attempt-2 and binds
-#: this seal digest to it.  Carried as evidence.
+#: ``r8-reseal-20260821/snapshot/attempt-2/snapshot-seal.json``.  Carried as
+#: evidence and re-checked against the execution authority's own binding block.
 D2_SNAPSHOT_SEAL_SHA256: Final[str] = (
-    "d4c9a13a148f6c6c0d4451264da275826084f0b27c7a69a7698fb8c2b7952ed9"
+    "7817e8df2da3f89b03df40caea5e313b3d113fd07328dc4aaad2c4559397d95f"
+)
+
+#: The r8 binding payload's exact bytes.  §134차 names it as one of the two
+#: values that bound the permission; it is registered below with
+#: ``dispatch_authorized=False`` because the payload itself is unsigned and was
+#: deliberately **not** rewritten to carry an authorization it never had.
+D2_R8_BINDING_PAYLOAD_SHA256: Final[str] = (
+    "00b975ff1a291917699588d91154a790765b0f3e7008b141a8f60f6925fbae61"
+)
+
+#: ``manifest_sha256`` from §132차 / §134차, verbatim.
+D2_R8_ARTIFACT_MANIFEST_SHA256: Final[str] = (
+    "fa7092a32e09689927228c400dbc97312af4eb1cd9f76d34a208d1fe7f1e8431"
+)
+
+#: ``seal_timestamp_utc`` from §132차, verbatim.
+D2_R8_SEAL_TIMESTAMP_UTC: Final[str] = "2026-08-21T01:53:45.145298Z"
+
+#: The execution-only authority artifact introduced under §134차.  It does not
+#: restate the r8 snapshot; it names it by digest.  Repository-relative so a
+#: reviewer reads the same bytes the runtime hashes.
+D2_R8_EXECUTION_AUTHORITY_PATH: Final[str] = (
+    "docs/contracts/d2-r8-execution-authority-20260821.json"
+)
+
+D2_EXECUTION_AUTHORITY_SCHEMA_VERSION: Final[str] = "d2-execution-authority.v1"
+D2_EXECUTION_AUTHORITY_KIND: Final[str] = "D2_EXECUTION_AUTHORITY"
+D2_EXECUTION_AUTHORITY_SCOPE: Final[str] = "R8_SEAL_ONLY"
+
+#: The exact bytes of :data:`D2_R8_EXECUTION_AUTHORITY_PATH`.
+D2_R8_EXECUTION_AUTHORITY_SHA256: Final[str] = (
+    "ba6518e7cafa16160059aafb22cd304d13793e0f8ea7f035d8fbd8ddc967b00b"
+)
+
+#: 🔴 The complete set of digests §134차 permits to dispatch — one member.
+#: :func:`_assert_closed_order_set` compares the registry's authorized entries
+#: against this by ``==``, not by membership, so a *second* authorized digest
+#: fails the import just as an *unauthorized* one does.  That is the machine
+#: form of "그 외 봉인은 계속 거부한다".
+D2_DISPATCH_AUTHORIZED_DIGESTS: Final[frozenset[str]] = frozenset(
+    {D2_R8_EXECUTION_AUTHORITY_SHA256}
 )
 
 #: The credential fingerprint the signed J2A registry binds to the shared
@@ -364,12 +432,16 @@ class D2BoundOrder:
         return f"{D2_CLIENT_ORDER_ID_PREFIX}-{digest[:24]}"
 
 
-#: The three operations, in dispatch order.  Read from r7 attempt-2's
-#: ``binding-payload-proposed.json``:
+#: The three operations, in dispatch order.  🔴 Transcribed **verbatim** from
+#: operator decision §132차 — the values were copied, not recomputed and not
+#: re-rounded, and they are the same values r8 attempt-2's
+#: ``binding-payload-proposed.json`` carries:
 #:
-#:   BTCUSDT  SELL LIMIT 0.00015000 @ 69266.01000000
-#:   ETHUSDT  SELL LIMIT 0.00520000 @  2248.56000000
-#:   USDCUSDT SELL LIMIT 5000.00000000 @ 1.00072000
+#:   BTCUSDT  SELL LIMIT 0.00015000    @ 75421.27000000
+#:   ETHUSDT  SELL LIMIT 0.00520000    @  2368.46000000
+#:   USDCUSDT SELL LIMIT 5000.00000000 @     1.00030000
+#:
+#: (§125차's 69266.01 / 2248.56 / 1.00072 are superseded and must not reappear.)
 #:
 #: This tuple is the authority the runtime checks against.  The payload is
 #: re-read at runtime so a doctored file is caught, but the payload can only
@@ -381,7 +453,7 @@ D2_BOUND_ORDERS: Final[tuple[D2BoundOrder, ...]] = (
         side=D2_SIDE,
         order_type=D2_ORDER_TYPE,
         quantity=Decimal("0.00015000"),
-        price=Decimal("69266.01000000"),
+        price=Decimal("75421.27000000"),
         time_in_force=D2_TIME_IN_FORCE,
         sealed_free_quantity=Decimal("0.00015957"),
         sealed_locked_quantity=Decimal("0"),
@@ -392,7 +464,7 @@ D2_BOUND_ORDERS: Final[tuple[D2BoundOrder, ...]] = (
         side=D2_SIDE,
         order_type=D2_ORDER_TYPE,
         quantity=Decimal("0.00520000"),
-        price=Decimal("2248.56000000"),
+        price=Decimal("2368.46000000"),
         time_in_force=D2_TIME_IN_FORCE,
         sealed_free_quantity=Decimal("0.00529470"),
         sealed_locked_quantity=Decimal("0"),
@@ -403,7 +475,7 @@ D2_BOUND_ORDERS: Final[tuple[D2BoundOrder, ...]] = (
         side=D2_SIDE,
         order_type=D2_ORDER_TYPE,
         quantity=Decimal("5000.00000000"),
-        price=Decimal("1.00072000"),
+        price=Decimal("1.00030000"),
         time_in_force=D2_TIME_IN_FORCE,
         sealed_free_quantity=Decimal("5000.00000000"),
         sealed_locked_quantity=Decimal("0"),
@@ -438,24 +510,49 @@ class SealedPayloadRecord:
 
 #: The complete set of sealed payloads this writer will parse.
 #:
-#: 🔴 Every entry today is ``dispatch_authorized=False``.  That is what makes
-#: "this module creates no execution authority" a structural fact rather than a
-#: claim: with both env gates armed and a lease held, ``--confirm`` still has
-#: no digest to act under.  When the operator re-signs, the re-signed file has
-#: *different bytes* and therefore a different digest, and teaching this map
-#: about it is a reviewed change with its own diff.
+#: 🔴 Exactly one entry is ``dispatch_authorized=True``: the r8 execution
+#: authority, under §134차.  The other two parse and then refuse — the r7
+#: payload because its ``pre_snapshot_hash`` is superseded, the r8 binding
+#: payload because it is unsigned.  Registration is *permission to parse*;
+#: ``dispatch_authorized`` is the separate half, and it is checked against the
+#: closed set :data:`D2_DISPATCH_AUTHORIZED_DIGESTS` at import.
 D2_KNOWN_SEALED_PAYLOADS: Final[Mapping[str, SealedPayloadRecord]] = {
     "e1c2d250d73ae3bdb631289a7293c35c217b9e5c6e2694d3f8ea572d1835a3aa": (
         SealedPayloadRecord(
             sha256=("e1c2d250d73ae3bdb631289a7293c35c217b9e5c6e2694d3f8ea572d1835a3aa"),
-            pre_snapshot_hash=D2_PRE_SNAPSHOT_HASH,
+            pre_snapshot_hash=D2_SUPERSEDED_R7_PRE_SNAPSHOT_HASH,
             dispatch_authorized=False,
             note=(
-                "r7 attempt-2 binding payload, unsigned: operator_authorization "
-                "is null and every row is mutation_authorized=false. Rehearsal "
-                "only; a re-signed payload will hash differently."
+                "r7 attempt-2 binding payload, unsigned and superseded by "
+                "§132차. Parseable so the refusal names 'superseded snapshot' "
+                "rather than 'unknown digest'; it can never bind, because its "
+                "pre_snapshot_hash is not D2_PRE_SNAPSHOT_HASH."
             ),
         )
+    ),
+    D2_R8_BINDING_PAYLOAD_SHA256: SealedPayloadRecord(
+        sha256=D2_R8_BINDING_PAYLOAD_SHA256,
+        pre_snapshot_hash=D2_PRE_SNAPSHOT_HASH,
+        dispatch_authorized=False,
+        note=(
+            "r8 attempt-2 binding payload, exactly as sealed: "
+            "operator_authorization is null, expiry is null, and all three "
+            "rows are mutation_authorized=false. It binds the three §132차 "
+            "orders and authorizes none of them. It was deliberately not "
+            "rewritten to carry an authorization it never had; the authority "
+            "is the separate execution artifact below."
+        ),
+    ),
+    D2_R8_EXECUTION_AUTHORITY_SHA256: SealedPayloadRecord(
+        sha256=D2_R8_EXECUTION_AUTHORITY_SHA256,
+        pre_snapshot_hash=D2_PRE_SNAPSHOT_HASH,
+        dispatch_authorized=True,
+        note=(
+            "r8 execution authority under operator decision §134차 "
+            "(docs/contracts/d2-r8-execution-authority-20260821.json). "
+            "Execution-only: it names the r8 seal by digest rather than "
+            "restating it, and its scope is that seal alone."
+        ),
     ),
 }
 
@@ -512,15 +609,47 @@ def _assert_closed_order_set() -> None:
                 D2ReasonCode.UNAUTHORIZED_OPERATION,
                 f"allowed_operation {operation_id!r} does not name {order.symbol}",
             )
-    if any(record.dispatch_authorized for record in D2_KNOWN_SEALED_PAYLOADS.values()):
-        # Not a prohibition on ever authorizing dispatch — a tripwire, so that
-        # flipping the flag is a deliberate, visible act rather than a quiet
-        # dictionary edit that no reviewer's eye catches.
+    # 🔴 The §134차 tripwire, replacing the pre-cutover "nothing may dispatch"
+    # form.  It is not weaker for being narrower: the comparison is closed
+    # equality against a one-member set, so *adding* a second authorized digest
+    # fails the import exactly as marking an unauthorized one does.  Widening
+    # the permission therefore still costs a visible, reviewed diff in two
+    # places — the registry and this constant.
+    if D2_DISPATCH_AUTHORIZED_DIGESTS != frozenset({D2_R8_EXECUTION_AUTHORITY_SHA256}):
         raise D2UnauthorizedOperation(
             D2ReasonCode.UNAUTHORIZED_OPERATION,
-            "a sealed payload is marked dispatch_authorized; adding one is a "
-            "reviewed operator cutover and must also update this tripwire",
+            "§134차 authorizes exactly one digest — the r8 execution "
+            f"authority — but D2_DISPATCH_AUTHORIZED_DIGESTS is "
+            f"{sorted(D2_DISPATCH_AUTHORIZED_DIGESTS)}",
         )
+    authorized = frozenset(
+        digest
+        for digest, record in D2_KNOWN_SEALED_PAYLOADS.items()
+        if record.dispatch_authorized
+    )
+    if authorized != D2_DISPATCH_AUTHORIZED_DIGESTS:
+        raise D2UnauthorizedOperation(
+            D2ReasonCode.UNAUTHORIZED_OPERATION,
+            "the set of dispatch_authorized sealed payloads must equal the "
+            "§134차 permission exactly; §134차 reads 'that seal only, every "
+            "other seal stays refused'. Registered as authorized: "
+            f"{sorted(authorized)}; permitted: "
+            f"{sorted(D2_DISPATCH_AUTHORIZED_DIGESTS)}",
+        )
+    for digest in sorted(authorized):
+        record = D2_KNOWN_SEALED_PAYLOADS[digest]
+        if record.sha256 != digest:
+            raise D2UnauthorizedOperation(
+                D2ReasonCode.UNAUTHORIZED_OPERATION,
+                f"authorized record {digest} carries sha256={record.sha256!r}",
+            )
+        if record.pre_snapshot_hash != D2_PRE_SNAPSHOT_HASH:
+            raise D2UnauthorizedOperation(
+                D2ReasonCode.UNAUTHORIZED_OPERATION,
+                f"authorized record {digest} binds "
+                f"{record.pre_snapshot_hash!r}, not the §132차 snapshot "
+                f"{D2_PRE_SNAPSHOT_HASH!r}",
+            )
 
 
 _assert_closed_order_set()
@@ -867,13 +996,21 @@ class SealedAuthority:
             reasons.append(
                 f"authority expired at {self.expiry.isoformat()} (now {now.isoformat()})"
             )
-        missing = sorted(
-            order.symbol
-            for order in self.orders
-            if order.symbol not in self.mutation_authorized_symbols
-        )
+        bound = {order.symbol for order in self.orders}
+        missing = sorted(bound - self.mutation_authorized_symbols)
         if missing:
             reasons.append(f"mutation_authorized is not true for {missing}")
+        # The other direction, which used to go unchecked: a payload that
+        # authorizes the three bound symbols *and a fourth* satisfied every
+        # test above. The bound set can never grow, so the fourth could not
+        # become an order — but a seal that claims more than it is allowed to
+        # claim is not a seal this writer should act under at all.
+        extra = sorted(self.mutation_authorized_symbols - bound)
+        if extra:
+            reasons.append(
+                "mutation_authorized is true for symbols outside the bound "
+                f"set: {extra}"
+            )
         return tuple(reasons)
 
     @property
@@ -891,6 +1028,77 @@ class SealedAuthority:
             "mutation_authorized_symbols": sorted(self.mutation_authorized_symbols),
             "credential_fingerprint": self.credential_fingerprint,
         }
+
+
+def _assert_execution_authority_shape(
+    payload: Mapping[str, Any], *, source: Path
+) -> None:
+    """Re-check a dispatch-authorized payload's *contents*, not just its bytes.
+
+    Only runs for a registry entry with ``dispatch_authorized=True``. For the
+    shipped artifact this is redundant with the digest — the bytes cannot
+    differ — and that redundancy is the point: if the registry is ever edited
+    to authorize some other digest, these checks are what still refuse it. They
+    are the content-level form of §134차's "그 외 봉인은 계속 거부한다".
+
+    Nothing here reads the r8 snapshot payload. It re-reads the digests the
+    authority *claims* to be bound to and compares them against the frozen
+    §132차 / §134차 values, so an authority that names a different snapshot,
+    manifest, or seal instant is refused.
+    """
+
+    def _require(field: str, actual: Any, expected: Any) -> None:
+        if actual != expected:
+            raise D2SealBindingMismatch(
+                D2ReasonCode.SEAL_IDENTITY_MISMATCH,
+                f"{source}: dispatch-authorized artifact has {field}="
+                f"{actual!r}, expected {expected!r}",
+            )
+
+    _require(
+        "schema_version",
+        payload.get("schema_version"),
+        D2_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+    )
+    _require("artifact_kind", payload.get("artifact_kind"), D2_EXECUTION_AUTHORITY_KIND)
+    _require(
+        "authority_scope", payload.get("authority_scope"), D2_EXECUTION_AUTHORITY_SCOPE
+    )
+
+    binding = payload.get("sealed_snapshot_binding")
+    if not isinstance(binding, Mapping):
+        raise D2SealBindingMismatch(
+            D2ReasonCode.SEAL_IDENTITY_MISMATCH,
+            f"{source}: dispatch-authorized artifact carries no "
+            "sealed_snapshot_binding, so it names no seal",
+        )
+    # ① of §134차: the r8 snapshot payload keeps its own bytes. An authority
+    # that admits to having rewritten it is refused rather than trusted.
+    _require(
+        "sealed_snapshot_binding.snapshot_payload_rewritten",
+        binding.get("snapshot_payload_rewritten"),
+        False,
+    )
+    _require(
+        "sealed_snapshot_binding.binding_payload_sha256",
+        binding.get("binding_payload_sha256"),
+        D2_R8_BINDING_PAYLOAD_SHA256,
+    )
+    _require(
+        "sealed_snapshot_binding.artifact_manifest_sha256",
+        binding.get("artifact_manifest_sha256"),
+        D2_R8_ARTIFACT_MANIFEST_SHA256,
+    )
+    _require(
+        "sealed_snapshot_binding.snapshot_seal_sha256",
+        binding.get("snapshot_seal_sha256"),
+        D2_SNAPSHOT_SEAL_SHA256,
+    )
+    _require(
+        "sealed_snapshot_binding.seal_timestamp_utc",
+        binding.get("seal_timestamp_utc"),
+        D2_R8_SEAL_TIMESTAMP_UTC,
+    )
 
 
 def load_sealed_authority(path: str | Path) -> SealedAuthority:
@@ -935,6 +1143,9 @@ def load_sealed_authority(path: str | Path) -> SealedAuthority:
             D2ReasonCode.SEAL_HASH_MISMATCH,
             "registered digest and payload disagree on pre_snapshot_hash",
         )
+
+    if record.dispatch_authorized:
+        _assert_execution_authority_shape(payload, source=source)
 
     assert_registry_credential_fingerprint()
     fingerprint = _sealed_credential_fingerprint(payload)
@@ -1940,17 +2151,27 @@ __all__ = [
     "D2_BOUND_ORDERS",
     "D2_CLIENT_ORDER_ID_PREFIX",
     "D2_CREDENTIAL_FINGERPRINT",
+    "D2_DISPATCH_AUTHORIZED_DIGESTS",
     "D2_EXCEPTION_ID",
+    "D2_EXECUTION_AUTHORITY_KIND",
+    "D2_EXECUTION_AUTHORITY_SCHEMA_VERSION",
+    "D2_EXECUTION_AUTHORITY_SCOPE",
     "D2_KNOWN_SEALED_PAYLOADS",
     "D2_LANE_ID",
     "D2_ORDER_TYPE",
     "D2_PRE_SNAPSHOT_HASH",
     "D2_PRODUCT",
     "D2_QUOTE_ASSET",
+    "D2_R8_ARTIFACT_MANIFEST_SHA256",
+    "D2_R8_BINDING_PAYLOAD_SHA256",
+    "D2_R8_EXECUTION_AUTHORITY_PATH",
+    "D2_R8_EXECUTION_AUTHORITY_SHA256",
+    "D2_R8_SEAL_TIMESTAMP_UTC",
     "D2_REMEDIATION_ENABLED_ENV",
     "D2_REMEDIATION_ID",
     "D2_SIDE",
     "D2_SNAPSHOT_SEAL_SHA256",
+    "D2_SUPERSEDED_R7_PRE_SNAPSHOT_HASH",
     "D2_TIME_IN_FORCE",
     "D2_VENUE",
     "D2_VENUE_HOST",

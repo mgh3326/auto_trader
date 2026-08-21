@@ -4,9 +4,10 @@
 `binance-demo-remediation-20260820` exception. This runbook covers the code that
 answers to that name.
 
-**Scope of this document.** It describes the writer and how to rehearse it. It
-does **not** authorize execution. Execution requires a separate operator
-re-sign, and the runbook cannot supply one.
+**Scope of this document.** It describes the writer, how to rehearse it, and —
+since operator decision §134차 (2026-08-21) — what it is now permitted to
+dispatch. The runbook does not itself authorize anything; the authority is
+§134차, and it is bounded to one seal.
 
 ## 1. What it is
 
@@ -15,17 +16,21 @@ re-sign, and the runbook cannot supply one.
 | Writer | `app/services/brokers/binance/spot_demo/d2_remediation_single.py` |
 | CLI | `scripts/binance_spot_demo_d2_remediation.py` |
 | Contract | `~/work/herdr-inbox/contract-d2-binance-remediation-v2.2-20260820.md` |
-| Seal | r7 attempt-2, `pre_snapshot_hash=sha256:5ba70a81…3e6b898` |
+| Seal | r8 attempt-2, `pre_snapshot_hash=sha256:4816a1d9…66f830` (§132차, supersedes §125차) |
+| Dispatch authority | `docs/contracts/d2-r8-execution-authority-20260821.json`, sha256 `ba6518e7…67b00b` (§134차) |
 | Surface | `binance_spot_demo_remediation_only` |
 | Canary/strategy use | forbidden |
 
 It can express exactly three orders:
 
 ```text
-BTCUSDT  SELL LIMIT 0.00015000    @ 69266.01000000
-ETHUSDT  SELL LIMIT 0.00520000    @  2248.56000000
-USDCUSDT SELL LIMIT 5000.00000000 @     1.00072000
+BTCUSDT  SELL LIMIT 0.00015000    @ 75421.27000000
+ETHUSDT  SELL LIMIT 0.00520000    @  2368.46000000
+USDCUSDT SELL LIMIT 5000.00000000 @     1.00030000
 ```
+
+Transcribed verbatim from §132차; §125차's `69266.01` / `2248.56` / `1.00072`
+are superseded and must not reappear.
 
 There is no fourth, no BUY, no MARKET, and no flag that selects a symbol,
 quantity, or price. The set lives in `D2_BOUND_ORDERS`; the sealed payload is
@@ -70,7 +75,7 @@ touches nothing.
 ```bash
 uv run python -m scripts.binance_spot_demo_d2_remediation \
   --plan-only \
-  --sealed-payload <path>/r7-snapshot/attempt-2/binding-payload-proposed.json
+  --sealed-payload docs/contracts/d2-r8-execution-authority-20260821.json
 ```
 
 `--dry-run` walks the whole path — both env gates, host re-assertion,
@@ -83,7 +88,13 @@ reachable database.
 ```bash
 BINANCE_SPOT_DEMO_ENABLED=true D2_REMEDIATION_SINGLE_ENABLED=true \
 uv run python -m scripts.binance_spot_demo_d2_remediation \
-  --dry-run --sealed-payload <path>/binding-payload-proposed.json
+  --dry-run --sealed-payload docs/contracts/d2-r8-execution-authority-20260821.json
+```
+
+Any registered payload may be rehearsed. Rehearsing the r8 *snapshot* payload
+(`<r8>/snapshot/attempt-2/binding-payload-proposed.json`) is the useful control:
+it binds the same three orders and prints four dispatch blockers, which is what
+"the snapshot was not rewritten into an authority" looks like from the outside.
 ```
 
 There is no flag to skip the order-shape check. It was optional in the first
@@ -91,19 +102,30 @@ revision, which meant the mode that sends real orders could also be the mode
 that skipped the only broker-side proof that the sealed filters still describe
 the market.
 
-## 5. Execution — refused, at runtime, on every registered payload
+## 5. Execution — permitted under one seal, refused under every other
 
 `--confirm` is the only mode that reaches `submit_order(..., confirm=True)`.
-For a caller entering through this module's functions, it is refused — not by
-convention but by checks that run, each named with where it lives:
+Operator decision §134차 (2026-08-21) reads, verbatim:
+
+> 「§132차가 바인딩한 r8 봉인 — pre_snapshot_hash
+> `sha256:4816a1d93da8a6e754d46b98d01e70aab9a82c7720bd86e0d5720583cc66f830` ·
+> manifest_sha256
+> `fa7092a32e09689927228c400dbc97312af4eb1cd9f76d34a208d1fe7f1e8431` ·
+> 수량/가격 3건 §132차 원문 — **한정으로 dispatch를 허용한다. 그 외 봉인은 계속
+> 거부한다.**」
+
+The second sentence — *every other seal stays refused* — is the operative one
+for this code, so the permission is expressed as a closed one-member set rather
+than as a flag another entry could also carry.
 
 | Gate | Enforced at | Current state |
 |---|---|---|
-| Payload bytes hashed before parsing; unknown digest refused | `load_sealed_authority` | one registered digest |
-| Every registered digest is `dispatch_authorized=false`, and import fails if not | `_assert_closed_order_set` | holds |
-| `operator_authorization` non-null | `SealedAuthority.dispatch_block_reasons` | `null` |
-| `expiry` present and not past, read from the real clock | `SealedAuthority.dispatch_block_reasons`, `D2RemediationSingleWriter.dispatch_block_reasons` | absent |
-| `mutation_authorized` on all three rows | `SealedAuthority.dispatch_block_reasons` | `false` on all three |
+| Payload bytes hashed before parsing; unknown digest refused | `load_sealed_authority` | three registered digests |
+| The set of `dispatch_authorized` entries **equals** `D2_DISPATCH_AUTHORIZED_DIGESTS`, or the import fails | `_assert_closed_order_set` | one member, the r8 execution authority |
+| A dispatch-authorized artifact must name the r8 seal, manifest, and seal instant, and declare the snapshot un-rewritten | `_assert_execution_authority_shape` | enforced |
+| `operator_authorization` non-null | `SealedAuthority.dispatch_block_reasons` | §134차 reference on the authority; `null` on the r8 snapshot payload |
+| `expiry` present and not past, read from the real clock | `SealedAuthority.dispatch_block_reasons`, `D2RemediationSingleWriter.dispatch_block_reasons` | `2026-08-22T14:59:59Z` |
+| `mutation_authorized` true on the three bound rows **and on nothing else** | `SealedAuthority.dispatch_block_reasons` | exactly BTCUSDT/ETHUSDT/USDCUSDT |
 | Sealed credential fingerprint = signed J2A registry | `load_sealed_authority`, `assert_registry_credential_fingerprint` | matches |
 | Live client credential fingerprint = sealed | `D2RemediationSingleWriter._assert_client_account` | checked per run |
 | Account-wide writer freeze | `assert_writer_freeze` | in force |
@@ -116,18 +138,37 @@ that goes stale on the next edit without anyone noticing, and
 `test_the_runbook_gate_table_names_symbols_that_exist` checks every name in the
 "Enforced at" column against the live modules.
 
-`--dry-run` prints the whole blocker list; `--confirm` refuses on it *before*
-opening a client, a lease, or a database session. Both env gates being armed
-changes none of this.
+### 5.1 What the authority artifact is, and what it is not
 
-Authorizing dispatch takes two separate things, in this order:
+`docs/contracts/d2-r8-execution-authority-20260821.json` (sha256
+`ba6518e7cafa16160059aafb22cd304d13793e0f8ea7f035d8fbd8ddc967b00b`) is an
+**execution-only** artifact. It does not restate or replace the r8 snapshot: it
+names the r8 binding payload (`00b975ff…`), artifact manifest (`fa7092a3…`),
+snapshot seal (`7817e8df…`), and seal instant by digest, and carries
+`snapshot_payload_rewritten: false`, which
+`_assert_execution_authority_shape` re-checks from the file's own bytes.
 
-1. the operator's fresh re-sign bound to the exact r7 `pre_snapshot_hash`,
-   which produces a **different file with a different digest**; and
-2. a reviewed change that registers that digest with
-   `dispatch_authorized=True` — which also has to update the import-time
-   tripwire in `_assert_closed_order_set` that currently asserts no such entry
-   exists.
+Its `operator_authorization` is a **reference to a recorded operator decision**
+(§134차 in `operator-decisions-20260805-0830.md`), quoted verbatim inside the
+file — not a cryptographic signature, and the file says so. The cutover it
+authorizes is the reviewed registration of its digest in the writer.
+
+The r8 snapshot payload stays registered with `dispatch_authorized=false` and
+still prints four blockers, which is the observable form of "it was not
+rewritten". The superseded r7 payload also stays registered, and refuses at
+`bind_sealed_orders` because its `pre_snapshot_hash` is no longer the bound one
+— a named refusal rather than "unknown digest".
+
+### 5.2 Widening the permission is still a two-place diff
+
+Authorizing a *different* seal takes, in this order:
+
+1. an operator decision naming it (§134차 authorizes r8 and explicitly nothing
+   else), and a new artifact bound to it — **different bytes, different
+   digest**; and
+2. a reviewed change that registers that digest **and** adds it to
+   `D2_DISPATCH_AUTHORIZED_DIGESTS`. Registering it alone fails the import,
+   because `_assert_closed_order_set` compares the two by equality.
 
 Neither step is something this repository can do to itself.
 

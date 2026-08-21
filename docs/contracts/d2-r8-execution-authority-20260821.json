@@ -1,0 +1,174 @@
+{
+  "schema_version": "d2-execution-authority.v1",
+  "artifact_kind": "D2_EXECUTION_AUTHORITY",
+  "authority_scope": "R8_SEAL_ONLY",
+  "authority_note": "Execution-only companion to the r8 seal. It does not restate, replace, or re-seal the r8 snapshot: the r8 binding payload keeps its own bytes and its own digest, and this file names that digest rather than carrying its contents. Loading this file authorizes dispatch under the r8 seal and under no other seal.",
+  "remediation_id": "d2-binance-demo-both-remediation-v2.1-20260818",
+  "product_domain": "both",
+  "pre_snapshot_hash": "sha256:4816a1d93da8a6e754d46b98d01e70aab9a82c7720bd86e0d5720583cc66f830",
+  "sealed_snapshot_binding": {
+    "seal": "r8-reseal-20260821/snapshot/attempt-2",
+    "snapshot_payload_rewritten": false,
+    "binding_payload_path": "jobs/d2-r2-snapshot-20260819-1315/events/r8-reseal-20260821/snapshot/attempt-2/binding-payload-proposed.json",
+    "binding_payload_sha256": "00b975ff1a291917699588d91154a790765b0f3e7008b141a8f60f6925fbae61",
+    "artifact_manifest_sha256": "fa7092a32e09689927228c400dbc97312af4eb1cd9f76d34a208d1fe7f1e8431",
+    "snapshot_seal_sha256": "7817e8df2da3f89b03df40caea5e313b3d113fd07328dc4aaad2c4559397d95f",
+    "pre_snapshot_observation_sha256": "4816a1d93da8a6e754d46b98d01e70aab9a82c7720bd86e0d5720583cc66f830",
+    "snapshot_core_sha256": "7c2ae51b0f6d3183022352bed633c797108cd4a6180f777e711d029ac8348374",
+    "seal_timestamp_utc": "2026-08-21T01:53:45.145298Z"
+  },
+  "operator_authorization": {
+    "kind": "OPERATOR_DECISION_LEDGER_REFERENCE",
+    "section": "§134차",
+    "decided_at_kst": "2026-08-21 12:3x",
+    "decision_file_path": "/Users/mgh3326/work/herdr-inbox/operator-decisions-20260805-0830.md",
+    "decision_file_digest_binding": "NOT_BOUND_APPEND_ONLY_LEDGER",
+    "decision_file_sha256_at_authoring": "01f5ee221b6d2ef4f2b196660ad2ce3b5dfea35c1e43d24b381c5eae66d9edb8",
+    "signing_sections": ["§108차", "§132차", "§134차"],
+    "supersedes": ["§125차"],
+    "verbatim_ko": "§132차가 바인딩한 r8 봉인 — pre_snapshot_hash sha256:4816a1d93da8a6e754d46b98d01e70aab9a82c7720bd86e0d5720583cc66f830 · manifest_sha256 fa7092a32e09689927228c400dbc97312af4eb1cd9f76d34a208d1fe7f1e8431 · 수량/가격 3건 §132차 원문 — 한정으로 dispatch를 허용한다. 그 외 봉인은 계속 거부한다.",
+    "scope_note": "The permission is bounded by the r8 pre_snapshot_hash, the r8 artifact manifest digest, and the three §132차 quantity/price pairs. Any other seal, any other digest, any other quantity or price is outside it and stays refused.",
+    "signature_kind_note": "This is a reference to a recorded operator decision, not a cryptographic signature. The cutover it authorizes is the reviewed registration of this file's digest in d2_remediation_single."
+  },
+  "expiry": "2026-08-22T14:59:59Z",
+  "expiry_note": "2026-08-22 23:59:59 KST. Chosen to cover the operator's stated §134차 target (execution on the night of 2026-08-21 KST) with one working margin day and no more. Enforced against the real clock; a backdated now_fn cannot revive it.",
+  "physical_account_identity": {
+    "credential_fingerprint": "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df",
+    "identity_status": "KNOWN_SHARED_SPOT_FUTURES_J2A",
+    "spot_host": "demo-api.binance.com"
+  },
+  "authorized_symbols": {
+    "spot": {
+      "BTCUSDT": {
+        "symbol": "BTCUSDT",
+        "asset": "BTC",
+        "product": "spot",
+        "disposition": "REVIEWED_SCOPE_LIMIT_CANDIDATE",
+        "mutation_authorized": true,
+        "operator_authorization_section": "§134차",
+        "value_source": {
+          "section": "§132차",
+          "r8_field": "authorized_symbols.spot.BTCUSDT.proposed_one_step",
+          "transcribed_not_recomputed": true
+        },
+        "proposed_one_step": {
+          "side": "SELL",
+          "order_type": "LIMIT",
+          "time_in_force": null,
+          "proposed_quantity_floor": "0.00015000",
+          "proposed_limit_price_floor": "75421.27000000",
+          "raw_free_quantity": "0.00015957",
+          "raw_locked_quantity": "0E-8",
+          "rounding_direction": "floor_only_no_uplift"
+        }
+      },
+      "ETHUSDT": {
+        "symbol": "ETHUSDT",
+        "asset": "ETH",
+        "product": "spot",
+        "disposition": "REVIEWED_SCOPE_LIMIT_CANDIDATE",
+        "mutation_authorized": true,
+        "operator_authorization_section": "§134차",
+        "value_source": {
+          "section": "§132차",
+          "r8_field": "authorized_symbols.spot.ETHUSDT.proposed_one_step",
+          "transcribed_not_recomputed": true
+        },
+        "proposed_one_step": {
+          "side": "SELL",
+          "order_type": "LIMIT",
+          "time_in_force": null,
+          "proposed_quantity_floor": "0.00520000",
+          "proposed_limit_price_floor": "2368.46000000",
+          "raw_free_quantity": "0.00529470",
+          "raw_locked_quantity": "0E-8",
+          "rounding_direction": "floor_only_no_uplift"
+        }
+      },
+      "USDCUSDT": {
+        "symbol": "USDCUSDT",
+        "asset": "USDC",
+        "product": "spot",
+        "disposition": "REVIEWED_SCOPE_LIMIT_CANDIDATE",
+        "mutation_authorized": true,
+        "operator_authorization_section": "§134차",
+        "value_source": {
+          "section": "§132차",
+          "r8_field": "authorized_symbols.spot.USDCUSDT.proposed_one_step",
+          "transcribed_not_recomputed": true
+        },
+        "proposed_one_step": {
+          "side": "SELL",
+          "order_type": "LIMIT",
+          "time_in_force": null,
+          "proposed_quantity_floor": "5000.00000000",
+          "proposed_limit_price_floor": "1.00030000",
+          "raw_free_quantity": "5000.00000000",
+          "raw_locked_quantity": "0E-8",
+          "rounding_direction": "floor_only_no_uplift"
+        }
+      },
+      "SOLUSDT": {
+        "symbol": "SOLUSDT",
+        "asset": "SOL",
+        "product": "spot",
+        "disposition": "DUST_ATTESTATION_REVIEW_CANDIDATE",
+        "mutation_authorized": false,
+        "planned_quantity": "0",
+        "exact_free_quantity": "0.00094600",
+        "rule_id": "LOT_SIZE_FLOOR_ZERO_V1_2",
+        "operator_reference": {"section": "§108차 ②", "disposition": "dust proof only; no order"}
+      },
+      "XRPUSDT": {
+        "symbol": "XRPUSDT",
+        "asset": "XRP",
+        "product": "spot",
+        "disposition": "DUST_ATTESTATION_REVIEW_CANDIDATE",
+        "mutation_authorized": false,
+        "planned_quantity": "0",
+        "exact_free_quantity": "0.09660000",
+        "rule_id": "LOT_SIZE_FLOOR_ZERO_V1_2",
+        "operator_reference": {"section": "§108차 ③", "disposition": "dust proof only; no order"}
+      },
+      "DOGEUSDT": {
+        "symbol": "DOGEUSDT",
+        "asset": "DOGE",
+        "product": "spot",
+        "disposition": "DUST_ATTESTATION_REVIEW_CANDIDATE",
+        "mutation_authorized": false,
+        "planned_quantity": "0",
+        "exact_free_quantity": "0.56100000",
+        "rule_id": "LOT_SIZE_FLOOR_ZERO_V1_2",
+        "operator_reference": {"section": "§108차 ③", "disposition": "dust proof only; no order"}
+      },
+      "USDT": {
+        "asset": "USDT",
+        "product": "spot",
+        "disposition": "QUOTE_CASH_ATTESTATION_ONLY",
+        "mutation_authorized": false,
+        "observed_free": "4978.04451557",
+        "observed_locked": "0E-8",
+        "operator_reference": {"section": "§108차", "disposition": "USDT is retained, not converted"}
+      }
+    }
+  },
+  "execution_exclusions": {
+    "BSBUSDT_260611": {
+      "product": "futures",
+      "reason": "EXACT_SYMBOL_REJECTED_BY_BROKER",
+      "operator_reference": {"section": "§121차", "contract_section": "v2.2 §7.5"},
+      "mutation_authorized": false
+    },
+    "futures_domain": {
+      "reason": "This authority covers spot only. The named writer has no futures path.",
+      "mutation_authorized": false
+    }
+  },
+  "contract": {
+    "path": "/Users/mgh3326/work/herdr-inbox/contract-d2-binance-remediation-v2.2-20260820.md",
+    "version": "v2.2",
+    "unchanged_by_this_artifact": true,
+    "dual_attestation_required": true,
+    "writer": "d2_remediation_single"
+  }
+}
