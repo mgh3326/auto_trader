@@ -393,6 +393,7 @@ tests/test_screenshot_holdings.py
 tests/test_screenshot_holdings_service_resolution.py
 tests/test_sell_pipeline_integration.py
 tests/test_sell_signal_service.py
+tests/test_sentry_pii_docs_default_off.py
 tests/test_services_forexfactory_calendar.py
 tests/test_services_krx.py
 tests/test_services_upbit.py
