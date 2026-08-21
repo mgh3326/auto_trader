@@ -20,6 +20,7 @@ import logging
 import math
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, cast
 
 import pytest
@@ -201,23 +202,81 @@ class _HostileStorageUUID(uuid.UUID):
 
     __slots__ = ("calls",)
 
-    def __init__(self, value: str) -> None:
-        object.__setattr__(self, "calls", [])
-        super().__init__(value)
-
-    def __getattribute__(self, name: str) -> object:
-        if name == "int":
-            object.__getattribute__(self, "calls").append("int")
-            return uuid.UUID.int.__get__(self, uuid.UUID)
-        return super().__getattribute__(name)
+    @property
+    def int(self) -> builtins.int:  # ty: ignore[override-of-final-variable]
+        object.__getattribute__(self, "calls").append("int")
+        return uuid.UUID.int.__get__(self, uuid.UUID)
 
     def __str__(self) -> str:
-        self.calls.append("str")
+        object.__getattribute__(self, "calls").append("str")
         return _FAKE_SECRET
 
     def __repr__(self) -> str:
-        self.calls.append("repr")
+        object.__getattribute__(self, "calls").append("repr")
         return _FAKE_SECRET
+
+
+def _hostile_storage_uuid(raw_int: builtins.int) -> _HostileStorageUUID:
+    """Build a UUID subtype whose base slot bypasses its hostile property."""
+    value = uuid.UUID.__new__(_HostileStorageUUID)
+    uuid.UUID.int.__set__(value, raw_int)
+    object.__setattr__(value, "calls", [])
+    return value
+
+
+class _HostileRawInt(builtins.int):
+    """Tracks numeric protocol use without carrying protected text."""
+
+    calls: list[str]
+
+    def __new__(cls, value: builtins.int) -> _HostileRawInt:
+        item = super().__new__(cls, value)
+        object.__setattr__(item, "calls", [])
+        return item
+
+    def __lt__(self, other: object) -> bool:
+        self.calls.append("lt")
+        return bool(builtins.int.__lt__(self, other))
+
+    def __le__(self, other: object) -> bool:
+        self.calls.append("le")
+        return bool(builtins.int.__le__(self, other))
+
+    def __gt__(self, other: object) -> bool:
+        self.calls.append("gt")
+        return bool(builtins.int.__gt__(self, other))
+
+    def __ge__(self, other: object) -> bool:
+        self.calls.append("ge")
+        return bool(builtins.int.__ge__(self, other))
+
+    def __int__(self) -> builtins.int:
+        self.calls.append("int")
+        return builtins.int.__int__(self)
+
+    def __index__(self) -> builtins.int:
+        self.calls.append("index")
+        return builtins.int.__index__(self)
+
+    def __and__(self, other: object) -> object:
+        self.calls.append("and")
+        return builtins.int.__and__(self, other)
+
+    def __or__(self, other: object) -> object:
+        self.calls.append("or")
+        return builtins.int.__or__(self, other)
+
+    def __xor__(self, other: object) -> object:
+        self.calls.append("xor")
+        return builtins.int.__xor__(self, other)
+
+    def __lshift__(self, other: object) -> object:
+        self.calls.append("lshift")
+        return builtins.int.__lshift__(self, other)
+
+    def __rshift__(self, other: object) -> object:
+        self.calls.append("rshift")
+        return builtins.int.__rshift__(self, other)
 
 
 class _CanonicalUUIDImpersonator:
@@ -481,6 +540,29 @@ def _assert_test_sentry_breadcrumbs_unchanged(
             _raise_generic("invalid recovery id changed Sentry breadcrumb count")
         if tuple(copy.deepcopy(breadcrumbs)) != expected_contents:
             _raise_generic("invalid recovery id changed Sentry breadcrumb contents")
+
+
+def _test_sentry_breadcrumb_deltas(
+    snapshot: tuple[tuple[int, tuple[int, ...], tuple[object, ...]], ...],
+) -> tuple[tuple[object, ...], ...]:
+    """Return exact append-only deltas while protecting both active scopes."""
+    scopes = _test_sentry_scopes()
+    if len(scopes) != len(snapshot):
+        _raise_generic("recovery summary changed the active Sentry scope count")
+    deltas: list[tuple[object, ...]] = []
+    for scope, (scope_id, expected_ids, expected_contents) in zip(
+        scopes, snapshot, strict=True
+    ):
+        if id(scope) != scope_id:
+            _raise_generic("recovery summary replaced an active Sentry scope")
+        breadcrumbs = list(getattr(scope, "_breadcrumbs", ()))
+        prefix_length = len(expected_ids)
+        if tuple(id(item) for item in breadcrumbs[:prefix_length]) != expected_ids:
+            _raise_generic("recovery summary changed existing Sentry breadcrumbs")
+        if tuple(copy.deepcopy(breadcrumbs[:prefix_length])) != expected_contents:
+            _raise_generic("recovery summary changed existing breadcrumb contents")
+        deltas.append(tuple(copy.deepcopy(breadcrumbs[prefix_length:])))
+    return tuple(deltas)
 
 
 def _assert_test_sentry_breadcrumbs_clean() -> None:
@@ -2995,6 +3077,19 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         _raise_generic("test UUID class spoof unexpectedly has UUID in its MRO")
     spoof.calls.clear()
 
+    poisoned_bool = uuid.UUID.__new__(uuid.UUID)
+    uuid.UUID.int.__set__(poisoned_bool, True)
+    if uuid.UUID.int.__get__(poisoned_bool, uuid.UUID) is not True:
+        _raise_generic("test UUID bool poison did not reach the base storage slot")
+
+    hostile_raw_int = _HostileRawInt(raw_int)
+    poisoned_subclass = uuid.UUID.__new__(uuid.UUID)
+    uuid.UUID.int.__set__(poisoned_subclass, hostile_raw_int)
+    stored_subclass = uuid.UUID.int.__get__(poisoned_subclass, uuid.UUID)
+    if type(stored_subclass) is not _HostileRawInt:
+        _raise_generic("test UUID int-subclass poison did not reach base storage")
+    hostile_raw_int.calls.clear()
+
     # ``uuid.UUID.__new__`` without initialization is an ordinary malformed
     # storage object: the base ``int`` descriptor raises AttributeError.
     malformed_values: tuple[object, ...] = (
@@ -3002,6 +3097,8 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         None,
         object(),
         uuid.UUID.__new__(uuid.UUID),
+        poisoned_bool,
+        poisoned_subclass,
     )
     failures = 0
     for value in malformed_values:
@@ -3016,6 +3113,8 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
             failures += 1
     if spoof.calls:
         failures += 1
+    if hostile_raw_int.calls:
+        failures += 1
     if failures:
         _raise_generic(
             "recovery UUID materializer accepted, rendered, or raised on malformed storage"
@@ -3029,7 +3128,7 @@ def test_recovery_uuid_materializer_reads_uuid_subtype_storage_via_base_descript
     __tracebackhide__ = True
     from app.services.order_proposals.callback_inbox import recovery as recovery_module
 
-    source = _HostileStorageUUID("01234567-89ab-4def-8abc-def012345678")
+    source = _hostile_storage_uuid(uuid.uuid4().int)
     source_int = uuid.UUID.int.__get__(source, uuid.UUID)
     if type(source_int) is not int:
         _raise_generic("base UUID descriptor did not expose an exact built-in integer")
@@ -3061,21 +3160,190 @@ async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_s
 
     log_sink, events, envelope_item_types = production_sentry_sinks
     malformed = _UUIDClassSpoof(uuid.uuid4().int)
-    valid = _HostileStorageUUID("01234567-89ab-4def-8abc-def012345678")
+    valid = _hostile_storage_uuid(uuid.uuid4().int)
     valid_int = uuid.UUID.int.__get__(valid, uuid.UUID)
     if type(valid_int) is not int:
         _raise_generic("test UUID subtype did not retain an exact integer payload")
     malformed.calls.clear()
     valid.calls.clear()
 
+    summary_message = "order_proposals.telegram.callback_recovery_swept"
+    summary_extras: dict[str, int] = {
+        "callback_recovery.scanned": 2,
+        "callback_recovery.claimed": 2,
+        "callback_recovery.pending": 0,
+        "callback_recovery.processing": 0,
+        "callback_recovery.retry_wait": 0,
+        "callback_recovery.dead_letter": 0,
+    }
+
+    def _normalize_summary_record(record: logging.LogRecord) -> tuple[object, ...]:
+        if (
+            record.name != recovery_module.__name__
+            or record.levelno != logging.INFO
+            or record.msg != summary_message
+            or record.args != ()
+            or record.getMessage() != summary_message
+            or _record_extras(record) != summary_extras
+            or record.exc_info is not None
+            or record.exc_text is not None
+            or record.stack_info is not None
+        ):
+            _raise_generic("recovery summary log shape was not the fixed aggregate")
+        return (
+            record.name,
+            record.levelno,
+            record.msg,
+            record.args,
+            record.getMessage(),
+            tuple(sorted(_record_extras(record).items())),
+        )
+
+    def _normalize_summary_breadcrumbs(
+        snapshot: tuple[tuple[int, tuple[int, ...], tuple[object, ...]], ...],
+    ) -> tuple[tuple[tuple[object, ...], ...], ...]:
+        normalized_scopes: list[tuple[tuple[object, ...], ...]] = []
+        for scope_delta in _test_sentry_breadcrumb_deltas(snapshot):
+            normalized_delta: list[tuple[object, ...]] = []
+            for breadcrumb in scope_delta:
+                if type(breadcrumb) is not dict:
+                    _raise_generic("recovery summary breadcrumb was not an exact map")
+                if set(breadcrumb) != {
+                    "type",
+                    "level",
+                    "category",
+                    "message",
+                    "timestamp",
+                    "data",
+                }:
+                    _raise_generic("recovery summary breadcrumb keys were not exact")
+                if (
+                    breadcrumb["type"] != "log"
+                    or breadcrumb["level"] != "info"
+                    or breadcrumb["category"] != recovery_module.__name__
+                    or breadcrumb["message"] != summary_message
+                    or type(breadcrumb["timestamp"]) is not datetime
+                    or type(breadcrumb["data"]) is not dict
+                    or breadcrumb["data"] != summary_extras
+                ):
+                    _raise_generic(
+                        "recovery summary breadcrumb was not the fixed aggregate"
+                    )
+                normalized_delta.append(
+                    (
+                        breadcrumb["type"],
+                        breadcrumb["level"],
+                        breadcrumb["category"],
+                        breadcrumb["message"],
+                        tuple(sorted(breadcrumb["data"].items())),
+                    )
+                )
+            normalized_scopes.append(tuple(normalized_delta))
+        return tuple(normalized_scopes)
+
+    def _normalize_summary_events(
+        values: list[dict[str, Any]],
+    ) -> tuple[tuple[object, ...], ...]:
+        normalized: list[tuple[object, ...]] = []
+        for event in values:
+            if type(event) is not dict or set(event) != {"items"}:
+                _raise_generic("recovery summary Sentry log envelope was not exact")
+            _assert_no_protected_text(event, where="recovery summary Sentry event")
+            items = event["items"]
+            if type(items) is not list or len(items) != 1:
+                _raise_generic("recovery summary Sentry log payload count was not one")
+            item = items[0]
+            if type(item) is not dict:
+                _raise_generic(
+                    "recovery summary Sentry log payload was not an exact map"
+                )
+            expected_item_keys = {
+                "timestamp",
+                "trace_id",
+                "span_id",
+                "level",
+                "body",
+                "attributes",
+            }
+            if set(item) != expected_item_keys:
+                _raise_generic(
+                    "recovery summary Sentry log payload keys were not exact"
+                )
+            attributes = item["attributes"]
+            if type(attributes) is not dict:
+                _raise_generic("recovery summary Sentry log attributes were not exact")
+            expected_summary_attributes = {
+                key: {"value": value, "type": "integer"}
+                for key, value in summary_extras.items()
+            }
+            if any(
+                attributes.get(key) != expected
+                for key, expected in expected_summary_attributes.items()
+            ):
+                _raise_generic("recovery summary Sentry log values were not exact")
+            if attributes.get("logger.name") != {
+                "value": recovery_module.__name__,
+                "type": "string",
+            }:
+                _raise_generic("recovery summary Sentry logger identity was not exact")
+            if item["level"] != "info" or item["body"] != summary_message:
+                _raise_generic("recovery summary Sentry log identity was not exact")
+            normalized.append(
+                (
+                    item["level"],
+                    item["body"],
+                    tuple(sorted(attributes)),
+                    tuple(
+                        sorted(
+                            (key, attribute.get("type"))
+                            for key, attribute in attributes.items()
+                            if type(attribute) is dict
+                        )
+                    ),
+                    tuple(sorted(expected_summary_attributes.items())),
+                    attributes["logger.name"]["type"],
+                    attributes["logger.name"]["value"],
+                )
+            )
+        return tuple(normalized)
+
     rollbacks: list[int] = []
     reservations: list[int] = []
     scans: list[int] = []
     item_calls: list[uuid.UUID] = []
     process_calls: list[uuid.UUID] = []
+
+    # Establish the exact production logging/Sentry shape independently of
+    # recovery's item path.  Keeping this safe control in the fixture makes
+    # the actual sweep's appended delta directly comparable without relying
+    # on object identity or the generated timestamp.
+    control_records_before = len(log_sink.records)
+    control_events_before = len(events)
+    control_envelopes_before = len(envelope_item_types)
+    control_breadcrumbs_before = _snapshot_test_sentry_breadcrumbs()
+    recovery_module.logger.info(summary_message, extra=dict(summary_extras))
+    sentry_sdk.flush(timeout=1.0)
+    control_record_shape = tuple(
+        _normalize_summary_record(record)
+        for record in log_sink.records[control_records_before:]
+    )
+    control_event_shape = _normalize_summary_events(events[control_events_before:])
+    control_envelope_shape = tuple(envelope_item_types[control_envelopes_before:])
+    control_breadcrumb_shape = _normalize_summary_breadcrumbs(
+        control_breadcrumbs_before
+    )
+    if (
+        len(control_record_shape) != 1
+        or len(control_event_shape) != 1
+        or control_envelope_shape != ("log",)
+        or sum(len(delta) for delta in control_breadcrumb_shape) != 1
+    ):
+        _raise_generic("safe recovery summary control was inert or widened")
+
     records_before = len(log_sink.records)
-    events_before = copy.deepcopy(events)
-    item_types_before = tuple(envelope_item_types)
+    events_before = len(events)
+    item_types_before = len(envelope_item_types)
+    breadcrumbs_before = _snapshot_test_sentry_breadcrumbs()
 
     class _Session:
         async def __aenter__(self) -> _Session:
@@ -3181,17 +3449,26 @@ async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_s
         if malformed.calls or valid.calls:
             _raise_generic("recovery rendered or dynamically read a candidate UUID")
 
-    def _assert_no_malformed_observability() -> None:
+    def _assert_exact_summary_observability() -> None:
         new_records = log_sink.records[records_before:]
-        recovery_records = [
-            record for record in new_records if record.name == recovery_module.__name__
-        ]
-        if any(record.levelno >= logging.ERROR for record in recovery_records):
-            _raise_generic("malformed recovery candidate emitted an error log")
-        if events != events_before or tuple(envelope_item_types) != item_types_before:
-            _raise_generic(
-                "malformed recovery candidate changed the Sentry event surface"
-            )
+        actual_record_shape = tuple(
+            _normalize_summary_record(record) for record in new_records
+        )
+        actual_event_shape = _normalize_summary_events(events[events_before:])
+        actual_envelope_shape = tuple(envelope_item_types[item_types_before:])
+        actual_breadcrumb_shape = _normalize_summary_breadcrumbs(breadcrumbs_before)
+        if actual_record_shape != control_record_shape:
+            _raise_generic("recovery emitted a log other than the final aggregate")
+        if actual_event_shape != control_event_shape:
+            _raise_generic("recovery changed the normalized Sentry event delta")
+        if actual_envelope_shape != control_envelope_shape:
+            _raise_generic("recovery changed the normalized Sentry log-envelope delta")
+        if actual_breadcrumb_shape != control_breadcrumb_shape:
+            _raise_generic("recovery changed the exact summary breadcrumb delta")
+        if any(record.name != recovery_module.__name__ for record in new_records):
+            _raise_generic("recovery emitted a non-recovery record after the snapshot")
+        if len(new_records) != 1:
+            _raise_generic("recovery emitted more than one final aggregate record")
         _assert_log_records_clean(log_sink.records)
         _assert_events_clean(events)
         _assert_test_sentry_breadcrumbs_clean()
@@ -3200,7 +3477,7 @@ async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_s
         (
             _assert_closed_report,
             _assert_only_valid_candidate_reached_execution,
-            _assert_no_malformed_observability,
+            _assert_exact_summary_observability,
             lambda: _assert_production_sentry_controls(events, envelope_item_types),
             lambda: _assert_exact_string(
                 "ok"
