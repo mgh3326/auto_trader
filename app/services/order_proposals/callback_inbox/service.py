@@ -147,11 +147,14 @@ class CallbackInboxService:
                 seconds=PROCESSING_STALE_AFTER_SECONDS
             ):
                 return ClaimDecision("skip", "not_stale")
-        elif row.state == InboxState.RETRY_WAIT.value and row.available_at > now:
-            return ClaimDecision("skip", "not_due")
-
+        # Exhaustion outranks the backoff window. A row whose budget is spent
+        # is finished, and hiding it behind "not yet due" would leave a
+        # terminal job carrying live authority until the backoff elapsed.
         if row.attempt_count >= row.max_attempts:
             return ClaimDecision("exhausted")
+
+        if row.state == InboxState.RETRY_WAIT.value and row.available_at > now:
+            return ClaimDecision("skip", "not_due")
         return ClaimDecision("run")
 
     async def begin_attempt(

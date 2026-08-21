@@ -365,9 +365,28 @@ async def _run_locked(
             except Exception as exc:  # noqa: BLE001 - provably before the core
                 raise PreCoreFailure("notifier unavailable") from exc
         except PreCoreFailure:
-            # The only path to a retry. The database is still asked to confirm
-            # independently that the core was never entered before one is
-            # written; if it disagrees, this becomes ambiguous, not a replay.
+            # The only path to a retry -- but only while attempts remain. On
+            # the last allowed one there is nothing left to retry into, and
+            # parking the job would leave it carrying a live nonce, a chat id
+            # and a user id for the whole backoff before anything scrubbed
+            # them. Terminate here instead.
+            if attempt_count >= row.max_attempts:
+                return await _terminate(
+                    session,
+                    service,
+                    row,
+                    job_id=job_id,
+                    now=now,
+                    queue_delay=queue_delay,
+                    terminal_state=InboxState.DEAD_LETTER.value,
+                    error_class=ErrorClass.ATTEMPTS_EXHAUSTED.value,
+                    outcome=None,
+                    attempt_count=attempt_count,
+                    event="callback_job_attempts_exhausted",
+                )
+            # The database is still asked to confirm independently that the
+            # core was never entered before a retry is written; if it
+            # disagrees, this becomes ambiguous, not a replay.
             try:
                 await service.schedule_retry(row, now=now)
             except RetryAuthorityRefused:
