@@ -107,13 +107,24 @@ class CallbackInboxRepository:
                 [InboxState.PENDING.value, InboxState.RETRY_WAIT.value]
             )
         ) & (TelegramCallbackInboxJob.available_at <= now)
+        # R25: a parked row whose attempt budget is spent is finished, and the
+        # backoff must not hide it. ``ck_..._retry_budget`` makes this shape
+        # unwritable going forward, but a database written by an older binary
+        # can still hold one, and leaving it parked would keep a live nonce
+        # and a chat id for the length of the backoff. The classifier already
+        # ranks exhaustion above "not yet due"; this is the scan agreeing, so
+        # the row actually reaches it. Healthy backoffs are unaffected.
+        exhausted = (TelegramCallbackInboxJob.state == InboxState.RETRY_WAIT.value) & (
+            TelegramCallbackInboxJob.attempt_count
+            >= TelegramCallbackInboxJob.max_attempts
+        )
         stale = (TelegramCallbackInboxJob.state == InboxState.PROCESSING.value) & (
             TelegramCallbackInboxJob.started_at <= stale_before
         )
         rows = (
             await self._session.execute(
                 select(TelegramCallbackInboxJob.job_id)
-                .where(due | stale)
+                .where(due | stale | exhausted)
                 .order_by(TelegramCallbackInboxJob.received_at.asc())
                 .limit(limit)
             )

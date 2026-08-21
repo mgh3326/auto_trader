@@ -277,8 +277,8 @@ class CallbackInboxService:
 
         The precondition is the whole point, and it is checked **in the
         database**: the row must still be a ``processing`` row that has not
-        entered the core, has not produced a verdict, and has no terminal
-        state waiting to be applied. Anything else raises
+        entered the core, has not produced a verdict, has no terminal state
+        waiting to be applied, and still has an attempt left to spend. Anything else raises
         :class:`RetryAuthorityRefused` and writes nothing at all -- in
         particular it does not clear ``handler_entered_at``, which would
         destroy the only evidence that a replay is unsafe.
@@ -294,6 +294,12 @@ class CallbackInboxService:
                 TelegramCallbackInboxJob.handler_entered_at.is_(None),
                 TelegramCallbackInboxJob.handler_completed_at.is_(None),
                 TelegramCallbackInboxJob.terminal_state_pending.is_(None),
+                # R25: and there has to be an attempt left to spend. The
+                # worker checks this before it calls, but the check has to
+                # live here too -- this is the retry authority, and an
+                # authority that trusts its caller is not one.
+                TelegramCallbackInboxJob.attempt_count
+                < TelegramCallbackInboxJob.max_attempts,
             ),
             values={
                 "state": InboxState.RETRY_WAIT.value,

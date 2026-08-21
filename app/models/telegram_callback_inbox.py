@@ -88,6 +88,20 @@ _HANDLER_MARKER_ORDER_SQL = (
     "AND terminal_state_pending IS NULL ELSE true END"
 )
 
+_RETRY_BUDGET_SQL = (
+    # R25. ``retry_wait`` means "will be tried again", so a row parked there
+    # with no attempts left is a contradiction: the sweep would either
+    # dead-letter it on sight or -- worse -- not see it at all until the
+    # backoff elapsed, all the while holding a live nonce and a chat id.
+    #
+    # No UNKNOWN loophole: ``attempt_count`` and ``max_attempts`` are both
+    # NOT NULL, so the comparison is never SQL UNKNOWN and the CHECK cannot
+    # be satisfied by absence. Other states are untouched -- a spent budget
+    # is the normal shape of a terminal row.
+    "CASE WHEN state = 'retry_wait' THEN attempt_count < max_attempts ELSE true END"
+)
+
+
 _RETRY_VOCABULARY_SQL = (
     # `retry_wait` has exactly one meaning, and it is not negotiable by a
     # caller: a failure that provably never reached the mutating region.
@@ -152,6 +166,7 @@ class TelegramCallbackInboxJob(Base):
         # an impossible row, and a queued row must not remember a handler.
         CheckConstraint(_HANDLER_MARKER_ORDER_SQL, name="handler_marker_order"),
         CheckConstraint(_RETRY_VOCABULARY_SQL, name="retry_vocabulary"),
+        CheckConstraint(_RETRY_BUDGET_SQL, name="retry_budget"),
         CheckConstraint(_TERMINAL_SCRUB_SQL, name="terminal_scrubbed"),
         CheckConstraint(_ACTIVE_RECONSTRUCTABLE_SQL, name="active_reconstructable"),
         Index("ix_telegram_callback_inbox_state_available", "state", "available_at"),

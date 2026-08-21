@@ -42,6 +42,13 @@ The two constraints that carry the safety
     vocabulary itself rather than accepting it from a caller; this is the
     database saying the same thing, so the next writer cannot talk around it.
 
+``ck_telegram_callback_inbox_retry_budget``
+    ``retry_wait`` implies ``attempt_count < max_attempts``. A parked row
+    with a spent budget is a contradiction, and the recovery scan gates
+    ``retry_wait`` on its backoff, so such a row would keep live authority
+    for the length of the backoff before anything looked at it. Both columns
+    are NOT NULL, so the comparison is never SQL UNKNOWN.
+
 ``ck_telegram_callback_inbox_processing_started_at``
     A ``processing`` row must say when it started. The recovery sweep decides
     whether to look at a claimed row by comparing that timestamp against a
@@ -105,6 +112,14 @@ _HANDLER_MARKER_ORDER = (
     "CASE WHEN state IN ('pending','retry_wait') THEN "
     "handler_entered_at IS NULL AND handler_completed_at IS NULL "
     "AND terminal_state_pending IS NULL ELSE true END"
+)
+
+_RETRY_BUDGET = (
+    # Both operands are NOT NULL columns, so there is no UNKNOWN loophole
+    # here -- unlike the vocabulary check above, which needed
+    # ``IS NOT DISTINCT FROM`` for exactly that reason.
+    "CASE WHEN state = 'retry_wait' "
+    "THEN attempt_count < max_attempts ELSE true END"
 )
 
 _RETRY_VOCABULARY = (
@@ -223,6 +238,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             _RETRY_VOCABULARY,
             name=op.f("ck_telegram_callback_inbox_retry_vocabulary"),
+        ),
+        sa.CheckConstraint(
+            _RETRY_BUDGET,
+            name=op.f("ck_telegram_callback_inbox_retry_budget"),
         ),
         sa.CheckConstraint(
             _TERMINAL_SCRUBBED,
