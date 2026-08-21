@@ -416,6 +416,19 @@ class _SourceFetchResult:
     hidden_counts: InvestHomeHiddenCounts = field(
         default_factory=InvestHomeHiddenCounts
     )
+    # ROB-1310 R8: a reader that aggregates several account sources (the
+    # manual reader, post-W2) may need to attribute one failure per source
+    # instead of collapsing them onto whichever source happens to be first.
+    # ``warning`` stays the primary/compat slot; the rest live here.
+    extra_warnings: list[InvestHomeWarning] = field(default_factory=list)
+
+    @property
+    def all_warnings(self) -> list[InvestHomeWarning]:
+        """Every warning this source emits, primary first."""
+
+        emitted = [self.warning] if self.warning is not None else []
+        emitted.extend(self.extra_warnings)
+        return emitted
 
 
 @dataclass(frozen=True)
@@ -682,8 +695,7 @@ class InvestHomeService:
         toss_api_holdings: list[Holding] = []
 
         for source, result in zip(live_sources, live_results, strict=True):
-            if result.warning is not None:
-                warnings.append(result.warning)
+            warnings.extend(result.all_warnings)
 
             if source == "toss_api":
                 if result.holdings or result.accounts:
@@ -714,8 +726,7 @@ class InvestHomeService:
         )
         accounts.extend(manual_accounts)
         holdings.extend(manual_holdings)
-        if manual_result.warning is not None:
-            warnings.append(manual_result.warning)
+        warnings.extend(manual_result.all_warnings)
         if not manual_result.accounts:
             toss_account = build_manual_account_from_holdings(manual_holdings)
             if toss_account is not None:
@@ -738,8 +749,7 @@ class InvestHomeService:
                         result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
                         accounts.extend(result.accounts)
                         holdings.extend(result.holdings)
-                        if result.warning is not None:
-                            warnings.append(result.warning)
+                        warnings.extend(result.all_warnings)
                     except Exception as exc:
                         src_name = type(reader).__name__
                         logger.warning(
@@ -842,8 +852,7 @@ class InvestHomeService:
             toss_api_holdings: list[Holding] = []
 
             for source, result in zip(live_sources, live_results, strict=True):
-                if result.warning is not None:
-                    warnings.append(result.warning)
+                warnings.extend(result.all_warnings)
 
                 if source == "toss_api":
                     if result.holdings or result.accounts:
@@ -871,8 +880,7 @@ class InvestHomeService:
             )
             accounts.extend(manual_accounts)
             holdings.extend(manual_holdings)
-            if manual_result.warning is not None:
-                warnings.append(manual_result.warning)
+            warnings.extend(manual_result.all_warnings)
             if not manual_result.accounts:
                 toss_account = build_manual_account_from_holdings(manual_holdings)
                 if toss_account is not None:
@@ -897,8 +905,7 @@ class InvestHomeService:
                             result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
                             accounts.extend(result.accounts)
                             holdings.extend(result.holdings)
-                            if result.warning is not None:
-                                warnings.append(result.warning)
+                            warnings.extend(result.all_warnings)
                         except Exception as exc:
                             src_name = type(reader).__name__
                             logger.warning(

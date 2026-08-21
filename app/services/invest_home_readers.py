@@ -731,6 +731,22 @@ class TossApiHomeReader:
             )
 
 
+def _manual_quote_symbol(market_type: MarketType, ticker: str | None) -> str:
+    """Quote-layer key for one manual holding.
+
+    Crypto goes through the shared ``to_upbit_symbol`` helper (``BTC`` ->
+    ``KRW-BTC``) because that is how the legacy quote contract keys crypto.
+    KR/US keep the stored ticker; their DB spelling is already the repository
+    convention and is normalized by ``app.core.symbol`` helpers at the broker
+    seams, never by string surgery here.
+    """
+
+    raw = ticker or ""
+    if market_type == MarketType.CRYPTO:
+        return to_upbit_symbol(raw)
+    return raw
+
+
 class ManualHomeReader:
     """manual_holdings (Toss 등) read-only reader."""
 
@@ -783,8 +799,16 @@ class ManualHomeReader:
 
             manual_holdings = list(raw_holdings)
 
+            # ROB-1310 R8: a manual CRYPTO holding may be stored as the bare
+            # base coin (``BTC``), but the legacy quote contract keys crypto as
+            # ``KRW-BTC`` and ``PriceFallbackResolver.resolve`` seeds
+            # ``dict.fromkeys(symbols, None)`` -- it only ever returns keys the
+            # caller requested. Requesting the raw coin therefore makes the
+            # ``KRW-BTC`` read below structurally unable to hit. Normalize
+            # through the shared ``to_upbit_symbol`` helper *before* the
+            # request (never by string surgery); KR/US keys are unchanged.
             kr_tickers = [
-                h.ticker
+                _manual_quote_symbol(h.market_type, h.ticker)
                 for h in manual_holdings
                 if h.market_type in {MarketType.KR, MarketType.CRYPTO}
             ]
@@ -840,7 +864,10 @@ class ManualHomeReader:
                         logger.warning("FX fetch failed for ManualHomeReader")
 
             holdings = []
-            partial_valuation_failure = False
+            # ROB-1310 R8: W2 widened manual holdings past Toss, so a failed
+            # valuation must name the manual source it actually happened to.
+            unpriced_sources: set[str] = set()
+            holding_sources: set[str] = set()
 
             for h in manual_holdings:
                 qty = float(h.quantity)
@@ -854,17 +881,17 @@ class ManualHomeReader:
                 if market is None:
                     continue
                 currency = "USD" if market == "US" else "KRW"
-                quote_symbol = (
-                    to_upbit_symbol(h.ticker) if market == "CRYPTO" else h.ticker
-                )
+                quote_symbol = _manual_quote_symbol(h.market_type, h.ticker)
 
                 price = (
-                    kr_prices.get(h.ticker)
+                    kr_prices.get(quote_symbol)
                     if market in {"KR", "CRYPTO"}
                     else us_prices.get(h.ticker)
                 )
                 if price is None and market == "CRYPTO":
-                    price = kr_prices.get(quote_symbol)
+                    # Compatibility only: read a raw-coin key back if some
+                    # other producer still returns one. Never the request key.
+                    price = kr_prices.get(h.ticker)
                 price_state: PriceStateLiteral = (
                     "live" if price is not None else "missing"
                 )
@@ -877,8 +904,12 @@ class ManualHomeReader:
                     elif usd_krw_rate:
                         value_krw = value_native * usd_krw_rate
 
+                holding_source = self._source_for_broker(
+                    str(getattr(h.broker_account, "broker_type", "toss")).lower()
+                )
+                holding_sources.add(holding_source)
                 if price is None and (kr_tickers or us_tickers):
-                    partial_valuation_failure = True
+                    unpriced_sources.add(holding_source)
 
                 pnl_krw: float | None = None
                 pnl_rate: float | None = None
@@ -898,11 +929,7 @@ class ManualHomeReader:
                     Holding(
                         holdingId=f"manual:{h.id}",
                         accountId=str(h.broker_account_id),
-                        source=self._source_for_broker(
-                            str(
-                                getattr(h.broker_account, "broker_type", "toss")
-                            ).lower()
-                        ),
+                        source=holding_source,
                         accountKind="manual",
                         symbol=h.ticker,
                         market=market,
@@ -968,23 +995,36 @@ class ManualHomeReader:
                     )
                 )
 
-            manual_warning: InvestHomeWarning | None = None
-            if partial_valuation_failure:
-                manual_warning = InvestHomeWarning(
-                    source="toss_manual",
-                    message="일부 수동 보유는 현재가 조회에 실패해 평가에서 제외했습니다.",
-                )
+            # One warning per affected manual source, sorted so a batch always
+            # reports the same way. The message stays fixed sanitized text --
+            # it never carries an exception, a payload or a credential.
+            manual_warnings: list[InvestHomeWarning] = []
+            if unpriced_sources:
+                manual_warnings = [
+                    InvestHomeWarning(
+                        source=source,
+                        message=(
+                            "일부 수동 보유는 현재가 조회에 실패해 평가에서 "
+                            "제외했습니다."
+                        ),
+                    )
+                    for source in sorted(unpriced_sources)
+                ]
             elif not (kr_tickers or us_tickers) and holdings:
                 # This case shouldn't happen with the logic above, but for safety
-                manual_warning = InvestHomeWarning(
-                    source="toss_manual",
-                    message="수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
-                )
+                manual_warnings = [
+                    InvestHomeWarning(
+                        source=source,
+                        message="수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
+                    )
+                    for source in sorted(holding_sources)
+                ]
 
             return _SourceFetchResult(
                 accounts=manual_accounts,
                 holdings=holdings,
-                warning=manual_warning,
+                warning=manual_warnings[0] if manual_warnings else None,
+                extra_warnings=manual_warnings[1:],
             )
         except Exception as exc:
             logger.warning("Manual fetch failed: %s", exc, exc_info=True)

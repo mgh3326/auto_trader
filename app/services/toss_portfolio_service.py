@@ -540,6 +540,7 @@ async def fetch_toss_portfolio_snapshot(
                     )
 
                 cash_snapshot = TossCashSnapshot()
+                cash_errors: list[dict[str, Any]] = []
                 if cash_task is not None:
                     parsed_cash: TossCashSnapshot | None = None
                     for attempt in range(2):
@@ -564,16 +565,32 @@ async def fetch_toss_portfolio_snapshot(
                                     expected_payload=cash_payload,
                                 )
                     if parsed_cash is None:
-                        raise ValueError(
-                            "Toss cash snapshot recovery payload is invalid"
+                        # ROB-1310 R8: the positions above are already valid.
+                        # Raising here made TossApiHomeReader degrade the whole
+                        # Toss source to empty accounts/holdings over a
+                        # cash-only corruption. Report cash as unknown -- None,
+                        # never a fabricated 0 -- plus a sanitized error, and
+                        # keep the reconstructed positions. Recovery stayed
+                        # bounded at the single re-entry above.
+                        logger.warning(
+                            "Toss cash snapshot recovery payload is invalid; "
+                            "keeping positions and reporting cash as unknown"
                         )
-                    cash_snapshot = parsed_cash
+                        cash_errors.append(
+                            {
+                                "source": "toss_api",
+                                "stage": "cash_snapshot",
+                                "error": "invalid_cash_snapshot_payload",
+                            }
+                        )
+                    else:
+                        cash_snapshot = parsed_cash
 
                 return TossPortfolioSnapshot(
                     positions=positions,
                     cash_krw=cash_snapshot.cash_krw,
                     cash_usd=cash_snapshot.cash_usd,
-                    errors=list(cash_snapshot.errors),
+                    errors=[*cash_snapshot.errors, *cash_errors],
                 )
             finally:
                 # ROB-707 parity for the shared path: if the positions chain
