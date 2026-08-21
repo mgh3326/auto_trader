@@ -153,6 +153,7 @@ tests/services/mock_integration/test_coordination.py
 tests/services/naver_finance/test_detail_cache_repository.py
 tests/services/naver_finance/test_investor_detail_cache_wiring.py
 tests/services/order_proposals/callback_inbox/test_action_round_trip.py
+tests/services/order_proposals/callback_inbox/test_attempt_exhaustion.py
 tests/services/order_proposals/callback_inbox/test_crash_points.py
 tests/services/order_proposals/callback_inbox/test_job_advisory_lock.py
 tests/services/order_proposals/callback_inbox/test_lock_authority.py
