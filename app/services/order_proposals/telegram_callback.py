@@ -1681,6 +1681,10 @@ class NormalizedCallback:
     message_id: Any
     telegram_user_id: Any
     callback: CallbackEnvelope
+    #: Carried for the durable ingress only, which digests it for tamper
+    #: detection (R28). The inline path has never read it, and nothing here
+    #: retains the raw value past that digest.
+    update_id: Any = None
 
     @property
     def telegram_user_id_str(self) -> str:
@@ -1736,6 +1740,7 @@ def normalize_callback_update(update: dict[str, Any]) -> NormalizedCallback:
         message_id=message.get("message_id"),
         telegram_user_id=from_user.get("id"),
         callback=callback,
+        update_id=update.get("update_id"),
     )
 
 

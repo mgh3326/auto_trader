@@ -210,6 +210,10 @@ class TelegramCallbackInboxJob(Base):
 
     # --- authority / PII: present only while the job is still runnable ---
     callback_query_id: Mapped[str | None] = mapped_column(Text)
+    #: R28. sha256 of the Telegram ``update_id``, not the value: the row
+    #: only needs to answer "same update as before?", and a digest answers
+    #: it without retaining a Telegram sequence number.
+    update_identity_digest: Mapped[str | None] = mapped_column(Text)
     chat_id: Mapped[str | None] = mapped_column(Text)
     message_id: Mapped[int | None] = mapped_column(BigInteger)
     telegram_user_id: Mapped[str | None] = mapped_column(Text)

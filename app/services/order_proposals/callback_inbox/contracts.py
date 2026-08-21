@@ -63,6 +63,11 @@ SCRUBBED_ON_TERMINAL: tuple[str, ...] = (
     "membership_revision",
     "membership_digest",
     "nonce",
+    # R28. A one-way digest of the Telegram ``update_id``, kept only to tell
+    # a genuine redelivery from a different call reusing the same callback
+    # query id. It is verification material, not identity, so it goes when
+    # the rest of the authority does.
+    "update_identity_digest",
 )
 
 #: Must be explicitly non-NULL while a job is still runnable, or the worker
@@ -203,24 +208,58 @@ class DeliveryIdentityMissing(ValueError):
     """Neither ``update_id`` nor a callback-query id was present."""
 
 
+UPDATE_IDENTITY_DOMAIN = "order_proposals.telegram_callback_inbox.update_id.v1"
+
+
 def build_update_digest(*, update_id: object, callback_query_id: object) -> str:
     """Return the one-way delivery identity digest used for dedupe.
 
-    Built from the two identifiers Telegram guarantees are unique per bot --
+    The identity is the **callback query id alone** when Telegram supplies
+    one. It hashed the *pair* until R28, which meant the same callback query
+    id arriving under a different ``update_id`` produced a different digest,
+    passed the unique index as an unrelated delivery, and was accepted,
+    persisted and queued a second time -- with whatever binding it happened
+    to carry. One click is one delivery no matter how it is re-wrapped, so
+    ``update_id`` no longer participates in the identity at all. It moves to
+    the verification projection instead (``build_update_identity_digest``),
+    where a mismatch is a conflict rather than a second row.
+
+    ``update_id`` remains a supported *fallback* identity for an update that
+    carries no callback query at all. The two kinds are domain-separated, so
+    an update id of ``7`` and a callback query id of ``"7"`` cannot collide.
+
+    Built only from identifiers Telegram guarantees are unique per bot --
     never from the raw payload -- and canonicalised so the digest depends on
-    the identity, not on JSON key order or on unrelated fields the Update
-    happens to carry.
+    the identity rather than on JSON key order.
     """
-    normalized_update = None if update_id is None else str(update_id)
     normalized_query = None if callback_query_id is None else str(callback_query_id)
-    if normalized_update is None and normalized_query is None:
+    normalized_update = None if update_id is None else str(update_id)
+    if normalized_query is not None:
+        kind, value = "callback_query_id", normalized_query
+    elif normalized_update is not None:
+        kind, value = "update_id", normalized_update
+    else:
         raise DeliveryIdentityMissing("no delivery identity on the update")
     canonical = json.dumps(
-        {
-            "domain": UPDATE_DIGEST_DOMAIN,
-            "update_id": normalized_update,
-            "callback_query_id": normalized_query,
-        },
+        {"domain": UPDATE_DIGEST_DOMAIN, "identity_kind": kind, "value": value},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_update_identity_digest(*, update_id: object) -> str | None:
+    """One-way digest of the Telegram ``update_id``, for tamper detection.
+
+    Stored rather than the raw value: the row only ever needs to answer "is
+    this the same update as before?", and a digest answers that without
+    retaining a Telegram sequence number past the terminal scrub.
+    """
+    if update_id is None:
+        return None
+    canonical = json.dumps(
+        {"domain": UPDATE_IDENTITY_DOMAIN, "update_id": str(update_id)},
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,

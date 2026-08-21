@@ -100,6 +100,7 @@ _TERMINAL_SCRUBBED = (
     "AND telegram_user_id IS NULL AND action IS NULL AND subject_short IS NULL "
     "AND dispatch_attempt_id IS NULL AND membership_revision IS NULL "
     "AND membership_digest IS NULL AND nonce IS NULL "
+    "AND update_identity_digest IS NULL "
     "AND terminal_state_pending IS NULL ELSE true END"
 )
 
@@ -171,6 +172,7 @@ def upgrade() -> None:
         sa.Column("terminal_state_pending", sa.Text(), nullable=True),
         sa.Column("finished_at", postgresql.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("callback_query_id", sa.Text(), nullable=True),
+        sa.Column("update_identity_digest", sa.Text(), nullable=True),
         sa.Column("chat_id", sa.Text(), nullable=True),
         sa.Column("message_id", sa.BigInteger(), nullable=True),
         sa.Column("telegram_user_id", sa.Text(), nullable=True),

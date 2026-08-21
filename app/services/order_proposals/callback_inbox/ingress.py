@@ -35,6 +35,7 @@ from app.services.order_proposals.callback_inbox.contracts import (
     TERMINAL_STATES,
     DeliveryIdentityMissing,
     build_update_digest,
+    build_update_identity_digest,
 )
 from app.services.order_proposals.callback_inbox.service import CallbackInboxService
 from app.services.order_proposals.telegram_callback import (
@@ -101,16 +102,24 @@ def _round_trippable(normalized: NormalizedCallback) -> bool:
 def normalized_envelope_projection(
     normalized: NormalizedCallback,
 ) -> dict[str, Any]:
-    """The exact ten fields this row persists, normalised exactly as inserted.
+    """The exact fields this row persists, normalised exactly as inserted.
 
     One helper, used by both the INSERT and the equality check, because the
     failure mode is drift: a field that is stored but not compared lets a
     *different* call reuse a delivery identity and be waved through as a
     benign duplicate.
+
+    ``update_identity_digest`` is here rather than in the delivery identity
+    (R28). The identity is the callback query id alone, so a redelivery
+    carrying a different ``update_id`` lands on the *same* row and has to be
+    caught by comparison -- which only works if it is compared.
     """
     callback = normalized.callback
     return {
         "callback_query_id": normalized.callback_query_id,
+        "update_identity_digest": build_update_identity_digest(
+            update_id=normalized.update_id
+        ),
         "chat_id": str(normalized.chat_id),
         "message_id": normalized.message_id,
         "telegram_user_id": (
