@@ -75,7 +75,9 @@ def _init_in_memory(
     return transport
 
 
-def _event_payloads(transport: _CapturingTransport, item_type: str) -> list[dict[str, Any]]:
+def _event_payloads(
+    transport: _CapturingTransport, item_type: str
+) -> list[dict[str, Any]]:
     return [
         item.payload.json
         for envelope in transport.envelopes
@@ -97,9 +99,7 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
         },
         "extra": {"mcp.request.argument.extra": _QUERY_SENTINEL},
         "breadcrumbs": {
-            "values": [
-                {"data": {"mcp.request.argument.breadcrumb": _QUERY_SENTINEL}}
-            ]
+            "values": [{"data": {"mcp.request.argument.breadcrumb": _QUERY_SENTINEL}}]
         },
         "measurements": {"mcp.duration_ms": {"value": 12.5}},
         "spans": [
@@ -133,9 +133,7 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
         },
     }
 
-    scrubbed_transaction = sentry_module._before_send_transaction(
-        transaction_event, {}
-    )
+    scrubbed_transaction = sentry_module._before_send_transaction(transaction_event, {})
     scrubbed_error = sentry_module._before_send(error_event, {})
 
     assert scrubbed_transaction is not None
@@ -179,12 +177,10 @@ def test_false_gate_removes_payload_from_serialized_transaction_and_error_envelo
             span.set_data("mcp.method.name", "tools/call")
             span.set_data("mcp.request.argument.query", _QUERY_SENTINEL)
             span.set_data("mcp.tool.result.content", _RESULT_SENTINEL)
-            span.set_data(
-                "mcp.prompt.result.message.content", _PROMPT_SENTINEL
-            )
+            span.set_data("mcp.prompt.result.message.content", _PROMPT_SENTINEL)
             span.set_tag("mcp.request.argument.span_tag", _QUERY_SENTINEL)
             span.set_status("ok")
-        transaction.set_measurement("mcp.duration_ms", 12.5, "millisecond")
+        sentry_sdk.set_measurement("mcp.duration_ms", 12.5, "millisecond")
 
     with sentry_sdk.new_scope() as scope:
         scope.set_context(

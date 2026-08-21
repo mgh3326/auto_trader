@@ -232,9 +232,10 @@ def test_mcp_tool_call_transaction_is_scrubbed_but_span_and_profile_survive(
         for entry in profile_payload["transactions"]
         if entry["id"] == transaction_payload["event_id"]
     )
-    assert profile_transaction["trace_id"] == transaction_payload["contexts"][
-        "trace"
-    ]["trace_id"]
+    assert (
+        profile_transaction["trace_id"]
+        == transaction_payload["contexts"]["trace"]["trace_id"]
+    )
     assert profile_transaction["name"] == transaction_payload["transaction"]
 
 
