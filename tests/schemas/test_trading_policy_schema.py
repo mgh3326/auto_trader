@@ -151,7 +151,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-21.3"
+    assert doc.version == "2026-08-21.4"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -282,7 +282,7 @@ def test_support_reserve_net_literal_policy_blocks_are_frozen():
     assert add.sizing_price == "proposed_limit_price"
     assert add.a_limit_lte_zero == "NO_ORDER"
     assert add.partial_A_limit_fill == "FORBIDDEN"
-    assert add.max_add_symbols_per_market == 1
+    assert add.max_add_symbols_per_market == 2
     assert add.max_reserve_net_add_fills_per_symbol_per_policy_version == 1
     assert add.same_day_rearm_after_fill is False
     assert add.crash_day_averaging_exemption is False
@@ -299,7 +299,7 @@ def test_support_reserve_net_literal_policy_blocks_are_frozen():
     assert priority.add_candidate_rank == "SECONDARY_CANDIDATE_POOL"
     assert priority.add_candidate_r931_review_required == "PASS"
     assert priority.add_candidate_a_limit_10 == "FULLY_SATISFIED"
-    assert priority.max_add_symbols_per_market == 1
+    assert priority.max_add_symbols_per_market == 2
     assert priority.same_intent_class_sort_order == [
         "support_strength_desc",
         "independent_support_source_count_desc",
@@ -979,6 +979,19 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     baseline_trim["tiers"] = baseline_trim["tiers"] + [current_trim["tiers"][-1]]
     baseline_trim["tie_breaks"]["tier_priority"] = current_trim["tie_breaks"][
         "tier_priority"
+    ]
+    # §136차 (2026-08-21) — A(k) 사이징/커버리지 델타. 현행 스키마 핀(k 0.20,
+    # Literal[2], 신설 면제 키)이 baseline을 파싱할 수 있도록 사전 패치하되,
+    # baseline 원값을 먼저 고정 확인한다.
+    reserve_base = baseline["decision_rules"]["buy.support_reserve_net"]
+    reserve_cur = current_raw["decision_rules"]["buy.support_reserve_net"]
+    assert reserve_base["add_candidate"]["max_add_symbols_per_market"] == 1
+    reserve_base["add_candidate"]["max_add_symbols_per_market"] = 2
+    assert reserve_base["priority_rules"]["max_add_symbols_per_market"] == 1
+    reserve_base["priority_rules"]["max_add_symbols_per_market"] = 2
+    assert "owned_symbol_add_exempt_from_symbol_cap" not in reserve_base
+    reserve_base["owned_symbol_add_exempt_from_symbol_cap"] = reserve_cur[
+        "owned_symbol_add_exempt_from_symbol_cap"
     ]
     baseline_dump = TradingPolicyDocument.model_validate(baseline).model_dump()
     current_dump = TradingPolicyDocument.model_validate(current_raw).model_dump()

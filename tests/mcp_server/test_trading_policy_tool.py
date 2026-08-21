@@ -52,7 +52,7 @@ async def test_get_trading_policy_returns_thresholds_and_version():
         "add_candidate_rank": "SECONDARY_CANDIDATE_POOL",
         "add_candidate_r931_review_required": "PASS",
         "add_candidate_a_limit_10": "FULLY_SATISFIED",
-        "max_add_symbols_per_market": 1,
+        "max_add_symbols_per_market": 2,
         "same_intent_class_sort_order": [
             "support_strength_desc",
             "independent_support_source_count_desc",
@@ -217,7 +217,7 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-08-21.3"
+    assert out["version"] == "2026-08-21.4"
     assert out["content_hash"]
 
 
