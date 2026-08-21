@@ -539,6 +539,32 @@ def test_an_unknown_valid_slug_never_becomes_a_terminal_category() -> None:
     )
 
 
+def test_normalization_never_dispatches_a_hostile_str_subclass() -> None:
+    """Only built-in ``str`` and genuine ``StrEnum`` values are trusted."""
+    from app.services.order_proposals.callback_inbox.contracts import normalize_outcome
+
+    calls = {"strip": 0, "lower": 0, "str": 0}
+
+    class _HostileString(str):
+        def strip(self, chars: str | None = None) -> str:
+            calls["strip"] += 1
+            return self
+
+        def lower(self) -> str:
+            calls["lower"] += 1
+            return self
+
+        def __str__(self) -> str:
+            calls["str"] += 1
+            return super().__str__()
+
+    result = normalize_outcome(_HostileString("approved"))
+    assert calls == {"strip": 0, "lower": 0, "str": 0}, (
+        "normalization dispatched a hostile string subtype"
+    )
+    _assert_category(result, "unclassified", where="hostile string subtype")
+
+
 def test_worker_logging_carries_no_authority_in_message_args_or_extra(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
