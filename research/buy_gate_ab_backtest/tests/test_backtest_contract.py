@@ -186,6 +186,25 @@ def test_both_evidence_paths_share_one_entry_basis() -> None:
         assert evidence["current_price"] == Decimal(str(round(raw_close, 2)))
 
 
+def test_micro_priced_row_is_dropped_by_both_paths() -> None:
+    """A close that rounds to 0.00 must fail identically on either path.
+
+    The live support impl refuses a non-positive current_price, so a
+    micro-priced asset is ungateable there. The RSI shortcut has to drop it
+    too, or the control cohort would gain rows the treated cohorts cannot have.
+    """
+    for seed, drift in ((31, 0.006), (32, -0.006)):
+        frame = _synthetic(300, seed=seed, drift=drift)
+        # scale off the *final* close so the decision-day price is under half a
+        # cent whichever way the series drifted
+        scale = 0.001 / float(frame["close"].iloc[-1])
+        for column in ("open", "high", "low", "close"):
+            frame[column] = frame[column] * scale
+        assert round(float(frame["close"].iloc[-1]), 2) == 0.0
+        result = build_evidence(symbol="KRW-BTT", market="crypto_upbit_krw", bars=frame)
+        assert not isinstance(result, dict), "a zero-rounding row must not be gated"
+
+
 def test_evidence_requires_full_indicator_history() -> None:
     frame = _synthetic(RSI_WINDOW_BARS - 1, seed=3)
     result = build_evidence(symbol="005930", market="kr", bars=frame)

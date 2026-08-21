@@ -124,15 +124,19 @@ def build_evidence(
         # Pre-registered shortcut: the shared RSI gate already rejects this row
         # for both arms, so the 60-bar support reconstruction cannot change any
         # cohort. Support fields are recorded as absent, not as a pass.
+        #
+        # The price handling must mirror the support path exactly: the live
+        # impl rounds to 2 decimals *and* refuses a non-positive result, which
+        # is how it behaves for micro-priced assets. Rounding without the
+        # positivity check would admit a zero-priced row here that the support
+        # path drops, reintroducing the very asymmetry this rounding fixes.
+        shortcut_price = round(float(window_250["close"].iloc[-1]), 2)
+        if shortcut_price <= 0:
+            return ReconstructionFailure(symbol, "price_rounds_to_zero")
         return _evidence(
             symbol=symbol,
             market=market,
-            # 🔴 Must match the SR path exactly. get_support_resistance_impl
-            # returns round(close, 2), so the shortcut has to round too --
-            # otherwise the control cohort (the only cohort this path feeds)
-            # would carry a different entry basis from the two treated
-            # cohorts, i.e. an asymmetry between the compared arms.
-            current_price=round(float(window_250["close"].iloc[-1]), 2),
+            current_price=shortcut_price,
             rsi_value=rsi_value,
             chosen={
                 "price": None,
