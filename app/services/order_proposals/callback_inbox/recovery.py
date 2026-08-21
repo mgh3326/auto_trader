@@ -126,10 +126,11 @@ async def recover_callback_jobs(
     statuses = empty_recovery_statuses()
     claimed = 0
     scanned = 0
-    for job_id in candidates:
+    for database_job_id in candidates:
         if claimed >= limit:
             break
         scanned += 1
+        job_id = _materialize_trusted_candidate_uuid(database_job_id)
         result = await _process_one(
             job_id, process_fn=process, now_fn=clock, worker_kwargs=worker_kwargs
         )
@@ -167,6 +168,17 @@ async def recover_callback_jobs(
     }
 
 
+def _materialize_trusted_candidate_uuid(value: uuid.UUID) -> uuid.UUID:
+    """Materialize repository UUID output as the exact item-boundary type.
+
+    PostgreSQL's asyncpg driver returns a ``uuid.UUID`` subtype for UUID
+    columns.  This helper is deliberately only on the typed repository-output
+    seam above: it never parses or renders an arbitrary task argument.  The
+    item boundary below therefore remains exact-type-only.
+    """
+    return uuid.UUID(int=value.int)
+
+
 async def _process_one(
     job_id: uuid.UUID,
     *,
@@ -175,6 +187,9 @@ async def _process_one(
     worker_kwargs: dict[str, Any],
 ) -> str:
     """One job's failure must not end the sweep for the others."""
+    if type(job_id) is not uuid.UUID:
+        return "error"
+
     canonical_job_id = str(job_id)
     try:
         result = await process_fn(
@@ -185,10 +200,13 @@ async def _process_one(
         )
         status = recovery_item_status(result, job_id=canonical_job_id)
     except Exception:  # noqa: BLE001 - keep sweeping; BaseException propagates
-        logger.error(
-            "order_proposals.telegram.callback_recovery_job_failed",
-            extra={"callback_job.id": canonical_job_id},
-        )
+        try:
+            logger.error(
+                "order_proposals.telegram.callback_recovery_job_failed",
+                extra={"callback_job.id": canonical_job_id},
+            )
+        except Exception:  # noqa: BLE001 - logging must not end a sweep
+            pass
         return "error"
     return status or "error"
 

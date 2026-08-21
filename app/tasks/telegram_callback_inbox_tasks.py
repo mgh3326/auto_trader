@@ -55,7 +55,7 @@ def recovery_schedule_labels() -> list[dict[str, str]]:
 
 
 @broker.task(task_name="order_proposals.telegram_callback_job")
-async def run_telegram_callback_job(job_id: str) -> dict[str, str]:
+async def run_telegram_callback_job(job_id: object) -> dict[str, str]:
     """Process one durable callback job.
 
     Invalid wire values are rejected before the gate, so neither gate branch
@@ -93,6 +93,7 @@ async def recover_telegram_callback_jobs() -> dict[str, Any]:
         report = await recover_callback_jobs()
         projected = project_recovery_report(
             report,
+            execution_limit=RECOVERY_SCAN_LIMIT,
             scan_cap=recovery_scan_cap(RECOVERY_SCAN_LIMIT),
         )
     except Exception:  # noqa: BLE001 - TaskIQ result boundary; BaseException propagates

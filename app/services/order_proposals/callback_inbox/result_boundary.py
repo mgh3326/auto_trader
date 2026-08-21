@@ -117,6 +117,7 @@ def empty_recovery_statuses() -> dict[str, int]:
 def project_recovery_report(
     value: object,
     *,
+    execution_limit: int,
     scan_cap: int,
 ) -> dict[str, object] | None:
     """Make a fresh closed copy of a recovery aggregate report.
@@ -125,6 +126,9 @@ def project_recovery_report(
     all non-exact built-in container/scalar types are rejected without
     rendering their values.
     """
+    if not _is_nonnegative_int(execution_limit) or not _is_nonnegative_int(scan_cap):
+        return None
+
     report = _exact_fields(value, expected_keys=RECOVERY_REPORT_KEYS)
     if report is None:
         return None
@@ -136,7 +140,7 @@ def project_recovery_report(
         return None
     if not _is_nonnegative_int(scanned) or not _is_nonnegative_int(claimed):
         return None
-    if claimed > scanned or scanned > scan_cap:
+    if claimed > execution_limit or claimed > scanned or scanned > scan_cap:
         return None
 
     statuses = _recovery_statuses(report["statuses"])
