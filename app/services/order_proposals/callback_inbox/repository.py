@@ -19,7 +19,13 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
-from app.services.order_proposals.callback_inbox.contracts import InboxState
+from app.services.order_proposals.callback_inbox.contracts import (
+    TIER_EXHAUSTED,
+    TIER_QUEUED,
+    TIER_STALE,
+    InboxState,
+    recovery_tier_quotas,
+)
 
 
 class CallbackInboxRepository:
@@ -95,12 +101,48 @@ class CallbackInboxRepository:
         now: datetime,
         stale_before: datetime,
         limit: int,
-    ) -> list[uuid.UUID]:
-        """Job ids the recovery sweep should *look at*, oldest first.
+    ) -> list[tuple[uuid.UUID, int]]:
+        """Candidates to look at, with the tier each one came from.
 
         Deliberately returns ids only. Whether a row may actually be claimed
         is decided later, behind the advisory lock, against a freshly read
         row -- this query is a scan filter, not a claim.
+
+        Each tier gets a bounded share of the scan (R29), because no single
+        ordering is fair in both directions. Oldest-first alone put in-flight
+        work at the front, so a few long-running jobs under live worker locks
+        filled every tick and the lost Redis kick behind them was never
+        selected. Queued-first inverts it: a backlog bigger than one scan and
+        the stale rows are never reached instead. So the tiers are ranked and
+        each is fetched separately:
+
+          0. ``retry_wait`` with no attempts left -- a scrub, and it holds
+             live authority until it happens (R25);
+          1. ``pending`` and due ``retry_wait`` -- work nothing is doing;
+          2. stale ``processing`` -- work someone may still be doing, and the
+             advisory lock is what settles whether they are.
+
+        Three ordinary ``WHERE ... ORDER BY ... LIMIT`` selects, one per tier,
+        rather than one query that ranks the eligible set with a window. The
+        window classified and sorted every eligible row, in one query, to
+        produce a handful of ids.
+
+        This is a smaller unit of work, not a bounded read. ``EXPLAIN`` on a
+        tier query is ``Limit -> Sort(received_at, job_id) -> Index Scan using
+        ix_telegram_callback_inbox_state_available``: the predicate uses the
+        index, but the ordering still sorts the eligible set, as a
+        bounded-memory top-N, because no index matches that order. What is
+        genuinely bounded is the number of queries, the rows returned, and the
+        memory each sort needs. Making the read stop early would need an index
+        built for these predicates and this ordering, which needs its own
+        evidence rather than a claim here.
+
+        ``received_at`` then ``job_id`` orders deterministically inside a
+        tier: rows arriving in the same instant are ordinary, and without the
+        tie-break a tier's share could hold a different subset every tick.
+        Everything is computed from the rows themselves, so a process that has
+        never swept before sees exactly the same candidates as one that has
+        been running all day.
         """
         due = (
             TelegramCallbackInboxJob.state.in_(
@@ -111,9 +153,7 @@ class CallbackInboxRepository:
         # backoff must not hide it. ``ck_..._retry_budget`` makes this shape
         # unwritable going forward, but a database written by an older binary
         # can still hold one, and leaving it parked would keep a live nonce
-        # and a chat id for the length of the backoff. The classifier already
-        # ranks exhaustion above "not yet due"; this is the scan agreeing, so
-        # the row actually reaches it. Healthy backoffs are unaffected.
+        # and a chat id for the length of the backoff.
         exhausted = (TelegramCallbackInboxJob.state == InboxState.RETRY_WAIT.value) & (
             TelegramCallbackInboxJob.attempt_count
             >= TelegramCallbackInboxJob.max_attempts
@@ -121,15 +161,32 @@ class CallbackInboxRepository:
         stale = (TelegramCallbackInboxJob.state == InboxState.PROCESSING.value) & (
             TelegramCallbackInboxJob.started_at <= stale_before
         )
-        rows = (
-            await self._session.execute(
-                select(TelegramCallbackInboxJob.job_id)
-                .where(due | stale | exhausted)
-                .order_by(TelegramCallbackInboxJob.received_at.asc())
-                .limit(limit)
-            )
-        ).all()
-        return [row[0] for row in rows]
+
+        quotas = recovery_tier_quotas(limit)
+        predicates = {
+            TIER_EXHAUSTED: exhausted,
+            TIER_QUEUED: due & ~exhausted,
+            TIER_STALE: stale,
+        }
+
+        candidates: list[tuple[uuid.UUID, int]] = []
+        for tier, predicate in sorted(predicates.items()):
+            quota = quotas.get(tier, 0)
+            if quota <= 0:
+                continue
+            rows = (
+                await self._session.execute(
+                    select(TelegramCallbackInboxJob.job_id)
+                    .where(predicate)
+                    .order_by(
+                        TelegramCallbackInboxJob.received_at.asc(),
+                        TelegramCallbackInboxJob.job_id.asc(),
+                    )
+                    .limit(quota)
+                )
+            ).all()
+            candidates.extend((row[0], tier) for row in rows)
+        return candidates
 
     async def counts_by_state(self) -> dict[str, int]:
         rows = (

@@ -99,6 +99,52 @@ PROCESSING_STALE_AFTER_SECONDS = 300
 
 RECOVERY_SCAN_LIMIT = 20
 
+#: How many candidates one sweep may *look at* per job it may actually run.
+#:
+#: R29. These were the same number, so a candidate whose advisory lock was
+#: held consumed the tick's whole budget and the queued work behind it was
+#: never selected. Looking at a locked row is cheap -- one
+#: ``pg_try_advisory_lock`` that fails -- while running one is not, so the two
+#: are now separate limits: contention costs a scan slot, execution costs an
+#: execution slot.
+RECOVERY_SCAN_OVERFETCH = 5
+
+#: An absolute ceiling on the scan regardless of the execution cap, so no
+#: caller can turn a sweep into a full-table walk.
+RECOVERY_SCAN_HARD_CAP = 1_000
+
+
+def recovery_scan_cap(limit: int) -> int:
+    """How many candidate ids one sweep may fetch for an execution cap."""
+    return min(max(limit, 1) * RECOVERY_SCAN_OVERFETCH, RECOVERY_SCAN_HARD_CAP)
+
+
+#: Scan tiers, most urgent first. The number is the tier's rank in SQL.
+TIER_EXHAUSTED = 0
+TIER_QUEUED = 1
+TIER_STALE = 2
+
+#: The share of one scan each non-queued tier is guaranteed.
+#:
+#: R29. A single global ordering cannot be fair in both directions: whichever
+#: tier sorts first starves the other as soon as it is bigger than one scan.
+#: Queued work first starved stale recovery; stale work first was the original
+#: bug. So each tier gets a reserved slice and the queued tier takes what is
+#: left, which is most of it -- reserving a little for the tiers that would
+#: otherwise never be reached costs the common case almost nothing.
+RECOVERY_TIER_RESERVE_DIVISOR = 5
+
+
+def recovery_tier_quotas(limit: int) -> dict[int, int]:
+    """How many candidates of each tier one sweep may look at."""
+    cap = recovery_scan_cap(limit)
+    reserve = max(1, cap // RECOVERY_TIER_RESERVE_DIVISOR)
+    return {
+        TIER_EXHAUSTED: reserve,
+        TIER_STALE: reserve,
+        TIER_QUEUED: max(1, cap - 2 * reserve),
+    }
+
 
 # --------------------------------------------------------------------------
 # Retry algebra
@@ -296,7 +342,13 @@ __all__ = [
     "OUTCOME_LABEL_SQL_REGEX",
     "PROCESSING_STALE_AFTER_SECONDS",
     "RECOVERY_CLAIMABLE_STATES",
+    "TIER_EXHAUSTED",
+    "TIER_QUEUED",
+    "TIER_STALE",
+    "RECOVERY_TIER_RESERVE_DIVISOR",
+    "RECOVERY_SCAN_HARD_CAP",
     "RECOVERY_SCAN_LIMIT",
+    "RECOVERY_SCAN_OVERFETCH",
     "RETRYABLE_ERROR_CLASSES",
     "RETRYABLE_HANDLER_REASONS",
     "RETRY_BACKOFF_SECONDS",
@@ -313,5 +365,7 @@ __all__ = [
     "WorkerStatus",
     "build_update_digest",
     "job_advisory_lock_key",
+    "recovery_scan_cap",
+    "recovery_tier_quotas",
     "normalize_outcome",
 ]

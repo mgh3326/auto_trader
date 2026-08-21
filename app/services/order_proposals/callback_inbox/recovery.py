@@ -41,23 +41,51 @@ async def recover_callback_jobs(
     process_fn: Callable[..., Any] | None = None,
     **worker_kwargs: Any,
 ) -> dict[str, Any]:
-    """One sweep. Bounded, idempotent, and safe to run concurrently."""
+    """One sweep. Bounded, idempotent, and safe to run concurrently.
+
+    ``limit`` is the **execution** cap: how many jobs this tick may actually
+    claim and run. The **scan** cap is derived from it and is larger, because
+    a candidate whose advisory lock is held costs one failed
+    ``pg_try_advisory_lock`` and nothing else.
+
+    They were the same number until R29, and that was a liveness bug rather
+    than a tuning choice: the scan ordered by age, so a few long-running jobs
+    under live worker locks sat at the front of every tick, filled the budget
+    with ``lock_contended``, and the pending row behind them -- the lost Redis
+    kick this sweep exists to recover -- was never selected. Not on that tick,
+    and not on any tick, for as long as those workers ran.
+
+    Both halves of the fix live in the database: the ordering is a SQL
+    expression over the row's own state, and the budget is spent per *claim*.
+    Nothing is remembered between sweeps, so a freshly started process and two
+    concurrent sweepers behave exactly like one that has been running all day.
+    """
     clock = now_fn or now_kst
     factory = session_factory or AsyncSessionLocal
     process = process_fn or process_callback_job
 
     async with factory() as session:
         service = CallbackInboxService(session)
+        # The *execution* limit crosses the boundary, exactly once. The scan
+        # cap and the per-tier quotas are derived from it in one place, at the
+        # query; deriving one here and handing that down applied the same
+        # multiplier twice (R29).
         candidates = await service.claimable_job_ids(now=clock(), limit=limit)
         await session.rollback()
 
     statuses: dict[str, int] = {}
     claimed = 0
+    scanned = 0
     for job_id in candidates:
+        if claimed >= limit:
+            break
+        scanned += 1
         result = await _process_one(
             job_id, process_fn=process, now_fn=clock, worker_kwargs=worker_kwargs
         )
         statuses[result] = statuses.get(result, 0) + 1
+        # A job someone else is holding, or that turned out not to be
+        # claimable, cost a look. Only work actually done costs budget.
         if result not in {"lock_contended", "not_claimable", "not_found"}:
             claimed += 1
 
@@ -69,7 +97,7 @@ async def recover_callback_jobs(
     logger.info(
         "order_proposals.telegram.callback_recovery_swept",
         extra={
-            "callback_recovery.scanned": len(candidates),
+            "callback_recovery.scanned": scanned,
             "callback_recovery.claimed": claimed,
             "callback_recovery.pending": backlog["pending"],
             "callback_recovery.processing": backlog["processing"],
@@ -79,6 +107,10 @@ async def recover_callback_jobs(
     )
     return {
         "status": "ok",
+        # How many candidates this tick actually looked at. Bounded by
+        # ``recovery_scan_cap(limit)``, and reported so that bound is
+        # observable rather than merely asserted in a docstring.
+        "scanned": scanned,
         "claimed": claimed,
         "statuses": statuses,
         "backlog": backlog,

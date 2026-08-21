@@ -22,6 +22,9 @@ from app.services.order_proposals.callback_inbox.contracts import (
     PROCESSING_STALE_AFTER_SECONDS,
     RETRY_BACKOFF_SECONDS,
     SCRUBBED_ON_TERMINAL,
+    TIER_EXHAUSTED,
+    TIER_QUEUED,
+    TIER_STALE,
     ErrorClass,
     InboxState,
     normalize_outcome,
@@ -316,11 +319,45 @@ class CallbackInboxService:
     # -- recovery scan ---------------------------------------------------
 
     async def claimable_job_ids(self, *, now: datetime, limit: int) -> list[uuid.UUID]:
-        return await self._repo.claimable_job_ids(
+        """Candidates to *look at*, interleaved so no tier can crowd out another.
+
+        ``limit`` is the **execution** cap -- how many jobs the caller may
+        actually run this tick. The scan cap and the per-tier quotas are
+        derived from it once, at the query. The two were the same number
+        until R29, which is how a handful of locked rows could consume a
+        whole tick's budget; deriving the scan cap here as well applied the
+        multiplier twice.
+
+        The repository already caps each tier separately, so the scan is fair.
+        The *execution* budget still has to be, because a caller that stops
+        after N claims would otherwise spend all N on whichever tier comes
+        first. Exhausted rows lead -- they are scrubs, they are few, and they
+        hold live authority until they happen -- and the queued and stale
+        tiers then alternate, so both make progress inside any budget of two
+        or more.
+
+        Purely a function of what the query returned. Nothing is remembered
+        between sweeps, so a freshly started process and two concurrent
+        sweepers behave exactly like one that has been running all day.
+        """
+        rows = await self._repo.claimable_job_ids(
             now=now,
             stale_before=now - timedelta(seconds=PROCESSING_STALE_AFTER_SECONDS),
             limit=limit,
         )
+        by_tier: dict[int, list[uuid.UUID]] = {}
+        for job_id, tier in rows:
+            by_tier.setdefault(tier, []).append(job_id)
+
+        ordered = list(by_tier.get(TIER_EXHAUSTED, ()))
+        queued = by_tier.get(TIER_QUEUED, [])
+        stale = by_tier.get(TIER_STALE, [])
+        for index in range(max(len(queued), len(stale))):
+            if index < len(queued):
+                ordered.append(queued[index])
+            if index < len(stale):
+                ordered.append(stale[index])
+        return ordered
 
     async def backlog(self, *, now: datetime) -> dict[str, Any]:
         """Aggregate-only backlog. Counts and one age; never an identifier."""
