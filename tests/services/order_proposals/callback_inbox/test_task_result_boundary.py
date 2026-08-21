@@ -14,6 +14,7 @@ vocabulary make this audit pass without a conscious contract change.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import copy
 import logging
 import math
@@ -159,6 +160,56 @@ class _HostileUUID(uuid.UUID):
     def __init__(self, value: str) -> None:
         object.__setattr__(self, "calls", [])
         super().__init__(value)
+
+    def __str__(self) -> str:
+        self.calls.append("str")
+        return _FAKE_SECRET
+
+    def __repr__(self) -> str:
+        self.calls.append("repr")
+        return _FAKE_SECRET
+
+
+class _UUIDClassSpoof:
+    """An impostor that defeats ``isinstance`` through ``__class__``."""
+
+    def __init__(self, raw_int: builtins.int) -> None:
+        self.calls: list[str] = []
+        self.raw_int = raw_int
+
+    @property
+    def __class__(self) -> type[uuid.UUID]:
+        self.calls.append("class")
+        return uuid.UUID
+
+    @property
+    def int(self) -> builtins.int:
+        self.calls.append("int")
+        return self.raw_int
+
+    def __str__(self) -> str:
+        self.calls.append("str")
+        return _FAKE_SECRET
+
+    def __repr__(self) -> str:
+        self.calls.append("repr")
+        return _FAKE_SECRET
+
+
+class _HostileStorageUUID(uuid.UUID):
+    """A valid UUID subtype whose dynamic descriptors must stay untouched."""
+
+    __slots__ = ("calls",)
+
+    def __init__(self, value: str) -> None:
+        object.__setattr__(self, "calls", [])
+        super().__init__(value)
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "int":
+            object.__getattribute__(self, "calls").append("int")
+            return uuid.UUID.int.__get__(self, uuid.UUID)
+        return super().__getattribute__(name)
 
     def __str__(self) -> str:
         self.calls.append("str")
@@ -2921,4 +2972,243 @@ async def test_internal_recovery_item_exception_surfaces_are_redacted(
             lambda: _assert_events_clean(events),
         ),
         message="internal recovery item leaked protected exception material",
+    )
+
+
+def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage() -> (
+    None
+):
+    """Only a real UUID MRO may reach the trusted candidate conversion seam."""
+    __tracebackhide__ = True
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    raw_int = uuid.uuid4().int
+    if type(raw_int) is not int:
+        _raise_generic("test UUID source did not expose an exact built-in integer")
+    spoof = _UUIDClassSpoof(raw_int)
+
+    # This is the anti-false-green control: ``isinstance`` itself is unsafe
+    # here because it consults the instance's hostile ``__class__`` property.
+    if not isinstance(spoof, uuid.UUID):
+        _raise_generic("test UUID class spoof did not fool isinstance")
+    if uuid.UUID in type(spoof).__mro__:
+        _raise_generic("test UUID class spoof unexpectedly has UUID in its MRO")
+    spoof.calls.clear()
+
+    # ``uuid.UUID.__new__`` without initialization is an ordinary malformed
+    # storage object: the base ``int`` descriptor raises AttributeError.
+    malformed_values: tuple[object, ...] = (
+        spoof,
+        None,
+        object(),
+        uuid.UUID.__new__(uuid.UUID),
+    )
+    failures = 0
+    for value in malformed_values:
+        try:
+            materialized = recovery_module._materialize_trusted_candidate_uuid(
+                cast(uuid.UUID, value)
+            )
+        except Exception:
+            failures += 1
+            continue
+        if materialized is not None:
+            failures += 1
+    if spoof.calls:
+        failures += 1
+    if failures:
+        _raise_generic(
+            "recovery UUID materializer accepted, rendered, or raised on malformed storage"
+        )
+
+
+def test_recovery_uuid_materializer_reads_uuid_subtype_storage_via_base_descriptor() -> (
+    None
+):
+    """A database UUID subtype is copied without invoking its overrides."""
+    __tracebackhide__ = True
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    source = _HostileStorageUUID("01234567-89ab-4def-8abc-def012345678")
+    source_int = uuid.UUID.int.__get__(source, uuid.UUID)
+    if type(source_int) is not int:
+        _raise_generic("base UUID descriptor did not expose an exact built-in integer")
+    source.calls.clear()
+
+    materialized: object | None = None
+    try:
+        materialized = recovery_module._materialize_trusted_candidate_uuid(source)
+    except Exception:
+        _raise_generic("recovery UUID materializer rejected valid UUID subtype storage")
+    if type(materialized) is not uuid.UUID:
+        _raise_generic("recovery UUID materializer did not return an exact UUID")
+    materialized_int = uuid.UUID.int.__get__(materialized, uuid.UUID)
+    if type(materialized_int) is not int or materialized_int != source_int:
+        _raise_generic("recovery UUID materializer changed the UUID storage value")
+    if source.calls:
+        _raise_generic("recovery UUID materializer invoked a UUID subtype override")
+
+
+@pytest.mark.asyncio
+async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_subtype(
+    monkeypatch: pytest.MonkeyPatch,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+) -> None:
+    """A bad repository candidate consumes one safe error slot, not the sweep."""
+    __tracebackhide__ = True
+    from app.core.timezone import now_kst
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    log_sink, events, envelope_item_types = production_sentry_sinks
+    malformed = _UUIDClassSpoof(uuid.uuid4().int)
+    valid = _HostileStorageUUID("01234567-89ab-4def-8abc-def012345678")
+    valid_int = uuid.UUID.int.__get__(valid, uuid.UUID)
+    if type(valid_int) is not int:
+        _raise_generic("test UUID subtype did not retain an exact integer payload")
+    malformed.calls.clear()
+    valid.calls.clear()
+
+    rollbacks: list[int] = []
+    reservations: list[int] = []
+    scans: list[int] = []
+    item_calls: list[uuid.UUID] = []
+    process_calls: list[uuid.UUID] = []
+    records_before = len(log_sink.records)
+    events_before = copy.deepcopy(events)
+    item_types_before = tuple(envelope_item_types)
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc: object,
+            traceback: object,
+        ) -> bool:
+            return False
+
+        async def rollback(self) -> None:
+            rollbacks.append(1)
+
+    def _session_factory() -> _Session:
+        return _Session()
+
+    class _FakeService:
+        def __init__(self, session: _Session) -> None:
+            self.session = session
+
+        async def claimable_job_ids(
+            self, *, now: object, limit: int, tier_start: int
+        ) -> list[uuid.UUID]:
+            scans.append(limit)
+            return [cast(uuid.UUID, malformed), valid]
+
+        async def backlog(self, *, now: object) -> dict[str, int | float | None]:
+            return {
+                "pending": 0,
+                "processing": 0,
+                "retry_wait": 0,
+                "dead_letter": 0,
+                "oldest_pending_age_seconds": None,
+            }
+
+    async def _reserve(*, limit: int, session_factory: object) -> int:
+        reservations.append(limit)
+        return 0
+
+    original_process_one = recovery_module._process_one
+
+    async def _process_one_spy(job_id: uuid.UUID, **kwargs: Any) -> str:
+        item_calls.append(job_id)
+        return await original_process_one(job_id, **kwargs)
+
+    async def _process(job_id: uuid.UUID, **kwargs: Any) -> dict[str, str]:
+        process_calls.append(job_id)
+        return {"status": "succeeded", "job_id": str(job_id)}
+
+    monkeypatch.setattr(
+        recovery_module, "reserve_recovery_tier_block", _reserve, raising=True
+    )
+    monkeypatch.setattr(
+        recovery_module, "CallbackInboxService", _FakeService, raising=True
+    )
+    monkeypatch.setattr(recovery_module, "_process_one", _process_one_spy, raising=True)
+
+    try:
+        report = await recovery_module.recover_callback_jobs(
+            now_fn=now_kst,
+            limit=2,
+            session_factory=_session_factory,
+            process_fn=_process,
+        )
+    except Exception:
+        _raise_generic("malformed recovery candidate aborted the sweep")
+    sentry_sdk.flush(timeout=1.0)
+
+    def _assert_closed_report() -> None:
+        _assert_valid_recovery_report(report)
+        assert type(report) is dict
+        if report["scanned"] != 2 or report["claimed"] != 2:
+            _raise_generic("malformed recovery candidate did not consume one safe slot")
+        statuses = report["statuses"]
+        assert type(statuses) is dict
+        if statuses.get("error") != 1 or statuses.get("succeeded") != 1:
+            _raise_generic(
+                "recovery did not report one malformed and one succeeded item"
+            )
+        if any(
+            statuses.get(status) != 0
+            for status in EXPECTED_RECOVERY_ITEM_STATUSES - {"error", "succeeded"}
+        ):
+            _raise_generic("recovery report widened an unrelated item status")
+
+    def _assert_only_valid_candidate_reached_execution() -> None:
+        if len(item_calls) != 1 or len(process_calls) != 1:
+            _raise_generic(
+                "malformed recovery candidate reached item or process authority"
+            )
+        item_job_id = item_calls[0]
+        process_job_id = process_calls[0]
+        if type(item_job_id) is not uuid.UUID or type(process_job_id) is not uuid.UUID:
+            _raise_generic("recovery did not materialize an exact UUID for execution")
+        if (
+            uuid.UUID.int.__get__(item_job_id, uuid.UUID) != valid_int
+            or uuid.UUID.int.__get__(process_job_id, uuid.UUID) != valid_int
+        ):
+            _raise_generic("recovery executed a candidate other than the valid UUID")
+        if malformed.calls or valid.calls:
+            _raise_generic("recovery rendered or dynamically read a candidate UUID")
+
+    def _assert_no_malformed_observability() -> None:
+        new_records = log_sink.records[records_before:]
+        recovery_records = [
+            record for record in new_records if record.name == recovery_module.__name__
+        ]
+        if any(record.levelno >= logging.ERROR for record in recovery_records):
+            _raise_generic("malformed recovery candidate emitted an error log")
+        if events != events_before or tuple(envelope_item_types) != item_types_before:
+            _raise_generic(
+                "malformed recovery candidate changed the Sentry event surface"
+            )
+        _assert_log_records_clean(log_sink.records)
+        _assert_events_clean(events)
+        _assert_test_sentry_breadcrumbs_clean()
+
+    _assert_all_clean(
+        (
+            _assert_closed_report,
+            _assert_only_valid_candidate_reached_execution,
+            _assert_no_malformed_observability,
+            lambda: _assert_production_sentry_controls(events, envelope_item_types),
+            lambda: _assert_exact_string(
+                "ok"
+                if reservations == [2] and scans == [2] and len(rollbacks) == 2
+                else "",
+                "ok",
+                where="recovery fake service/session seam",
+            ),
+        ),
+        message="malformed recovery candidate crossed execution or observability authority",
     )
