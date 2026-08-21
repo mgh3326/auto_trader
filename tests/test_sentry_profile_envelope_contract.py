@@ -221,6 +221,15 @@ def test_mcp_tool_call_transaction_is_scrubbed_but_span_and_profile_survive(
         entry["id"] for entry in profile_payload.get("transactions", [])
     }
     assert transaction_payload["event_id"] in linked_transaction_ids
+    profile_transaction = next(
+        entry
+        for entry in profile_payload["transactions"]
+        if entry["id"] == transaction_payload["event_id"]
+    )
+    assert profile_transaction["trace_id"] == transaction_payload["contexts"][
+        "trace"
+    ]["trace_id"]
+    assert profile_transaction["name"] == transaction_payload["transaction"]
 
 
 @pytest.mark.unit
