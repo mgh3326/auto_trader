@@ -138,7 +138,20 @@ class TimelineTossClient:
         self.sellable_calls.append(symbol)
         return SimpleNamespace(sellable_quantity=self.sellable_quantity_value)
 
-    async def place_order(self, payload):
+    async def place_order(self, payload, *, pre_send_hook=None):
+        """The first-party signature, deliberately.
+
+        ``toss_place_order`` inspects this method with
+        ``_accepts_pre_send_hook``: a one-argument ``place_order`` takes the
+        *compatibility* branch, which awaits the hook itself and never hands
+        it to the client. Accepting ``pre_send_hook`` puts this test on the
+        real first-party path, where the client owns the last-moment
+        pre-send gate. The mutation is recorded only *after* the hook
+        completes, so the timeline pins that ordering rather than assuming it.
+        """
+        if pre_send_hook is not None:
+            self.timeline.append("pre_send_hook")
+            await pre_send_hook()
         self.timeline.append("broker_mutation")
         self.placed_payloads.append(payload)
         return SimpleNamespace(
@@ -301,6 +314,19 @@ async def test_the_durable_default_path_runs_the_whole_toss_sell_order_core(
         "broker_mutation"
     ), toss_core.timeline
     assert toss_core.sellable_calls == [SYMBOL]
+
+    # R18: the first-party branch really was taken -- the pre-send hook was
+    # handed to the client and completed before the POST, rather than the
+    # compatibility branch awaiting it upstream.
+    from app.mcp_server.tooling.orders_toss_variants import _accepts_pre_send_hook
+
+    assert _accepts_pre_send_hook(toss_core.place_order), (
+        "the fake client would take the compatibility branch"
+    )
+    assert toss_core.timeline.count("pre_send_hook") == 1, toss_core.timeline
+    assert toss_core.timeline.index("pre_send_hook") < toss_core.timeline.index(
+        "broker_mutation"
+    ), toss_core.timeline
 
     # -- the mutation payload: an explicit, finite, positive SELL quantity --
     assert len(toss_core.placed_payloads) == 1
