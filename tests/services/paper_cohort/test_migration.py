@@ -202,6 +202,10 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 await connection.execute(
                     text(f"ALTER TABLE review.order_proposals DROP COLUMN {column}")
                 )
+            # W5's durable callback inbox is later than this reconstructed
+            # boundary and is already in Base.metadata; drop it so the upgrade
+            # chain creates it (and its CHECKs) instead of colliding.
+            await connection.execute(text("DROP TABLE review.telegram_callback_inbox"))
             # Funding advisory is later than this reconstructed boundary. Drop
             # its current-head metadata tables so the additive migrations are
             # exercised by the upgrade chain instead of colliding with create_all.
