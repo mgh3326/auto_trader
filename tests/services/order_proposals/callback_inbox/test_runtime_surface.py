@@ -14,7 +14,10 @@ from typing import Any
 
 import pytest
 
-from app.services.order_proposals.callback_inbox.contracts import SCRUBBED_ON_TERMINAL
+from app.services.order_proposals.callback_inbox.contracts import (
+    RECOVERY_CLAIMABLE_STATES,
+    SCRUBBED_ON_TERMINAL,
+)
 
 from .conftest import (
     _TEST_OWNED_INBOX_SHAPE_FIELDS,
@@ -132,6 +135,13 @@ def test_test_owned_row_shaper_tracks_every_terminal_authority_field() -> None:
     """Future terminal-scrub additions cannot become generic test mutations."""
     assert _TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS == frozenset(SCRUBBED_ON_TERMINAL)
     assert _TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS <= _TEST_OWNED_INBOX_SHAPE_FIELDS
+
+
+def test_test_owned_subject_degrader_tracks_exact_recovery_claimable_states() -> None:
+    """Its sole active-state authority is the durable recovery contract."""
+    assert RECOVERY_CLAIMABLE_STATES == frozenset(
+        {"pending", "retry_wait", "processing"}
+    )
 
 
 @pytest.mark.asyncio

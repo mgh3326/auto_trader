@@ -32,8 +32,8 @@ from app.services.order_proposals import approval_message as approval_messages
 from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals import telegram_callback as callback_module
 from app.services.order_proposals.callback_inbox.contracts import (
+    RECOVERY_CLAIMABLE_STATES,
     SCRUBBED_ON_TERMINAL,
-    TERMINAL_STATES,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -426,10 +426,12 @@ class _OwnedInboxJobIds(list[uuid.UUID]):
 
 
 # Crash/recovery tests need to reproduce only these durable shapes. This is
-# intentionally not a generic test mutation API: immutable identity/digest
-# fields and timestamps remain outside the allowlist, while authority fields
-# are limited to their terminal-scrub value below. Normal ORM flushes still
-# enforce every live marker/cross-field constraint.
+# intentionally not a generic test mutation API: immutable ``job_id`` and
+# ``update_digest`` identity/digest material remain outside the allowlist, and
+# terminal authority material (including ``update_identity_digest``) is
+# scrub-only below. The listed timing and durable-marker fields are deliberately
+# available to model crash/recovery shapes. Normal ORM flushes still enforce
+# every live marker/cross-field constraint.
 _TEST_OWNED_INBOX_SHAPE_FIELDS: frozenset[str] = frozenset(
     {
         "attempt_count",
@@ -530,13 +532,17 @@ async def degrade_owned_callback_subject_short(
     )
     if row is None:
         raise LookupError(f"owned inbox row was not found: {job_id}")
+    if type(row.state) is not str or row.state not in RECOVERY_CLAIMABLE_STATES:
+        raise ValueError("only a recovery-claimable callback subject may be degraded")
     if row.subject_short is None:
         raise ValueError("a scrubbed subject_short may never be re-armed")
-    if row.state in TERMINAL_STATES:
-        raise ValueError("only an active callback subject may be degraded")
+    if type(row.subject_short) is not str:
+        raise ValueError("only an exact persisted subject_short may be degraded")
 
     from app.services.order_proposals.callback_inbox.worker import _SUBJECT_SHORT
 
+    if _SUBJECT_SHORT.fullmatch(row.subject_short) is None:  # noqa: SLF001
+        raise ValueError("only a reconstructable subject_short may be degraded")
     if _SUBJECT_SHORT.fullmatch(_TEST_OWNED_INVALID_SUBJECT_SHORT):  # noqa: SLF001
         raise AssertionError("the test-only subject corruption must remain invalid")
     row.subject_short = _TEST_OWNED_INVALID_SUBJECT_SHORT

@@ -22,6 +22,10 @@ import pytest
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.callback_inbox.contracts import (
+    RECOVERY_CLAIMABLE_STATES,
+    TERMINAL_STATES,
+)
 from app.services.order_proposals.revalidation import RungOutcome
 from app.services.order_proposals.telegram_callback import (
     handle_normalized_callback,
@@ -54,6 +58,13 @@ class _BrokerCounter:
     @property
     def mutations(self) -> int:
         return len(self.calls)
+
+
+class _SubjectShortSubclass(str):
+    """Looks string-like but is not the exact persisted ``str`` type."""
+
+
+_SUBJECT_DEGRADER_ALLOWED_STATES = ("pending", "retry_wait", "processing")
 
 
 async def _queue(inbox_cleanup: list[uuid.UUID], group) -> uuid.UUID:
@@ -589,26 +600,79 @@ async def test_a_stored_envelope_that_cannot_be_rebuilt_is_discarded(
 
 
 @pytest.mark.asyncio
-async def test_test_owned_subject_degrader_refuses_to_rearm_a_scrubbed_subject(
+@pytest.mark.parametrize(
+    ("state", "subject_short", "accepted"),
+    [
+        *(
+            pytest.param(state, "deadbeef", True, id=f"allows-{state}")
+            for state in _SUBJECT_DEGRADER_ALLOWED_STATES
+        ),
+        *(
+            pytest.param(state, "deadbeef", False, id=f"terminal-{state}")
+            for state in sorted(TERMINAL_STATES)
+        ),
+        pytest.param("unknown", "deadbeef", False, id="unknown-state"),
+        pytest.param(None, "deadbeef", False, id="none-state"),
+        pytest.param(0, "deadbeef", False, id="non-string-state"),
+        pytest.param("pending", None, False, id="none-subject"),
+        pytest.param("pending", 8, False, id="non-string-subject"),
+        pytest.param(
+            "pending",
+            _SubjectShortSubclass("deadbeef"),
+            False,
+            id="string-subclass-subject",
+        ),
+        pytest.param("pending", "zzzzzzzz", False, id="invalid-subject"),
+    ],
+)
+async def test_test_owned_subject_degrader_accepts_only_reconstructable_recovery_rows(
     inbox_cleanup: list[uuid.UUID],
+    state: object,
+    subject_short: object,
+    *,
+    accepted: bool,
 ) -> None:
-    """The narrow corrupt-envelope helper cannot resurrect terminal authority."""
+    """The test-only corruption seam has no state or type escape hatch."""
 
-    class _ScrubbedSubjectSession:
+    class _SubjectShortSession:
         def __init__(self) -> None:
+            self.row = SimpleNamespace(state=state, subject_short=subject_short)
             self.scalar_calls = 0
+            self.flush_calls = 0
 
         async def scalar(self, _statement: object) -> SimpleNamespace:
             self.scalar_calls += 1
-            return SimpleNamespace(state="pending", subject_short=None)
+            return self.row
 
+        async def flush(self) -> None:
+            self.flush_calls += 1
+
+    assert RECOVERY_CLAIMABLE_STATES == frozenset(_SUBJECT_DEGRADER_ALLOWED_STATES)
     job_id = uuid.uuid4()
     inbox_cleanup.append(job_id)
-    session = _ScrubbedSubjectSession()
+    session = _SubjectShortSession()
+    original_state = session.row.state
+    original_subject_short = session.row.subject_short
 
-    with pytest.raises(ValueError, match="may never be re-armed"):
-        await degrade_owned_callback_subject_short(
-            session,  # type: ignore[arg-type] - the rejection occurs before flush
+    if accepted:
+        row = await degrade_owned_callback_subject_short(
+            session,  # type: ignore[arg-type] - test double observes only this seam
             job_id,
         )
-    assert session.scalar_calls == 1
+        from app.services.order_proposals.callback_inbox.worker import _SUBJECT_SHORT
+
+        assert row is session.row
+        assert session.row.subject_short == "zzzzzzzz"
+        assert _SUBJECT_SHORT.fullmatch(session.row.subject_short) is None  # noqa: SLF001
+        assert session.scalar_calls == 1
+        assert session.flush_calls == 1
+    else:
+        with pytest.raises(ValueError):
+            await degrade_owned_callback_subject_short(
+                session,  # type: ignore[arg-type] - test double observes only this seam
+                job_id,
+            )
+        assert session.scalar_calls == 1
+        assert session.flush_calls == 0
+        assert session.row.state is original_state
+        assert session.row.subject_short is original_subject_short
