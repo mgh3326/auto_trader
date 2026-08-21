@@ -11,6 +11,7 @@ terminal row even when the code that should have scrubbed it is skipped.
 from __future__ import annotations
 
 import ast
+import contextlib
 import datetime as dt
 import importlib.util
 import pathlib
@@ -33,7 +34,7 @@ _PARENT = "20260820_rob1290_reconcile"
 
 
 @pytest.mark.unit
-def test_the_migration_declares_the_exact_c86_parent_and_no_row_dml() -> None:
+def test_the_migration_declares_the_exact_c86_parent() -> None:
     tree = ast.parse(_MIGRATION.read_text(encoding="utf-8"))
     assignments: dict[str, object] = {}
     for node in tree.body:
@@ -47,19 +48,106 @@ def test_the_migration_declares_the_exact_c86_parent_and_no_row_dml() -> None:
             assignments[target.id] = ast.literal_eval(value)
     assert assignments == {"revision": _REVISION, "down_revision": _PARENT}
 
-    executed = [
-        ast.literal_eval(node.args[0])
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "execute"
-        and node.args
-        and isinstance(node.args[0], ast.Constant)
-    ]
-    for statement in executed:
-        upper = str(statement).upper()
-        for dml in ("INSERT", "UPDATE ", "DELETE"):
-            assert dml not in upper, statement
+
+#: Alembic operations that write or rewrite rows. None may appear.
+_ROW_DML_OPS = frozenset(
+    {
+        "bulk_insert",
+        "execute",
+        "executemany",
+    }
+)
+#: Alembic operations that touch an existing schema object.
+_MUTATION_OPS = frozenset(
+    {
+        "alter_column",
+        "drop_column",
+        "add_column",
+        "rename_table",
+        "drop_constraint",
+        "create_check_constraint",
+        "create_foreign_key",
+        "create_primary_key",
+        "create_unique_constraint",
+        "alter_table",
+        "batch_alter_table",
+    }
+)
+#: Every op the migration is allowed to use, and the object each may name.
+_ALLOWED_OPS = frozenset({"create_table", "drop_table", "create_index", "drop_index"})
+
+
+@pytest.mark.unit
+def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
+    """R6 strengthening 5 — cover the whole surface, not just literal SQL.
+
+    A string-literal scan misses ``op.bulk_insert``, ``sa.text`` built from a
+    variable, and every ALTER-shaped op. This walks the call graph instead:
+    only ``create_table``/``drop_table``/``create_index``/``drop_index`` may
+    appear, every one of them must name ``telegram_callback_inbox`` in the
+    ``review`` schema, and no row-writing or schema-mutating op may be present
+    at all.
+    """
+    source = _MIGRATION.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    ops: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        owner = node.func.value
+        if isinstance(owner, ast.Name) and owner.id == "op":
+            ops.append((node.func.attr, node.lineno))
+
+    used = {name for name, _ in ops if name != "f"}
+    assert not (used & _ROW_DML_OPS), f"row DML in an additive migration: {used}"
+    assert not (used & _MUTATION_OPS), f"schema mutation: {used & _MUTATION_OPS}"
+    assert used <= _ALLOWED_OPS, (
+        f"unexpected alembic ops: {sorted(used - _ALLOWED_OPS)}"
+    )
+    assert "create_table" in used and "drop_table" in used
+
+    # Every op names this table, in this schema, and nothing else.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        owner = node.func.value
+        if not (isinstance(owner, ast.Name) and owner.id == "op"):
+            continue
+        if node.func.attr not in _ALLOWED_OPS:
+            continue
+        rendered = ast.dump(node)
+        assert "_TABLE" in rendered or "telegram_callback_inbox" in rendered, (
+            f"line {node.lineno}: an op that does not name the inbox table"
+        )
+        schemas = [
+            kw for kw in node.keywords if kw.arg in {"schema", "table_name", "schema_"}
+        ]
+        if any(kw.arg == "schema" for kw in schemas):
+            schema_kw = next(kw for kw in schemas if kw.arg == "schema")
+            rendered_schema = ast.dump(schema_kw.value)
+            assert "_SCHEMA" in rendered_schema or "review" in rendered_schema, (
+                f"line {node.lineno}: an op outside the review schema"
+            )
+
+    # The module-level constants those ops resolve to.
+    namespace: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            with contextlib.suppress(ValueError):
+                namespace[node.targets[0].id] = ast.literal_eval(node.value)
+    assert namespace.get("_TABLE") == "telegram_callback_inbox"
+    assert namespace.get("_SCHEMA") == "review"
+
+    # And no other table name appears anywhere in the file's SQL text.
+    for other_table in (
+        "order_proposals",
+        "order_proposal_rungs",
+        "order_proposal_approval_batches",
+        "alembic_version",
+        "watch_event_repricing_claims",
+    ):
+        assert other_table not in source.split('"""', 2)[-1], other_table
 
 
 @pytest.mark.unit

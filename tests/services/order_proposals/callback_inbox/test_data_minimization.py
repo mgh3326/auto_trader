@@ -114,7 +114,16 @@ def test_the_inbox_table_stores_no_raw_update_and_no_free_text() -> None:
 
 
 def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
-    """R2 — an identity digest, not a hash of the raw JSON."""
+    """R6 strengthening 4 — the separator is *in the hash input*.
+
+    A constant that merely contains the word "telegram" proves nothing. This
+    recomputes the digest by hand from the documented canonical form and
+    requires an exact match, then shows that perturbing the domain, or either
+    identity component, changes the output.
+    """
+    import hashlib
+    import json
+
     from app.services.order_proposals.callback_inbox.contracts import (
         UPDATE_DIGEST_DOMAIN,
         build_update_digest,
@@ -126,17 +135,59 @@ def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
     assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
     assert_no_sentinels(digest, where="update_digest")
 
-    # Domain separation: the same identity under another domain is a different
-    # digest, so a tombstone can never be replayed across surfaces.
-    assert "telegram" in UPDATE_DIGEST_DOMAIN
+    def _expected(domain: str, update_id: object, query_id: object) -> str:
+        canonical = json.dumps(
+            {
+                "domain": domain,
+                "update_id": None if update_id is None else str(update_id),
+                "callback_query_id": None if query_id is None else str(query_id),
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    # The real separator is fed in: recomputing with it matches exactly ...
+    assert digest == _expected(UPDATE_DIGEST_DOMAIN, 123, FAKE_CALLBACK_QUERY_ID)
+    # ... and recomputing with any other domain does not.
+    for other in (
+        "",
+        "telegram",
+        UPDATE_DIGEST_DOMAIN + "x",
+        UPDATE_DIGEST_DOMAIN.replace("v1", "v2"),
+        "order_proposals.telegram_callback_inbox.delivery",
+    ):
+        assert digest != _expected(other, 123, FAKE_CALLBACK_QUERY_ID), other
+
+    # Every identity component participates.
+    assert digest != build_update_digest(
+        update_id=124, callback_query_id=FAKE_CALLBACK_QUERY_ID
+    )
     assert digest != build_update_digest(update_id=123, callback_query_id=None)
     assert digest != build_update_digest(
         update_id=None, callback_query_id=FAKE_CALLBACK_QUERY_ID
     )
-    # Stable across calls and independent of unrelated payload fields.
+    # ... and the two are not interchangeable, so a swap cannot collide.
+    assert build_update_digest(
+        update_id="a", callback_query_id="b"
+    ) != build_update_digest(update_id="b", callback_query_id="a")
+    # Deterministic.
     assert digest == build_update_digest(
         update_id=123, callback_query_id=FAKE_CALLBACK_QUERY_ID
     )
+
+
+def test_a_changed_binding_changes_the_stored_envelope_not_the_digest() -> None:
+    """The digest is a *delivery* identity, which is why a tampered envelope
+    reusing one is a conflict rather than a duplicate (see the ingress suite).
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        build_update_digest,
+    )
+
+    same = build_update_digest(update_id=7, callback_query_id="cbq-7")
+    assert same == build_update_digest(update_id=7, callback_query_id="cbq-7")
 
 
 def test_only_a_job_uuid_ever_reaches_the_queue() -> None:

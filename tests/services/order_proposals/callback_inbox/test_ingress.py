@@ -14,6 +14,7 @@ The contract this file pins:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from typing import Any
@@ -394,6 +395,79 @@ async def test_persist_failure_raises_and_never_attempts_the_kick(
             enqueue_fn=_enqueue,
         )
     assert kicked == []
+
+
+@pytest.mark.asyncio
+async def test_a_failure_at_the_real_commit_returns_503_and_never_enqueues(
+    _bootstrap_test_schema,
+) -> None:
+    """R6 strengthening 2 — fail at ``commit()``, not before it.
+
+    The sibling test explodes during ``execute``/``flush``, which never
+    reaches the interesting boundary. Here the INSERT really is built and
+    flushed against the real session, and only the commit fails -- the shape
+    of a lost connection at exactly the wrong moment. The row must not exist,
+    the caller must get ``CallbackInboxUnavailable``, and the producer must
+    never have been asked to do anything.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        build_update_digest,
+    )
+    from app.services.order_proposals.callback_inbox.ingress import (
+        CallbackInboxUnavailable,
+        ingest_callback_update,
+    )
+
+    kicked: list[uuid.UUID] = []
+
+    async def _enqueue(job_id: uuid.UUID) -> None:  # pragma: no cover - must not run
+        kicked.append(job_id)
+
+    update_id = 745_000 + uuid.uuid4().int % 10_000
+    callback_id = f"cbq-{update_id}"
+    flushed: list[int] = []
+
+    class _CommitFails:
+        """A real session whose commit is the only thing that breaks."""
+
+        def __init__(self, session) -> None:
+            self._session = session
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+        async def flush(self, *args, **kwargs):
+            result = await self._session.flush(*args, **kwargs)
+            flushed.append(1)
+            return result
+
+        async def commit(self):
+            raise ConnectionResetError("connection lost at commit")
+
+    @contextlib.asynccontextmanager
+    async def _factory():
+        async with AsyncSessionLocal() as session:
+            try:
+                yield _CommitFails(session)
+            finally:
+                await session.rollback()
+
+    with pytest.raises(CallbackInboxUnavailable):
+        await ingest_callback_update(
+            make_update(
+                data=_valid_callback_data(),
+                update_id=update_id,
+                callback_id=callback_id,
+            ),
+            now=now_kst(),
+            session_factory=_factory,
+            enqueue_fn=_enqueue,
+        )
+
+    assert flushed == [1], "the insert never reached the real session"
+    assert kicked == [], "a failed commit still kicked the queue"
+    digest = build_update_digest(update_id=update_id, callback_query_id=callback_id)
+    assert await _count_rows(digest) == 0, "an uncommitted row became visible"
 
 
 @pytest.mark.asyncio

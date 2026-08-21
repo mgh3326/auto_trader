@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.config import settings
 
@@ -211,8 +212,6 @@ async def test_db_persist_failure_returns_503_and_never_enqueues(
         CallbackInboxUnavailable,
     )
 
-    enqueued: list[uuid.UUID] = []
-
     async def _ingest(update, **kwargs):
         raise CallbackInboxUnavailable("persist_failed")
 
@@ -224,7 +223,6 @@ async def test_db_persist_failure_returns_503_and_never_enqueues(
         response = await _post(_build_app(), _VALID_UPDATE)
 
     assert response.status_code == 503
-    assert enqueued == []
     inline.assert_not_awaited()
 
 
@@ -360,3 +358,127 @@ async def test_the_enable_gate_still_wins_over_the_durable_gate(
     assert response.status_code == 503
     assert response.json()["detail"]["error"] == "order_proposals_telegram_disabled"
     ingest.assert_not_awaited()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_the_route_end_to_end_enqueues_only_an_opaque_job_uuid(
+    _armed: None, _bootstrap_test_schema, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R6 strengthening 3 — the route, the real ingress, the real producer.
+
+    Nothing is patched between the HTTP request and ``kiq``: the only fake is
+    the broker's transport, so the bytes captured here are the bytes Redis
+    would have received. The route is exercised over ASGI, so this also pins
+    that the request thread's whole job is "commit, kick, 200".
+    """
+    import json
+
+    from sqlalchemy import delete
+
+    from app.core.db import AsyncSessionLocal
+    from app.core.taskiq_broker import broker
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+    from app.services.order_proposals.approval_message import build_callback_data
+    from app.services.order_proposals.dispatch_contract import (
+        ApprovalCardKind,
+        DispatchBinding,
+        build_membership_digest,
+    )
+
+    sent: list[Any] = []
+
+    async def _fake_transport(message):
+        sent.append(message)
+
+    monkeypatch.setattr(broker, "kick", _fake_transport)
+
+    chat_id = -1007766554433
+    user_id = 5544332211009
+    message_id = 876543210
+    nonce = "routekick99"
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        str(chat_id),
+        raising=False,
+    )
+
+    proposal_id = uuid.uuid4()
+    data = build_callback_data(
+        action="op",
+        proposal_id=proposal_id,
+        nonce=nonce,
+        binding=DispatchBinding(
+            attempt_id=uuid.uuid4(),
+            card_kind=ApprovalCardKind.MANUAL,
+            membership_revision=1,
+            membership_digest=build_membership_digest(
+                card_kind=ApprovalCardKind.MANUAL,
+                membership_revision=1,
+                members=[{"proposal_id": str(proposal_id), "approval_nonce": nonce}],
+            ),
+        ),
+    )
+    update_id = 995_000 + uuid.uuid4().int % 10_000
+    callback_id = f"cbq-route-{update_id}"
+
+    try:
+        response = await _post(
+            _build_app(),
+            {
+                "update_id": update_id,
+                "callback_query": {
+                    "id": callback_id,
+                    "from": {"id": user_id},
+                    "message": {
+                        "chat": {"id": chat_id},
+                        "message_id": message_id,
+                    },
+                    "data": data,
+                },
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+
+        assert len(sent) == 1, sent
+        raw = sent[0].message.decode()
+        payload = json.loads(raw)
+        assert payload["task_name"] == "order_proposals.telegram_callback_job"
+        assert payload["kwargs"] == {}
+        assert len(payload["args"]) == 1
+        job_id = uuid.UUID(payload["args"][0])  # opaque, and really a UUID
+
+        for leaked in (
+            nonce,
+            callback_id,
+            str(chat_id),
+            str(user_id),
+            str(message_id),
+            str(update_id),
+            data,
+            str(proposal_id),
+            "callback_query",
+        ):
+            assert leaked not in raw, f"the queue payload leaked {leaked!r}"
+
+        # The committed row is the ACK, and it is the job that was kicked.
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(TelegramCallbackInboxJob).where(
+                        TelegramCallbackInboxJob.job_id == job_id
+                    )
+                )
+            ).scalar_one()
+            assert row.state == "pending"
+            assert row.chat_id == str(chat_id)
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                delete(TelegramCallbackInboxJob).where(
+                    TelegramCallbackInboxJob.callback_query_id == callback_id
+                )
+            )
+            await session.commit()

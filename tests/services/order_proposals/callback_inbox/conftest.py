@@ -241,6 +241,159 @@ def proposal_callback_data(group, *, action: str = "op") -> str:
     )
 
 
+async def seed_auto_veto_proposal(session, *, nonce: str, symbol: str = "005930"):
+    """A resting auto-submitted order carrying a `vc` (veto/cancel) card."""
+    service = OrderProposalsService(session)
+    now = datetime.now(UTC)
+    group = await service.create_proposal(
+        symbol=symbol,
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        thesis="w5 auto-veto fixture",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("97000"), None)],
+        source_asof={
+            "auto_approved": {
+                "policy_version": "test-policy",
+                "approved_at": now.isoformat(),
+                "eligibility": [],
+                "outcomes": ["submitted_resting"],
+            }
+        },
+    )
+    await service.transition_rung(group.proposal_id, 0, new_state="revalidating")
+    await service.transition_rung(group.proposal_id, 0, new_state="approved")
+    await service.transition_rung(group.proposal_id, 0, new_state="submitting")
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=f"broker-{uuid.uuid4().hex[:8]}",
+        correlation_id=f"corr-{uuid.uuid4().hex[:8]}",
+        idempotency_key=f"idem-{uuid.uuid4().hex[:8]}",
+        approval_hash_digest="digest-auto-1",
+        now=now,
+    )
+    await service.set_approval_nonce(group.proposal_id, nonce)
+    await _publish_fixture_card(
+        service, group, nonce=nonce, card_kind=ApprovalCardKind.AUTO_VETO
+    )
+    await session.commit()
+    return group
+
+
+async def seed_loss_cut_proposal(session, monkeypatch, *, nonce: str):
+    """A loss-cut proposal carrying an `lc` (confirm) card."""
+    retro = type(
+        "Retro",
+        (),
+        {
+            "id": 42,
+            "symbol": "AAPL",
+            "trigger_type": "stop_loss",
+            "created_at": datetime.now(UTC),
+            "lesson": "손절 기준을 늦추지 않는다",
+        },
+    )()
+
+    async def fake_lookup(_session, retrospective_id):
+        assert retrospective_id == 42
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("99"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-1285",
+    )
+    dispatched_at = datetime.now(UTC)
+    window = await allow_known_session(group, now=dispatched_at)
+    await service.record_approval_dispatch(
+        group.proposal_id,
+        message_id=555,
+        chat_id=str(CHAT_ID),
+        now=dispatched_at,
+        approval_window_policy_stamp=window.policy_stamp,
+    )
+    await service.set_approval_nonce(group.proposal_id, nonce)
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce=nonce,
+        card_kind=ApprovalCardKind.LOSS_CUT_CONFIRMATION,
+    )
+    await session.commit()
+    return group
+
+
+async def seed_approval_batch(session, *, member_count: int = 2):
+    """A `ba` (batch) card covering several published proposals."""
+    from app.services.order_proposals.approval_message import build_batch_callback_data
+
+    service = OrderProposalsService(session)
+    now = datetime.now(UTC)
+    groups = []
+    registration = None
+    for index in range(member_count):
+        group = await seed_proposal(
+            session,
+            nonce=f"bm{uuid.uuid4().hex[:9]}",
+            symbol=f"BW{index}",
+        )
+        groups.append(group)
+        registration = await service.register_approval_batch_member(
+            group.proposal_id,
+            chat_id=str(CHAT_ID),
+            approval_message_id=7100 + index,
+            now=now + timedelta(seconds=index),
+            summary_member_threshold=member_count,
+        )
+    await session.commit()
+    assert registration is not None and registration.binding is not None
+    batch = registration.batch
+    result = await service.finish_approval_batch_dispatch(
+        batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        publication=_successful_publication(7999),
+        now=now + timedelta(seconds=member_count),
+    )
+    assert result.ok
+    await session.commit()
+    data = build_batch_callback_data(
+        batch_id=batch.batch_id,
+        nonce=batch.approval_nonce,
+        binding=registration.binding,
+    )
+    return batch, groups, data
+
+
+async def consume_nonce(proposal_id: uuid.UUID) -> None:
+    """Spend an approval out of band, as a first click would have."""
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text(
+                "UPDATE review.order_proposals SET approval_nonce_used_at = now() "
+                "WHERE proposal_id = :pid"
+            ),
+            {"pid": proposal_id},
+        )
+        await session.commit()
+
+
 @pytest_asyncio.fixture
 async def inbox_cleanup(_bootstrap_test_schema) -> AsyncIterator[list[uuid.UUID]]:
     """Delete every inbox row a test created, whatever the outcome."""
