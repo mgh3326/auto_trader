@@ -1,24 +1,32 @@
 """D2 one-shot remediation CLI — the operator entry point for the writer.
 
-Default-disabled, dry-run by default, and bound to the sealed r7 attempt-2
-snapshot.  It can express exactly three orders and no fourth:
+Default-disabled, dry-run by default, and bound to the sealed r8 attempt-2
+snapshot (operator decision §132차).  It can express exactly three orders and
+no fourth:
 
-    BTCUSDT  SELL LIMIT 0.00015000    @ 69266.01000000
-    ETHUSDT  SELL LIMIT 0.00520000    @  2248.56000000
-    USDCUSDT SELL LIMIT 5000.00000000 @     1.00072000
+    BTCUSDT  SELL LIMIT 0.00015000    @ 75421.27000000
+    ETHUSDT  SELL LIMIT 0.00520000    @  2368.46000000
+    USDCUSDT SELL LIMIT 5000.00000000 @     1.00030000
 
 There is no ``--symbol``, ``--side``, ``--quantity``, or ``--price`` flag,
 because there is nothing for them to select.  The orders come from the sealed
 payload file, whose **bytes are hashed and checked against a registered
 digest** before the JSON is even parsed.
 
-**``--confirm`` cannot dispatch today, and that is by construction.** Every
-registered sealed payload carries ``dispatch_authorized=false``, the current r7
-object has ``operator_authorization=null``, no expiry, and
-``mutation_authorized=false`` on all three rows. ``--dry-run`` prints that list;
-``--confirm`` refuses on it. Authorizing dispatch takes the operator's re-sign
-(which produces different bytes, and therefore a different digest) plus a
-reviewed change that registers it.
+**What ``--confirm`` can dispatch, and what it still cannot.** Operator
+decision §134차 permits dispatch under the r8 seal *and no other seal*:
+
+    「§132차가 바인딩한 r8 봉인 — pre_snapshot_hash 4816a1d9…66f830 ·
+      manifest fa7092a3…e8431 · 수량/가격 3건 §132차 원문 — 한정으로 dispatch 를
+      허용한다. 그 외 봉인은 계속 거부한다.」
+
+So exactly one file clears the gate: the execution authority artifact
+``docs/contracts/d2-r8-execution-authority-20260821.json``. The r8 *snapshot*
+payload is registered too and still refuses — it is unsigned, has no expiry,
+and carries ``mutation_authorized=false`` on all three rows, and it was not
+rewritten to say otherwise. Passing the superseded r7 payload, an unregistered
+file, or a one-byte edit of either is refused before the JSON is parsed.
+``--dry-run`` prints the whole blocker list; ``--confirm`` refuses on it.
 
 **Relationship to ``scripts/binance_spot_demo_smoke.py``.**  That CLI is the
 ROB-298 BUY round-trip smoke path and remains exactly what it is; it does not
@@ -122,7 +130,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sealed-payload",
         type=Path,
-        help="path to the sealed r7 attempt-2 binding payload JSON",
+        help="path to a registered sealed payload JSON. Dispatch requires the "
+        "r8 execution authority "
+        "(docs/contracts/d2-r8-execution-authority-20260821.json); every other "
+        "registered payload rehearses and refuses",
     )
     return parser
 
