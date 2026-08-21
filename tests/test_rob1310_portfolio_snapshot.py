@@ -2106,3 +2106,439 @@ async def test_manual_held_key_failure_does_not_log_exception_secret(caplog):
         assert sentinel not in record.getMessage()
         assert sentinel not in repr(record.args)
         assert sentinel not in repr(record.exc_info)
+
+
+# --------------------------------------------------------------------------
+# ROB-1310 R7 audit regressions: held-key symbol seam + bounded cached Toss
+# recovery. Fake/local only; no broker, credential, or network access.
+# --------------------------------------------------------------------------
+
+
+def _held_key_home_response():
+    """A home projection whose symbols arrive in broker-specific spellings."""
+
+    from app.schemas.invest_home import (
+        Account,
+        CashAmounts,
+        Holding,
+        HomeSummary,
+        InvestHomeResponse,
+    )
+
+    return InvestHomeResponse(
+        homeSummary=HomeSummary(
+            includedSources=["kis", "upbit"],
+            excludedSources=[],
+            totalValueKrw=1_000,
+        ),
+        accounts=[
+            Account(
+                accountId="kis_account",
+                displayName="KIS",
+                source="kis",
+                accountKind="live",
+                includedInHome=True,
+                valueKrw=1_000,
+                cashBalances=CashAmounts(),
+                buyingPower=CashAmounts(),
+            )
+        ],
+        holdings=[
+            Holding(
+                holdingId="kis:us:BRK-B",
+                accountId="kis_account",
+                source="kis",
+                accountKind="live",
+                # Yahoo/broker spelling that must be normalized to the DB form.
+                symbol="BRK-B",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Berkshire Hathaway B",
+                quantity=1,
+                currency="USD",
+            ),
+            Holding(
+                holdingId="upbit:BTC",
+                accountId="kis_account",
+                source="upbit",
+                accountKind="live",
+                # Upbit balance spelling: the bare base coin.
+                symbol="btc",
+                market="CRYPTO",
+                assetType="crypto",
+                assetCategory="crypto",
+                displayName="Bitcoin",
+                quantity=2,
+                currency="KRW",
+            ),
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_snapshot_held_pairs_use_market_aware_symbol_helpers() -> None:
+    """ROB-1310 R7: the serialized held-key projection must go through the
+    shared market-aware symbol helpers -- ``to_db_symbol`` for KR/US and
+    ``to_upbit_symbol`` for crypto -- never a bare ``strip().upper()``.
+    """
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+
+    payload = serialize_portfolio_snapshot(_held_key_home_response())
+
+    assert payload["held_pairs"] == [
+        ["crypto", "KRW-BTC"],
+        ["us", "BRK.B"],
+    ]
+
+
+@pytest.mark.unit
+def test_held_pairs_from_portfolio_snapshot_normalizes_market_aware_symbols() -> None:
+    """A cached payload written by an older process must still be read back
+    through the same market-aware seam."""
+    from app.services.portfolio_snapshot import (
+        PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
+        held_pairs_from_portfolio_snapshot,
+    )
+
+    pairs = held_pairs_from_portfolio_snapshot(
+        {
+            "schema_version": PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
+            "held_pairs": [
+                ["us", "BRK/B"],
+                ["us", "brk-b"],
+                ["crypto", "btc"],
+                ["crypto", "KRW-BTC"],
+                ["kr", " 005930 "],
+            ],
+        }
+    )
+
+    # ``BRK/B`` and ``brk-b`` collapse onto the single DB key ``BRK.B``; the
+    # bare coin and the market-prefixed coin collapse onto ``KRW-BTC``.
+    assert pairs == [
+        ("crypto", "KRW-BTC"),
+        ("kr", "005930"),
+        ("us", "BRK.B"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_held_pairs_use_market_aware_symbol_helpers() -> None:
+    """``ManualHomeReader.fetch_held_pairs`` is the cold-snapshot manual seam;
+    it must emit the same market-aware keys as the snapshot projection."""
+    from app.services import invest_home_readers as readers
+
+    class _ManualHoldingsStub:
+        def __init__(self, _db):
+            pass
+
+        async def get_holdings_by_user(self, _user_id):
+            return [
+                SimpleNamespace(market_type="US", ticker="BRK-B", quantity=1),
+                SimpleNamespace(market_type="CRYPTO", ticker="btc", quantity=2),
+                SimpleNamespace(market_type="KR", ticker=" 005930 ", quantity=3),
+                SimpleNamespace(market_type="US", ticker="ZERO", quantity=0),
+            ]
+
+    reader = readers.ManualHomeReader.__new__(readers.ManualHomeReader)
+    reader._db = None
+    reader._service = _ManualHoldingsStub(None)
+    reader._quote_service = None
+
+    assert await reader.fetch_held_pairs(user_id=1) == [
+        ("crypto", "KRW-BTC"),
+        ("kr", "005930"),
+        ("us", "BRK.B"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_service_manual_held_pairs_use_market_aware_symbol_helpers() -> None:
+    """The typed cold-snapshot error carries manual keys for the same seam;
+    they must not be a differently-normalized dialect."""
+    from app.services.invest_home_service import (
+        InvestHomeService,
+        PortfolioSnapshotUnavailableError,
+    )
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    class _ManualKeyReader:
+        async def fetch_held_pairs(self, *, user_id: int):
+            return [("US", "BRK/B"), ("CRYPTO", "btc"), ("KR", " 005930 ")]
+
+    class _ExplodingReader:
+        async def fetch(self, *, user_id: int):
+            raise AssertionError("held-key projection must not run full readers")
+
+    cache = PortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+    )
+    service = InvestHomeService(
+        kis_reader=_ExplodingReader(),
+        upbit_reader=_ExplodingReader(),
+        manual_reader=_ManualKeyReader(),
+        toss_api_reader=_ExplodingReader(),
+        snapshot_cache=cache,
+    )
+
+    with pytest.raises(PortfolioSnapshotUnavailableError) as excinfo:
+        await service.get_held_pairs(user_id=1)
+
+    assert excinfo.value.manual_pairs == [
+        ("crypto", "KRW-BTC"),
+        ("kr", "005930"),
+        ("us", "BRK.B"),
+    ]
+
+
+class _FailingHoldingsTossClient:
+    """Fake Toss client whose holdings fanout always fails at the broker."""
+
+    def __init__(self, *, cash_gate: asyncio.Event | None = None) -> None:
+        self.holdings_calls = 0
+        self.buying_power_calls = 0
+        self.sellable_calls = 0
+        self.cash_cancelled = False
+        self.closed = False
+        self.buying_power_after_close = 0
+        self._cash_gate = cash_gate
+
+    async def holdings(self):
+        self.holdings_calls += 1
+        raise RuntimeError("toss holdings outage")
+
+    async def sellable_quantity(self, *, symbol: str):
+        self.sellable_calls += 1
+        raise AssertionError("general snapshot must not call sellable_quantity")
+
+    async def buying_power(self, *, currency: str):
+        self.buying_power_calls += 1
+        if self.closed:
+            self.buying_power_after_close += 1
+        if self._cash_gate is not None:
+            try:
+                await self._cash_gate.wait()
+            except asyncio.CancelledError:
+                self.cash_cancelled = True
+                raise
+        return SimpleNamespace(currency=currency, cash_buying_power=Decimal("100"))
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_shared_toss_snapshot_upstream_failure_fans_out_to_broker_once() -> None:
+    """ROB-1310 R7: an upstream broker failure is not corrupt-cache evidence.
+    It must propagate after exactly one fanout instead of re-entering the
+    recovery path and multiplying load on an already failing broker.
+    """
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    client = _FailingHoldingsTossClient()
+    cache = TossPortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="toss holdings outage"):
+        await fetch_toss_portfolio_snapshot(
+            client=client,
+            need_cash=False,
+            snapshot_cache=cache,
+            use_shared_snapshot=True,
+        )
+
+    assert client.holdings_calls == 1
+    assert client.sellable_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_shared_toss_snapshot_failure_cancels_and_drains_pending_cash_task() -> (
+    None
+):
+    """ROB-707 already guards this on the uncached path: when the positions
+    chain fails the sibling cash task must be cancelled and drained before the
+    owned client is closed, so it never touches a closed client and never
+    leaves an unretrieved task exception.
+    """
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    cash_gate = asyncio.Event()
+    client = _FailingHoldingsTossClient(cash_gate=cash_gate)
+    cache = TossPortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="toss holdings outage"):
+        await fetch_toss_portfolio_snapshot(
+            client=client,
+            need_cash=True,
+            snapshot_cache=cache,
+            use_shared_snapshot=True,
+        )
+
+    assert client.cash_cancelled is True
+    assert client.buying_power_after_close == 0
+
+    # Nothing may still be pending against the (now closed) client.
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and not task.done()
+    ]
+    assert pending == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_shared_toss_snapshot_corrupt_payload_still_reenters_singleflight() -> (
+    None
+):
+    """Deserialization corruption -- and only that -- keeps its CAS-delete and
+    single bounded re-entry into the shared singleflight."""
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+    await cache.put("positions", {"positions": [{"symbol": "AAPL"}]})
+
+    client = _CountingTossClient()
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=client,
+        need_cash=False,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+
+    assert client.holdings_calls == 1
+    assert [position.symbol for position in snapshot.positions] == ["AAPL"]
+    assert snapshot.positions[0].sellable_quantity is None
+
+
+@pytest.mark.unit
+def test_snapshot_cache_decimal_parse_error_is_a_value_error() -> None:
+    """A non-numeric cached decimal must surface as the intended ``ValueError``
+    (corrupt-cache evidence), not as a bare ``decimal.InvalidOperation`` that
+    the narrowed recovery path would treat as an upstream failure.
+    """
+    from app.services.toss_portfolio_service import _decimal_from_snapshot_cache
+
+    with pytest.raises(ValueError, match="invalid quantity"):
+        _decimal_from_snapshot_cache("not-a-number", field="quantity")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_snapshot_cache_recovery_observes_actual_owner_token() -> None:
+    """ROB-1310 R7: a lost recovery ``SET NX`` returns ``None``. Recording that
+    ``None`` as the observed owner makes the *next* token comparison always read
+    as "a recovery owner just took over" and grants one unearned extra wait
+    budget. The waiter must record the actual current owner token instead.
+    """
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    cache = TossPortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=0.02,
+        poll_interval_seconds=0.005,
+    )
+
+    lease_probes = 0
+
+    async def _never_acquire(_scope: str):
+        # Every SET NX loses: another waiter is always the recovery owner.
+        return None
+
+    async def _lock_remaining(_scope: str):
+        nonlocal lease_probes
+        lease_probes += 1
+        # First probe: the previous owner's lease has expired, so the waiter
+        # enters bounded crash recovery. Afterwards a live recovery owner
+        # holds the lease under a stable token.
+        return 0.0 if lease_probes == 1 else 5.0
+
+    async def _lock_token(_scope: str):
+        return "recovery-owner-token"
+
+    cache._acquire = _never_acquire  # type: ignore[method-assign]
+    cache._lock_remaining_seconds = _lock_remaining  # type: ignore[method-assign]
+    cache._lock_token = _lock_token  # type: ignore[method-assign]
+
+    async def _fetcher():
+        raise AssertionError("waiter must not fetch while a recovery owner holds it")
+
+    with pytest.raises(TimeoutError, match="owner did not complete"):
+        await cache.get_or_fetch("positions", _fetcher)
+
+    # One probe for the expired lease (crash recovery) plus one for the live
+    # recovery owner under an unchanged token. A third probe means the ``None``
+    # observation granted an extra unearned window.
+    assert lease_probes == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "app.services.portfolio_snapshot_cache",
+        "app.services.toss_portfolio_snapshot_cache",
+    ],
+)
+async def test_reset_shared_snapshot_cache_closes_the_client_it_owns(
+    monkeypatch, module_name: str
+) -> None:
+    """ROB-1310 R7: the factory owns the Redis client it creates. Dropping the
+    process-local singleton without closing it leaks that client's connection
+    pool for every reset.
+    """
+    import importlib
+
+    module = importlib.import_module(module_name)
+
+    class _RecordingRedis:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    created: list[_RecordingRedis] = []
+
+    def _fake_from_url(*_args, **_kwargs):
+        client = _RecordingRedis()
+        created.append(client)
+        return client
+
+    module.reset_shared_portfolio_snapshot_cache()
+    monkeypatch.setattr(module.redis, "from_url", _fake_from_url)
+    try:
+        module.get_shared_portfolio_snapshot_cache()
+        assert len(created) == 1
+
+        module.reset_shared_portfolio_snapshot_cache()
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert created[0].closed is True
+    finally:
+        module.reset_shared_portfolio_snapshot_cache()

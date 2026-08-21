@@ -1171,6 +1171,13 @@ async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_se
 
     calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
 
+    # ROB-1310 R7: gate the leader on an explicit Event instead of a real
+    # 3.2s sleep. The old sleep exceeded the 3s follower wait budget, so the
+    # follower could time out of the singleflight and compose the readers
+    # itself (breaking the call counts), and it added 3s to every suite run.
+    leader_entered = asyncio.Event()
+    leader_release = asyncio.Event()
+
     class _CountingReader:
         def __init__(self, source: str, holding: Holding | None = None):
             self.source = source
@@ -1179,7 +1186,8 @@ async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_se
         async def fetch(self, *, user_id):
             calls[self.source] += 1
             if self.source == "kis":
-                await asyncio.sleep(3.2)
+                leader_entered.set()
+                await leader_release.wait()
             return _SourceFetchResult(
                 accounts=[], holdings=[self.holding] if self.holding else []
             )
@@ -1237,9 +1245,15 @@ async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_se
         snapshot_cache=cache_b,
     )
 
-    first, second = await asyncio.gather(
-        service_a.get_home(user_id=1), service_b.get_home(user_id=1)
-    )
+    leader_task = asyncio.create_task(service_a.get_home(user_id=1))
+    # The leader now owns the distributed lease, so the follower can only wait.
+    await leader_entered.wait()
+    follower_task = asyncio.create_task(service_b.get_home(user_id=1))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    leader_release.set()
+
+    first, second = await asyncio.gather(leader_task, follower_task)
 
     assert first == second
     assert calls == {"kis": 1, "upbit": 1, "toss_api": 1, "manual": 1}

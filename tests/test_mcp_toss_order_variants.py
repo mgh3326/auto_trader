@@ -3228,3 +3228,161 @@ async def test_client_order_id_same_day_stable_next_day_new(monkeypatch):
     cid2 = day2["payload_preview"]["clientOrderId"]
     assert cid1a == cid1b  # same trading day -> broker/ledger dedupe key
     assert cid1a != cid2  # next trading day -> new order allowed
+
+
+# --------------------------------------------------------------------------
+# ROB-1310 R7: positive sell-preflight contract pins + documentation sync.
+# Fake client only; no broker, credential, or network access.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_sell_success_reports_fresh_sellable_evidence(monkeypatch):
+    """A successful live sell must publish the broker-preflight evidence that
+    authorized its size, so the response cannot be confused with a cached or
+    snapshot-derived sizing decision."""
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("110"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("10")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity="4",
+        price="150",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert result["mutation_sent"] is True
+    # The fresh broker read happened, and its result is the published authority.
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert result["fresh_sellable_quantity"] == "10"
+    assert result["sellable_quantity_source"] == "toss_broker_preflight"
+
+
+@pytest.mark.asyncio
+async def test_us_sell_modify_success_reports_fresh_sellable_evidence(monkeypatch):
+    """The modify replacement path publishes the same preflight evidence."""
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("4"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("150"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("10")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert result["fresh_sellable_quantity"] == "10"
+    assert result["sellable_quantity_source"] == "toss_broker_preflight"
+
+
+@pytest.mark.unit
+def test_live_sell_explicit_quantity_requirement_is_documented():
+    """ROB-1310 R7: live SELL placement rejects orderAmount-only requests
+    before any broker mutation. The public MCP surfaces must say so."""
+    from pathlib import Path
+
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    registered: dict[str, str] = {}
+
+    class _RecordingMCP:
+        def tool(self, *, name: str, description: str = "", **_kwargs):
+            registered[name] = description
+
+            def _decorator(fn):
+                return fn
+
+            return _decorator
+
+    otv.register_toss_live_order_tools(_RecordingMCP())
+
+    place_description = registered["toss_place_order"]
+    assert "quantity" in place_description
+    assert "orderAmount" in place_description
+    assert "sell" in place_description.lower()
+
+    readme = Path(otv.__file__).resolve().parents[1] / "README.md"
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "orderAmount-only" in readme_text
+    assert "sell_quantity_required" in readme_text
