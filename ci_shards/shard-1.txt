@@ -164,6 +164,7 @@ tests/services/market_close_digest/test_service.py
 tests/services/market_close_digest/test_static_boundaries.py
 tests/services/mock_integration/test_kiwoom_coordination_adapter.py
 tests/services/order_proposals/callback_inbox/test_ingress.py
+tests/services/order_proposals/callback_inbox/test_repository_boundary.py
 tests/services/order_proposals/callback_inbox/test_seam_equivalence.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_dispatch_security_invariants.py

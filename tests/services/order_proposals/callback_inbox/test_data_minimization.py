@@ -105,8 +105,12 @@ def test_the_inbox_table_stores_no_raw_update_and_no_free_text() -> None:
     }
     for column in table.columns:
         assert not isinstance(column.type, JSONB | JSON | ARRAY), column.name
-    for forbidden in ("payload", "update", "raw", "text", "body", "token", "headers"):
+    # ``update_digest`` is the one-way dedupe tombstone, not the update; every
+    # other shape that could hold a payload or a message body is banned.
+    for forbidden in ("payload", "raw", "body", "token", "header", "secret"):
         assert not any(forbidden in name for name in table.columns.keys()), forbidden
+    for exact in ("data", "text", "update", "message", "callback_data"):
+        assert exact not in table.columns, exact
 
 
 def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:

@@ -65,7 +65,7 @@ def test_the_migration_declares_the_exact_c86_parent_and_no_row_dml() -> None:
 @pytest.mark.unit
 def test_the_migration_chain_still_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
-    heads = script.get_heads()
+    heads = tuple(script.get_heads())
     assert heads == (_REVISION,), heads
 
 
@@ -89,15 +89,16 @@ _INSERT = sa.text(
     """
     INSERT INTO review.telegram_callback_inbox
         (job_id, update_digest, state, attempt_count, max_attempts,
-         received_at, available_at, callback_query_id, chat_id, message_id,
-         telegram_user_id, action, subject_short, dispatch_attempt_id,
-         membership_revision, membership_digest, nonce, outcome, error_class)
+         received_at, available_at, terminal_state_pending, callback_query_id,
+         chat_id, message_id, telegram_user_id, action, subject_short,
+         dispatch_attempt_id, membership_revision, membership_digest, nonce,
+         outcome, error_class)
     VALUES
         (:job_id, :update_digest, :state, :attempt_count, 3,
-         :now, :now, :callback_query_id, :chat_id, :message_id,
-         :telegram_user_id, :action, :subject_short, :dispatch_attempt_id,
-         :membership_revision, :membership_digest, :nonce, :outcome,
-         :error_class)
+         :now, :now, :terminal_state_pending, :callback_query_id,
+         :chat_id, :message_id, :telegram_user_id, :action, :subject_short,
+         :dispatch_attempt_id, :membership_revision, :membership_digest, :nonce,
+         :outcome, :error_class)
     """
 )
 
@@ -111,6 +112,7 @@ def _row(**overrides: object) -> dict[str, object]:
         "state": "pending",
         "attempt_count": 0,
         "now": _NOW,
+        "terminal_state_pending": None,
         "callback_query_id": "cbq-1",
         "chat_id": "42",
         "message_id": 555,
@@ -154,8 +156,172 @@ def _scrubbed() -> dict[str, object]:
     }
 
 
+#: Every authority/PII column the threat brief requires a terminal row to
+#: have dropped. Kept literal, not imported from ``contracts``, so a future
+#: edit that *shrinks* the production tuple cannot silently shrink this test
+#: with it.
+AUTHORITY_FIELDS: tuple[str, ...] = (
+    "callback_query_id",
+    "chat_id",
+    "message_id",
+    "telegram_user_id",
+    "action",
+    "subject_short",
+    "dispatch_attempt_id",
+    "membership_revision",
+    "membership_digest",
+    "nonce",
+)
+
+#: Every column a claimable row must carry, or the worker could not rebuild
+#: and re-gate the envelope.
+RECONSTRUCTION_FIELDS: tuple[str, ...] = (
+    "chat_id",
+    "action",
+    "subject_short",
+    "dispatch_attempt_id",
+    "membership_revision",
+    "membership_digest",
+    "nonce",
+)
+
+TERMINAL_STATES: tuple[str, ...] = ("succeeded", "discarded", "dead_letter")
+ACTIVE_STATES: tuple[str, ...] = ("pending", "processing", "retry_wait")
+
+_LIVE_VALUES: dict[str, object] = {
+    "callback_query_id": "cbq-1",
+    "chat_id": "42",
+    "message_id": 555,
+    "telegram_user_id": "777",
+    "action": "op",
+    "subject_short": "0123abcd",
+    "dispatch_attempt_id": uuid.UUID("11111111-2222-4333-8444-555555555555"),
+    "membership_revision": 1,
+    "membership_digest": "abcdefghijkl",
+    "nonce": "nonce123456",
+}
+
+
+def _scrubbed() -> dict[str, object]:
+    return dict.fromkeys(AUTHORITY_FIELDS)
+
+
+def _sanity(connection: sa.Connection) -> bool:
+    """A clean pending row must be accepted, or every assertion below is vacuous."""
+    return _accepts(connection)
+
+
+def _terminal_probe(connection: sa.Connection, state: str, retained: str | None):
+    """Insert a terminal row, optionally retaining exactly one authority field."""
+    overrides: dict[str, object] = {"state": state, **_scrubbed()}
+    if retained is not None:
+        overrides[retained] = _LIVE_VALUES[retained]
+    return _accepts(connection, **overrides)
+
+
+def _active_probe(connection: sa.Connection, state: str, missing: str | None):
+    """Insert an active row, optionally dropping exactly one required field."""
+    overrides: dict[str, object] = {"state": state}
+    if missing is not None:
+        overrides[missing] = None
+    return _accepts(connection, **overrides)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_every_terminal_state_rejects_every_retained_authority_field(
+    _bootstrap_test_schema,
+) -> None:
+    """R3 B1 — all 10 fields x all 3 terminal states, through raw SQL.
+
+    The previous version of this test checked four fields on one state, which
+    would have passed against a CHECK that only listed those four. Each probe
+    is a raw INSERT on a fresh connection, so the ORM service that is supposed
+    to scrub is not in the picture at all.
+    """
+    from app.core.db import AsyncSessionLocal
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        results: dict[str, bool] = {"__sanity__": _sanity(connection)}
+        for state in TERMINAL_STATES:
+            results[f"{state}::fully_scrubbed"] = _terminal_probe(
+                connection, state, None
+            )
+            for field in AUTHORITY_FIELDS:
+                results[f"{state}::{field}"] = _terminal_probe(connection, state, field)
+        return results
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    expected: dict[str, bool] = {"__sanity__": True}
+    for state in TERMINAL_STATES:
+        expected[f"{state}::fully_scrubbed"] = True
+        for field in AUTHORITY_FIELDS:
+            expected[f"{state}::{field}"] = False
+    assert observed == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_every_claimable_state_requires_every_reconstruction_field(
+    _bootstrap_test_schema,
+) -> None:
+    """R3 B1 — a half-written active row must never become a runnable job."""
+    from app.core.db import AsyncSessionLocal
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        results: dict[str, bool] = {"__sanity__": _sanity(connection)}
+        for state in ACTIVE_STATES:
+            results[f"{state}::complete"] = _active_probe(connection, state, None)
+            for field in RECONSTRUCTION_FIELDS:
+                results[f"{state}::{field}"] = _active_probe(connection, state, field)
+        return results
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    expected: dict[str, bool] = {"__sanity__": True}
+    for state in ACTIVE_STATES:
+        expected[f"{state}::complete"] = True
+        for field in RECONSTRUCTION_FIELDS:
+            expected[f"{state}::{field}"] = False
+    assert observed == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_terminal_row_may_not_retain_a_pending_terminal_marker(
+    _bootstrap_test_schema,
+) -> None:
+    """``terminal_state_pending`` is the repair marker; a finished row has none."""
+    from app.core.db import AsyncSessionLocal
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        return {
+            "retained": _accepts(
+                connection,
+                state="succeeded",
+                terminal_state_pending="succeeded",
+                **_scrubbed(),
+            ),
+            "cleared": _accepts(connection, state="succeeded", **_scrubbed()),
+        }
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    assert observed == {"retained": False, "cleared": True}
+
+
 def _constraint_behaviour(connection: sa.Connection) -> dict[str, bool]:
-    """One pass over every constraint this migration is responsible for."""
+    """The non-field constraints: dedupe, vocabularies, attempt bounds."""
     shared_digest = uuid.uuid4().hex * 2
     connection.execute(_INSERT, _row(update_digest=shared_digest))
     duplicate_digest_accepted = _accepts(connection, update_digest=shared_digest)
@@ -167,59 +333,11 @@ def _constraint_behaviour(connection: sa.Connection) -> dict[str, bool]:
         "attempts_over_max": _accepts(connection, attempt_count=4),
         "attempts_at_max": _accepts(connection, attempt_count=3),
         "unknown_action": _accepts(connection, action="zz"),
-        "active_row_missing_nonce": _accepts(connection, nonce=None),
-        "active_row_missing_chat": _accepts(connection, chat_id=None),
-        # A terminal row that kept its authority material must be refused.
-        "terminal_with_nonce": _accepts(
-            connection, state="succeeded", **{**_scrubbed(), "nonce": "nonce123456"}
-        ),
-        "terminal_with_chat": _accepts(
-            connection, state="discarded", **{**_scrubbed(), "chat_id": "42"}
-        ),
-        "terminal_with_binding": _accepts(
-            connection,
-            state="dead_letter",
-            **{**_scrubbed(), "membership_digest": "abcdefghijkl"},
-        ),
-        "terminal_with_subject": _accepts(
-            connection,
-            state="succeeded",
-            **{**_scrubbed(), "subject_short": "0123abcd"},
-        ),
-        "terminal_fully_scrubbed": _accepts(
-            connection, state="succeeded", **_scrubbed()
+        "unknown_terminal_pending": _accepts(
+            connection, terminal_state_pending="pending"
         ),
         "bad_outcome_label": _accepts(connection, outcome="leak: nonce123456"),
         "bad_error_class": _accepts(connection, error_class="not_a_class"),
-    }
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_every_constraint_behaves_as_specified(_bootstrap_test_schema) -> None:
-    from app.core.db import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as session:
-        connection = await session.connection()
-        behaviour = await connection.run_sync(_constraint_behaviour)
-        await session.rollback()
-
-    assert behaviour == {
-        "duplicate_digest": False,
-        "unknown_state": False,
-        "negative_attempts": False,
-        "attempts_over_max": False,
-        "attempts_at_max": True,
-        "unknown_action": False,
-        "active_row_missing_nonce": False,
-        "active_row_missing_chat": False,
-        "terminal_with_nonce": False,
-        "terminal_with_chat": False,
-        "terminal_with_binding": False,
-        "terminal_with_subject": False,
-        "terminal_fully_scrubbed": True,
-        "bad_outcome_label": False,
-        "bad_error_class": False,
     }
 
 

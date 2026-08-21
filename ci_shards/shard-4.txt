@@ -168,6 +168,7 @@ tests/services/market_events/test_coverage_gate.py
 tests/services/mock_integration/test_rob1266_us_readiness_contract.py
 tests/services/naver_finance/test_detail_cache_store.py
 tests/services/order_proposals/callback_inbox/test_gates_and_registration.py
+tests/services/order_proposals/callback_inbox/test_migration_chain.py
 tests/services/order_proposals/callback_inbox/test_recovery.py
 tests/services/order_proposals/test_alerts.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py

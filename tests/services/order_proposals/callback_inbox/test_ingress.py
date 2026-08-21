@@ -276,6 +276,80 @@ async def test_concurrent_duplicate_deliveries_still_create_one_row(
 
 
 @pytest.mark.asyncio
+async def test_a_concurrent_conflicting_delivery_loses_and_fails_closed(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R3 B2 — two *different* calls racing on one delivery identity.
+
+    The sequential mismatch test cannot distinguish a correct implementation
+    from one that pre-reads, sees nothing, inserts, and then converts every
+    ``IntegrityError`` into "duplicate, already queued". Under a real race the
+    loser reaches the unique violation with a genuinely different envelope, and
+    reporting that as a benign duplicate would silently drop an approval click
+    while telling Telegram everything is fine.
+
+    Whatever the interleaving: exactly one envelope is accepted, exactly one is
+    refused as a conflict, exactly one row exists, and exactly one kick fires.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        build_update_digest,
+    )
+    from app.services.order_proposals.callback_inbox.ingress import (
+        ingest_callback_update,
+    )
+
+    update_id = 780_000 + uuid.uuid4().int % 10_000
+    callback_id = f"cbq-{update_id}"
+    barrier = asyncio.Barrier(2)
+    kicked: list[uuid.UUID] = []
+
+    async def _enqueue(job_id: uuid.UUID) -> None:
+        kicked.append(job_id)
+
+    async def _attempt(nonce: str):
+        update = make_update(
+            data=_valid_callback_data(nonce=nonce),
+            update_id=update_id,
+            callback_id=callback_id,
+        )
+        await barrier.wait()
+        return await ingest_callback_update(update, now=now_kst(), enqueue_fn=_enqueue)
+
+    first, second = await asyncio.gather(
+        _attempt("noncealpha1"), _attempt("noncebravo1")
+    )
+
+    accepted = [result for result in (first, second) if result.accepted]
+    conflicted = [
+        result for result in (first, second) if result.reason == "delivery_conflict"
+    ]
+    assert len(accepted) == 1, (first, second)
+    assert len(conflicted) == 1, (first, second)
+
+    winner = accepted[0]
+    assert winner.job_id is not None
+    inbox_cleanup.append(winner.job_id)
+    assert winner.duplicate is False
+    assert winner.reason == "queued"
+
+    loser = conflicted[0]
+    assert loser.accepted is False
+    assert loser.duplicate is False, "a different envelope is not a duplicate"
+    assert loser.job_id is None, "a refused delivery must not name the winner's job"
+    assert loser.enqueued is False
+
+    assert kicked == [winner.job_id], kicked
+    digest = build_update_digest(update_id=update_id, callback_query_id=callback_id)
+    assert await _count_rows(digest) == 1
+
+    # Exactly one authority row, and it is the winner's envelope untouched.
+    row = await load_job(winner.job_id)
+    assert row is not None
+    assert row.nonce in {"noncealpha1", "noncebravo1"}
+    assert row.state == "pending"
+
+
+@pytest.mark.asyncio
 async def test_persist_failure_raises_and_never_attempts_the_kick(
     _bootstrap_test_schema,
 ) -> None:

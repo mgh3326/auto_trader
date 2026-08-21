@@ -21,6 +21,7 @@ import asyncio
 import uuid
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import text
 
 pytestmark = pytest.mark.integration
@@ -163,6 +164,7 @@ async def test_an_unlock_failure_invalidates_instead_of_pooling_the_backend(
     _bootstrap_test_schema, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A backend that still holds the lock must never go back to the pool."""
+    from app.services.order_proposals.callback_inbox import locks as locks_module
     from app.services.order_proposals.callback_inbox.contracts import (
         job_advisory_lock_key,
     )
@@ -175,14 +177,18 @@ async def test_an_unlock_failure_invalidates_instead_of_pooling_the_backend(
     assert await lock.try_acquire(key) is True
 
     connection = lock.connection_for_test()
-    original_execute = connection.execute
 
-    async def _explode(statement, *args, **kwargs):
-        if "pg_advisory_unlock" in str(statement):
-            raise RuntimeError("unlock statement failed")
-        return await original_execute(statement, *args, **kwargs)
-
-    monkeypatch.setattr(connection, "execute", _explode)
+    # A *real* server-side failure, not a Python-level fake: the unlock
+    # statement itself is made invalid, so PostgreSQL rejects it exactly as it
+    # would during an outage and the transaction is left aborted.
+    monkeypatch.setattr(
+        locks_module,
+        "_RELEASE",
+        sa.text(
+            "SELECT pg_advisory_unlock(CAST(:key AS bigint)) "
+            "FROM w5_no_such_relation_zzz"
+        ),
+    )
 
     # release() must swallow the failure (the job outcome is already durable)
     # but it must not leave a lock-holding backend usable.

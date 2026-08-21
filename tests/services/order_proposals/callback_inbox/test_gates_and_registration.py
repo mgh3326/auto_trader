@@ -163,12 +163,15 @@ def _database_is_a_tripwire(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         touched.append("AsyncSessionLocal")
         raise AssertionError("gate-off task opened a database session")
 
-    async def _connect_tripwire(*args, **kwargs):
-        touched.append("engine.connect")
-        raise AssertionError("gate-off task opened a database connection")
+    class _EngineTripwire:
+        # ``AsyncEngine.connect`` is read-only, so swap the engine itself --
+        # the advisory lock resolves ``db.engine`` at call time.
+        async def connect(self, *args, **kwargs):
+            touched.append("engine.connect")
+            raise AssertionError("gate-off task opened a database connection")
 
     monkeypatch.setattr(db, "AsyncSessionLocal", _session_tripwire)
-    monkeypatch.setattr(db.engine, "connect", _connect_tripwire)
+    monkeypatch.setattr(db, "engine", _EngineTripwire())
     # The modules bind the factory by name at call time (never as a default
     # argument), so patching the module attribute really does disarm them.
     for module in (ingress, recovery, worker):
