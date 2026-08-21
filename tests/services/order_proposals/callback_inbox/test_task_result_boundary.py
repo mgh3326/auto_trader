@@ -14,11 +14,12 @@ vocabulary make this audit pass without a conscious contract change.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import math
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import sentry_sdk
@@ -150,17 +151,52 @@ class _Hostile:
         return _FAKE_SECRET
 
 
+class _HostileUUID(uuid.UUID):
+    """A real UUID subclass that must not receive UUID authority."""
+
+    __slots__ = ("calls",)
+
+    def __init__(self, value: str) -> None:
+        object.__setattr__(self, "calls", [])
+        super().__init__(value)
+
+    def __str__(self) -> str:
+        self.calls.append("str")
+        return _FAKE_SECRET
+
+    def __repr__(self) -> str:
+        self.calls.append("repr")
+        return _FAKE_SECRET
+
+
+class _CanonicalUUIDImpersonator:
+    """A non-UUID that would pass a string-round-trip implementation."""
+
+    def __init__(self, canonical: str) -> None:
+        self.canonical = canonical
+        self.calls: list[str] = []
+
+    def __str__(self) -> str:
+        self.calls.append("str")
+        return self.canonical
+
+    def __repr__(self) -> str:
+        self.calls.append("repr")
+        return _FAKE_SECRET
+
+
 class _HostileExtraKey:
     """A non-string dict key whose callbacks must stay outside the boundary."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, collision_key: str = "status") -> None:
         self.calls: list[str] = []
+        self.collision_key = collision_key
 
     def __hash__(self) -> int:
         self.calls.append("hash")
         # Deliberately collide during test dict construction; callbacks are
         # reset before either production boundary sees the finished dict.
-        return hash("status")
+        return hash(self.collision_key)
 
     def __eq__(self, other: object) -> bool:
         self.calls.append("eq")
@@ -557,6 +593,72 @@ def _contains_mapping_pair(value: object, *, key: str, expected: object) -> bool
     return False
 
 
+_RECEIVER_POST_EVENT_MESSAGE = "safe TaskIQ Receiver post-event control"
+
+
+class _HideTaskiqReceiverDiagnosticsFromPytest(logging.Filter):
+    """Keep only pytest's renderer from exposing an upstream parser warning."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.name.startswith("taskiq.receiver")
+
+
+def _hide_taskiq_receiver_diagnostics_from_pytest(
+    request: pytest.FixtureRequest, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Retain the test sink while preventing pytest from rendering raw input."""
+    logging_plugin = request.config.pluginmanager.get_plugin("logging-plugin")
+    pytest_handlers = [caplog.handler]
+    for attribute in (
+        "report_handler",
+        "caplog_handler",
+        "log_cli_handler",
+        "log_file_handler",
+    ):
+        handler = getattr(logging_plugin, attribute, None)
+        if isinstance(handler, logging.Handler) and handler not in pytest_handlers:
+            pytest_handlers.append(handler)
+    pytest_filter = _HideTaskiqReceiverDiagnosticsFromPytest()
+    for handler in pytest_handlers:
+        handler.addFilter(pytest_filter)
+
+    def _remove_pytest_filter() -> None:
+        for handler in pytest_handlers:
+            handler.removeFilter(pytest_filter)
+
+    request.addfinalizer(_remove_pytest_filter)
+
+
+def _capture_safe_receiver_post_event(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Force any Receiver breadcrumb into a real event on the fixture client."""
+    clients = tuple(getattr(scope, "client", None) for scope in _test_sentry_scopes())
+    client = clients[0] if clients else None
+    if client is None or any(candidate is not client for candidate in clients):
+        _raise_generic("Receiver test did not retain one fixture-bound Sentry client")
+    flush = getattr(client, "flush", None)
+    if not callable(flush):
+        _raise_generic("fixture-bound Sentry client did not expose flush")
+
+    before_count = len(events)
+    sentry_sdk.capture_message(_RECEIVER_POST_EVENT_MESSAGE)
+    flush(timeout=1.0)
+    new_events = events[before_count:]
+    if len(new_events) != 1:
+        _raise_generic(
+            "safe post-Receiver Sentry event did not increase count exactly once"
+        )
+    if not any(
+        _contains_mapping_pair(
+            event, key="message", expected=_RECEIVER_POST_EVENT_MESSAGE
+        )
+        for event in new_events
+    ):
+        _raise_generic("safe post-Receiver Sentry event was not captured")
+    return new_events
+
+
 def _assert_production_sentry_controls(
     events: list[dict[str, Any]], envelope_item_types: list[str]
 ) -> None:
@@ -586,9 +688,56 @@ def _assert_production_sentry_controls(
         _raise_generic("W5 worker transaction data control was not captured")
 
 
+def _snapshot_production_observability(
+    log_sink: _RecordSink,
+    events: list[dict[str, Any]],
+    envelope_item_types: list[str],
+) -> tuple[
+    tuple[int, ...],
+    tuple[dict[str, object], ...],
+    list[dict[str, Any]],
+    tuple[str, ...],
+]:
+    """Take an exact, safe snapshot before an input must be a no-op."""
+    return (
+        tuple(id(record) for record in log_sink.records),
+        tuple(copy.deepcopy(dict(vars(record))) for record in log_sink.records),
+        copy.deepcopy(events),
+        tuple(envelope_item_types),
+    )
+
+
+def _assert_production_observability_unchanged(
+    log_sink: _RecordSink,
+    events: list[dict[str, Any]],
+    envelope_item_types: list[str],
+    snapshot: tuple[
+        tuple[int, ...],
+        tuple[dict[str, object], ...],
+        list[dict[str, Any]],
+        tuple[str, ...],
+    ],
+) -> None:
+    """Reject even fixed-safe log/Sentry output for a rejected raw UUID."""
+    record_ids, record_fields, expected_events, expected_item_types = snapshot
+    if tuple(id(record) for record in log_sink.records) != record_ids:
+        _raise_generic("invalid recovery id changed production log record count")
+    if tuple(copy.deepcopy(dict(vars(record))) for record in log_sink.records) != (
+        record_fields
+    ):
+        _raise_generic("invalid recovery id changed production log record contents")
+    if events != expected_events:
+        _raise_generic("invalid recovery id changed production Sentry event contents")
+    if tuple(envelope_item_types) != expected_item_types:
+        _raise_generic("invalid recovery id changed production Sentry envelope items")
+
+
 def test_closed_worker_status_vocabularies_match_the_independent_contract() -> None:
     """A one-line runtime allowlist widening must fail this boundary audit."""
-    from app.services.order_proposals.callback_inbox.contracts import WORKER_STATUSES
+    from app.services.order_proposals.callback_inbox.contracts import (
+        WORKER_STATUSES,
+        WorkerStatus,
+    )
     from app.services.order_proposals.callback_inbox.result_boundary import (
         PROCESS_STATUSES,
     )
@@ -599,6 +748,10 @@ def test_closed_worker_status_vocabularies_match_the_independent_contract() -> N
         _raise_generic(
             "worker statuses diverged from the contract plus its gate status"
         )
+    if frozenset(item.value for item in WorkerStatus) != (
+        EXPECTED_PROCESS_STATUSES | {"disabled"}
+    ):
+        _raise_generic("public WorkerStatus values diverged from the contract")
 
 
 @pytest.mark.parametrize(
@@ -938,6 +1091,7 @@ async def test_receiver_rejects_raw_noncanonical_job_ids_before_task_gate_or_wor
     case: str,
 ) -> None:
     """The real TaskIQ Receiver must not coerce wire values before this task."""
+    __tracebackhide__ = True
     from app.core import db
     from app.core.config import settings
     from app.core.taskiq_broker import broker, result_backend
@@ -965,33 +1119,10 @@ async def test_receiver_rejects_raw_noncanonical_job_ids_before_task_gate_or_wor
             "production_sentry_sinks"
         )
 
-    class _HideReceiverDiagnosticFromPytest(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            return not record.name.startswith("taskiq.receiver")
-
     # Keep a broken upstream Receiver/Pydantic log out of pytest's rendered
     # failure section.  The test-owned production-equivalent sink below still
     # receives and scans every record before the generic assertion is raised.
-    logging_plugin = request.config.pluginmanager.get_plugin("logging-plugin")
-    pytest_handlers = [caplog.handler]
-    for attribute in (
-        "report_handler",
-        "caplog_handler",
-        "log_cli_handler",
-        "log_file_handler",
-    ):
-        handler = getattr(logging_plugin, attribute, None)
-        if isinstance(handler, logging.Handler) and handler not in pytest_handlers:
-            pytest_handlers.append(handler)
-    pytest_filter = _HideReceiverDiagnosticFromPytest()
-    for handler in pytest_handlers:
-        handler.addFilter(pytest_filter)
-
-    def _remove_pytest_filter() -> None:
-        for handler in pytest_handlers:
-            handler.removeFilter(pytest_filter)
-
-    request.addfinalizer(_remove_pytest_filter)
+    _hide_taskiq_receiver_diagnostics_from_pytest(request, caplog)
 
     def _session_tripwire(*args: object, **kwargs: object) -> object:
         touched.append("session")
@@ -1054,6 +1185,7 @@ async def test_receiver_rejects_raw_noncanonical_job_ids_before_task_gate_or_wor
     payload = model_dump(result)
     raw = broker.result_backend.serializer.dumpb(payload)
     decoded = broker.result_backend.serializer.loadb(raw)
+    post_receiver_events = _capture_safe_receiver_post_event(events)
 
     def _assert_receiver_result() -> None:
         if result.is_err is not False or result.error is not None:
@@ -1095,6 +1227,8 @@ async def test_receiver_rejects_raw_noncanonical_job_ids_before_task_gate_or_wor
             ),
             lambda: _assert_log_records_clean(log_sink.records),
             lambda: _assert_events_clean(events),
+            lambda: _assert_events_clean(post_receiver_events),
+            _assert_test_sentry_breadcrumbs_clean,
             _assert_sentry_control,
         ),
         message="TaskIQ Receiver coerced or reflected a raw callback job id",
@@ -1136,6 +1270,82 @@ async def test_receiver_str_annotation_control_coerces_bytes_to_an_exact_string(
         _raise_generic("TaskIQ annotation positive control did not complete safely")
     if len(seen) != 1 or type(seen[0]) is not str or seen[0] != canonical:
         _raise_generic("TaskIQ annotation positive control did not coerce bytes")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sentry_surface", ("unfiltered", "production"))
+@pytest.mark.parametrize(
+    "case",
+    ("json_list", "json_dict", "hostile_object"),
+    ids=("json-list", "json-dict", "hostile-object"),
+)
+async def test_receiver_validation_warnings_do_not_reach_sentry_post_event(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    sentry_surface: str,
+    case: str,
+) -> None:
+    """A safe post-Receiver event must carry no parser-warning breadcrumb."""
+    __tracebackhide__ = True
+    from app.core.taskiq_broker import broker
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    values: dict[str, object] = {
+        "json_list": [_FAKE_SECRET],
+        "json_dict": {"private": _FAKE_SECRET},
+        "hostile_object": _Hostile(),
+    }
+    envelope_item_types: list[str] | None = None
+    if sentry_surface == "unfiltered":
+        _log_sink, events = request.getfixturevalue("task_boundary_sinks")
+    else:
+        _log_sink, events, envelope_item_types = request.getfixturevalue(
+            "production_sentry_sinks"
+        )
+    _hide_taskiq_receiver_diagnostics_from_pytest(request, caplog)
+
+    task = task_module.run_telegram_callback_job
+    message = TaskiqMessage(
+        task_id=str(uuid.uuid4()),
+        task_name=task.task_name,
+        labels=dict(task.labels),
+        args=[values[case]],
+        kwargs={},
+    )
+    receiver = Receiver(
+        broker=broker,
+        validate_params=True,
+        max_async_tasks=1,
+        run_startup=False,
+    )
+    result: TaskiqResult[Any] = await receiver.run_task(
+        target=task.original_func,
+        message=message,
+    )
+    post_receiver_events = _capture_safe_receiver_post_event(events)
+
+    def _assert_receiver_result() -> None:
+        if result.is_err is not False or result.error is not None:
+            _raise_generic("Receiver warning control did not return a safe result")
+        _assert_invalid_job_id_result(result.return_value)
+
+    def _assert_sentry_control() -> None:
+        if sentry_surface == "unfiltered":
+            _assert_transaction_control(events)
+            return
+        assert envelope_item_types is not None
+        _assert_production_sentry_controls(events, envelope_item_types)
+
+    _assert_all_clean(
+        (
+            _assert_receiver_result,
+            lambda: _assert_events_clean(events),
+            lambda: _assert_events_clean(post_receiver_events),
+            _assert_test_sentry_breadcrumbs_clean,
+            _assert_sentry_control,
+        ),
+        message="Receiver validation warning crossed the Sentry boundary",
+    )
 
 
 @pytest.mark.asyncio
@@ -1803,6 +2013,95 @@ async def test_recovery_report_at_default_execution_limit_remains_valid(
     _assert_valid_recovery_report(result)
 
 
+@pytest.mark.parametrize(
+    ("claimed", "expected_valid"),
+    ((3, True), (4, False)),
+    ids=("at-custom-limit", "over-custom-limit"),
+)
+def test_recovery_report_projector_obeys_the_explicit_execution_limit(
+    claimed: int, expected_valid: bool
+) -> None:
+    """A caller-supplied execution cap cannot silently become the default 20."""
+    from app.services.order_proposals.callback_inbox.result_boundary import (
+        project_recovery_report,
+    )
+
+    report = _valid_recovery_report(populated=False)
+    statuses = report["statuses"]
+    assert type(statuses) is dict
+    statuses["succeeded"] = claimed
+    report["scanned"] = claimed
+    report["claimed"] = claimed
+
+    try:
+        projected = project_recovery_report(
+            report,
+            execution_limit=3,
+            scan_cap=8,
+        )
+    except TypeError:
+        _raise_generic("recovery report projector omitted an execution-limit input")
+
+    if expected_valid:
+        _assert_valid_recovery_report(projected)
+        assert type(projected) is dict
+        if projected["claimed"] != claimed or projected["scanned"] != claimed:
+            _raise_generic("projector did not retain the custom-limit report")
+    elif projected is not None:
+        _raise_generic("projector accepted a report over its explicit execution limit")
+
+
+@pytest.mark.asyncio
+async def test_recovery_task_passes_execution_and_scan_limits_by_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The task owns both authoritative limits and passes neither positionally."""
+    from app.core.config import settings
+    from app.services.order_proposals.callback_inbox.contracts import (
+        RECOVERY_SCAN_LIMIT,
+        recovery_scan_cap,
+    )
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    report = _valid_recovery_report(populated=False)
+    calls: list[tuple[object, int, int]] = []
+    expected_scan_cap = recovery_scan_cap(RECOVERY_SCAN_LIMIT)
+
+    async def _recover() -> dict[str, object]:
+        return report
+
+    def _project(
+        value: object, *, execution_limit: int, scan_cap: int
+    ) -> dict[str, object]:
+        calls.append((value, execution_limit, scan_cap))
+        return report
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(task_module, "recover_callback_jobs", _recover)
+    monkeypatch.setattr(task_module, "project_recovery_report", _project)
+
+    try:
+        result = await task_module.recover_telegram_callback_jobs.original_func()
+    except Exception:
+        _raise_generic("recovery task did not call the fixed projector seam")
+    _assert_valid_recovery_report(result)
+    if calls != [(report, RECOVERY_SCAN_LIMIT, expected_scan_cap)]:
+        _raise_generic(
+            "recovery task did not pass both authoritative limits by keyword"
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
@@ -1894,6 +2193,62 @@ async def test_invalid_recovery_reports_collapse_to_the_fixed_error(
         assert isinstance(hostile, _Hostile)
         if hostile.calls:
             _raise_generic("invalid recovery report invoked hostile coercion")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("map_level", "collision_key"),
+    (
+        ("top", "status"),
+        ("statuses", "succeeded"),
+        ("backlog", "pending"),
+    ),
+    ids=("top-map", "statuses-map", "backlog-map"),
+)
+async def test_recovery_report_rejects_non_string_extra_keys_without_callbacks(
+    monkeypatch: pytest.MonkeyPatch, map_level: str, collision_key: str
+) -> None:
+    """Each strict report map checks exact key type before membership lookup."""
+    from app.core.config import settings
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    report = _valid_recovery_report(populated=False)
+    if map_level == "top":
+        target = cast(dict[object, object], report)
+    else:
+        nested = report[map_level]
+        if type(nested) is not dict:
+            _raise_generic("test recovery report did not expose an exact nested map")
+        target = cast(dict[object, object], nested)
+    hostile_key = _HostileExtraKey(collision_key=collision_key)
+    target[hostile_key] = _FAKE_SECRET
+    # Construction may hash/compare a colliding key.  Production sees only
+    # the finished exact dict, so every callback below must remain absent.
+    hostile_key.calls.clear()
+
+    async def _recover() -> dict[str, object]:
+        return report
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(task_module, "recover_callback_jobs", _recover)
+    try:
+        result = await task_module.recover_telegram_callback_jobs()
+    except Exception:
+        _raise_generic("non-string recovery report key escaped the TaskIQ boundary")
+    _assert_recovery_error(result)
+    if hostile_key.calls:
+        _raise_generic("recovery report key invoked a boundary callback")
 
 
 @pytest.mark.asyncio
@@ -2111,17 +2466,38 @@ async def test_internal_recovery_item_rejects_malformed_worker_results(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ("plain_object", "uuid_subclass", "canonical_impersonator"),
+    ids=("plain-object", "uuid-subclass", "canonical-impersonator"),
+)
 async def test_internal_recovery_item_rejects_a_non_uuid_job_id_before_coercion(
     production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    case: str,
 ) -> None:
-    """Recovery owns opaque UUIDs only; a raw object cannot reach its worker."""
+    """Recovery accepts an exact UUID only and does nothing for every impostor."""
+    __tracebackhide__ = True
     from app.core.timezone import now_kst
     from app.services.order_proposals.callback_inbox import recovery as recovery_module
 
     log_sink, events, envelope_item_types = production_sentry_sinks
-    hostile = _Hostile()
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    hostile: _Hostile | _HostileUUID | _CanonicalUUIDImpersonator
+    if case == "plain_object":
+        hostile = _Hostile()
+    elif case == "uuid_subclass":
+        hostile = _HostileUUID(canonical)
+    elif case == "canonical_impersonator":
+        hostile = _CanonicalUUIDImpersonator(canonical)
+    else:
+        _raise_generic("unknown test-only invalid recovery UUID case")
+    # UUID construction and dict setup are outside the production boundary.
+    hostile.calls.clear()
     process_calls: list[object] = []
     error = _BoundaryRuntimeError(reject_render=True)
+    observability_before = _snapshot_production_observability(
+        log_sink, events, envelope_item_types
+    )
 
     async def _process(*args: object, **kwargs: object) -> object:
         process_calls.append(args)
@@ -2136,6 +2512,7 @@ async def test_internal_recovery_item_rejects_a_non_uuid_job_id_before_coercion(
         )
     except Exception:
         _raise_generic("non-UUID recovery item escaped its fixed error boundary")
+    sentry_sdk.flush(timeout=1.0)
 
     def _assert_no_coercion_or_process() -> None:
         if hostile.calls:
@@ -2153,6 +2530,12 @@ async def test_internal_recovery_item_rejects_a_non_uuid_job_id_before_coercion(
                 error, where="non-UUID recovery item exception"
             ),
             lambda: _assert_production_sentry_controls(events, envelope_item_types),
+            lambda: _assert_production_observability_unchanged(
+                log_sink,
+                events,
+                envelope_item_types,
+                observability_before,
+            ),
             lambda: _assert_log_records_clean(log_sink.records),
             lambda: _assert_events_clean(events),
         ),
@@ -2267,6 +2650,7 @@ async def test_internal_recovery_item_logging_failure_still_returns_fixed_error(
     None
 ):
     """A broken log handler cannot end one recovery item or its sweep."""
+    __tracebackhide__ = True
     from app.core.timezone import now_kst
     from app.services.order_proposals.callback_inbox import recovery as recovery_module
 
@@ -2299,6 +2683,54 @@ async def test_internal_recovery_item_logging_failure_still_returns_fixed_error(
     _assert_exception_unrendered(process_error, where="recovery process exception")
     _assert_exception_unrendered(handler_error, where="recovery logging exception")
     _assert_exact_string(result, "error", where="recovery logging-failure result")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception_type", "factory"),
+    (
+        (asyncio.CancelledError, asyncio.CancelledError),
+        (KeyboardInterrupt, KeyboardInterrupt),
+        (SystemExit, SystemExit),
+        (_CustomBaseException, _CustomBaseException),
+    ),
+    ids=("cancelled", "keyboard_interrupt", "system_exit", "custom_base"),
+)
+async def test_internal_recovery_logger_handler_preserves_non_exception_baseexception(
+    exception_type: type[BaseException], factory: Callable[[], BaseException]
+) -> None:
+    """A logger repair may absorb ``Exception`` only, never control flow."""
+    from app.core.timezone import now_kst
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    process_error = _BoundaryRuntimeError(reject_render=True)
+    handler_error = factory()
+
+    async def _explode(*args: object, **kwargs: object) -> object:
+        raise process_error
+
+    class _RaisingHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            raise handler_error
+
+    recovery_logger = logging.getLogger(recovery_module.__name__)
+    handler = _RaisingHandler(level=logging.ERROR)
+    recovery_logger.addHandler(handler)
+    try:
+        with pytest.raises(exception_type) as caught:
+            await recovery_module._process_one(
+                uuid.uuid4(),
+                process_fn=_explode,
+                now_fn=now_kst,
+                worker_kwargs={},
+            )
+    finally:
+        recovery_logger.removeHandler(handler)
+
+    if caught.value is not handler_error:
+        _raise_generic("recovery logger replaced a non-Exception control-flow object")
+    _assert_exception_unrendered(process_error, where="recovery logger process error")
+    _assert_exception_unrendered(handler_error, where="recovery logger BaseException")
 
 
 @pytest.mark.asyncio
