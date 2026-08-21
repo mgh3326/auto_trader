@@ -359,43 +359,30 @@ async def test_a_batch_action_reaches_the_batch_branch_and_fails_closed(
 
 
 # ---------------------------------------------------------------------------
-# R8 B14 + SHOULD 3 / R15 — the positive paths, through the *whole* real core
+# Action routing — narrower than B14, and labelled as such
 # ---------------------------------------------------------------------------
 #
-# R15's correction, and it matters: faking ``revalidate_and_submit`` would skip
-# the approval hash, the fresh preview, the buying-power claim, the nonce and
-# commit lease, and every rung transition -- precisely the machinery B14
-# exists to prove the durable path reaches. So it is real here.
+# R20.5: the canonical B14 positive lives in ``test_full_core_toss_sell.py``,
+# which runs the whole order core (real preview, real approval-hash mint and
+# verify, real fresh sellable, real POST, real ledger write) and fakes only
+# the Toss API client. The earlier duplicate here faked
+# ``order_execution._place_order_impl`` and called it a transport; it is not
+# -- it owns the env/confirm gates, approval-hash verification, the execution
+# branch, the pre-send intent boundary and the accepted-only ledger write --
+# so that test has been removed rather than relabelled.
 #
-# REAL below the TaskIQ task: process_callback_job, the advisory lock, the
-# attempt/entry markers, handle_normalized_callback, the published-binding
-# preflight, nonce consumption, the commit lease, record_approval,
-# revalidate_and_submit (fresh preview, buying-power claim, approval-hash
-# plumbing, _classify_submit, every rung transition) and
-# _default_place_order_fn -- all against the real test database.
-#
-# FAKED: order_execution._place_order_impl, plus the notifier.
-#
-# HONEST LIMIT (R16). ``_place_order_impl`` is not merely transport: it owns
-# the input/market/account and env+confirm gates, approval-hash verification,
-# the KIS/Toss/Upbit execution branch, the pre-send intent and idempotency
-# boundary, the kis_mock attribution gate, and the accepted-only ledger
-# service write. Faking it leaves all of that OUTSIDE this test. Those
-# boundaries have their own suites (tests/test_mcp_kis_order_variants.py,
-# tests/test_kis_mock_order_ledger.py, tests/test_live_loss_sell_hard_guard.py
-# and the approval-hash suites) and W5 changes none of them. Pushing this test
-# below _place_order_impl -- faking the client _create_kis_client returns, per
-# R16 -- is a real and worthwhile extension. It is NOT done here, and this
-# comment exists so nobody reads the assertions below as covering it.
+# What remains below is genuinely narrower and says so: these pin *which
+# branch of the core an action routes to*, using a sender probe that must
+# never be reached at all.
 
 
-class _BrokerTransport:
-    """The lowest-level broker call, and nothing above it.
+class _SenderProbe:
+    """A tripwire, not a transport.
 
-    Records every preview (``dry_run=True``) and every mutation
-    (``dry_run=False``) separately, because "how many times did we actually
-    send" and "did a fresh preview happen before we sent" are different
-    questions and B14 asks both.
+    Installed where the approve branch would eventually reach execution. The
+    only assertion made about it in this file is that it stays empty: these
+    tests are about routing, and any call here means an action reached a
+    branch it had no business reaching.
     """
 
     def __init__(self, *, price: str = "100", quantity: str = "10") -> None:
@@ -419,96 +406,9 @@ class _BrokerTransport:
             "success": True,
             "dry_run": False,
             "broker_status": "accepted",
-            "order_id": f"w5-broker-{len(self.mutations)}",
+            "order_id": f"w5-probe-{len(self.mutations)}",
             "correlation_id": kwargs.get("correlation_id"),
         }
-
-
-@pytest.mark.asyncio
-async def test_a_valid_approval_traverses_the_real_core_to_a_real_submission(
-    _bootstrap_test_schema,
-    db_session,
-    inbox_cleanup: list[uuid.UUID],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R8 B14 / R15 — an *active* ``op``, end to end, real revalidation core.
-
-    No ``handler=`` override and no ``revalidate_fn`` override: the production
-    TaskIQ task drives the worker, which drives the real
-    ``handle_normalized_callback``, which drives the real
-    ``revalidate_and_submit``. Only the broker transport is a fake.
-    """
-    from app.mcp_server.tooling import order_execution
-    from app.services.order_proposals.callback_inbox import worker as worker_module
-
-    group = await seed_proposal(db_session, nonce="activeop123", symbol="ACTKR")
-    data = proposal_callback_data(group, action="op")
-    job_id = await _queue(inbox_cleanup, data)
-
-    transport = _BrokerTransport()
-    monkeypatch.setattr(order_execution, "_place_order_impl", transport)
-
-    entered: list[str] = []
-    real_core = callback_module.handle_normalized_callback
-
-    async def _spy(normalized, **kwargs):
-        entered.append(normalized.callback.action)
-        return await real_core(normalized, **kwargs)
-
-    monkeypatch.setattr(worker_module, "handle_normalized_callback", _spy)
-
-    notifier = FakeNotifier()
-    result = await _run_default_seam(job_id, notifier, monkeypatch)
-
-    # -- the real core, once, with the real action --------------------------
-    assert entered == ["op"], entered
-    assert result["status"] == "succeeded", result
-
-    # -- a fresh preview happened, and exactly one mutation was sent --------
-    assert len(transport.previews) == 1, transport.previews
-    assert len(transport.mutations) == 1, transport.mutations
-    mutation = transport.mutations[0]
-    assert mutation["symbol"] == "ACTKR"
-    assert mutation["side"] == "buy"
-    assert mutation.get("dry_run") is False
-    # The preview really preceded the mutation.
-    assert transport.previews[0].get("dry_run") is True
-
-    # -- nonce and approval consumed exactly once, by the real gates --------
-    async with AsyncSessionLocal() as session:
-        refreshed, rungs = await OrderProposalsService(session).get_proposal(
-            group.proposal_id
-        )
-    assert refreshed.approval_nonce_used_at is not None, "the nonce was not consumed"
-    assert refreshed.approved_at is not None
-    assert refreshed.approved_by_telegram_user_id == "777"
-    assert refreshed.commit_lease_until is not None, "no commit lease was taken"
-
-    # -- the real rung transition and broker evidence, written by the core --
-    assert [rung.state for rung in rungs] == ["resting"], [r.state for r in rungs]
-    rung = rungs[0]
-    assert rung.broker_order_id == "w5-broker-1"
-    assert rung.correlation_id, "the core recorded no correlation id"
-    assert rung.approval_hash_digest, "the core recorded no approval-hash digest"
-
-    row = await load_job(job_id)
-    assert row is not None
-    assert row.state == "succeeded"
-    assert row.outcome == "approved"
-
-    # -- a redelivery mutates zero more times -------------------------------
-    replay_job = await _queue(inbox_cleanup, data)
-    replay = await _run_default_seam(replay_job, FakeNotifier(), monkeypatch)
-    assert replay["status"] == "discarded"
-    assert len(transport.mutations) == 1, "a replay reached the broker transport"
-
-    # -- and neither does a recovery sweep over both jobs -------------------
-    from app.services.order_proposals.callback_inbox.recovery import (
-        recover_callback_jobs,
-    )
-
-    await recover_callback_jobs()
-    assert len(transport.mutations) == 1, "recovery re-sent a completed job"
 
 
 @pytest.mark.asyncio
@@ -534,8 +434,8 @@ async def test_an_auto_veto_routes_to_the_veto_branch_not_the_approve_branch(
     data = proposal_callback_data(group, action="vc")
     job_id = await _queue(inbox_cleanup, data)
 
-    transport = _BrokerTransport()
-    monkeypatch.setattr(order_execution, "_place_order_impl", transport)
+    probe = _SenderProbe()
+    monkeypatch.setattr(order_execution, "_place_order_impl", probe)
 
     entered: list[str] = []
     real_core = callback_module.handle_normalized_callback
@@ -549,8 +449,8 @@ async def test_an_auto_veto_routes_to_the_veto_branch_not_the_approve_branch(
     await _run_default_seam(job_id, FakeNotifier(), monkeypatch)
 
     assert entered == ["vc"], entered
-    assert transport.mutations == [], "a veto reached the approve branch's sender"
-    assert transport.previews == [], "a veto previewed an order"
+    assert probe.mutations == [], "a veto reached the approve branch's sender"
+    assert probe.previews == [], "a veto previewed an order"
 
     async with AsyncSessionLocal() as session:
         _after, after_rungs = await OrderProposalsService(session).get_proposal(
@@ -586,8 +486,8 @@ async def test_a_loss_cut_first_click_never_sends_an_order(
     data = proposal_callback_data(group, action="op")
     job_id = await _queue(inbox_cleanup, data)
 
-    transport = _BrokerTransport(price="99", quantity="1")
-    monkeypatch.setattr(order_execution, "_place_order_impl", transport)
+    probe = _SenderProbe(price="99", quantity="1")
+    monkeypatch.setattr(order_execution, "_place_order_impl", probe)
 
     entered: list[str] = []
     real_core = callback_module.handle_normalized_callback
@@ -601,7 +501,7 @@ async def test_a_loss_cut_first_click_never_sends_an_order(
     await _run_default_seam(job_id, FakeNotifier(), monkeypatch)
 
     assert entered == ["op"]
-    assert transport.mutations == [], "a loss-cut first click sent an order"
+    assert probe.mutations == [], "a loss-cut first click sent an order"
 
     async with AsyncSessionLocal() as session:
         after, after_rungs = await OrderProposalsService(session).get_proposal(

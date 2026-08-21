@@ -40,6 +40,7 @@ Nothing between the task and the client is faked. In particular
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -48,6 +49,7 @@ from typing import Any
 
 import fakeredis
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
@@ -70,7 +72,9 @@ pytestmark = pytest.mark.integration
 SYMBOL = "005930"
 SELL_QUANTITY = Decimal("3")
 SELL_PRICE = Decimal("71000")
-BROKER_ORDER_ID = "w5-toss-order-1"
+#: Unique per test run: a module-level constant collides under xdist
+#: and on rerun, and the ledger has a UNIQUE on broker_order_id.
+BROKER_ORDER_ID = f"w5-toss-{uuid.uuid4().hex[:16]}"
 
 
 class TimelineTossClient:
@@ -87,6 +91,10 @@ class TimelineTossClient:
         self.placed_payloads: list[dict[str, Any]] = []
         self.sellable_calls: list[str] = []
         self.sellable_quantity_value = Decimal("10")
+        self.cache_reads: list[str] = []
+        self.warm_cache: Any = None
+        self.minted_token_digests: list[str] = []
+        self.verified_token_digests: list[str] = []
 
     async def aclose(self) -> None:
         return None
@@ -117,13 +125,20 @@ class TimelineTossClient:
         )
 
     async def prices(self, symbols):
+        """The exact production DTO, so the real preview reads a real field.
+
+        A ``SimpleNamespace`` with ``last``/``close``/``base`` would leave
+        ``last_price`` missing, which is the attribute the preview actually
+        reads -- the fake would have been "compatible" with nothing.
+        """
+        from app.services.brokers.toss.dto import TossPrice
+
         self.timeline.append("prices")
         return [
-            SimpleNamespace(
+            TossPrice(
                 symbol=SYMBOL,
-                last=SELL_PRICE,
-                close=SELL_PRICE,
-                base=SELL_PRICE,
+                timestamp=None,
+                last_price=SELL_PRICE,
                 currency="KRW",
             )
         ]
@@ -150,8 +165,10 @@ class TimelineTossClient:
         completes, so the timeline pins that ordering rather than assuming it.
         """
         if pre_send_hook is not None:
-            self.timeline.append("pre_send_hook")
             await pre_send_hook()
+            # Recorded only *after* the await returns: entry proves nothing
+            # about ordering, completion does.
+            self.timeline.append("pre_send_hook_completed")
         self.timeline.append("broker_mutation")
         self.placed_payloads.append(payload)
         return SimpleNamespace(
@@ -176,6 +193,30 @@ def toss_core(monkeypatch: pytest.MonkeyPatch) -> TimelineTossClient:
     monkeypatch.setattr(settings, "toss_api_enabled", True, raising=False)
     monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    # R20.1: "optional" would let a broken preview->place token handoff pass.
+    monkeypatch.setattr(settings, "toss_approval_hash_mode", "required")
+
+    # R20b: call-through wrappers around the REAL encode/verify. Only the
+    # SHA-256 digest of each token is retained -- the token itself is never
+    # stored, logged or asserted on, so a failure message cannot leak it.
+    minted: list[str] = []
+    verified: list[str] = []
+    real_encode = otv.encode_approval_token
+    real_verify = otv.verify_approval_token
+
+    def _spy_encode(canonical, *args: Any, **kwargs: Any):
+        token = real_encode(canonical, *args, **kwargs)
+        minted.append(hashlib.sha256(str(token).encode()).hexdigest())
+        return token
+
+    def _spy_verify(token, canonical, *args: Any, **kwargs: Any):
+        verified.append(hashlib.sha256(str(token).encode()).hexdigest())
+        return real_verify(token, canonical, *args, **kwargs)
+
+    monkeypatch.setattr(otv, "encode_approval_token", _spy_encode)
+    monkeypatch.setattr(otv, "verify_approval_token", _spy_verify)
+    client.minted_token_digests = minted
+    client.verified_token_digests = verified
 
     # -- the client itself is the only order-path fake ----------------------
     monkeypatch.setattr(
@@ -196,13 +237,27 @@ def toss_core(monkeypatch: pytest.MonkeyPatch) -> TimelineTossClient:
     monkeypatch.setattr(otv, "get_kr_toss_session_from_toss", _regular_session)
     monkeypatch.setattr(otv, "get_kr_nxt_tradability", _nxt)
 
-    # -- a deliberately EMPTY warm cache: if the general/warm sellable path
-    #    were consulted it would find nothing, and the timeline would show it.
-    empty_cache = TossSellableCache(
+    # -- R20.7: an empty cache proves nothing -- a miss and a never-consulted
+    #    cache look identical. This one is preloaded with a deliberately WRONG,
+    #    generous value and counts every read, so consulting it would both be
+    #    visible and authorize more than the broker allows.
+    warm_cache = TossSellableCache(
         ttl_seconds=600,
         redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
     )
-    monkeypatch.setattr(otv, "get_shared_sellable_cache", lambda: empty_cache)
+    cache_reads: list[str] = []
+    for method_name in ("read_many", "get_many", "get"):
+        original = getattr(warm_cache, method_name)
+
+        def _counting(*args: Any, _name=method_name, _original=original, **kwargs: Any):
+            cache_reads.append(_name)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(warm_cache, method_name, _counting, raising=False)
+
+    monkeypatch.setattr(otv, "get_shared_sellable_cache", lambda: warm_cache)
+    client.cache_reads = cache_reads
+    client.warm_cache = warm_cache
 
     # -- an outbound publish, not order core --------------------------------
     async def _no_publish(*args: Any, **kwargs: Any) -> None:
@@ -266,6 +321,31 @@ async def _queue(inbox_cleanup: list[uuid.UUID], data: str) -> uuid.UUID:
     return result.job_id
 
 
+@pytest_asyncio.fixture
+async def toss_ledger_row_cleanup():
+    """Delete only the exact ledger rows this test created.
+
+    R20.3: a broad ``delete(TossLiveOrderLedger)`` races every other
+    toss-ledger test under xdist. This removes rows by their exact, per-run
+    unique broker order id and nothing else.
+    """
+    from sqlalchemy import delete
+
+    from app.models.review import TossLiveOrderLedger
+
+    broker_order_ids: list[str] = []
+    yield broker_order_ids
+    if not broker_order_ids:
+        return
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            delete(TossLiveOrderLedger).where(
+                TossLiveOrderLedger.broker_order_id.in_(broker_order_ids)
+            )
+        )
+        await session.commit()
+
+
 async def _ledger_rows(correlation_id: str | None = None) -> list[Any]:
     from app.models.review import TossLiveOrderLedger
 
@@ -279,12 +359,14 @@ async def _ledger_rows(correlation_id: str | None = None) -> list[Any]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("toss_ledger_cleanup_lock")
 async def test_the_durable_default_path_runs_the_whole_toss_sell_order_core(
     _bootstrap_test_schema,
     db_session,
     inbox_cleanup: list[uuid.UUID],
     monkeypatch: pytest.MonkeyPatch,
     toss_core: TimelineTossClient,
+    toss_ledger_row_cleanup: list[str],
 ) -> None:
     """B14 / R17 — no ``handler=``, no ``revalidate_fn=``, no core faked."""
     from app.core.config import settings
@@ -294,6 +376,7 @@ async def test_the_durable_default_path_runs_the_whole_toss_sell_order_core(
     group = await _seed_toss_sell(db_session, nonce="tosssell123")
     data = proposal_callback_data(group, action="op")
     job_id = await _queue(inbox_cleanup, data)
+    toss_ledger_row_cleanup.append(BROKER_ORDER_ID)
 
     monkeypatch.setattr(
         settings,
@@ -323,9 +406,11 @@ async def test_the_durable_default_path_runs_the_whole_toss_sell_order_core(
     assert _accepts_pre_send_hook(toss_core.place_order), (
         "the fake client would take the compatibility branch"
     )
-    assert toss_core.timeline.count("pre_send_hook") == 1, toss_core.timeline
-    assert toss_core.timeline.index("pre_send_hook") < toss_core.timeline.index(
-        "broker_mutation"
+    assert toss_core.timeline.count("pre_send_hook_completed") == 1, toss_core.timeline
+    assert (
+        toss_core.timeline.index("fresh_sellable")
+        < toss_core.timeline.index("pre_send_hook_completed")
+        < toss_core.timeline.index("broker_mutation")
     ), toss_core.timeline
 
     # -- the mutation payload: an explicit, finite, positive SELL quantity --
@@ -353,10 +438,60 @@ async def test_the_durable_default_path_runs_the_whole_toss_sell_order_core(
     assert rung.approval_hash_digest, "no approval-hash digest was recorded"
     assert rung.idempotency_key, "no idempotency key was recorded"
 
-    # -- the production ledger service wrote exactly one accepted row ------
+    # -- R20.1/R20b: the token the real preview minted is the token the real
+    #    live place verified. Digests only; the token itself never leaves the
+    #    production functions.
+    assert len(toss_core.minted_token_digests) == 1, toss_core.minted_token_digests
+    assert len(toss_core.verified_token_digests) == 1, toss_core.verified_token_digests
+    assert toss_core.minted_token_digests[0] == toss_core.verified_token_digests[0], (
+        "the approval token verified at send is not the one preview minted"
+    )
+
+    # -- R20.7: the warm/general cache was never consulted for sizing -------
+    assert toss_core.cache_reads == [], toss_core.cache_reads
+
+    # -- R20.2: the production ledger service wrote exactly one accepted row,
+    #    cross-linked to the rung on every identifier they share ------------
     ledger_rows = await _ledger_rows()
     assert len(ledger_rows) == 1, ledger_rows
-    assert ledger_rows[0].broker_order_id == BROKER_ORDER_ID
+    ledger = ledger_rows[0]
+    assert ledger.broker_order_id == BROKER_ORDER_ID
+    assert ledger.operation_kind == "place"
+    assert ledger.side == "sell"
+    assert ledger.market == "kr"
+    assert ledger.symbol == SYMBOL
+    assert ledger.account_mode == "toss_live"
+    assert ledger.broker == "toss"
+    assert ledger.status == "accepted"
+    assert Decimal(str(ledger.quantity)) == SELL_QUANTITY
+
+    # accepted-only: nothing a fill would write may exist before reconcile
+    assert ledger.filled_qty in (None, Decimal("0")), ledger.filled_qty
+    assert ledger.avg_fill_price is None
+    assert ledger.trade_id is None
+    assert ledger.journal_id is None
+    assert ledger.reconciled_at is None
+
+    # the exact cross-links to the proposal rung
+    assert ledger.client_order_id == rung.idempotency_key, (
+        ledger.client_order_id,
+        rung.idempotency_key,
+    )
+    assert ledger.correlation_id == rung.correlation_id, (
+        ledger.correlation_id,
+        rung.correlation_id,
+    )
+    assert ledger.approval_hash == rung.approval_hash_digest, (
+        ledger.approval_hash,
+        rung.approval_hash_digest,
+    )
+
+    # -- R20b: capture the exactly-once evidence for the replay check -------
+    once = {
+        "approval_nonce_used_at": refreshed.approval_nonce_used_at,
+        "approved_at": refreshed.approved_at,
+        "commit_lease_until": refreshed.commit_lease_until,
+    }
 
     # -- the inbox row is terminal and scrubbed ----------------------------
     row = await load_job(job_id)
@@ -376,7 +511,20 @@ async def test_the_durable_default_path_runs_the_whole_toss_sell_order_core(
 
     assert toss_core.timeline.count("fresh_sellable") == 1, toss_core.timeline
     assert toss_core.timeline.count("broker_mutation") == 1, toss_core.timeline
+    assert toss_core.cache_reads == [], toss_core.cache_reads
     assert len(await _ledger_rows()) == 1
+    assert len(toss_core.verified_token_digests) == 1
+
+    # -- R20b: "exactly once" means the *same* values, not merely non-null --
+    async with AsyncSessionLocal() as session:
+        after, after_rungs = await OrderProposalsService(session).get_proposal(
+            group.proposal_id
+        )
+    assert after.approval_nonce_used_at == once["approval_nonce_used_at"]
+    assert after.approved_at == once["approved_at"]
+    assert after.commit_lease_until == once["commit_lease_until"]
+    assert after_rungs[0].broker_order_id == BROKER_ORDER_ID
+    assert after_rungs[0].idempotency_key == rung.idempotency_key
 
 
 @pytest.mark.asyncio
