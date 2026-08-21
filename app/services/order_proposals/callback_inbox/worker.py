@@ -47,7 +47,6 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals.callback_inbox.contracts import (
-    MUTATION_NOT_STARTED_KEY,
     TERMINAL_STATE_STATUS,
     ErrorClass,
     InboxState,
@@ -64,7 +63,10 @@ from app.services.order_proposals.callback_inbox.observability import (
     log_job_event,
     worker_transaction,
 )
-from app.services.order_proposals.callback_inbox.service import CallbackInboxService
+from app.services.order_proposals.callback_inbox.service import (
+    CallbackInboxService,
+    RetryAuthorityRefused,
+)
 from app.services.order_proposals.dispatch_contract import CallbackEnvelope
 from app.services.order_proposals.telegram_callback import (
     NormalizedCallback,
@@ -98,6 +100,20 @@ def resolve_notifier() -> Any:
 
 class EnvelopeInvalid(Exception):
     """A stored row no longer rebuilds into a valid callback."""
+
+
+class PreCoreFailure(Exception):
+    """The only grant of retry authority, and the worker owns it.
+
+    Raised exclusively from the phase that runs *before* the callback core is
+    entered, so raising it is itself the proof that nothing has mutated. A
+    handler cannot produce it: by the time a handler runs, this phase is over,
+    and an exception escaping a handler is caught as
+    :class:`ErrorClass.HANDLER_EXCEPTION` instead. The durable
+    ``handler_entered_at`` marker is checked again in the database before the
+    retry is written, so even this exception cannot replay a job whose core
+    was reached.
+    """
 
 
 def rebuild_normalized(row: Any) -> NormalizedCallback:
@@ -148,7 +164,12 @@ def rebuild_normalized(row: Any) -> NormalizedCallback:
 
 
 def classify_verdict(result: Any) -> tuple[str, str | None, object]:
-    """Map a callback-core result to ``(state, error_class, outcome)``.
+    """Map a callback-core result to ``(state, error_class)``.
+
+    Every branch here is terminal. Once the core has been entered there is no
+    return value that can send the job back round, because a handler that
+    already reached the broker can return exactly what an untouched one would
+    -- see :data:`IGNORED_HANDLER_RETRY_KEYS`.
 
     The one asymmetry worth stating plainly: ``handled=True`` is success even
     when a rung came back ``unverified``. An ambiguous *send* is already
@@ -164,9 +185,6 @@ def classify_verdict(result: Any) -> tuple[str, str | None, object]:
     reason = result.get("reason")
     if result.get("handled"):
         return InboxState.SUCCEEDED.value, None, reason
-    if result.get(MUTATION_NOT_STARTED_KEY) is True:
-        # Typed evidence, not a reason string. Today's core never sets it.
-        return InboxState.RETRY_WAIT.value, ErrorClass.PRE_CORE_FAILURE.value, reason
     if reason == "internal_error":
         # Ambiguous by construction; see this module's docstring.
         return (
@@ -294,10 +312,16 @@ async def _run_locked(
                 event="callback_job_attempts_exhausted",
             )
 
-        # Pay for the attempt before doing the work.
-        await service.begin_attempt(row, now=now)
+        # Pay for the attempt before doing the work. Conditional: if the row
+        # moved underneath us, we are not the claimant we thought we were.
+        attempt_count = row.attempt_count + 1
+        if not await service.begin_attempt(row, now=now):
+            await session.rollback()
+            return WorkerStatus.NOT_CLAIMABLE.value, {}
         await session.commit()
-        attempt_count = row.attempt_count
+        row = await service.get(job_id)
+        if row is None:  # pragma: no cover - defensive
+            return WorkerStatus.NOT_FOUND.value, {}
 
         try:
             normalized = rebuild_normalized(row)
@@ -336,9 +360,32 @@ async def _run_locked(
             )
 
         try:
-            notifier = resolve_notifier()
-        except Exception:  # noqa: BLE001 - provably before the mutating region
-            await service.schedule_retry(row, now=now)
+            try:
+                notifier = resolve_notifier()
+            except Exception as exc:  # noqa: BLE001 - provably before the core
+                raise PreCoreFailure("notifier unavailable") from exc
+        except PreCoreFailure:
+            # The only path to a retry. The database is still asked to confirm
+            # independently that the core was never entered before one is
+            # written; if it disagrees, this becomes ambiguous, not a replay.
+            try:
+                await service.schedule_retry(row, now=now)
+            except RetryAuthorityRefused:
+                await session.rollback()
+                refreshed = await service.get(job_id)
+                return await _terminate(
+                    session,
+                    service,
+                    refreshed if refreshed is not None else row,
+                    job_id=job_id,
+                    now=now,
+                    queue_delay=queue_delay,
+                    terminal_state=InboxState.DEAD_LETTER.value,
+                    error_class=ErrorClass.HANDLER_AMBIGUOUS.value,
+                    outcome=None,
+                    attempt_count=attempt_count,
+                    event="callback_job_retry_refused",
+                )
             await session.commit()
             return _finish(
                 job_id,
@@ -350,7 +397,10 @@ async def _run_locked(
                 event="callback_job_retry_scheduled",
             )
 
-        # Durable "we are about to enter the core", in its own commit.
+        # Durable "we are about to enter the core", in its own commit. Every
+        # line above this one is the pre-core region: a failure there is the
+        # only thing that can earn a retry, and the database is asked to
+        # confirm that independently before one is written.
         await service.mark_handler_entered(row, now=now)
         await session.commit()
 
@@ -383,21 +433,6 @@ async def _run_locked(
             )
 
         terminal_state, error_class, outcome = classify_verdict(result)
-
-        if terminal_state == InboxState.RETRY_WAIT.value:
-            await service.schedule_retry(
-                row, now=now, error_class=error_class, outcome=outcome
-            )
-            await session.commit()
-            return _finish(
-                job_id,
-                InboxState.RETRY_WAIT.value,
-                attempt_count=attempt_count,
-                queue_delay=queue_delay,
-                outcome=outcome,
-                error_class=error_class,
-                event="callback_job_retry_scheduled",
-            )
 
         # Record the verdict, then apply it. Two commits on purpose.
         await service.record_handler_verdict(
@@ -501,6 +536,7 @@ def _result(job_id: uuid.UUID, status: str) -> dict[str, str]:
 __all__ = [
     "DEFAULT_CLOCK",
     "EnvelopeInvalid",
+    "PreCoreFailure",
     "classify_verdict",
     "process_callback_job",
     "rebuild_normalized",

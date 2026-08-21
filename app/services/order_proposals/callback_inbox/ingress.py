@@ -32,6 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals.callback_inbox.contracts import (
+    TERMINAL_STATES,
     DeliveryIdentityMissing,
     build_update_digest,
 )
@@ -97,17 +98,40 @@ def _round_trippable(normalized: NormalizedCallback) -> bool:
     )
 
 
-def _matches(row: Any, normalized: NormalizedCallback) -> bool:
-    """Is the stored row the same call, or a different one reusing the id?"""
+def normalized_envelope_projection(
+    normalized: NormalizedCallback,
+) -> dict[str, Any]:
+    """The exact ten fields this row persists, normalised exactly as inserted.
+
+    One helper, used by both the INSERT and the equality check, because the
+    failure mode is drift: a field that is stored but not compared lets a
+    *different* call reuse a delivery identity and be waved through as a
+    benign duplicate.
+    """
     callback = normalized.callback
-    return (
-        row.chat_id == str(normalized.chat_id)
-        and row.action == callback.action
-        and row.subject_short == callback.subject_short
-        and row.dispatch_attempt_id == callback.attempt_id
-        and row.membership_revision == callback.membership_revision
-        and row.membership_digest == callback.membership_digest
-        and row.nonce == callback.nonce
+    return {
+        "callback_query_id": normalized.callback_query_id,
+        "chat_id": str(normalized.chat_id),
+        "message_id": normalized.message_id,
+        "telegram_user_id": (
+            None
+            if normalized.telegram_user_id is None
+            else str(normalized.telegram_user_id)
+        ),
+        "action": callback.action,
+        "subject_short": callback.subject_short,
+        "dispatch_attempt_id": callback.attempt_id,
+        "membership_revision": callback.membership_revision,
+        "membership_digest": callback.membership_digest,
+        "nonce": callback.nonce,
+    }
+
+
+def envelope_matches_row(row: Any, normalized: NormalizedCallback) -> bool:
+    """Is the stored row the same call, or a different one reusing the id?"""
+    return all(
+        getattr(row, field, None) == value
+        for field, value in normalized_envelope_projection(normalized).items()
     )
 
 
@@ -180,27 +204,13 @@ async def _persist(
     now: datetime,
 ) -> tuple[uuid.UUID | None, bool, bool]:
     """Insert, or resolve an existing row. Returns ``(job_id, dup, conflict)``."""
-    callback = normalized.callback
     async with factory() as session:
         service = CallbackInboxService(session)
         try:
             row = await service.enqueue(
                 update_digest=update_digest,
                 now=now,
-                callback_query_id=normalized.callback_query_id,
-                chat_id=str(normalized.chat_id),
-                message_id=normalized.message_id,
-                telegram_user_id=(
-                    None
-                    if normalized.telegram_user_id is None
-                    else str(normalized.telegram_user_id)
-                ),
-                action=callback.action,
-                subject_short=callback.subject_short,
-                dispatch_attempt_id=callback.attempt_id,
-                membership_revision=callback.membership_revision,
-                membership_digest=callback.membership_digest,
-                nonce=callback.nonce,
+                **normalized_envelope_projection(normalized),
             )
             job_id = row.job_id
             await session.commit()
@@ -218,7 +228,17 @@ async def _persist(
         if existing is None:
             # The unique violation came from somewhere we cannot explain.
             raise CallbackInboxUnavailable("callback inbox dedupe unresolved")
-        matched = _matches(existing, normalized)
+        # A terminal row has had all ten equality fields scrubbed, so an exact
+        # redelivery and a tampered one are no longer distinguishable. Keeping
+        # a reconstructible binding fingerprint to tell them apart would undo
+        # the privacy contract the scrub exists for, so a terminal digest hit
+        # is a benign duplicate: acknowledged, never rehydrated, never queued.
+        # See docs/runbooks/telegram-callback-durable-inbox.md §6.
+        if existing.state in TERMINAL_STATES:
+            job_id = existing.job_id
+            await session.rollback()
+            return job_id, True, False
+        matched = envelope_matches_row(existing, normalized)
         job_id = existing.job_id
         await session.rollback()
     return (job_id, True, False) if matched else (None, False, True)
@@ -251,5 +271,7 @@ async def _kick(
 __all__ = [
     "CallbackInboxUnavailable",
     "IngressResult",
+    "envelope_matches_row",
     "ingest_callback_update",
+    "normalized_envelope_projection",
 ]

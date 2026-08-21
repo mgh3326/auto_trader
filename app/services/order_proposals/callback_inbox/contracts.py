@@ -99,18 +99,24 @@ RECOVERY_SCAN_LIMIT = 20
 # Retry algebra
 # --------------------------------------------------------------------------
 
-#: Typed evidence a handler may return to declare that it provably did not
-#: begin the mutating region. Today's callback core never sets it -- see
-#: ``tests/.../test_gates_and_registration.py`` -- so post-entry retries are
-#: currently impossible by construction.
-MUTATION_NOT_STARTED_KEY = "mutation_not_started"
+#: Keys a handler might return hoping to buy a replay. **None of them is
+#: honoured.** Retry authority is worker-owned: it exists only as a
+#: :class:`~app.services.order_proposals.callback_inbox.worker.PreCoreFailure`
+#: raised from the phase that runs *before* the core is entered, and the
+#: service refuses to act on it unless the durable row still proves
+#: pre-entry. A handler that has already mutated could return any of these
+#: just as easily as one that has not, which is exactly why a returned value
+#: can never be the proof.
+IGNORED_HANDLER_RETRY_KEYS: frozenset[str] = frozenset(
+    {"mutation_not_started", "retry", "retryable", "safe_to_retry"}
+)
 
 #: EMPTY, and that is the point. The callback core funnels every exception
 #: into ``{"handled": False, "reason": "internal_error"}``, including one
 #: raised after ``revalidate_and_submit`` reached the broker and before the
 #: transaction committed. That rollback leaves the nonce unconsumed and the
 #: published binding valid, so a reason-string-driven retry would look legal
-#: and submit a second time. No reason string is evidence.
+#: and submit a second time. No reason string is evidence either.
 RETRYABLE_HANDLER_REASONS: frozenset[str] = frozenset()
 
 
@@ -243,7 +249,7 @@ __all__ = [
     "ERROR_CLASSES",
     "INBOX_STATES",
     "MAX_ATTEMPTS",
-    "MUTATION_NOT_STARTED_KEY",
+    "IGNORED_HANDLER_RETRY_KEYS",
     "OUTCOME_LABEL_PATTERN",
     "OUTCOME_LABEL_SQL_REGEX",
     "PROCESSING_STALE_AFTER_SECONDS",

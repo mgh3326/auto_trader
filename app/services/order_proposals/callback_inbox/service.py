@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
@@ -32,6 +33,17 @@ from app.services.order_proposals.callback_inbox.repository import (
 
 class CallbackInboxConflict(Exception):
     """A stored row exists for this delivery but describes a different call."""
+
+
+class RetryAuthorityRefused(Exception):
+    """The durable row does not prove the callback core was never entered.
+
+    Retry authority is not something a caller can assert; it is something the
+    row has to still be able to show. Once ``handler_entered_at`` is
+    committed, no argument, return value or exception can buy a replay --
+    because a handler that already reached the broker would be able to make
+    exactly the same claim as one that never started.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,12 +128,20 @@ class CallbackInboxService:
             return ClaimDecision("skip", "state")
 
         if row.state == InboxState.PROCESSING.value:
+            # A repair finalises without re-running, so it needs the whole
+            # causal chain: entered, then completed, then a verdict. Anything
+            # short of that is ambiguous, never a success.
             if (
-                row.handler_completed_at is not None
+                row.handler_entered_at is not None
+                and row.handler_completed_at is not None
                 and row.terminal_state_pending is not None
             ):
                 return ClaimDecision("repair")
-            if row.handler_entered_at is not None:
+            if (
+                row.handler_entered_at is not None
+                or row.handler_completed_at is not None
+                or row.terminal_state_pending is not None
+            ):
                 return ClaimDecision("ambiguous")
             if row.started_at is None or row.started_at > now - timedelta(
                 seconds=PROCESSING_STALE_AFTER_SECONDS
@@ -136,21 +156,39 @@ class CallbackInboxService:
 
     async def begin_attempt(
         self, row: TelegramCallbackInboxJob, *, now: datetime
-    ) -> TelegramCallbackInboxJob:
+    ) -> bool:
         """Spend one attempt and re-arm the row for a fresh execution.
 
         Committed by the caller *before* the handler runs, so a process that
         dies mid-handler has already paid for the attempt and a crash loop
         converges on the dead-letter rather than spinning forever.
+
+        Conditional, for the same reason ``schedule_retry`` is: this clears
+        the durable entry markers, and it may only do so on a row the database
+        still agrees has none. Returns ``False`` if the row moved underneath.
         """
-        return await self._repo.update(
-            row,
-            state=InboxState.PROCESSING.value,
-            attempt_count=row.attempt_count + 1,
-            started_at=now,
-            handler_entered_at=None,
-            handler_completed_at=None,
-            terminal_state_pending=None,
+        return await self._repo.try_conditional_update(
+            job_id=row.job_id,
+            predicate=and_(
+                TelegramCallbackInboxJob.attempt_count == row.attempt_count,
+                TelegramCallbackInboxJob.handler_entered_at.is_(None),
+                TelegramCallbackInboxJob.state.in_(
+                    [
+                        InboxState.PENDING.value,
+                        InboxState.RETRY_WAIT.value,
+                        InboxState.PROCESSING.value,
+                    ]
+                ),
+            ),
+            # Nothing is cleared: the predicate has already established that
+            # this row has no entry marker, and the database's causal CHECK
+            # means it can therefore have no completion or verdict either.
+            # Markers are monotonic -- no API may write one back to NULL.
+            values={
+                "state": InboxState.PROCESSING.value,
+                "attempt_count": row.attempt_count + 1,
+                "started_at": now,
+            },
         )
 
     async def mark_handler_entered(
@@ -224,24 +262,38 @@ class CallbackInboxService:
         now: datetime,
         error_class: str = ErrorClass.PRE_CORE_FAILURE.value,
         outcome: object = None,
-    ) -> TelegramCallbackInboxJob:
+    ) -> None:
         """Park a provably-unexecuted job until its backoff elapses.
 
-        Reachable only for failures that never entered the callback core (or
-        that returned typed ``mutation_not_started`` evidence). Everything
-        else is terminal; see :mod:`.contracts`.
+        The precondition is the whole point, and it is checked **in the
+        database**: the row must still be a ``processing`` row that has not
+        entered the core, has not produced a verdict, and has no terminal
+        state waiting to be applied. Anything else raises
+        :class:`RetryAuthorityRefused` and writes nothing at all -- in
+        particular it does not clear ``handler_entered_at``, which would
+        destroy the only evidence that a replay is unsafe.
+
+        Note there is nothing to clear on the success path either: the
+        predicate has already established that all three markers are NULL.
         """
         index = min(max(row.attempt_count, 1), len(RETRY_BACKOFF_SECONDS)) - 1
-        return await self._repo.update(
-            row,
-            state=InboxState.RETRY_WAIT.value,
-            available_at=now + timedelta(seconds=RETRY_BACKOFF_SECONDS[index]),
-            handler_entered_at=None,
-            handler_completed_at=None,
-            terminal_state_pending=None,
-            outcome=normalize_outcome(outcome),
-            error_class=error_class,
+        granted = await self._repo.try_conditional_update(
+            job_id=row.job_id,
+            predicate=and_(
+                TelegramCallbackInboxJob.state == InboxState.PROCESSING.value,
+                TelegramCallbackInboxJob.handler_entered_at.is_(None),
+                TelegramCallbackInboxJob.handler_completed_at.is_(None),
+                TelegramCallbackInboxJob.terminal_state_pending.is_(None),
+            ),
+            values={
+                "state": InboxState.RETRY_WAIT.value,
+                "available_at": now + timedelta(seconds=RETRY_BACKOFF_SECONDS[index]),
+                "outcome": normalize_outcome(outcome),
+                "error_class": error_class,
+            },
         )
+        if not granted:
+            raise RetryAuthorityRefused(str(row.job_id))
 
     # -- recovery scan ---------------------------------------------------
 
@@ -288,4 +340,5 @@ __all__ = [
     "CallbackInboxConflict",
     "CallbackInboxService",
     "ClaimDecision",
+    "RetryAuthorityRefused",
 ]

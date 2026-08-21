@@ -28,6 +28,21 @@ The two constraints that carry the safety
     re-gate the envelope, explicitly non-NULL, so a half-written row can never
     become a job the worker has to guess about.
 
+``ck_telegram_callback_inbox_handler_marker_order``
+    The three handler markers are causal facts. Completion implies entry; a
+    recorded verdict implies both; and a queued (``pending``/``retry_wait``)
+    row may remember none of them. Recovery *repairs* a job -- finalises it
+    without re-running it -- on the strength of a recorded verdict, so a
+    verdict that no handler entry ever produced has to be an impossible row.
+    A pre-core ``discarded`` row legitimately carries no markers at all.
+
+``ck_telegram_callback_inbox_processing_started_at``
+    A ``processing`` row must say when it started. The recovery sweep decides
+    whether to look at a claimed row by comparing that timestamp against a
+    staleness window; a NULL makes the comparison permanently false, so the
+    row would occupy "a worker owns this" forever while being invisible to the
+    sweep. ``pending`` and ``retry_wait`` have not started and are unaffected.
+
 Both are ``CASE WHEN ... THEN ... ELSE true END`` over ``IS NULL`` /
 ``IS NOT NULL`` predicates. Written as a bare ``state <> '...' OR col IS NULL``
 they would evaluate to SQL ``UNKNOWN`` if any operand were NULL, and a CHECK
@@ -72,6 +87,17 @@ _TERMINAL_SCRUBBED = (
     "AND telegram_user_id IS NULL AND action IS NULL AND subject_short IS NULL "
     "AND dispatch_attempt_id IS NULL AND membership_revision IS NULL "
     "AND membership_digest IS NULL AND nonce IS NULL "
+    "AND terminal_state_pending IS NULL ELSE true END"
+)
+
+_HANDLER_MARKER_ORDER = (
+    "(handler_completed_at IS NULL OR handler_entered_at IS NOT NULL)"
+    " AND "
+    "(terminal_state_pending IS NULL OR ("
+    "handler_entered_at IS NOT NULL AND handler_completed_at IS NOT NULL))"
+    " AND "
+    "CASE WHEN state IN ('pending','retry_wait') THEN "
+    "handler_entered_at IS NULL AND handler_completed_at IS NULL "
     "AND terminal_state_pending IS NULL ELSE true END"
 )
 
@@ -165,6 +191,15 @@ def upgrade() -> None:
             "'chat_revoked','envelope_invalid','handler_ambiguous',"
             "'handler_exception','pre_core_failure')",
             name=op.f("ck_telegram_callback_inbox_error_class"),
+        ),
+        sa.CheckConstraint(
+            "CASE WHEN state = 'processing' THEN started_at IS NOT NULL "
+            "ELSE true END",
+            name=op.f("ck_telegram_callback_inbox_processing_started_at"),
+        ),
+        sa.CheckConstraint(
+            _HANDLER_MARKER_ORDER,
+            name=op.f("ck_telegram_callback_inbox_handler_marker_order"),
         ),
         sa.CheckConstraint(
             _TERMINAL_SCRUBBED,

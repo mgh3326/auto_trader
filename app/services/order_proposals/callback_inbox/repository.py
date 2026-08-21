@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
@@ -60,6 +60,34 @@ class CallbackInboxRepository:
             setattr(row, key, value)
         await self._session.flush()
         return row
+
+    async def try_conditional_update(
+        self,
+        *,
+        job_id: uuid.UUID,
+        predicate: Any,
+        values: dict[str, Any],
+    ) -> bool:
+        """Apply ``values`` only if the *database* row still matches.
+
+        The precondition is evaluated by PostgreSQL, not against whatever an
+        in-memory ORM object happens to remember. That matters because the
+        markers these transitions guard on -- ``handler_entered_at`` above all
+        -- can be committed by work that happened after this session loaded
+        the row, and an in-memory check would cheerfully erase them.
+        """
+        result = await self._session.execute(
+            update(TelegramCallbackInboxJob)
+            .where(TelegramCallbackInboxJob.job_id == job_id, predicate)
+            .values(**values)
+            .returning(TelegramCallbackInboxJob.id)
+        )
+        updated = result.first() is not None
+        if updated:
+            # The identity map still holds the pre-update row; drop it so any
+            # later read in this session sees what the database now says.
+            self._session.expire_all()
+        return updated
 
     async def claimable_job_ids(
         self,

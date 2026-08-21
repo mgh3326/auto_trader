@@ -74,6 +74,20 @@ _TERMINAL_SCRUB_SQL = (
     " ELSE true END"
 )
 
+_HANDLER_MARKER_ORDER_SQL = (
+    # completion implies entry
+    "(handler_completed_at IS NULL OR handler_entered_at IS NOT NULL)"
+    " AND "
+    # a recorded verdict implies both
+    "(terminal_state_pending IS NULL OR ("
+    "handler_entered_at IS NOT NULL AND handler_completed_at IS NOT NULL))"
+    " AND "
+    # a queued row has not run anything
+    "CASE WHEN state IN ('pending','retry_wait') THEN "
+    "handler_entered_at IS NULL AND handler_completed_at IS NULL "
+    "AND terminal_state_pending IS NULL ELSE true END"
+)
+
 _ACTIVE_RECONSTRUCTABLE_SQL = (
     f"CASE WHEN state IN ({_ACTIVE_SQL}) THEN "
     + " AND ".join(f"{column} IS NOT NULL" for column in ACTIVE_REQUIRED_COLUMNS)
@@ -108,6 +122,19 @@ class TelegramCallbackInboxJob(Base):
             f"error_class IS NULL OR error_class IN ({_ERROR_CLASSES_SQL})",
             name="error_class",
         ),
+        # A claimed row with no ``started_at`` has no defined age, so the
+        # recovery scan's staleness comparison is never true for it: the row
+        # would sit in the state that says "a worker owns this" and be
+        # invisible to the sweep forever.
+        CheckConstraint(
+            "CASE WHEN state = 'processing' THEN started_at IS NOT NULL ELSE true END",
+            name="processing_started_at",
+        ),
+        # The three handler markers are causal facts, not independent flags.
+        # Repair finalises a job *without re-running it* on the strength of a
+        # recorded verdict, so a verdict that no entry ever produced must be
+        # an impossible row, and a queued row must not remember a handler.
+        CheckConstraint(_HANDLER_MARKER_ORDER_SQL, name="handler_marker_order"),
         CheckConstraint(_TERMINAL_SCRUB_SQL, name="terminal_scrubbed"),
         CheckConstraint(_ACTIVE_RECONSTRUCTABLE_SQL, name="active_reconstructable"),
         Index("ix_telegram_callback_inbox_state_available", "state", "available_at"),
