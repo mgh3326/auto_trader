@@ -2096,7 +2096,7 @@ async def test_manual_held_key_failure_does_not_log_exception_secret(caplog):
         ),
     )
 
-    with caplog.at_level("WARNING", logger="app.services.invest_home_service"):
+    with caplog.at_level("WARNING"):
         with pytest.raises(PortfolioSnapshotUnavailableError) as caught:
             await service.get_held_pairs(user_id=1)
 

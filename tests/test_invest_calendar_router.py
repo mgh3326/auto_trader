@@ -80,12 +80,28 @@ def _empty_coverage(from_date: date, to_date: date) -> CoverageMatrixResponse:
 
 def _patch_freshness(monkeypatch, svc, from_date: date, to_date: date, states=None):
     fake_freshness = MagicMock()
+    coverage = _empty_coverage(from_date, to_date)
     fake_freshness.get_per_day_states = AsyncMock(return_value=states or {})
-    fake_freshness.get_coverage_matrix = AsyncMock(
-        return_value=_empty_coverage(from_date, to_date)
+    fake_freshness.get_coverage_matrix = AsyncMock(return_value=coverage)
+    fake_freshness.get_calendar_window = AsyncMock(
+        return_value=(states or {}, coverage)
     )
     monkeypatch.setattr(svc, "MarketEventsFreshnessService", lambda db: fake_freshness)
     return fake_freshness
+
+
+def _patch_events(monkeypatch, svc, events) -> None:
+    async def _load(db, from_date, to_date):
+        return events
+
+    monkeypatch.setattr(svc, "load_calendar_events", _load, raising=False)
+    fake_resp = MagicMock()
+    fake_resp.events = events
+    fake_query = MagicMock()
+    fake_query.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(
+        svc, "MarketEventsQueryService", lambda db: fake_query, raising=False
+    )
 
 
 @pytest.mark.unit
@@ -93,11 +109,7 @@ def _patch_freshness(monkeypatch, svc, from_date: date, to_date: date, states=No
 async def test_calendar_returns_per_day(monkeypatch) -> None:
     from app.services.invest_view_model import calendar_service as svc
 
-    fake_resp = MagicMock()
-    fake_resp.events = [_fake_event(event_id="e1")]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, [_fake_event(event_id="e1")])
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     db = MagicMock()
@@ -124,9 +136,7 @@ async def test_calendar_clusters_when_over_threshold(monkeypatch) -> None:
         _fake_event(event_id=f"e{i}", category="earnings", market="us")
         for i in range(15)
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resp = await svc.build_calendar(
@@ -154,9 +164,7 @@ async def test_calendar_prioritizes_held_watchlist_and_value_events(
         _fake_event(event_id="held", symbol="AAPL"),
         _fake_event(event_id="valued", symbol="TSLA", forecast="1.23"),
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resolver = RelationResolver(
@@ -226,9 +234,7 @@ async def test_calendar_cluster_top_events_and_summary_are_priority_aware(
             actual="2.34",
         ),
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resolver = RelationResolver(
@@ -310,8 +316,7 @@ async def test_calendar_promotes_ppi_terms_in_dense_economic_cluster(
             **value_fields,
         ),
     ]
-    fake_query_service = MagicMock(list_for_range=AsyncMock(return_value=fake_resp))
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resp = await svc.build_calendar(
@@ -358,9 +363,7 @@ async def test_calendar_polishes_blank_kr_title_kst_time_and_values(
             values=[value],
         )
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resp = await svc.build_calendar(
@@ -391,9 +394,7 @@ async def test_get_calendar_returns_one_day_per_date_for_month_range(
     fake_resp.events = [
         _fake_event(event_id=f"e{i}", ev_date=date(2026, 5, i + 1)) for i in range(31)
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 1), date(2026, 5, 31))
 
     resp = await svc.build_calendar(
@@ -423,38 +424,38 @@ async def test_calendar_meta_includes_source_freshness(monkeypatch) -> None:
 
     fake_resp = MagicMock()
     fake_resp.events = []
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
 
+    coverage = CoverageMatrixResponse(
+        fromDate=date(2026, 5, 11),
+        toDate=date(2026, 5, 11),
+        asOf=datetime.now(UTC),
+        sources=[
+            CalendarSourceStatus(
+                source="finnhub",
+                category="earnings",
+                market="us",
+                state="missing",
+            )
+        ],
+        partitions=[],
+        coverage=CalendarCoverage(
+            fromDate=date(2026, 5, 11),
+            toDate=date(2026, 5, 11),
+            expectedPartitions=3,
+            succeededPartitions=0,
+            failedPartitions=0,
+            missingPartitions=3,
+            totalEvents=0,
+        ),
+    )
     fake_freshness = MagicMock()
     fake_freshness.get_per_day_states = AsyncMock(
         return_value={date(2026, 5, 11): "missing"}
     )
-    fake_freshness.get_coverage_matrix = AsyncMock(
-        return_value=CoverageMatrixResponse(
-            fromDate=date(2026, 5, 11),
-            toDate=date(2026, 5, 11),
-            asOf=datetime.now(UTC),
-            sources=[
-                CalendarSourceStatus(
-                    source="finnhub",
-                    category="earnings",
-                    market="us",
-                    state="missing",
-                )
-            ],
-            partitions=[],
-            coverage=CalendarCoverage(
-                fromDate=date(2026, 5, 11),
-                toDate=date(2026, 5, 11),
-                expectedPartitions=3,
-                succeededPartitions=0,
-                failedPartitions=0,
-                missingPartitions=3,
-                totalEvents=0,
-            ),
-        )
+    fake_freshness.get_coverage_matrix = AsyncMock(return_value=coverage)
+    fake_freshness.get_calendar_window = AsyncMock(
+        return_value=({date(2026, 5, 11): "missing"}, coverage)
     )
     monkeypatch.setattr(svc, "MarketEventsFreshnessService", lambda db: fake_freshness)
 
@@ -483,31 +484,31 @@ async def test_calendar_marks_loaded_when_events_present(monkeypatch) -> None:
 
     fake_resp = MagicMock()
     fake_resp.events = [_fake_event(event_id="e1", ev_date=date(2026, 5, 11))]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
 
+    coverage = CoverageMatrixResponse(
+        fromDate=date(2026, 5, 11),
+        toDate=date(2026, 5, 11),
+        asOf=datetime.now(UTC),
+        sources=[],
+        partitions=[],
+        coverage=CalendarCoverage(
+            fromDate=date(2026, 5, 11),
+            toDate=date(2026, 5, 11),
+            expectedPartitions=3,
+            succeededPartitions=3,
+            failedPartitions=0,
+            missingPartitions=0,
+            totalEvents=1,
+        ),
+    )
     fake_freshness = MagicMock()
     fake_freshness.get_per_day_states = AsyncMock(
         return_value={date(2026, 5, 11): "loaded"}
     )
-    fake_freshness.get_coverage_matrix = AsyncMock(
-        return_value=CoverageMatrixResponse(
-            fromDate=date(2026, 5, 11),
-            toDate=date(2026, 5, 11),
-            asOf=datetime.now(UTC),
-            sources=[],
-            partitions=[],
-            coverage=CalendarCoverage(
-                fromDate=date(2026, 5, 11),
-                toDate=date(2026, 5, 11),
-                expectedPartitions=3,
-                succeededPartitions=3,
-                failedPartitions=0,
-                missingPartitions=0,
-                totalEvents=1,
-            ),
-        )
+    fake_freshness.get_coverage_matrix = AsyncMock(return_value=coverage)
+    fake_freshness.get_calendar_window = AsyncMock(
+        return_value=({date(2026, 5, 11): "loaded"}, coverage)
     )
     monkeypatch.setattr(svc, "MarketEventsFreshnessService", lambda db: fake_freshness)
 
@@ -551,9 +552,7 @@ async def test_calendar_prefers_tradingview_over_forexfactory_duplicate(
             previous="0.2",
         ),
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resp = await svc.build_calendar(
@@ -601,9 +600,7 @@ async def test_calendar_keeps_forexfactory_when_tradingview_missing(
             previous="165",
         ),
     ]
-    fake_query_service = MagicMock()
-    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_events(monkeypatch, svc, fake_resp.events)
     _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
 
     resp = await svc.build_calendar(

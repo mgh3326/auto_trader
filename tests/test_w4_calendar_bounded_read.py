@@ -168,21 +168,27 @@ def _empty_coverage(from_date: date, to_date: date) -> CoverageMatrixResponse:
 def _patch_query(monkeypatch, events: list[object]) -> None:
     from app.services.invest_view_model import calendar_service as svc
 
+    async def _load(db, from_date, to_date):
+        return events
+
+    monkeypatch.setattr(svc, "load_calendar_events", _load, raising=False)
     fake_resp = MagicMock()
     fake_resp.events = events
     fake_query = MagicMock()
     fake_query.list_for_range = AsyncMock(return_value=fake_resp)
-    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query)
+    monkeypatch.setattr(
+        svc, "MarketEventsQueryService", lambda db: fake_query, raising=False
+    )
 
 
 def _patch_freshness(monkeypatch, from_date: date, to_date: date) -> MagicMock:
     from app.services.invest_view_model import calendar_service as svc
 
     fake_freshness = MagicMock()
+    coverage = _empty_coverage(from_date, to_date)
     fake_freshness.get_per_day_states = AsyncMock(return_value={})
-    fake_freshness.get_coverage_matrix = AsyncMock(
-        return_value=_empty_coverage(from_date, to_date)
-    )
+    fake_freshness.get_coverage_matrix = AsyncMock(return_value=coverage)
+    fake_freshness.get_calendar_window = AsyncMock(return_value=({}, coverage))
     monkeypatch.setattr(svc, "MarketEventsFreshnessService", lambda db: fake_freshness)
     return fake_freshness
 
@@ -244,6 +250,9 @@ async def test_warm_calendar_route_sql_is_bounded_and_independent_of_event_count
     db_session: AsyncSession,
 ) -> None:
     await _clear_day(db_session, _DAY)
+    async with _ExecuteCounter(db_session) as zero:
+        await _run_warm_route(db_session)
+    assert zero.count <= 4
 
     await _seed_events(db_session, 1)
     async with _ExecuteCounter(db_session) as one:
@@ -276,9 +285,18 @@ async def test_build_calendar_sql_stays_within_three_independent_of_n(
 ) -> None:
     from app.services.invest_view_model.calendar_service import build_calendar
 
-    await _clear_day(db_session, _DAY)
-    await _seed_events(db_session, 1)
     resolver = RelationResolver(held={("crypto", "KRW-BTC")})
+    await _clear_day(db_session, _DAY)
+    async with _ExecuteCounter(db_session) as zero:
+        await build_calendar(
+            db=db_session,
+            resolver=resolver,
+            from_date=_DAY,
+            to_date=_DAY,
+            tab="all",
+        )
+    assert zero.count <= 3
+    await _seed_events(db_session, 1)
     async with _ExecuteCounter(db_session) as one:
         await build_calendar(
             db=db_session,
