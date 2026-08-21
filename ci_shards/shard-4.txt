@@ -412,6 +412,7 @@ tests/test_us_intraday_candles_read_service.py
 tests/test_us_symbol_universe_model.py
 tests/test_us_symbol_universe_sync.py
 tests/test_us_valuation_bulk_tvscreener.py
+tests/test_w4_calendar_bounded_read.py
 tests/test_watch_expiry_tasks.py
 tests/test_watch_validity_policy.py
 tests/test_watch_validity_review.py
