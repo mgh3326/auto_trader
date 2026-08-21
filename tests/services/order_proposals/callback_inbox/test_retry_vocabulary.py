@@ -210,6 +210,7 @@ async def test_the_database_refuses_any_other_retry_vocabulary(
             ),
         }
         for wrong in (
+            "attempt_budget_invalid",
             "handler_ambiguous",
             "handler_exception",
             "chat_revoked",
@@ -254,6 +255,7 @@ async def test_the_database_refuses_any_other_retry_vocabulary(
 
     assert observed == {
         "retry_wait__pre_core_failure": True,
+        "retry_wait__attempt_budget_invalid": False,
         "retry_wait__handler_ambiguous": False,
         "retry_wait__handler_exception": False,
         "retry_wait__chat_revoked": False,

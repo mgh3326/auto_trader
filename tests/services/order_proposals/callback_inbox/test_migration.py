@@ -160,6 +160,27 @@ def test_the_orm_outcome_constraint_uses_the_closed_category_inventory() -> None
     assert str(constraint.sqltext) == expected
 
 
+@pytest.mark.unit
+def test_the_orm_declares_the_fixed_cross_field_attempt_budget() -> None:
+    """R34 — three is a fixed protocol constant, never a caller budget."""
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+    from app.services.order_proposals.callback_inbox.contracts import MAX_ATTEMPTS
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in TelegramCallbackInboxJob.__table__.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+
+    assert MAX_ATTEMPTS == 3
+    assert checks["ck_telegram_callback_inbox_attempt_count"] == (
+        "attempt_count >= 0 AND attempt_count <= max_attempts"
+    )
+    assert checks["ck_telegram_callback_inbox_max_attempts"] == (
+        f"max_attempts = {MAX_ATTEMPTS}"
+    )
+
+
 # --------------------------------------------------------------------------
 # Everything below needs a real PostgreSQL.
 # --------------------------------------------------------------------------
@@ -174,7 +195,7 @@ _INSERT = sa.text(
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
          outcome, error_class)
     VALUES
-        (:job_id, :update_digest, :state, :attempt_count, 3,
+        (:job_id, :update_digest, :state, :attempt_count, :max_attempts,
          :now, :now, :started_at, :handler_entered_at, :handler_completed_at,
          :terminal_state_pending, :callback_query_id,
          :chat_id, :message_id, :telegram_user_id, :action, :subject_short,
@@ -192,6 +213,7 @@ def _row(**overrides: object) -> dict[str, object]:
         "update_digest": uuid.uuid4().hex * 2,
         "state": "pending",
         "attempt_count": 0,
+        "max_attempts": 3,
         "now": _NOW,
         "started_at": None,
         "handler_entered_at": None,
@@ -318,6 +340,126 @@ def _active_probe(connection: sa.Connection, state: str, missing: str | None):
     if missing is not None:
         overrides[missing] = None
     return _accepts(connection, **overrides)
+
+
+def _attempt_budget_overrides(
+    state: str, *, attempt_count: object, max_attempts: object
+) -> dict[str, object]:
+    """Make a shape otherwise valid for its state, then vary only its budget."""
+    overrides: dict[str, object] = {
+        "state": state,
+        "attempt_count": attempt_count,
+        "max_attempts": max_attempts,
+    }
+    if state in TERMINAL_STATES:
+        overrides.update(_scrubbed())
+    elif state == "processing":
+        overrides["started_at"] = _NOW
+    elif state == "retry_wait":
+        overrides["error_class"] = "pre_core_failure"
+    return overrides
+
+
+def _expected_attempt_budget_acceptance(
+    state: str, case_name: str, accepted: bool
+) -> bool:
+    # ``attempt_count=3, max_attempts=3`` is the legal fixed upper boundary
+    # everywhere except ``retry_wait``.  That exception is intentionally
+    # separate from the R34 cross-field rule: R25's retry-budget CHECK says a
+    # parked retry must still have another attempt left.
+    if case_name == "fixed_upper_boundary":
+        return state != "retry_wait"
+    return accepted
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_the_bootstrap_database_enforces_the_fixed_cross_field_budget_matrix(
+    _bootstrap_test_schema,
+) -> None:
+    """R34 — raw PostgreSQL, every state, and every hostile cross-field shape.
+
+    The test deliberately does not infer parity from constraint names.  It
+    inserts values through raw SQL against the ORM-created schema, because a
+    separate one-column range check would otherwise still accept a live
+    ``attempt_count=3, max_attempts=4`` poison row.
+    """
+    from app.core.db import AsyncSessionLocal
+
+    cases: tuple[tuple[str, object, object, bool], ...] = (
+        ("fixed_lower_boundary", 0, 3, True),
+        ("fixed_unspent_retry", 2, 3, True),
+        ("fixed_upper_boundary", 3, 3, True),
+        ("max_above_fixed", 3, 4, False),
+        ("max_below_fixed", 0, 1, False),
+        ("zero_max", 0, 0, False),
+        ("negative_max", 0, -1, False),
+        ("negative_attempt", -1, 3, False),
+        ("attempt_above_fixed_budget", 4, 3, False),
+        ("attempt_above_declared_budget", 2, 1, False),
+        ("null_attempt", None, 3, False),
+        ("null_max", 0, None, False),
+    )
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        observed: dict[str, bool] = {}
+        for state in (*ACTIVE_STATES, *TERMINAL_STATES):
+            for name, candidate_count, candidate_max, _expected in cases:
+                observed[f"{state}::{name}"] = _accepts(
+                    connection,
+                    **_attempt_budget_overrides(
+                        state,
+                        attempt_count=candidate_count,
+                        max_attempts=candidate_max,
+                    ),
+                )
+        return observed
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    expected: dict[str, bool] = {}
+    for state in (*ACTIVE_STATES, *TERMINAL_STATES):
+        for name, _candidate_count, _candidate_max, accepted in cases:
+            expected[f"{state}::{name}"] = _expected_attempt_budget_acceptance(
+                state, name, accepted
+            )
+    assert observed == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_retry_wait_fixed_upper_boundary_is_rejected_by_the_retry_budget(
+    _bootstrap_test_schema,
+) -> None:
+    """R25 remains distinct: fixed ``3`` is valid, but not while parked."""
+    from app.core.db import AsyncSessionLocal
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        return {
+            "pending_fixed_upper": _accepts(
+                connection,
+                **_attempt_budget_overrides("pending", attempt_count=3, max_attempts=3),
+            ),
+            "retry_wait_fixed_upper": _accepts(
+                connection,
+                **_attempt_budget_overrides(
+                    "retry_wait", attempt_count=3, max_attempts=3
+                ),
+            ),
+        }
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    assert observed == {
+        "pending_fixed_upper": True,
+        "retry_wait_fixed_upper": False,
+    }
 
 
 @pytest.mark.integration

@@ -440,8 +440,46 @@ async def load_job(job_id: uuid.UUID):
 
 RETRY_BUDGET_CONSTRAINT = "ck_telegram_callback_inbox_retry_budget"
 
+# R34's hostile-row fixtures model a row written before the fixed cross-field
+# budget invariant existed.  The fixture below drops these checks only to
+# insert rows it owns, then re-adds the *target* checks as NOT VALID before it
+# yields control back to any production worker/service code.  PostgreSQL keeps
+# legacy rows under NOT VALID but applies the checks to every UPDATE, which is
+# exactly the real repair condition: terminalisation has to normalise the
+# entire budget in the same statement as the scrub.
+ATTEMPT_BUDGET_CONSTRAINTS: tuple[str, ...] = (
+    "ck_telegram_callback_inbox_retry_budget",
+    "ck_telegram_callback_inbox_attempt_count",
+    "ck_telegram_callback_inbox_max_attempts",
+)
+
 _RETRY_BUDGET_SQL = (
     "CASE WHEN state = 'retry_wait' THEN attempt_count < max_attempts ELSE true END"
+)
+
+_R34_NOT_VALID_CHECKS: dict[str, str] = {
+    "ck_telegram_callback_inbox_retry_budget": (
+        f"CHECK ({_RETRY_BUDGET_SQL}) NOT VALID"
+    ),
+    "ck_telegram_callback_inbox_attempt_count": (
+        "CHECK (attempt_count >= 0 AND attempt_count <= max_attempts) NOT VALID"
+    ),
+    "ck_telegram_callback_inbox_max_attempts": "CHECK (max_attempts = 3) NOT VALID",
+}
+
+_ATTEMPT_BUDGET_POISON_FIELDS: frozenset[str] = frozenset(
+    {
+        "state",
+        "attempt_count",
+        "max_attempts",
+        "available_at",
+        "started_at",
+        "handler_entered_at",
+        "handler_completed_at",
+        "terminal_state_pending",
+        "outcome",
+        "error_class",
+    }
 )
 
 
@@ -484,3 +522,109 @@ async def without_the_retry_budget_check() -> AsyncIterator[None]:
                 )
             )
             await session.commit()
+
+
+class AttemptBudgetPoisonRows:
+    """Owned legacy rows plus an explicit NOT VALID re-arm boundary.
+
+    Calling :meth:`insert` is the sole time a test can write an invalid budget.
+    It is intentionally separate from :meth:`enforce_for_processing`: every
+    test must re-arm the desired R34 checks before calling worker, recovery, or
+    either CAS service method.  The context manager validates the target
+    checks on exit after removing only still-invalid rows this instance owns.
+    """
+
+    def __init__(self) -> None:
+        self._owned_job_ids: list[uuid.UUID] = []
+        self._enforced = False
+
+    async def insert(self, job_id: uuid.UUID, **fields: Any) -> None:
+        if self._enforced:
+            raise RuntimeError("attempt budget poison fixture is already re-armed")
+        unknown = set(fields) - _ATTEMPT_BUDGET_POISON_FIELDS
+        if unknown:
+            raise ValueError(f"unexpected poison field names: {sorted(unknown)}")
+        if not fields:
+            raise ValueError("a poison insert needs explicit fields")
+
+        if job_id not in self._owned_job_ids:
+            self._owned_job_ids.append(job_id)
+        assignments = ", ".join(f"{field} = :{field}" for field in sorted(fields))
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                text(
+                    "UPDATE review.telegram_callback_inbox "
+                    f"SET {assignments} WHERE job_id = :job_id"
+                ),
+                {"job_id": job_id, **fields},
+            )
+            if result.rowcount != 1:
+                raise LookupError(f"owned poison row was not found: {job_id}")
+            await session.commit()
+
+    async def enforce_for_processing(self) -> None:
+        """Install fixed R34 checks as NOT VALID before production code runs."""
+        if self._enforced:
+            return
+        async with AsyncSessionLocal() as session:
+            for name in ATTEMPT_BUDGET_CONSTRAINTS:
+                await session.execute(
+                    text(
+                        "ALTER TABLE review.telegram_callback_inbox "
+                        f"ADD CONSTRAINT {name} {_R34_NOT_VALID_CHECKS[name]}"
+                    )
+                )
+            await session.commit()
+        self._enforced = True
+
+    async def run_after_enforcing(self, operation: Callable[[], Any]) -> Any:
+        """Run production code only after target checks protect every UPDATE."""
+        await self.enforce_for_processing()
+        assert self._enforced
+        return await operation()
+
+    async def cleanup_and_validate(self) -> None:
+        """Remove only this fixture's unhealed rows, then validate R34 DDL."""
+        if not self._enforced:
+            await self.enforce_for_processing()
+        async with AsyncSessionLocal() as session:
+            for job_id in self._owned_job_ids:
+                await session.execute(
+                    text(
+                        "DELETE FROM review.telegram_callback_inbox "
+                        "WHERE job_id = :job_id "
+                        "AND (max_attempts <> 3 "
+                        "OR attempt_count < 0 "
+                        "OR attempt_count > max_attempts "
+                        "OR (state = 'retry_wait' "
+                        "AND attempt_count >= max_attempts))"
+                    ),
+                    {"job_id": job_id},
+                )
+            for name in ATTEMPT_BUDGET_CONSTRAINTS:
+                await session.execute(
+                    text(
+                        "ALTER TABLE review.telegram_callback_inbox "
+                        f"VALIDATE CONSTRAINT {name}"
+                    )
+                )
+            await session.commit()
+
+
+@contextlib.asynccontextmanager
+async def attempt_budget_poison_rows() -> AsyncIterator[AttemptBudgetPoisonRows]:
+    """Insert owned legacy rows, then require a NOT VALID re-arm before use."""
+    async with AsyncSessionLocal() as session:
+        for name in ATTEMPT_BUDGET_CONSTRAINTS:
+            await session.execute(
+                text(
+                    f"ALTER TABLE review.telegram_callback_inbox DROP CONSTRAINT {name}"
+                )
+            )
+        await session.commit()
+
+    rows = AttemptBudgetPoisonRows()
+    try:
+        yield rows
+    finally:
+        await rows.cleanup_and_validate()

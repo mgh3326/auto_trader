@@ -358,6 +358,7 @@ def test_error_class_vocabulary_is_closed() -> None:
 
     assert ERROR_CLASSES == frozenset(
         {
+            "attempt_budget_invalid",
             "attempts_exhausted",
             "chat_revoked",
             "envelope_invalid",

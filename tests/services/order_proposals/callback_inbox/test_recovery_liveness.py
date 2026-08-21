@@ -797,7 +797,7 @@ async def test_the_candidate_scan_is_bounded_in_the_database_too(
     produce a handful of ids.
 
     What this test claims is exactly what it checks, and no more: at most
-    three statements, each separately ``LIMIT``ed, and no full-partition
+    four statements, each separately ``LIMIT``ed, and no full-partition
     ranking. It does **not** claim the database stops reading at the quota.
     ``EXPLAIN`` on a tier query shows ``Limit -> Sort(received_at, job_id) ->
     Index Scan using ix_telegram_callback_inbox_state_available``: the
@@ -844,8 +844,8 @@ async def test_the_candidate_scan_is_bounded_in_the_database_too(
 
     assert len(rows) <= cap, len(rows)
     assert statements, "no query was issued at all"
-    assert len(statements) <= 3, (
-        f"{len(statements)} queries for three tiers: one bounded SELECT each, "
+    assert len(statements) <= 4, (
+        f"{len(statements)} queries for four tiers: one bounded SELECT each, "
         f"or one bounded UNION ALL"
     )
     for sql in statements:

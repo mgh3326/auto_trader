@@ -283,6 +283,97 @@ async def _processing_check_rejects_a_missing_started_at(database_url: str) -> b
         await connection.close()
 
 
+async def _attempt_budget_matrix(
+    database_url: str,
+) -> tuple[tuple[str, str, bool, bool], ...]:
+    """Exercise R34's values on the real parent->head schema.
+
+    Constraint-name parity is not enough here: the pre-R34 pair of names was
+    present while a fixed-count row with a caller-supplied larger budget still
+    passed.  This is intentionally the same all-state matrix as the ORM
+    bootstrap test, but run after the real Alembic CLI reaches head.
+    """
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    cases: tuple[tuple[str, object, object, bool], ...] = (
+        ("fixed_lower_boundary", 0, 3, True),
+        ("fixed_unspent_retry", 2, 3, True),
+        ("fixed_upper_boundary", 3, 3, True),
+        ("max_above_fixed", 3, 4, False),
+        ("max_below_fixed", 0, 1, False),
+        ("zero_max", 0, 0, False),
+        ("negative_max", 0, -1, False),
+        ("negative_attempt", -1, 3, False),
+        ("attempt_above_fixed_budget", 4, 3, False),
+        ("attempt_above_declared_budget", 2, 1, False),
+        ("null_attempt", None, 3, False),
+        ("null_max", 0, None, False),
+    )
+    states = (
+        "pending",
+        "processing",
+        "retry_wait",
+        "succeeded",
+        "discarded",
+        "dead_letter",
+    )
+    results: list[tuple[str, str, bool, bool]] = []
+    try:
+        for state in states:
+            for name, candidate_count, maximum, expected in cases:
+                active = state in {"pending", "processing", "retry_wait"}
+                try:
+                    await connection.execute(
+                        "INSERT INTO review.telegram_callback_inbox "
+                        "(job_id, update_digest, state, attempt_count, max_attempts, "
+                        "received_at, available_at, started_at, chat_id, action, "
+                        "subject_short, dispatch_attempt_id, membership_revision, "
+                        "membership_digest, nonce, error_class) "
+                        "VALUES ($1, $2, $3, $4, $5, now(), now(), "
+                        "CASE WHEN $3 = 'processing' THEN now() ELSE NULL END, "
+                        "$6, $7, $8, $9, $10, $11, $12, $13)",
+                        uuid.uuid4(),
+                        uuid.uuid4().hex * 2,
+                        state,
+                        candidate_count,
+                        maximum,
+                        "42" if active else None,
+                        "op" if active else None,
+                        "0123abcd" if active else None,
+                        uuid.uuid4() if active else None,
+                        1 if active else None,
+                        "abcdefghijkl" if active else None,
+                        "nonce123456" if active else None,
+                        "pre_core_failure" if state == "retry_wait" else None,
+                    )
+                except (
+                    asyncpg.exceptions.CheckViolationError,
+                    asyncpg.exceptions.NotNullViolationError,
+                ):
+                    accepted = False
+                else:
+                    accepted = True
+                expected_for_state = (
+                    state != "retry_wait"
+                    if name == "fixed_upper_boundary"
+                    else expected
+                )
+                results.append((state, name, accepted, expected_for_state))
+    finally:
+        await connection.close()
+    return tuple(results)
+
+
+async def _assert_attempt_budget_matrix(database_url: str) -> None:
+    for state, name, accepted, expected in await _attempt_budget_matrix(database_url):
+        if accepted != expected:
+            raise AssertionError(f"attempt budget matrix mismatch: {state}::{name}")
+
+
 async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bool:
     """A recorded verdict with no handler entry must be unstorable."""
     import asyncpg
@@ -421,6 +512,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         # the inherited regex-only implementation fails on the actual database
         # behaviour, not merely because a revision label is absent.
         await _assert_outcome_constraint_matrix(scratch_database)
+        await _assert_attempt_budget_matrix(scratch_database)
         assert await _stamped_revision(scratch_database) == W5_INBOX_REVISION
         objects = await _live_objects(scratch_database)
         live = {
