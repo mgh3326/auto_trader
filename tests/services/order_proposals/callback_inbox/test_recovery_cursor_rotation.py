@@ -15,6 +15,11 @@ import asyncio
 import contextlib
 import importlib
 import inspect
+import json
+import os
+import pathlib
+import subprocess
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -29,6 +34,8 @@ from app.core.timezone import now_kst
 from .conftest import attempt_budget_poison_rows, make_update
 
 pytestmark = pytest.mark.integration
+
+_REPO = pathlib.Path(__file__).resolve().parents[4]
 
 
 _ROW_FIELDS = frozenset(
@@ -289,6 +296,170 @@ async def _isolated_cursor() -> AsyncIterator[None]:
         yield
     finally:
         await _clear_cursor()
+
+
+async def _cursor_table_exists() -> bool:
+    async with AsyncSessionLocal() as session:
+        exists = bool(
+            (
+                await session.execute(
+                    sa.text(
+                        "SELECT to_regclass("
+                        "'review.telegram_callback_recovery_cursor') IS NOT NULL"
+                    )
+                )
+            ).scalar_one()
+        )
+        await session.rollback()
+    return exists
+
+
+async def _replace_cursor_next_tier(next_tier: int) -> None:
+    """Test-owned singleton setup; this is ordering state, never job authority."""
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            sa.text("DELETE FROM review.telegram_callback_recovery_cursor WHERE id = 1")
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO review.telegram_callback_recovery_cursor "
+                "(id, next_tier, updated_at) VALUES (1, :next_tier, now())"
+            ),
+            {"next_tier": next_tier},
+        )
+        await session.commit()
+
+
+async def _cursor_next_tier() -> int | None:
+    async with AsyncSessionLocal() as session:
+        value = (
+            await session.execute(
+                sa.text(
+                    "SELECT next_tier FROM review.telegram_callback_recovery_cursor "
+                    "WHERE id = 1"
+                )
+            )
+        ).scalar_one_or_none()
+        await session.rollback()
+    return None if value is None else int(value)
+
+
+async def _clear_raw_cursor_if_present() -> None:
+    if not await _cursor_table_exists():
+        return
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            sa.text("DELETE FROM review.telegram_callback_recovery_cursor WHERE id = 1")
+        )
+        await session.commit()
+
+
+_FRESH_PROCESS_SWEEP = """
+import asyncio
+import json
+import os
+
+import sqlalchemy as sa
+
+from app.core.db import AsyncSessionLocal
+from app.services.order_proposals.callback_inbox.recovery import recover_callback_jobs
+
+
+async def _record_only(job_id, **kwargs):
+    seen.append(str(job_id))
+    return {"status": "succeeded"}
+
+
+async def _main():
+    report = await recover_callback_jobs(limit=1, process_fn=_record_only)
+    async with AsyncSessionLocal() as session:
+        next_tier = (
+            await session.execute(
+                sa.text(
+                    "SELECT next_tier FROM review.telegram_callback_recovery_cursor "
+                    "WHERE id = 1"
+                )
+            )
+        ).scalar_one_or_none()
+        await session.rollback()
+    print(
+        "R34_FRESH_SWEEP="
+        + json.dumps(
+            {
+                "claimed": report["claimed"],
+                "cursor_next_tier": next_tier,
+                "pid": os.getpid(),
+                "scanned": report["scanned"],
+                "seen": seen,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+seen = []
+asyncio.run(_main())
+"""
+
+
+def _fresh_process_sweep() -> dict[str, Any]:
+    """A new interpreter cannot retain a module/class cursor from this test."""
+    environment = dict(os.environ)
+    prior_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(_REPO) if not prior_path else f"{_REPO}{os.pathsep}{prior_path}"
+    )
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter and source
+        [sys.executable, "-c", _FRESH_PROCESS_SWEEP],
+        cwd=str(_REPO),
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=60,
+    )
+    assert completed.returncode == 0, (
+        f"fresh recovery process failed ({completed.returncode})\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    markers = [
+        line.removeprefix("R34_FRESH_SWEEP=")
+        for line in completed.stdout.splitlines()
+        if line.startswith("R34_FRESH_SWEEP=")
+    ]
+    assert len(markers) == 1, completed.stdout
+    decoded = json.loads(markers[0])
+    assert isinstance(decoded, dict), decoded
+    return decoded
+
+
+@pytest.mark.asyncio
+async def test_fresh_process_sweeps_follow_the_committed_cursor_tier_order(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """Fresh interpreters prove recovery uses the DB cursor through selection."""
+    from app.services.order_proposals.callback_inbox.contracts import recovery_scan_cap
+
+    now = now_kst()
+    async with _persistent_four_tier_backlog(inbox_cleanup, now=now) as tiers:
+        assert set(tiers.values()) == set(_TIER_NAMES)
+        # q=1 means the stored next tier is exactly this sweep's reserved
+        # start. It is deliberately nonzero: a process-local sequence that
+        # starts from zero cannot pass by accident.
+        await _replace_cursor_next_tier(2)
+        try:
+            reports = [_fresh_process_sweep(), _fresh_process_sweep()]
+            for report, expected_start, expected_next in zip(
+                reports, (2, 3), (3, 0), strict=True
+            ):
+                assert report["claimed"] == 1, report
+                assert report["scanned"] <= recovery_scan_cap(1), report
+                assert len(report["seen"]) == 1, report
+                assert tiers[uuid.UUID(report["seen"][0])] == expected_start, report
+                assert report["cursor_next_tier"] == expected_next, report
+                assert await _cursor_next_tier() == expected_next
+            assert reports[0]["pid"] != reports[1]["pid"], reports
+        finally:
+            await _clear_raw_cursor_if_present()
 
 
 @pytest.mark.asyncio
@@ -657,20 +828,86 @@ def _mutable_custom_class_names(tree: ast.AST) -> set[str]:
     return mutable
 
 
-def _custom_constructor(value: ast.expr | None, classes: set[str]) -> str | None:
-    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
-        if value.func.id in classes:
+_STATEFUL_BUILTIN_FACTORIES = frozenset({"bytearray", "dict", "list", "set"})
+_STATEFUL_IMPORTED_FACTORIES = frozenset(
+    {
+        "collections.Counter",
+        "collections.defaultdict",
+        "collections.deque",
+        "itertools.accumulate",
+        "itertools.count",
+        "itertools.cycle",
+        "itertools.repeat",
+        "queue.Queue",
+        "random.Random",
+    }
+)
+
+
+def _import_bindings(tree: ast.AST) -> dict[str, str]:
+    """Resolve only import aliases needed to recognise known state factories."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings[alias.asname or alias.name.split(".", 1)[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name != "*":
+                    bindings[alias.asname or alias.name] = (
+                        f"{module}.{alias.name}".strip(".")
+                    )
+    return bindings
+
+
+def _stateful_constructor(
+    value: ast.expr | None,
+    *,
+    custom_classes: set[str],
+    imports: dict[str, str],
+) -> str | None:
+    """Recognise a local/imported state factory without name-based guesses."""
+    if not isinstance(value, ast.Call):
+        return None
+    if isinstance(value.func, ast.Name):
+        if value.func.id in custom_classes:
             return value.func.id
+        if value.func.id in _STATEFUL_BUILTIN_FACTORIES:
+            return f"builtin {value.func.id}"
+        origin = imports.get(value.func.id)
+        if origin in _STATEFUL_IMPORTED_FACTORIES:
+            return origin
+    elif isinstance(value.func, ast.Attribute) and isinstance(
+        value.func.value, ast.Name
+    ):
+        origin = imports.get(value.func.value.id)
+        if origin is not None:
+            qualified = f"{origin}.{value.func.attr}"
+            if qualified in _STATEFUL_IMPORTED_FACTORIES:
+                return qualified
     return None
 
 
-def _direct_custom_bindings(scope: ast.AST, classes: set[str]) -> set[str]:
-    bindings: set[str] = set()
+def _direct_stateful_bindings(
+    scope: ast.AST,
+    *,
+    custom_classes: set[str],
+    imports: dict[str, str],
+) -> dict[str, str]:
+    bindings: dict[str, str] = {}
     for node in _direct_scope_nodes(scope):
         value, targets = _assignment_parts(node)
-        if _custom_constructor(value, classes) is None:
+        constructor = _stateful_constructor(
+            value,
+            custom_classes=custom_classes,
+            imports=imports,
+        )
+        if constructor is None:
             continue
-        bindings.update(target.id for target in targets if isinstance(target, ast.Name))
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bindings[target.id] = constructor
     return bindings
 
 
@@ -694,6 +931,7 @@ def _rotation_state_offenders(source: str) -> list[str]:
     """Find actual process-local custom state, not names that merely say cursor."""
     tree = ast.parse(source)
     classes = _mutable_custom_class_names(tree)
+    imports = _import_bindings(tree)
     offenders: list[str] = []
     scopes: list[ast.AST] = [tree]
     scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
@@ -702,7 +940,11 @@ def _rotation_state_offenders(source: str) -> list[str]:
         kind = "module" if isinstance(scope, ast.Module) else f"class {scope.name}"
         for node in _direct_scope_nodes(scope):
             value, targets = _assignment_parts(node)
-            constructor = _custom_constructor(value, classes)
+            constructor = _stateful_constructor(
+                value,
+                custom_classes=classes,
+                imports=imports,
+            )
             if constructor is None:
                 continue
             for target in targets:
@@ -717,7 +959,11 @@ def _rotation_state_offenders(source: str) -> list[str]:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     )
     for function in functions:
-        closed_over = _direct_custom_bindings(function, classes)
+        closed_over = _direct_stateful_bindings(
+            function,
+            custom_classes=classes,
+            imports=imports,
+        )
         if not closed_over:
             continue
         for nested in _nested_functions(function):
@@ -726,9 +972,10 @@ def _rotation_state_offenders(source: str) -> list[str]:
                 for node in _direct_scope_nodes(nested)
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
             }
-            for name in sorted(closed_over & loaded):
+            for name in sorted(set(closed_over) & loaded):
                 offenders.append(
-                    f"line {nested.lineno}: {nested.name} closes over mutable {name}"
+                    f"line {nested.lineno}: {nested.name} closes over "
+                    f"mutable {closed_over[name]} as {name}"
                 )
 
     for node in ast.walk(tree):
@@ -781,6 +1028,186 @@ def _call_keyword(call: ast.Call, name: str) -> ast.expr | None:
     )
 
 
+def _target_mentions_name(target: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id == name for node in ast.walk(target)
+    )
+
+
+def _tier_start_store_offenders(
+    recover: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    initial_targets: set[int],
+) -> list[str]:
+    """The reservation result is immutable local data until the scan call."""
+    offenders: list[str] = []
+    for node in _direct_scope_nodes(recover):
+        if (
+            isinstance(node, ast.Name)
+            and node.id == "tier_start"
+            and isinstance(node.ctx, ast.Store | ast.Del)
+            and id(node) not in initial_targets
+        ):
+            offenders.append(
+                f"line {node.lineno}: tier_start is rebound or deleted after reservation"
+            )
+        elif isinstance(node, ast.ExceptHandler) and node.name == "tier_start":
+            offenders.append(
+                f"line {node.lineno}: tier_start is rebound by an exception handler"
+            )
+        elif isinstance(node, ast.alias) and node.asname == "tier_start":
+            offenders.append(
+                f"line {node.lineno}: tier_start is rebound by an import alias"
+            )
+        elif (
+            isinstance(node, ast.MatchAs | ast.MatchStar) and node.name == "tier_start"
+        ):
+            offenders.append(
+                f"line {node.lineno}: tier_start is rebound by a match pattern"
+            )
+        elif (
+            isinstance(node, ast.Attribute | ast.Subscript)
+            and isinstance(node.ctx, ast.Store | ast.Del)
+            and _target_mentions_name(node, "tier_start")
+        ):
+            offenders.append(
+                f"line {node.lineno}: tier_start is mutated after reservation"
+            )
+    return offenders
+
+
+def _contains_name_load(node: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(child, ast.Name)
+        and child.id == name
+        and isinstance(child.ctx, ast.Load)
+        for child in ast.walk(node)
+    )
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    return {
+        child.id
+        for child in ast.walk(target)
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+    }
+
+
+def _is_name_load(node: ast.AST | None, name: str) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == name
+        and isinstance(node.ctx, ast.Load)
+    )
+
+
+def _is_tier_start_slice(slice_: ast.AST, *, lower: bool) -> bool:
+    if not isinstance(slice_, ast.Slice):
+        return False
+    endpoint = slice_.lower if lower else slice_.upper
+    other_endpoint = slice_.upper if lower else slice_.lower
+    return _is_name_load(endpoint, "tier_start") and other_endpoint is None
+
+
+def _rotation_ring_name(value: ast.expr | None) -> str | None:
+    """Return the ring name only for ``ring[start:] + ring[:start]``."""
+    if not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.Add):
+        return None
+    left, right = value.left, value.right
+    if not isinstance(left, ast.Subscript) or not isinstance(right, ast.Subscript):
+        return None
+    if not (
+        isinstance(left.value, ast.Name)
+        and isinstance(right.value, ast.Name)
+        and left.value.id == right.value.id
+    ):
+        return None
+    if not _is_tier_start_slice(left.slice, lower=True):
+        return None
+    if not _is_tier_start_slice(right.slice, lower=False):
+        return None
+    return left.value.id
+
+
+def _is_exact_tier_ring(value: ast.expr | None) -> bool:
+    if not isinstance(value, ast.Tuple | ast.List):
+        return False
+    elements = value.elts
+    integer_ring = [
+        element.value
+        for element in elements
+        if isinstance(element, ast.Constant) and type(element.value) is int
+    ]
+    if integer_ring == [0, 1, 2, 3] and len(integer_ring) == len(elements):
+        return True
+    return [element.id for element in elements if isinstance(element, ast.Name)] == [
+        "TIER_MALFORMED",
+        "TIER_EXHAUSTED",
+        "TIER_QUEUED",
+        "TIER_STALE",
+    ]
+
+
+def _call_uses_loop_name(call: ast.Call, loop_names: set[str]) -> bool:
+    return any(
+        _contains_name_load(argument, name)
+        for argument in (*call.args, *(keyword.value for keyword in call.keywords))
+        for name in loop_names
+    )
+
+
+def _tier_order_rotation_offenders(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[str]:
+    """Require a real cyclic ``tier_start`` rotation to drive selection.
+
+    Merely accepting or reading ``tier_start`` is not enough: the selected
+    candidate loop must iterate an order derived as ``ring[start:] +
+    ring[:start]``.  That shape makes the complete four-tier cycle visible to
+    the verifier without accepting an unrelated conditional or an imported
+    process-local iterator as a lookalike.
+    """
+    exact_rings: set[str] = set()
+    assignments: list[tuple[ast.expr | None, list[ast.expr]]] = []
+    for node in _direct_scope_nodes(method):
+        value, targets = _assignment_parts(node)
+        assignments.append((value, targets))
+        if _is_exact_tier_ring(value):
+            exact_rings.update(
+                target.id for target in targets if isinstance(target, ast.Name)
+            )
+
+    rotated_orders: dict[str, str] = {}
+    for value, targets in assignments:
+        ring_name = _rotation_ring_name(value)
+        if ring_name is None or ring_name not in exact_rings:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                rotated_orders[target.id] = ring_name
+    if not rotated_orders:
+        return [
+            "claimable_job_ids does not rotate the exact four-tier order from "
+            "tier_start"
+        ]
+
+    for node in _direct_scope_nodes(method):
+        if not isinstance(node, ast.For | ast.AsyncFor):
+            continue
+        if not any(_contains_name_load(node.iter, name) for name in rotated_orders):
+            continue
+        loop_names = _target_names(node.target)
+        if any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "get"
+            and _call_uses_loop_name(call, loop_names)
+            for call in ast.walk(node)
+        ):
+            return []
+    return ["claimable_job_ids does not select candidates in the rotated tier order"]
+
+
 def _durable_tier_start_offenders(
     *, recovery_source: str, service_source: str
 ) -> list[str]:
@@ -802,14 +1229,16 @@ def _durable_tier_start_offenders(
     if service_claimable is None:
         offenders.append("CallbackInboxService.claimable_job_ids is missing")
 
-    assignments = []
+    assignments: list[tuple[ast.AST, ast.expr | None, set[int]]] = []
     for node in _direct_scope_nodes(recover):
         value, targets = _assignment_parts(node)
-        if any(
-            isinstance(target, ast.Name) and target.id == "tier_start"
+        initial_targets = {
+            id(target)
             for target in targets
-        ):
-            assignments.append((node, value))
+            if isinstance(target, ast.Name) and target.id == "tier_start"
+        }
+        if initial_targets:
+            assignments.append((node, value, initial_targets))
     if len(assignments) != 1:
         offenders.append(
             f"tier_start has {len(assignments)} direct bindings, expected one"
@@ -822,6 +1251,10 @@ def _durable_tier_start_offenders(
     ):
         offenders.append(
             "tier_start is not assigned directly from the committed reservation"
+        )
+    elif assignments:
+        offenders.extend(
+            _tier_start_store_offenders(recover, initial_targets=assignments[0][2])
         )
     recover_reservations = [
         node
@@ -889,7 +1322,176 @@ def _durable_tier_start_offenders(
             for node in _direct_scope_nodes(service_claimable)
         ):
             offenders.append("claimable_job_ids ignores tier_start")
+        offenders.extend(_tier_order_rotation_offenders(service_claimable))
     return offenders
+
+
+def _valid_recovery_source(*, after_reservation: str = "") -> str:
+    return f"""
+async def reserve_recovery_tier_block():
+    await service.reserve_recovery_tier_block()
+    await session.commit()
+
+
+async def recover_callback_jobs():
+    tier_start = await reserve_recovery_tier_block()
+{after_reservation}    candidates = await service.claimable_job_ids(
+        now=now,
+        limit=limit,
+        tier_start=tier_start,
+    )
+    return candidates
+"""
+
+
+def _rotating_service_source() -> str:
+    return """
+class CallbackInboxService:
+    async def claimable_job_ids(self, *, now, limit, tier_start):
+        tier_ring = (0, 1, 2, 3)
+        rotated_tiers = tier_ring[tier_start:] + tier_ring[:tier_start]
+        by_tier = {}
+        ordered = []
+        for tier in rotated_tiers:
+            ordered.extend(by_tier.get(tier, []))
+        return ordered
+"""
+
+
+@pytest.mark.unit
+def test_durable_tier_start_guard_allows_the_direct_reservation_passthrough() -> None:
+    assert (
+        _durable_tier_start_offenders(
+            recovery_source=_valid_recovery_source(),
+            service_source=_rotating_service_source(),
+        )
+        == []
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("label", "after_reservation", "expected"),
+    (
+        (
+            "plus_equals",
+            "    tier_start += 1\n",
+            "tier_start is rebound or deleted after reservation",
+        ),
+        (
+            "rebind_transform",
+            "    tier_start = (tier_start + 1) % 4\n",
+            "tier_start has 2 direct bindings",
+        ),
+        (
+            "named_expression",
+            "    if (tier_start := tier_start + 1):\n        pass\n",
+            "tier_start is rebound or deleted after reservation",
+        ),
+        (
+            "delete",
+            "    del tier_start\n",
+            "tier_start is rebound or deleted after reservation",
+        ),
+        (
+            "for_target",
+            "    for tier_start in ():\n        pass\n",
+            "tier_start is rebound or deleted after reservation",
+        ),
+        (
+            "import_alias",
+            "    import itertools as tier_start\n",
+            "tier_start is rebound by an import alias",
+        ),
+        (
+            "subscript_mutation",
+            "    tier_start[0] = 1\n",
+            "tier_start is mutated after reservation",
+        ),
+    ),
+)
+def test_durable_tier_start_guard_rejects_every_post_reservation_mutation(
+    label: str, after_reservation: str, expected: str
+) -> None:
+    offenders = _durable_tier_start_offenders(
+        recovery_source=_valid_recovery_source(after_reservation=after_reservation),
+        service_source=_rotating_service_source(),
+    )
+    assert any(expected in offender for offender in offenders), (
+        label,
+        offenders,
+    )
+
+
+@pytest.mark.unit
+def test_rotation_verifiers_reject_an_imported_itertools_cycle_bypass() -> None:
+    service_source = """
+import itertools
+
+
+class CallbackInboxService:
+    _rotation = itertools.cycle((0, 1, 2, 3))
+
+    async def claimable_job_ids(self, *, now, limit, tier_start):
+        if tier_start is None:
+            return []
+        selected = next(self._rotation)
+        by_tier = {}
+        ordered = []
+        for tier in (selected,):
+            ordered.extend(by_tier.get(tier, []))
+        return ordered
+"""
+    state_offenders = _rotation_state_offenders(service_source)
+    assert any("itertools.cycle" in offender for offender in state_offenders), (
+        state_offenders
+    )
+    flow_offenders = _durable_tier_start_offenders(
+        recovery_source=_valid_recovery_source(),
+        service_source=service_source,
+    )
+    assert any("tier order" in offender for offender in flow_offenders), flow_offenders
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "service_source",
+    (
+        """
+class CallbackInboxService:
+    async def claimable_job_ids(self, *, now, limit, tier_start):
+        tier_ring = (0, 1, 2, 3)
+        accepted = tier_start
+        rotated_tiers = tier_ring[0:] + tier_ring[:0]
+        by_tier = {}
+        ordered = []
+        for tier in rotated_tiers:
+            ordered.extend(by_tier.get(tier, []))
+        return ordered
+""",
+        """
+class CallbackInboxService:
+    async def claimable_job_ids(self, *, now, limit, tier_start):
+        tier_ring = (0, 1, 2)
+        rotated_tiers = tier_ring[tier_start:] + tier_ring[:tier_start]
+        by_tier = {}
+        ordered = []
+        for tier in rotated_tiers:
+            ordered.extend(by_tier.get(tier, []))
+        return ordered
+""",
+    ),
+)
+def test_durable_tier_start_guard_rejects_acceptance_or_a_nonfour_tier_ring(
+    service_source: str,
+) -> None:
+    offenders = _durable_tier_start_offenders(
+        recovery_source=_valid_recovery_source(),
+        service_source=service_source,
+    )
+    assert any(
+        "rotate the exact four-tier order" in offender for offender in offenders
+    ), offenders
 
 
 @pytest.mark.unit
@@ -927,16 +1529,20 @@ def make_rotation():
     assert any("CallbackInboxService" in offender for offender in offenders), offenders
     assert any("_rotation_state" in offender for offender in offenders), offenders
     assert any("module_ring" in offender for offender in offenders), offenders
-    assert any("closes over mutable ring" in offender for offender in offenders), (
-        offenders
-    )
+    assert any(
+        "closes over mutable _Ring as ring" in offender for offender in offenders
+    ), offenders
 
 
 @pytest.mark.unit
 def test_rotation_state_guard_allows_a_harmless_local_cursor_name() -> None:
     harmless = """
+import itertools
+
+
 async def recover_callback_jobs():
     cursor_note = "observability label only"
+    local_iterator = itertools.cycle((0,))
     return cursor_note
 """
     assert _rotation_state_offenders(harmless) == []
