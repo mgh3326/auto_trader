@@ -374,14 +374,18 @@ def test_a_changed_binding_changes_the_stored_envelope_and_not_the_digest() -> N
 
 
 def test_only_a_job_uuid_ever_reaches_the_queue() -> None:
-    """RED item 5 — the Redis argument carries no authority and no PII."""
+    """The producer is UUID-only; the consumer receives an uncoerced raw value."""
     import inspect
 
     from app.tasks import telegram_callback_inbox_tasks as task_module
 
     signature = inspect.signature(task_module.run_telegram_callback_job.original_func)
     assert list(signature.parameters) == ["job_id"]
-    assert signature.parameters["job_id"].annotation in (str, "str")
+    # The real producer payload is separately pinned to ``args=[uuid-string]``
+    # and ``kwargs={}`` in production-wiring coverage.  This consumer must not
+    # ask TaskIQ/Pydantic to coerce untrusted received values before the strict
+    # runtime boundary can reject them.
+    assert signature.parameters["job_id"].annotation in (object, "object")
 
 
 @pytest.mark.asyncio
