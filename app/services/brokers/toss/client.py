@@ -100,6 +100,24 @@ class TossReadClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    @property
+    def snapshot_scope_identity(self) -> str:
+        """Non-secret identity for shared-snapshot cache scoping (ROB-1310 R10).
+
+        Exposes the same endpoint/client-fingerprint/account-selection
+        material used by the settings-derived global scope
+        (``_snapshot_cache_scope``), so a caller that explicitly injects a
+        ``TossReadClient`` -- rather than letting
+        ``fetch_toss_portfolio_snapshot`` create one internally -- can still
+        safely opt into the shared snapshot cache under this client's own
+        scope instead of being bypassed as untrusted. Never the raw base URL,
+        client id, or account sequence; those never leave this property.
+        """
+        base_url = str(self._client.base_url).rstrip("/")
+        fingerprint = self._token_manager.client_fingerprint
+        account = self._account_seq if self._account_seq is not None else "auto"
+        return "|".join([base_url, fingerprint, str(account)])
+
     async def _publish_error(
         self,
         *,

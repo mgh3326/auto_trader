@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -78,6 +79,30 @@ def _market_for_instrument_type(instrument_type: str) -> str:
 def _decimal_dict_value(raw: dict[str, Any], key: str) -> Decimal | None:
     value = raw.get(key)
     return value if isinstance(value, Decimal) else None
+
+
+def _injected_client_snapshot_scope(client: Any) -> str | None:
+    """Hashed, non-secret scope for an explicitly injected client, if trusted.
+
+    ROB-1310 R10 (B5): the process-shared snapshot cache's default scope is
+    derived from the process's own configured settings
+    (``_snapshot_cache_scope``) and is only correct for a client
+    ``fetch_toss_portfolio_snapshot`` created itself from those same
+    settings. An explicitly injected client (a different account, a
+    differently-configured client, or a test fake) has no relationship to
+    that scope at all. Such a client may still opt into sharing the
+    process-global cache, but only by declaring its own trustworthy identity
+    through the ``snapshot_scope_identity`` attribute/property (see
+    ``TossReadClient.snapshot_scope_identity``). A client without one --
+    including every fake/mock that predates this protocol -- returns
+    ``None`` here and must not be scoped at all; see the caller for the
+    bypass this triggers. The identity is always hashed before use: the raw
+    string must never appear in a Redis key, log, or error.
+    """
+    identity = getattr(client, "snapshot_scope_identity", None)
+    if not isinstance(identity, str) or not identity.strip():
+        return None
+    return hashlib.sha256(identity.strip().encode("utf-8")).hexdigest()[:16]
 
 
 async def fetch_toss_cash_snapshot(
@@ -468,6 +493,23 @@ async def fetch_toss_portfolio_snapshot(
     if need_sellable:
         use_shared_snapshot = False
 
+    positions_scope = "positions"
+    cash_scope = "cash"
+    if use_shared_snapshot and not created_client and snapshot_cache is None:
+        # ROB-1310 R10 (B5): an explicitly injected client with no explicit
+        # snapshot_cache would otherwise fall through to the process-global,
+        # settings-derived singleton below -- a scope that has nothing to do
+        # with this client's actual identity. Only a client that declares a
+        # trustworthy scope may share that singleton (namespaced further by
+        # its own hashed identity, never the global scope alone); a client
+        # without one must not share/fall back at all.
+        injected_scope = _injected_client_snapshot_scope(active_client)
+        if injected_scope is None:
+            use_shared_snapshot = False
+        else:
+            positions_scope = f"{injected_scope}:positions"
+            cash_scope = f"{injected_scope}:cash"
+
     try:
         if use_shared_snapshot:
             if snapshot_cache is None:
@@ -491,7 +533,7 @@ async def fetch_toss_portfolio_snapshot(
                 }
 
             position_task = asyncio.create_task(
-                snapshot_cache.get_or_fetch("positions", fetch_positions_payload)
+                snapshot_cache.get_or_fetch(positions_scope, fetch_positions_payload)
             )
 
             async def fetch_cash_payload() -> dict[str, Any]:
@@ -509,7 +551,7 @@ async def fetch_toss_portfolio_snapshot(
             cash_task: asyncio.Task[dict[str, Any]] | None = None
             if need_cash:
                 cash_task = asyncio.create_task(
-                    snapshot_cache.get_or_fetch("cash", fetch_cash_payload)
+                    snapshot_cache.get_or_fetch(cash_scope, fetch_cash_payload)
                 )
 
             try:
@@ -524,7 +566,7 @@ async def fetch_toss_portfolio_snapshot(
                         await position_task
                         if attempt == 0
                         else await snapshot_cache.get_or_fetch(
-                            "positions", fetch_positions_payload
+                            positions_scope, fetch_positions_payload
                         )
                     )
                     try:
@@ -537,7 +579,7 @@ async def fetch_toss_portfolio_snapshot(
                         )
                         if isinstance(positions_payload, dict):
                             await snapshot_cache.delete(
-                                "positions",
+                                positions_scope,
                                 expected_payload=positions_payload,
                             )
                 if positions is None:
@@ -554,7 +596,7 @@ async def fetch_toss_portfolio_snapshot(
                             await cash_task
                             if attempt == 0
                             else await snapshot_cache.get_or_fetch(
-                                "cash", fetch_cash_payload
+                                cash_scope, fetch_cash_payload
                             )
                         )
                         try:
@@ -567,7 +609,7 @@ async def fetch_toss_portfolio_snapshot(
                             )
                             if isinstance(cash_payload, dict):
                                 await snapshot_cache.delete(
-                                    "cash",
+                                    cash_scope,
                                     expected_payload=cash_payload,
                                 )
                     if parsed_cash is None:
