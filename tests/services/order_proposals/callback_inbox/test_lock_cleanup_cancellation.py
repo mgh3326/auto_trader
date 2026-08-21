@@ -70,16 +70,76 @@ async def _release_with(connection) -> BaseException | None:
 
 @pytest.mark.asyncio
 async def test_a_cancellation_during_cleanup_does_not_abandon_the_backend() -> None:
-    """R27 — the counterexample: cancelled mid-``invalidate``."""
+    """R27 — the counterexample, at the seam it actually arrives from.
+
+    The unlock is cancelled (that cancellation is the one owed back to the
+    caller), the cleanup then parks inside ``invalidate``, and the outer task
+    is cancelled twice more while it waits. None of that may reach the
+    cleanup, and none of it may let the backend survive.
+    """
+    events: list[str] = []
+    at_gate = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _Gated:
+        async def execute(self, *_args, **_kwargs):
+            events.append("execute")
+            raise asyncio.CancelledError
+
+        async def commit(self) -> None:  # pragma: no cover - unlock fails
+            pass
+
+        async def invalidate(self) -> None:
+            events.append("invalidate_started")
+            at_gate.set()
+            await gate.wait()
+            events.append("invalidate_completed")
+
+        async def close(self) -> None:
+            events.append("close")
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    lock._connection = _Gated()  # noqa: SLF001
+
+    task = asyncio.create_task(lock.release(1234))
+    await asyncio.wait_for(at_gate.wait(), timeout=5)
+
+    # Before the gate: the cleanup is unfinished and the holder still owns
+    # the connection, because dropping it here is what orphans the backend.
+    assert task.done() is False
+    assert lock.closed is False, "the holder let go before cleanup finished"
+
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False, "a cancellation abandoned the cleanup"
+
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "invalidate_completed" in events, events
+    assert "close" in events, events
+    assert lock.closed is True
+
+
+@pytest.mark.asyncio
+async def test_a_spurious_inner_cancellation_is_retried_not_propagated() -> None:
+    """A ``CancelledError`` from the driver call is not our cancellation.
+
+    Nothing cancels the cleanup task, so a ``CancelledError`` surfacing from
+    inside ``invalidate()`` came from the driver. Abandoning the backend over
+    it would be the original bug wearing a different hat, so the cleanup
+    retries and the caller sees no cancellation at all.
+    """
     connection = _Recorder()
     escaped = await _release_with(connection)
 
-    # Cancellation semantics are preserved: it still reaches the caller.
-    assert isinstance(escaped, asyncio.CancelledError)
-
-    # ... but not before the backend was actually terminated.
-    assert "invalidate_completed" in connection.events, connection.events
-    assert "close" in connection.events, connection.events
+    assert escaped is None
+    assert connection.events.count("invalidate_started") == 2, connection.events
+    assert "invalidate_completed" in connection.events
+    assert "close" in connection.events
 
 
 @pytest.mark.asyncio
@@ -100,8 +160,7 @@ async def test_the_holder_keeps_authority_until_cleanup_finishes() -> None:
     lock = locks_module.PostgresJobAdvisoryLock()
     connection = _Watching()
     lock._connection = connection  # noqa: SLF001
-    with pytest.raises(asyncio.CancelledError):
-        await lock.release(1234)
+    await lock.release(1234)
 
     # Both attempts happen while the object still owns the connection.
     assert seen == [False, False], seen
@@ -272,22 +331,32 @@ async def test_a_double_cancelled_release_leaves_no_lock_behind(
         monkeypatch.setattr(locks_module, "_RELEASE", text("SELECT no_such_fn()"))
 
         real_invalidate = type(lock.connection_for_test()).invalidate
-        fired: list[int] = []
+        at_gate = asyncio.Event()
+        gate = asyncio.Event()
 
-        async def _cancel_once(self):
-            if not fired:
-                fired.append(1)
-                raise asyncio.CancelledError
+        async def _gated_invalidate(self):
+            at_gate.set()
+            await gate.wait()
             await real_invalidate(self)
 
         monkeypatch.setattr(
-            type(lock.connection_for_test()), "invalidate", _cancel_once, raising=True
+            type(lock.connection_for_test()),
+            "invalidate",
+            _gated_invalidate,
+            raising=True,
         )
 
-        with pytest.raises(asyncio.CancelledError):
-            await lock.release(key)
+        task = asyncio.create_task(lock.release(key))
+        await asyncio.wait_for(at_gate.wait(), timeout=20)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False, "a cancellation abandoned the cleanup"
+        gate.set()
 
-        assert fired == [1], "the injected cancellation never fired"
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         # The holder's backend must be gone, so the key is free again.
         retaken = bool(
