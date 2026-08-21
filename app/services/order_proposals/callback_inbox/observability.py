@@ -19,7 +19,10 @@ import uuid
 from collections.abc import Iterator
 from typing import Any
 
-from app.services.order_proposals.callback_inbox.contracts import normalize_outcome
+from app.services.order_proposals.callback_inbox.contracts import (
+    clamp_attempt_count,
+    normalize_outcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,10 @@ def build_worker_span_data(
     data: dict[str, Any] = {
         "callback_job.id": str(job_id),
         "callback_job.state": str(state),
-        "callback_job.attempt": int(attempt_count),
+        # Keep telemetry in the same fixed protocol range as persisted
+        # terminal rows.  This avoids ever exporting a legacy poison count
+        # even if a future caller bypasses the worker's terminal branch.
+        "callback_job.attempt": clamp_attempt_count(attempt_count),
     }
     if queue_delay_seconds is not None:
         data["callback_job.queue_delay_seconds"] = round(float(queue_delay_seconds), 3)

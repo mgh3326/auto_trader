@@ -141,10 +141,10 @@ class TelegramCallbackInboxJob(Base):
             name="terminal_state_pending",
         ),
         CheckConstraint(
-            f"attempt_count >= 0 AND attempt_count <= {MAX_ATTEMPTS}",
+            "attempt_count >= 0 AND attempt_count <= max_attempts",
             name="attempt_count",
         ),
-        CheckConstraint("max_attempts > 0", name="max_attempts"),
+        CheckConstraint(f"max_attempts = {MAX_ATTEMPTS}", name="max_attempts"),
         CheckConstraint(f"action IS NULL OR action IN ({_ACTIONS_SQL})", name="action"),
         CheckConstraint(
             f"outcome IS NULL OR outcome IN ({_OUTCOME_CATEGORIES_SQL})",

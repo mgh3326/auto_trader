@@ -1,11 +1,12 @@
 """The safety net for a lost Redis kick.
 
-Scans for work the queue may have dropped -- ``pending`` and due ``retry_wait``
-rows, plus ``processing`` rows old enough to suspect -- and runs each through
-exactly the same :func:`process_callback_job` the per-job task uses. It gets a
-wider set of claimable states and nothing else: the advisory lock still
-decides whether a job may be touched, so a live worker is never overtaken and
-a "stale" row whose lock is held is simply skipped.
+Scans for work the queue may have dropped -- malformed active budgets first,
+then canonical ``pending`` and due ``retry_wait`` rows, plus canonical
+``processing`` rows old enough to suspect -- and runs each through exactly the
+same :func:`process_callback_job` the per-job task uses. It gets a wider set
+of claimable states and nothing else: the advisory lock still decides whether
+a job may be touched, so a live worker is never overtaken and a "stale" row
+whose lock is held is simply skipped.
 
 The report is aggregate-only by design. Counts by state and one age; the only
 identifier that appears anywhere is the opaque job UUID, and only in logs.

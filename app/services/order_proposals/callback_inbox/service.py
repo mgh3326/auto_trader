@@ -23,10 +23,13 @@ from app.services.order_proposals.callback_inbox.contracts import (
     RETRY_BACKOFF_SECONDS,
     SCRUBBED_ON_TERMINAL,
     TIER_EXHAUSTED,
+    TIER_MALFORMED,
     TIER_QUEUED,
     TIER_STALE,
     ErrorClass,
     InboxState,
+    clamp_attempt_count,
+    is_malformed_attempt_budget,
     normalize_outcome,
 )
 from app.services.order_proposals.callback_inbox.repository import (
@@ -53,7 +56,8 @@ class RetryAuthorityRefused(Exception):
 class ClaimDecision:
     """What a claimant may do with a row it has just locked."""
 
-    #: ``"run"`` | ``"repair"`` | ``"ambiguous"`` | ``"exhausted"`` | ``"skip"``
+    #: ``"malformed"`` | ``"run"`` | ``"repair"`` | ``"ambiguous"`` |
+    #: ``"exhausted"`` | ``"skip"``
     action: str
     reason: str | None = None
 
@@ -132,6 +136,16 @@ class CallbackInboxService:
         if row.state not in claimable_states:
             return ClaimDecision("skip", "state")
 
+        # Fixed-three validation precedes every active classification.  In
+        # particular, a legacy processing row with a recorded verdict is not
+        # repaired and a future retry is not hidden behind its due time: both
+        # still carry authority under an invalid budget and must be scrubbed.
+        if is_malformed_attempt_budget(
+            attempt_count=row.attempt_count,
+            max_attempts=row.max_attempts,
+        ):
+            return ClaimDecision("malformed")
+
         if row.state == InboxState.PROCESSING.value:
             # A repair finalises without re-running, so it needs the whole
             # causal chain: entered, then completed, then a verdict. Anything
@@ -179,6 +193,11 @@ class CallbackInboxService:
             job_id=row.job_id,
             predicate=and_(
                 TelegramCallbackInboxJob.attempt_count == row.attempt_count,
+                TelegramCallbackInboxJob.max_attempts == MAX_ATTEMPTS,
+                TelegramCallbackInboxJob.attempt_count >= 0,
+                TelegramCallbackInboxJob.attempt_count
+                < TelegramCallbackInboxJob.max_attempts,
+                TelegramCallbackInboxJob.attempt_count < MAX_ATTEMPTS,
                 TelegramCallbackInboxJob.handler_entered_at.is_(None),
                 TelegramCallbackInboxJob.state.in_(
                     [
@@ -194,7 +213,7 @@ class CallbackInboxService:
             # Markers are monotonic -- no API may write one back to NULL.
             values={
                 "state": InboxState.PROCESSING.value,
-                "attempt_count": row.attempt_count + 1,
+                "attempt_count": clamp_attempt_count(row.attempt_count) + 1,
                 "started_at": now,
             },
         )
@@ -255,6 +274,12 @@ class CallbackInboxService:
         fields: dict[str, Any] = dict.fromkeys(SCRUBBED_ON_TERMINAL)
         fields.update(
             state=terminal_state,
+            # A NOT VALID R34 CHECK still applies to this UPDATE.  The count
+            # and fixed budget therefore have to be normalised in the same
+            # write as the terminal state and authority scrub; a separate
+            # repair write would itself fail and leave the poison active.
+            attempt_count=clamp_attempt_count(row.attempt_count),
+            max_attempts=MAX_ATTEMPTS,
             terminal_state_pending=None,
             finished_at=now,
         )
@@ -291,11 +316,20 @@ class CallbackInboxService:
         Note there is nothing to clear on the success path either: the
         predicate has already established that all three markers are NULL.
         """
-        index = min(max(row.attempt_count, 1), len(RETRY_BACKOFF_SECONDS)) - 1
+        index = (
+            min(
+                max(clamp_attempt_count(row.attempt_count), 1),
+                len(RETRY_BACKOFF_SECONDS),
+            )
+            - 1
+        )
         granted = await self._repo.try_conditional_update(
             job_id=row.job_id,
             predicate=and_(
                 TelegramCallbackInboxJob.state == InboxState.PROCESSING.value,
+                TelegramCallbackInboxJob.attempt_count == row.attempt_count,
+                TelegramCallbackInboxJob.max_attempts == MAX_ATTEMPTS,
+                TelegramCallbackInboxJob.attempt_count >= 0,
                 TelegramCallbackInboxJob.handler_entered_at.is_(None),
                 TelegramCallbackInboxJob.handler_completed_at.is_(None),
                 TelegramCallbackInboxJob.terminal_state_pending.is_(None),
@@ -305,6 +339,7 @@ class CallbackInboxService:
                 # authority that trusts its caller is not one.
                 TelegramCallbackInboxJob.attempt_count
                 < TelegramCallbackInboxJob.max_attempts,
+                TelegramCallbackInboxJob.attempt_count < MAX_ATTEMPTS,
             ),
             values={
                 "state": InboxState.RETRY_WAIT.value,
@@ -331,10 +366,10 @@ class CallbackInboxService:
         The repository already caps each tier separately, so the scan is fair.
         The *execution* budget still has to be, because a caller that stops
         after N claims would otherwise spend all N on whichever tier comes
-        first. Exhausted rows lead -- they are scrubs, they are few, and they
-        hold live authority until they happen -- and the queued and stale
-        tiers then alternate, so both make progress inside any budget of two
-        or more.
+        first. Malformed rows lead each round because they are immediate
+        scrubs, but each tier contributes at most one candidate per round:
+        a large poison prefix cannot consume the execution limit before
+        queued or stale work gets a chance to progress.
 
         Purely a function of what the query returned. Nothing is remembered
         between sweeps, so a freshly started process and two concurrent
@@ -349,14 +384,18 @@ class CallbackInboxService:
         for job_id, tier in rows:
             by_tier.setdefault(tier, []).append(job_id)
 
-        ordered = list(by_tier.get(TIER_EXHAUSTED, ()))
+        malformed = by_tier.get(TIER_MALFORMED, [])
+        exhausted = by_tier.get(TIER_EXHAUSTED, [])
         queued = by_tier.get(TIER_QUEUED, [])
         stale = by_tier.get(TIER_STALE, [])
-        for index in range(max(len(queued), len(stale))):
-            if index < len(queued):
-                ordered.append(queued[index])
-            if index < len(stale):
-                ordered.append(stale[index])
+        ordered: list[uuid.UUID] = []
+        # The malformed tier leads each round, but gets no unbounded prefix:
+        # a poison backlog must not consume the whole execution limit and
+        # starve ordinary queued or stale recovery (R29).
+        for index in range(max(map(len, (malformed, exhausted, queued, stale)))):
+            for tier in (malformed, exhausted, queued, stale):
+                if index < len(tier):
+                    ordered.append(tier[index])
         return ordered
 
     async def backlog(self, *, now: datetime) -> dict[str, Any]:

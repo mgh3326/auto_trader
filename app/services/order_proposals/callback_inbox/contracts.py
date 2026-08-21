@@ -86,6 +86,37 @@ ACTIVE_REQUIRED_COLUMNS: tuple[str, ...] = (
 
 MAX_ATTEMPTS = 3
 
+
+def is_malformed_attempt_budget(*, attempt_count: object, max_attempts: object) -> bool:
+    """Whether an inbox row violates the fixed three-attempt protocol.
+
+    This deliberately accepts only built-in ``int`` values.  ``bool`` is an
+    ``int`` subclass in Python, but it is never an attempt count or budget;
+    accepting it would make a malformed in-memory row look canonical before
+    the worker reaches its database boundary.  No coercion is performed: a
+    poisoned legacy value must be terminalised, not reinterpreted.
+    """
+    return (
+        type(attempt_count) is not int
+        or type(max_attempts) is not int
+        or max_attempts != MAX_ATTEMPTS
+        or attempt_count < 0
+        or attempt_count > max_attempts
+    )
+
+
+def clamp_attempt_count(attempt_count: object) -> int:
+    """Project a potentially malformed count onto the safe ``0..3`` range.
+
+    This is used only while terminalising a malformed row and at the telemetry
+    boundary.  It never grants execution authority: classification uses
+    :func:`is_malformed_attempt_budget` first.
+    """
+    if type(attempt_count) is not int:
+        return 0
+    return min(max(attempt_count, 0), MAX_ATTEMPTS)
+
+
 #: Deterministic backoff by attempt number (1-indexed). The recovery sweep
 #: runs every minute, so these only need to be coarse.
 RETRY_BACKOFF_SECONDS: tuple[int, ...] = (15, 60, 300)
@@ -127,18 +158,25 @@ def recovery_scan_cap(limit: int) -> int:
 
 
 #: Scan tiers, most urgent first. The number is the tier's rank in SQL.
-TIER_EXHAUSTED = 0
-TIER_QUEUED = 1
-TIER_STALE = 2
+#:
+#: R34 keeps malformed active rows in their own due-independent tier.  It is
+#: not folded into exhausted: an invalid count/budget pair must be normalised
+#: in the same terminal write that scrubs authority, whether it is pending,
+#: processing, or a future retry.
+TIER_MALFORMED = 0
+TIER_EXHAUSTED = 1
+TIER_QUEUED = 2
+TIER_STALE = 3
 
 #: The share of one scan each non-queued tier is guaranteed.
 #:
 #: R29. A single global ordering cannot be fair in both directions: whichever
 #: tier sorts first starves the other as soon as it is bigger than one scan.
 #: Queued work first starved stale recovery; stale work first was the original
-#: bug. So each tier gets a reserved slice and the queued tier takes what is
-#: left, which is most of it -- reserving a little for the tiers that would
-#: otherwise never be reached costs the common case almost nothing.
+#: bug. R34 adds a malformed scrub tier, but it too gets only a reserved
+#: slice. The queued tier takes what is left, which is most of it -- reserving
+#: a little for tiers that would otherwise never be reached costs the common
+#: case almost nothing.
 RECOVERY_TIER_RESERVE_DIVISOR = 5
 
 
@@ -147,9 +185,10 @@ def recovery_tier_quotas(limit: int) -> dict[int, int]:
     cap = recovery_scan_cap(limit)
     reserve = max(1, cap // RECOVERY_TIER_RESERVE_DIVISOR)
     return {
+        TIER_MALFORMED: reserve,
         TIER_EXHAUSTED: reserve,
         TIER_STALE: reserve,
-        TIER_QUEUED: max(1, cap - 2 * reserve),
+        TIER_QUEUED: max(1, cap - 3 * reserve),
     }
 
 
@@ -179,6 +218,10 @@ RETRYABLE_HANDLER_REASONS: frozenset[str] = frozenset()
 
 
 class ErrorClass(StrEnum):
+    #: A legacy row's count/budget pair is not the fixed protocol shape.
+    #: It is terminalised before any repair, exhaustion, due-time, or handler
+    #: path can use its authority.
+    ATTEMPT_BUDGET_INVALID = "attempt_budget_invalid"
     #: The mutating region was provably not entered: a worker-owned
     #: ``PreCoreFailure`` raised above the ``handler_entered_at`` commit, and
     #: re-confirmed by ``schedule_retry``'s conditional UPDATE against the
@@ -437,6 +480,7 @@ def _sql_string_list(values: object) -> str:
 __all__ = [
     "ACTIVE_REQUIRED_COLUMNS",
     "ADVISORY_LOCK_DOMAIN",
+    "clamp_attempt_count",
     "ERROR_CLASSES",
     "INBOX_STATES",
     "MAX_ATTEMPTS",
@@ -446,6 +490,7 @@ __all__ = [
     "PROCESSING_STALE_AFTER_SECONDS",
     "RECOVERY_CLAIMABLE_STATES",
     "TIER_EXHAUSTED",
+    "TIER_MALFORMED",
     "TIER_QUEUED",
     "TIER_STALE",
     "RECOVERY_TIER_RESERVE_DIVISOR",
@@ -467,6 +512,7 @@ __all__ = [
     "InboxState",
     "WorkerStatus",
     "build_update_digest",
+    "is_malformed_attempt_budget",
     "job_advisory_lock_key",
     "recovery_scan_cap",
     "recovery_tier_quotas",

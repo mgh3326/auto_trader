@@ -49,6 +49,13 @@ The two constraints that carry the safety
     for the length of the backoff before anything looked at it. Both columns
     are NOT NULL, so the comparison is never SQL UNKNOWN.
 
+``ck_telegram_callback_inbox_attempt_count`` /
+``ck_telegram_callback_inbox_max_attempts``
+    The budget is a protocol constant, not an operator setting: every row has
+    ``max_attempts = 3`` and ``0 <= attempt_count <= max_attempts``.  A
+    pre-R34 legacy row can therefore be identified and terminally scrubbed
+    before it reaches the callback handler.
+
 ``ck_telegram_callback_inbox_processing_started_at``
     A ``processing`` row must say when it started. The recovery sweep decides
     whether to look at a claimed row by comparing that timestamp against a
@@ -277,11 +284,11 @@ def upgrade() -> None:
             name=op.f("ck_telegram_callback_inbox_terminal_state_pending"),
         ),
         sa.CheckConstraint(
-            "attempt_count >= 0 AND attempt_count <= 3",
+            "attempt_count >= 0 AND attempt_count <= max_attempts",
             name=op.f("ck_telegram_callback_inbox_attempt_count"),
         ),
         sa.CheckConstraint(
-            "max_attempts > 0",
+            "max_attempts = 3",
             name=op.f("ck_telegram_callback_inbox_max_attempts"),
         ),
         sa.CheckConstraint(
@@ -293,9 +300,9 @@ def upgrade() -> None:
             name=op.f("ck_telegram_callback_inbox_outcome"),
         ),
         sa.CheckConstraint(
-            "error_class IS NULL OR error_class IN ('attempts_exhausted',"
-            "'chat_revoked','envelope_invalid','handler_ambiguous',"
-            "'handler_exception','pre_core_failure')",
+            "error_class IS NULL OR error_class IN ('attempt_budget_invalid',"
+            "'attempts_exhausted','chat_revoked','envelope_invalid',"
+            "'handler_ambiguous','handler_exception','pre_core_failure')",
             name=op.f("ck_telegram_callback_inbox_error_class"),
         ),
         sa.CheckConstraint(

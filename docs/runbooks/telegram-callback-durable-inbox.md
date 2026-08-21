@@ -146,11 +146,14 @@ lock -> classify -> attempt -> rebuild -> re-authorise -> enter -> run -> verdic
 
 ### Recovery
 
-Scans `pending`, due `retry_wait`, and `processing` rows older than
+Scans malformed active budgets ahead of the normal exhausted, `pending`, due
+`retry_wait`, and `processing` rows older than
 `PROCESSING_STALE_AFTER_SECONDS` (300), then runs each through the same
 `process_callback_job` with a wider claimable-state set. The staleness window
 is a **scan filter, never an authority**: a "stale" row whose lock is held is
 skipped. Reports counts by state plus one age — no identifiers.
+
+`max_attempts` is fixed at `3` and is not configurable. Malformed active budgets terminalize as `dead_letter` / `attempt_budget_invalid`, normalize `max_attempts` to `3`, clamp `attempt_count` to `0..3`, and scrub authority before the handler.
 
 ---
 

@@ -15,12 +15,14 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
 from app.services.order_proposals.callback_inbox.contracts import (
+    MAX_ATTEMPTS,
     TIER_EXHAUSTED,
+    TIER_MALFORMED,
     TIER_QUEUED,
     TIER_STALE,
     InboxState,
@@ -108,21 +110,21 @@ class CallbackInboxRepository:
         is decided later, behind the advisory lock, against a freshly read
         row -- this query is a scan filter, not a claim.
 
-        Each tier gets a bounded share of the scan (R29), because no single
-        ordering is fair in both directions. Oldest-first alone put in-flight
-        work at the front, so a few long-running jobs under live worker locks
-        filled every tick and the lost Redis kick behind them was never
-        selected. Queued-first inverts it: a backlog bigger than one scan and
-        the stale rows are never reached instead. So the tiers are ranked and
-        each is fetched separately:
+        Each tier gets a bounded share of the scan (R29/R34), because no
+        single ordering is fair in both directions. Oldest-first alone put
+        in-flight work at the front, so a few long-running jobs under live
+        worker locks filled every tick and the lost Redis kick behind them was
+        never selected. Queued-first inverts it: a backlog bigger than one
+        scan and the stale rows are never reached instead. So the tiers are
+        ranked and each is fetched separately:
 
-          0. ``retry_wait`` with no attempts left -- a scrub, and it holds
-             live authority until it happens (R25);
-          1. ``pending`` and due ``retry_wait`` -- work nothing is doing;
-          2. stale ``processing`` -- work someone may still be doing, and the
-             advisory lock is what settles whether they are.
+          0. malformed active budget -- a due-independent terminal scrub;
+          1. canonical ``retry_wait`` with no attempts left -- R25 cleanup;
+          2. canonical ``pending`` and due ``retry_wait`` -- idle work;
+          3. canonical stale ``processing`` -- work someone may still be
+             doing, and the advisory lock is what settles whether they are.
 
-        Three ordinary ``WHERE ... ORDER BY ... LIMIT`` selects, one per tier,
+        Four ordinary ``WHERE ... ORDER BY ... LIMIT`` selects, one per tier,
         rather than one query that ranks the eligible set with a window. The
         window classified and sorted every eligible row, in one query, to
         produce a handful of ids.
@@ -144,26 +146,59 @@ class CallbackInboxRepository:
         never swept before sees exactly the same candidates as one that has
         been running all day.
         """
-        due = (
+        active = TelegramCallbackInboxJob.state.in_(
+            [
+                InboxState.PENDING.value,
+                InboxState.RETRY_WAIT.value,
+                InboxState.PROCESSING.value,
+            ]
+        )
+        # R34: this is intentionally explicit instead of using ``NOT
+        # canonical_budget``. SQL NULL would make that negation UNKNOWN, while
+        # this tier has to fail closed even for a damaged legacy row whose
+        # integer columns somehow became NULL before the current NOT NULL DDL.
+        malformed = active & or_(
+            TelegramCallbackInboxJob.max_attempts.is_(None),
+            TelegramCallbackInboxJob.attempt_count.is_(None),
+            TelegramCallbackInboxJob.max_attempts != MAX_ATTEMPTS,
+            TelegramCallbackInboxJob.attempt_count < 0,
+            TelegramCallbackInboxJob.attempt_count
+            > TelegramCallbackInboxJob.max_attempts,
+        )
+        canonical_budget = and_(
+            TelegramCallbackInboxJob.max_attempts == MAX_ATTEMPTS,
+            TelegramCallbackInboxJob.attempt_count >= 0,
+            TelegramCallbackInboxJob.attempt_count
+            <= TelegramCallbackInboxJob.max_attempts,
+        )
+        due = canonical_budget & (
             TelegramCallbackInboxJob.state.in_(
                 [InboxState.PENDING.value, InboxState.RETRY_WAIT.value]
             )
-        ) & (TelegramCallbackInboxJob.available_at <= now)
+            & (TelegramCallbackInboxJob.available_at <= now)
+        )
         # R25: a parked row whose attempt budget is spent is finished, and the
         # backoff must not hide it. ``ck_..._retry_budget`` makes this shape
         # unwritable going forward, but a database written by an older binary
         # can still hold one, and leaving it parked would keep a live nonce
         # and a chat id for the length of the backoff.
-        exhausted = (TelegramCallbackInboxJob.state == InboxState.RETRY_WAIT.value) & (
-            TelegramCallbackInboxJob.attempt_count
-            >= TelegramCallbackInboxJob.max_attempts
+        exhausted = (
+            canonical_budget
+            & (TelegramCallbackInboxJob.state == InboxState.RETRY_WAIT.value)
+            & (
+                TelegramCallbackInboxJob.attempt_count
+                >= TelegramCallbackInboxJob.max_attempts
+            )
         )
-        stale = (TelegramCallbackInboxJob.state == InboxState.PROCESSING.value) & (
-            TelegramCallbackInboxJob.started_at <= stale_before
+        stale = (
+            canonical_budget
+            & (TelegramCallbackInboxJob.state == InboxState.PROCESSING.value)
+            & (TelegramCallbackInboxJob.started_at <= stale_before)
         )
 
         quotas = recovery_tier_quotas(limit)
         predicates = {
+            TIER_MALFORMED: malformed,
             TIER_EXHAUSTED: exhausted,
             TIER_QUEUED: due & ~exhausted,
             TIER_STALE: stale,

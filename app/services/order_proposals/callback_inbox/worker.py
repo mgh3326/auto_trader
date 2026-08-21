@@ -47,10 +47,12 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals.callback_inbox.contracts import (
+    MAX_ATTEMPTS,
     TERMINAL_STATE_STATUS,
     ErrorClass,
     InboxState,
     WorkerStatus,
+    clamp_attempt_count,
     job_advisory_lock_key,
 )
 from app.services.order_proposals.callback_inbox.locks import (
@@ -261,6 +263,26 @@ async def _run_locked(
         if decision.action == "skip":
             return WorkerStatus.NOT_CLAIMABLE.value, {}
 
+        if decision.action == "malformed":
+            # This branch is deliberately before repair/exhaustion/attempt
+            # accounting. A legacy active row may carry any crash marker or a
+            # future backoff, but it may never use its malformed authority to
+            # reach the handler. ``finalize`` normalises budget + count in
+            # this same terminal scrub write.
+            return await _terminate(
+                session,
+                service,
+                row,
+                job_id=job_id,
+                now=now,
+                queue_delay=queue_delay,
+                terminal_state=InboxState.DEAD_LETTER.value,
+                error_class=ErrorClass.ATTEMPT_BUDGET_INVALID.value,
+                outcome=None,
+                attempt_count=row.attempt_count,
+                event="callback_job_attempt_budget_invalid",
+            )
+
         if decision.action == "repair":
             # The handler already finished; only the paperwork was lost. No
             # attempt is spent and the core is not touched.
@@ -370,7 +392,7 @@ async def _run_locked(
             # parking the job would leave it carrying a live nonce, a chat id
             # and a user id for the whole backoff before anything scrubbed
             # them. Terminate here instead.
-            if attempt_count >= row.max_attempts:
+            if attempt_count >= MAX_ATTEMPTS:
                 return await _terminate(
                     session,
                     service,
@@ -521,11 +543,15 @@ def _finish(
     error_class: str | None,
     event: str,
 ) -> tuple[str, dict[str, Any]]:
+    # The worker result and telemetry never expose an incoming poison value.
+    # A malformed branch terminalises atomically before reaching here, and
+    # this final projection keeps a future caller from bypassing that fact.
+    safe_attempt_count = clamp_attempt_count(attempt_count)
     log_job_event(
         f"order_proposals.telegram.{event}",
         job_id=job_id,
         state=state,
-        attempt_count=attempt_count,
+        attempt_count=safe_attempt_count,
         queue_delay_seconds=queue_delay,
         outcome=outcome,
         error_class=error_class,
@@ -533,7 +559,7 @@ def _finish(
     span_data = build_worker_span_data(
         job_id=job_id,
         state=state,
-        attempt_count=attempt_count,
+        attempt_count=safe_attempt_count,
         queue_delay_seconds=queue_delay,
         outcome=outcome,
         error_class=error_class,
