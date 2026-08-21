@@ -308,3 +308,127 @@ async def test_stale_processing_still_makes_progress_when_nothing_is_locked(
     row = await load_job(job_id)
     assert row is not None
     assert row.state == "succeeded", "an unlocked stale row was never recovered"
+
+
+# ---------------------------------------------------------------------------
+# fairness has to come from the database, not from this process
+# ---------------------------------------------------------------------------
+#
+# A module-level cursor would pass the two-tick test above and still starve
+# the inbox in production: workers restart, and more than one sweeper can be
+# running at once. Whatever makes the second tick different from the first has
+# to be visible to a process that has never run a sweep before.
+
+
+@pytest.mark.asyncio
+async def test_fairness_survives_a_fresh_recovery_instance(
+    _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID], held_locks
+) -> None:
+    """R29 — reload the module between ticks; the outcome must not change.
+
+    If progress depended on state carried in the recovery module, discarding
+    that module would put the sweep back at tick one forever.
+    """
+    import importlib
+
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    from .conftest import seed_proposal
+
+    limit = 2
+    stale_at = now_kst() - timedelta(hours=6)
+    for index in range(limit):
+        job_id = await _queue(
+            inbox_cleanup, received_at=stale_at - timedelta(minutes=10 - index)
+        )
+        await _force(job_id, state="processing", attempt_count=1, started_at=stale_at)
+        await held_locks.hold(job_id)
+
+    group = await seed_proposal(db_session, nonce="freshinst12", symbol="FRSKR")
+    pending = await _queue(inbox_cleanup, data=proposal_callback_data(group))
+
+    calls: list[Any] = []
+
+    async def _handler(normalized, **kwargs):
+        calls.append(normalized.callback.proposal_id)
+        return {"handled": True, "reason": "approved"}
+
+    for _ in range(2):
+        fresh = importlib.reload(recovery_module)
+        await fresh.recover_callback_jobs(handler=_handler, limit=limit)
+
+    row = await load_job(pending)
+    assert row is not None
+    assert row.state == "succeeded", (
+        "a process that had never swept before could not reach the pending row"
+    )
+    assert len(calls) == 1, calls
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_sweepers_make_progress_without_duplicating(
+    _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID], held_locks
+) -> None:
+    """R29 — two sweepers at once: progress, and still exactly one handler call."""
+    import asyncio as _asyncio
+
+    from app.services.order_proposals.callback_inbox.recovery import (
+        recover_callback_jobs,
+    )
+
+    from .conftest import seed_proposal
+
+    limit = 2
+    stale_at = now_kst() - timedelta(hours=6)
+    locked: list[uuid.UUID] = []
+    for index in range(limit):
+        job_id = await _queue(
+            inbox_cleanup, received_at=stale_at - timedelta(minutes=10 - index)
+        )
+        await _force(job_id, state="processing", attempt_count=1, started_at=stale_at)
+        await held_locks.hold(job_id)
+        locked.append(job_id)
+
+    group = await seed_proposal(db_session, nonce="concurrent1", symbol="CNCKR")
+    pending = await _queue(inbox_cleanup, data=proposal_callback_data(group))
+
+    calls: list[Any] = []
+
+    async def _handler(normalized, **kwargs):
+        calls.append(normalized.callback.proposal_id)
+        return {"handled": True, "reason": "approved"}
+
+    await _asyncio.gather(
+        recover_callback_jobs(handler=_handler, limit=limit),
+        recover_callback_jobs(handler=_handler, limit=limit),
+    )
+
+    row = await load_job(pending)
+    assert row is not None
+    assert row.state == "succeeded", "neither sweeper reached the pending row"
+    assert len(calls) == 1, f"the job ran {len(calls)} times"
+
+    for job_id in locked:
+        locked_row = await load_job(job_id)
+        assert locked_row is not None
+        assert locked_row.state == "processing"
+        assert locked_row.handler_entered_at is None
+
+
+def test_the_sweep_carries_no_process_local_cursor() -> None:
+    """R29 — structurally: no module-level mutable state to carry a position."""
+    import inspect
+
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+    from app.services.order_proposals.callback_inbox import (
+        repository as repository_module,
+    )
+
+    for module in (recovery_module, repository_module):
+        for name, value in vars(module).items():
+            if name.startswith("__") or inspect.isclass(value):
+                continue
+            assert not isinstance(value, list | dict | set), (
+                f"{module.__name__}.{name} is mutable module state; fairness must "
+                f"come from the database, not from this process"
+            )
