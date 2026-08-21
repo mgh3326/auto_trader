@@ -136,6 +136,18 @@ async def test_recovery_reports_aggregate_backlog_only(
     # be observed. Still aggregate-only -- a count, not an identifier.
     assert set(report) == {"status", "scanned", "claimed", "statuses", "backlog"}
     assert isinstance(report["claimed"], int)
+    # ``scanned`` is a plain count inside the exact cap for this tick's
+    # execution limit -- asserting the bound is the whole reason it is
+    # reported, so it is asserted here rather than merely typed.
+    from app.services.order_proposals.callback_inbox.contracts import (
+        RECOVERY_SCAN_LIMIT,
+        recovery_scan_cap,
+    )
+
+    assert isinstance(report["scanned"], int)
+    assert not isinstance(report["scanned"], bool)
+    assert 0 <= report["scanned"] <= recovery_scan_cap(RECOVERY_SCAN_LIMIT)
+    assert report["scanned"] >= report["claimed"]
     # Counts by state and one age. No identifiers, no chat, no nonce.
     assert set(report["backlog"]) == {
         "pending",
