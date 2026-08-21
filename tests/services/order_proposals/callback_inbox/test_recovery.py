@@ -10,6 +10,7 @@ operator will read most often.
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import timedelta
 
@@ -141,7 +142,7 @@ async def test_recovery_reports_aggregate_backlog_only(
     # tell from outside how much a tick looked at, so the scan cap could not
     # be observed. Still aggregate-only -- a count, not an identifier.
     assert set(report) == {"status", "scanned", "claimed", "statuses", "backlog"}
-    assert isinstance(report["claimed"], int)
+    assert type(report["claimed"]) is int
     # ``scanned`` is a plain count inside the exact cap for this tick's
     # execution limit -- asserting the bound is the whole reason it is
     # reported, so it is asserted here rather than merely typed.
@@ -150,10 +151,9 @@ async def test_recovery_reports_aggregate_backlog_only(
         recovery_scan_cap,
     )
 
-    assert isinstance(report["scanned"], int)
-    assert not isinstance(report["scanned"], bool)
+    assert type(report["scanned"]) is int
     assert 0 <= report["scanned"] <= recovery_scan_cap(RECOVERY_SCAN_LIMIT)
-    assert report["scanned"] >= report["claimed"]
+    assert 0 <= report["claimed"] <= report["scanned"]
     # Counts by state and one age. No identifiers, no chat, no nonce.
     assert set(report["backlog"]) == {
         "pending",
@@ -163,9 +163,35 @@ async def test_recovery_reports_aggregate_backlog_only(
         "oldest_pending_age_seconds",
     }
     for key, value in report["backlog"].items():
-        assert isinstance(value, int | float | type(None)), key
+        if key == "oldest_pending_age_seconds":
+            assert value is None or (
+                type(value) is float and value >= 0 and math.isfinite(value)
+            ), key
+        else:
+            assert type(value) is int and value >= 0, key
+
+    # R35: successful task/recovery reports always carry every closed item
+    # bucket, including zero-valued buckets.  A dynamic sparse map makes a
+    # malformed/unknown worker result indistinguishable from a no-op sweep.
+    expected_statuses = {
+        "dead_letter",
+        "discarded",
+        "error",
+        "lock_contended",
+        "not_claimable",
+        "not_found",
+        "retry_scheduled",
+        "succeeded",
+    }
+    assert set(report["statuses"]) == expected_statuses
     for status, count in report["statuses"].items():
-        assert isinstance(status, str) and isinstance(count, int)
+        assert type(status) is str and type(count) is int and count >= 0
+    assert sum(report["statuses"].values()) == report["scanned"]
+    assert report["claimed"] == sum(
+        count
+        for status, count in report["statuses"].items()
+        if status not in {"lock_contended", "not_claimable", "not_found"}
+    )
 
 
 @pytest.mark.asyncio
