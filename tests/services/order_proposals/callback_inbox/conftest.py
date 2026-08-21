@@ -31,6 +31,10 @@ from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import approval_message as approval_messages
 from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals import telegram_callback as callback_module
+from app.services.order_proposals.callback_inbox.contracts import (
+    SCRUBBED_ON_TERMINAL,
+    TERMINAL_STATES,
+)
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     ApprovalPublication,
@@ -452,20 +456,15 @@ _TEST_OWNED_INBOX_SHAPE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-_TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS: frozenset[str] = frozenset(
-    {
-        "action",
-        "callback_query_id",
-        "chat_id",
-        "dispatch_attempt_id",
-        "membership_digest",
-        "membership_revision",
-        "message_id",
-        "nonce",
-        "telegram_user_id",
-        "update_identity_digest",
-    }
-)
+# Keep the generic shaper incapable of re-arming any production terminal
+# authority.  Deriving this set makes a future production scrub field fail
+# safely here too, rather than turning test shaping into a bypass.
+_TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS: frozenset[str] = frozenset(SCRUBBED_ON_TERMINAL)
+
+# The one test that needs a corrupt-but-still-active envelope may only use this
+# fixed value.  It cannot be parsed as the eight-character hexadecimal subject
+# short accepted by the worker.
+_TEST_OWNED_INVALID_SUBJECT_SHORT = "zzzzzzzz"
 
 
 async def shape_owned_callback_inbox_row(
@@ -504,6 +503,43 @@ async def shape_owned_callback_inbox_row(
         raise LookupError(f"owned inbox row was not found: {job_id}")
     for field, value in fields.items():
         setattr(row, field, value)
+    await session.flush()
+    return row
+
+
+async def degrade_owned_callback_subject_short(
+    session: AsyncSession,
+    job_id: uuid.UUID,
+) -> Any:
+    """Replace one owned active subject with the fixed invalid test value.
+
+    This is deliberately narrower than ``shape_owned_callback_inbox_row``:
+    a terminal-scrubbed ``None`` can never be re-armed, and callers cannot
+    choose a replacement authority value.
+    """
+    owned = _OWNED_INBOX_JOB_IDS.get()
+    if owned is None or job_id not in owned:
+        raise PermissionError("test row shaping requires an inbox_cleanup-owned job")
+
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+
+    row = await session.scalar(
+        select(TelegramCallbackInboxJob).where(
+            TelegramCallbackInboxJob.job_id == job_id
+        )
+    )
+    if row is None:
+        raise LookupError(f"owned inbox row was not found: {job_id}")
+    if row.subject_short is None:
+        raise ValueError("a scrubbed subject_short may never be re-armed")
+    if row.state in TERMINAL_STATES:
+        raise ValueError("only an active callback subject may be degraded")
+
+    from app.services.order_proposals.callback_inbox.worker import _SUBJECT_SHORT
+
+    if _SUBJECT_SHORT.fullmatch(_TEST_OWNED_INVALID_SUBJECT_SHORT):  # noqa: SLF001
+        raise AssertionError("the test-only subject corruption must remain invalid")
+    row.subject_short = _TEST_OWNED_INVALID_SUBJECT_SHORT
     await session.flush()
     return row
 

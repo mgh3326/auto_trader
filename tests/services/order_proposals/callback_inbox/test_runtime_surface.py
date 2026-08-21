@@ -14,7 +14,13 @@ from typing import Any
 
 import pytest
 
-from .conftest import shape_owned_callback_inbox_row
+from app.services.order_proposals.callback_inbox.contracts import SCRUBBED_ON_TERMINAL
+
+from .conftest import (
+    _TEST_OWNED_INBOX_SHAPE_FIELDS,
+    _TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS,
+    shape_owned_callback_inbox_row,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -122,6 +128,12 @@ def test_r34_durable_reservation_layers_remain_runtime_contract() -> None:
     assert "reserve_recovery_tier_block" in recovery.__all__
 
 
+def test_test_owned_row_shaper_tracks_every_terminal_authority_field() -> None:
+    """Future terminal-scrub additions cannot become generic test mutations."""
+    assert _TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS == frozenset(SCRUBBED_ON_TERMINAL)
+    assert _TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS <= _TEST_OWNED_INBOX_SHAPE_FIELDS
+
+
 @pytest.mark.asyncio
 async def test_test_owned_row_shaper_rejects_arbitrary_or_unowned_mutations() -> None:
     """The replacement helper is closed to arbitrary fields and foreign rows."""
@@ -130,6 +142,12 @@ async def test_test_owned_row_shaper_rejects_arbitrary_or_unowned_mutations() ->
             None,  # type: ignore[arg-type] - rejection happens before session use
             uuid.uuid4(),
             update_digest="must never be test-shaped",
+        )
+    with pytest.raises(ValueError, match="subject_short"):
+        await shape_owned_callback_inbox_row(
+            None,  # type: ignore[arg-type] - scrub rejection happens before session use
+            uuid.uuid4(),
+            subject_short="must never re-arm authority",
         )
     with pytest.raises(PermissionError, match="inbox_cleanup-owned"):
         await shape_owned_callback_inbox_row(

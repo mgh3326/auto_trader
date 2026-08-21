@@ -15,6 +15,7 @@ from __future__ import annotations
 import functools
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,7 @@ from app.services.order_proposals.telegram_callback import (
 
 from .conftest import (
     FakeNotifier,
+    degrade_owned_callback_subject_short,
     load_job,
     make_update,
     proposal_callback_data,
@@ -567,8 +569,14 @@ async def test_a_stored_envelope_that_cannot_be_rebuilt_is_discarded(
 
     group = await seed_proposal(db_session, nonce="corrupt1234", symbol="CRPKR")
     job_id = await _queue(inbox_cleanup, group)
+    before = await load_job(job_id)
+    assert before is not None
+    assert before.state == "pending"
+    assert before.subject_short is not None
     async with AsyncSessionLocal() as session:
-        await shape_owned_callback_inbox_row(session, job_id, subject_short="zzzzzzzz")
+        corrupted = await degrade_owned_callback_subject_short(session, job_id)
+        assert corrupted.state == "pending"
+        assert corrupted.subject_short == "zzzzzzzz"
         await session.commit()
 
     broker = _BrokerCounter()
@@ -578,3 +586,29 @@ async def test_a_stored_envelope_that_cannot_be_rebuilt_is_discarded(
     row = await load_job(job_id)
     assert row is not None
     assert row.error_class == "envelope_invalid"
+
+
+@pytest.mark.asyncio
+async def test_test_owned_subject_degrader_refuses_to_rearm_a_scrubbed_subject(
+    inbox_cleanup: list[uuid.UUID],
+) -> None:
+    """The narrow corrupt-envelope helper cannot resurrect terminal authority."""
+
+    class _ScrubbedSubjectSession:
+        def __init__(self) -> None:
+            self.scalar_calls = 0
+
+        async def scalar(self, _statement: object) -> SimpleNamespace:
+            self.scalar_calls += 1
+            return SimpleNamespace(state="pending", subject_short=None)
+
+    job_id = uuid.uuid4()
+    inbox_cleanup.append(job_id)
+    session = _ScrubbedSubjectSession()
+
+    with pytest.raises(ValueError, match="may never be re-armed"):
+        await degrade_owned_callback_subject_short(
+            session,  # type: ignore[arg-type] - the rejection occurs before flush
+            job_id,
+        )
+    assert session.scalar_calls == 1
