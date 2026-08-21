@@ -88,7 +88,28 @@ def main() -> None:
             )
     print()
 
-    print("**(4) 검열 비대칭 방향**\n")
+    print("**(4) 🔴 핵심 — 보고 대상인 *격차* 가 검열 가정에 얼마나 흔들리나**\n")
+    print("각 팔을 따로 묶는 것만으로는 \"검열이 결론을 뒤집을 수 있나\"에 답이 안 된다.")
+    print("아래는 **B−A 마이너스 A** 자체를 가정별로 다시 계산한 것이다.\n")
+    print("| 시장 | 가정 | 중앙값 격차 | 평균 격차 |")
+    print("|---|---|---:|---:|")
+    names = {
+        "reported_excludes_censored": "보고값(검열 제외)",
+        "assumption_worst_total_loss": "최악 — 전손",
+        "assumption_carry_d5_else_observed_min": "D+5 승계",
+        "assumption_best_observed_max": "최선 — 관측 최대",
+    }
+    for market, payload in payloads.items():
+        bounds = payload.get("b_only_minus_a_gap_under_bounds", {})
+        for key, label in names.items():
+            row = bounds.get(key, {})
+            print(
+                f"| {TITLES[market]} | {label} | {_pct(row.get('median'))} | "
+                f"{_pct(row.get('mean'))} |"
+            )
+    print()
+
+    print("**(5) 검열 비대칭 방향**\n")
     print("| 시장 | A terminal_gap | B−A terminal_gap | B−A / A | 방향 |")
     print("|---|---:|---:|---:|---|")
     for market, payload in payloads.items():

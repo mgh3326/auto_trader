@@ -107,12 +107,50 @@ def analyse(result: dict[str, Any]) -> dict[str, Any]:
             },
         }
 
+    # The quantity the report actually cites is the B-A minus A gap, so bound
+    # THAT, not just each arm. A bound on each arm separately does not tell the
+    # reader whether the censoring could move the reported comparison.
+    def _gap(key: str, stat: str) -> float | None:
+        left = by_cohort["b_only"]["d20_bounded_sensitivity"][key].get(stat)
+        right = by_cohort["a_and_b"]["d20_bounded_sensitivity"][key].get(stat)
+        if left is None or right is None:
+            return None
+        return round(left - right, 6)
+
+    reported_gap_median = None
+    reported_gap_mean = None
+    left = by_cohort["b_only"]["d20_as_reported_excludes_censored"]
+    right = by_cohort["a_and_b"]["d20_as_reported_excludes_censored"]
+    if left.get("median") is not None and right.get("median") is not None:
+        reported_gap_median = round(left["median"] - right["median"], 6)
+        reported_gap_mean = round(left["mean"] - right["mean"], 6)
+
+    gap_bounds = {
+        "reported_excludes_censored": {
+            "median": reported_gap_median,
+            "mean": reported_gap_mean,
+        },
+        "assumption_worst_total_loss": {
+            "median": _gap("assumption_worst_total_loss", "median"),
+            "mean": _gap("assumption_worst_total_loss", "mean"),
+        },
+        "assumption_carry_d5_else_observed_min": {
+            "median": _gap("assumption_carry_d5_else_observed_min", "median"),
+            "mean": _gap("assumption_carry_d5_else_observed_min", "mean"),
+        },
+        "assumption_best_observed_max": {
+            "median": _gap("assumption_best_observed_max", "median"),
+            "mean": _gap("assumption_best_observed_max", "mean"),
+        },
+    }
+
     a_rate = by_cohort["a_and_b"]["terminal_gap_rate"] or 0.0
     b_rate = by_cohort["b_only"]["terminal_gap_rate"] or 0.0
     return {
         "market": result["market"],
         "window": FULL_WINDOW,
         "cohorts": by_cohort,
+        "b_only_minus_a_gap_under_bounds": gap_bounds,
         "asymmetry": {
             "terminal_gap_rate_a_and_b": a_rate,
             "terminal_gap_rate_b_only": b_rate,
