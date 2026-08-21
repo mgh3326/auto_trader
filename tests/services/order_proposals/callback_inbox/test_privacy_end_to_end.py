@@ -59,6 +59,16 @@ SENTINEL_DIGEST = "ZzDigestSen1"
 SENTINEL_ATTEMPT = "5eee5eee-1111-4222-8333-444444444444"
 SENTINEL_MESSAGE_ID = 909090909091
 SENTINEL_REVISION = 35
+# R32: syntactically valid as the old slug regex but deliberately absent from
+# the closed terminal category vocabulary. Full and partial scans use only
+# generic failure messages so a failed privacy test does not print it.
+R32_UNKNOWN_OUTCOME = "r32nonceopaquevalue"
+R32_UNKNOWN_OUTCOME_FRAGMENTS = (
+    R32_UNKNOWN_OUTCOME,
+    R32_UNKNOWN_OUTCOME[:7],
+    R32_UNKNOWN_OUTCOME[7:13],
+    R32_UNKNOWN_OUTCOME[-7:],
+)
 
 SENTINELS = (
     SENTINEL_NONCE,
@@ -73,6 +83,7 @@ SENTINELS = (
     SENTINEL_DIGEST,
     SENTINEL_ATTEMPT,
     str(SENTINEL_MESSAGE_ID),
+    *R32_UNKNOWN_OUTCOME_FRAGMENTS,
 )
 
 #: Only these may appear in a log record's own attributes or a span's data.
@@ -271,7 +282,10 @@ def _sentinel_data() -> str:
 
 
 async def _queue_sentinel_job(
-    inbox_cleanup: list[uuid.UUID], monkeypatch: pytest.MonkeyPatch
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    callback_id: str = SENTINEL_CBQ,
 ) -> uuid.UUID:
     """One job whose every authority field is a sentinel."""
     from app.core.config import settings
@@ -294,7 +308,7 @@ async def _queue_sentinel_job(
         make_update(
             data=_sentinel_data(),
             update_id=update_id,
-            callback_id=SENTINEL_CBQ,
+            callback_id=callback_id,
             chat_id=int(SENTINEL_CHAT),
             user_id=int(SENTINEL_USER),
             message_id=SENTINEL_MESSAGE_ID,
@@ -313,6 +327,113 @@ class _Exploding(Exception):
 
     def __init__(self) -> None:
         super().__init__(SENTINEL_EXC, SENTINEL_ARG)
+
+
+def _assert_unclassified(value: object, *, where: str) -> None:
+    """Keep a RED failure from echoing an unknown terminal value."""
+    if value != "unclassified":
+        raise AssertionError(f"{where}: expected the fixed fallback category")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    (
+        R32_UNKNOWN_OUTCOME,
+        f"unknown_outcome_family:{R32_UNKNOWN_OUTCOME}",
+    ),
+    ids=("bare", "unknown-prefix-payload"),
+)
+async def test_regex_valid_unknown_worker_reasons_are_discarded_as_unclassified(
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    """R32 RED: category projection cannot change state/retry classification."""
+    from app.services.order_proposals.callback_inbox.worker import process_callback_job
+
+    job_id = await _queue_sentinel_job(
+        inbox_cleanup,
+        monkeypatch,
+        callback_id=f"r32-callback-{uuid.uuid4().hex}",
+    )
+
+    async def _unknown_reason_handler(normalized, **kwargs):
+        return {"handled": False, "reason": reason}
+
+    result = await process_callback_job(job_id, handler=_unknown_reason_handler)
+
+    # Unknown raw reasons remain an explicit terminal business discard. They
+    # must never acquire retry authority while their display category is reduced.
+    assert result["status"] == "discarded"
+    terminal = await load_job(job_id)
+    assert terminal is not None
+    assert terminal.state == "discarded"
+    assert terminal.error_class is None
+    assert terminal.attempt_count == 1
+    _assert_unclassified(terminal.outcome, where="terminal row")
+    for field in (
+        "callback_query_id",
+        "chat_id",
+        "message_id",
+        "telegram_user_id",
+        "action",
+        "subject_short",
+        "dispatch_attempt_id",
+        "membership_revision",
+        "membership_digest",
+        "nonce",
+    ):
+        assert getattr(terminal, field) is None, field
+
+
+@pytest.mark.asyncio
+async def test_regex_valid_unknown_outcome_never_reaches_row_logs_or_sentry(
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+    log_sink: _RecordSink,
+    sentry_sink: list[dict[str, Any]],
+) -> None:
+    """R32 RED: recursive full/prefix/middle/suffix scans stay private."""
+    from app.services.order_proposals.callback_inbox.worker import process_callback_job
+
+    job_id = await _queue_sentinel_job(
+        inbox_cleanup,
+        monkeypatch,
+        callback_id=f"r32-callback-{uuid.uuid4().hex}",
+    )
+
+    async def _unknown_reason_handler(normalized, **kwargs):
+        return {"handled": False, "reason": R32_UNKNOWN_OUTCOME}
+
+    result = await process_callback_job(job_id, handler=_unknown_reason_handler)
+    assert result["status"] == "discarded"
+    terminal = await load_job(job_id)
+    assert terminal is not None
+
+    # Run every recursive scanner before reporting a generic failure. The
+    # report intentionally identifies only the surface, never a fixture value.
+    clean_surfaces: list[bool] = []
+    for check in (
+        lambda: assert_no_leak({"outcome": terminal.outcome}, where="terminal outcome"),
+        lambda: assert_records_clean(log_sink),
+        lambda: assert_events_clean(sentry_sink, expect_any=True),
+    ):
+        try:
+            check()
+        except AssertionError:
+            clean_surfaces.append(False)
+        else:
+            clean_surfaces.append(True)
+    if not all(clean_surfaces):
+        raise AssertionError(
+            "R32 protected outcome material escaped an observable surface"
+        )
+
+    # A missing outcome would hide the problem rather than solve it.
+    _assert_unclassified(terminal.outcome, where="terminal row")
 
 
 @pytest.mark.asyncio

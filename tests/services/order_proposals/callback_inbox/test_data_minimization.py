@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from enum import StrEnum
 from typing import Any
 
 import pytest
@@ -34,6 +35,90 @@ ALL_SENTINELS = (
     FAKE_BOT_TOKEN,
     FAKE_DIGEST,
 )
+
+
+# This tuple is intentionally independent from the runtime vocabulary.  It is
+# the audit inventory for every category the callback core is allowed to retain
+# after a terminal scrub; changing production constants must not silently
+# weaken this check.
+CANONICAL_OUTCOME_CATEGORIES: tuple[str, ...] = (
+    # decisions / successful completion
+    "approved",
+    "approved_with_window_block",
+    "denied",
+    "needs_reconfirm",
+    "batch_approved",
+    "auto_veto_cancelled",
+    "auto_veto_filled",
+    "auto_veto_failed",
+    "auto_veto_unconfirmed",
+    "loss_cut_confirmation_required",
+    # window / callback core
+    "expired",
+    "invalid_valid_until",
+    "defer_session_closed",
+    "calendar_unknown",
+    "no_executable_window",
+    "approval_window_blocked",
+    "proposal_not_found",
+    "chat_not_allowed",
+    "lease_held",
+    "nonce_mismatch",
+    "nonce_replay",
+    "internal_error",
+    # loss-cut confirmation
+    "loss_cut_confirmation_missing",
+    "loss_cut_confirmation_invalid",
+    "loss_cut_confirmation_expired",
+    "loss_cut_confirmation_principal_mismatch",
+    "loss_cut_confirmation_binding_mismatch",
+    "loss_cut_confirmation_dispatch_failed",
+    # published binding / dispatch
+    "approval_callback_subject_mismatch",
+    "approval_dispatch_state_invalid",
+    "approval_dispatch_card_kind_invalid",
+    "approval_dispatch_pending",
+    "approval_dispatch_sent_superseded",
+    "approval_dispatch_failed",
+    "approval_dispatch_partial_failed",
+    "approval_dispatch_failed_superseded",
+    "approval_dispatch_attempt_mismatch",
+    "approval_membership_revision_mismatch",
+    "approval_membership_digest_mismatch",
+    "approval_card_action_mismatch",
+    "auto_veto_not_available",
+    "auto_veto_nonce_requires_vc",
+    # batch
+    "batch_window_blocked",
+    "approval_batch_not_found",
+    "approval_batch_too_small",
+    "approval_batch_expired",
+    "approval_batch_chat_mismatch",
+    "approval_batch_nonce_mismatch",
+    "approval_batch_nonce_replay",
+    "approval_batch_member_snapshot_invalid",
+    "approval_batch_membership_changed",
+    "approval_batch_membership_digest_mismatch",
+    # Explicit projection families, followed by the safe fallback.
+    "proposal_superseded_by",
+    "proposal_terminal",
+    "approval_window",
+    "approval_batch_member_stale",
+    "unclassified",
+)
+
+PAYLOAD_OUTCOME_CATEGORIES: tuple[str, ...] = (
+    "proposal_superseded_by",
+    "proposal_terminal",
+    "approval_window",
+    "approval_batch_member_stale",
+)
+
+
+def _assert_category(actual: str | None, expected: str, *, where: str) -> None:
+    """Compare categories without echoing a possibly sensitive input on RED."""
+    if actual != expected:
+        raise AssertionError(f"{where}: outcome category mismatch")
 
 
 def _walk(value: Any) -> list[str]:
@@ -371,31 +456,57 @@ def test_the_span_builder_cannot_be_fed_authority_material() -> None:
     assert_no_sentinels(data, where="sentry span data (hostile outcome)")
 
 
-def test_an_outcome_label_is_a_slug_never_a_payload() -> None:
+def test_an_outcome_label_is_a_closed_category_never_a_payload() -> None:
     from app.services.order_proposals.callback_inbox.contracts import (
-        OUTCOME_LABEL_PATTERN,
+        OUTCOME_CATEGORIES,
+        PAYLOAD_OUTCOME_CATEGORIES as RUNTIME_PAYLOAD_OUTCOME_CATEGORIES,
         normalize_outcome,
     )
 
-    assert normalize_outcome("approved") == "approved"
-    assert normalize_outcome("EXPIRED") == "expired"
-    # The core's richer reasons keep only their stable prefix.
-    assert normalize_outcome(f"proposal_superseded_by:{uuid.uuid4()}") == (
-        "proposal_superseded_by"
-    )
-    assert normalize_outcome("approval_window:EXPIRED:now_at_or_after") == (
-        "approval_window"
-    )
-    assert normalize_outcome(f"leak {FAKE_NONCE}") == "unclassified"
-    assert normalize_outcome(None) is None
-    for candidate in (
-        "approved",
-        "expired",
-        "nonce_replay",
+    assert OUTCOME_CATEGORIES == CANONICAL_OUTCOME_CATEGORIES
+    assert RUNTIME_PAYLOAD_OUTCOME_CATEGORIES == PAYLOAD_OUTCOME_CATEGORIES
+
+    # Known categories preserve their stable display value after normalisation.
+    for category in CANONICAL_OUTCOME_CATEGORIES:
+        _assert_category(
+            normalize_outcome(f"  {category.upper()}  "),
+            category,
+            where="known category",
+        )
+
+    # Only the audited payload families may retain their prefix.  Their raw
+    # suffix is never a terminal/log/Sentry surface.
+    for category in PAYLOAD_OUTCOME_CATEGORIES:
+        _assert_category(
+            normalize_outcome(f"{category}:opaque_payload"),
+            category,
+            where="known payload family",
+        )
+
+    _assert_category(
+        normalize_outcome(f"leak {FAKE_NONCE}"),
         "unclassified",
-        "proposal_superseded_by",
-    ):
-        assert OUTCOME_LABEL_PATTERN.fullmatch(candidate), candidate
+        where="non-slug input",
+    )
+    assert normalize_outcome(None) is None
+
+    class _KnownReason(StrEnum):
+        APPROVED = "approved"
+
+    class _StringifyingObject:
+        def __str__(self) -> str:
+            return "approved"
+
+    _assert_category(
+        normalize_outcome(_KnownReason.APPROVED),
+        "approved",
+        where="StrEnum input",
+    )
+    _assert_category(
+        normalize_outcome(_StringifyingObject()),
+        "unclassified",
+        where="arbitrary object",
+    )
 
 
 def test_worker_logging_carries_no_authority_in_message_args_or_extra(

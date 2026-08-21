@@ -30,6 +30,7 @@ _REPO = pathlib.Path(__file__).resolve().parents[4]
 _MIGRATION = _REPO / "alembic/versions/20260821_w5_telegram_callback_inbox.py"
 _REVISION = "20260821_w5_callback_inbox"
 _PARENT = "20260820_rob1290_reconcile"
+_R32_REVISION = "20260821_w5_outcome_allowlist"
 
 
 @pytest.mark.unit
@@ -103,7 +104,7 @@ def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
 def test_the_migration_chain_still_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
     heads = tuple(script.get_heads())
-    assert heads == (_REVISION,), heads
+    assert heads == (_R32_REVISION,), heads
 
 
 @pytest.mark.unit
@@ -116,6 +117,24 @@ def test_the_orm_model_is_registered_and_exported() -> None:
     assert "review.telegram_callback_inbox" in Base.metadata.tables, sorted(
         Base.metadata.tables
     )
+
+
+@pytest.mark.unit
+def test_the_orm_outcome_constraint_uses_the_closed_category_inventory() -> None:
+    """ORM DDL must agree with the independent runtime projection vocabulary."""
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+    from app.services.order_proposals.callback_inbox.contracts import (
+        OUTCOME_CATEGORIES,
+        _sql_string_list,
+    )
+
+    constraint = next(
+        item
+        for item in TelegramCallbackInboxJob.__table__.constraints
+        if item.name == "ck_telegram_callback_inbox_outcome"
+    )
+    expected = f"outcome IS NULL OR outcome IN ({_sql_string_list(OUTCOME_CATEGORIES)})"
+    assert str(constraint.sqltext) == expected
 
 
 # --------------------------------------------------------------------------

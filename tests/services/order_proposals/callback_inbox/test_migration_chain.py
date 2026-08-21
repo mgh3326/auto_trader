@@ -58,7 +58,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-W5_REVISION = "20260821_w5_callback_inbox"
+W5_INBOX_REVISION = "20260821_w5_callback_inbox"
+R32_HEAD_REVISION = "20260821_w5_outcome_allowlist"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -314,6 +315,58 @@ async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bo
         await connection.close()
 
 
+async def _outcome_constraint_matrix(
+    database_url: str,
+) -> tuple[tuple[str, bool, bool], ...]:
+    """Run the R32 vocabulary matrix against the actual migrated table.
+
+    Case names, rather than fixture values, are returned so a failure cannot
+    echo the unknown lowercase slug or any payload fragment into test output.
+    """
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    cases: tuple[tuple[str, str | None, bool], ...] = (
+        ("null", None, True),
+        ("known", "approved", True),
+        ("unclassified", "unclassified", True),
+        ("unknown_valid_slug", "r32nonceopaquevalue", False),
+        ("raw_known_prefix_payload", "approval_window:expired:opaque", False),
+        ("unknown_prefix_payload", "unknown_outcome_family:opaque", False),
+        ("uppercase", "APPROVED", False),
+    )
+    results: list[tuple[str, bool, bool]] = []
+    try:
+        for name, outcome, expected in cases:
+            try:
+                await connection.execute(
+                    "INSERT INTO review.telegram_callback_inbox "
+                    "(job_id, update_digest, state, attempt_count, max_attempts, "
+                    "received_at, available_at, outcome) "
+                    "VALUES ($1, $2, 'succeeded', 0, 3, now(), now(), $3::text)",
+                    uuid.uuid4(),
+                    uuid.uuid4().hex * 2,
+                    outcome,
+                )
+            except asyncpg.exceptions.CheckViolationError:
+                accepted = False
+            else:
+                accepted = True
+            results.append((name, accepted, expected))
+    finally:
+        await connection.close()
+    return tuple(results)
+
+
+async def _assert_outcome_constraint_matrix(database_url: str) -> None:
+    for name, accepted, expected in await _outcome_constraint_matrix(database_url):
+        if accepted != expected:
+            raise AssertionError(f"outcome vocabulary matrix mismatch: {name}")
+
+
 def test_alembic_reports_exactly_one_head() -> None:
     """R3 B3 — asked of the CLI, not of a Python API that might differ."""
     output = (
@@ -321,7 +374,7 @@ def test_alembic_reports_exactly_one_head() -> None:
     )
     heads = [line for line in output if line.strip()]
     assert len(heads) == 1, output
-    assert heads[0].startswith(W5_REVISION), output
+    assert heads[0].startswith(R32_HEAD_REVISION), output
 
 
 @pytest.mark.asyncio
@@ -364,8 +417,12 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     )
 
     async def _check_head_state() -> None:
-        assert await _stamped_revision(scratch_database) == W5_REVISION
         assert await _table_exists(scratch_database) is True
+        # This is deliberately performed before checking the revision label so
+        # the inherited regex-only implementation fails on the actual database
+        # behaviour, not merely because a future head name is absent.
+        await _assert_outcome_constraint_matrix(scratch_database)
+        assert await _stamped_revision(scratch_database) == R32_HEAD_REVISION
         objects = await _live_objects(scratch_database)
         live = {
             name
