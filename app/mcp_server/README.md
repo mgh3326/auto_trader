@@ -218,40 +218,70 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_krx_session_health()`
   - Read-only authenticated KRX-session probe. It uses the normal KRX login/re-authentication path and reports `status`, `reason`, `retryable`, and `authenticated`; no market, broker, or order state is changed.
 - `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
-  - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
+  - **DB-only (ROB-1309): makes zero external HTTP calls** — no sector lazy-fill, no analyst-consensus fetch, no live KIS holdings lookup, no live price fetch. Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
   - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
-  - `exclude_held` (bool): hide symbols already in the KIS-live portfolio; if KIS holdings degrade, the response keeps results and emits a warning.
+  - `exclude_held` is NOT supported here — it would require the live KIS holdings call this DB-only tool never makes; passing `exclude_held=True` returns a fail-closed error pointing at `screen_stocks_enrich` (same redirect pattern as `min_analyst_count`/`min_analyst_buy_count`). `isHeld` is always `false` on every returned row.
   - `exclude_watched` (bool): accepted for compatibility, but currently unsupported in MCP because no user watchlist context is wired; requests emit an explicit warning.
   - `exclude_symbols`: explicit symbols to remove after dedupe.
-  - `min_analyst_count` (int): quality filter — filters enriched results by consensus total coverage.
-  - `min_analyst_buy_count` (int): compatibility filter — filters enriched results by consensus buy count.
+  - `min_analyst_count` / `min_analyst_buy_count`: NOT applied here — this tool never returns consensus data; passing either returns the same fail-closed redirect error as `exclude_held`. Use `screen_stocks_enrich` for analyst-count filtering.
   - `min_market_cap` (float): size filter using raw numeric `marketCapValue` (`KRW` for KR, `USD` for US/crypto).
   - `min/max_market_cap_eok` (float): KR compatibility size filter — unit is 1억원.
   - `sort="matched_presets_desc"`: ranks intersections (stocks in multiple presets) first.
   - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
-  - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
   - `preset="support_proximity"` is KR-only and reads persisted price/support/distance plus Naver-normalized KRW market cap. It performs no query-time OHLCV fetch or support recalculation; revalidate only the returned top symbols with `get_support_resistance`/`get_quote` when acting.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
-  - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
+  - Preset sweeps are capped at 5 presets.
   - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
+  - `priceLabel`/`changePctLabel`/`metricValueLabel` are values at the snapshot time and may be stale by up to one session; revalidate a top candidate with `get_quote`/`get_support_resistance`/`analyze_stock_batch` before acting.
   - Crypto snapshot examples:
     - `screen_stocks_snapshot(preset="crypto_high_volume", market="crypto", limit=40)`
     - `screen_stocks_snapshot(preset="crypto_momentum", market="crypto", filters=[{"field":"trade_amount_24h","operator":"gte","value":10000000000}], limit=40)`
   - Use `get_crypto_top_movers` for live Upbit top movers; use `screen_stocks_snapshot(..., market="crypto")` for persisted snapshot-backed filtering.
+- `screen_stocks_enrich(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
+  - **ROB-1309 opt-in live-enrichment counterpart to `screen_stocks_snapshot`.** Runs the identical preset/filter/discovery/pagination pipeline (same params), then makes external calls: KR/US analyst consensus (buy/hold/sell counts + target prices, Redis cache-aside with a call-time-fresh target-upside recompute), sector-label lazy-fill, RSI14 from persisted snapshot closes, and the one live KIS holdings call for `exclude_held`/`isHeld`.
+  - `min_analyst_count`/`min_analyst_buy_count` filter on resolved consensus counts before pagination (capped at 200 merged rows before enrichment); only the returned page is fully enriched with `analysisContext`.
+  - Only call this after `screen_stocks_snapshot` when analyst consensus / sector labels / analyst-count filtering / `exclude_held` are actually needed — every call fans out one HTTP round-trip per uncached symbol on the page and can take tens of seconds for a full page.
+  - A symbol whose sector/consensus fetch just failed is not retried within a bounded window (`meta.enrichment_excluded`); a symbol with >=3 consecutive failures is dropped from `results` on that call only, reported under `meta.chronic_failure_candidates` (self-healing on the next success). Read-only wrt broker/order/watch state.
 - `get_top_stocks(market="kr", ranking_type="volume", limit=20, min_market_cap=None, min_turnover=None)` - Cross-market rankings. KR quality floors are raw KRW and fail closed; `min_market_cap` uses normalized Naver-backed valuation snapshots, while turnover uses trade amount or price × volume. Crypto supports `volume`, `gainers`, `losers`, and `relative_strength`.
 - `get_crypto_top_movers(ranking_type="relative_strength", limit=20)` - Crypto-only Upbit KRW discovery wrapper. Default ranking sorts non-BTC coins by 24h outperformance vs KRW-BTC.
 - `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True, decision_history_account_mode=None)`
-  - Legacy/deep-dive batch analysis for up to 10 symbols.
-  - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
-    rows now expose consensus and RSI context directly.
-  - Keep using it when support/resistance or full `quick=False` analysis is needed
-    for symbols outside the snapshot result path.
-  - Default `quick=True` returns compact summary with: symbol, current_price,
-    rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
+  - Batch analysis for up to 10 symbols. `quick=True` is the default DB-only fast projection;
+    `quick=False` is the explicit full/deep analysis path.
+  - `screen_stocks_snapshot` is DB-only (ROB-1309) and never returns consensus/RSI
+    inline. For analyst consensus/sector labels, call `screen_stocks_enrich` with
+    the same preset/filter/pagination inputs (it has no `symbols` parameter — it
+    reruns the identical discovery query, then enriches the returned page); for
+    RSI/support/resistance or full `quick=False` analysis on individual symbols,
+    call `analyze_stock_batch`.
+  - Quick returns only the allowlisted projection: symbol, market_type, source,
+    current_price, latest OHLCV, rsi_14, supports (top 3), resistances (top 3),
+    and the freshness envelope. It also preserves compact `decision_history`
+    and `earnings` meaning through set-based DB read models. It makes zero HTTP
+    requests and reads all requested data in at most 12 DB executions per batch.
+    The quick path does not run news, profile, provider earnings, consensus,
+    recommendation, or holdings work.
+  - **`current_price` is NOT live.** It is the close of the most recent
+    CLOSED daily candle (`data_state="stale"`,
+    `data_state_reason="db_only_projection"`). Call `get_quote` for a live
+    price or live session/NXT-tradability state.
+  - `include_position` is accepted for compatibility but has no effect for
+    any `quick` value — `analyze_stock_batch` never attaches a `position`
+    field, quick or full. Use `get_holdings` for per-account positions.
+  - **Removed from the quick contract (PR #1915, deep/`quick=False`-only now):**
+    `nxt_tradable`/`nxt_tradable_source`/`nxt_tradable_asof`/`nxt_tradable_stale`
+    (ROB-668), `price_source`/`session`/`session_state`/`krx_prev_close`/
+    `change_pct` (ROB-725/ROB-888), `venue`/`quote_asof`/`delayed` (quote
+    provenance), `price_data_state` (ROB-1048), `fresh_artifact_exists`
+    (ROB-648), and `consensus`/`recommendation` (holdings). Use
+    `get_quote` for the live-price/session-provenance fields.
+  - Use `quick=False` when consensus, recommendation, news, profile, provider
+    earnings,
+    peers, or the complete full-analysis payload is explicitly required.
+    The full output contract is unchanged.
   - Every full and compact result carries the ROB-1048 freshness/provenance
     envelope: `data_state` (`fresh|stale|degraded|missing`),
     `derived_as_of`, `fetched_at`, `data_age_seconds`, `cache_hit`,
@@ -259,39 +289,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     oldest included provider evidence. A swallowed provider exception produces
     `degraded` (or `missing` when no usable evidence remains) with null
     timestamps; response-time `now` is never substituted.
-  - A valid provider-cache hit may remain `fresh` and sets
-    `fallback_source="analyze_fetch_cache"`. Compact rows that also carry
-    quote-session freshness retain that quote classification as
-    `price_data_state` when aggregate evidence `data_state` is applied.
-  - When a non-stale `analysis_artifact` already covers a symbol, that symbol's
-    compact summary also carries a `fresh_artifact_exists` hint
-    (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
-    artifact via `analysis_artifact_get` instead of re-deriving. This is a soft
-    hint only — the analysis still runs and is returned.
-  - `decision_history_account_mode="kis_mock"` switches only the advisory
-    `decision_history` block to the explicit mock/counterfactual branch. Leave it
-    unset for default live/default lesson context.
-  - The `decision_history` block includes `open_actions` (ROB-884): a bounded
-    list of at most five active retrospective actions (`open`/`in_progress`
-    only; terminal `done`/`obsolete`/`expired` actions are always excluded).
-    Each compact item carries `action_id`, `action`, `status`, `owner`,
-    `issue_id`, `due_kst_date`, and `overdue` — nothing else. Action text is
-    capped at 220 characters, owner at 80, issue ID at 32, and the total
-    `open_actions` JSON is capped at 3 KiB (UTF-8). `open_actions_meta` carries
-    `authority="historical_advisory"`, `executable=false`, the returned `count`,
-    and a `truncated` flag. **This is historical advisory context only — it is
-    not an order instruction, tool execution authorization, or auto-approval.**
-    Action text alone must never trigger tool or order auto-execution.
-    Visibility uses the same retrospective predicate as lessons/outcomes:
-    `kis_mock` is exact-only when that account mode is requested; the default
-    path excludes the mock-counterfactual cohort. Stock-detail's separate
-    decision-history schema is not extended (it already has retrospective cards).
-    `open_actions` is injected only on the `quick=True` compact path; the
-    `quick=False` full-analysis path does not carry compact decision-history
-    injection. Frozen analysis bundles capture the same `open_actions`/meta in
-    their `decision_history` section, and frozen reads return the stored values
-    without re-querying.
-  - Compact US rows carry the same quote provenance fields as `get_quote` when present: `session`, `data_state`, `data_state_reason`, `price_source`, `venue`, `quote_asof`, and `delayed`.
+  - The full path may use its provider fetch cache and its `refresh` behavior;
+    these provider-cache semantics do not apply to quick. Compact quick rows
+    use the DB-only freshness envelope described above.
 
 ### Snapshot-backed report generation
 

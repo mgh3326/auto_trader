@@ -56,7 +56,7 @@ RSI 35.40 · 지지/저항 · upside +84% 가 **전부 0-변동 캔들 위에서
 
 | 소비자 | 동작 |
 |---|---|
-| `analyze_stock_batch` / `analyze_stock` | `data_state` = `halted_suspect` (top-level + quote 양쪽). `indicators` · `support_resistance` = **null** (추정·보간 없음). recommendation 은 RSI 부재로 `hold`/`low` + `insufficient_inputs` 로 자동 하한. 근거는 `halt_suspect` 블록. compact 요약에도 실린다 |
+| `analyze_stock_batch` / `analyze_stock` | `data_state` = `halted_suspect` (top-level + quote 양쪽). `indicators` · `support_resistance` = **null** (추정·보간 없음). 근거는 `halt_suspect` 블록. quick(`quick=True`)에도 `rsi_14`/`supports`/`resistances` null + `halt_suspect` 로 실린다 — 단 `recommendation` 필드는 ROB-1311 이후 `quick=False`(full) 전용이며, full 에서는 RSI 부재로 `hold`/`low` + `insufficient_inputs` 로 자동 하한 |
 | `screen_stocks` | 행 **제외**. 제외분은 `meta.halted_suspect_excluded` + `warnings` 로 보고. 🔴 봉 이력 조회 실패는 **제외하지 않고**(fail-open) warning 만 남긴다 — DB 장애는 정지의 증거가 아니다. 🔴 비용 게이트 = §4-1 |
 | `scripts/policy_table` (kr/us/crypto) | `rows` 에서 **제외**. `universe.halted_suspect` 에 심볼·근거 보존, KR/US 는 `universe.skipped` 에 `reason="halted_suspect"` 로도 계상. 요약 md 에 심볼이 그대로 찍힌다 |
 

@@ -990,48 +990,39 @@ class TestAnalyzeStockBatch:
         assert "analyze_stock_batch" in tools
 
     async def test_analyze_stock_batch_quick_summary(self, monkeypatch):
-        """Test that analyze_stock_batch returns the compact summary contract."""
+        """Test that quick returns the DB-backed projection contract."""
         tools = build_tools()
 
-        mock_analysis = {
+        mock_projection = {
             "symbol": "005930",
             "market_type": "equity_kr",
-            "source": "kis",
-            "quote": {"price": 75000},
-            # ROB-451: production stores the FLAT indicator map (already unwrapped in
-            # analysis_analyze.py). The old double-nested mock hid the batch-formatter bug.
-            "indicators": {
-                "rsi": {"14": 45.0},
-                "bollinger": {"lower": 74000},
+            "source": "daily_candles_db",
+            "current_price": 75000,
+            "ohlcv": {
+                "open": 74000,
+                "high": 76000,
+                "low": 73500,
+                "close": 75000,
+                "volume": 1000,
             },
-            "support_resistance": {
-                "supports": [{"price": 73000}],
-                "resistances": [{"price": 77000, "strength": "medium"}],
-            },
-            "opinions": {
-                "consensus": {
-                    "buy_count": 2,
-                    "avg_target_price": 85000,
-                    "current_price": 75000,
-                }
-            },
-            "recommendation": {
-                "action": "hold",
-                "confidence": "low",
-            },
-            "news": [{"title": "Some news"}],
-            "profile": {"description": "Company profile"},
+            "rsi_14": 45.0,
+            "supports": [{"price": 73000}],
+            "resistances": [{"price": 77000, "strength": "medium"}],
+            "data_state": "stale",
+            "data_state_reason": "db_only_projection",
+            "derived_as_of": "2026-08-20T00:00:00+00:00",
+            "fetched_at": "2026-08-20T00:00:00+00:00",
+            "data_age_seconds": 1.0,
+            "cache_hit": False,
+            "fallback_source": "daily_candles_db",
+            "provider_provenance": [],
         }
 
-        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
-            return mock_analysis
+        async def fake_projection(symbols, *, market):
+            return {"005930": mock_projection}
 
-        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
-        # ROB-541: not-held symbol -> position is null. Mock the single batched
-        # holdings fetch so the contract is deterministic without a DB.
-        empty_collect = AsyncMock(return_value=([], [], "equity_kr", None))
         monkeypatch.setattr(
-            portfolio_holdings, "_collect_portfolio_positions", empty_collect
+            analysis_tool_handlers, "_load_quick_projection_batch", fake_projection
         )
 
         result = await tools["analyze_stock_batch"](["005930"], market="kr")
@@ -1045,67 +1036,59 @@ class TestAnalyzeStockBatch:
         assert result["results"]["005930"] == {
             "symbol": "005930",
             "market_type": "equity_kr",
-            "source": "kis",
+            "source": "daily_candles_db",
             "current_price": 75000,
+            "ohlcv": {
+                "open": 74000,
+                "high": 76000,
+                "low": 73500,
+                "close": 75000,
+                "volume": 1000,
+            },
             "rsi_14": 45.0,
-            "consensus": {
-                "buy_count": 2,
-                "avg_target_price": 85000,
-                "current_price": 75000,
-            },
-            "recommendation": {
-                "action": "hold",
-                "confidence": "low",
-            },
             "supports": [{"price": 73000}],
             "resistances": [{"price": 77000, "strength": "medium"}],
-            # ROB-541: include_position defaults True; not held -> null.
-            "position": None,
-            # ROB-1048 additive freshness/provenance contract keys. The mocked
-            # _analyze_stock_impl bypasses the real pipeline, so no fetch-layer
-            # provider envelope is available.
-            "data_state": "degraded",
+            "data_state": "stale",
+            "data_state_reason": "db_only_projection",
             "cache_hit": False,
-            "derived_as_of": None,
-            "fetched_at": None,
-            "data_age_seconds": None,
-            "fallback_source": None,
+            "derived_as_of": "2026-08-20T00:00:00+00:00",
+            "fetched_at": "2026-08-20T00:00:00+00:00",
+            "data_age_seconds": 1.0,
+            "fallback_source": "daily_candles_db",
             "provider_provenance": [],
         }
-        # Single batched holdings fetch only — never per symbol.
-        assert empty_collect.await_count == 1
 
     async def test_analyze_stock_batch_quick_summary_crypto_rsi(self, monkeypatch):
-        # ROB-451: crypto batch quick summary must surface rsi_14 (flat indicator map),
-        # while consensus stays null (crypto has no analyst-consensus source — correct).
+        # Quick crypto rows use the same DB-only projection allowlist.
         tools = build_tools()
 
-        mock_analysis = {
-            "symbol": "BTC",
+        mock_projection = {
+            "symbol": "KRW-BTC",
             "market_type": "crypto",
-            "source": "upbit",
-            "quote": {"price": 95000000},
-            "indicators": {"rsi": {"14": 61.2}},  # production FLAT shape
-            "support_resistance": {"supports": [], "resistances": []},
-            # no "opinions" → consensus is correctly null for crypto
+            "source": "daily_candles_db",
+            "current_price": 95000000,
+            "ohlcv": None,
+            "rsi_14": 61.2,
+            "supports": [],
+            "resistances": [],
+            "data_state": "stale",
+            "fallback_source": "daily_candles_db",
+            "provider_provenance": [],
         }
 
-        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
-            return mock_analysis
+        async def fake_projection(symbols, *, market):
+            return {"KRW-BTC": mock_projection}
 
-        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
         monkeypatch.setattr(
-            portfolio_holdings,
-            "_collect_portfolio_positions",
-            AsyncMock(return_value=([], [], "crypto", None)),
+            analysis_tool_handlers, "_load_quick_projection_batch", fake_projection
         )
 
-        result = await tools["analyze_stock_batch"](["BTC"], market="crypto")
+        result = await tools["analyze_stock_batch"](["KRW-BTC"], market="crypto")
 
-        row = result["results"]["BTC"]
-        assert row["rsi_14"] == pytest.approx(61.2)  # ROB-451: no longer null
-        assert row.get("consensus") is None  # crypto: correct (not a regression)
-        assert row["position"] is None  # ROB-541: BTC not held -> null
+        row = result["results"]["KRW-BTC"]
+        assert row["rsi_14"] == pytest.approx(61.2)
+        assert "consensus" not in row
+        assert "position" not in row
 
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
@@ -1189,7 +1172,7 @@ class TestAnalyzeStockBatch:
         )
 
         result = await tools["analyze_stock_batch"](
-            ["005930", "000660", "035420"], market="kr"
+            ["005930", "000660", "035420"], market="kr", quick=False
         )
 
         assert "results" in result
@@ -1226,18 +1209,8 @@ class TestAnalyzeStockBatch:
 
         result = await tools["analyze_stock_batch"](["005930"], market="kr")
 
-        position = result["results"]["005930"]["position"]
-        assert position == [
-            {
-                "account": "kis",
-                "account_mode": "kis_live",
-                "qty": 10,
-                "avg_buy_price": 70000,
-                "pnl_pct": 7.14,
-                "order_routable": True,
-            }
-        ]
-        assert collect.await_count == 1
+        assert "position" not in result["results"]["005930"]
+        assert collect.await_count == 0
 
     async def test_analyze_stock_batch_position_toss_not_routable(self, monkeypatch):
         """ROB-541: toss-held symbol -> order_routable=False (matches get_holdings)."""
@@ -1269,10 +1242,8 @@ class TestAnalyzeStockBatch:
 
         result = await tools["analyze_stock_batch"](["005930"], market="kr")
 
-        position = result["results"]["005930"]["position"]
-        assert len(position) == 1
-        assert position[0]["order_routable"] is False
-        assert position[0]["account_mode"] == "toss_api"
+        assert "position" not in result["results"]["005930"]
+        assert collect.await_count == 0
 
     async def test_analyze_stock_batch_position_multi_account_array(self, monkeypatch):
         """ROB-541: symbol held in toss + samsung -> 2-element array, no OR-collapse."""
@@ -1316,12 +1287,8 @@ class TestAnalyzeStockBatch:
 
         result = await tools["analyze_stock_batch"](["005930"], market="kr")
 
-        position = result["results"]["005930"]["position"]
-        assert len(position) == 2
-        accounts = {entry["account"]: entry["order_routable"] for entry in position}
-        # Both reference-only -> both False; never OR-collapsed to a single flag.
-        assert accounts == {"toss": False, "samsung": False}
-        assert collect.await_count == 1
+        assert "position" not in result["results"]["005930"]
+        assert collect.await_count == 0
 
     async def test_analyze_stock_batch_include_position_false_omits_key(
         self, monkeypatch
@@ -1350,7 +1317,7 @@ class TestAnalyzeStockBatch:
         assert collect.await_count == 0
 
     async def test_analyze_stock_batch_position_fail_open(self, monkeypatch):
-        """ROB-541: holdings outage -> position null + warning, analysis survives."""
+        """Quick projection does not enter the holdings surface."""
         tools = build_tools()
 
         async def fake_impl(symbol: str, market: str | None, include_peers: bool):
@@ -1371,8 +1338,7 @@ class TestAnalyzeStockBatch:
 
         result = await tools["analyze_stock_batch"](["005930"], market="kr")
 
-        assert result["results"]["005930"]["position"] is None
-        assert any("보유 종목 조회 실패" in w for w in result["summary"]["errors"])
+        assert "position" not in result["results"]["005930"]
 
 
 @pytest.mark.asyncio

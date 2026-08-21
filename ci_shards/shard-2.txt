@@ -25,6 +25,7 @@ tests/mcp_server/test_market_quote_snapshot_tools.py
 tests/mcp_server/test_mirror_counterfactual_tool.py
 tests/mcp_server/test_operating_briefing_policy_version.py
 tests/mcp_server/test_operating_briefing_tools.py
+tests/mcp_server/test_rob1311_quick_projection.py
 tests/mcp_server/test_shared_converters.py
 tests/mcp_server/tooling/test_buy_candidate_fanout.py
 tests/mcp_server/tooling/test_get_news_envelope.py

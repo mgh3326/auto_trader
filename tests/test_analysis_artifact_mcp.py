@@ -458,42 +458,38 @@ async def test_list_is_metadata_only(db_session: AsyncSession) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_analyze_stock_batch_surfaces_fresh_artifact_hint(
+async def test_analyze_stock_batch_quick_does_not_query_artifact_hints(
     db_session: AsyncSession, monkeypatch
 ) -> None:
     from app.mcp_server.tooling import analysis_tool_handlers as handlers
 
-    covered = "005930"
-    uncovered = "000660"
-    save_response = await analysis_artifact_save(
-        market="kr",
-        kind="screening_ranking",
-        title="fresh ranking",
-        symbols=[covered],
-        as_of="2026-07-02T02:00:00+00:00",
-        valid_until="2099-01-01T00:00:00+09:00",
-    )
-    assert save_response["success"] is True
+    async def fail_artifact_attach(*args, **kwargs):
+        raise AssertionError("quick must not query persisted artifact hints")
 
-    def stub(sym, market, include_peers):
-        return {"symbol": sym, "market_type": "equity_kr", "source": "kis"}
+    async def fake_projection(symbols, *, market):
+        return {
+            symbol: {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "daily_candles_db",
+                "current_price": None,
+                "ohlcv": None,
+                "rsi_14": None,
+                "supports": [],
+                "resistances": [],
+                "data_state": "missing",
+            }
+            for symbol in symbols
+        }
 
-    monkeypatch.setattr(handlers.analysis_screening, "_analyze_stock_impl", stub)
+    monkeypatch.setattr(handlers, "_attach_fresh_artifact_hints", fail_artifact_attach)
+    monkeypatch.setattr(handlers, "_load_quick_projection_batch", fake_projection)
 
     result = await handlers.analyze_stock_batch_impl(
-        [covered, uncovered], market="kr", include_position=False
+        ["005930", "000660"], market="kr", include_position=False
     )
 
-    covered_row = result["results"][covered]
-    hint = covered_row["fresh_artifact_exists"]
-    assert hint["artifact_uuid"] == save_response["artifact"]["artifact_uuid"]
-    assert hint["kind"] == "screening_ranking"
-    # as_of is the same instant (compare parsed, format may differ across reads).
-    from dateutil.parser import parse
-
-    assert parse(hint["as_of"]) == parse(save_response["artifact"]["as_of"])
-    # A symbol with no fresh artifact carries no hint at all.
-    assert "fresh_artifact_exists" not in result["results"][uncovered]
+    assert all("fresh_artifact_exists" not in row for row in result["results"].values())
 
 
 @pytest.mark.integration

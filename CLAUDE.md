@@ -535,6 +535,45 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   100행 스크린이 KIS 라이브 100회를 때리는 것 방지). 감수하는 구멍 = 거래량 있는
   0-변동 구간. analyze/정책표는 이력을 무조건 읽으므로 그쪽에서 잡힌다.
 
+### analyze quick fast projection (ROB-1311)
+
+`analyze_stock_batch(quick=True)` 는 full analyzer의 formatter-only 변형이 아니다.
+MCP registration → `analysis_tool_handlers.analyze_stock_batch_impl` →
+`analysis_quick.load_quick_projection_batch` 로 분기해 `daily_candles` DB에서 모든
+요청 심볼의 일봉 이력을 batch read하고, 가격/OHLCV/RSI/지지·저항을 로컬 계산한다.
+기존 compact consumer가 요구하는 `decision_history`와 `earnings` 의미도 각각
+set-based review/market-events read model로 batch read해 canonical 심볼에 붙인다.
+KR/US는 시장별 window query 1회씩, crypto는 instrument identity 1회와 candle query
+1회를 사용하며, history/earnings read model을 포함한 batch당 DB execution 상한은
+12회로 고정한다. 외부 HTTP는 0회다.
+
+Quick allowlist는 `symbol`, `market_type`, `source`, `current_price`, 최신 `ohlcv`,
+`rsi_14`, `supports`, `resistances`, `decision_history`, `earnings`,
+ROB-1048 freshness envelope 및 `halt_suspect`다. 뉴스/profile/consensus/
+recommendation/holdings와 provider 기반 earnings는 quick에서 실행하지 않는다.
+`quick=False` 는 기존 `analysis_screening._analyze_stock_impl`
+→ `analysis_analyze.analyze_stock_impl` 호출과 full output을 유지한다.
+
+🔴 **`current_price`는 라이브 시세가 아니다.** quick의 `current_price`는
+`daily_candles`의 가장 최근 **마감된** 일봉 종가이며 `data_state="stale"`,
+`data_state_reason="db_only_projection"`로 항상 스탬프된다. 라이브 가격·세션
+상태(NXT 체결가능 등)가 필요하면 반드시 `get_quote`를 호출할 것 — quick만으로
+판단하지 말 것.
+
+**PR #1915 축소 필드 (quick 전용, `quick=False`는 불변)**: 구 quick 요약이
+가지고 있던 `nxt_tradable`/`nxt_tradable_source`/`nxt_tradable_asof`/
+`nxt_tradable_stale`(ROB-668) · `price_source`/`session`/`session_state`/
+`krx_prev_close`/`change_pct`(ROB-725/ROB-888) · `venue`/`quote_asof`/`delayed`
+(quote provenance) · `price_data_state`(ROB-1048) · `fresh_artifact_exists`
+(ROB-648) · `consensus`/`recommendation`/`position`/뉴스/profile/provider
+earnings는 전부 quick allowlist에서 제거됐다. 라이브 가격/세션 provenance가
+필요하면 `get_quote`를 사용할 것 — quick은 그 값들을 더 이상 담지 않는다.
+
+🔴 ROB-1236: quick도 모든 심볼의 일봉 이력을 반드시 읽고 `classify_ohlcv_frame`을
+적용한다. 동결 3세션이면 `data_state=halted_suspect`, RSI와 supports/resistances는
+null이며 `halt_suspect` 근거를 보존한다. DB 장애는 해당 행을 `missing`으로 남기며
+외부 provider로 우회하지 않는다.
+
 ### 매수 게이트 A/B shadow (ROB-1301)
 
 KR/US 매수 스크리닝의 **variant B(moderate+ 지지)** 는 계좌 불사용 shadow
@@ -885,4 +924,3 @@ uv run alembic history
 - `UPBIT_WEBSOCKET_README.md` - Upbit WebSocket 실시간 시세
 - `DEPLOYMENT.md` - 배포 가이드
 - `DOCKER_USAGE.md` - Docker 사용법
-
