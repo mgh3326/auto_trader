@@ -111,12 +111,18 @@ async def fetch_toss_cash_snapshot(
         errors: list[dict[str, Any]] = []
         for currency, result in zip(("KRW", "USD"), buying_power_results, strict=True):
             if isinstance(result, BaseException):
+                # ROB-1310 R9 (B3): never persist the raw broker/provider
+                # exception text -- this list flows into the shared Redis
+                # cash cache payload (fetch_cash_payload) and is replayed
+                # verbatim on every later cache hit. A fixed, sanitized code
+                # is the only thing that may end up there or in the log.
+                logger.warning("Toss buying_power fetch failed for %s", currency)
                 errors.append(
                     {
                         "source": "toss_api",
                         "stage": "buying_power",
                         "currency": currency,
-                        "error": str(result),
+                        "error": "toss_buying_power_unavailable",
                     }
                 )
                 continue

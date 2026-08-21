@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import inspect
 import json
 import logging
@@ -21,11 +22,37 @@ import redis.asyncio as redis
 from redis.exceptions import WatchError
 
 from app.core.config import settings
+from app.services.brokers.toss.auth import _client_fingerprint
+from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL
 
 logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "toss:portfolio:snapshot:v1"
 _LOCK_PREFIX = "toss:portfolio:snapshot:singleflight:v1"
+
+
+def _snapshot_cache_scope(settings_obj: Any) -> str:
+    """Opaque scope isolating one Toss account/environment on shared Redis.
+
+    ROB-1310 R9 (B5): the cache previously used a static global key, so two
+    processes configured for different Toss accounts/environments silently
+    exchanged positions/cash on shared Redis. The scope is derived from the
+    configured endpoint, the OAuth client-id fingerprint (reusing the same
+    concept as ``TossOAuthTokenManager``), and the effective account
+    selection -- never the raw base URL, client id, account sequence,
+    secret, or token, which must never appear in a Redis key/log/error.
+    """
+
+    base_url = str(
+        getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
+    ).rstrip("/")
+    client_id = str(getattr(settings_obj, "toss_api_client_id", None) or "")
+    fingerprint = _client_fingerprint(client_id) if client_id else "unconfigured"
+    account_seq = getattr(settings_obj, "toss_api_account_seq", None)
+    material = "|".join(
+        [base_url, fingerprint, str(account_seq) if account_seq is not None else "auto"]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 def _key(scope: str) -> str:
@@ -551,8 +578,11 @@ def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
             logger.warning("Toss portfolio snapshot Redis client init failed: %s", exc)
         global _shared_snapshot_redis_client
         _shared_snapshot_redis_client = redis_client
+        scope = _snapshot_cache_scope(settings)
         _shared_portfolio_snapshot_cache = TossPortfolioSnapshotCache(
             redis_client=redis_client,
+            key_prefix=f"{_KEY_PREFIX}:{scope}",
+            lock_prefix=f"{_LOCK_PREFIX}:{scope}",
             ttl_seconds=float(
                 getattr(settings, "toss_portfolio_snapshot_cache_ttl_seconds", 5.0)
             ),

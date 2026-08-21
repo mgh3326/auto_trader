@@ -759,12 +759,17 @@ class ManualHomeReader:
 
     @staticmethod
     def _source_for_broker(broker_type: str) -> str:
+        # ROB-1310 R9 (B4): ``broker_accounts.broker_type`` is a free-form
+        # column. An unrecognized value must never be silently attributed to
+        # Toss -- ``manual_unknown`` is the explicit, truthful fallback so
+        # provenance never lies about which broker a holding came from.
         return {
             "toss": "toss_manual",
             "samsung": "pension_manual",
+            "isa": "isa_manual",
             "kis": "kis_manual",
             "upbit": "upbit_manual",
-        }.get(broker_type, "toss_manual")
+        }.get(broker_type, "manual_unknown")
 
     async def fetch_held_pairs(self, *, user_id: int) -> list[tuple[str, str]]:
         """Read manual held keys without quote/FX enrichment for calendar."""
@@ -824,30 +829,50 @@ class ManualHomeReader:
                 quote_service = self._quote_service
 
                 async def _fetch_kr_prices() -> dict[str, float | None]:
-                    with sentry_sdk.start_span(
-                        op="invest.home.manual.phase",
-                        name="invest.home.manual.fetch_kr_prices",
-                    ) as span:
-                        span.set_data("ticker_count", len(kr_tickers))
-                        prices = await quote_service.fetch_kr_prices(kr_tickers)
-                        span.set_data("price_count", len(prices))
-                        return prices
+                    try:
+                        with sentry_sdk.start_span(
+                            op="invest.home.manual.phase",
+                            name="invest.home.manual.fetch_kr_prices",
+                        ) as span:
+                            span.set_data("ticker_count", len(kr_tickers))
+                            prices = await quote_service.fetch_kr_prices(kr_tickers)
+                            span.set_data("price_count", len(prices))
+                            return prices
+                    except Exception:
+                        # ROB-1310 R9 (B1): a KR/CRYPTO quote-provider failure
+                        # must not fall through to the reader's outer
+                        # catch-all -- that would discard every manual
+                        # holding/account and misattribute the failure to a
+                        # hardcoded source. Every KR/CRYPTO holding simply
+                        # reports missing below and the per-source warning
+                        # loop attributes it correctly; the concurrent US
+                        # fetch is unaffected. No exception text/trace logged.
+                        logger.warning("Manual KR/CRYPTO quote fetch failed (isolated)")
+                        return {}
 
                 async def _fetch_us_prices() -> dict[str, float | None]:
-                    with sentry_sdk.start_span(
-                        op="invest.home.manual.phase",
-                        name="invest.home.manual.fetch_us_prices",
-                    ) as span:
-                        span.set_data("ticker_count", len(us_tickers))
-                        prices = await quote_service.fetch_us_prices(us_tickers)
-                        span.set_data("price_count", len(prices))
-                        return prices
+                    try:
+                        with sentry_sdk.start_span(
+                            op="invest.home.manual.phase",
+                            name="invest.home.manual.fetch_us_prices",
+                        ) as span:
+                            span.set_data("ticker_count", len(us_tickers))
+                            prices = await quote_service.fetch_us_prices(us_tickers)
+                            span.set_data("price_count", len(prices))
+                            return prices
+                    except Exception:
+                        # ROB-1310 R9 (B1): same isolation as the KR fetch --
+                        # a US provider failure must not discard KR/CRYPTO
+                        # valuations that already succeeded.
+                        logger.warning("Manual US quote fetch failed (isolated)")
+                        return {}
 
                 # ROB-702: KR and US price fetches are independent — run them
                 # concurrently so the manual reader's wall time is max(kr, us),
-                # not kr + us (~7s -> ~3.5s). Failure semantics unchanged: a
-                # raise from either fetch propagates (gather re-raises) to the
-                # outer try/except, exactly as the sequential awaits did.
+                # not kr + us (~7s -> ~3.5s). ROB-1310 R9 (B1): each fetch now
+                # catches its own failure and returns {} instead of letting
+                # gather propagate -- a failure in one market must not discard
+                # the other market's already-successful prices.
                 kr_prices, us_prices = await asyncio.gather(
                     _fetch_kr_prices(), _fetch_us_prices()
                 )
@@ -1026,12 +1051,21 @@ class ManualHomeReader:
                 warning=manual_warnings[0] if manual_warnings else None,
                 extra_warnings=manual_warnings[1:],
             )
-        except Exception as exc:
-            logger.warning("Manual fetch failed: %s", exc, exc_info=True)
+        except Exception:
+            # ROB-1310 R9 (B1): quote-provider failures are isolated above and
+            # never reach this branch. This is the genuinely catastrophic
+            # case -- e.g. the holdings load itself fails -- where no
+            # holding/broker is even known yet. ``toss_manual`` would be a
+            # false attribution here; ``manual_unknown`` is the only truthful
+            # source, and the raw exception text/trace must never leak.
+            logger.warning("Manual holdings fetch failed before any source was known")
             return _SourceFetchResult(
                 accounts=[],
                 holdings=[],
-                warning=InvestHomeWarning(source="toss_manual", message=str(exc)),
+                warning=InvestHomeWarning(
+                    source="manual_unknown",
+                    message="수동 보유 조회에 실패했습니다.",
+                ),
             )
 
 

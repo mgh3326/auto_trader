@@ -14,6 +14,7 @@ AccountSourceLiteral = Literal[
     "isa_manual",
     "kis_manual",
     "upbit_manual",
+    "manual_unknown",
     "kis_mock",
     "kiwoom_mock",
     "alpaca_paper",
@@ -85,6 +86,7 @@ class Holding(BaseModel):
             "isa_manual",
             "kis_manual",
             "upbit_manual",
+            "manual_unknown",
         }:
             self.sourceOfTruth = False
             self.isTradeable = False
