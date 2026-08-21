@@ -109,8 +109,16 @@ RECOVERY_SCAN_LIMIT = 20
 #: execution slot.
 RECOVERY_SCAN_OVERFETCH = 5
 
-#: An absolute ceiling on the scan regardless of the execution cap, so no
-#: caller can turn a sweep into a full-table walk.
+#: An absolute ceiling on how many candidate rows one sweep may fetch,
+#: regardless of the execution cap, so no caller can ask for an arbitrarily
+#: large result set.
+#:
+#: A cap on the result, not on the read. ``EXPLAIN`` on a tier query shows the
+#: predicate using ``(state, available_at)`` and the ordering still sorting the
+#: eligible set as a bounded-memory top-N, because no index matches
+#: ``(received_at, job_id)``. What this bounds is rows returned and sort
+#: memory; bounding the physical read would need an index built for these
+#: predicates and this ordering.
 RECOVERY_SCAN_HARD_CAP = 1_000
 
 

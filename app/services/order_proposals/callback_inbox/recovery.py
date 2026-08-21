@@ -55,10 +55,13 @@ async def recover_callback_jobs(
     kick this sweep exists to recover -- was never selected. Not on that tick,
     and not on any tick, for as long as those workers ran.
 
-    Both halves of the fix live in the database: the ordering is a SQL
-    expression over the row's own state, and the budget is spent per *claim*.
-    Nothing is remembered between sweeps, so a freshly started process and two
-    concurrent sweepers behave exactly like one that has been running all day.
+    The database decides which candidates exist and in what order within each
+    tier: the tier predicates, the per-tier quotas and the ``received_at``,
+    ``job_id`` ordering are all evaluated there. The deterministic interleave
+    of the queued and stale tiers is stateless local Python over the rows that
+    came back, and the budget is spent per *claim*. Neither half remembers
+    anything between sweeps, so a freshly started process and two concurrent
+    sweepers behave exactly like one that has been running all day.
     """
     clock = now_fn or now_kst
     factory = session_factory or AsyncSessionLocal
