@@ -1077,9 +1077,7 @@ def test_route_request_buy_lane_uses_real_quick_parameter_name():
     from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
 
     buy_step = next(
-        step
-        for step in LANE_SEQUENCES["buy"]
-        if step["tool"] == "analyze_stock_batch"
+        step for step in LANE_SEQUENCES["buy"] if step["tool"] == "analyze_stock_batch"
     )
     purpose = buy_step["purpose"]
 
@@ -1104,9 +1102,7 @@ def test_route_request_sell_and_discovery_lanes_annotate_quick_false_for_upside_
     from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
 
     sell_step = next(
-        step
-        for step in LANE_SEQUENCES["sell"]
-        if step["tool"] == "analyze_stock_batch"
+        step for step in LANE_SEQUENCES["sell"] if step["tool"] == "analyze_stock_batch"
     )
     assert "quick=false" in sell_step["purpose"].lower(), (
         "the sell lane's analyze_stock_batch step confirms 'upside', which "
@@ -1200,7 +1196,7 @@ def test_mcp_readme_screener_snapshot_section_does_not_claim_live_holdings_or_en
     readme = (repo_root / "app" / "mcp_server" / "README.md").read_text(
         encoding="utf-8"
     )
-    section_start = readme.index('screen_stocks_snapshot(preset=None')
+    section_start = readme.index("screen_stocks_snapshot(preset=None")
     next_tool_start = readme.index("get_top_stocks(market=", section_start)
     section = readme[section_start:next_tool_start]
 
