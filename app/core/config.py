@@ -924,8 +924,12 @@ class Settings(BaseSettings):
     # Read at import time by the schedule label; changing it needs a restart.
     ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_CRON: str = "* * * * *"
     # The Redis kick is best-effort: the committed row is the durable ACK, so
-    # a slow or dead broker must never hold the webhook thread open.
-    ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS: float = 2.0
+    # a slow or dead broker must never hold the webhook thread open. Keep a
+    # finite, positive, bounded domain: inf/nan would turn the ACK into an
+    # unbounded wait, and zero/negative values are not a meaningful deadline.
+    ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS: Annotated[
+        float, Field(gt=0.0, le=10.0, allow_inf_nan=False)
+    ] = 2.0
     # B0/B1 loss-cut web surfaces. Both are physically absent from the app
     # unless an operator enables at least one flag after schema rollout.
     INVEST_LOSS_CUT_EVIDENCE_ENABLED: bool = False

@@ -95,6 +95,17 @@ A failure at step 3 raises `CallbackInboxUnavailable`, the route answers a
 half-accepted. A failure at step 4 changes nothing — the committed row is the
 durable acknowledgement and the recovery sweep will find it.
 
+The enqueue deadline is finite **`(0, 10]` seconds** (default 2). At most 16
+best-effort producer tasks may be in flight in one web process. On deadline
+expiry, ingress asks the producer to cancel and returns the durable ACK result
+immediately; it does **not** wait for a producer that catches cancellation.
+That task remains strongly held until its done callback consumes its late
+success, failure, or cancellation, so it still occupies one of the 16 slots.
+At capacity no producer is invoked; the row remains pending for the normal
+R29 recovery path. A late result never changes row authority or delays an ACK;
+duplicate kicks remain harmless because the database row and per-job advisory
+lock are authoritative.
+
 **Dedupe.** `update_digest` is a domain-separated SHA-256 over
 `(update_id, callback_query_id)` only — never the payload. A re-delivery of the
 same call is a benign `duplicate`. A *different* envelope reusing the same
@@ -294,6 +305,14 @@ coming out. Nothing else. Logs and Sentry spans use the allowlist in
   the lock the same way — see the second bullet above. This is the same
   extreme-tail window, not a new one, and the callback core's nonce, commit
   lease and idempotency key are what cover it.
+- **Graceful enqueue shutdown is bounded, not magical.** Before the web
+  process shuts its TaskIQ broker down it requests cancellation from any
+  in-flight enqueue producers and gives cooperative tasks a short bounded reap
+  window. A same-loop coroutine that perpetually catches `CancelledError`
+  cannot be force-killed by Python and may still be in the strong registry at
+  the end of that window. Do not claim a graceful zero-task exit in that case:
+  the process supervisor's configured hard-stop / hard-kill fallback is the
+  final containment mechanism.
 
 ---
 

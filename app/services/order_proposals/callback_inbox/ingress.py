@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy.exc import IntegrityError
 
@@ -48,6 +49,20 @@ logger = logging.getLogger(__name__)
 
 EnqueueFn = Callable[[uuid.UUID], Awaitable[None]]
 SessionFactory = Callable[[], Any]
+
+# The ACK path must never turn one stuck Redis producer into unbounded detached
+# work. This is deliberately a strong set rather than a WeakSet: a timeout
+# only requests cancellation, and a producer may legally delay or ignore that
+# request. Its done callback is the sole owner that consumes the outcome and
+# removes the reference.
+_INFLIGHT_ENQUEUE_TASK_CAP: Final = 16
+_INFLIGHT_ENQUEUE_TASKS: set[asyncio.Task[None]] = set()
+
+# This is a graceful-shutdown budget, not an ingress-ACK budget. Same-loop
+# coroutines that suppress cancellation cannot be force-killed by Python; see
+# the durable-inbox runbook for the supervisor hard-kill fallback.
+_ENQUEUE_SHUTDOWN_REAP_TIMEOUT_SECONDS: Final = 0.5
+_ENQUEUE_TIMEOUT_MAX_SECONDS: Final = 10.0
 
 
 class CallbackInboxUnavailable(Exception):
@@ -73,6 +88,45 @@ async def _default_enqueue(job_id: uuid.UUID) -> None:
     from app.tasks.telegram_callback_inbox_tasks import run_telegram_callback_job
 
     await run_telegram_callback_job.kiq(str(job_id))
+
+
+def _valid_enqueue_timeout_seconds(timeout_seconds: object) -> float | None:
+    """Return a safe ACK deadline, or fail closed without starting a producer."""
+    if isinstance(timeout_seconds, bool):
+        return None
+    try:
+        seconds = float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(seconds) or not 0.0 < seconds <= _ENQUEUE_TIMEOUT_MAX_SECONDS:
+        return None
+    return seconds
+
+
+async def _run_enqueue_producer(enqueue_fn: EnqueueFn, job_id: uuid.UUID) -> None:
+    """Keep every producer behind one explicit Task owned by the registry."""
+    await enqueue_fn(job_id)
+
+
+def _consume_enqueue_task(task: asyncio.Task[None]) -> None:
+    """Consume a terminal producer outcome before releasing its cap slot."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        # Cooperative timeout/cancellation is expected. Calling ``result`` is
+        # nevertheless essential: it marks the terminal state as observed.
+        pass
+    except Exception as exc:  # noqa: BLE001 - background best-effort producer
+        # This can be a late failure after the durable ACK already returned.
+        # It changes no inbox authority; recovery owns eventual execution.
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_late_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+    finally:
+        # Do not move this to the timeout path. A cancellation-resistant task
+        # remains an active cap consumer until this callback has observed it.
+        _INFLIGHT_ENQUEUE_TASKS.discard(task)
 
 
 def _round_trippable(normalized: NormalizedCallback) -> bool:
@@ -254,14 +308,63 @@ async def _persist(
 
 
 async def _kick(
-    job_id: uuid.UUID, *, enqueue_fn: EnqueueFn, timeout_seconds: float
+    job_id: uuid.UUID, *, enqueue_fn: EnqueueFn, timeout_seconds: object
 ) -> bool:
-    """Best-effort, bounded. A dead broker costs latency, never a click."""
+    """Best-effort, bounded. A dead broker costs latency, never a click.
+
+    A timeout requests cancellation, but deliberately does not await cleanup:
+    ``asyncio.wait_for`` would wait for a cancellation-resistant producer and
+    let it exceed the webhook ACK budget. The task stays strongly held until
+    its done callback consumes the terminal result.
+    """
+    timeout = _valid_enqueue_timeout_seconds(timeout_seconds)
+    if timeout is None:
+        # Never echo a raw runtime-tampered value into logs: this is a fixed
+        # classification only, and it happens before producer invocation.
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_timeout_invalid",
+            extra={"enqueue_timeout_error": "invalid_timeout"},
+        )
+        return False
+
+    if len(_INFLIGHT_ENQUEUE_TASKS) >= _INFLIGHT_ENQUEUE_TASK_CAP:
+        # No producer invocation on backpressure: the committed inbox row is
+        # already durable and R29 recovery will find it fairly later.
+        logger.warning(
+            "order_proposals.telegram.callback_job_enqueue_backpressure",
+            extra={"inflight_enqueue_tasks": len(_INFLIGHT_ENQUEUE_TASKS)},
+        )
+        return False
+
+    producer_task = asyncio.create_task(
+        _run_enqueue_producer(enqueue_fn, job_id),
+        name=f"telegram-callback-enqueue:{job_id}",
+    )
+    _INFLIGHT_ENQUEUE_TASKS.add(producer_task)
+    producer_task.add_done_callback(_consume_enqueue_task)
+
     try:
-        await asyncio.wait_for(enqueue_fn(job_id), timeout=max(timeout_seconds, 0.01))
-    except TimeoutError:
+        done, _ = await asyncio.wait((producer_task,), timeout=timeout)
+    except asyncio.CancelledError:
+        # The request's original cancellation remains authoritative. Asking
+        # the child to stop is best-effort; registry accounting stays with its
+        # done callback if it resists.
+        producer_task.cancel()
+        raise
+
+    if producer_task not in done:
+        producer_task.cancel()
         logger.error(
             "order_proposals.telegram.callback_job_enqueue_timeout",
+            extra={"callback_job.id": str(job_id)},
+        )
+        return False
+
+    try:
+        producer_task.result()
+    except asyncio.CancelledError:
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_cancelled",
             extra={"callback_job.id": str(job_id)},
         )
         return False
@@ -277,10 +380,37 @@ async def _kick(
     return True
 
 
+async def shutdown_callback_enqueue_tasks() -> None:
+    """Boundedly ask outstanding enqueue producers to stop before broker exit.
+
+    This intentionally does not promise an empty registry: a coroutine that
+    keeps swallowing cancellation on this event loop cannot be force-killed by
+    Python. It remains strongly referenced until it actually finishes; a
+    process supervisor must enforce the hard-stop fallback documented in the
+    runbook.
+    """
+    tasks = tuple(_INFLIGHT_ENQUEUE_TASKS)
+    if not tasks:
+        return
+
+    for task in tasks:
+        task.cancel()
+
+    _, pending = await asyncio.wait(
+        tasks, timeout=_ENQUEUE_SHUTDOWN_REAP_TIMEOUT_SECONDS
+    )
+    if pending:
+        logger.warning(
+            "order_proposals.telegram.callback_job_enqueue_shutdown_pending",
+            extra={"inflight_enqueue_tasks": len(pending)},
+        )
+
+
 __all__ = [
     "CallbackInboxUnavailable",
     "IngressResult",
     "envelope_matches_row",
     "ingest_callback_update",
     "normalized_envelope_projection",
+    "shutdown_callback_enqueue_tasks",
 ]
