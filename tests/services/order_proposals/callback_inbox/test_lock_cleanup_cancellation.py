@@ -493,3 +493,98 @@ def test_the_cleanup_never_rewrites_the_cancellation_bookkeeping() -> None:
     source = inspect.getsource(locks_module)
     assert "uncancel(" not in source
     assert "suppress(BaseException)" not in source
+
+
+# ---------------------------------------------------------------------------
+# telemetry must never outrank the cleanup
+# ---------------------------------------------------------------------------
+
+
+class _RaisingLogger:
+    """A logger whose handler blows up, as a full disk or a bad sink would."""
+
+    def __init__(self) -> None:
+        self.attempted: list[str] = []
+
+    def _fail(self, event: str, *_args, **_kwargs) -> None:
+        self.attempted.append(event)
+        raise RuntimeError("logging handler failed")
+
+    error = _fail
+    critical = _fail
+    warning = _fail
+    info = _fail
+    debug = _fail
+
+
+@pytest.mark.parametrize("unlock", ["raises", "returns_false"])
+@pytest.mark.asyncio
+async def test_a_raising_logger_cannot_preempt_the_cleanup(
+    unlock: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R27 — order of operations: terminate first, report afterwards.
+
+    Both failure paths logged *before* discarding the connection, so a
+    logging handler that raises escaped with ``invalidate`` and ``close``
+    never called and the holder's reference already dropped -- the same
+    orphaned backend as the cancellation bug, reached without any
+    cancellation at all. A telemetry failure cannot outrank the cleanup.
+    """
+
+    class _Connection(_Recorder):
+        async def execute(self, *_args, **_kwargs):
+            self.events.append("execute")
+            if unlock == "raises":
+                raise OSError("connection reset while unlocking")
+
+            class _Result:
+                @staticmethod
+                def scalar_one():
+                    return False  # a lock this backend did not hold
+
+            return _Result()
+
+        async def invalidate(self) -> None:
+            self.events.append("invalidate_started")
+            self.events.append("invalidate_completed")
+
+    spy = _RaisingLogger()
+    monkeypatch.setattr(locks_module, "logger", spy, raising=True)
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    connection = _Connection(cancel_on="never")
+    lock._connection = connection  # noqa: SLF001
+
+    await lock.release(1234)  # the logging failure must not surface
+
+    assert "invalidate_completed" in connection.events, connection.events
+    assert "close" in connection.events, connection.events
+    assert lock.closed is True
+    assert spy.attempted, "the failure was never reported at all"
+
+
+@pytest.mark.asyncio
+async def test_simulate_process_death_keeps_authority_until_it_finishes() -> None:
+    """The test helper has the same obligation as the real path.
+
+    It models a kill, so it must not do the one thing a kill never does:
+    drop the last handle on a backend that is still alive.
+    """
+    seen: list[bool] = []
+
+    class _Watching(_Recorder):
+        async def invalidate(self) -> None:
+            seen.append(lock.closed)
+            self.events.append("invalidate_started")
+            self.events.append("invalidate_completed")
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    connection = _Watching(cancel_on="never")
+    lock._connection = connection  # noqa: SLF001
+
+    await lock.simulate_process_death()
+
+    assert seen == [False], seen
+    assert "invalidate_completed" in connection.events
+    assert "close" in connection.events
+    assert lock.closed is True

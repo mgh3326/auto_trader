@@ -602,6 +602,11 @@ def test_the_production_modules_never_format_an_exception_into_a_message() -> No
             func = node.func
             if not isinstance(func, ast.Attribute) or func.attr not in log_methods:
                 continue
+            # ... on a logger. ``asyncio.Task.exception()`` shares the name
+            # and is not a logging call, and reporting it would push authors
+            # towards rewriting correct code to appease the guard.
+            if not _is_logger(func.value):
+                continue
             log_calls += 1
 
             if func.attr == "exception":
@@ -629,6 +634,15 @@ def test_the_production_modules_never_format_an_exception_into_a_message() -> No
     assert not offenders, offenders
     assert inspected >= 7, f"only inspected {inspected} modules"
     assert log_calls >= 5, f"only found {log_calls} logging calls to check"
+
+
+def _is_logger(node: ast.AST) -> bool:
+    """Is this expression the module logger, or something logger-shaped?"""
+    if isinstance(node, ast.Name):
+        return "log" in node.id.lower()
+    if isinstance(node, ast.Attribute):
+        return "log" in node.attr.lower()
+    return False
 
 
 def _is_exception_class_name(call: ast.Call, name: ast.AST) -> bool:
