@@ -340,6 +340,32 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 
 **안전 경계**: read-mostly 마켓 데이터, 브로커/주문/감시 mutation 없음. `raw_payload_json` 은 저장 전 `_redact_sensitive_keys` 적용. 모든 DB 쓰기는 `MarketEventsRepository` 경유. Prefect 배포는 후속 작업.
 
+### Invest calendar bounded read (`GET /invest/api/calendar`)
+
+`/invest/api/calendar` is an HTTP-zero, SQL-bounded read path. It does not
+construct the full `InvestHomeService` KIS/Upbit/Toss/paper reader graph.
+
+- **Held keys**: `app/services/calendar_held_key_service.py` reads W2 snapshot
+  `held_pairs` (same scope/TTL/schema as ROB-1310). Cold/corrupt/unusable
+  cache is a typed 503 (`error_code`/`source`/`unavailable_reason`/
+  `manual_pairs_available`) — never a fabricated manual-only success.
+  `InvestHomeService.get_held_pairs` delegates to this service.
+- **Events**: `app/services/invest_view_model/calendar_read_model.py` loads
+  events once (no `raw_payload_json`) and all values in one batch. First-value
+  semantics and event order are preserved.
+- **Freshness**: partitions load once; day state, source status, and coverage
+  share those rows and the same `now`. `coverage.totalEvents` is the event
+  count loaded before tab filtering.
+- **SQL bound**: warm valid snapshot route ≤ 4 queries; `build_calendar` ≤ 3.
+  Independent of event count N.
+- **HTTP/socket**: 0 external attempts on warm/cold/corrupt/unusable paths.
+- **Relation keys**: KR/US `to_db_symbol` (`BRK-B`/`BRK/B` → `BRK.B`); crypto
+  `to_upbit_symbol` (`BTC`/`KRW-BTC` → `KRW-BTC`) via `held_key_symbol`.
+- **런북**: `docs/runbooks/calendar-source-coverage.md`
+
+Sellable/order paths are unchanged: snapshot schema still excludes sellable
+fields; order tools keep their own fresh broker preflight.
+
 ### Research Reports Integration (ROB-140)
 
 브로커 리서치 리포트 (Naver Research / KIS Research 등) `research-reports.v1` 페이로드의 thin ingest/read-layer 통합.

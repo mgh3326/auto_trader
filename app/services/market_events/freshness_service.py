@@ -220,14 +220,13 @@ class MarketEventsFreshnessService:
             stale=hours_since is None or hours_since > stale_threshold_hours,
         )
 
-    async def get_per_day_states(
-        self, from_date: date, to_date: date, *, now: datetime | None = None
+    def _per_day_states_from_rows(
+        self,
+        rows: list[MarketEventIngestionPartition],
+        from_date: date,
+        to_date: date,
+        now: datetime,
     ) -> dict[date, CalendarDayState]:
-        if from_date > to_date:
-            raise ValueError("from_date must be <= to_date")
-        now = now or datetime.now(UTC)
-        rows = await self._load_partitions(from_date, to_date)
-
         by_date: dict[date, list[MarketEventIngestionPartition]] = defaultdict(list)
         for row in rows:
             by_date[row.partition_date].append(row)
@@ -255,7 +254,6 @@ class MarketEventsFreshnessService:
             if missing or running_or_pending:
                 out[current_date] = "partial"
                 continue
-            # All present and all succeeded.
             if all(_is_stale(p.finished_at, now=now) for p in succeeded):
                 out[current_date] = "stale"
                 continue
@@ -266,14 +264,14 @@ class MarketEventsFreshnessService:
 
         return out
 
-    async def get_coverage_matrix(
-        self, from_date: date, to_date: date, *, now: datetime | None = None
+    def _coverage_matrix_from_rows(
+        self,
+        rows: list[MarketEventIngestionPartition],
+        from_date: date,
+        to_date: date,
+        now: datetime,
+        total_events: int,
     ) -> CoverageMatrixResponse:
-        if from_date > to_date:
-            raise ValueError("from_date must be <= to_date")
-        now = now or datetime.now(UTC)
-        rows = await self._load_partitions(from_date, to_date)
-
         by_source: dict[tuple[str, str, str], dict[str, object]] = {}
 
         for triple in EXPECTED_SOURCES:
@@ -403,6 +401,61 @@ class MarketEventsFreshnessService:
                 )
         partitions.sort(key=lambda p: (p.partitionDate, p.source, p.category, p.market))
 
+        coverage = CalendarCoverage(
+            fromDate=from_date,
+            toDate=to_date,
+            expectedPartitions=total_expected,
+            succeededPartitions=total_succeeded,
+            failedPartitions=total_failed,
+            missingPartitions=total_missing,
+            totalEvents=int(total_events),
+        )
+
+        return CoverageMatrixResponse(
+            fromDate=from_date,
+            toDate=to_date,
+            asOf=now,
+            sources=sources,
+            partitions=partitions,
+            coverage=coverage,
+        )
+
+    async def get_calendar_window(
+        self,
+        from_date: date,
+        to_date: date,
+        *,
+        total_events: int,
+        now: datetime | None = None,
+    ) -> tuple[dict[date, CalendarDayState], CoverageMatrixResponse]:
+        """Load partitions once and derive day state plus coverage from them."""
+        if from_date > to_date:
+            raise ValueError("from_date must be <= to_date")
+        clock = _ensure_aware(now or datetime.now(UTC))
+        rows = await self._load_partitions(from_date, to_date)
+        return (
+            self._per_day_states_from_rows(rows, from_date, to_date, clock),
+            self._coverage_matrix_from_rows(
+                rows, from_date, to_date, clock, total_events
+            ),
+        )
+
+    async def get_per_day_states(
+        self, from_date: date, to_date: date, *, now: datetime | None = None
+    ) -> dict[date, CalendarDayState]:
+        if from_date > to_date:
+            raise ValueError("from_date must be <= to_date")
+        now = now or datetime.now(UTC)
+        rows = await self._load_partitions(from_date, to_date)
+        return self._per_day_states_from_rows(rows, from_date, to_date, now)
+
+    async def get_coverage_matrix(
+        self, from_date: date, to_date: date, *, now: datetime | None = None
+    ) -> CoverageMatrixResponse:
+        if from_date > to_date:
+            raise ValueError("from_date must be <= to_date")
+        now = now or datetime.now(UTC)
+        rows = await self._load_partitions(from_date, to_date)
         actual_event_count = (
             await self.db.execute(
                 select(func.count())
@@ -413,24 +466,8 @@ class MarketEventsFreshnessService:
                 )
             )
         ).scalar_one()
-
-        coverage = CalendarCoverage(
-            fromDate=from_date,
-            toDate=to_date,
-            expectedPartitions=total_expected,
-            succeededPartitions=total_succeeded,
-            failedPartitions=total_failed,
-            missingPartitions=total_missing,
-            totalEvents=int(actual_event_count),
-        )
-
-        return CoverageMatrixResponse(
-            fromDate=from_date,
-            toDate=to_date,
-            asOf=now,
-            sources=sources,
-            partitions=partitions,
-            coverage=coverage,
+        return self._coverage_matrix_from_rows(
+            rows, from_date, to_date, now, int(actual_event_count)
         )
 
 

@@ -25,9 +25,9 @@ from app.schemas.invest_calendar import (
     HighlightReason,
     ImpactTag,
 )
+from app.services.invest_view_model.calendar_read_model import load_calendar_events
 from app.services.invest_view_model.relation_resolver import RelationResolver
 from app.services.market_events.freshness_service import MarketEventsFreshnessService
-from app.services.market_events.query_service import MarketEventsQueryService
 
 CLUSTER_THRESHOLD = 10
 DAY_HIGHLIGHT_LIMIT = 5
@@ -382,16 +382,16 @@ async def build_calendar(
     to_date: date,
     tab: CalendarTab,
 ) -> CalendarResponse:
-    svc = MarketEventsQueryService(db)
     freshness_svc = MarketEventsFreshnessService(db)
 
-    range_resp = await svc.list_for_range(from_date, to_date)
-    per_day_states = await freshness_svc.get_per_day_states(from_date, to_date)
-    coverage_matrix = await freshness_svc.get_coverage_matrix(from_date, to_date)
+    raw_events = await load_calendar_events(db, from_date, to_date)
+    total_events = len(raw_events)
+    per_day_states, coverage_matrix = await freshness_svc.get_calendar_window(
+        from_date, to_date, total_events=total_events
+    )
 
     by_day: dict[date, list[CalendarEvent]] = {}
-    # range_resp.events is a list[MarketEventResponse]
-    for raw in getattr(range_resp, "events", []):
+    for raw in raw_events:
         market = _normalize_market(getattr(raw, "market", None))
         # MarketEventResponse uses 'category', not 'event_type'
         etype = _normalize_event_type(getattr(raw, "category", None))

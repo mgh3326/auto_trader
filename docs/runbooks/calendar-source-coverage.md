@@ -102,8 +102,36 @@ These categories are **not** ingested today. Each row describes the gap, the rec
 
 When investigating "why isn't event X visible on day Y": check `dataState` first, then check whether it ended up inside a cluster.
 
+## `/invest/api/calendar` HTTP-zero / SQL-bound contract
+
+`GET /invest/api/calendar` is a bounded read path. It must not grow SQL with
+event count and must not touch brokers.
+
+| Path | Bound |
+| --- | --- |
+| Warm valid snapshot route | ≤ 4 SQL (watchlist + events + values batch + freshness partitions) |
+| `build_calendar` | ≤ 3 SQL (events + values batch + freshness partitions) |
+| External HTTP / socket | 0 |
+| Full home-reader construction (KIS/Upbit/Toss/paper) | 0 |
+
+Typed failures (byte-semantic 503 keys, never a fake manual-only 200):
+
+* `error_code`: `portfolio_snapshot_unavailable`
+* `source`: `portfolio_snapshot`
+* `unavailable_reason`: `held_key_projection_missing_or_invalid` /
+  `snapshot_cache_unusable` / `held_key_projection_unavailable`
+* `manual_pairs_available`: boolean
+
+`coverage.totalEvents` is the event count loaded before tab filtering, derived
+from the same event projection — not a second `COUNT(*)` on the calendar
+route. Day state and source freshness share one partition load and one `now`.
+
+Relation keys: KR/US `to_db_symbol`; crypto `to_upbit_symbol`. Held `KRW-BTC`
+matches event `BTC`. Snapshot schema/version/scope/TTL are unchanged.
+
 ## Operating safely
 
 * **Do not** enable a recurring ingestion schedule from this PR — that is gated by ROB-128 follow-ups.
 * **Do not** call live source APIs from CI. The diagnostic CLI talks to the DB only.
 * When running the diagnostic CLI against production, no DB writes occur; the SQL is `SELECT ... FROM market_event_ingestion_partitions` + `SELECT count(*) FROM market_events`.
+* The calendar route itself does not issue that `COUNT(*)`; coverage totals come from the already-loaded event projection.

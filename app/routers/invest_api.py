@@ -1,7 +1,8 @@
 """ROB-123 — read-only `/invest/api`.
 
-이 라우터는 `InvestHomeService` 만 의존하고 broker / KIS / Upbit 클라이언트를 직접
-import 하지 않는다. order / watch / scheduler / mutation 경로 import 금지.
+이 라우터는 기본적으로 `InvestHomeService` 에 의존하고 broker / KIS / Upbit
+클라이언트를 직접 import 하지 않는다. `/calendar` 는 held-key 전용 의존성만
+구성한다. order / watch / scheduler / mutation 경로 import 금지.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ from app.schemas.invest_stock_detail_research_consensus import (
 )
 from app.schemas.investment_reports import StockDetailOrderLedgerResponse
 from app.schemas.investor_flow import InvestorFlowResponse
+from app.services.calendar_held_key_service import CalendarHeldKeyService
 from app.services.invest_benchmark_gap_service import (
     build_benchmark_gap_matrix_from_coverage,
 )
@@ -197,6 +199,21 @@ def get_screener_service_dep():
     from app.services.screener_service import ScreenerService
 
     return ScreenerService()
+
+
+def get_calendar_held_key_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CalendarHeldKeyService:
+    """Calendar DI: snapshot held-keys + manual DB keys, no home-reader graph."""
+    from app.services.invest_home_readers import ManualHomeReader
+    from app.services.portfolio_snapshot_cache import (
+        get_shared_portfolio_snapshot_cache,
+    )
+
+    return CalendarHeldKeyService(
+        snapshot_cache=get_shared_portfolio_snapshot_cache(),
+        manual_reader=ManualHomeReader(db),
+    )
 
 
 @router.get("/home")
@@ -648,7 +665,7 @@ async def get_signals(
 @router.get("/calendar")
 async def get_calendar(
     user: Annotated[Any, Depends(get_authenticated_user)],
-    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    service: Annotated[CalendarHeldKeyService, Depends(get_calendar_held_key_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
     from_date: date = Query(...),
     to_date: date = Query(...),

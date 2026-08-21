@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.symbol import to_db_symbol
+from app.services.portfolio_snapshot import held_key_symbol
 
 Relation = Literal["held", "watchlist", "both", "none"]
 Market = Literal["kr", "us", "crypto"]
@@ -24,11 +24,12 @@ _TYPE_TO_MARKET: dict[str, str] = {
 }
 
 
-def _norm(symbol: str) -> str:
+def _norm(market: str, symbol: str) -> str:
     try:
-        return to_db_symbol(symbol).upper()
+        normalized = held_key_symbol(market, symbol)
+        return normalized or str(symbol).strip().upper()
     except Exception:
-        return symbol.upper()
+        return str(symbol).upper()
 
 
 @dataclass
@@ -37,7 +38,7 @@ class RelationResolver:
     watch: set[tuple[str, str]] = field(default_factory=set)
 
     def relation(self, market: str, symbol: str) -> Relation:
-        key = (market.lower(), _norm(symbol))
+        key = (market.lower(), _norm(market, symbol))
         h = key in self.held
         w = key in self.watch
         if h and w:
@@ -49,10 +50,10 @@ class RelationResolver:
         return "none"
 
     def is_held(self, market: str, symbol: str) -> bool:
-        return (market.lower(), _norm(symbol)) in self.held
+        return (market.lower(), _norm(market, symbol)) in self.held
 
     def is_watched(self, market: str, symbol: str) -> bool:
-        return (market.lower(), _norm(symbol)) in self.watch
+        return (market.lower(), _norm(market, symbol)) in self.watch
 
 
 async def build_relation_resolver(
@@ -70,7 +71,7 @@ async def build_relation_resolver(
     """
     resolver = RelationResolver()
     if held_pairs:
-        resolver.held = {(m.lower(), _norm(s)) for m, s in held_pairs}
+        resolver.held = {(m.lower(), _norm(m, s)) for m, s in held_pairs}
 
     # user_watch_items joins to instruments for symbol/type.
     # If the join fails or the table is unavailable, leave watch empty.
@@ -93,5 +94,5 @@ async def build_relation_resolver(
         if sym is None or instrument_type is None:
             continue
         market = _TYPE_TO_MARKET.get(str(instrument_type), "us")
-        resolver.watch.add((market, _norm(str(sym))))
+        resolver.watch.add((market, _norm(market, str(sym))))
     return resolver
