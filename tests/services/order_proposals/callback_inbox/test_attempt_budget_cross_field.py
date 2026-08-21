@@ -13,6 +13,7 @@ import inspect
 import logging
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -172,6 +173,8 @@ def _assert_budget_scrubbed(raw: dict[str, Any], *, expected_attempt: int) -> No
         (None, 3, True),
         (0, None, True),
         ("3", 3, True),
+        (True, 3, True),
+        (0, True, True),
     ),
 )
 def test_the_malformed_budget_validator_is_pure_and_fixed(
@@ -187,6 +190,121 @@ def test_the_malformed_budget_validator_is_pure_and_fixed(
         )
         is expected_malformed
     )
+
+
+@pytest.mark.unit
+def test_claim_classification_checks_malformed_budget_before_any_active_path() -> None:
+    """R34 — malformed wins before repair, exhaustion, or due-time logic."""
+    from app.services.order_proposals.callback_inbox.contracts import (
+        RECOVERY_CLAIMABLE_STATES,
+    )
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    now = now_kst()
+    service = CallbackInboxService(None)  # type: ignore[arg-type]
+
+    def _row(**overrides: Any) -> SimpleNamespace:
+        fields: dict[str, Any] = {
+            "state": "pending",
+            "attempt_count": 0,
+            "max_attempts": 3,
+            "available_at": now,
+            "started_at": None,
+            "handler_entered_at": None,
+            "handler_completed_at": None,
+            "terminal_state_pending": None,
+        }
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    cases = {
+        "malformed_pending": (
+            _row(attempt_count=3, max_attempts=4),
+            ("malformed", None),
+        ),
+        "repair_shaped_processing": (
+            _row(
+                state="processing",
+                started_at=now,
+                handler_entered_at=now,
+                handler_completed_at=now,
+                terminal_state_pending="succeeded",
+            ),
+            ("repair", None),
+        ),
+        "malformed_repair_shaped_processing": (
+            _row(
+                state="processing",
+                attempt_count=-1,
+                started_at=now,
+                handler_entered_at=now,
+                handler_completed_at=now,
+                terminal_state_pending="succeeded",
+            ),
+            ("malformed", None),
+        ),
+        "entered_only_processing": (
+            _row(
+                state="processing",
+                started_at=now,
+                handler_entered_at=now,
+            ),
+            ("ambiguous", None),
+        ),
+        "future_malformed_retry_not_due": (
+            _row(
+                state="retry_wait",
+                attempt_count=3,
+                max_attempts=4,
+                available_at=now + timedelta(hours=6),
+            ),
+            ("malformed", None),
+        ),
+        "future_malformed_retry_exhausted": (
+            _row(
+                state="retry_wait",
+                attempt_count=4,
+                max_attempts=3,
+                available_at=now + timedelta(hours=6),
+            ),
+            ("malformed", None),
+        ),
+        "canonical_spent_retry": (
+            _row(
+                state="retry_wait",
+                attempt_count=3,
+                max_attempts=3,
+                available_at=now + timedelta(hours=6),
+            ),
+            ("exhausted", None),
+        ),
+        "healthy_future_retry": (
+            _row(
+                state="retry_wait",
+                attempt_count=2,
+                max_attempts=3,
+                available_at=now + timedelta(hours=6),
+            ),
+            ("skip", "not_due"),
+        ),
+        "valid_pending": (_row(), ("run", None)),
+    }
+
+    observed = {
+        name: (
+            decision.action,
+            decision.reason,
+        )
+        for name, (row, _expected) in cases.items()
+        for decision in (
+            service.classify_claim(
+                row, now=now, claimable_states=RECOVERY_CLAIMABLE_STATES
+            ),
+        )
+    }
+    assert observed == {name: expected for name, (_row, expected) in cases.items()}
 
 
 @pytest.mark.asyncio
@@ -239,8 +357,8 @@ async def test_worker_scrubs_a_malformed_budget_before_handler_entry_and_telemet
         await poison.insert(
             job_id,
             state="pending",
-            attempt_count=3,
-            max_attempts=4,
+            attempt_count=4,
+            max_attempts=3,
             available_at=now_kst(),
         )
         with caplog.at_level(logging.INFO):
@@ -258,6 +376,7 @@ async def test_worker_scrubs_a_malformed_budget_before_handler_entry_and_telemet
     assert set(result) == {"status", "job_id"}
     assert span_data["callback_job.attempt"] == 3
     assert "callback_job.max_attempts" not in span_data
+    assert 4 not in span_data.values()
     events = [
         record
         for record in caplog.records
@@ -267,6 +386,12 @@ async def test_worker_scrubs_a_malformed_budget_before_handler_entry_and_telemet
     assert len(events) == 1
     assert events[0].__dict__["callback_job.attempt"] == 3
     assert "callback_job.max_attempts" not in events[0].__dict__
+    event_budget_data = {
+        key: value
+        for key, value in events[0].__dict__.items()
+        if key.startswith("callback_job.")
+    }
+    assert 4 not in event_budget_data.values()
 
 
 @pytest.mark.asyncio
@@ -313,6 +438,7 @@ async def test_recovery_scrubs_every_active_malformed_budget_in_one_sweep(
     max_attempts: int,
     extra: dict[str, Any],
     normalised_attempt: int,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Pending, repair-shaped processing, and future retry are priority scrubbed."""
     from app.services.order_proposals.callback_inbox.recovery import (
@@ -334,9 +460,10 @@ async def test_recovery_scrubs_every_active_malformed_budget_in_one_sweep(
             max_attempts=max_attempts,
             **extra,
         )
-        first = await poison.run_after_enforcing(
-            lambda: recover_callback_jobs(handler=_handler, limit=20)
-        )
+        with caplog.at_level(logging.ERROR):
+            first = await poison.run_after_enforcing(
+                lambda: recover_callback_jobs(handler=_handler, limit=20)
+            )
         after_first = await _raw_row(job_id)
         second = await poison.run_after_enforcing(
             lambda: recover_callback_jobs(handler=_handler, limit=20)
@@ -344,6 +471,12 @@ async def test_recovery_scrubs_every_active_malformed_budget_in_one_sweep(
         after_second = await _raw_row(job_id)
 
     assert first["status"] == "ok"
+    assert first["statuses"].get("error", 0) == 0
+    assert second["statuses"].get("error", 0) == 0
+    assert not any(
+        record.getMessage() == "order_proposals.telegram.callback_recovery_job_failed"
+        for record in caplog.records
+    )
     _assert_budget_scrubbed(after_first, expected_attempt=normalised_attempt)
     assert handler_calls == []
     # The target was terminal after the first sweep; a second sweep neither
@@ -525,7 +658,7 @@ async def test_malformed_rows_are_excluded_from_the_normal_recovery_tiers(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attempt_count", "max_attempts"),
-    ((3, 4), (2, 1), (-1, 3)),
+    ((3, 4), (2, 1), (0, 1), (-1, 3)),
 )
 async def test_begin_attempt_cas_refuses_every_malformed_budget_without_writing(
     _bootstrap_test_schema,
@@ -566,6 +699,31 @@ async def test_begin_attempt_cas_refuses_every_malformed_budget_without_writing(
 
 
 @pytest.mark.asyncio
+async def test_begin_attempt_cas_refuses_the_canonical_spent_budget_without_writing(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """A fixed-three row at count three is valid but cannot spend a fourth."""
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    job_id = await _queue(inbox_cleanup)
+    await _set_row(job_id, state="pending", attempt_count=3)
+
+    async with AsyncSessionLocal() as session:
+        service = CallbackInboxService(session)
+        row = await service.get(job_id)
+        assert row is not None
+        assert await service.begin_attempt(row, now=now_kst()) is False
+        await session.commit()
+
+    raw = await _raw_row(job_id)
+    assert raw["state"] == "pending"
+    assert raw["attempt_count"] == 3
+    assert raw["max_attempts"] == 3
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("attempt_count", (0, 2))
 async def test_begin_attempt_cas_still_accepts_canonical_unspent_budgets(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], attempt_count: int
@@ -594,7 +752,7 @@ async def test_begin_attempt_cas_still_accepts_canonical_unspent_budgets(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attempt_count", "max_attempts"),
-    ((3, 4), (2, 1), (-1, 3)),
+    ((3, 4), (2, 1), (0, 1), (-1, 3)),
 )
 async def test_schedule_retry_cas_refuses_every_malformed_budget_without_writing(
     _bootstrap_test_schema,

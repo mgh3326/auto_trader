@@ -374,6 +374,49 @@ async def _assert_attempt_budget_matrix(database_url: str) -> None:
             raise AssertionError(f"attempt budget matrix mismatch: {state}::{name}")
 
 
+async def _error_class_constraint_matrix(
+    database_url: str,
+) -> tuple[tuple[str, bool, bool], ...]:
+    """Exercise the closed error-class vocabulary on the real upgraded table."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    cases: tuple[tuple[str, str, bool], ...] = (
+        ("attempt_budget_invalid", "attempt_budget_invalid", True),
+        ("unknown", "r34_unknown_error_class", False),
+    )
+    results: list[tuple[str, bool, bool]] = []
+    try:
+        for name, error_class, expected in cases:
+            try:
+                await connection.execute(
+                    "INSERT INTO review.telegram_callback_inbox "
+                    "(job_id, update_digest, state, attempt_count, max_attempts, "
+                    "received_at, available_at, error_class) "
+                    "VALUES ($1, $2, 'dead_letter', 0, 3, now(), now(), $3::text)",
+                    uuid.uuid4(),
+                    uuid.uuid4().hex * 2,
+                    error_class,
+                )
+            except asyncpg.exceptions.CheckViolationError:
+                accepted = False
+            else:
+                accepted = True
+            results.append((name, accepted, expected))
+    finally:
+        await connection.close()
+    return tuple(results)
+
+
+async def _assert_error_class_constraint_matrix(database_url: str) -> None:
+    for name, accepted, expected in await _error_class_constraint_matrix(database_url):
+        if accepted != expected:
+            raise AssertionError(f"error-class vocabulary matrix mismatch: {name}")
+
+
 async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bool:
     """A recorded verdict with no handler entry must be unstorable."""
     import asyncpg
@@ -513,6 +556,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         # behaviour, not merely because a revision label is absent.
         await _assert_outcome_constraint_matrix(scratch_database)
         await _assert_attempt_budget_matrix(scratch_database)
+        await _assert_error_class_constraint_matrix(scratch_database)
         assert await _stamped_revision(scratch_database) == W5_INBOX_REVISION
         objects = await _live_objects(scratch_database)
         live = {

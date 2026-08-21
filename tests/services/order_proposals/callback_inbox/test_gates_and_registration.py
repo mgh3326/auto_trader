@@ -377,6 +377,39 @@ def test_max_attempts_is_three() -> None:
     assert MAX_ATTEMPTS == 3
 
 
+def test_callback_attempt_budget_has_no_settings_or_environment_override() -> None:
+    """R34 — three is protocol, not an operator-tunable retry budget."""
+    from app.services.order_proposals.callback_inbox import contracts
+
+    callback_attempt_fields = {
+        name
+        for name in Settings.model_fields
+        if ("CALLBACK" in name or "INBOX" in name) and "ATTEMPT" in name
+    }
+    assert callback_attempt_fields == set()
+
+    package = pathlib.Path(contracts.__file__).parent
+    package_source = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(package.glob("*.py"))
+    )
+    assert "ORDER_PROPOSALS_TELEGRAM_CALLBACK_MAX_ATTEMPTS" not in package_source
+    assert "ORDER_PROPOSALS_TELEGRAM_CALLBACK_INBOX_MAX_ATTEMPTS" not in package_source
+
+
+def test_runbook_pins_fixed_three_budget_and_malformed_terminal_semantics() -> None:
+    runbook = (
+        pathlib.Path(__file__).resolve().parents[4]
+        / "docs/runbooks/telegram-callback-durable-inbox.md"
+    ).read_text(encoding="utf-8")
+
+    assert "`max_attempts` is fixed at `3` and is not configurable." in runbook
+    assert (
+        "Malformed active budgets terminalize as `dead_letter` / "
+        "`attempt_budget_invalid`, normalize `max_attempts` to `3`, clamp "
+        "`attempt_count` to `0..3`, and scrub authority before the handler." in runbook
+    )
+
+
 def test_the_task_module_binds_no_database_name_at_all() -> None:
     """R9 B18 — a task-local sessionmaker would sidestep the callee tripwires.
 
