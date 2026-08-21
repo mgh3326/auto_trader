@@ -21,6 +21,8 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from asyncpg.pgproto import pgproto
+
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals.callback_inbox.contracts import (
@@ -131,9 +133,14 @@ async def recover_callback_jobs(
             break
         scanned += 1
         job_id = _materialize_trusted_candidate_uuid(database_job_id)
-        result = await _process_one(
-            job_id, process_fn=process, now_fn=clock, worker_kwargs=worker_kwargs
-        )
+        if job_id is None:
+            # A malformed repository value still consumes one bounded claim,
+            # but never crosses the item-processing authority boundary.
+            result = "error"
+        else:
+            result = await _process_one(
+                job_id, process_fn=process, now_fn=clock, worker_kwargs=worker_kwargs
+            )
         statuses[result] = statuses.get(result, 0) + 1
         # A job someone else is holding, or that turned out not to be
         # claimable, cost a look. Only work actually done costs budget.
@@ -168,15 +175,40 @@ async def recover_callback_jobs(
     }
 
 
-def _materialize_trusted_candidate_uuid(value: uuid.UUID) -> uuid.UUID:
-    """Materialize repository UUID output as the exact item-boundary type.
+def _materialize_trusted_candidate_uuid(value: object) -> uuid.UUID | None:
+    """Copy only exact stdlib or asyncpg UUID storage into a stdlib UUID.
 
-    PostgreSQL's asyncpg driver returns a ``uuid.UUID`` subtype for UUID
-    columns.  This helper is deliberately only on the typed repository-output
-    seam above: it never parses or renders an arbitrary task argument.  The
-    item boundary below therefore remains exact-type-only.
+    The exact ``uuid.UUID`` representation contributes only its own ``int``
+    descriptor; the exact ``asyncpg.pgproto.pgproto.UUID`` representation
+    contributes only its own ``bytes`` descriptor. Every other object,
+    including arbitrary Python UUID subclasses, is rejected without parsing
+    or rendering it.
     """
-    return uuid.UUID(int=value.int)
+    value_type = type(value)
+    if value_type is uuid.UUID:
+        try:
+            raw_int = uuid.UUID.int.__get__(value, uuid.UUID)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if type(raw_int) is not int:
+            return None
+        try:
+            return uuid.UUID(int=raw_int)
+        except (AttributeError, TypeError, ValueError):
+            return None
+    if value_type is pgproto.UUID:
+        try:
+            raw_bytes = pgproto.UUID.bytes.__get__(value, pgproto.UUID)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if type(raw_bytes) is not bytes or len(raw_bytes) != 16:
+            return None
+        try:
+            return uuid.UUID(bytes=raw_bytes)
+        except (AttributeError, TypeError, ValueError):
+            return None
+    else:
+        return None
 
 
 async def _process_one(
