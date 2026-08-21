@@ -13,7 +13,12 @@ import io
 import os
 from contextlib import redirect_stdout
 
-from research.buy_gate_ab_backtest import render_bootstrap, render_censoring, report
+from research.buy_gate_ab_backtest import (
+    render_bootstrap,
+    render_censoring,
+    render_primary,
+    report,
+)
 
 
 def _capture(fn, directory: str) -> str:
@@ -42,6 +47,7 @@ def main() -> None:
     tables = _capture(report.main, args.results_dir)
     bootstrap = _capture(render_bootstrap.main, args.results_dir)
     censoring = _capture(render_censoring.main, args.results_dir)
+    primary = _capture(render_primary.main, args.results_dir)
 
     document = "\n".join(
         [
@@ -53,7 +59,7 @@ def main() -> None:
             bootstrap,
             "\n---\n\n## 6.1 B2 — D+20 검열 분해와 유계 민감도\n",
             censoring,
-            prose("report-close.md"),
+            prose("report-close.md").replace("<<<PRIMARY_TABLES>>>", primary),
         ]
     )
     with open(args.out, "w", encoding="utf-8") as handle:
