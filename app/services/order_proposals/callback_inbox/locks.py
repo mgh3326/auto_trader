@@ -72,7 +72,6 @@ logger = logging.getLogger(__name__)
 
 _TRY_ACQUIRE = text("SELECT pg_try_advisory_lock(CAST(:key AS bigint))")
 _RELEASE = text("SELECT pg_advisory_unlock(CAST(:key AS bigint))")
-_BACKEND_PID = text("SELECT pg_backend_pid()")
 
 
 #: Handles for backends we could not prove are dead.
@@ -90,11 +89,6 @@ _BACKEND_PID = text("SELECT pg_backend_pid()")
 #: grows on a path that also raises :class:`LockTerminationUnproven`, which is
 #: fatal to the job, so it cannot grow quietly or without bound.
 _QUARANTINE: set[Any] = set()
-
-
-def quarantined_handles() -> set[Any]:
-    """The handles held back from the pool. Exposed so tests can assert on it."""
-    return _QUARANTINE
 
 
 def _quarantine(*handles: Any) -> None:
@@ -125,49 +119,6 @@ class PostgresJobAdvisoryLock:
 
     def __init__(self) -> None:
         self._connection: AsyncConnection | None = None
-
-    @property
-    def closed(self) -> bool:
-        return self._connection is None
-
-    def connection_for_test(self) -> AsyncConnection:
-        """Expose the held connection so tests can assert on the real backend."""
-        if self._connection is None:
-            raise RuntimeError("advisory lock is not held")
-        return self._connection
-
-    async def backend_pid(self) -> int:
-        """The PID of the backend actually holding the lock."""
-        connection = self._connection
-        if connection is None:
-            raise RuntimeError("advisory lock is not held")
-        return int((await connection.execute(_BACKEND_PID)).scalar_one())
-
-    async def commit_for_test(self) -> None:
-        """Commit on the lock's own connection.
-
-        Exists so a test can prove the lock survives a commit -- the exact
-        property a transaction-scoped lock would fail.
-        """
-        connection = self._connection
-        if connection is None:
-            raise RuntimeError("advisory lock is not held")
-        await connection.commit()
-
-    async def simulate_process_death(self) -> None:
-        """Drop the socket without unlocking, exactly as a kill would."""
-        connection = self._connection
-        if connection is None:
-            return
-        # Same obligation as the real path, results included: this models a
-        # kill, so it must not do the one thing a kill never does -- drop the
-        # last handle on a backend that is still alive.
-        terminated, during = await _hard_discard(connection)
-        if not terminated:
-            raise LockTerminationUnproven("simulate_process_death")
-        self._connection = None
-        if during is not None:
-            raise during
 
     async def try_acquire(self, key: int) -> bool:
         if self._connection is not None:

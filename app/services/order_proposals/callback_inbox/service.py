@@ -423,23 +423,6 @@ class CallbackInboxService:
             ),
         }
 
-    # -- tests only ------------------------------------------------------
-
-    async def force_state_for_test(
-        self, job_id: uuid.UUID, **fields: Any
-    ) -> TelegramCallbackInboxJob:
-        """Put a row into an exact shape a crash would have left behind.
-
-        Test-only seam. Production code never reaches it: reproducing "a
-        worker died holding this row" any other way would need a real second
-        process, and a fake row is the only way to pin the *classification*
-        rules against every crash shape.
-        """
-        row = await self._repo.get_by_job_id(job_id)
-        if row is None:
-            raise LookupError(str(job_id))
-        return await self._repo.update(row, **fields)
-
 
 __all__ = [
     "CallbackInboxConflict",
