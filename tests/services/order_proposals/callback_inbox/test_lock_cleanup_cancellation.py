@@ -588,3 +588,71 @@ async def test_simulate_process_death_keeps_authority_until_it_finishes() -> Non
     assert "invalidate_completed" in connection.events
     assert "close" in connection.events
     assert lock.closed is True
+
+
+@pytest.mark.asyncio
+async def test_simulate_process_death_refuses_to_drop_an_unterminated_backend() -> None:
+    """The helper obeys the same contract, including its failure half.
+
+    Awaiting the retained cleanup is not enough: its result has to be read.
+    A helper that clears the reference regardless proves nothing about the
+    backend and destroys the only handle on it -- which is exactly the state
+    the rest of this module refuses to reach.
+    """
+    from app.services.order_proposals.callback_inbox.locks import (
+        LockTerminationUnproven,
+    )
+
+    class _Broken(_Recorder):
+        async def invalidate(self) -> None:
+            self.events.append("invalidate_started")
+            raise OSError("cannot invalidate")
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    connection = _Broken(cancel_on="never")
+    lock._connection = connection  # noqa: SLF001
+
+    with pytest.raises(LockTerminationUnproven):
+        await lock.simulate_process_death()
+
+    assert lock.closed is False, "an unterminated backend was handed on"
+
+
+@pytest.mark.asyncio
+async def test_simulate_process_death_re_delivers_a_cancellation() -> None:
+    """... and does not swallow the cancellation it absorbed while cleaning up."""
+    events: list[str] = []
+    at_gate = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _Gated:
+        async def get_raw_connection(self):  # pragma: no cover - not needed
+            raise OSError("no raw connection")
+
+        async def invalidate(self) -> None:
+            events.append("invalidate_started")
+            at_gate.set()
+            await gate.wait()
+            events.append("invalidate_completed")
+
+        async def close(self) -> None:
+            events.append("close")
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    lock._connection = _Gated()  # noqa: SLF001
+
+    task = asyncio.create_task(lock.simulate_process_death())
+    await asyncio.wait_for(at_gate.wait(), timeout=5)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False, "a cancellation abandoned the cleanup"
+    gate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "invalidate_completed" in events, events
+    assert "close" in events, events
+    assert lock.closed is True
