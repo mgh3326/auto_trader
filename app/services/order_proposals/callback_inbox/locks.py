@@ -24,6 +24,22 @@ release-or-invalidate, never release-or-shrug
     ``invalidate()``s the connection instead, which drops the socket; the
     backend exits and PostgreSQL releases every advisory lock it held.
 
+    That cleanup has to *finish*, and cancellation is the reason it might
+    not. ``asyncio.CancelledError`` is a ``BaseException``, so an ordinary
+    ``suppress(Exception)`` does not hold it, and a second cancellation
+    arriving mid-``invalidate`` used to escape with the backend still alive
+    (R27). Every cleanup now runs in a retained task that this module never
+    cancels, awaited through repeated ``asyncio.shield`` until it is done.
+    The cancellation is remembered and re-delivered afterwards -- the
+    contract is "finish, then re-deliver", never "pretend it did not
+    happen", so ``uncancel`` is not called and the caller's cancellation
+    semantics are unchanged.
+
+    If neither ``invalidate()`` nor the driver's own ``terminate()`` can
+    prove the backend is gone, there is no safe weaker option:
+    :class:`LockTerminationUnproven` surfaces and the holder keeps its
+    reference rather than pooling a connection that may still hold the lock.
+
 Process death needs no cooperation at all: the socket closes, the backend
 exits, the lock is gone, and the recovery sweep can reclaim the row.
 
@@ -34,6 +50,7 @@ fencing, and it is not a distributed lock across a PostgreSQL restart -- see
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
@@ -47,6 +64,17 @@ logger = logging.getLogger(__name__)
 _TRY_ACQUIRE = text("SELECT pg_try_advisory_lock(CAST(:key AS bigint))")
 _RELEASE = text("SELECT pg_advisory_unlock(CAST(:key AS bigint))")
 _BACKEND_PID = text("SELECT pg_backend_pid()")
+
+
+class LockTerminationUnproven(RuntimeError):
+    """A backend that may still hold the lock could not be killed.
+
+    Deliberately fatal. The alternatives are pooling a connection that may
+    hold an advisory lock -- stranding it for the life of the process -- or
+    swallowing that fact, which hides it. By the time this can be raised the
+    job's outcome is already durable, so the worker crashing is a recoverable
+    event and the recovery sweep repairs the row.
+    """
 
 
 class JobAdvisoryLock(Protocol):
@@ -92,13 +120,17 @@ class PostgresJobAdvisoryLock:
     async def simulate_process_death(self) -> None:
         """Drop the socket without unlocking, exactly as a kill would."""
         connection = self._connection
-        self._connection = None
         if connection is None:
             return
-        with contextlib.suppress(Exception):
-            await connection.invalidate()
-        with contextlib.suppress(Exception):
-            await connection.close()
+        # Same obligation as the real path, results included: this models a
+        # kill, so it must not do the one thing a kill never does -- drop the
+        # last handle on a backend that is still alive.
+        terminated, during = await _hard_discard(connection)
+        if not terminated:
+            raise LockTerminationUnproven("simulate_process_death")
+        self._connection = None
+        if during is not None:
+            raise during
 
     async def try_acquire(self, key: int) -> bool:
         if self._connection is not None:
@@ -110,61 +142,229 @@ class PostgresJobAdvisoryLock:
             acquired = bool(
                 (await connection.execute(_TRY_ACQUIRE, {"key": key})).scalar_one()
             )
-        except BaseException:
-            # Never leave a connection behind on the error path; it may or may
-            # not hold the lock, so drop the backend rather than pool it.
-            await _discard(connection)
+        except BaseException as original:
+            # The acquire is ambiguous, not failed: the server may have
+            # granted the lock before the client lost the result. So this
+            # path carries the same obligation as ``release`` -- terminate,
+            # never pool -- and the same cancellation hazard, since the
+            # cleanup can be interrupted just as easily here.
+            terminated, during = await _hard_discard(connection)
+            if not terminated:
+                raise LockTerminationUnproven(str(key)) from original
+            if during is not None and not isinstance(original, asyncio.CancelledError):
+                raise during from original
             raise
         if not acquired:
-            # A refused acquirer holds nothing, so an ordinary close is right.
-            with contextlib.suppress(Exception):
-                await connection.close()
+            # A refused acquirer holds nothing, so an ordinary close is
+            # right -- retained, so repeated cancellation cannot leak it.
+            _, during = await _retained_close(connection)
+            if during is not None:
+                raise during
             return False
         self._connection = connection
         return True
 
     async def release(self, key: int) -> None:
-        """Release and close, or discard the backend if that cannot be proved.
+        """Release and close, or terminate the backend if that cannot be proved.
 
-        Never raises: by the time this runs the job's outcome is already
-        durable, and losing the connection must not turn a recorded outcome
-        into an error.
+        The reference is cleared only once the cleanup has actually finished.
+        A lock object that reports itself released while its backend is alive
+        is worse than one that reports nothing, because the last handle on
+        that backend is then gone.
+
+        Raises only what the caller must not miss: a re-delivered
+        ``CancelledError``, or :class:`LockTerminationUnproven` when a
+        possibly-locked backend could not be killed. An ordinary unlock
+        failure is logged and handled, because by the time this runs the
+        job's outcome is already durable and losing the connection must not
+        turn a recorded outcome into an error.
         """
         connection = self._connection
-        self._connection = None
         if connection is None:
             return
+
+        original: BaseException | None = None
+        released: bool | None = None
+        report: str | None = None
         try:
             released = bool(
                 (await connection.execute(_RELEASE, {"key": key})).scalar_one()
             )
             await connection.commit()
+        except asyncio.CancelledError as cancelled:
+            # Remembered, not swallowed: re-delivered once cleanup is done.
+            original = cancelled
+            report = "order_proposals.telegram.callback_job_unlock_cancelled"
         except BaseException:
-            logger.error(
-                "order_proposals.telegram.callback_job_unlock_failed",
-                extra={"lock_released": False},
-            )
-            await _discard(connection)
-            return
-        if not released:
+            report = "order_proposals.telegram.callback_job_unlock_failed"
+
+        if released is False:
             # We asked to release a lock this backend did not hold. Something
             # is wrong with our accounting, so do not hand the backend on.
-            logger.error(
-                "order_proposals.telegram.callback_job_unlock_not_held",
-                extra={"lock_released": False},
-            )
-            await _discard(connection)
+            report = "order_proposals.telegram.callback_job_unlock_not_held"
+
+        # Nothing is logged until the connection is dealt with. Reporting
+        # first put a logging handler ahead of the cleanup, and a handler
+        # that raises then orphaned a possibly-locked backend without any
+        # cancellation being involved at all (R27).
+        if released is True:
+            # Unlocked for certain, so the backend is safe to hand back --
+            # but only once the close has genuinely finished.
+            _, during = await _retained_close(connection)
+            self._connection = None
+            escaping = original or during
+            if escaping is not None:
+                raise escaping
             return
+
+        terminated, during = await _hard_discard(connection)
+        if not terminated:
+            # Keep the reference: pooling a connection that may still hold
+            # the lock would strand it for the life of the process, and no
+            # quieter option left is also safe.
+            _report(
+                logger.critical,
+                "order_proposals.telegram.callback_job_backend_not_terminated",
+            )
+            raise LockTerminationUnproven(str(key))
+        self._connection = None
+        while_reporting = _report(logger.error, report)
+        escaping = original or during or while_reporting
+        if escaping is not None:
+            raise escaping
+
+
+def _report(level: Any, event: str | None) -> asyncio.CancelledError | None:
+    """Emit one telemetry event, best effort.
+
+    Called only after the connection has been dealt with. A logging handler
+    that fails is a reporting problem; it must not become a lock problem, so
+    the failure is dropped. A cancellation arriving here is handed back to
+    the caller rather than lost, because by this point the cleanup is done
+    and the cancellation is the only thing left owed.
+    """
+    if event is None:
+        return None
+    try:
+        level(event, extra={"lock_released": False})
+    except asyncio.CancelledError as cancelled:
+        return cancelled
+    except BaseException:
+        return None
+    return None
+
+
+async def _await_retained(
+    coroutine: Any,
+) -> tuple[Any, asyncio.CancelledError | None]:
+    """Run ``coroutine`` to completion no matter how often *we* are cancelled.
+
+    The work goes into a task this module never cancels, and the shield is
+    re-awaited until that task is done. Each cancellation delivered to us is
+    remembered -- the first one is the one re-delivered -- but none of them
+    reaches the cleanup, which is the whole point: a half-finished
+    ``invalidate`` leaves a possibly-locked backend alive.
+
+    ``uncancel`` is deliberately not called. Rewriting the cancelling count
+    would hide the cancellation from an enclosing ``TaskGroup``; the contract
+    here is to finish the cleanup and then re-deliver it unchanged.
+    """
+    task = asyncio.ensure_future(coroutine)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancelled is None:
+                cancelled = exc
+        except BaseException:
+            # Raised by the task itself; it is done, so the loop ends here.
+            break
+    result = None
+    if task.done() and not task.cancelled() and task.exception() is None:
+        result = task.result()
+    return result, cancelled
+
+
+async def _terminate_now(connection: AsyncConnection) -> bool:
+    """Kill a backend that might still hold a lock. True if that is proven.
+
+    Never raises: it runs inside a retained task, so an exception here would
+    only be observable as "the cleanup did not happen".
+    """
+    raw: Any = None
+    driver: Any = None
+    try:
+        # Snapshotted first, through the public API, because a successful
+        # invalidate detaches the connection and takes the handles with it.
+        raw = await connection.get_raw_connection()
+        driver = getattr(raw, "driver_connection", None)
+    except BaseException:
+        raw = None
+
+    invalidated = False
+    for _ in range(2):
+        try:
+            await connection.invalidate()
+        except asyncio.CancelledError:
+            # This task is never cancelled by us, so the cancellation came
+            # from inside the driver call. Try again rather than abandon a
+            # backend that may still hold the lock.
+            continue
+        except BaseException:
+            break
+        invalidated = True
+        break
+
+    if invalidated:
+        await _close_quietly(connection)
+        return True
+
+    # ``invalidate`` failed. An ordinary pool close is not an option here --
+    # it would hand on a possibly-locked backend -- so prove termination
+    # through the driver instead.
+    terminated = False
+    if raw is not None:
         with contextlib.suppress(Exception):
-            await connection.close()
+            raw.detach()
+    if driver is not None:
+        try:
+            driver.terminate()
+        except BaseException:
+            terminated = False
+        else:
+            terminated = True
+    if raw is not None:
+        with contextlib.suppress(Exception):
+            raw.invalidate()
+    await _close_quietly(connection)
+    return terminated
 
 
-async def _discard(connection: AsyncConnection) -> None:
-    """Terminate a backend that might still hold a lock."""
-    with contextlib.suppress(Exception):
-        await connection.invalidate()
-    with contextlib.suppress(Exception):
+async def _close_quietly(connection: AsyncConnection) -> None:
+    """Bookkeeping close. The backend is already gone by the time this runs."""
+    try:
         await connection.close()
+    except asyncio.CancelledError:
+        return
+    except BaseException:
+        return
+
+
+async def _hard_discard(
+    connection: AsyncConnection,
+) -> tuple[bool, asyncio.CancelledError | None]:
+    """Terminate the backend, surviving any number of cancellations."""
+    terminated, cancelled = await _await_retained(_terminate_now(connection))
+    return bool(terminated), cancelled
+
+
+async def _retained_close(
+    connection: AsyncConnection,
+) -> tuple[None, asyncio.CancelledError | None]:
+    """Close an unlocked connection, surviving any number of cancellations."""
+    _, cancelled = await _await_retained(_close_quietly(connection))
+    return None, cancelled
 
 
 @contextlib.asynccontextmanager
@@ -190,6 +390,7 @@ async def job_advisory_lock(
 
 __all__ = [
     "JobAdvisoryLock",
+    "LockTerminationUnproven",
     "PostgresJobAdvisoryLock",
     "job_advisory_lock",
 ]
