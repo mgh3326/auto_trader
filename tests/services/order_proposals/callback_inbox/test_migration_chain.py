@@ -283,6 +283,37 @@ async def _processing_check_rejects_a_missing_started_at(database_url: str) -> b
         await connection.close()
 
 
+async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bool:
+    """A recorded verdict with no handler entry must be unstorable."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        try:
+            await connection.execute(
+                "INSERT INTO review.telegram_callback_inbox "
+                "(job_id, update_digest, state, attempt_count, max_attempts, "
+                " received_at, available_at, started_at, handler_completed_at, "
+                " terminal_state_pending, chat_id, action, subject_short, "
+                " dispatch_attempt_id, membership_revision, membership_digest, "
+                " nonce) "
+                "VALUES ($1, $2, 'processing', 1, 3, now(), now(), now(), now(), "
+                "'succeeded', '42', 'op', '0123abcd', $3, 1, 'abcdefghijkl', "
+                "'nonce123456')",
+                uuid.uuid4(),
+                uuid.uuid4().hex * 2,
+                uuid.uuid4(),
+            )
+        except asyncpg.exceptions.CheckViolationError:
+            return True
+        return False
+    finally:
+        await connection.close()
+
+
 def test_alembic_reports_exactly_one_head() -> None:
     """R3 B3 — asked of the CLI, not of a Python API that might differ."""
     output = (
@@ -298,14 +329,19 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     scratch_database: str,
 ) -> None:
     """R9 B19 — real parent schema -> head -> parent -> head, all via the CLI."""
+    # R23: the EXACT live set, not a subset. The previous `<=` check was
+    # missing `handler_marker_order` entirely, so a constraint could vanish
+    # from the migration without anything failing.
     expected_constraints = {
         "ck_telegram_callback_inbox_action",
         "ck_telegram_callback_inbox_active_reconstructable",
         "ck_telegram_callback_inbox_attempt_count",
         "ck_telegram_callback_inbox_error_class",
+        "ck_telegram_callback_inbox_handler_marker_order",
         "ck_telegram_callback_inbox_max_attempts",
         "ck_telegram_callback_inbox_outcome",
         "ck_telegram_callback_inbox_processing_started_at",
+        "ck_telegram_callback_inbox_retry_vocabulary",
         "ck_telegram_callback_inbox_state",
         "ck_telegram_callback_inbox_terminal_scrubbed",
         "ck_telegram_callback_inbox_terminal_state_pending",
@@ -330,14 +366,26 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         assert await _stamped_revision(scratch_database) == W5_REVISION
         assert await _table_exists(scratch_database) is True
         objects = await _live_objects(scratch_database)
-        missing = expected_constraints - set(objects["constraints"])
-        assert not missing, missing
+        live = {
+            name
+            for name in objects["constraints"]
+            if name.startswith(("ck_telegram", "pk_telegram", "uq_telegram"))
+        }
+        assert live == expected_constraints, {
+            "missing": sorted(expected_constraints - live),
+            "unexpected": sorted(live - expected_constraints),
+        }
         assert "ix_telegram_callback_inbox_state_available" in objects["indexes"], (
             objects["indexes"]
         )
         assert await _terminal_check_rejects_a_retained_nonce(scratch_database) is True
         assert (
             await _processing_check_rejects_a_missing_started_at(scratch_database)
+            is True
+        )
+        # R23: the marker-order constraint, exercised rather than merely named.
+        assert (
+            await _marker_check_rejects_a_verdict_without_entry(scratch_database)
             is True
         )
 

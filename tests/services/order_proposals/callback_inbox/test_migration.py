@@ -11,7 +11,6 @@ terminal row even when the code that should have scrubbed it is skipped.
 from __future__ import annotations
 
 import ast
-import contextlib
 import datetime as dt
 import importlib.util
 import pathlib
@@ -79,113 +78,25 @@ _ALLOWED_OPS = frozenset({"create_table", "drop_table", "create_index", "drop_in
 
 @pytest.mark.unit
 def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
-    """R6 strengthening 5 + R9 B21 — the whole operation surface.
+    """Delegates to the scanner that has been shown hostile input.
 
-    A string-literal scan misses ``op.bulk_insert``, ``sa.text`` built from a
-    variable, and every ALTER-shaped op. This walks the call graph instead:
-
-    * only ``create_table``/``drop_table``/``create_index``/``drop_index`` may
-      appear, and every one must name this table;
-    * every one must be schema-qualified to ``review`` -- an unqualified DDL
-      call lands in ``public`` on a default ``search_path``, which is a
-      different table that no constraint in this repo governs;
-    * ``op`` may not be aliased or re-bound, so the scan cannot be walked
-      around by ``o = op`` or ``from alembic.op import create_table``;
-    * no other table name appears in the file's code at all.
+    The version that lived here was closed-world about op *names* but not
+    about op *receivers* or *phases*, so it accepted aliases, ``getattr``,
+    helper indirection and a ``drop_table`` in ``upgrade``. The scanner it now
+    calls is proved against a twelve-case corpus in
+    ``test_migration_phase_guard.py``; duplicating a weaker copy here would
+    just be a second thing to keep in step.
     """
-    source = _MIGRATION.read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    from ._migration_guard import scan
 
-    # 1. `op` is the imported alembic op module and nothing else re-binds it.
-    op_imports = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "alembic"
-    ]
-    assert op_imports, "the migration does not import alembic.op"
-    for node in op_imports:
-        for alias in node.names:
-            assert alias.name == "op" and alias.asname is None, ast.dump(node)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in ast.walk(node):
-                if isinstance(target, ast.Name) and target.id == "op":
-                    raise AssertionError(f"line {node.lineno}: `op` is re-bound")
-        if isinstance(node, ast.ImportFrom) and node.module == "alembic.op":
-            raise AssertionError(
-                "direct `from alembic.op import ...` bypasses the scan"
-            )
-
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "op"
-    ]
-    used = {node.func.attr for node in calls} - {"f"}
-
-    assert not (used & _ROW_DML_OPS), f"row DML in an additive migration: {used}"
-    assert not (used & _MUTATION_OPS), f"schema mutation: {used & _MUTATION_OPS}"
-    assert used <= _ALLOWED_OPS, (
-        f"unexpected alembic ops: {sorted(used - _ALLOWED_OPS)}"
+    result = scan(
+        _MIGRATION.read_text(encoding="utf-8"),
+        table="telegram_callback_inbox",
+        schema="review",
     )
-    assert used == _ALLOWED_OPS, f"expected all four DDL ops, got {sorted(used)}"
-
-    # 2. Every DDL call names this table, in this schema.
-    ddl_calls = [node for node in calls if node.func.attr in _ALLOWED_OPS]
-    assert len(ddl_calls) == 4, [node.func.attr for node in ddl_calls]
-    for node in ddl_calls:
-        rendered = ast.dump(node)
-        assert "_TABLE" in rendered or "telegram_callback_inbox" in rendered, (
-            f"line {node.lineno}: {node.func.attr} does not name the inbox table"
-        )
-        schema_kw = next((kw for kw in node.keywords if kw.arg == "schema"), None)
-        assert schema_kw is not None, (
-            f"line {node.lineno}: {node.func.attr} is not schema-qualified; "
-            "it would land in `public`"
-        )
-        rendered_schema = ast.dump(schema_kw.value)
-        assert "_SCHEMA" in rendered_schema or "review" in rendered_schema, (
-            f"line {node.lineno}: {node.func.attr} targets a schema other than review"
-        )
-
-    # 3. The constants those ops resolve to.
-    namespace: dict[str, object] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
-            with contextlib.suppress(ValueError):
-                namespace[node.targets[0].id] = ast.literal_eval(node.value)
-    assert namespace.get("_TABLE") == "telegram_callback_inbox"
-    assert namespace.get("_SCHEMA") == "review"
-
-    # 4. Only the intended objects are created.
-    created_indexes = {
-        ast.literal_eval(node.args[0])
-        for node in ddl_calls
-        if node.func.attr == "create_index" and isinstance(node.args[0], ast.Constant)
-    }
-    assert created_indexes == {"ix_telegram_callback_inbox_state_available"}
-
-    # 5. No other table name appears anywhere in the file's *code*.
-    code = source.split('"""', 2)[-1]
-    for other_table in (
-        "order_proposals",
-        "order_proposal_rungs",
-        "order_proposal_approval_batches",
-        "alembic_version",
-        "watch_event_repricing_claims",
-        "kis_live_order_ledger",
-        "live_order_ledger",
-        "toss_live_order_ledger",
-        "order_send_intents",
-    ):
-        assert other_table not in code, other_table
-    # ... and no raw SQL execution smuggled in as a variable.
-    assert "sa.text(" not in code or "server_default" in code
-    for banned in ("op.execute", "op.bulk_insert", "connection.execute"):
-        assert banned not in code, banned
+    assert result.ok, result.offenders
+    assert result.ops_by_phase["upgrade"] == ["create_table", "create_index"]
+    assert result.ops_by_phase["downgrade"] == ["drop_index", "drop_table"]
 
 
 @pytest.mark.unit
