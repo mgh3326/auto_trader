@@ -40,9 +40,7 @@ def test_diagnostics_enabled_and_profiler_ready_with_dsn_and_positive_rate(
     monkeypatch.setattr(
         sentry_diagnostics.settings, "SENTRY_DSN", "not-a-real-secret-fixture"
     )
-    monkeypatch.setattr(
-        sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 0.5
-    )
+    monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 0.5)
 
     result = sentry_diagnostics.get_sentry_diagnostics("mcp")
 
@@ -57,9 +55,7 @@ def test_diagnostics_profiler_not_ready_when_profiles_sample_rate_zero(monkeypat
     monkeypatch.setattr(
         sentry_diagnostics.settings, "SENTRY_DSN", "not-a-real-secret-fixture"
     )
-    monkeypatch.setattr(
-        sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 0.0
-    )
+    monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 0.0)
 
     result = sentry_diagnostics.get_sentry_diagnostics("taskiq-worker")
 
@@ -78,9 +74,7 @@ def test_diagnostics_profiler_not_ready_when_traces_sample_rate_zero(monkeypatch
         sentry_diagnostics.settings, "SENTRY_DSN", "not-a-real-secret-fixture"
     )
     monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_TRACES_SAMPLE_RATE", 0.0)
-    monkeypatch.setattr(
-        sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 1.0
-    )
+    monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 1.0)
 
     result = sentry_diagnostics.get_sentry_diagnostics("taskiq-worker")
 

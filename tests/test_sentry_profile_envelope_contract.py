@@ -112,7 +112,9 @@ def _init_via_real_seam(
     )
 
     initialized = sentry_module.init_sentry(service_name="test-envelope-contract")
-    assert initialized is True, "init_sentry() must report success for a fake-but-set DSN"
+    assert initialized is True, (
+        "init_sentry() must report success for a fake-but-set DSN"
+    )
     return transport
 
 
@@ -142,10 +144,14 @@ def test_sampled_transaction_yields_linked_profile_and_transaction_items(monkeyp
     assert "profile" in item_types, item_types
 
     transaction_payload = next(
-        item.payload.json for item in envelope.items if item.headers.get("type") == "transaction"
+        item.payload.json
+        for item in envelope.items
+        if item.headers.get("type") == "transaction"
     )
     profile_payload = next(
-        item.payload.json for item in envelope.items if item.headers.get("type") == "profile"
+        item.payload.json
+        for item in envelope.items
+        if item.headers.get("type") == "profile"
     )
 
     transaction_event_id = transaction_payload["event_id"]
@@ -202,7 +208,9 @@ def test_mcp_tool_call_transaction_is_scrubbed_but_span_and_profile_survive(
     assert "profile" in item_types, item_types
 
     transaction_payload = next(
-        item.payload.json for item in envelope.items if item.headers.get("type") == "transaction"
+        item.payload.json
+        for item in envelope.items
+        if item.headers.get("type") == "transaction"
     )
     assert transaction_payload["transaction"] == "tools/call get_quote"
 
@@ -215,7 +223,9 @@ def test_mcp_tool_call_transaction_is_scrubbed_but_span_and_profile_survive(
     assert mcp_span["data"]["mcp.request.argument.api_key"] == "[Filtered]"
 
     profile_payload = next(
-        item.payload.json for item in envelope.items if item.headers.get("type") == "profile"
+        item.payload.json
+        for item in envelope.items
+        if item.headers.get("type") == "profile"
     )
     linked_transaction_ids = {
         entry["id"] for entry in profile_payload.get("transactions", [])
