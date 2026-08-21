@@ -30,6 +30,16 @@ def test_durable_callback_enqueue_timeout_is_finite_positive_and_capped() -> Non
     baseline = Settings(_env_file=None)
     assert baseline.ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS == 2.0
 
+    for accepted in (10.0, 0.000_001):
+        configured = Settings(
+            _env_file=None,
+            ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS=accepted,
+        )
+        assert (
+            configured.ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS
+            == accepted
+        )
+
     for invalid in (
         float("nan"),
         float("inf"),

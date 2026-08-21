@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 import uuid
 
@@ -241,10 +242,11 @@ async def test_outer_cancellation_is_re_raised_while_the_resistant_child_keeps_i
 
 
 @pytest.mark.asyncio
-async def test_fast_error_cooperative_timeout_and_runtime_tamper_are_fail_closed() -> (
-    None
-):
+async def test_fast_error_cooperative_timeout_and_runtime_tamper_are_fail_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Normal outcomes stay unchanged; invalid runtime values never invoke a producer."""
+    from app.services.order_proposals.callback_inbox import ingress as ingress_module
     from app.services.order_proposals.callback_inbox.ingress import _kick
 
     async def _success(_job_id: uuid.UUID) -> None:
@@ -281,14 +283,18 @@ async def test_fast_error_cooperative_timeout_and_runtime_tamper_are_fail_closed
         invoked += 1
         raise AssertionError("invalid timeout invoked the producer")
 
-    for invalid_timeout in (
+    invalid_timeouts = (
         float("nan"),
         float("inf"),
         float("-inf"),
         0.0,
         -1.0,
         10.01,
-    ):
+        "r33-invalid-timeout",
+    )
+    caplog.set_level(logging.ERROR, logger=ingress_module.__name__)
+    caplog.clear()
+    for invalid_timeout in invalid_timeouts:
         assert (
             await _kick(
                 uuid.uuid4(),
@@ -298,6 +304,26 @@ async def test_fast_error_cooperative_timeout_and_runtime_tamper_are_fail_closed
             is False
         )
     assert invoked == 0
+
+    records = [
+        record for record in caplog.records if record.name == ingress_module.__name__
+    ]
+    assert [record.getMessage() for record in records] == [
+        "order_proposals.telegram.callback_job_enqueue_timeout_invalid"
+    ] * len(invalid_timeouts)
+    assert [getattr(record, "enqueue_timeout_error", None) for record in records] == [
+        "invalid_timeout"
+    ] * len(invalid_timeouts)
+    for raw_value in (
+        "nan",
+        "inf",
+        "-inf",
+        "0.0",
+        "-1.0",
+        "10.01",
+        "r33-invalid-timeout",
+    ):
+        assert raw_value not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -339,3 +365,88 @@ async def test_shutdown_reap_is_bounded_and_does_not_discard_a_resistant_produce
         assert cancellation_count >= 2
     finally:
         await _finish_task(request, release)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_reap_keeps_all_resistant_producers_in_the_cap_until_they_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown may request cancellation, never clear still-live cap slots."""
+    from app.services.order_proposals.callback_inbox import ingress as ingress_module
+    from app.services.order_proposals.callback_inbox.ingress import _kick
+
+    monkeypatch.setattr(
+        ingress_module, "_ENQUEUE_SHUTDOWN_REAP_TIMEOUT_SECONDS", 0.02, raising=False
+    )
+    release = asyncio.Event()
+    started_sixteen = asyncio.Event()
+    all_finished = asyncio.Event()
+    active = 0
+    calls = 0
+
+    async def _resistant(_job_id: uuid.UUID) -> None:
+        nonlocal active, calls
+        calls += 1
+        active += 1
+        if calls == 16:
+            started_sixteen.set()
+        try:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+        finally:
+            active -= 1
+            if active == 0:
+                all_finished.set()
+
+    kick_tasks = [
+        asyncio.create_task(
+            _kick(uuid.uuid4(), enqueue_fn=_resistant, timeout_seconds=0.02)
+        )
+        for _ in range(16)
+    ]
+    gather_kicks = asyncio.gather(*kick_tasks)
+    try:
+        await asyncio.wait_for(started_sixteen.wait(), timeout=0.5)
+        assert (
+            await asyncio.wait_for(asyncio.shield(gather_kicks), timeout=0.25)
+            == [False] * 16
+        )
+        assert active == 16
+
+        await ingress_module.shutdown_callback_enqueue_tasks()
+        assert active == 16
+
+        overflow_calls = 0
+
+        async def _overflow_must_not_run(_job_id: uuid.UUID) -> None:
+            nonlocal overflow_calls
+            overflow_calls += 1
+
+        assert (
+            await _kick(
+                uuid.uuid4(),
+                enqueue_fn=_overflow_must_not_run,
+                timeout_seconds=0.02,
+            )
+            is False
+        )
+        assert overflow_calls == 0
+
+        release.set()
+        await asyncio.wait_for(all_finished.wait(), timeout=0.5)
+        await asyncio.sleep(0)
+
+        assert await _kick(
+            uuid.uuid4(),
+            enqueue_fn=_overflow_must_not_run,
+            timeout_seconds=0.02,
+        )
+        assert overflow_calls == 1
+    finally:
+        release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*kick_tasks, return_exceptions=True), timeout=1.0
+        )
