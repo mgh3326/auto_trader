@@ -39,6 +39,7 @@ PHASE_OPS = {"upgrade": UPGRADE_OPS, "downgrade": DOWNGRADE_OPS}
 
 #: Anything that hands out a raw connection or executes raw SQL.
 ESCAPE_HATCHES = frozenset({"get_bind", "execute", "executemany", "exec_driver_sql"})
+RAW_CONNECTION_METHODS = frozenset({"execute", "executemany", "exec_driver_sql"})
 
 
 @dataclass
@@ -79,6 +80,127 @@ def _alias_names(tree: ast.AST) -> set[str]:
                     aliases.add(target.id)
                     changed = True
     return aliases
+
+
+def _assignment_parts(node: ast.AST) -> tuple[ast.expr | None, list[ast.expr]]:
+    """Return the value and simple targets for a normal/annotated assignment."""
+    if isinstance(node, ast.Assign):
+        return node.value, list(node.targets)
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        return node.value, [node.target]
+    return None, []
+
+
+def _assigned_names(node: ast.AST) -> set[str]:
+    """Only ordinary name bindings can later become an indirect call target."""
+    _, targets = _assignment_parts(node)
+    return {target.id for target in targets if isinstance(target, ast.Name)}
+
+
+def _method_alias_offenders(tree: ast.AST, *, op_aliases: set[str]) -> list[str]:
+    """Reject aliases of an Alembic method or raw connection execution method.
+
+    A call such as ``run = op.execute; run(...)`` has no direct ``op``
+    receiver at its call site, so the phase/operation trace alone cannot see
+    it. A raw connection has the same shape. This migration has no legitimate
+    need to store either kind of method, so rejecting the binding itself is
+    safer than attempting whole-program alias resolution.
+    """
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        value, _ = _assignment_parts(node)
+        if not isinstance(value, ast.Attribute):
+            continue
+        targets = _assigned_names(node)
+        if not targets:
+            continue
+        receiver_is_op = (
+            isinstance(value.value, ast.Name) and value.value.id in op_aliases
+        )
+        raw_connection_method = value.attr in RAW_CONNECTION_METHODS
+        if not receiver_is_op and not raw_connection_method:
+            continue
+        source = (
+            f"{value.value.id}.{value.attr}"
+            if isinstance(value.value, ast.Name)
+            else value.attr
+        )
+        kind = "op method" if receiver_is_op else "raw connection method"
+        for target in sorted(targets):
+            offenders.append(
+                f"line {node.lineno}: {kind} {source} is aliased as {target}"
+            )
+    return offenders
+
+
+def _imported_bindings(tree: ast.AST) -> dict[str, str]:
+    """Map every imported local name to its declared module path."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".", 1)[0]
+                bindings[local] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                bindings[local] = f"{module}.{alias.name}".strip(".")
+    return bindings
+
+
+def _is_sqlalchemy_constructor_import(origin: str) -> bool:
+    """SQLAlchemy imports construct DDL values; they do not execute a migration."""
+    return origin == "sqlalchemy" or origin.startswith("sqlalchemy.")
+
+
+def _imported_helper_offenders(tree: ast.AST, *, op_aliases: set[str]) -> list[str]:
+    """Reject opaque imported helper execution while allowing SQLAlchemy DDL.
+
+    A zero-argument imported helper can mutate through a hidden connection
+    without receiving ``op`` at all. The closed operation trace cannot infer
+    that side effect, so this additive migration permits direct imported call
+    targets only from SQLAlchemy's DDL-constructor namespace. Aliases of an
+    opaque imported helper are followed one assignment deep (and transitively)
+    before calls are checked.
+    """
+    imported = _imported_bindings(tree)
+    helper_aliases = {
+        name
+        for name, origin in imported.items()
+        if name not in op_aliases and not _is_sqlalchemy_constructor_import(origin)
+    }
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            value, _ = _assignment_parts(node)
+            if not isinstance(value, ast.Name) or value.id not in helper_aliases:
+                continue
+            for target in _assigned_names(node):
+                if target not in helper_aliases:
+                    helper_aliases.add(target)
+                    changed = True
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id in helper_aliases:
+            offenders.append(
+                f"line {node.lineno}: imported helper {node.func.id} is executed"
+            )
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in helper_aliases
+        ):
+            offenders.append(
+                f"line {node.lineno}: imported helper {node.func.value.id}.{node.func.attr} is executed"
+            )
+    return offenders
 
 
 def _enclosing_phase(tree: ast.AST, node: ast.AST) -> str:
@@ -175,6 +297,8 @@ def scan(
     aliases = _alias_names(tree)
     if aliases != {"op"}:
         result.offenders.append(f"`op` is aliased: {sorted(aliases - {'op'})}")
+    result.offenders.extend(_method_alias_offenders(tree, op_aliases=aliases))
+    result.offenders.extend(_imported_helper_offenders(tree, op_aliases=aliases))
 
     # Importing the operations directly bypasses receiver analysis entirely.
     for node in ast.walk(tree):

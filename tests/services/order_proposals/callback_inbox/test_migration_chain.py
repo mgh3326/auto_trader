@@ -49,6 +49,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from typing import TypedDict
 
 import pytest
 import pytest_asyncio
@@ -61,6 +62,12 @@ PARENT_REVISION = "20260820_rob1290_reconcile"
 W5_INBOX_REVISION = "20260821_w5_callback_inbox"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
+
+
+class _CursorLiveObjects(TypedDict):
+    constraints: list[str]
+    indexes: list[str]
+    columns: dict[str, tuple[str, str]]
 
 
 def _scratch_name() -> str:
@@ -99,26 +106,27 @@ async def scratch_database() -> AsyncIterator[str]:
 
     base = make_url(os.environ["DATABASE_URL"])
     name = _scratch_name()
-    admin = await asyncpg.connect(**_admin_kwargs(base, database="postgres"))
     try:
-        await admin.execute(f'CREATE DATABASE "{name}"')
-    finally:
-        await admin.close()
+        admin = await asyncpg.connect(**_admin_kwargs(base, database="postgres"))
+        try:
+            await admin.execute(f'CREATE DATABASE "{name}"')
+        finally:
+            await admin.close()
 
-    url = base.set(database=name)
-    engine = create_async_engine(url.render_as_string(hide_password=False))
-    try:
-        async with engine.begin() as connection:
-            for schema in ("paper", "research", "review"):
-                await connection.execute(
-                    text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-                )
-            await connection.run_sync(Base.metadata.create_all)
-            for table in _POST_PARENT_TABLES:
-                await connection.execute(text(f"DROP TABLE {table}"))
-    finally:
-        await engine.dispose()
-    try:
+        url = base.set(database=name)
+        engine = create_async_engine(url.render_as_string(hide_password=False))
+        try:
+            async with engine.begin() as connection:
+                for schema in ("paper", "research", "review"):
+                    await connection.execute(
+                        text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                    )
+                await connection.run_sync(Base.metadata.create_all)
+                for table in _POST_PARENT_TABLES:
+                    await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        finally:
+            await engine.dispose()
+
         yield url.render_as_string(hide_password=False)
     finally:
         assert name.startswith(_SCRATCH_PREFIX), name  # never drop anything else
@@ -127,6 +135,27 @@ async def scratch_database() -> AsyncIterator[str]:
             await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
         finally:
             await admin.close()
+
+
+def test_scratch_database_setup_cannot_bypass_its_bounded_cleanup() -> None:
+    """A missing current-head table must fail assertions, not leak a scratch DB."""
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(scratch_database))
+    tree = ast.parse(source)
+    fixture = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef))
+    lifecycle = next(node for node in fixture.body if isinstance(node, ast.Try))
+    assert any(
+        isinstance(node, ast.Yield)
+        for statement in lifecycle.body
+        for node in ast.walk(statement)
+    )
+    assert "DROP TABLE IF EXISTS {table}" in source
+    assert "DROP DATABASE IF EXISTS" in "\n".join(
+        ast.unparse(statement) for statement in lifecycle.finalbody
+    )
 
 
 def _alembic(*args: str, database_url: str) -> str:
@@ -243,7 +272,7 @@ async def _live_objects(database_url: str) -> dict[str, list[str]]:
         await connection.close()
 
 
-async def _cursor_live_objects(database_url: str) -> dict[str, list[str]]:
+async def _cursor_live_objects(database_url: str) -> _CursorLiveObjects:
     """The cursor's exact singleton constraints after a real upgrade."""
     import asyncpg
 
@@ -262,9 +291,17 @@ async def _cursor_live_objects(database_url: str) -> dict[str, list[str]]:
             "WHERE schemaname = 'review' "
             "AND tablename = 'telegram_callback_recovery_cursor' ORDER BY indexname"
         )
+        columns = await connection.fetch(
+            "SELECT column_name, data_type, is_nullable "
+            "FROM information_schema.columns "
+            "WHERE table_schema = 'review' "
+            "AND table_name = 'telegram_callback_recovery_cursor' "
+            "ORDER BY ordinal_position"
+        )
         return {
             "constraints": [row[0] for row in constraints],
             "indexes": [row[0] for row in indexes],
+            "columns": {row[0]: (row[1], row[2]) for row in columns},
         }
     finally:
         await connection.close()
@@ -689,6 +726,11 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         cursor_objects = await _cursor_live_objects(scratch_database)
         assert set(cursor_objects["constraints"]) == expected_cursor_constraints
         assert cursor_objects["indexes"] == ["pk_telegram_callback_recovery_cursor"]
+        assert cursor_objects["columns"] == {
+            "id": ("smallint", "NO"),
+            "next_tier": ("smallint", "NO"),
+            "updated_at": ("timestamp with time zone", "NO"),
+        }
         assert await _terminal_check_rejects_a_retained_nonce(scratch_database) is True
         assert (
             await _processing_check_rejects_a_missing_started_at(scratch_database)

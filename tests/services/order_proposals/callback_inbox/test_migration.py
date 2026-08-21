@@ -174,6 +174,8 @@ def test_the_cursor_orm_is_a_pii_free_singleton_with_no_index() -> None:
     assert table.c.next_tier.nullable is False
     assert isinstance(table.c.next_tier.type, sa.SmallInteger)
     assert table.c.updated_at.nullable is False
+    assert isinstance(table.c.updated_at.type, sa.TIMESTAMP)
+    assert table.c.updated_at.type.timezone is True
     checks = {
         check.name: str(check.sqltext)
         for check in table.constraints

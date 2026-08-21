@@ -296,6 +296,62 @@ def downgrade():
     op.drop_table("telegram_callback_inbox", schema="review")
 """,
     ),
+    (
+        "op_method_alias_raw_sql_with_exact_trace",
+        """
+def upgrade():
+    run = op.execute
+    run("DELETE FROM review.order_proposals")
+    op.create_table("telegram_callback_inbox", schema="review")
+    op.create_index("ix_telegram_callback_inbox_state_available", "telegram_callback_inbox", ["state", "available_at"], schema="review")
+    op.create_table("telegram_callback_recovery_cursor", schema="review")
+
+
+def downgrade():
+    op.drop_table("telegram_callback_recovery_cursor", schema="review")
+    op.drop_index("ix_telegram_callback_inbox_state_available", table_name="telegram_callback_inbox", schema="review")
+    op.drop_table("telegram_callback_inbox", schema="review")
+""",
+    ),
+    (
+        "raw_connection_method_alias_with_exact_trace",
+        """
+from legacy_connection import connection
+
+
+def upgrade():
+    run = connection.execute
+    run("DELETE FROM review.order_proposals")
+    op.create_table("telegram_callback_inbox", schema="review")
+    op.create_index("ix_telegram_callback_inbox_state_available", "telegram_callback_inbox", ["state", "available_at"], schema="review")
+    op.create_table("telegram_callback_recovery_cursor", schema="review")
+
+
+def downgrade():
+    op.drop_table("telegram_callback_recovery_cursor", schema="review")
+    op.drop_index("ix_telegram_callback_inbox_state_available", table_name="telegram_callback_inbox", schema="review")
+    op.drop_table("telegram_callback_inbox", schema="review")
+""",
+    ),
+    (
+        "imported_zero_arg_mutating_helper_with_exact_trace",
+        """
+from migration_escape import mutate_rows
+
+
+def upgrade():
+    mutate_rows()
+    op.create_table("telegram_callback_inbox", schema="review")
+    op.create_index("ix_telegram_callback_inbox_state_available", "telegram_callback_inbox", ["state", "available_at"], schema="review")
+    op.create_table("telegram_callback_recovery_cursor", schema="review")
+
+
+def downgrade():
+    op.drop_table("telegram_callback_recovery_cursor", schema="review")
+    op.drop_index("ix_telegram_callback_inbox_state_available", table_name="telegram_callback_inbox", schema="review")
+    op.drop_table("telegram_callback_inbox", schema="review")
+""",
+    ),
 )
 
 
@@ -311,13 +367,20 @@ def test_the_guard_rejects_every_hostile_migration(label: str, source: str) -> N
 def test_the_guard_accepts_the_clean_shape() -> None:
     """Anti-vacuity: it must not simply reject everything."""
     clean = """
+import sqlalchemy as sa
+
+
 _INBOX_TABLE = "telegram_callback_inbox"
 _CURSOR_TABLE = "telegram_callback_recovery_cursor"
 _SCHEMA = "review"
 
 
 def upgrade():
-    op.create_table(_INBOX_TABLE, schema=_SCHEMA)
+    op.create_table(
+        _INBOX_TABLE,
+        sa.Column("id", sa.BigInteger(), nullable=False),
+        schema=_SCHEMA,
+    )
     op.create_index(
         "ix_telegram_callback_inbox_state_available",
         _INBOX_TABLE,
@@ -446,6 +509,9 @@ def test_the_real_migration_makes_exactly_the_calls_it_should(
     assert cursor_columns["id"].primary_key is True
     assert isinstance(cursor_columns["next_tier"].type, sa.SmallInteger)
     assert cursor_columns["next_tier"].nullable is False
+    assert isinstance(cursor_columns["updated_at"].type, sa.TIMESTAMP)
+    assert cursor_columns["updated_at"].type.timezone is True
+    assert cursor_columns["updated_at"].nullable is False
     cursor_checks = {
         check.name: str(check.sqltext)
         for check in cursor_table[1][1:]
