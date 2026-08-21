@@ -656,3 +656,332 @@ async def test_simulate_process_death_re_delivers_a_cancellation() -> None:
     assert "invalidate_completed" in events, events
     assert "close" in events, events
     assert lock.closed is True
+
+
+# ---------------------------------------------------------------------------
+# R27d -- unproven termination must not close, and must not check in
+# ---------------------------------------------------------------------------
+#
+# ``_terminate_now`` ran ``raw.invalidate()`` and the bookkeeping close
+# unconditionally, including after both invalidate *and* the driver terminate
+# had failed. So ``LockTerminationUnproven`` surfaced and the holder kept its
+# reference -- but the wrapper underneath had already been closed and checked
+# back into the pool, and the next checkout handed the same backend, still
+# holding the advisory lock, to unrelated work. The retained reference was a
+# phantom.
+
+
+class _Driver:
+    def __init__(self, *, terminates: bool, events: list[str]) -> None:
+        self._terminates = terminates
+        self._events = events
+
+    def terminate(self) -> None:
+        self._events.append("driver_terminate")
+        if not self._terminates:
+            raise OSError("driver terminate failed")
+
+
+class _Raw:
+    def __init__(self, *, terminates: bool, events: list[str]) -> None:
+        self.driver_connection = _Driver(terminates=terminates, events=events)
+        self._events = events
+
+    def detach(self) -> None:
+        self._events.append("detach")
+
+    def invalidate(self) -> None:
+        self._events.append("raw_invalidate")
+
+
+class _Unterminable:
+    """Neither ``invalidate`` nor the driver can prove the backend is gone."""
+
+    def __init__(self, *, terminates: bool = False, unlock: str = "raises") -> None:
+        self.events: list[str] = []
+        self._terminates = terminates
+        self._unlock = unlock
+        self.raw = _Raw(terminates=terminates, events=self.events)
+
+    async def get_raw_connection(self):
+        self.events.append("get_raw_connection")
+        return self.raw
+
+    async def execute(self, *_args, **_kwargs):
+        self.events.append("execute")
+        if self._unlock == "raises":
+            raise OSError("connection reset while unlocking")
+
+        class _Result:
+            @staticmethod
+            def scalar_one():
+                return True
+
+        return _Result()
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+
+    async def invalidate(self) -> None:
+        self.events.append("invalidate_started")
+        raise OSError("cannot invalidate")
+
+    async def close(self) -> None:
+        self.events.append("close")
+
+
+def _quarantined() -> set:
+    from app.services.order_proposals.callback_inbox.locks import (
+        quarantined_handles,
+    )
+
+    return quarantined_handles()
+
+
+@pytest.mark.asyncio
+async def test_an_unproven_release_never_closes_or_checks_in() -> None:
+    """R27d — no close, no raw invalidate, no checkin. The handle is kept."""
+    from app.services.order_proposals.callback_inbox.locks import (
+        LockTerminationUnproven,
+    )
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    connection = _Unterminable()
+    lock._connection = connection  # noqa: SLF001
+
+    with pytest.raises(LockTerminationUnproven):
+        await lock.release(1234)
+
+    assert "close" not in connection.events, connection.events
+    assert "raw_invalidate" not in connection.events, connection.events
+    # Detaching is allowed and wanted: it is what stops a checkin.
+    assert connection.events == [
+        "execute",
+        "get_raw_connection",
+        "invalidate_started",
+        "detach",
+        "driver_terminate",
+    ], connection.events
+
+    assert lock.closed is False
+    quarantine = _quarantined()
+    assert connection in quarantine, "the connection was left to the garbage collector"
+    assert connection.raw in quarantine
+    assert connection.raw.driver_connection in quarantine
+
+
+@pytest.mark.asyncio
+async def test_an_unproven_ambiguous_acquire_keeps_its_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R27d — the acquire path has no holder to keep the reference for it.
+
+    ``try_acquire`` owns its connection in a local, so once the function
+    unwinds nothing points at it and the garbage collector is free to close
+    it -- back into the pool, lock and all. It has to be owned explicitly.
+    """
+    from app.core import db
+    from app.services.order_proposals.callback_inbox.locks import (
+        LockTerminationUnproven,
+    )
+
+    connection = _Unterminable()
+
+    class _Engine:
+        async def connect(self):
+            return connection
+
+    monkeypatch.setattr(db, "engine", _Engine(), raising=True)
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    with pytest.raises(LockTerminationUnproven):
+        await lock.try_acquire(4321)
+
+    assert "close" not in connection.events, connection.events
+    assert "raw_invalidate" not in connection.events, connection.events
+    assert connection in _quarantined()
+
+
+@pytest.mark.asyncio
+async def test_an_unproven_simulated_death_keeps_its_connection() -> None:
+    """R27d — and so does the helper that models a kill."""
+    from app.services.order_proposals.callback_inbox.locks import (
+        LockTerminationUnproven,
+    )
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    connection = _Unterminable()
+    lock._connection = connection  # noqa: SLF001
+
+    with pytest.raises(LockTerminationUnproven):
+        await lock.simulate_process_death()
+
+    assert "close" not in connection.events, connection.events
+    assert lock.closed is False
+    assert connection in _quarantined()
+
+
+@pytest.mark.asyncio
+async def test_the_driver_fallback_runs_in_order_when_it_does_prove_it() -> None:
+    """R27d — proven termination: exact order, and only then a close."""
+    lock = locks_module.PostgresJobAdvisoryLock()
+    connection = _Unterminable(terminates=True)
+    lock._connection = connection  # noqa: SLF001
+
+    await lock.release(1234)
+
+    assert connection.events == [
+        "execute",
+        "get_raw_connection",
+        "invalidate_started",
+        "detach",
+        "driver_terminate",
+        "raw_invalidate",
+        "close",
+    ], connection.events
+    assert lock.closed is True
+    assert connection not in _quarantined()
+
+
+# ---------------------------------------------------------------------------
+# R27d -- a close that does not finish is not a close that finished
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("failure", ["runtime_error", "cancelled"])
+@pytest.mark.asyncio
+async def test_an_inner_close_failure_is_not_reported_as_success(
+    failure: str,
+) -> None:
+    """R27d SHOULD — the unlock succeeded, so this is a checkout leak.
+
+    ``_close_quietly`` swallowed everything, including a ``CancelledError``
+    raised by the driver, and the retained wrapper reported success anyway.
+    ``release`` then cleared the holder while the connection was neither
+    closed nor checked in. The lock is already released, so no order can be
+    submitted twice -- but "cleanup genuinely finished" has to mean it.
+    """
+    events: list[str] = []
+
+    class _BadClose:
+        async def get_raw_connection(self):
+            raise OSError("no raw connection")
+
+        async def execute(self, *_args, **_kwargs):
+            class _Result:
+                @staticmethod
+                def scalar_one():
+                    return True
+
+            return _Result()
+
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def invalidate(self) -> None:
+            events.append("invalidate")
+
+        async def close(self) -> None:
+            events.append("close_attempted")
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            raise RuntimeError("close failed")
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    lock._connection = _BadClose()  # noqa: SLF001
+
+    await lock.release(1234)
+
+    # The failed close must not simply be believed: the connection is
+    # invalidated instead, so nothing hands it back to the pool.
+    assert "close_attempted" in events, events
+    assert "invalidate" in events, "a connection that would not close was pooled"
+    assert lock.closed is True
+
+
+# ---------------------------------------------------------------------------
+# R27d -- against a real pool and a real backend
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_an_unproven_backend_is_never_handed_back_by_the_pool(
+    _bootstrap_test_schema, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R27d — the property the fakes stand in for, on a real QueuePool.
+
+    One slot. Take the lock, make termination unprovable, and the pool must
+    not be able to hand that backend to anything else: the checkout blocks
+    rather than returning the locked session, and an independent backend can
+    still see the lock held. Only an explicit kill frees it.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core import db
+    from app.core.config import settings
+    from app.services.order_proposals.callback_inbox.locks import (
+        LockTerminationUnproven,
+    )
+
+    key = int(uuid.uuid4().int % 2_000_000_000) + 1
+    pooled = create_async_engine(
+        settings.DATABASE_URL, pool_size=1, max_overflow=0, pool_timeout=2
+    )
+    observer = await db.engine.connect()
+    try:
+        monkeypatch.setattr(db, "engine", pooled, raising=True)
+        lock = locks_module.PostgresJobAdvisoryLock()
+        assert await lock.try_acquire(key) is True
+        held_by = await lock.backend_pid()
+
+        connection_type = type(lock.connection_for_test())
+        monkeypatch.setattr(locks_module, "_RELEASE", text("SELECT no_such_fn()"))
+
+        async def _no_invalidate(self):
+            raise OSError("cannot invalidate")
+
+        async def _no_raw(self):
+            raise OSError("no raw connection")
+
+        monkeypatch.setattr(connection_type, "invalidate", _no_invalidate)
+        monkeypatch.setattr(connection_type, "get_raw_connection", _no_raw)
+
+        with pytest.raises(LockTerminationUnproven):
+            await lock.release(key)
+
+        # The one slot is still occupied by a backend that may hold the lock.
+        with pytest.raises(Exception) as checkout:
+            spare = await pooled.connect()
+            await spare.close()
+        assert "timeout" in str(checkout.value).lower(), str(checkout.value)
+
+        # An independent backend confirms the lock really is still held.
+        still_held = bool(
+            (
+                await observer.execute(
+                    text("SELECT pg_try_advisory_lock(CAST(:k AS bigint))"), {"k": key}
+                )
+            ).scalar_one()
+        )
+        assert still_held is False, "the lock was released by an unproven cleanup"
+
+        # Explicit cleanup, which is what an operator would have to do.
+        await observer.execute(
+            text("SELECT pg_terminate_backend(:pid)"), {"pid": held_by}
+        )
+        retaken = bool(
+            (
+                await observer.execute(
+                    text("SELECT pg_try_advisory_lock(CAST(:k AS bigint))"), {"k": key}
+                )
+            ).scalar_one()
+        )
+        assert retaken is True
+        await observer.execute(
+            text("SELECT pg_advisory_unlock(CAST(:k AS bigint))"), {"k": key}
+        )
+        await observer.commit()
+    finally:
+        await observer.close()
+        await pooled.dispose()
