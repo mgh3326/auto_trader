@@ -447,16 +447,16 @@ async def test_fresh_process_sweeps_follow_the_committed_cursor_tier_order(
         # starts from zero cannot pass by accident.
         await _replace_cursor_next_tier(2)
         try:
-            reports = [_fresh_process_sweep(), _fresh_process_sweep()]
-            for report, expected_start, expected_next in zip(
-                reports, (2, 3), (3, 0), strict=True
-            ):
+            reports: list[dict[str, Any]] = []
+            for expected_start, expected_next in zip((2, 3), (3, 0), strict=True):
+                report = _fresh_process_sweep()
                 assert report["claimed"] == 1, report
                 assert report["scanned"] <= recovery_scan_cap(1), report
                 assert len(report["seen"]) == 1, report
                 assert tiers[uuid.UUID(report["seen"][0])] == expected_start, report
                 assert report["cursor_next_tier"] == expected_next, report
                 assert await _cursor_next_tier() == expected_next
+                reports.append(report)
             assert reports[0]["pid"] != reports[1]["pid"], reports
         finally:
             await _clear_raw_cursor_if_present()
