@@ -43,6 +43,7 @@ from sqlalchemy import (
     CheckConstraint,
     Index,
     Integer,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
@@ -241,4 +242,30 @@ class TelegramCallbackInboxJob(Base):
     )
 
 
-__all__ = ["TelegramCallbackInboxJob"]
+class TelegramCallbackRecoveryCursor(Base):
+    """The PII-free, durable start position for recovery's four-tier ring.
+
+    The table intentionally starts empty. Recovery lazily creates its only row
+    with an atomic PostgreSQL UPSERT, then commits that reservation before it
+    scans or executes any inbox job. It is ordering state only: it grants no
+    callback, nonce, approval, or order authority.
+    """
+
+    __tablename__ = "telegram_callback_recovery_cursor"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="id"),
+        CheckConstraint(
+            "next_tier >= 0 AND next_tier < 4",
+            name="next_tier",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    next_tier: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+
+
+__all__ = ["TelegramCallbackInboxJob", "TelegramCallbackRecoveryCursor"]

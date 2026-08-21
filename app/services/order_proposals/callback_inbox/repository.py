@@ -16,9 +16,13 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+from app.models.telegram_callback_inbox import (
+    TelegramCallbackInboxJob,
+    TelegramCallbackRecoveryCursor,
+)
 from app.services.order_proposals.callback_inbox.contracts import (
     MAX_ATTEMPTS,
     TIER_EXHAUSTED,
@@ -96,6 +100,38 @@ class CallbackInboxRepository:
             # later read in this session sees what the database now says.
             self._session.expire_all()
         return updated
+
+    async def reserve_recovery_tier_block(self, *, limit: int) -> int:
+        """Atomically reserve this sweep's start in the durable four-tier ring.
+
+        The returned value is the start of the block this transaction owns,
+        while the singleton stores the next block's start. This is deliberately
+        one PostgreSQL INSERT .. ON CONFLICT .. RETURNING statement: a
+        read/compute/write sequence could allocate the same tier window to two
+        concurrent sweepers.
+        """
+        if limit < 1:
+            raise ValueError("recovery limit must be at least 1")
+
+        q = min(limit, 4)
+        statement = (
+            postgresql.insert(TelegramCallbackRecoveryCursor)
+            .values(
+                id=1,
+                next_tier=q % 4,
+                updated_at=func.now(),
+            )
+            .on_conflict_do_update(
+                index_elements=[TelegramCallbackRecoveryCursor.id],
+                set_={
+                    "next_tier": (TelegramCallbackRecoveryCursor.next_tier + q) % 4,
+                    "updated_at": func.now(),
+                },
+            )
+            .returning(TelegramCallbackRecoveryCursor.next_tier)
+        )
+        post_write_next_tier = (await self._session.execute(statement)).scalar_one()
+        return (int(post_write_next_tier) - q) % 4
 
     async def claimable_job_ids(
         self,

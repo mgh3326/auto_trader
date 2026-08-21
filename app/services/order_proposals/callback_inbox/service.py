@@ -20,12 +20,9 @@ from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
 from app.services.order_proposals.callback_inbox.contracts import (
     MAX_ATTEMPTS,
     PROCESSING_STALE_AFTER_SECONDS,
+    RECOVERY_TIER_RING,
     RETRY_BACKOFF_SECONDS,
     SCRUBBED_ON_TERMINAL,
-    TIER_EXHAUSTED,
-    TIER_MALFORMED,
-    TIER_QUEUED,
-    TIER_STALE,
     ErrorClass,
     InboxState,
     clamp_attempt_count,
@@ -353,8 +350,14 @@ class CallbackInboxService:
 
     # -- recovery scan ---------------------------------------------------
 
-    async def claimable_job_ids(self, *, now: datetime, limit: int) -> list[uuid.UUID]:
-        """Candidates to *look at*, interleaved so no tier can crowd out another.
+    async def reserve_recovery_tier_block(self, *, limit: int) -> int:
+        """Reserve a durable cross-tier recovery window without committing it."""
+        return await self._repo.reserve_recovery_tier_block(limit=limit)
+
+    async def claimable_job_ids(
+        self, *, now: datetime, limit: int, tier_start: int
+    ) -> list[uuid.UUID]:
+        """Candidates to *look at*, starting at the explicitly reserved tier.
 
         ``limit`` is the **execution** cap -- how many jobs the caller may
         actually run this tick. The scan cap and the per-tier quotas are
@@ -363,18 +366,20 @@ class CallbackInboxService:
         whole tick's budget; deriving the scan cap here as well applied the
         multiplier twice.
 
-        The repository already caps each tier separately, so the scan is fair.
-        The *execution* budget still has to be, because a caller that stops
-        after N claims would otherwise spend all N on whichever tier comes
-        first. Malformed rows lead each round because they are immediate
-        scrubs, but each tier contributes at most one candidate per round:
-        a large poison prefix cannot consume the execution limit before
-        queued or stale work gets a chance to progress.
+        The repository already caps each tier separately. The caller supplies
+        the committed start from the PII-free recovery cursor; this method
+        never rereads or derives it. Each tier contributes at most one
+        candidate per round, so a large poison prefix cannot consume the
+        execution limit before queued or stale work gets a chance to progress.
 
-        Purely a function of what the query returned. Nothing is remembered
-        between sweeps, so a freshly started process and two concurrent
-        sweepers behave exactly like one that has been running all day.
+        Apart from that explicit start, this is purely a function of the query
+        result. It carries no local cursor or fallback ordering state.
         """
+        if limit < 1:
+            raise ValueError("recovery limit must be at least 1")
+        if type(tier_start) is not int or not 0 <= tier_start < len(RECOVERY_TIER_RING):
+            raise ValueError("tier_start must identify a recovery tier")
+
         rows = await self._repo.claimable_job_ids(
             now=now,
             stale_before=now - timedelta(seconds=PROCESSING_STALE_AFTER_SECONDS),
@@ -384,18 +389,24 @@ class CallbackInboxService:
         for job_id, tier in rows:
             by_tier.setdefault(tier, []).append(job_id)
 
-        malformed = by_tier.get(TIER_MALFORMED, [])
-        exhausted = by_tier.get(TIER_EXHAUSTED, [])
-        queued = by_tier.get(TIER_QUEUED, [])
-        stale = by_tier.get(TIER_STALE, [])
+        tier_order = tuple(
+            RECOVERY_TIER_RING[(tier_start + offset) % len(RECOVERY_TIER_RING)]
+            for offset in range(len(RECOVERY_TIER_RING))
+        )
         ordered: list[uuid.UUID] = []
-        # The malformed tier leads each round, but gets no unbounded prefix:
-        # a poison backlog must not consume the whole execution limit and
-        # starve ordinary queued or stale recovery (R29).
-        for index in range(max(map(len, (malformed, exhausted, queued, stale)))):
-            for tier in (malformed, exhausted, queued, stale):
-                if index < len(tier):
-                    ordered.append(tier[index])
+        # The committed ring rotates which tier leads each sweep, but every
+        # tier still gets at most one candidate per round. That preserves
+        # R29's bounded poison/contended-prefix behaviour inside a sweep.
+        for index in range(
+            max(
+                (len(by_tier.get(tier, [])) for tier in RECOVERY_TIER_RING),
+                default=0,
+            )
+        ):
+            for tier in tier_order:
+                candidates = by_tier.get(tier, [])
+                if index < len(candidates):
+                    ordered.append(candidates[index])
         return ordered
 
     async def backlog(self, *, now: datetime) -> dict[str, Any]:

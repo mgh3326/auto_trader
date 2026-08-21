@@ -135,7 +135,10 @@ from .strategy_learning_event import ResearchStrategyLearningEvent
 from .symbol_news_relevance import SymbolNewsRelevance
 from .symbol_sectors import SymbolSector
 from .symbol_trade_settings import SymbolTradeSettings
-from .telegram_callback_inbox import TelegramCallbackInboxJob
+from .telegram_callback_inbox import (
+    TelegramCallbackInboxJob,
+    TelegramCallbackRecoveryCursor,
+)
 from .trade_journal import JournalStatus, TradeJournal
 from .trade_profile import (
     AssetProfile,
@@ -253,6 +256,7 @@ __all__ = [
     "OrderProposalLossCutScope",
     "OrderProposalRung",
     "TelegramCallbackInboxJob",
+    "TelegramCallbackRecoveryCursor",
     "BrokerType",
     "MarketType",
     "BrokerAccount",

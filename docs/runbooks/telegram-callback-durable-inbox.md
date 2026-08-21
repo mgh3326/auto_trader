@@ -52,7 +52,7 @@ opaque job UUID.** Losing Redis loses latency, never a click.
 
 | piece | file |
 |---|---|
-| table | `review.telegram_callback_inbox` (`app/models/telegram_callback_inbox.py`) |
+| tables | `review.telegram_callback_inbox` and the PII-free singleton `review.telegram_callback_recovery_cursor` (`app/models/telegram_callback_inbox.py`) |
 | migration | `alembic/versions/20260821_w5_telegram_callback_inbox.py` |
 | vocabularies | `app/services/order_proposals/callback_inbox/contracts.py` |
 | repository (service-internal) | `.../callback_inbox/repository.py` |
@@ -146,14 +146,33 @@ lock -> classify -> attempt -> rebuild -> re-authorise -> enter -> run -> verdic
 
 ### Recovery
 
-Scans malformed active budgets ahead of the normal exhausted, `pending`, due
-`retry_wait`, and `processing` rows older than
-`PROCESSING_STALE_AFTER_SECONDS` (300), then runs each through the same
-`process_callback_job` with a wider claimable-state set. The staleness window
-is a **scan filter, never an authority**: a "stale" row whose lock is held is
-skipped. Reports counts by state plus one age — no identifiers.
+For every sweep with `limit >= 1`, recovery first opens a short, separate
+transaction and atomically reserves `q = min(limit, 4)` positions from the
+singleton cursor. The cursor is empty after migration and lazily self-seeds on
+that first UPSERT; it contains only `id=1`, the next tier, and a timestamp —
+no callback authority or PII. The reservation commits **before** the candidate
+scan. Its returned start is passed unchanged to the scan; the service never
+rereads the cursor. A reservation or commit error fails closed: recovery does
+not scan, invoke a handler, or fall back to a fixed, time-based, or
+process-local order. A process death after a successful reservation can burn
+one block, which is safe because the next successful sweep advances normally.
+
+The exact cyclic order is malformed active budgets, exhausted canonical
+`retry_wait`, canonical `pending`/due `retry_wait`, then stale `processing`.
+The scan still makes four separately bounded candidate SELECTs with
+deterministic `received_at, job_id` ordering inside each tier, then starts its
+round-robin emission at the committed tier. This is **cross-tier** fairness:
+with persistent runnable work, every tier is offered within
+`ceil(4 / min(limit, 4))` successful reservations. It does not promise
+per-row fairness behind a permanently lock-contended head. The staleness
+window is a **scan filter, never an authority**: a "stale" row whose lock is
+held is skipped. The candidate cap bounds returned rows/queries, not the
+physical index work required to find them. Reports counts by state plus one
+age — no identifiers.
 
 `max_attempts` is fixed at `3` and is not configurable. Malformed active budgets terminalize as `dead_letter` / `attempt_budget_invalid`, normalize `max_attempts` to `3`, clamp `attempt_count` to `0..3`, and scrub authority before the handler.
+
+R36 owns the test-schema bootstrap bump from v38 to v39 for `telegram_callback_recovery_cursor`.
 
 ---
 

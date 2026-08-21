@@ -4,10 +4,11 @@ Revision ID: 20260821_w5_callback_inbox
 Revises: 20260820_rob1290_reconcile
 Create Date: 2026-08-21
 
-Additive: creates one new table in the ``review`` schema. No existing table,
-column, constraint or index is altered, and nothing in ``review.order_proposals``
-or its satellites is touched -- the durable inbox reads none of them and writes
-none of them; it only decides *when* the existing callback core runs.
+Additive: creates the durable inbox and its PII-free recovery-order cursor in
+the ``review`` schema. No existing table, column, constraint or index is
+altered, and nothing in ``review.order_proposals`` or its satellites is touched
+-- the durable inbox reads none of them and writes none of them; it only
+decides *when* the existing callback core runs.
 
 Applying this migration changes no behaviour on its own. All three W5 gates
 (``ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED`` /
@@ -104,7 +105,8 @@ down_revision: str | Sequence[str] | None = "20260820_rob1290_reconcile"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_TABLE = "telegram_callback_inbox"
+_INBOX_TABLE = "telegram_callback_inbox"
+_CURSOR_TABLE = "telegram_callback_recovery_cursor"
 _SCHEMA = "review"
 
 # This migration is unmerged, so R32 changes its create-table CHECK directly.
@@ -224,7 +226,7 @@ _ACTIVE_RECONSTRUCTABLE = (
 def upgrade() -> None:
     """Create review.telegram_callback_inbox."""
     op.create_table(
-        _TABLE,
+        _INBOX_TABLE,
         sa.Column("id", sa.BigInteger(), nullable=False),
         sa.Column("job_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("update_digest", sa.Text(), nullable=False),
@@ -338,9 +340,27 @@ def upgrade() -> None:
     )
     op.create_index(
         "ix_telegram_callback_inbox_state_available",
-        _TABLE,
+        _INBOX_TABLE,
         ["state", "available_at"],
         unique=False,
+        schema=_SCHEMA,
+    )
+    op.create_table(
+        _CURSOR_TABLE,
+        sa.Column("id", sa.SmallInteger(), primary_key=True, nullable=False),
+        sa.Column("next_tier", sa.SmallInteger(), nullable=False),
+        sa.Column("updated_at", postgresql.TIMESTAMP(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "id = 1",
+            name=op.f("ck_telegram_callback_recovery_cursor_id"),
+        ),
+        sa.CheckConstraint(
+            "next_tier >= 0 AND next_tier < 4",
+            name=op.f("ck_telegram_callback_recovery_cursor_next_tier"),
+        ),
+        sa.PrimaryKeyConstraint(
+            "id", name=op.f("pk_telegram_callback_recovery_cursor")
+        ),
         schema=_SCHEMA,
     )
 
@@ -351,9 +371,10 @@ def downgrade() -> None:
     Safe only once the ingress gate is off and the backlog has drained; see
     the module docstring and the runbook's rollback section.
     """
+    op.drop_table(_CURSOR_TABLE, schema=_SCHEMA)
     op.drop_index(
         "ix_telegram_callback_inbox_state_available",
-        table_name=_TABLE,
+        table_name=_INBOX_TABLE,
         schema=_SCHEMA,
     )
-    op.drop_table(_TABLE, schema=_SCHEMA)
+    op.drop_table(_INBOX_TABLE, schema=_SCHEMA)

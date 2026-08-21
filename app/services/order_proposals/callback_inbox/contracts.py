@@ -157,16 +157,22 @@ def recovery_scan_cap(limit: int) -> int:
     return min(max(limit, 1) * RECOVERY_SCAN_OVERFETCH, RECOVERY_SCAN_HARD_CAP)
 
 
-#: Scan tiers, most urgent first. The number is the tier's rank in SQL.
-#:
-#: R34 keeps malformed active rows in their own due-independent tier.  It is
-#: not folded into exhausted: an invalid count/budget pair must be normalised
-#: in the same terminal write that scrubs authority, whether it is pending,
-#: processing, or a future retry.
+#: The canonical four-tier recovery ring. R34 keeps malformed active rows in
+#: their own due-independent tier; they are not folded into exhausted because
+#: an invalid count/budget pair must be normalised in the same terminal write
+#: that scrubs authority, whether it is pending, processing, or a future
+#: retry. The database cursor rotates *between* sweeps through this exact
+#: order; it does not alter the predicates or grant row authority.
 TIER_MALFORMED = 0
 TIER_EXHAUSTED = 1
 TIER_QUEUED = 2
 TIER_STALE = 3
+RECOVERY_TIER_RING: tuple[int, ...] = (
+    TIER_MALFORMED,
+    TIER_EXHAUSTED,
+    TIER_QUEUED,
+    TIER_STALE,
+)
 
 #: The share of one scan each non-queued tier is guaranteed.
 #:
