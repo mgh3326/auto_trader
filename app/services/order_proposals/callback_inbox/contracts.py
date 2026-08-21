@@ -121,8 +121,11 @@ RETRYABLE_HANDLER_REASONS: frozenset[str] = frozenset()
 
 
 class ErrorClass(StrEnum):
-    #: The mutating region was provably not entered (pre-core failure, or the
-    #: typed ``mutation_not_started`` flag). The only re-runnable class.
+    #: The mutating region was provably not entered: a worker-owned
+    #: ``PreCoreFailure`` raised above the ``handler_entered_at`` commit, and
+    #: re-confirmed by ``schedule_retry``'s conditional UPDATE against the
+    #: durable markers. The only re-runnable class. Nothing a handler returns
+    #: can reach it -- see :data:`IGNORED_HANDLER_RETRY_KEYS`.
     PRE_CORE_FAILURE = "pre_core_failure"
     #: The core was entered and did not report a verdict. Unsafe to replay.
     HANDLER_AMBIGUOUS = "handler_ambiguous"

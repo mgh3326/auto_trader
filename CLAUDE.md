@@ -620,7 +620,15 @@ Redis 를 잃으면 지연을 잃지 클릭을 잃지 않는다.
 재시도하면 합법으로 보이면서 두 번 제출된다.
 
 따라서 재실행 가능한 유일한 부류는 **코어에 진입하지 않았음이 증명된 실패**뿐:
-- `retry_wait` ← pre-core 실패, 또는 typed `mutation_not_started`(현 코어는 절대 안 씀)
+- `retry_wait` ← **worker-owned pre-core phase 실패만**(envelope 재구성/allowlist
+  재검증/notifier 해석 등, 코어 진입 전). `PreCoreFailure` 로만 발생하고,
+  `schedule_retry` 가 조건부 UPDATE 로 DB 에서 `state='processing'` +
+  `handler_entered_at`/`handler_completed_at`/`terminal_state_pending` 전부 NULL
+  임을 재확인해야 기록된다. 🔴 **핸들러가 반환하는
+  `mutation_not_started`/`retry`/`retryable`/`safe_to_retry` 는 진단용이며 재실행
+  권한을 전혀 만들지 못한다**(`IGNORED_HANDLER_RETRY_KEYS`) — 이미 mutate 한
+  핸들러도 똑같이 반환할 수 있기 때문이다. 코어 진입 마커 이후의 모든
+  예외·결과·reason 은 terminal(succeeded/discarded/dead_letter)일 뿐 재시도 없음
 - `succeeded` ← `handled=True` (`results: ["unverified"]` 포함 — 모호한 *전송*은
   proposal/order 상태머신 소관이고, 콜백 재실행은 해결이 아니라 중복 위험)
 - `discarded` ← 명시적 비즈니스 거부(nonce_replay/expired/guard_blocked/…), chat 취소,
@@ -628,10 +636,16 @@ Redis 를 잃으면 지연을 잃지 클릭을 잃지 않는다.
 - `dead_letter` ← 코어 진입 후 `internal_error`·크래시·contract 위반, 또는 3회 소진.
   **자동 replay 없음. 권한 필드 스크럽됨. 운영자가 새 승인 카드를 발급해야 한다.**
 
-내구 마커 2개가 프로세스가 죽은 뒤에도 이 판정을 가능하게 한다:
+내구 마커 3개가 프로세스가 죽은 뒤에도 이 판정을 가능하게 한다:
 `handler_entered_at`(코어 호출 직전 단독 커밋 — "진입 전 사망"과 "진입 후 사망"의
 유일한 내구 차이) / `handler_completed_at` + `terminal_state_pending`(코어 반환 직후
 단독 커밋 — 마지막 커밋을 잃으면 recovery 가 **재실행이 아니라 스크럽 보수**를 한다).
+🔴 세 마커는 **인과 순서**이고(완료⇒진입, 판정⇒진입+완료) DB CHECK
+(`ck_..._handler_marker_order`)가 강제하며, **단조(monotonic)** 다 — 어떤 API 도
+NULL 로 되돌리지 못한다. 재시도가 합법인 이유는 마커를 지웠기 때문이 아니라 CAS
+술어가 애초에 NULL 이었음을 증명했기 때문이다. 또한 `processing` 행은
+`started_at` 이 NOT NULL 이어야 한다(`ck_..._processing_started_at`) — NULL 이면
+staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는다.
 
 **데이터 최소화 = 스키마 속성**: raw Telegram `Update` 저장 안 함(JSON/JSONB/ARRAY
 컬럼 자체가 없음). terminal 도달 즉시 권한/PII 10개 컬럼 NULL — DB CHECK 2개가 강제

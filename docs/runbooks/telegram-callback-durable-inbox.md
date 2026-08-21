@@ -165,12 +165,20 @@ produces exactly that result — and the rollback leaves the nonce *unconsumed*
 and the published binding *still valid*. A retry would look perfectly legal and
 submit a second time.
 
-So the only re-runnable class is a failure that provably never entered the core:
+So the only re-runnable class is a failure that provably never entered the
+core -- and "provably" means two independent things must agree: the worker
+raised `PreCoreFailure` from the phase *above* the `mark_handler_entered`
+commit, **and** `schedule_retry`'s conditional UPDATE re-confirmed in the
+database that the row is still `processing` with `handler_entered_at`,
+`handler_completed_at` and `terminal_state_pending` all NULL. A handler
+cannot produce `PreCoreFailure` (by the time it runs, that phase is over, and
+an exception escaping it is `handler_exception`), and no value it returns
+grants anything:
 
 | situation | state | error class | handler re-invoked? |
 |---|---|---|---|
 | pre-core failure (envelope rebuild, notifier resolution) | `retry_wait` | `pre_core_failure` | yes, up to 3 attempts |
-| typed `mutation_not_started: True` from a handler | `retry_wait` | `pre_core_failure` | yes (today's core never sets it) |
+| a handler-returned `mutation_not_started` / `retry` / `retryable` / `safe_to_retry` | **ignored — buys no authority** | as per the row it actually lands in | never |
 | `handled: True` — including `results: ["unverified"]` | `succeeded` | — | never |
 | explicit business rejection (`nonce_replay`, `expired`, `guard_blocked`, …) | `discarded` | — | never |
 | `internal_error` after core entry | `dead_letter` | `handler_ambiguous` | never |
