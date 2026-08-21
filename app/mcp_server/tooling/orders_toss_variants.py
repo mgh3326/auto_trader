@@ -719,6 +719,60 @@ async def _loss_cut_position_scope(
     }, None
 
 
+async def _fresh_sellable_preflight(
+    client: TossReadClient,
+    *,
+    symbol: str,
+    requested_quantity: Decimal | None,
+    base: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Revalidate sellability directly at the broker immediately before send."""
+    try:
+        result = await client.sellable_quantity(symbol=symbol)
+        sellable = Decimal(str(result.sellable_quantity))
+    except Exception:  # noqa: BLE001 — sell sizing fails closed
+        # ROB-1310 R9 (B3): never surface the raw broker/provider exception
+        # text -- only the stable error_code and a fixed, sanitized message.
+        logger.warning(
+            "Fresh broker sellable quantity fetch failed for %s (fail closed)",
+            symbol,
+        )
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Failed to retrieve fresh broker sellable quantity for {symbol} "
+                "(fail closed)."
+            ),
+            "error_code": "fresh_sellable_unavailable",
+        }
+
+    if not sellable.is_finite() or sellable < Decimal("0"):
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Invalid fresh broker sellable quantity for {symbol}: {sellable} "
+                "(fail closed)."
+            ),
+            "error_code": "fresh_sellable_invalid",
+        }
+    if requested_quantity is not None and requested_quantity > sellable:
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Requested sell quantity {requested_quantity} exceeds fresh "
+                f"broker sellable quantity {sellable} (fail closed)."
+            ),
+            "error_code": "fresh_sellable_insufficient",
+        }
+    return {
+        "fresh_sellable_quantity": _stringify_decimal(sellable),
+        "sellable_quantity_source": "toss_broker_preflight",
+    }, None
+
+
 async def _opposite_pending_error(
     client: TossReadClient,
     symbol: str,
@@ -1395,6 +1449,25 @@ async def _toss_place_order_impl(
             "error": "toss_place_order requires confirm=True when dry_run=False.",
         }
 
+    # ROB-1310 R9 (B2): the explicit finite-positive SELL quantity gate must
+    # run before *any* Decimal arithmetic on the quantity, including the
+    # high-value KRW notional comparison below -- ``Decimal("NaN") >= ...``
+    # raises ``decimal.InvalidOperation`` instead of failing closed with the
+    # structured contract. Toss's orderAmount-only SELL shape has no
+    # broker-authoritative quantity contract; do not synthesize one from
+    # holdings, snapshots, or sellable caches.
+    if side == "sell" and (
+        quantity_dec is None
+        or not quantity_dec.is_finite()
+        or quantity_dec <= Decimal("0")
+    ):
+        return {
+            "success": False,
+            **base_response,
+            "error": "SELL orders require an explicit quantity.",
+            "error_code": "sell_quantity_required",
+        }
+
     # Guard: high-value KR order
     if (
         guard := _high_value_error(
@@ -1416,6 +1489,7 @@ async def _toss_place_order_impl(
         return mutation_gate
 
     async def execute_order(client: TossReadClient):
+        sellable_evidence: dict[str, Any] = {}
         # Guard: Warnings check
         guard_res = await check_warnings_guard(client, symbol, market=mkt, side=side)
         guard_warnings = _warning_payload(guard_res.warnings)
@@ -1450,7 +1524,9 @@ async def _toss_place_order_impl(
                 return sell_guard
 
         # Guard: NXT session preflight. Required mode fail-closes before POST;
-        # warn/optional log but proceed (fail-open on unknown session).
+        # warn/optional log but proceed (fail-open on unknown session). For a
+        # SELL, keep this ahead of the fresh sellable read so broker
+        # sellability remains the last validation before mutation.
         preflight = await _nxt_preflight_context(symbol, mkt)
         if preflight is not None:
             verdict, _ = preflight
@@ -1476,6 +1552,20 @@ async def _toss_place_order_impl(
                     verdict.session,
                     verdict.reason,
                 )
+
+        if side == "sell":
+            # ROB-1310: never consume the display sellable cache or shared
+            # portfolio snapshot for order sizing. Recheck Toss directly after
+            # the existing sell guards and before any mutation hook/POST.
+            sellable_evidence, sellable_error = await _fresh_sellable_preflight(
+                client,
+                symbol=symbol,
+                requested_quantity=quantity_dec,
+                base=base_response,
+            )
+            if sellable_error is not None:
+                return sellable_error
+            sellable_evidence = sellable_evidence or {}
 
         pre_send_hook = _toss_pre_send_hook.get()
 
@@ -1546,6 +1636,7 @@ async def _toss_place_order_impl(
                 "approval_hash_digest": ledger_approval_hash,
                 "warnings": guard_warnings,
                 "warnings_check_message": guard_res.error_message,
+                **sellable_evidence,
                 "message": (
                     "Toss live order accepted and recorded accepted-only; "
                     "run toss_reconcile_orders to book confirmed fills."
@@ -1706,6 +1797,22 @@ async def toss_modify_order(
                     "error": "Toss US order modify requires new_price.",
                 }
 
+        if side == "sell":
+            effective_quantity = (
+                new_quantity_dec if mkt == "kr" else orig_order.quantity
+            )
+            if (
+                effective_quantity is None
+                or not effective_quantity.is_finite()
+                or effective_quantity <= Decimal("0")
+            ):
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "SELL order modifications require a positive quantity.",
+                    "error_code": "sell_quantity_required",
+                }
+
         # ROB-561 — a KR limit reprice must snap to the KRX tick grid just like
         # a fresh place, otherwise the modify hits the same tick-size rejection.
         # Snap BEFORE the sell-loss guard so the guard validates the real price.
@@ -1739,6 +1846,8 @@ async def toss_modify_order(
             ) is not None:
                 return sell_guard
 
+        sellable_evidence: dict[str, Any] = {}
+
         if (
             high_value_guard := _high_value_error(
                 mkt,
@@ -1757,6 +1866,58 @@ async def toss_modify_order(
             )
             if mutation_gate is not None:
                 return mutation_gate
+            # ROB-1310 R9 (B6): required-mode NXT must gate every live
+            # replacement, not only SELL -- it previously lived inside
+            # ``if side == "sell":`` so a blocked required-mode verdict never
+            # stopped a KR BUY replacement before the broker POST. BUY must
+            # still never call fresh sellable, so that stays SELL-only below.
+            preflight = await _nxt_preflight_context(symbol, mkt)
+            if preflight is not None:
+                verdict, _ = preflight
+                if verdict.block:
+                    mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+                    if mode == "required":
+                        return {
+                            "success": False,
+                            **base_response,
+                            "error": (
+                                f"NXT session {verdict.session!r} does not support "
+                                f"{symbol} ({verdict.reason}); order not sent."
+                            ),
+                            "error_code": "nxt_session_not_tradable",
+                            "session": verdict.session,
+                            "alternatives": list(verdict.alternatives),
+                        }
+                    logger.warning(
+                        "NXT preflight advisory (mode=%s): symbol=%s side=%s "
+                        "session=%s reason=%s — proceeding with live send",
+                        mode,
+                        symbol,
+                        side,
+                        verdict.session,
+                        verdict.reason,
+                    )
+            if side == "sell":
+                # Toss US modify rejects ``quantity`` and the replacement
+                # inherits the original order quantity.  The official API
+                # contract does not document a reservation-adjusted delta, so
+                # compare the complete inherited quantity and fail closed when
+                # fresh sellable is lower.  This remains a direct broker
+                # preflight; snapshot/cache data is never sizing authority.
+                # Fresh sellability is deliberately the final validation
+                # before the replacement POST.
+                preflight_quantity = (
+                    new_quantity_dec if mkt == "kr" else orig_order.quantity
+                )
+                sellable_evidence, sellable_error = await _fresh_sellable_preflight(
+                    client,
+                    symbol=symbol,
+                    requested_quantity=preflight_quantity,
+                    base=base_response,
+                )
+                if sellable_error is not None:
+                    return sellable_error
+                sellable_evidence = sellable_evidence or {}
 
         if dry_run:
             return {
@@ -1800,6 +1961,7 @@ async def toss_modify_order(
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss modify returns a newly issued orderId; it is not the original order id.",
+                **sellable_evidence,
                 **ledger,
             }
         except Exception as exc:
@@ -2129,7 +2291,14 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "preview/submit identity and correlation are bound internally and "
             "cannot be supplied by MCP callers. Direct loss_cut is disabled; use "
             "order_proposal_create for Telegram two-click confirmation and a full "
-            "second-click preview/retrospective/slip/hash revalidation."
+            "second-click preview/retrospective/slip/hash revalidation. Every live "
+            "sell requires an explicit, finite, positive quantity: an "
+            "orderAmount-only sell is rejected with "
+            "error_code='sell_quantity_required' before any broker mutation, "
+            "because Toss's orderAmount shape carries no broker-authoritative "
+            "quantity and one must never be synthesized from holdings, "
+            "snapshots, or sellable caches. Live sells "
+            "also require a fresh Toss broker sellable-quantity preflight before POST."
         ),
     )(toss_place_order)
     mcp.tool(
@@ -2141,7 +2310,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true. KR modify requires both "
             "new_price and new_quantity. US modify requires new_price and "
             "rejects new_quantity. Sell reprices are blocked below "
-            "avg_purchase_price*1.01. Toss returns a newly issued replacement "
+            "avg_purchase_price*1.01 and live sells recheck broker sellable quantity. "
+            "Toss returns a newly issued replacement "
             "orderId for successful modify."
         ),
     )(toss_modify_order)

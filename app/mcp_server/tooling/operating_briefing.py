@@ -11,7 +11,7 @@ from app.mcp_server.tooling.pending_orders_snapshot import (
     collect_pending_orders_snapshot,
 )
 from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
-from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
+from app.mcp_server.tooling.portfolio_holdings import _get_portfolio_summary_impl
 from app.schemas.analysis_artifact import AnalysisArtifactMeta
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
@@ -21,6 +21,7 @@ from app.schemas.investment_reports import (
 from app.schemas.session_context import SessionContextResponse
 from app.services.account_routing import compact_cost_profile
 from app.services.analysis_artifact import AnalysisArtifactService
+from app.services.invest_home_service import PortfolioSnapshotUnavailableError
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
     _advisory_draft_profiles,
@@ -134,7 +135,9 @@ def _account_routability(
             "account_name": account.get("account_name"),
             "account_mode": account.get("account_mode"),
             "order_routable": account.get("order_routable"),
-            "position_count": len(account.get("positions") or []),
+            "position_count": account.get(
+                "position_count", len(account.get("positions") or [])
+            ),
         }
         if market in {"kr", "us"}:
             profile = compact_cost_profile(
@@ -281,9 +284,28 @@ async def get_operating_briefing_impl(
 ) -> dict[str, Any]:
     as_of = now_kst()
     effective_scope = _default_account_scope(market, account_scope)
-    holdings = await _get_holdings_impl(
-        **_holdings_kwargs(market, effective_scope, include_current_price)
-    )
+    # ROB-1310: briefing consumes a bounded summary read model. It must not
+    # reuse the full holdings projection or fan out to sellable/current-price
+    # endpoints; the shared Toss snapshot supplies only the balance metrics.
+    try:
+        holdings = await _get_portfolio_summary_impl(
+            **_holdings_kwargs(market, effective_scope, False)
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        # BLOCKER-2: a hung whole-snapshot owner past the hard wait bound
+        # must degrade the briefing's holdings section rather than raise a
+        # raw/unhandled error out of the run-start briefing entrypoint.
+        holdings = {
+            "accounts": [],
+            "errors": [
+                {
+                    "source": "portfolio_snapshot",
+                    "error": exc.error_code,
+                    "unavailable_reason": exc.reason,
+                    "degraded": True,
+                }
+            ],
+        }
     async with AsyncSessionLocal() as db:
         pending = await collect_pending_orders_snapshot(
             db,
@@ -445,7 +467,11 @@ async def get_operating_briefing_impl(
             "total_accounts": holdings.get("total_accounts"),
             "total_positions": holdings.get("total_positions"),
             "summary": holdings.get("summary"),
-            "top_movers": _top_movers(holdings),
+            "top_movers": (
+                list(holdings.get("top_movers") or [])
+                if "top_movers" in holdings
+                else _top_movers(holdings)
+            ),
             # ROB-541 — per-account routable/account_mode so a reference-only
             # (toss/manual) holding is distinguishable from a kis_live-sellable one.
             "accounts": _account_routability(

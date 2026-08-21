@@ -101,7 +101,17 @@ from app.services.brokers.kis.client import KISClient
 from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
 from app.services.daily_candles.read_service import cache_first_kr
 from app.services.daily_candles.repository import DailyCandlesRepository
+from app.services.invest_home_service import PortfolioSnapshotUnavailableError
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.portfolio_snapshot import (
+    deserialize_portfolio_snapshot,
+    fetch_uncached_portfolio_snapshot_payload,
+    portfolio_snapshot_scope,
+    portfolio_snapshot_to_mcp_positions,
+)
+from app.services.portfolio_snapshot_cache import (
+    get_shared_portfolio_snapshot_cache,
+)
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
     TossPortfolioPosition,
@@ -592,7 +602,7 @@ def _toss_api_position_to_mcp(position: TossPortfolioPosition) -> dict[str, Any]
 async def _collect_toss_api_positions(
     market_filter: str | None,
     *,
-    need_sellable: bool = True,
+    need_sellable: bool = False,
     fresh_sellable: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     if not bool(getattr(settings, "toss_api_enabled", False)):
@@ -600,12 +610,13 @@ async def _collect_toss_api_positions(
     if market_filter == "crypto":
         return [], [], False
 
-    # ROB-810/ROB-828: reuse the 600s Redis sellable cache shared with /invest
-    # home and other MCP processes. Confirmed fills and successful sell order
-    # mutations invalidate only their symbol. fresh_sellable=True forces a
-    # fresh per-symbol re-fetch. need_cash=False: this path never reads cash,
-    # so skip the ACCOUNT-limited buying_power fanout it would discard.
-    sellable_cache = None if fresh_sellable else get_shared_sellable_cache()
+    # ROB-1310: general holdings reads do not consume sellable quantities. The
+    # explicit opt-in remains available for broker-adjacent callers, but it is
+    # never reached by get_holdings/home/briefing. need_cash=False: this path
+    # never reads cash, so skip the ACCOUNT-limited buying_power fanout.
+    sellable_cache = (
+        None if fresh_sellable or not need_sellable else get_shared_sellable_cache()
+    )
     try:
         snapshot = await fetch_toss_portfolio_snapshot(
             need_sellable=need_sellable,
@@ -928,6 +939,55 @@ async def _fetch_price_map_for_positions(
     return price_map, price_errors, error_map, metadata_map
 
 
+async def _collect_whole_portfolio_positions(
+    *,
+    cache,
+    user_id: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read the canonical whole-portfolio snapshot for general consumers."""
+
+    scope = portfolio_snapshot_scope(
+        user_id=user_id,
+        include_paper=False,
+        paper_sources=None,
+    )
+
+    async def fetch_payload() -> dict[str, Any]:
+        return await fetch_uncached_portfolio_snapshot_payload(
+            user_id=user_id,
+            include_paper=False,
+            paper_sources=None,
+        )
+
+    response = None
+    last_error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            payload = await cache.get_or_fetch(scope, fetch_payload)
+        except TimeoutError:
+            # ROB-1310 BLOCKER-2: the bounded owner-wait hard bound must
+            # surface as a sanitized typed availability outcome to MCP
+            # holdings/briefing callers, not a raw TimeoutError.
+            raise PortfolioSnapshotUnavailableError("owner_wait_exhausted") from None
+        try:
+            response = deserialize_portfolio_snapshot(payload)
+            break
+        except Exception as exc:
+            last_error = exc
+            await cache.delete(scope, expected_payload=payload)
+    if response is None:
+        raise ValueError(
+            "portfolio snapshot recovery payload is invalid"
+        ) from last_error
+
+    positions = portfolio_snapshot_to_mcp_positions(response)
+    errors = [
+        {"source": warning.source, "error": warning.message, "degraded": True}
+        for warning in response.meta.warnings
+    ]
+    return positions, errors
+
+
 async def _collect_portfolio_positions(
     *,
     account: str | None,
@@ -936,8 +996,9 @@ async def _collect_portfolio_positions(
     account_name: str | None = None,
     user_id: int = _MCP_USER_ID,
     is_mock: bool = False,
-    need_sellable: bool = True,
+    need_sellable: bool = False,
     fresh_sellable: bool = False,
+    preserve_snapshot_metrics: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     # Short-circuit to paper handler when the caller asked for a paper account.
     from app.mcp_server.tooling.paper_portfolio_handler import (
@@ -990,7 +1051,7 @@ async def _collect_portfolio_positions(
                     _apply_price_refresh(position, price, metadata_map.get(key))
                 elif (error := error_map.get(key)) is not None and needs_refresh:
                     _mark_price_refresh_failed(position, error)
-        else:
+        elif not preserve_snapshot_metrics:
             for position in positions:
                 position["current_price"] = None
                 position["evaluation_amount"] = None
@@ -1011,40 +1072,52 @@ async def _collect_portfolio_positions(
         positions.sort(key=lambda p: (p["account"], p["market"], p["symbol"]))
         return positions, errors, market_filter, account
 
-    tasks: list[Any] = []
-    if market_filter != "crypto":
-        if is_mock:
-            tasks.append(_collect_kis_positions(market_filter, is_mock=True))
-        else:
-            tasks.append(_collect_kis_positions(market_filter))
-    if not is_mock:
-        if market_filter in (None, "crypto"):
-            tasks.append(_collect_upbit_positions(market_filter))
-        tasks.append(
-            _collect_manual_positions(user_id=user_id, market_filter=market_filter)
-        )
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
     positions: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-
-    for result in results:
-        if isinstance(result, BaseException):
-            if isinstance(result, UpbitSymbolUniverseLookupError):
-                raise result
-            errors.append({"source": "holdings", "error": str(result)})
-            continue
-        source_positions, source_errors = cast(
-            tuple[list[dict[str, Any]], list[dict[str, Any]]],
-            result,
+    whole_snapshot_used = False
+    snapshot_cache = get_shared_portfolio_snapshot_cache()
+    if not is_mock and not need_sellable and snapshot_cache.usable:
+        positions, errors = await _collect_whole_portfolio_positions(
+            cache=snapshot_cache,
+            user_id=user_id,
         )
-        positions.extend(source_positions)
-        errors.extend(source_errors)
+        whole_snapshot_used = True
+
+    if not whole_snapshot_used:
+        tasks: list[Any] = []
+        if market_filter != "crypto":
+            if is_mock:
+                tasks.append(_collect_kis_positions(market_filter, is_mock=True))
+            else:
+                tasks.append(_collect_kis_positions(market_filter))
+        if not is_mock:
+            if market_filter in (None, "crypto"):
+                tasks.append(_collect_upbit_positions(market_filter))
+            tasks.append(
+                _collect_manual_positions(user_id=user_id, market_filter=market_filter)
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                if isinstance(result, UpbitSymbolUniverseLookupError):
+                    raise result
+                errors.append({"source": "holdings", "error": str(result)})
+                continue
+            source_positions, source_errors = cast(
+                tuple[list[dict[str, Any]], list[dict[str, Any]]],
+                result,
+            )
+            positions.extend(source_positions)
+            errors.extend(source_errors)
 
     toss_api_positions: list[dict[str, Any]] = []
-    toss_api_errors: list[dict[str, Any]] = []
     toss_api_succeeded = False
-    if not is_mock and bool(getattr(settings, "toss_api_enabled", False)):
+    if (
+        not whole_snapshot_used
+        and not is_mock
+        and bool(getattr(settings, "toss_api_enabled", False))
+    ):
         (
             toss_api_positions,
             toss_api_errors,
@@ -1109,7 +1182,7 @@ async def _collect_portfolio_positions(
                 error = error_map.get(key)
                 if error is not None and needs_price_refresh:
                     _mark_price_refresh_failed(position, error)
-    else:
+    elif not preserve_snapshot_metrics:
         for position in positions:
             position["current_price"] = None
             position["evaluation_amount"] = None
@@ -1236,6 +1309,7 @@ async def _get_holdings_impl(
         include_current_price=include_current_price,
         account_name=account_name,
         is_mock=is_mock,
+        need_sellable=False,
         fresh_sellable=fresh_sellable,
     )
 
@@ -1439,6 +1513,105 @@ async def _get_holdings_impl(
     }
 
 
+def _summary_top_movers(
+    positions: list[dict[str, Any]], *, limit: int = 5
+) -> list[dict[str, Any]]:
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for position in positions:
+        profit_rate = _to_optional_float(position.get("profit_rate"))
+        if profit_rate is None:
+            continue
+        candidates.append((abs(profit_rate), position))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [
+        {
+            "symbol": position.get("symbol"),
+            "account": position.get("account"),
+            "profit_rate": position.get("profit_rate"),
+            "profit_loss": position.get("profit_loss"),
+            "evaluation_amount": position.get("evaluation_amount"),
+        }
+        for _, position in candidates[:limit]
+    ]
+
+
+async def _get_portfolio_summary_impl(
+    *,
+    account: str | None = None,
+    market: str | None = None,
+    include_current_price: bool = False,
+    account_name: str | None = None,
+    user_id: int = _MCP_USER_ID,
+    is_mock: bool = False,
+    routing_account_mode: str = "kis_live",
+) -> dict[str, Any]:
+    """Return bounded holdings metadata for briefing/calendar consumers.
+
+    ``include_current_price`` is accepted for call-site compatibility but this
+    read model intentionally never performs per-symbol quote enrichment. The
+    broker balance snapshot's own metrics are retained when available.
+    """
+    del include_current_price
+    (
+        positions,
+        errors,
+        resolved_market_filter,
+        resolved_account_filter,
+    ) = await _collect_portfolio_positions(
+        account=account,
+        market=market,
+        include_current_price=False,
+        account_name=account_name,
+        user_id=user_id,
+        is_mock=is_mock,
+        need_sellable=False,
+        preserve_snapshot_metrics=True,
+    )
+
+    grouped_accounts: dict[str, dict[str, Any]] = {}
+    held_pairs: list[tuple[str, str]] = []
+    for position in positions:
+        account_id = str(position["account"])
+        grouped = grouped_accounts.setdefault(
+            account_id,
+            {
+                "account": account_id,
+                "broker": position.get("broker"),
+                "account_name": position.get("account_name"),
+                "account_mode": _provenance_account_mode(
+                    broker=position.get("broker"),
+                    source=position.get("source"),
+                    routing_mode=routing_account_mode,
+                ),
+                "order_routable": _account_order_routable(
+                    source=position.get("source"),
+                    broker=position.get("broker"),
+                ),
+                "position_count": 0,
+            },
+        )
+        grouped["position_count"] += 1
+        held_pairs.append((str(position["market"]), str(position["symbol"])))
+
+    accounts = [grouped_accounts[key] for key in sorted(grouped_accounts)]
+    return {
+        "filters": {
+            "account": resolved_account_filter,
+            "account_name": account_name,
+            "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
+            "include_current_price": False,
+        },
+        "total_accounts": len(accounts),
+        "total_positions": len(positions),
+        # Snapshot metrics are retained without triggering a quote fanout.
+        "summary": _build_holdings_summary(positions, True),
+        "top_movers": _summary_top_movers(positions),
+        "accounts": accounts,
+        "held_pairs": held_pairs,
+        "errors": errors,
+    }
+
+
 async def _get_position_impl(
     *,
     symbol: str,
@@ -1479,6 +1652,7 @@ async def _get_position_impl(
             account=token,
             market=market,
             include_current_price=True,
+            need_sellable=False,
         )
     else:
         if routing.is_kis_mock:
@@ -1493,6 +1667,7 @@ async def _get_position_impl(
             market=market,
             include_current_price=True,
             is_mock=routing.is_kis_mock,
+            need_sellable=False,
         )
 
     matched_positions = [
@@ -1608,9 +1783,10 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "marked degraded=true during outages). "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings. "
-            "fresh_sellable=True bypasses the 600s Toss sellable-quantity Redis "
-            "cache and re-fetches per-symbol (default False reuses the shared "
-            "cache). "
+            "General holdings reads omit sellable_quantity; the deprecated "
+            "fresh_sellable flag is retained for compatibility and does not "
+            "enable broker sellable fanout. Live order tools perform their own "
+            "fresh broker preflight. "
         ),
     )
     async def get_holdings(
@@ -1804,6 +1980,7 @@ __all__ = [
     "_collect_portfolio_positions",
     "_get_indicators_impl",
     "_get_holdings_impl",
+    "_get_portfolio_summary_impl",
     "_get_position_impl",
     "_update_manual_holdings_impl",
 ]

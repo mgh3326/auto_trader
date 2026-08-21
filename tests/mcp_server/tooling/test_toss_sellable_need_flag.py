@@ -29,7 +29,9 @@ async def test_build_batch_position_index_requests_no_sellable(monkeypatch):
     assert captured["include_current_price"] is False
 
 
-async def test_collect_portfolio_positions_forwards_need_sellable_to_toss(monkeypatch):
+async def test_collect_portfolio_positions_defaults_to_no_sellable_and_allows_explicit_opt_in(
+    monkeypatch,
+):
     calls: list[bool] = []
 
     async def fake_fetch(*, need_sellable: bool = True, **_):
@@ -59,19 +61,23 @@ async def test_collect_portfolio_positions_forwards_need_sellable_to_toss(monkey
     monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", _empty)
     monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", _empty)
 
-    # Default path keeps sellable (MCP / sell-classification contract).
+    # General holdings reads omit sellable by default.
     await portfolio_holdings._collect_portfolio_positions(
         account=None, market=None, include_current_price=False
     )
-    # Explicit opt-out threads through.
+    # Explicit opt-out remains no-op, and the lower-level opt-in is preserved
+    # for the broker/order-adjacent caller only.
     await portfolio_holdings._collect_portfolio_positions(
         account=None, market=None, include_current_price=False, need_sellable=False
     )
+    await portfolio_holdings._collect_portfolio_positions(
+        account=None, market=None, include_current_price=False, need_sellable=True
+    )
 
-    assert calls == [True, False]
+    assert calls == [False, False, True]
 
 
-async def test_collect_toss_api_positions_defaults_need_sellable_true(monkeypatch):
+async def test_collect_toss_api_positions_defaults_need_sellable_false(monkeypatch):
     seen: list[bool] = []
 
     async def fake_fetch(*, need_sellable: bool = True, **_):
@@ -88,11 +94,12 @@ async def test_collect_toss_api_positions_defaults_need_sellable_true(monkeypatc
 
     await portfolio_holdings._collect_toss_api_positions(None)
     await portfolio_holdings._collect_toss_api_positions(None, need_sellable=False)
+    await portfolio_holdings._collect_toss_api_positions(None, need_sellable=True)
 
-    assert seen == [True, False]
+    assert seen == [False, False, True]
 
 
-async def test_collect_toss_api_positions_uses_shared_cache_and_skips_cash(monkeypatch):
+async def test_collect_toss_api_positions_skips_sellable_cache_and_cash(monkeypatch):
     seen: dict[str, Any] = {}
     sentinel_cache = object()
 
@@ -113,14 +120,15 @@ async def test_collect_toss_api_positions_uses_shared_cache_and_skips_cash(monke
         portfolio_holdings, "get_shared_sellable_cache", lambda: sentinel_cache
     )
 
-    # Default: shared cache is used; cash fanout skipped.
+    # General reads do not consult the sellable cache at all.
     await portfolio_holdings._collect_toss_api_positions(None)
-    assert seen["need_sellable"] is True
+    assert seen["need_sellable"] is False
     assert seen["need_cash"] is False
-    assert seen["sellable_cache"] is sentinel_cache
+    assert seen["sellable_cache"] is None
 
-    # fresh_sellable=True bypasses the cache (fresh fanout), still skips cash.
+    # The legacy flag cannot re-enable sellable reads on a general path.
     await portfolio_holdings._collect_toss_api_positions(None, fresh_sellable=True)
+    assert seen["need_sellable"] is False
     assert seen["need_cash"] is False
     assert seen["sellable_cache"] is None
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -146,6 +147,8 @@ class MockTossClient:
         self.prices_list = []
         self.warnings_list = []
         self.get_order_calls = 0
+        self.sellable_calls = []
+        self.sellable_quantity_value = Decimal("10")
 
         if monkeypatch:
             monkeypatch.setattr(
@@ -177,6 +180,10 @@ class MockTossClient:
         for item in self.holdings_list:
             items.append(SimpleNamespace(**item))
         return SimpleNamespace(items=items, raw_overview={})
+
+    async def sellable_quantity(self, *, symbol):
+        self.sellable_calls.append(symbol)
+        return SimpleNamespace(sellable_quantity=self.sellable_quantity_value)
 
     async def list_orders(self, *, status, symbol=None, **kwargs):
         from types import SimpleNamespace
@@ -459,6 +466,388 @@ async def test_place_sell_blocks_below_avg_floor_for_limit_and_market(monkeypatc
     )
     assert res_market["success"] is False
     assert "below average purchase price floor" in res_market["error"]
+
+
+@pytest.mark.asyncio
+async def test_sell_preflight_ignores_warm_cache_and_rechecks_fresh_broker_sellable(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100.0"),
+            "last_price": Decimal("110.0"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("4")
+
+    # A stale display cache must never authorize a sell larger than the fresh
+    # broker quantity.
+    warm_cache = TossSellableCache(
+        ttl_seconds=600,
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+    )
+    await warm_cache.put("AAPL", Decimal("10"))
+    monkeypatch.setattr(otv, "get_shared_sellable_cache", lambda: warm_cache)
+    monkeypatch.setattr(otv, "_invalidate_sellable_after_sell_mutation", AsyncMock())
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(
+            return_value={
+                "ledger_id": 1,
+                "broker_status": "accepted",
+                "fill_recorded": False,
+                "journal_created": False,
+            }
+        ),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity="5",
+        price="110",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert "sellable" in result["error"].lower()
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert mock_client.placed_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_us_sell_order_amount_without_quantity_fails_before_mutation(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("110"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("0")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity=None,
+        price="110",
+        order_amount="1",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["mutation_sent"] is False
+    assert result["error_code"] == "sell_quantity_required"
+    assert mock_client.sellable_calls == []
+    assert mock_client.placed_payloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quantity", ["0", "-1"])
+async def test_sell_rejects_non_positive_quantity_before_mutation(
+    monkeypatch, quantity: str
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("110"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("10")
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        quantity=quantity,
+        price="110",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["mutation_sent"] is False
+    assert result["error_code"] == "sell_quantity_required"
+    assert mock_client.sellable_calls == []
+    assert mock_client.placed_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_us_sell_modify_preflight_compares_inherited_original_quantity(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("150"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    # Toss US modify rejects new_quantity, so the replacement inherits the
+    # original order quantity. A fresh broker result below that quantity must
+    # fail closed before the replacement POST; None must not skip the compare.
+    mock_client.sellable_quantity_value = Decimal("4")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert mock_client.placed_payloads == []
+    assert result["success"] is False
+    assert result["error_code"] == "fresh_sellable_insufficient"
+
+
+@pytest.mark.asyncio
+async def test_place_sell_runs_nxt_before_fresh_sellable_and_post(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    events: list[str] = []
+
+    async def fake_warnings(*args, **kwargs):
+        events.append("warnings")
+        return SimpleNamespace(ok=True, warnings=[], error_message=None)
+
+    async def fake_opposite(*args, **kwargs):
+        events.append("opposite")
+        return None
+
+    async def fake_loss(*args, **kwargs):
+        events.append("loss")
+        return None
+
+    async def fake_nxt(*args, **kwargs):
+        events.append("nxt")
+        return None
+
+    monkeypatch.setattr(otv, "check_warnings_guard", fake_warnings)
+    monkeypatch.setattr(otv, "_opposite_pending_error", fake_opposite)
+    monkeypatch.setattr(otv, "_sell_loss_guard", fake_loss)
+    monkeypatch.setattr(otv, "_nxt_preflight_context", fake_nxt)
+
+    mock_client = MockTossClient(monkeypatch)
+    original_sellable = mock_client.sellable_quantity
+    original_place = mock_client.place_order
+
+    async def fresh_sellable(*, symbol):
+        events.append("sellable")
+        return await original_sellable(symbol=symbol)
+
+    async def post(payload):
+        events.append("post")
+        return await original_place(payload)
+
+    monkeypatch.setattr(mock_client, "sellable_quantity", fresh_sellable)
+    monkeypatch.setattr(mock_client, "place_order", post)
+
+    warm_cache = TossSellableCache(
+        ttl_seconds=600,
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+    )
+    await warm_cache.put("005930", Decimal("999"))
+    monkeypatch.setattr(otv, "get_shared_sellable_cache", lambda: warm_cache)
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="005930",
+        side="sell",
+        quantity="1",
+        price="50000",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert mock_client.sellable_calls == ["005930"]
+    assert events == ["warnings", "opposite", "loss", "nxt", "sellable", "post"]
+
+
+@pytest.mark.asyncio
+async def test_modify_sell_runs_nxt_before_fresh_sellable_and_replacement_post(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    events: list[str] = []
+
+    async def fake_loss(*args, **kwargs):
+        events.append("loss")
+        return None
+
+    async def fake_nxt(*args, **kwargs):
+        events.append("nxt")
+        return None
+
+    monkeypatch.setattr(otv, "_sell_loss_guard", fake_loss)
+    monkeypatch.setattr(otv, "_nxt_preflight_context", fake_nxt)
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "005930",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("50000"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "KRW",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+    original_sellable = mock_client.sellable_quantity
+    original_modify = mock_client.modify_order
+
+    async def fresh_sellable(*, symbol):
+        events.append("sellable")
+        return await original_sellable(symbol=symbol)
+
+    async def replacement(order_id, payload):
+        events.append("post")
+        return await original_modify(order_id, payload)
+
+    monkeypatch.setattr(mock_client, "sellable_quantity", fresh_sellable)
+    monkeypatch.setattr(mock_client, "modify_order", replacement)
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="50000",
+        new_quantity="5",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert mock_client.sellable_calls == ["005930"]
+    assert events == ["loss", "nxt", "sellable", "post"]
 
 
 @pytest.mark.asyncio
@@ -2840,3 +3229,372 @@ async def test_client_order_id_same_day_stable_next_day_new(monkeypatch):
     cid2 = day2["payload_preview"]["clientOrderId"]
     assert cid1a == cid1b  # same trading day -> broker/ledger dedupe key
     assert cid1a != cid2  # next trading day -> new order allowed
+
+
+# --------------------------------------------------------------------------
+# ROB-1310 R7: positive sell-preflight contract pins + documentation sync.
+# Fake client only; no broker, credential, or network access.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_sell_success_reports_fresh_sellable_evidence(monkeypatch):
+    """A successful live sell must publish the broker-preflight evidence that
+    authorized its size, so the response cannot be confused with a cached or
+    snapshot-derived sizing decision."""
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("110"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("10")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity="4",
+        price="150",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert result["mutation_sent"] is True
+    # The fresh broker read happened, and its result is the published authority.
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert result["fresh_sellable_quantity"] == "10"
+    assert result["sellable_quantity_source"] == "toss_broker_preflight"
+
+
+@pytest.mark.asyncio
+async def test_us_sell_modify_success_reports_fresh_sellable_evidence(monkeypatch):
+    """The modify replacement path publishes the same preflight evidence."""
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-123",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("150.0"),
+            "quantity": Decimal("4"),
+            "order_amount": None,
+            "currency": "USD",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("150"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("10")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert mock_client.sellable_calls == ["AAPL"]
+    assert result["fresh_sellable_quantity"] == "10"
+    assert result["sellable_quantity_source"] == "toss_broker_preflight"
+
+
+@pytest.mark.unit
+def test_live_sell_explicit_quantity_requirement_is_documented():
+    """ROB-1310 R7: live SELL placement rejects orderAmount-only requests
+    before any broker mutation. The public MCP surfaces must say so."""
+    from pathlib import Path
+
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    registered: dict[str, str] = {}
+
+    class _RecordingMCP:
+        def tool(self, *, name: str, description: str = "", **_kwargs):
+            registered[name] = description
+
+            def _decorator(fn):
+                return fn
+
+            return _decorator
+
+    otv.register_toss_live_order_tools(_RecordingMCP())
+
+    place_description = registered["toss_place_order"]
+    assert "quantity" in place_description
+    assert "orderAmount" in place_description
+    assert "sell" in place_description.lower()
+
+    readme = Path(otv.__file__).resolve().parents[1] / "README.md"
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "orderAmount-only" in readme_text
+    assert "sell_quantity_required" in readme_text
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B2 — every non-finite/non-positive live SELL quantity must be
+# rejected by the structured sell_quantity_required gate *before* the
+# high-value KRW notional comparison, which raises decimal.InvalidOperation
+# on a NaN quantity.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quantity", ["NaN", "Infinity", "-Infinity"])
+async def test_kr_sell_rejects_non_finite_quantity_before_high_value_check(
+    monkeypatch, quantity: str
+):
+    """ROB-1310 R9 / B2 (R8 verifier blocker 2).
+
+    A non-finite Decimal SELL quantity -- NaN in particular -- must be
+    rejected by the explicit finite-positive SELL gate before the high-value
+    KRW notional comparison, which raises decimal.InvalidOperation on NaN.
+    The reject must be the same structured sell_quantity_required failure as
+    every other invalid SELL quantity, with zero client/broker calls.
+    """
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "005930",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("60000"),
+            "last_price": Decimal("70000"),
+            "name": "삼성전자",
+            "market_country": "KR",
+            "currency": "KRW",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("10")
+
+    result = await toss_place_order(
+        symbol="005930",
+        side="sell",
+        quantity=quantity,
+        price="70000",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["mutation_sent"] is False
+    assert result.get("error_code") == "sell_quantity_required"
+    assert mock_client.sellable_calls == []
+    assert mock_client.placed_payloads == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B3 — a raw broker exception from the fresh sellable-quantity
+# preflight must never reach the response error text or the log.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fresh_sellable_preflight_failure_sanitizes_broker_exception(
+    monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    """ROB-1310 R9 / B3 (R8 verifier blocker 3, sellable preflight half).
+
+    A raw broker exception from the fresh sellable-quantity preflight must
+    never reach the response error text or the log -- only the stable
+    fresh_sellable_unavailable error code and a fixed message.
+    """
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    fake_secret_marker = "FAKE_SECRET_h9k2z_do_not_leak"
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "005930",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("60000"),
+            "last_price": Decimal("70000"),
+            "name": "삼성전자",
+            "market_country": "KR",
+            "currency": "KRW",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+
+    async def failing_sellable(*, symbol):
+        raise RuntimeError(f"broker exploded: {fake_secret_marker}")
+
+    monkeypatch.setattr(mock_client, "sellable_quantity", failing_sellable)
+
+    with caplog.at_level("WARNING"):
+        result = await toss_place_order(
+            symbol="005930",
+            side="sell",
+            quantity="1",
+            price="70000",
+            market="kr",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+        )
+
+    assert result["success"] is False
+    assert result["error_code"] == "fresh_sellable_unavailable"
+    assert fake_secret_marker not in json.dumps(result)
+    assert mock_client.placed_payloads == []
+    for record in caplog.records:
+        assert fake_secret_marker not in record.getMessage()
+        if record.exc_text:
+            assert fake_secret_marker not in record.exc_text
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B6 — a required-mode blocked NXT verdict must stop a KR BUY
+# replacement before the broker modify POST/ledger, exactly like it already
+# does for place. The NXT preflight was nested inside `if side == "sell":`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_modify_buy_replacement_blocked_by_required_nxt_mode_before_broker_post(
+    monkeypatch,
+):
+    """ROB-1310 R9 / B6 (R8 verifier blocker 6 / review 3826407059).
+
+    The NXT preflight is nested inside ``if side == "sell":`` in live modify,
+    so a required-mode blocked verdict never runs for a BUY replacement. A
+    blocked required-mode verdict must stop a KR BUY modify before the
+    broker modify POST/ledger.
+    """
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    monkeypatch.setattr(settings, "toss_nxt_preflight_mode", "required")
+
+    nxt_calls: list[str] = []
+
+    async def blocked_nxt(symbol, market, **kwargs):
+        nxt_calls.append(symbol)
+        verdict = SimpleNamespace(
+            block=True,
+            session="NXT",
+            reason="not_supported",
+            alternatives=[],
+        )
+        return verdict, None
+
+    monkeypatch.setattr(otv, "_nxt_preflight_context", blocked_nxt)
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.orders_list = [
+        {
+            "order_id": "orig-ord-buy-1",
+            "symbol": "005930",
+            "side": "BUY",
+            "status": "OPEN",
+            "order_type": "LIMIT",
+            "time_in_force": "DAY",
+            "price": Decimal("70000"),
+            "quantity": Decimal("10"),
+            "order_amount": None,
+            "currency": "KRW",
+            "ordered_at": "2026-06-12T00:00:00Z",
+            "canceled_at": None,
+            "execution": {},
+        }
+    ]
+
+    result = await toss_modify_order(
+        order_id="orig-ord-buy-1",
+        new_price="70500",
+        new_quantity="10",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert nxt_calls == ["005930"]
+    assert result["success"] is False
+    assert result["error_code"] == "nxt_session_not_tradable"
+    assert result["mutation_sent"] is False
+    assert mock_client.placed_payloads == []
+    assert mock_client.sellable_calls == []

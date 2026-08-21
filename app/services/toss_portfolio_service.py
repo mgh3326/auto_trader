@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
@@ -10,7 +12,10 @@ import sentry_sdk
 
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.dto import TossSellableQuantity
+from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
 from app.services.toss_sellable_cache import TossSellableCache
+
+logger = logging.getLogger(__name__)
 
 
 class TossPortfolioClient(Protocol):
@@ -76,6 +81,30 @@ def _decimal_dict_value(raw: dict[str, Any], key: str) -> Decimal | None:
     return value if isinstance(value, Decimal) else None
 
 
+def _injected_client_snapshot_scope(client: Any) -> str | None:
+    """Hashed, non-secret scope for an explicitly injected client, if trusted.
+
+    ROB-1310 R10 (B5): the process-shared snapshot cache's default scope is
+    derived from the process's own configured settings
+    (``_snapshot_cache_scope``) and is only correct for a client
+    ``fetch_toss_portfolio_snapshot`` created itself from those same
+    settings. An explicitly injected client (a different account, a
+    differently-configured client, or a test fake) has no relationship to
+    that scope at all. Such a client may still opt into sharing the
+    process-global cache, but only by declaring its own trustworthy identity
+    through the ``snapshot_scope_identity`` attribute/property (see
+    ``TossReadClient.snapshot_scope_identity``). A client without one --
+    including every fake/mock that predates this protocol -- returns
+    ``None`` here and must not be scoped at all; see the caller for the
+    bypass this triggers. The identity is always hashed before use: the raw
+    string must never appear in a Redis key, log, or error.
+    """
+    identity = getattr(client, "snapshot_scope_identity", None)
+    if not isinstance(identity, str) or not identity.strip():
+        return None
+    return hashlib.sha256(identity.strip().encode("utf-8")).hexdigest()[:16]
+
+
 async def fetch_toss_cash_snapshot(
     *,
     client: TossPortfolioClient | None = None,
@@ -107,12 +136,18 @@ async def fetch_toss_cash_snapshot(
         errors: list[dict[str, Any]] = []
         for currency, result in zip(("KRW", "USD"), buying_power_results, strict=True):
             if isinstance(result, BaseException):
+                # ROB-1310 R9 (B3): never persist the raw broker/provider
+                # exception text -- this list flows into the shared Redis
+                # cash cache payload (fetch_cash_payload) and is replayed
+                # verbatim on every later cache hit. A fixed, sanitized code
+                # is the only thing that may end up there or in the log.
+                logger.warning("Toss buying_power fetch failed for %s", currency)
                 errors.append(
                     {
                         "source": "toss_api",
                         "stage": "buying_power",
                         "currency": currency,
-                        "error": str(result),
+                        "error": "toss_buying_power_unavailable",
                     }
                 )
                 continue
@@ -131,16 +166,13 @@ async def fetch_toss_cash_snapshot(
             await active_client.aclose()
 
 
-async def fetch_toss_portfolio_snapshot(
+async def _fetch_toss_portfolio_snapshot_uncached(
     *,
-    need_sellable: bool = True,
-    need_cash: bool = True,
+    active_client: TossPortfolioClient,
+    need_sellable: bool,
+    need_cash: bool,
     sellable_cache: TossSellableCache | None = None,
-    client: TossPortfolioClient | None = None,
 ) -> TossPortfolioSnapshot:
-    created_client = client is None
-    active_client: TossPortfolioClient = client or TossReadClient.from_settings()
-
     # ROB-707: the cash (buying-power) snapshot is independent of holdings, so
     # kick it off concurrently with the holdings/sellable chain instead of
     # awaiting it serially after the position loop. Output is unchanged; only
@@ -302,5 +334,329 @@ async def fetch_toss_portfolio_snapshot(
             cash_task.cancel()
             with contextlib.suppress(BaseException):
                 await cash_task
+
+
+def _position_to_snapshot_cache(position: TossPortfolioPosition) -> dict[str, Any]:
+    """Serialize only the non-sellable portfolio read model."""
+    return {
+        "account": position.account,
+        "account_name": position.account_name,
+        "broker": position.broker,
+        "source": position.source,
+        "instrument_type": position.instrument_type,
+        "market": position.market,
+        "symbol": position.symbol,
+        "name": position.name,
+        "quantity": str(position.quantity),
+        "avg_buy_price": str(position.avg_buy_price),
+        "current_price": str(position.current_price),
+        "evaluation_amount": (
+            str(position.evaluation_amount)
+            if position.evaluation_amount is not None
+            else None
+        ),
+        "profit_loss": (
+            str(position.profit_loss) if position.profit_loss is not None else None
+        ),
+        "profit_rate": (
+            str(position.profit_rate) if position.profit_rate is not None else None
+        ),
+    }
+
+
+def _decimal_from_snapshot_cache(raw: Any, *, field: str) -> Decimal:
+    if raw is None:
+        raise ValueError(f"Toss snapshot cache missing {field}")
+    try:
+        value = Decimal(str(raw))
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        # decimal.InvalidOperation derives from ArithmeticError, not
+        # ValueError: without it a corrupt cached decimal escapes this
+        # converter untyped and reads as an upstream failure downstream.
+        raise ValueError(f"Toss snapshot cache has invalid {field}") from exc
+    if not value.is_finite():
+        raise ValueError(f"Toss snapshot cache has non-finite {field}")
+    return value
+
+
+def _optional_decimal_from_snapshot_cache(raw: Any, *, field: str) -> Decimal | None:
+    if raw is None:
+        return None
+    return _decimal_from_snapshot_cache(raw, field=field)
+
+
+def _contains_forbidden_sellable_key(value: Any) -> bool:
+    """Reject every sellability spelling before parsing a cached position."""
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = "".join(char for char in str(key).lower() if char.isalnum())
+            if "sellable" in normalized or normalized in {
+                "pendingsellquantity",
+                "pendingquantity",
+            }:
+                return True
+            if _contains_forbidden_sellable_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_forbidden_sellable_key(item) for item in value)
+    return False
+
+
+def _position_from_snapshot_cache(raw: Any) -> TossPortfolioPosition:
+    if not isinstance(raw, dict):
+        raise ValueError("Toss snapshot cache position is not an object")
+    # Any sellability key, including a null value or a nested legacy spelling,
+    # is a contract violation.  It must not become reconstructible order
+    # authority through a future parser change.
+    if _contains_forbidden_sellable_key(raw):
+        raise ValueError("Toss snapshot cache contains forbidden sellable field")
+    try:
+        return TossPortfolioPosition(
+            account=str(raw["account"]),
+            account_name=str(raw["account_name"]),
+            broker=str(raw["broker"]),
+            source=str(raw["source"]),
+            instrument_type=str(raw["instrument_type"]),
+            market=str(raw["market"]),
+            symbol=str(raw["symbol"]),
+            name=str(raw["name"]),
+            quantity=_decimal_from_snapshot_cache(
+                raw.get("quantity"), field="quantity"
+            ),
+            avg_buy_price=_decimal_from_snapshot_cache(
+                raw.get("avg_buy_price"), field="avg_buy_price"
+            ),
+            current_price=_decimal_from_snapshot_cache(
+                raw.get("current_price"), field="current_price"
+            ),
+            evaluation_amount=_optional_decimal_from_snapshot_cache(
+                raw.get("evaluation_amount"), field="evaluation_amount"
+            ),
+            profit_loss=_optional_decimal_from_snapshot_cache(
+                raw.get("profit_loss"), field="profit_loss"
+            ),
+            profit_rate=_optional_decimal_from_snapshot_cache(
+                raw.get("profit_rate"), field="profit_rate"
+            ),
+            sellable_quantity=None,
+        )
+    except KeyError as exc:
+        raise ValueError("Toss snapshot cache position is incomplete") from exc
+
+
+def _positions_from_snapshot_cache(
+    payload: dict[str, Any],
+) -> list[TossPortfolioPosition]:
+    raw_positions = payload.get("positions")
+    if not isinstance(raw_positions, list):
+        raise ValueError("Toss snapshot cache positions payload is invalid")
+    return [_position_from_snapshot_cache(raw) for raw in raw_positions]
+
+
+def _cash_from_snapshot_cache(payload: dict[str, Any]) -> TossCashSnapshot:
+    raw_errors = payload.get("errors", [])
+    if not isinstance(raw_errors, list):
+        raise ValueError("Toss cash snapshot cache errors payload is invalid")
+    return TossCashSnapshot(
+        cash_krw=_optional_decimal_from_snapshot_cache(
+            payload.get("cash_krw"), field="cash_krw"
+        ),
+        cash_usd=_optional_decimal_from_snapshot_cache(
+            payload.get("cash_usd"), field="cash_usd"
+        ),
+        errors=[item for item in raw_errors if isinstance(item, dict)],
+    )
+
+
+async def fetch_toss_portfolio_snapshot(
+    *,
+    need_sellable: bool = False,
+    need_cash: bool = True,
+    sellable_cache: TossSellableCache | None = None,
+    client: TossPortfolioClient | None = None,
+    snapshot_cache: TossPortfolioSnapshotCache | None = None,
+    use_shared_snapshot: bool | None = None,
+) -> TossPortfolioSnapshot:
+    """Fetch the Toss portfolio read model.
+
+    General reads default to the process-shared Redis snapshot and never call
+    the broker sellable endpoint.  ``need_sellable=True`` is an explicit
+    broker-adjacent opt-in and always bypasses the shared snapshot/cache so a
+    caller cannot accidentally use stale data for an order decision.
+    """
+    created_client = client is None
+    active_client: TossPortfolioClient = client or TossReadClient.from_settings()
+
+    if use_shared_snapshot is None:
+        use_shared_snapshot = created_client and not need_sellable
+    if need_sellable:
+        use_shared_snapshot = False
+
+    positions_scope = "positions"
+    cash_scope = "cash"
+    if use_shared_snapshot and not created_client and snapshot_cache is None:
+        # ROB-1310 R10 (B5): an explicitly injected client with no explicit
+        # snapshot_cache would otherwise fall through to the process-global,
+        # settings-derived singleton below -- a scope that has nothing to do
+        # with this client's actual identity. Only a client that declares a
+        # trustworthy scope may share that singleton (namespaced further by
+        # its own hashed identity, never the global scope alone); a client
+        # without one must not share/fall back at all.
+        injected_scope = _injected_client_snapshot_scope(active_client)
+        if injected_scope is None:
+            use_shared_snapshot = False
+        else:
+            positions_scope = f"{injected_scope}:positions"
+            cash_scope = f"{injected_scope}:cash"
+
+    try:
+        if use_shared_snapshot:
+            if snapshot_cache is None:
+                from app.services.toss_portfolio_snapshot_cache import (
+                    get_shared_portfolio_snapshot_cache,
+                )
+
+                snapshot_cache = get_shared_portfolio_snapshot_cache()
+
+            async def fetch_positions_payload() -> dict[str, Any]:
+                snapshot = await _fetch_toss_portfolio_snapshot_uncached(
+                    active_client=active_client,
+                    need_sellable=False,
+                    need_cash=False,
+                )
+                return {
+                    "positions": [
+                        _position_to_snapshot_cache(position)
+                        for position in snapshot.positions
+                    ]
+                }
+
+            position_task = asyncio.create_task(
+                snapshot_cache.get_or_fetch(positions_scope, fetch_positions_payload)
+            )
+
+            async def fetch_cash_payload() -> dict[str, Any]:
+                cash = await fetch_toss_cash_snapshot(client=active_client)
+                return {
+                    "cash_krw": (
+                        str(cash.cash_krw) if cash.cash_krw is not None else None
+                    ),
+                    "cash_usd": (
+                        str(cash.cash_usd) if cash.cash_usd is not None else None
+                    ),
+                    "errors": cash.errors,
+                }
+
+            cash_task: asyncio.Task[dict[str, Any]] | None = None
+            if need_cash:
+                cash_task = asyncio.create_task(
+                    snapshot_cache.get_or_fetch(cash_scope, fetch_cash_payload)
+                )
+
+            try:
+                # ROB-1310: an upstream fetch failure is *not* corrupt-cache
+                # evidence. Only a deserialization failure may CAS-delete and
+                # re-enter the shared singleflight; a broker/Redis fetch error
+                # propagates after a single fanout so an outage is not
+                # amplified into repeated holdings/buying_power fanouts.
+                positions: list[TossPortfolioPosition] | None = None
+                for attempt in range(2):
+                    positions_payload = (
+                        await position_task
+                        if attempt == 0
+                        else await snapshot_cache.get_or_fetch(
+                            positions_scope, fetch_positions_payload
+                        )
+                    )
+                    try:
+                        positions = _positions_from_snapshot_cache(positions_payload)
+                        break
+                    except Exception as exc:  # noqa: BLE001 — corrupt cache only
+                        logger.warning(
+                            "Toss portfolio snapshot cache payload invalid (%s)",
+                            type(exc).__name__,
+                        )
+                        if isinstance(positions_payload, dict):
+                            await snapshot_cache.delete(
+                                positions_scope,
+                                expected_payload=positions_payload,
+                            )
+                if positions is None:
+                    raise ValueError(
+                        "Toss portfolio snapshot recovery payload is invalid"
+                    )
+
+                cash_snapshot = TossCashSnapshot()
+                cash_errors: list[dict[str, Any]] = []
+                if cash_task is not None:
+                    parsed_cash: TossCashSnapshot | None = None
+                    for attempt in range(2):
+                        cash_payload = (
+                            await cash_task
+                            if attempt == 0
+                            else await snapshot_cache.get_or_fetch(
+                                cash_scope, fetch_cash_payload
+                            )
+                        )
+                        try:
+                            parsed_cash = _cash_from_snapshot_cache(cash_payload)
+                            break
+                        except Exception as exc:  # noqa: BLE001 — corrupt cache only
+                            logger.warning(
+                                "Toss cash snapshot cache payload invalid (%s)",
+                                type(exc).__name__,
+                            )
+                            if isinstance(cash_payload, dict):
+                                await snapshot_cache.delete(
+                                    cash_scope,
+                                    expected_payload=cash_payload,
+                                )
+                    if parsed_cash is None:
+                        # ROB-1310 R8: the positions above are already valid.
+                        # Raising here made TossApiHomeReader degrade the whole
+                        # Toss source to empty accounts/holdings over a
+                        # cash-only corruption. Report cash as unknown -- None,
+                        # never a fabricated 0 -- plus a sanitized error, and
+                        # keep the reconstructed positions. Recovery stayed
+                        # bounded at the single re-entry above.
+                        logger.warning(
+                            "Toss cash snapshot recovery payload is invalid; "
+                            "keeping positions and reporting cash as unknown"
+                        )
+                        cash_errors.append(
+                            {
+                                "source": "toss_api",
+                                "stage": "cash_snapshot",
+                                "error": "invalid_cash_snapshot_payload",
+                            }
+                        )
+                    else:
+                        cash_snapshot = parsed_cash
+
+                return TossPortfolioSnapshot(
+                    positions=positions,
+                    cash_krw=cash_snapshot.cash_krw,
+                    cash_usd=cash_snapshot.cash_usd,
+                    errors=[*cash_snapshot.errors, *cash_errors],
+                )
+            finally:
+                # ROB-707 parity for the shared path: if the positions chain
+                # raised before the cash task was awaited, cancel and drain it
+                # so it never touches the client the outer finally closes and
+                # never leaves an unretrieved task exception.
+                for pending_task in (position_task, cash_task):
+                    if pending_task is not None and not pending_task.done():
+                        pending_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await pending_task
+
+        return await _fetch_toss_portfolio_snapshot_uncached(
+            active_client=active_client,
+            need_sellable=need_sellable,
+            need_cash=need_cash,
+            sellable_cache=sellable_cache,
+        )
+    finally:
         if created_client:
             await active_client.aclose()

@@ -72,7 +72,10 @@ from app.services.invest_benchmark_gap_service import (
 )
 from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_crypto_naver_adapter import build_naver_crypto_reference
-from app.services.invest_home_service import InvestHomeService
+from app.services.invest_home_service import (
+    InvestHomeService,
+    PortfolioSnapshotUnavailableError,
+)
 from app.services.invest_momentum_events.coverage_service import build_momentum_coverage
 from app.services.invest_momentum_events.repository import (
     InvestMomentumEventSnapshotsRepository,
@@ -165,6 +168,9 @@ def get_invest_home_service(
         UpbitHomeReader,
     )
     from app.services.invest_quote_service import InvestQuoteService
+    from app.services.portfolio_snapshot_cache import (
+        get_shared_portfolio_snapshot_cache,
+    )
 
     kis_client = SafeKISClient()
     quote_service = InvestQuoteService(kis_client, db)
@@ -177,6 +183,7 @@ def get_invest_home_service(
         if bool(getattr(settings, "toss_api_enabled", False))
         else None,
         paper_readers=[KISMockHomeReader(), AlpacaPaperHomeReader()],
+        snapshot_cache=get_shared_portfolio_snapshot_cache(),
     )
 
 
@@ -199,11 +206,22 @@ async def get_home(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> InvestHomeResponse:
-    return await service.get_home(
-        user_id=user.id,
-        include_paper=include_paper,
-        paper_sources=_parse_paper_sources(paper_sources),
-    )
+    try:
+        return await service.get_home(
+            user_id=user.id,
+            include_paper=include_paper,
+            paper_sources=_parse_paper_sources(paper_sources),
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
 
 
 @router.get("/market")
@@ -374,13 +392,24 @@ async def get_account_panel(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> AccountPanelResponse:
-    return await build_account_panel(
-        user_id=user.id,
-        db=db,
-        home_service=service,
-        include_paper=include_paper,
-        paper_sources=_parse_paper_sources(paper_sources),
-    )
+    try:
+        return await build_account_panel(
+            user_id=user.id,
+            db=db,
+            home_service=service,
+            include_paper=include_paper,
+            paper_sources=_parse_paper_sources(paper_sources),
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
 
 
 @router.get("/investor-flow")
@@ -627,14 +656,26 @@ async def get_calendar(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> CalendarResponse:
-    home = await service.get_home(
-        user_id=user.id,
-        include_paper=include_paper,
-        paper_sources=_parse_paper_sources(paper_sources),
-    )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    # ROB-1310: calendar only needs held-symbol keys. Avoid building the full
+    # home projection; Toss uses the shared portfolio snapshot and the manual
+    # source remains a read-only DB lookup. includePaper remains explicit.
+    try:
+        held_pairs = await service.get_held_pairs(
+            user_id=user.id,
+            include_paper=include_paper,
+            paper_sources=_parse_paper_sources(paper_sources),
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_calendar(
         db=db,
         resolver=resolver,

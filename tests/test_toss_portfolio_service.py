@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from decimal import Decimal
 
 import fakeredis.aioredis
@@ -70,7 +72,10 @@ class _FakeTossClient:
 async def test_fetch_toss_portfolio_snapshot_maps_holdings_sellable_and_cash() -> None:
     client = _FakeTossClient()
 
-    snapshot = await fetch_toss_portfolio_snapshot(client=client)
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=client,
+        need_sellable=True,
+    )
 
     assert client.closed is False
     assert client.sellable_calls == ["BRK.B"]
@@ -96,7 +101,10 @@ async def test_fetch_toss_portfolio_snapshot_keeps_position_when_sellable_fails(
         async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
             raise RuntimeError(f"sellable failed for {symbol}")
 
-    snapshot = await fetch_toss_portfolio_snapshot(client=Client())
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=Client(),
+        need_sellable=True,
+    )
 
     assert snapshot.positions[0].sellable_quantity is None
     assert snapshot.errors == [
@@ -148,14 +156,62 @@ async def test_fetch_toss_portfolio_snapshot_skips_sellable_when_not_needed() ->
 
 
 @pytest.mark.asyncio
-async def test_fetch_toss_portfolio_snapshot_default_still_fetches_sellable() -> None:
+async def test_fetch_toss_portfolio_snapshot_default_skips_sellable() -> None:
     client = _FakeTossClient()
 
     snapshot = await fetch_toss_portfolio_snapshot(client=client)
 
-    # Default is unchanged: sellable is fetched and mapped.
-    assert client.sellable_calls == ["BRK.B"]
-    assert snapshot.positions[0].sellable_quantity == Decimal("1.25")
+    # General portfolio reads must not fan out to Toss ORDER_INFO.
+    assert client.sellable_calls == []
+    assert snapshot.positions[0].sellable_quantity is None
+
+
+@pytest.mark.asyncio
+async def test_corrupt_toss_snapshot_recovery_reenters_shared_singleflight():
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    class _CountingSlowClient(_FakeTossClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.holdings_calls = 0
+
+        async def holdings(self) -> TossHoldings:
+            self.holdings_calls += 1
+            await asyncio.sleep(0.05)
+            return await super().holdings()
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = TossPortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    cache_b = TossPortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    await redis_client.set(
+        cache_a._cache_key("positions"),
+        json.dumps({"positions": [{"corrupt": True}]}),
+        ex=30,
+    )
+    client_a = _CountingSlowClient()
+    client_b = _CountingSlowClient()
+
+    first, second = await asyncio.gather(
+        fetch_toss_portfolio_snapshot(
+            client=client_a,
+            need_cash=False,
+            snapshot_cache=cache_a,
+            use_shared_snapshot=True,
+        ),
+        fetch_toss_portfolio_snapshot(
+            client=client_b,
+            need_cash=False,
+            snapshot_cache=cache_b,
+            use_shared_snapshot=True,
+        ),
+    )
+
+    assert first.positions == second.positions
+    assert client_a.holdings_calls + client_b.holdings_calls == 1
+    cached = await cache_a.get("positions")
+    assert cached is not None
+    assert isinstance(cached.get("positions"), list)
+    assert cached["positions"][0]["symbol"] == "BRK.B"
 
 
 @pytest.mark.asyncio
@@ -314,10 +370,10 @@ async def test_fetch_toss_portfolio_snapshot_skips_cash_when_not_needed() -> Non
     assert client.buying_power_calls == []
     assert snapshot.cash_krw is None
     assert snapshot.cash_usd is None
-    # Holdings + sellable still resolve normally.
+    # Holdings resolve normally; sellability is deliberately omitted.
     assert len(snapshot.positions) == 1
     assert snapshot.positions[0].symbol == "BRK.B"
-    assert snapshot.positions[0].sellable_quantity == Decimal("1.25")
+    assert snapshot.positions[0].sellable_quantity is None
     assert snapshot.errors == []
 
 
@@ -331,3 +387,85 @@ async def test_fetch_toss_portfolio_snapshot_default_still_fetches_cash() -> Non
     assert client.buying_power_calls == ["KRW", "USD"]
     assert snapshot.cash_krw == Decimal("123456")
     assert snapshot.cash_usd == Decimal("789.01")
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B3 — a raw broker buying-power exception must never reach the
+# cash snapshot errors, the shared Redis cache payload, a cache-hit replay,
+# or the log.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_toss_cash_snapshot_sanitizes_buying_power_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ROB-1310 R9 / B3 (R8 verifier blocker 3, cash half).
+
+    A raw broker exception for buying-power must never reach the cash
+    snapshot's ``errors`` list or the log -- only a stable, sanitized error.
+    """
+    fake_secret_marker = "FAKE_SECRET_qv7m2_do_not_leak"
+
+    class Client(_FakeTossClient):
+        async def buying_power(self, *, currency: str) -> TossBuyingPower:
+            if currency == "KRW":
+                raise RuntimeError(f"broker exploded: {fake_secret_marker}")
+            return await super().buying_power(currency=currency)
+
+    with caplog.at_level("WARNING"):
+        snapshot = await fetch_toss_cash_snapshot(client=Client())
+
+    assert snapshot.cash_krw is None
+    assert len(snapshot.errors) == 1
+    error_text = json.dumps(snapshot.errors)
+    assert fake_secret_marker not in error_text
+
+    for record in caplog.records:
+        assert fake_secret_marker not in record.getMessage()
+        if record.exc_text:
+            assert fake_secret_marker not in record.exc_text
+
+
+@pytest.mark.asyncio
+async def test_shared_snapshot_cache_does_not_persist_or_replay_raw_cash_error_text() -> (
+    None
+):
+    """ROB-1310 R9 / B3 (R8 verifier blocker 3 / review 3826632068).
+
+    A raw broker buying-power exception must not be persisted into the
+    shared Redis cash cache payload, and a subsequent cache-hit read must not
+    replay it either.
+    """
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    fake_secret_marker = "FAKE_SECRET_pk3f8_do_not_leak"
+
+    class Client(_FakeTossClient):
+        async def buying_power(self, *, currency: str) -> TossBuyingPower:
+            raise RuntimeError(f"broker exploded: {fake_secret_marker}")
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = TossPortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=Client(),
+        need_cash=True,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+    assert snapshot.cash_krw is None
+    assert fake_secret_marker not in json.dumps(snapshot.errors)
+
+    raw_cash = await redis_client.get(cache._cache_key("cash"))
+    assert raw_cash is not None
+    assert fake_secret_marker not in raw_cash
+
+    # A subsequent cache-hit read must not replay the marker either.
+    replay = await fetch_toss_portfolio_snapshot(
+        client=Client(),
+        need_cash=True,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+    assert fake_secret_marker not in json.dumps(replay.errors)

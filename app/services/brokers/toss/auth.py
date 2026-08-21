@@ -95,6 +95,11 @@ class TossOAuthTokenManager:
             f"client_id_fp={_client_fingerprint(self._client_id)!r}>"
         )
 
+    @property
+    def client_fingerprint(self) -> str:
+        """Non-secret client-id fingerprint, never the raw client id."""
+        return _client_fingerprint(self._client_id)
+
     @classmethod
     def from_settings(
         cls,

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import sentry_sdk
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_upbit_symbol
 from app.models.manual_holdings import MarketType
 from app.schemas.invest_home import (
     Account,
@@ -34,11 +35,13 @@ from app.services.brokers.upbit.client import (
     fetch_my_coins,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate
-from app.services.invest_home_service import _SourceFetchResult
+from app.services.invest_home_service import (
+    _SourceFetchResult,
+    build_account_from_holdings,
+)
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
-from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
     get_upbit_warning_markets,
@@ -198,6 +201,7 @@ class KISHomeReader:
                         valueNative=value_native,
                         valueKrw=value_krw,
                         pnlKrw=pnl_krw,
+                        pnlNative=pnl_native,
                         pnlRate=float(s.get("evlu_pfls_rt", 0)) / 100.0,
                         sourceOfTruth=True,
                         isTradeable=True,
@@ -515,24 +519,20 @@ class UpbitHomeReader:
             )
 
 
-def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float:
-    """ROB-549: 0.0 while reference-only; the API-provided sellable quantity
-    (falling back to full quantity) once Toss live mutations are armed."""
-    if not mutations_enabled:
-        return 0.0
-    sellable = getattr(position, "sellable_quantity", None)
-    if sellable is None:
-        return float(position.quantity)
-    return float(sellable)
+def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float | None:
+    """Keep sellable quantity unknown on the general home read path.
+
+    ROB-1310 keeps general home reads off the Toss sellable endpoint. Unknown
+    sellability is therefore ``None``; even an accidental lower-layer value is
+    not promoted into this display projection.
+    """
+    del position, mutations_enabled
+    return None
 
 
 def _toss_pending_sell_quantity(position: Any, mutations_enabled: bool) -> float:
-    if not mutations_enabled:
-        return 0.0
-    return max(
-        float(position.quantity) - _toss_sellable_quantity(position, mutations_enabled),
-        0.0,
-    )
+    del position, mutations_enabled
+    return 0.0
 
 
 class TossApiHomeReader:
@@ -541,9 +541,9 @@ class TossApiHomeReader:
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         del user_id
         try:
-            # ROB-549: gate tradeability/sellable on the live-mutation flag so
-            # toss_api holdings stop contradicting the registered toss_live order
-            # tools once the operator arms TOSS_LIVE_ORDER_MUTATIONS_ENABLED.
+            # ROB-549: keep tradeability gated on the live-mutation flag. ROB-1310
+            # makes sellable quantity broker-adjacent; this general home reader
+            # never fans out to Toss ORDER_INFO.
             from app.core.config import settings as _settings
 
             mutations_enabled = bool(
@@ -554,10 +554,7 @@ class TossApiHomeReader:
                 name="invest.home.toss_api.snapshot",
             ) as span:
                 snapshot = await fetch_toss_portfolio_snapshot(
-                    need_sellable=mutations_enabled,
-                    sellable_cache=(
-                        get_shared_sellable_cache() if mutations_enabled else None
-                    ),
+                    need_sellable=False,
                 )
                 span.set_data("position_count", len(snapshot.positions))
                 span.set_data("error_count", len(snapshot.errors))
@@ -734,6 +731,22 @@ class TossApiHomeReader:
             )
 
 
+def _manual_quote_symbol(market_type: MarketType, ticker: str | None) -> str:
+    """Quote-layer key for one manual holding.
+
+    Crypto goes through the shared ``to_upbit_symbol`` helper (``BTC`` ->
+    ``KRW-BTC``) because that is how the legacy quote contract keys crypto.
+    KR/US keep the stored ticker; their DB spelling is already the repository
+    convention and is normalized by ``app.core.symbol`` helpers at the broker
+    seams, never by string surgery here.
+    """
+
+    raw = ticker or ""
+    if market_type == MarketType.CRYPTO:
+        return to_upbit_symbol(raw)
+    return raw
+
+
 class ManualHomeReader:
     """manual_holdings (Toss 등) read-only reader."""
 
@@ -744,6 +757,42 @@ class ManualHomeReader:
         self._service = ManualHoldingsService(db)
         self._quote_service = quote_service
 
+    @staticmethod
+    def _source_for_broker(broker_type: str) -> str:
+        # ROB-1310 R9 (B4): ``broker_accounts.broker_type`` is a free-form
+        # column. An unrecognized value must never be silently attributed to
+        # Toss -- ``manual_unknown`` is the explicit, truthful fallback so
+        # provenance never lies about which broker a holding came from.
+        return {
+            "toss": "toss_manual",
+            "samsung": "pension_manual",
+            "isa": "isa_manual",
+            "kis": "kis_manual",
+            "upbit": "upbit_manual",
+        }.get(broker_type, "manual_unknown")
+
+    async def fetch_held_pairs(self, *, user_id: int) -> list[tuple[str, str]]:
+        """Read manual held keys without quote/FX enrichment for calendar."""
+
+        from app.services.portfolio_snapshot import (
+            HELD_KEY_MARKETS,
+            held_key_symbol,
+        )
+
+        raw_holdings = await self._service.get_holdings_by_user(user_id)
+        pairs: set[tuple[str, str]] = set()
+        for holding in raw_holdings:
+            if float(holding.quantity or 0) <= 0:
+                continue
+            market = str(holding.market_type).lower()
+            if market not in HELD_KEY_MARKETS:
+                continue
+            # ROB-1310: one market-aware seam for every held-key projection.
+            symbol = held_key_symbol(market, holding.ticker or "")
+            if symbol:
+                pairs.add((market, symbol))
+        return sorted(pairs)
+
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
             with sentry_sdk.start_span(
@@ -753,17 +802,23 @@ class ManualHomeReader:
                 raw_holdings = await self._service.get_holdings_by_user(user_id)
                 span.set_data("raw_holding_count", len(raw_holdings))
 
-            toss_holdings = [
-                h
-                for h in raw_holdings
-                if str(getattr(h.broker_account, "broker_type", "")).lower() == "toss"
-            ]
+            manual_holdings = list(raw_holdings)
 
+            # ROB-1310 R8: a manual CRYPTO holding may be stored as the bare
+            # base coin (``BTC``), but the legacy quote contract keys crypto as
+            # ``KRW-BTC`` and ``PriceFallbackResolver.resolve`` seeds
+            # ``dict.fromkeys(symbols, None)`` -- it only ever returns keys the
+            # caller requested. Requesting the raw coin therefore makes the
+            # ``KRW-BTC`` read below structurally unable to hit. Normalize
+            # through the shared ``to_upbit_symbol`` helper *before* the
+            # request (never by string surgery); KR/US keys are unchanged.
             kr_tickers = [
-                h.ticker for h in toss_holdings if h.market_type == MarketType.KR
+                _manual_quote_symbol(h.market_type, h.ticker)
+                for h in manual_holdings
+                if h.market_type in {MarketType.KR, MarketType.CRYPTO}
             ]
             us_tickers = [
-                h.ticker for h in toss_holdings if h.market_type == MarketType.US
+                h.ticker for h in manual_holdings if h.market_type == MarketType.US
             ]
 
             kr_prices: dict[str, float | None] = {}
@@ -774,30 +829,50 @@ class ManualHomeReader:
                 quote_service = self._quote_service
 
                 async def _fetch_kr_prices() -> dict[str, float | None]:
-                    with sentry_sdk.start_span(
-                        op="invest.home.manual.phase",
-                        name="invest.home.manual.fetch_kr_prices",
-                    ) as span:
-                        span.set_data("ticker_count", len(kr_tickers))
-                        prices = await quote_service.fetch_kr_prices(kr_tickers)
-                        span.set_data("price_count", len(prices))
-                        return prices
+                    try:
+                        with sentry_sdk.start_span(
+                            op="invest.home.manual.phase",
+                            name="invest.home.manual.fetch_kr_prices",
+                        ) as span:
+                            span.set_data("ticker_count", len(kr_tickers))
+                            prices = await quote_service.fetch_kr_prices(kr_tickers)
+                            span.set_data("price_count", len(prices))
+                            return prices
+                    except Exception:
+                        # ROB-1310 R9 (B1): a KR/CRYPTO quote-provider failure
+                        # must not fall through to the reader's outer
+                        # catch-all -- that would discard every manual
+                        # holding/account and misattribute the failure to a
+                        # hardcoded source. Every KR/CRYPTO holding simply
+                        # reports missing below and the per-source warning
+                        # loop attributes it correctly; the concurrent US
+                        # fetch is unaffected. No exception text/trace logged.
+                        logger.warning("Manual KR/CRYPTO quote fetch failed (isolated)")
+                        return {}
 
                 async def _fetch_us_prices() -> dict[str, float | None]:
-                    with sentry_sdk.start_span(
-                        op="invest.home.manual.phase",
-                        name="invest.home.manual.fetch_us_prices",
-                    ) as span:
-                        span.set_data("ticker_count", len(us_tickers))
-                        prices = await quote_service.fetch_us_prices(us_tickers)
-                        span.set_data("price_count", len(prices))
-                        return prices
+                    try:
+                        with sentry_sdk.start_span(
+                            op="invest.home.manual.phase",
+                            name="invest.home.manual.fetch_us_prices",
+                        ) as span:
+                            span.set_data("ticker_count", len(us_tickers))
+                            prices = await quote_service.fetch_us_prices(us_tickers)
+                            span.set_data("price_count", len(prices))
+                            return prices
+                    except Exception:
+                        # ROB-1310 R9 (B1): same isolation as the KR fetch --
+                        # a US provider failure must not discard KR/CRYPTO
+                        # valuations that already succeeded.
+                        logger.warning("Manual US quote fetch failed (isolated)")
+                        return {}
 
                 # ROB-702: KR and US price fetches are independent — run them
                 # concurrently so the manual reader's wall time is max(kr, us),
-                # not kr + us (~7s -> ~3.5s). Failure semantics unchanged: a
-                # raise from either fetch propagates (gather re-raises) to the
-                # outer try/except, exactly as the sequential awaits did.
+                # not kr + us (~7s -> ~3.5s). ROB-1310 R9 (B1): each fetch now
+                # catches its own failure and returns {} instead of letting
+                # gather propagate -- a failure in one market must not discard
+                # the other market's already-successful prices.
                 kr_prices, us_prices = await asyncio.gather(
                     _fetch_kr_prices(), _fetch_us_prices()
                 )
@@ -814,20 +889,34 @@ class ManualHomeReader:
                         logger.warning("FX fetch failed for ManualHomeReader")
 
             holdings = []
-            partial_valuation_failure = False
+            # ROB-1310 R8: W2 widened manual holdings past Toss, so a failed
+            # valuation must name the manual source it actually happened to.
+            unpriced_sources: set[str] = set()
+            holding_sources: set[str] = set()
 
-            for h in toss_holdings:
+            for h in manual_holdings:
                 qty = float(h.quantity)
                 avg_price = float(h.avg_price) if h.avg_price else None
                 cost_basis = (qty * avg_price) if avg_price else None
-                market = "KR" if h.market_type == MarketType.KR else "US"
-                currency = "KRW" if market == "KR" else "USD"
+                market = {
+                    MarketType.KR: "KR",
+                    MarketType.US: "US",
+                    MarketType.CRYPTO: "CRYPTO",
+                }.get(h.market_type)
+                if market is None:
+                    continue
+                currency = "USD" if market == "US" else "KRW"
+                quote_symbol = _manual_quote_symbol(h.market_type, h.ticker)
 
                 price = (
-                    kr_prices.get(h.ticker)
-                    if market == "KR"
+                    kr_prices.get(quote_symbol)
+                    if market in {"KR", "CRYPTO"}
                     else us_prices.get(h.ticker)
                 )
+                if price is None and market == "CRYPTO":
+                    # Compatibility only: read a raw-coin key back if some
+                    # other producer still returns one. Never the request key.
+                    price = kr_prices.get(h.ticker)
                 price_state: PriceStateLiteral = (
                     "live" if price is not None else "missing"
                 )
@@ -840,8 +929,12 @@ class ManualHomeReader:
                     elif usd_krw_rate:
                         value_krw = value_native * usd_krw_rate
 
+                holding_source = self._source_for_broker(
+                    str(getattr(h.broker_account, "broker_type", "toss")).lower()
+                )
+                holding_sources.add(holding_source)
                 if price is None and (kr_tickers or us_tickers):
-                    partial_valuation_failure = True
+                    unpriced_sources.add(holding_source)
 
                 pnl_krw: float | None = None
                 pnl_rate: float | None = None
@@ -861,12 +954,18 @@ class ManualHomeReader:
                     Holding(
                         holdingId=f"manual:{h.id}",
                         accountId=str(h.broker_account_id),
-                        source="toss_manual",
+                        source=holding_source,
                         accountKind="manual",
                         symbol=h.ticker,
                         market=market,
-                        assetType="equity",
-                        assetCategory="kr_stock" if market == "KR" else "us_stock",
+                        assetType="crypto" if market == "CRYPTO" else "equity",
+                        assetCategory=(
+                            "crypto"
+                            if market == "CRYPTO"
+                            else "kr_stock"
+                            if market == "KR"
+                            else "us_stock"
+                        ),
                         displayName=h.display_name or h.ticker,
                         quantity=qty,
                         averageCost=avg_price,
@@ -886,30 +985,87 @@ class ManualHomeReader:
                     )
                 )
 
-            manual_warning: InvestHomeWarning | None = None
-            if partial_valuation_failure:
-                manual_warning = InvestHomeWarning(
-                    source="toss_manual",
-                    message="일부 Toss 수동 보유는 현재가 조회에 실패해 평가에서 제외했습니다.",
+            manual_accounts: list[Account] = []
+            account_names = {
+                str(h.broker_account_id): str(
+                    getattr(h.broker_account, "account_name", None) or "기본 계좌"
                 )
-            elif not (kr_tickers or us_tickers) and holdings:
-                # This case shouldn't happen with the logic above, but for safety
-                manual_warning = InvestHomeWarning(
-                    source="toss_manual",
-                    message="Toss 수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
+                for h in manual_holdings
+            }
+            account_sources = {
+                str(h.broker_account_id): self._source_for_broker(
+                    str(getattr(h.broker_account, "broker_type", "toss")).lower()
+                )
+                for h in manual_holdings
+            }
+            # ROB-1310 SHOULD-1: build one Account per DB manual account
+            # regardless of whether any holding in it (or any manual holding
+            # at all) currently has a known price. The DB account identity
+            # (id/displayName/source) must not depend on price availability —
+            # a temporarily-unpriced account must not flip to a different
+            # hardcoded canonical id/name downstream (MCP projection). The
+            # value math still only counts priced holdings and never
+            # fabricates a value from cost basis (build_account_from_holdings
+            # sums to 0.0, not a guess, when nothing is priced).
+            for account_id, account_name in account_names.items():
+                account_holdings = [
+                    holding for holding in holdings if holding.accountId == account_id
+                ]
+                manual_accounts.append(
+                    build_account_from_holdings(
+                        account_id=account_id,
+                        display_name=account_name,
+                        source=account_sources[account_id],
+                        holdings=account_holdings,
+                    )
                 )
 
+            # One warning per affected manual source, sorted so a batch always
+            # reports the same way. The message stays fixed sanitized text --
+            # it never carries an exception, a payload or a credential.
+            manual_warnings: list[InvestHomeWarning] = []
+            if unpriced_sources:
+                manual_warnings = [
+                    InvestHomeWarning(
+                        source=source,
+                        message=(
+                            "일부 수동 보유는 현재가 조회에 실패해 평가에서 "
+                            "제외했습니다."
+                        ),
+                    )
+                    for source in sorted(unpriced_sources)
+                ]
+            elif not (kr_tickers or us_tickers) and holdings:
+                # This case shouldn't happen with the logic above, but for safety
+                manual_warnings = [
+                    InvestHomeWarning(
+                        source=source,
+                        message="수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
+                    )
+                    for source in sorted(holding_sources)
+                ]
+
             return _SourceFetchResult(
-                accounts=[],
+                accounts=manual_accounts,
                 holdings=holdings,
-                warning=manual_warning,
+                warning=manual_warnings[0] if manual_warnings else None,
+                extra_warnings=manual_warnings[1:],
             )
-        except Exception as exc:
-            logger.warning("Manual fetch failed: %s", exc, exc_info=True)
+        except Exception:
+            # ROB-1310 R9 (B1): quote-provider failures are isolated above and
+            # never reach this branch. This is the genuinely catastrophic
+            # case -- e.g. the holdings load itself fails -- where no
+            # holding/broker is even known yet. ``toss_manual`` would be a
+            # false attribution here; ``manual_unknown`` is the only truthful
+            # source, and the raw exception text/trace must never leak.
+            logger.warning("Manual holdings fetch failed before any source was known")
             return _SourceFetchResult(
                 accounts=[],
                 holdings=[],
-                warning=InvestHomeWarning(source="toss_manual", message=str(exc)),
+                warning=InvestHomeWarning(
+                    source="manual_unknown",
+                    message="수동 보유 조회에 실패했습니다.",
+                ),
             )
 
 

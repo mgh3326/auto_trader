@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+import fakeredis.aioredis
 import pytest
 
-from app.schemas.invest_home import Holding
+from app.schemas.invest_home import Account, Holding
 from app.services.invest_home_service import (
     HOME_INCLUDED_SOURCES,
     build_grouped_holdings,
@@ -153,6 +154,30 @@ def test_grouped_merges_same_market_assettype_currency_symbol() -> None:
     assert toss.sellableQuantity == 0
     assert toss.pendingSellQuantity == 0
     assert toss.referenceQuantity == 20
+
+
+@pytest.mark.unit
+def test_unknown_sellable_quantity_stays_null_through_grouping_and_serialization():
+    holding = _h(
+        source="toss_api",
+        accountKind="live",
+        symbol="AAPL",
+        market="US",
+        currency="USD",
+        assetCategory="us_stock",
+        sellableQuantity=None,
+    )
+
+    grouped = build_grouped_holdings([holding])
+
+    assert holding.model_dump(mode="json")["sellableQuantity"] is None
+    assert grouped[0].sellableQuantity is None
+    assert grouped[0].sourceBreakdown[0].sellableQuantity is None
+    assert grouped[0].model_dump(mode="json")["sellableQuantity"] is None
+    assert (
+        grouped[0].model_dump(mode="json")["sourceBreakdown"][0]["sellableQuantity"]
+        is None
+    )
 
 
 @pytest.mark.unit
@@ -1033,6 +1058,224 @@ class _Reader:
 
 
 @pytest.mark.asyncio
+async def test_get_held_pairs_fails_closed_without_snapshot_or_db_key_reader():
+    from app.services.invest_home_service import InvestHomeService
+
+    service = InvestHomeService(
+        kis_reader=_Reader(holdings=[_h(symbol="005930", market="KR")]),
+        upbit_reader=_Reader(
+            holdings=[
+                _h(
+                    source="upbit",
+                    symbol="KRW-BTC",
+                    market="CRYPTO",
+                    assetType="crypto",
+                    assetCategory="crypto",
+                    currency="KRW",
+                )
+            ]
+        ),
+        manual_reader=_Reader(
+            holdings=[
+                _h(
+                    source="toss_manual",
+                    accountKind="manual",
+                    symbol="BRK.B",
+                    market="US",
+                    assetCategory="us_stock",
+                )
+            ]
+        ),
+        toss_api_reader=_Reader(
+            holdings=[
+                _h(
+                    source="toss_api",
+                    symbol="BRK.B",
+                    market="US",
+                    assetCategory="us_stock",
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="portfolio_snapshot_unavailable:snapshot_cache_unusable",
+    ):
+        await service.get_held_pairs(user_id=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_readers():
+    from app.services.invest_home_service import InvestHomeService
+
+    whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
+    PortfolioSnapshotCache = whole_snapshot.PortfolioSnapshotCache
+    portfolio_snapshot_scope = whole_snapshot.portfolio_snapshot_scope
+
+    class _ExplodingReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must not run a full home reader")
+
+    class _ManualKeyReader:
+        def __init__(self):
+            self.held_key_calls = 0
+
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must use the DB held-key projection")
+
+        async def fetch_held_pairs(self, *, user_id):
+            self.held_key_calls += 1
+            return [("kr", "005930")]
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=0.1,
+        poll_interval_seconds=0.01,
+    )
+    scope = portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
+    await cache.put(scope, {"schema_version": 1, "held_pairs": [["us", "AAPL"]]})
+    manual_reader = _ManualKeyReader()
+    service = InvestHomeService(
+        kis_reader=_ExplodingReader(),
+        upbit_reader=_ExplodingReader(),
+        manual_reader=manual_reader,
+        toss_api_reader=_ExplodingReader(),
+        snapshot_cache=cache,
+    )
+
+    assert await service.get_held_pairs(user_id=1) == [("us", "AAPL")]
+    assert manual_reader.held_key_calls == 0
+
+    await cache.delete(scope)
+    with pytest.raises(
+        RuntimeError,
+        match="portfolio_snapshot_unavailable:held_key_projection_missing_or_invalid",
+    ):
+        await service.get_held_pairs(user_id=1)
+    assert manual_reader.held_key_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_sellable():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
+    PortfolioSnapshotCache = whole_snapshot.PortfolioSnapshotCache
+    portfolio_snapshot_scope = whole_snapshot.portfolio_snapshot_scope
+
+    calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
+
+    # ROB-1310 R7: gate the leader on an explicit Event instead of a real
+    # 3.2s sleep. The old sleep exceeded the 3s follower wait budget, so the
+    # follower could time out of the singleflight and compose the readers
+    # itself (breaking the call counts), and it added 3s to every suite run.
+    leader_entered = asyncio.Event()
+    leader_release = asyncio.Event()
+
+    class _CountingReader:
+        def __init__(self, source: str, holding: Holding | None = None):
+            self.source = source
+            self.holding = holding
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            if self.source == "kis":
+                leader_entered.set()
+                await leader_release.wait()
+            return _SourceFetchResult(
+                accounts=[], holdings=[self.holding] if self.holding else []
+            )
+
+    kis_reader = _CountingReader("kis", _h(symbol="005930"))
+    upbit_reader = _CountingReader(
+        "upbit",
+        _h(
+            source="upbit",
+            symbol="KRW-BTC",
+            market="CRYPTO",
+            assetType="crypto",
+            assetCategory="crypto",
+        ),
+    )
+    toss_reader = _CountingReader(
+        "toss_api",
+        _h(
+            source="toss_api",
+            symbol="AAPL",
+            market="US",
+            currency="USD",
+            assetCategory="us_stock",
+            sellableQuantity=None,
+        ),
+    )
+    manual_reader = _CountingReader("manual")
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=3,
+        poll_interval_seconds=0.01,
+    )
+    cache_b = PortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=10,
+        wait_timeout_seconds=3,
+        poll_interval_seconds=0.01,
+    )
+    service_a = InvestHomeService(
+        kis_reader=kis_reader,
+        upbit_reader=upbit_reader,
+        manual_reader=manual_reader,
+        toss_api_reader=toss_reader,
+        snapshot_cache=cache_a,
+    )
+    service_b = InvestHomeService(
+        kis_reader=kis_reader,
+        upbit_reader=upbit_reader,
+        manual_reader=manual_reader,
+        toss_api_reader=toss_reader,
+        snapshot_cache=cache_b,
+    )
+
+    leader_task = asyncio.create_task(service_a.get_home(user_id=1))
+    # The leader now owns the distributed lease, so the follower can only wait.
+    await leader_entered.wait()
+    follower_task = asyncio.create_task(service_b.get_home(user_id=1))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    leader_release.set()
+
+    first, second = await asyncio.gather(leader_task, follower_task)
+
+    assert first == second
+    assert calls == {"kis": 1, "upbit": 1, "toss_api": 1, "manual": 1}
+    payload = await cache_a.get(
+        portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
+    )
+    assert payload is not None
+
+    def _contains_sellable(value):
+        if isinstance(value, dict):
+            return any(
+                "sellable" in str(key).lower() or _contains_sellable(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(_contains_sellable(item) for item in value)
+        return False
+
+    assert not _contains_sellable(payload)
+
+
+@pytest.mark.asyncio
 async def test_get_home_uses_toss_api_instead_of_manual_when_toss_api_has_holdings():
     from app.services.invest_home_service import InvestHomeService
 
@@ -1159,6 +1402,144 @@ async def test_get_home_keeps_manual_holding_when_toss_api_does_not_duplicate_sy
 
 
 @pytest.mark.asyncio
+async def test_get_home_summary_excludes_manual_value_removed_by_toss_api_dedup():
+    """ROB-1310 BLOCKER-1: account/summary totals must match the
+    Toss-API-deduplicated holdings actually published, not the manual
+    reader's unfiltered per-account total.
+
+    The manual reader's ``Account.valueKrw`` is computed from ALL of its
+    holdings before ``InvestHomeService`` drops the ``toss_manual`` row that
+    duplicates a ``toss_api`` position. Publishing that unfiltered total
+    double-counts the duplicate's value against toss_api's own value for the
+    same position. Covers both ``get_home`` (home) and
+    ``build_account_panel_view`` (account-panel).
+    """
+    from app.services.invest_home_service import InvestHomeService
+
+    toss_api_reader = _Reader(
+        accounts=[
+            Account(
+                accountId="toss_api_account",
+                displayName="Toss",
+                source="toss_api",
+                accountKind="live",
+                includedInHome=True,
+                valueKrw=645.18,
+            )
+        ],
+        holdings=[
+            Holding(
+                holdingId="toss_api:BRK.B",
+                accountId="toss_api_account",
+                source="toss_api",
+                accountKind="live",
+                symbol="BRK.B",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Berkshire Hathaway B",
+                quantity=1.5,
+                averageCost=400.0,
+                costBasis=600.0,
+                currency="USD",
+                valueNative=645.18,
+                valueKrw=645.18,
+                sourceOfTruth=True,
+                isTradeable=False,
+                manualOnly=False,
+                sellableQuantity=0.0,
+                referenceQuantity=1.5,
+            )
+        ],
+    )
+    manual_holdings = [
+        _h(
+            holdingId="manual:1",
+            accountId="acct-1",
+            source="toss_manual",
+            accountKind="manual",
+            symbol="BRK.B",
+            market="US",
+            assetType="equity",
+            assetCategory="us_stock",
+            displayName="Berkshire Hathaway B",
+            quantity=1.5,
+            averageCost=400.0,
+            costBasis=600.0,
+            currency="USD",
+            valueNative=645.18,
+            valueKrw=600.0,
+            manualOnly=True,
+            sourceOfTruth=False,
+            isTradeable=False,
+        ),
+        _h(
+            holdingId="manual:2",
+            accountId="acct-1",
+            source="toss_manual",
+            accountKind="manual",
+            symbol="AAPL",
+            market="US",
+            assetType="equity",
+            assetCategory="us_stock",
+            displayName="Apple",
+            quantity=2.0,
+            averageCost=100.0,
+            costBasis=200.0,
+            currency="USD",
+            valueNative=400.0,
+            valueKrw=400.0,
+            manualOnly=True,
+            sourceOfTruth=False,
+            isTradeable=False,
+        ),
+    ]
+    manual_reader = _Reader(
+        accounts=[
+            Account(
+                accountId="acct-1",
+                displayName="Toss 수동",
+                source="toss_manual",
+                accountKind="manual",
+                includedInHome=True,
+                # Unfiltered manual-reader total: BOTH holdings, including
+                # the one that duplicates toss_api's BRK.B position.
+                valueKrw=1000.0,
+                costBasisKrw=800.0,
+                pnlKrw=200.0,
+                pnlRate=0.25,
+            )
+        ],
+        holdings=manual_holdings,
+    )
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=manual_reader,
+        toss_api_reader=toss_api_reader,
+    )
+
+    home = await service.get_home(user_id=1)
+    panel = await service.build_account_panel_view(user_id=1)
+
+    # The BRK.B manual holding was correctly dropped as a toss_api duplicate.
+    assert [h.symbol for h in home.holdings] == ["BRK.B", "AAPL"]
+
+    manual_account_home = next(a for a in home.accounts if a.source == "toss_manual")
+    manual_account_panel = next(a for a in panel.accounts if a.source == "toss_manual")
+    # Account totals must equal the sum of the manual holdings actually
+    # published (AAPL only == 400.0), not the reader's unfiltered 1000.0.
+    assert manual_account_home.valueKrw == pytest.approx(400.0)
+    assert manual_account_panel.valueKrw == pytest.approx(400.0)
+
+    visible_holdings_total = sum(
+        h.valueKrw for h in home.holdings if h.valueKrw is not None
+    )
+    assert home.homeSummary.totalValueKrw == pytest.approx(visible_holdings_total)
+    assert panel.homeSummary.totalValueKrw == pytest.approx(visible_holdings_total)
+
+
+@pytest.mark.asyncio
 async def test_get_home_falls_back_to_manual_when_toss_api_returns_warning_only():
     from app.schemas.invest_home import InvestHomeWarning
     from app.services.invest_home_service import InvestHomeService
@@ -1250,3 +1631,88 @@ async def test_get_home_falls_back_to_manual_when_toss_api_has_cash_only_account
         "toss_manual",
     ]
     assert [h.source for h in result.holdings] == ["toss_manual"]
+
+
+@pytest.mark.asyncio
+async def test_home_warnings_attribute_manual_failures_to_each_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R8 / review 3826407065 — end of the manual warning seam.
+
+    W2 widened manual holdings past Toss, so ``meta.warnings`` must name the
+    manual source that actually failed valuation. A batch with two distinct
+    failing manual sources must surface both, and must not attribute one
+    source's failure to another.
+    """
+    from types import SimpleNamespace
+
+    from app.models.manual_holdings import MarketType
+    from app.services import invest_home_readers as readers
+    from app.services.invest_home_service import InvestHomeService
+
+    broker_toss = SimpleNamespace(
+        id=901, broker_type="toss", account_name="토스 수동계좌"
+    )
+    broker_upbit = SimpleNamespace(
+        id=902, broker_type="upbit", account_name="업비트 수동계좌"
+    )
+    manual_rows = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=901,
+            broker_account=broker_toss,
+            ticker="000660",
+            market_type=MarketType.KR,
+            display_name="SK하이닉스",
+            quantity=1,
+            avg_price=100_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=902,
+            broker_account=broker_upbit,
+            ticker="ETH",
+            market_type=MarketType.CRYPTO,
+            display_name="이더리움",
+            quantity=1,
+            avg_price=3_000_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int):
+            return manual_rows
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    async def _no_prices(symbols):
+        return dict.fromkeys(symbols, None)
+
+    quote_service = SimpleNamespace(
+        fetch_kr_prices=_no_prices, fetch_us_prices=_no_prices
+    )
+
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=readers.ManualHomeReader(
+            db=None,  # type: ignore[arg-type]
+            quote_service=quote_service,  # type: ignore[arg-type]
+        ),
+        toss_api_reader=_Reader(),
+    )
+
+    home = await service.get_home(user_id=1)
+
+    manual_warning_sources = [
+        warning.source
+        for warning in home.meta.warnings
+        if warning.source.endswith("_manual")
+    ]
+    assert manual_warning_sources == ["toss_manual", "upbit_manual"], (
+        "each failing manual source must reach meta.warnings under its own "
+        f"source; got {manual_warning_sources!r}"
+    )

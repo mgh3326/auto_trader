@@ -1,0 +1,623 @@
+"""Process-shared Redis cache and singleflight for Toss portfolio snapshots.
+
+The cache contains only the holdings/buying-power read model.  It deliberately
+does not provide a sellable quantity: order paths must query the broker at the
+time of the order and must never use this read cache for sizing or approval.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import inspect
+import json
+import logging
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import redis.asyncio as redis
+from redis.exceptions import WatchError
+
+from app.core.config import settings
+from app.services.brokers.toss.auth import _client_fingerprint
+from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL
+
+logger = logging.getLogger(__name__)
+
+_KEY_PREFIX = "toss:portfolio:snapshot:v1"
+_LOCK_PREFIX = "toss:portfolio:snapshot:singleflight:v1"
+
+
+def _snapshot_cache_scope(settings_obj: Any) -> str:
+    """Opaque scope isolating one Toss account/environment on shared Redis.
+
+    ROB-1310 R9 (B5): the cache previously used a static global key, so two
+    processes configured for different Toss accounts/environments silently
+    exchanged positions/cash on shared Redis. The scope is derived from the
+    configured endpoint, the OAuth client-id fingerprint (reusing the same
+    concept as ``TossOAuthTokenManager``), and the effective account
+    selection -- never the raw base URL, client id, account sequence,
+    secret, or token, which must never appear in a Redis key/log/error.
+    """
+
+    base_url = str(
+        getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
+    ).rstrip("/")
+    client_id = str(getattr(settings_obj, "toss_api_client_id", None) or "")
+    fingerprint = _client_fingerprint(client_id) if client_id else "unconfigured"
+    account_seq = getattr(settings_obj, "toss_api_account_seq", None)
+    material = "|".join(
+        [base_url, fingerprint, str(account_seq) if account_seq is not None else "auto"]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _key(scope: str) -> str:
+    return f"{_KEY_PREFIX}:{scope}"
+
+
+def _lock_key(scope: str) -> str:
+    return f"{_LOCK_PREFIX}:{scope}"
+
+
+class TossPortfolioSnapshotCache:
+    """Redis-backed cache-aside store with a bounded distributed singleflight."""
+
+    def __init__(
+        self,
+        *,
+        redis_client: Any,
+        ttl_seconds: float,
+        lock_ttl_seconds: float = 10.0,
+        wait_timeout_seconds: float = 3.0,
+        poll_interval_seconds: float = 0.05,
+        enabled: bool = True,
+        key_prefix: str = _KEY_PREFIX,
+        lock_prefix: str = _LOCK_PREFIX,
+    ) -> None:
+        self._redis = redis_client
+        self._ttl_seconds = float(ttl_seconds)
+        self._lock_ttl_seconds = float(lock_ttl_seconds)
+        self._wait_timeout_seconds = max(float(wait_timeout_seconds), 0.0)
+        self._poll_interval_seconds = max(float(poll_interval_seconds), 0.01)
+        self._enabled = bool(enabled)
+        self._key_prefix = key_prefix
+        self._lock_prefix = lock_prefix
+        self._degraded_until = 0.0
+
+    def _mark_degraded(self) -> None:
+        self._degraded_until = time.monotonic() + 5.0
+
+    @property
+    def usable(self) -> bool:
+        return (
+            self._enabled
+            and self._ttl_seconds > 0
+            and self._redis is not None
+            and time.monotonic() >= self._degraded_until
+        )
+
+    def _cache_key(self, scope: str) -> str:
+        return f"{self._key_prefix}:{scope}"
+
+    def _singleflight_key(self, scope: str) -> str:
+        return f"{self._lock_prefix}:{scope}"
+
+    async def get(self, scope: str) -> dict[str, Any] | None:
+        if not self.usable:
+            return None
+        try:
+            raw = await self._redis.get(self._cache_key(scope))
+        except Exception as exc:  # noqa: BLE001 — read cache fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot cache GET failed: %s", exc)
+            return None
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("Toss portfolio snapshot cache entry is invalid")
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    async def put(self, scope: str, payload: dict[str, Any]) -> None:
+        if not self.usable:
+            return
+        try:
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            await self._redis.set(
+                self._cache_key(scope),
+                encoded,
+                ex=max(1, int(self._ttl_seconds)),
+            )
+        except Exception as exc:  # noqa: BLE001 — write cache fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot cache SET failed: %s", exc)
+
+    async def _put_if_owner(
+        self,
+        scope: str,
+        token: str,
+        payload: dict[str, Any],
+    ) -> bool | None:
+        """Fence a snapshot write by the current singleflight owner.
+
+        ``False`` means the lease changed and this caller must discard its
+        payload. ``None`` means Redis was unavailable; callers retain the
+        existing bounded fail-open behavior without claiming ownership.
+        """
+
+        if not self.usable or self._redis is None:
+            return None
+        cache_key = self._cache_key(scope)
+        lock_key = self._singleflight_key(scope)
+        try:
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(lock_key)
+                if await pipe.get(lock_key) != token:
+                    return False
+                pipe.multi()
+                pipe.set(
+                    cache_key,
+                    encoded,
+                    ex=max(1, int(self._ttl_seconds)),
+                )
+                written = await pipe.execute()
+                return bool(written and written[0])
+        except WatchError:
+            return False
+        except Exception as exc:  # noqa: BLE001 — cache write fails open
+            self._mark_degraded()
+            logger.warning(
+                "Toss portfolio snapshot fenced SET failed (%s)",
+                type(exc).__name__,
+            )
+            return None
+
+    def _owner_wait_budget_seconds(self) -> float:
+        """Bound one owner observation without defeating normal slow owners.
+
+        Lease renewal proves ownership, not forward progress.  A hard budget
+        therefore remains necessary for a renewing but hung owner.  The budget
+        is deliberately much larger than the default waiter window, while a
+        short test/degraded lease remains finite and promptly fail-closed.
+        """
+
+        # Normal production leases get a small completion cushion over the
+        # configured waiter window (the cash path can be just over three
+        # seconds).  Very short leases use two lease lengths so crash recovery
+        # remains prompt rather than inheriting a multi-second hang budget.
+        lease_cushion = (
+            2.0 * max(self._lock_ttl_seconds, 0.0)
+            if self._lock_ttl_seconds < 1.0
+            else 1.0
+        )
+        return max(
+            self._wait_timeout_seconds + lease_cushion,
+            self._poll_interval_seconds * 4.0,
+        )
+
+    async def _wait_for_winner_or_recovery(
+        self,
+        scope: str,
+        fetcher: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """After losing a lease, read the winner or acquire one recovery lease."""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._owner_wait_budget_seconds()
+        recovery_attempts = 0
+        max_recovery_attempts = 2
+        observed_owner_token = await self._lock_token(scope)
+        while True:
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                lock_remaining = await self._lock_remaining_seconds(scope)
+                if lock_remaining is None:
+                    raise TimeoutError(
+                        "portfolio snapshot winner unavailable during Redis outage"
+                    )
+                if lock_remaining <= 0:
+                    if recovery_attempts >= max_recovery_attempts:
+                        raise TimeoutError(
+                            "portfolio snapshot recovery owner did not complete"
+                        )
+                    recovery_attempts += 1
+                    recovery_token = await self._acquire(scope)
+                    if recovery_token is not None:
+                        return await self._fetch_as_owner(
+                            scope, recovery_token, fetcher
+                        )
+                    if not self.usable:
+                        raise TimeoutError(
+                            "portfolio snapshot recovery lock unavailable"
+                        )
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    # ``recovery_token`` is None here by construction (this
+                    # branch is the lost SET NX). Recording it would make the
+                    # next comparison always read as "a new owner took over"
+                    # and grant one unearned extra wait window. Observe the
+                    # owner that actually won instead.
+                    observed_owner_token = await self._lock_token(scope)
+                    continue
+                current_owner_token = await self._lock_token(scope)
+                if (
+                    current_owner_token is not None
+                    and current_owner_token != observed_owner_token
+                ):
+                    observed_owner_token = current_owner_token
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    continue
+                raise TimeoutError("portfolio snapshot owner did not complete")
+            await asyncio.sleep(min(self._poll_interval_seconds, remaining))
+
+    async def delete(
+        self,
+        scope: str,
+        *,
+        expected_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Delete a cache entry, optionally only if it is unchanged.
+
+        Recovery callers pass the corrupt payload they observed. The
+        compare-and-delete path prevents a delayed observer from deleting a
+        newer valid replacement written by another facade (the ABA race).
+        The unqualified form remains best-effort invalidation for callers that
+        do not have an observed value.
+        """
+        if self._redis is None:
+            return False
+        cache_key = self._cache_key(scope)
+        try:
+            if expected_payload is None:
+                return bool(await self._redis.delete(cache_key))
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(cache_key)
+                raw = await pipe.get(cache_key)
+                if raw is None:
+                    return False
+                try:
+                    current = json.loads(raw)
+                except (TypeError, ValueError):
+                    return False
+                if current != expected_payload:
+                    return False
+                pipe.multi()
+                pipe.delete(cache_key)
+                deleted = await pipe.execute()
+                return bool(deleted and deleted[0])
+        except WatchError:
+            return False
+        except Exception as exc:  # noqa: BLE001 — invalidation is best effort
+            logger.warning("Toss portfolio snapshot cache DEL failed: %s", exc)
+            return False
+
+    async def _acquire(self, scope: str) -> str | None:
+        if not self.usable:
+            return None
+        token = str(uuid.uuid4())
+        try:
+            acquired = await self._redis.set(
+                self._singleflight_key(scope),
+                token,
+                nx=True,
+                px=max(1, int(self._lock_ttl_seconds * 1000)),
+            )
+        except Exception as exc:  # noqa: BLE001 — singleflight fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot lock failed: %s", exc)
+            return None
+        return token if acquired else None
+
+    async def _release(self, scope: str, token: str) -> None:
+        if self._redis is None:
+            return
+        lock_key = self._singleflight_key(scope)
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(lock_key)
+                if await pipe.get(lock_key) != token:
+                    return
+                pipe.multi()
+                pipe.delete(lock_key)
+                await pipe.execute()
+        except WatchError:
+            # Another owner acquired the key after this lease expired.
+            return
+        except Exception:  # noqa: BLE001 — lock expiry is the fallback
+            return
+
+    async def _renew(self, scope: str, token: str) -> bool:
+        if not self.usable or self._redis is None:
+            return False
+        lock_key = self._singleflight_key(scope)
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(lock_key)
+                if await pipe.get(lock_key) != token:
+                    return False
+                pipe.multi()
+                pipe.pexpire(
+                    lock_key,
+                    max(1, int(self._lock_ttl_seconds * 1000)),
+                )
+                renewed = await pipe.execute()
+        except WatchError:
+            # The lease expired or changed ownership while being renewed.
+            return False
+        except Exception as exc:  # noqa: BLE001 — renewal failure is fail-open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot lock renewal failed: %s", exc)
+            return False
+        return bool(renewed and renewed[0])
+
+    async def _renew_until_done(self, scope: str, token: str) -> None:
+        interval = max(min(self._lock_ttl_seconds / 3.0, 1.0), 0.05)
+        while True:
+            await asyncio.sleep(interval)
+            if not await self._renew(scope, token):
+                return
+
+    async def _fetch_as_owner(
+        self,
+        scope: str,
+        token: str,
+        fetcher: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        renewal_task = asyncio.create_task(self._renew_until_done(scope, token))
+        try:
+            # Another writer may have completed between the initial GET and
+            # lock acquisition.
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+            payload = await fetcher()
+            if isinstance(payload, dict):
+                write_result = await self._put_if_owner(scope, token, payload)
+                if write_result is True or write_result is None:
+                    return payload
+                # A new owner may already have written a newer value.  Never
+                # return this stale result to the old caller.
+                return await self._wait_for_winner_or_recovery(scope, fetcher)
+            return payload
+        finally:
+            renewal_task.cancel()
+            try:
+                await renewal_task
+            except asyncio.CancelledError:
+                pass
+            await self._release(scope, token)
+
+    async def _lock_remaining_seconds(self, scope: str) -> float | None:
+        """Return the current lock lease, or ``None`` when Redis is unavailable.
+
+        A waiter may extend its initial bounded polling window while the owner
+        still holds a live lease. The lease is the distributed ownership
+        boundary; after it expires, waiters re-enter bounded ownership
+        acquisition before using direct crash recovery.
+        """
+
+        if not self.usable or self._redis is None:
+            return None
+        try:
+            pttl = await self._redis.pttl(self._singleflight_key(scope))
+        except Exception as exc:  # noqa: BLE001 — lock inspection fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot lock TTL failed: %s", exc)
+            return None
+
+        if pttl == -2:
+            return 0.0
+        if pttl == -1:
+            # Our locks always have a lease.  A pre-existing/malformed
+            # immortal lock is not demonstrably live, so fail open rather
+            # than waiting without a bound.
+            return 0.0
+        if pttl < 0:
+            return 0.0
+        return max(float(pttl) / 1000.0, 0.0)
+
+    async def _lock_token(self, scope: str) -> str | None:
+        """Read the owner token to distinguish renewal from recovery."""
+
+        if not self.usable or self._redis is None:
+            return None
+        try:
+            token = await self._redis.get(self._singleflight_key(scope))
+        except Exception as exc:  # noqa: BLE001 — lock inspection fails open
+            self._mark_degraded()
+            logger.warning(
+                "Toss portfolio snapshot owner inspection failed (%s)",
+                type(exc).__name__,
+            )
+            return None
+        return str(token) if token is not None else None
+
+    async def get_or_fetch(
+        self,
+        scope: str,
+        fetcher: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """Return a cached payload, sharing one upstream fetch across processes.
+
+        Redis outages and lock wait exhaustion fall back to the supplied fetcher;
+        no synthetic payload is created when the cache is unavailable.
+        """
+        cached = await self.get(scope)
+        if cached is not None:
+            return cached
+        if not self.usable:
+            return await fetcher()
+
+        token = await self._acquire(scope)
+        if token is not None:
+            return await self._fetch_as_owner(scope, token, fetcher)
+
+        if not self.usable:
+            return await fetcher()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._owner_wait_budget_seconds()
+        recovery_attempts = 0
+        max_recovery_attempts = 2
+        observed_owner_token = await self._lock_token(scope)
+        while True:
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                lock_remaining = await self._lock_remaining_seconds(scope)
+                if lock_remaining is None:
+                    return await fetcher()
+                if lock_remaining <= 0:
+                    # A dead owner must not make every waiter independently
+                    # fetch. Re-enter SET NX so exactly one waiter becomes
+                    # the bounded crash-recovery owner.
+                    if recovery_attempts >= max_recovery_attempts:
+                        raise TimeoutError(
+                            "portfolio snapshot recovery owner did not complete"
+                        )
+                    recovery_attempts += 1
+                    recovery_token = await self._acquire(scope)
+                    if recovery_token is not None:
+                        return await self._fetch_as_owner(
+                            scope, recovery_token, fetcher
+                        )
+                    if not self.usable:
+                        return await fetcher()
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    # ``recovery_token`` is None here by construction (this
+                    # branch is the lost SET NX). Recording it would make the
+                    # next comparison always read as "a new owner took over"
+                    # and grant one unearned extra wait window. Observe the
+                    # owner that actually won instead.
+                    observed_owner_token = await self._lock_token(scope)
+                    continue
+                # A positive PTTL proves ownership is live, but renewal is not
+                # proof of fetch progress.  If the token changed, a recovery
+                # owner just took over and merits one fresh bounded wait.  An
+                # unchanged token is the original renewing/hung owner.
+                current_owner_token = await self._lock_token(scope)
+                if (
+                    current_owner_token is not None
+                    and current_owner_token != observed_owner_token
+                ):
+                    observed_owner_token = current_owner_token
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    continue
+                raise TimeoutError("portfolio snapshot owner did not complete")
+            await asyncio.sleep(min(self._poll_interval_seconds, remaining))
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+
+
+_shared_portfolio_snapshot_cache: TossPortfolioSnapshotCache | None = None
+_shared_snapshot_redis_client: Any | None = None
+
+
+def _close_owned_redis_client(client: Any) -> None:
+    """Best-effort release of a Redis client this module created.
+
+    The reset hook is synchronous but ``redis.asyncio`` closes are awaitable,
+    so schedule the close on the running loop when there is one and drain it
+    directly otherwise. Every failure path is suppressed: dropping the
+    singleton must never raise, but it must also not leak the connection pool.
+    """
+
+    if client is None:
+        return
+    closer = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if closer is None:
+        return
+    try:
+        result = closer()
+    except Exception as exc:  # noqa: BLE001 — teardown never raises
+        logger.warning("Snapshot cache Redis close failed: %s", exc)
+        return
+    if not inspect.isawaitable(result):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        with contextlib.suppress(Exception):
+            asyncio.run(_drain(result))
+        return
+    task = loop.create_task(_drain(result))
+    task.add_done_callback(lambda finished: finished.exception())
+
+
+async def _drain(awaitable: Any) -> None:
+    with contextlib.suppress(Exception):
+        await awaitable
+
+
+def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
+    """Return a process-local Redis client facade over the shared snapshot store."""
+    global _shared_portfolio_snapshot_cache
+    if _shared_portfolio_snapshot_cache is None:
+        redis_client = None
+        try:
+            redis_client = redis.from_url(
+                settings.get_redis_url(),
+                max_connections=settings.redis_max_connections,
+                socket_timeout=settings.redis_socket_timeout,
+                socket_connect_timeout=settings.redis_socket_connect_timeout,
+                decode_responses=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — cache fails open
+            logger.warning("Toss portfolio snapshot Redis client init failed: %s", exc)
+        global _shared_snapshot_redis_client
+        _shared_snapshot_redis_client = redis_client
+        scope = _snapshot_cache_scope(settings)
+        _shared_portfolio_snapshot_cache = TossPortfolioSnapshotCache(
+            redis_client=redis_client,
+            key_prefix=f"{_KEY_PREFIX}:{scope}",
+            lock_prefix=f"{_LOCK_PREFIX}:{scope}",
+            ttl_seconds=float(
+                getattr(settings, "toss_portfolio_snapshot_cache_ttl_seconds", 5.0)
+            ),
+            lock_ttl_seconds=float(
+                getattr(
+                    settings,
+                    "toss_portfolio_snapshot_cache_lock_ttl_seconds",
+                    10.0,
+                )
+            ),
+            wait_timeout_seconds=float(
+                getattr(
+                    settings,
+                    "toss_portfolio_snapshot_cache_wait_seconds",
+                    3.0,
+                )
+            ),
+            enabled=bool(
+                getattr(settings, "toss_portfolio_snapshot_cache_enabled", True)
+            ),
+        )
+    return _shared_portfolio_snapshot_cache
+
+
+def reset_shared_portfolio_snapshot_cache() -> None:
+    """Test hook for dropping the process-local Redis facade."""
+    global _shared_portfolio_snapshot_cache, _shared_snapshot_redis_client
+    _shared_portfolio_snapshot_cache = None
+    client = _shared_snapshot_redis_client
+    _shared_snapshot_redis_client = None
+    _close_owned_redis_client(client)
+
+
+__all__ = [
+    "TossPortfolioSnapshotCache",
+    "get_shared_portfolio_snapshot_cache",
+    "reset_shared_portfolio_snapshot_cache",
+]
