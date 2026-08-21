@@ -50,15 +50,20 @@ _ENABLED = re.compile(
 )
 
 
-def _deployment_files() -> list[pathlib.Path]:
+def _deployment_files_in(root: pathlib.Path) -> list[pathlib.Path]:
+    """Every file under ``root`` a deployment could read a gate from."""
     files: list[pathlib.Path] = []
     for pattern in _DEPLOYMENT_GLOBS:
         files.extend(
             path
-            for path in _REPO.glob(pattern)
+            for path in root.glob(pattern)
             if path.is_file() and "__pycache__" not in path.parts
         )
     return sorted(set(files))
+
+
+def _deployment_files() -> list[pathlib.Path]:
+    return _deployment_files_in(_REPO)
 
 
 def find_enabled_gates(text: str) -> list[str]:
@@ -124,3 +129,138 @@ def test_the_guard_does_not_fire_on_a_disabled_gate(gate: str) -> None:
         # concerned -- deliberately, because uncommenting is one keystroke.
         expected = [gate] if line.startswith("#") else []
         assert find_enabled_gates(line) == expected, line
+
+
+# ---------------------------------------------------------------------------
+# R26 -- the discovery, not just the matcher
+# ---------------------------------------------------------------------------
+#
+# The mutation tests above prove the *regex* fires. They say nothing about
+# whether the guard ever reads the file the gate was written into, and the
+# glob list missed several tracked surfaces that really do get read at
+# deployment time: ``env.prod.example``, the root launchers, the shell scripts
+# under ``.github/workflows/``, the launchd plists, and anything nested deeper
+# than ``scripts/*.sh``. A gate set in any of those passed the guard.
+#
+# So these drive the discovery itself against a repo-shaped tree.
+
+#: Tracked path classes the original glob list could not see.
+OMITTED_SURFACES = (
+    "env.prod.example",
+    "run_docker.sh",
+    "run_api_compose.sh",
+    ".github/workflows/taskiq-smoke.sh",
+    "ops/native/plists/com.robinco.auto-trader.worker.plist",
+    "ops/native/scripts/run-scheduler.sh",
+    "scripts/deploy/native/deploy-native.sh",
+)
+
+#: Path classes the original glob list already covered. Kept so the fix has
+#: to be an extension rather than a replacement.
+COVERED_SURFACES = (
+    "env.example",
+    "Makefile",
+    "docker-compose.prod.yml",
+    "scripts/run_taskiq_worker.sh",
+    ".github/workflows/deploy.yml",
+)
+
+#: Places a fake gate literal legitimately lives. Scanning them would make
+#: the guard noisy rather than stronger, so they must stay out.
+NON_DEPLOYMENT_SURFACES = (
+    "tests/services/order_proposals/callback_inbox/test_no_auto_activation.py",
+    "docs/runbooks/telegram-callback-durable-inbox.md",
+    "app/core/config.py",
+    "frontend/invest/.env.local.example",
+    "research/notes.md",
+)
+
+
+def _repo_shaped_tree(root: pathlib.Path) -> None:
+    """A minimal tree with one file per path class, all gates false."""
+    for relative in OMITTED_SURFACES + COVERED_SURFACES + NON_DEPLOYMENT_SURFACES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(f"{gate}=false" for gate in W5_GATES) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _scan(root: pathlib.Path) -> list[str]:
+    """Whatever the production guard reports for this tree."""
+    offenders: list[str] = []
+    for path in _deployment_files_in(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:  # pragma: no cover - binary
+            continue
+        for gate in find_enabled_gates(text):
+            offenders.append(f"{path.relative_to(root).as_posix()}: {gate}")
+    return sorted(offenders)
+
+
+@pytest.mark.parametrize("relative", OMITTED_SURFACES + COVERED_SURFACES)
+def test_discovery_reaches_every_deployment_surface(
+    relative: str, tmp_path: pathlib.Path
+) -> None:
+    """R26 — plant a live gate in each tracked path class; the guard must see it.
+
+    This is the assertion the regex mutation tests could not make: a guard
+    that never opens ``env.prod.example`` will pass every matcher test ever
+    written and still let the gate through.
+    """
+    _repo_shaped_tree(tmp_path)
+    gate = "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED"
+    (tmp_path / relative).write_text(f"{gate}=true\n", encoding="utf-8")
+
+    assert _scan(tmp_path) == [f"{relative}: {gate}"]
+
+
+@pytest.mark.parametrize("relative", NON_DEPLOYMENT_SURFACES)
+def test_discovery_ignores_non_deployment_files(
+    relative: str, tmp_path: pathlib.Path
+) -> None:
+    """The allowlist is closed both ways: no indiscriminate tree scan.
+
+    Test fixtures, runbook prose and application source all legitimately
+    contain the literal ``GATE=true``. Reporting those would train a reader
+    to ignore the guard, which is worse than not having it.
+    """
+    _repo_shaped_tree(tmp_path)
+    gate = "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED"
+    (tmp_path / relative).write_text(f"{gate}=true\n", encoding="utf-8")
+
+    assert _scan(tmp_path) == []
+
+
+def test_discovery_is_anchored_on_the_real_repository() -> None:
+    """The path classes above are not hypothetical -- each exists here."""
+    for relative in (
+        "env.prod.example",
+        ".github/workflows/taskiq-smoke.sh",
+        "ops/native/plists/com.robinco.auto-trader.worker.plist",
+        "ops/native/scripts/run-scheduler.sh",
+    ):
+        assert (_REPO / relative).is_file(), relative
+
+    discovered = {
+        path.relative_to(_REPO).as_posix() for path in _deployment_files_in(_REPO)
+    }
+    for relative in (
+        "env.example",
+        "env.prod.example",
+        "Makefile",
+        ".github/workflows/taskiq-smoke.sh",
+        "ops/native/plists/com.robinco.auto-trader.worker.plist",
+        "ops/native/scripts/run-scheduler.sh",
+    ):
+        assert relative in discovered, relative
+
+    # ... and it still refuses to wander into prose or fixtures.
+    assert not [item for item in discovered if item.startswith(("docs/", "tests/"))]
+
+
+def test_the_real_repository_enables_no_gate_anywhere() -> None:
+    """R26 — the widened scan, run for real."""
+    assert _scan(_REPO) == []
