@@ -342,6 +342,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         "ck_telegram_callback_inbox_outcome",
         "ck_telegram_callback_inbox_processing_started_at",
         "ck_telegram_callback_inbox_retry_vocabulary",
+        "ck_telegram_callback_inbox_retry_budget",
         "ck_telegram_callback_inbox_state",
         "ck_telegram_callback_inbox_terminal_scrubbed",
         "ck_telegram_callback_inbox_terminal_state_pending",
