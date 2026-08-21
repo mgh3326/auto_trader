@@ -53,7 +53,7 @@ def test_diagnostics_enabled_and_profiler_ready_with_dsn_and_positive_rate(
 
 
 @pytest.mark.unit
-def test_diagnostics_profiler_not_ready_when_sample_rate_zero(monkeypatch):
+def test_diagnostics_profiler_not_ready_when_profiles_sample_rate_zero(monkeypatch):
     monkeypatch.setattr(
         sentry_diagnostics.settings, "SENTRY_DSN", "not-a-real-secret-fixture"
     )
@@ -61,7 +61,28 @@ def test_diagnostics_profiler_not_ready_when_sample_rate_zero(monkeypatch):
         sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 0.0
     )
 
-    result = sentry_diagnostics.get_sentry_diagnostics("worker")
+    result = sentry_diagnostics.get_sentry_diagnostics("taskiq-worker")
+
+    assert result["enabled"] is True
+    assert result["profiler_ready"] is False
+
+
+@pytest.mark.unit
+def test_diagnostics_profiler_not_ready_when_traces_sample_rate_zero(monkeypatch):
+    """ROB obs/sentry-profiling-path: verified against installed sentry-sdk
+    2.57.0 — profiles_sample_rate > 0 alone is not sufficient; the
+    transaction profiler piggybacks on trace sampling
+    (test_sentry_profile_envelope_contract.py
+    ::test_zero_traces_sample_rate_suppresses_profile_even_with_profiles_enabled)."""
+    monkeypatch.setattr(
+        sentry_diagnostics.settings, "SENTRY_DSN", "not-a-real-secret-fixture"
+    )
+    monkeypatch.setattr(sentry_diagnostics.settings, "SENTRY_TRACES_SAMPLE_RATE", 0.0)
+    monkeypatch.setattr(
+        sentry_diagnostics.settings, "SENTRY_PROFILES_SAMPLE_RATE", 1.0
+    )
+
+    result = sentry_diagnostics.get_sentry_diagnostics("taskiq-worker")
 
     assert result["enabled"] is True
     assert result["profiler_ready"] is False
@@ -79,6 +100,23 @@ def test_diagnostics_never_echoes_the_dsn_value(monkeypatch):
 
 
 @pytest.mark.unit
-def test_diagnostics_process_kind_is_echoed_verbatim():
+def test_diagnostics_process_kind_is_echoed_verbatim_when_known():
     result = sentry_diagnostics.get_sentry_diagnostics("taskiq-scheduler")
     assert result["process_kind"] == "taskiq-scheduler"
+
+
+@pytest.mark.unit
+def test_diagnostics_rejects_unknown_process_kind_fail_closed():
+    """process_kind is an allowlist, not a free-text passthrough — an
+    unknown value must raise, never be echoed back into diagnostics output."""
+    fake_secret_like_value = "sk-live-should-never-be-echoed-back"
+
+    with pytest.raises(ValueError, match="unknown process_kind"):
+        sentry_diagnostics.get_sentry_diagnostics(fake_secret_like_value)
+
+
+@pytest.mark.unit
+def test_all_known_process_kinds_are_accepted():
+    for process_kind in sentry_diagnostics.KNOWN_PROCESS_KINDS:
+        result = sentry_diagnostics.get_sentry_diagnostics(process_kind)
+        assert result["process_kind"] == process_kind
