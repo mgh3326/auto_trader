@@ -34,6 +34,7 @@ tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_reconcile_window.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
 tests/mcp_server/test_operating_briefing_negative_class.py
+tests/mcp_server/test_rob1311_r2_blockers.py
 tests/mcp_server/test_shadow_replay_profile.py
 tests/mcp_server/test_watch_events_list_recent_tool.py
 tests/mcp_server/tooling/test_crypto_live_routing.py
