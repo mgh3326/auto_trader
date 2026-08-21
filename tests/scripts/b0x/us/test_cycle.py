@@ -286,3 +286,48 @@ async def test_foreign_residual_blocks_confirmed_submit_but_is_not_relabelled_ow
     assert outcome.record["fresh_truth"]["own_position_symbols"] == []
     assert "contaminated lab account state" in outcome.record["submission_skipped"]
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_dlab_manual_execution_is_attributed_and_does_not_skip_as_contaminated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The native lab smoke prefix removes only the false contamination path."""
+
+    readers, _ = _readers(
+        positions=[
+            {
+                "symbol": "UBER",
+                "qty": "1",
+                "qty_available": "1",
+                "avg_entry_price": "69.65",
+            }
+        ],
+        ledger=[
+            {
+                "account_mode": alpaca.LANE,
+                "record_kind": "execution",
+                "lifecycle_correlation_id": "dlab-rob73-uber",
+                "client_order_id": "dlab-rob73-uber",
+                "broker_order_id": "broker-uber",
+                "execution_symbol": "UBER",
+                "side": "buy",
+                "filled_qty": "1",
+                "filled_avg_price": "69.65",
+                "created_at": "2026-08-09T15:00:00+00:00",
+            }
+        ],
+    )
+    monkeypatch.setattr(us_cycle, "us_market_session", lambda now: US_SESSION_REGULAR)
+
+    outcome = await us_cycle.run_us_cycle(
+        now=NOW,
+        table_dir=_table_dir(tmp_path),
+        out_dir=tmp_path / "observations",
+        confirm=False,
+        readers=readers,
+    )
+
+    assert outcome.record["contaminated"] is False
+    assert outcome.record["fresh_truth"]["foreign_position_symbols"] == []
+    assert outcome.record["submission_skipped"].startswith("confirm=False")

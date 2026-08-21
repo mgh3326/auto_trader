@@ -46,8 +46,8 @@ MISSING_NAV_FOR_RATIO_KILL_REASON = "missing_nav_for_ratio_kill"
 INVALID_US_TABLE_SIZING_REASON = "invalid_us_table_sizing"
 
 US_REALIZED_PNL_UNAVAILABLE = (
-    "realized_pnl_today has no dedicated source when a b0xu execution exists "
-    "today; this cycle fails closed rather than treating it as a measured zero."
+    "realized_pnl_today has no dedicated source when a recognized lab execution "
+    "exists today; this cycle fails closed rather than treating it as a measured zero."
 )
 
 

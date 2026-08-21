@@ -4,10 +4,11 @@ This module deliberately has two sharply separated halves:
 
 * :func:`read_fresh_truth` uses the existing read-only ``alpaca_paper_*``
   surfaces for the *lab* account only.  It reads the whole positions/open
-  order snapshot plus the existing Alpaca ledger, then attributes residual
-  state by an evidence-bearing ``b0xu-`` lifecycle correlation.  Nothing is
-  inferred from an account name, a client-order-id prefix, or a plausible
-  history.
+  order snapshot plus the existing Alpaca ledger.  Position attribution accepts
+  evidence-bearing ``b0xu-`` and native-lab ``dlab-`` lifecycle correlations;
+  open-order ownership remains ``b0xu-`` only, so its cancellation scope does
+  not expand.  Nothing is inferred from an account name, a client-order-id
+  prefix, or a plausible history.
 * planning/submission is pure.  There is deliberately no production mutation
   default until an approved lab-aware automated boundary exists.  Tests inject
   fakes/stubs at that seam; no test needs an Alpaca account, preview call,
@@ -57,6 +58,14 @@ LANE: Final[str] = ALPACA_PAPER_LAB_ACCOUNT_MODE
 MARKET: Final[str] = "us"
 QUOTE_CURRENCY: Final[str] = "USD"
 B0XU_CORRELATION_PREFIX: Final[str] = "b0xu-"
+# The Alpaca lab profile prefixes server-issued manual and automated IDs with
+# ``dlab-``.  These IDs predate B0-X, but are native evidence for the same
+# explicitly selected lab account when stored as lifecycle correlations.
+DLAB_CORRELATION_PREFIX: Final[str] = "dlab-"
+LAB_EXECUTION_CORRELATION_PREFIXES: Final[tuple[str, ...]] = (
+    B0XU_CORRELATION_PREFIX,
+    DLAB_CORRELATION_PREFIX,
+)
 
 # Contract §4 US column.  The locked envelope holds the $450 ceiling; these
 # two values are the signed lower edge and B0's selected point within the band.
@@ -78,7 +87,7 @@ class LabTruthReadError(RuntimeError):
 
 
 class RealizedPnlUnavailable(RuntimeError):
-    """A B0-X execution exists today but no realized-P&L source is available."""
+    """A recognized lab execution exists today but no realized-P&L source exists."""
 
 
 class LabMutationNotWired(RuntimeError):
@@ -286,11 +295,11 @@ class FreshTruth:
             "own_pending_readable": True,
             "cumulative_deployment_readable": self.cumulative_deployment_readable,
             "realized_pnl_source": (
-                "no B0-X US execution observed in the current UTC day in the "
+                "no recognized lab execution observed in the current UTC day in the "
                 "bounded, complete recent ledger snapshot"
                 if self.realized_pnl_today == Decimal("0")
-                else "unavailable: B0-X US execution exists today but no realized-P&L "
-                "read model is wired"
+                else "unavailable: recognized lab execution exists today but no "
+                "realized-P&L read model is wired"
             ),
         }
 
@@ -310,19 +319,19 @@ def _parse_datetime(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.UTC)
 
 
-def _b0xu_executions(items: list[dict[str, Any]]) -> tuple[LedgerExecution, ...]:
+def _lab_executions(items: list[dict[str, Any]]) -> tuple[LedgerExecution, ...]:
     parsed: list[LedgerExecution] = []
     for row in items:
         correlation = str(row.get("lifecycle_correlation_id") or "").strip()
-        if not correlation.startswith(B0XU_CORRELATION_PREFIX):
+        if not correlation.startswith(LAB_EXECUTION_CORRELATION_PREFIXES):
             continue
         if row.get("account_mode") != LANE:
-            raise LabTruthReadError("b0xu ledger row is not bound to alpaca_paper_lab")
+            raise LabTruthReadError("lab ledger row is not bound to alpaca_paper_lab")
         if str(row.get("record_kind") or "") != "execution":
             continue
         side = str(row.get("side") or "").strip().lower()
         if side not in {"buy", "sell"}:
-            raise LabTruthReadError("b0xu execution has an unknown side")
+            raise LabTruthReadError("lab execution has an unknown side")
         parsed.append(
             LedgerExecution(
                 correlation_id=correlation,
@@ -351,7 +360,14 @@ def _classify_open_orders(
 ) -> tuple[tuple[RawOpenOrder, ...], tuple[RawOpenOrder, ...]]:
     correlations_by_broker_id: dict[str, set[str]] = defaultdict(set)
     for execution in executions:
-        if execution.broker_order_id:
+        # Position provenance recognizes native lab smoke rows as well, but
+        # open-order ownership reaches the cancellation path.  Preserve that
+        # mutation scope: only B0-X's own lifecycle prefix can own a resting
+        # broker order.
+        if (
+            execution.correlation_id.startswith(B0XU_CORRELATION_PREFIX)
+            and execution.broker_order_id
+        ):
             correlations_by_broker_id[execution.broker_order_id].add(
                 execution.correlation_id
             )
@@ -390,11 +406,13 @@ def _attribute_positions(
         events = events_by_symbol.get(position.symbol, [])
         if not events:
             foreign.append(position.symbol)
-            failures.append(f"{position.symbol}: no b0xu execution correlation")
+            failures.append(
+                f"{position.symbol}: no recognized lab execution correlation"
+            )
             continue
         if any(event.filled_qty is None for event in events):
             foreign.append(position.symbol)
-            failures.append(f"{position.symbol}: b0xu fill quantity unavailable")
+            failures.append(f"{position.symbol}: lab fill quantity unavailable")
             continue
 
         signed_qty = sum(
@@ -408,7 +426,7 @@ def _attribute_positions(
         if signed_qty != position.quantity or signed_qty <= 0:
             foreign.append(position.symbol)
             failures.append(
-                f"{position.symbol}: broker quantity does not exactly match b0xu fills"
+                f"{position.symbol}: broker quantity does not exactly match lab fills"
             )
             continue
 
@@ -465,12 +483,12 @@ def _attribute_positions(
 def _realized_pnl_today(
     executions: tuple[LedgerExecution, ...], *, now: dt.datetime
 ) -> Decimal | None:
-    """Return a provable zero only when no B0-X execution exists today.
+    """Return a provable zero only when no recognized lab execution exists today.
 
     The current ledger exposes fills and positions, not a dedicated realized
     P&L read model.  A made-up zero would disable a NAV-ratio kill.  The
     bounded complete ledger snapshot can, however, prove the bootstrap case:
-    no B0-X execution at all means there is no B0-X realized P&L today.
+    no recognized lab execution at all means there is no lab realized P&L today.
     """
 
     if not executions:
@@ -527,7 +545,7 @@ async def read_fresh_truth(
         )
     if int(ledger_response.get("count", -1)) >= _LEDGER_READ_LIMIT:
         raise LabTruthReadError(
-            "ledger read reached its limit; b0xu attribution incomplete"
+            "ledger read reached its limit; lab attribution incomplete"
         )
 
     account = account_response.get("account")
@@ -581,7 +599,7 @@ async def read_fresh_truth(
     ledger_items = ledger_response.get("items")
     if not isinstance(ledger_items, list):
         raise LabTruthReadError("ledger items malformed")
-    executions = _b0xu_executions(ledger_items)
+    executions = _lab_executions(ledger_items)
     positions = tuple(sorted(raw_positions, key=lambda position: position.symbol))
     open_orders = tuple(sorted(raw_orders, key=lambda order: order.broker_order_id))
     own_open_orders, foreign_open_orders = _classify_open_orders(
@@ -959,6 +977,8 @@ async def cancel_own_open_orders(
 
 __all__ = [
     "B0XU_CORRELATION_PREFIX",
+    "DLAB_CORRELATION_PREFIX",
+    "LAB_EXECUTION_CORRELATION_PREFIXES",
     "LANE",
     "MARKET",
     "QUOTE_CURRENCY",
