@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import Settings
 
@@ -21,3 +22,24 @@ def test_telegram_flags_default_off_and_allowlist_parses():
         _env_file=None, ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR="111, 222"
     )
     assert s2.order_proposals_telegram_chat_allowlist == ["111", "222"]
+
+
+@pytest.mark.unit
+def test_durable_callback_enqueue_timeout_is_finite_positive_and_capped() -> None:
+    """R33: an ACK deadline must never become zero, infinite, or unbounded."""
+    baseline = Settings(_env_file=None)
+    assert baseline.ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS == 2.0
+
+    for invalid in (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        0.0,
+        -0.01,
+        10.01,
+    ):
+        with pytest.raises(ValidationError):
+            Settings(
+                _env_file=None,
+                ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS=invalid,
+            )

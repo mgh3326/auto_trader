@@ -693,41 +693,69 @@ async def test_the_ack_is_bounded_by_the_configured_enqueue_timeout(
 
 
 @pytest.mark.asyncio
-async def test_a_hung_kick_keeps_the_committed_row_and_returns_bounded(
+async def test_a_cancellation_resistant_kick_keeps_the_committed_row_and_returns_bounded(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
 ) -> None:
-    """RED item 3 — Redis loss must not undo the durable ACK."""
+    """R33 — a cancellation-resistant Redis producer cannot extend the ACK."""
     from app.services.order_proposals.callback_inbox.ingress import (
         ingest_callback_update,
     )
 
     update_id = 740_000 + uuid.uuid4().int % 10_000
+    started = asyncio.Event()
+    cancel_requested = asyncio.Event()
+    release = asyncio.Event()
+    produced_job_ids: list[uuid.UUID] = []
+    producer_started_at = 0.0
 
-    async def _hang(job_id: uuid.UUID) -> None:
-        await asyncio.sleep(30)
+    async def _resistant(job_id: uuid.UUID) -> None:
+        nonlocal producer_started_at
+        produced_job_ids.append(job_id)
+        producer_started_at = time.monotonic()
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancel_requested.set()
 
-    started = time.monotonic()
-    result = await ingest_callback_update(
-        make_update(
-            data=_valid_callback_data(),
-            update_id=update_id,
-            callback_id=f"cbq-{update_id}",
-        ),
-        now=now_kst(),
-        enqueue_fn=_hang,
-        enqueue_timeout_seconds=0.05,
+    request = asyncio.create_task(
+        ingest_callback_update(
+            make_update(
+                data=_valid_callback_data(),
+                update_id=update_id,
+                callback_id=f"cbq-{update_id}",
+            ),
+            now=now_kst(),
+            enqueue_fn=_resistant,
+            enqueue_timeout_seconds=0.02,
+        )
     )
-    elapsed = time.monotonic() - started
-    assert result.job_id is not None
-    inbox_cleanup.append(result.job_id)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        result = await asyncio.wait_for(asyncio.shield(request), timeout=0.15)
+        elapsed = time.monotonic() - producer_started_at
+        assert result.job_id is not None
+        inbox_cleanup.append(result.job_id)
 
-    assert result.accepted is True
-    assert result.enqueued is False
-    assert elapsed < 5.0
+        assert result.accepted is True
+        assert result.enqueued is False
+        assert cancel_requested.is_set()
+        assert elapsed < 0.15, elapsed
 
-    row = await load_job(result.job_id)
-    assert row is not None
-    assert row.state == "pending"
+        row = await load_job(result.job_id)
+        assert row is not None
+        assert row.state == "pending"
+    finally:
+        # The fake deliberately becomes cooperative only after the ACK has
+        # returned.  Let its real done callback own final task cleanup.
+        release.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=1.0)
+        await asyncio.sleep(0)
+        for job_id in produced_job_ids:
+            if job_id not in inbox_cleanup:
+                inbox_cleanup.append(job_id)
 
 
 @pytest.mark.asyncio

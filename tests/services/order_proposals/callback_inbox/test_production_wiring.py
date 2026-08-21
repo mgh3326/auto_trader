@@ -612,26 +612,24 @@ async def test_a_rejected_update_never_reaches_the_real_producer(
 
 
 @pytest.mark.asyncio
-async def test_the_configured_timeout_is_the_one_handed_to_wait_for(
+async def test_default_kiq_producer_ack_deadline_survives_cancellation_resistance(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
 ) -> None:
-    """R24 — the *default producer* path, with the exact value spied on.
+    """R33 — the real ``.kiq`` seam cannot hold a webhook ACK hostage.
 
-    The elapsed-time assertion below bounds the wait, but a conditional that
-    ignored the setting on the default path and used its own number could
-    still sit inside a generous bound. This reads the value actually passed
-    to ``asyncio.wait_for`` on a run where nothing overrides ``enqueue_fn``.
+    This intentionally replaces the old implementation pin on
+    ``asyncio.wait_for``.  The fake is below the TaskIQ formatter, so the
+    default producer still serialises and calls ``.kiq`` exactly as production
+    does; it simply keeps running after the deadline's cancellation request.
     """
-    import asyncio as _asyncio
 
     from app.core.config import settings
     from app.core.taskiq_broker import broker
-    from app.services.order_proposals.callback_inbox import ingress as ingress_module
     from app.services.order_proposals.callback_inbox.ingress import (
         ingest_callback_update,
     )
 
-    configured = 0.37
+    configured = 0.02
     monkeypatch.setattr(
         settings,
         "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
@@ -639,39 +637,83 @@ async def test_the_configured_timeout_is_the_one_handed_to_wait_for(
         raising=False,
     )
 
-    timeouts: list[float | None] = []
-    real_wait_for = _asyncio.wait_for
+    started = asyncio.Event()
+    cancel_requested = asyncio.Event()
+    release = asyncio.Event()
+    late_failure_seen = asyncio.Event()
+    sent_job_ids: list[uuid.UUID] = []
+    producer_started_at = 0.0
+    loop_errors: list[dict[str, object]] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
 
-    async def _spy_wait_for(awaitable, timeout):
-        timeouts.append(timeout)
-        return await real_wait_for(awaitable, timeout)
+    def _capture_loop_error(
+        _loop: asyncio.AbstractEventLoop, context: dict[str, object]
+    ) -> None:
+        loop_errors.append(context)
 
-    monkeypatch.setattr(ingress_module.asyncio, "wait_for", _spy_wait_for)
+    loop.set_exception_handler(_capture_loop_error)
 
-    sent: list[Any] = []
+    async def _resistant_transport(message: Any) -> None:
+        nonlocal producer_started_at
+        payload = json.loads(message.message.decode())
+        sent_job_ids.append(uuid.UUID(payload["args"][0]))
+        producer_started_at = time.monotonic()
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancel_requested.set()
+        late_failure_seen.set()
+        raise RuntimeError("late broker enqueue failure")
 
-    async def _fake_transport(message):
-        sent.append(message)
-
-    monkeypatch.setattr(broker, "kick", _fake_transport)
+    monkeypatch.setattr(broker, "kick", _resistant_transport)
 
     update_id = 994_000 + uuid.uuid4().int % 10_000
-    result = await ingest_callback_update(
-        make_update(
-            data=_synthetic_data(),
-            update_id=update_id,
-            callback_id=f"cbq-{update_id}",
-        ),
-        now=now_kst(),
+    request = asyncio.create_task(
+        ingest_callback_update(
+            make_update(
+                data=_synthetic_data(),
+                update_id=update_id,
+                callback_id=f"cbq-{update_id}",
+            ),
+            now=now_kst(),
+        )
     )
-    assert result.job_id is not None
-    inbox_cleanup.append(result.job_id)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        result = await asyncio.wait_for(asyncio.shield(request), timeout=0.15)
+        elapsed = time.monotonic() - producer_started_at
+        assert result.job_id is not None
+        inbox_cleanup.append(result.job_id)
 
-    assert result.enqueued is True
-    assert len(sent) == 1
-    assert timeouts == [configured], (
-        f"the default producer was given {timeouts!r}, not the configured {configured}"
-    )
+        assert result.accepted is True
+        assert result.enqueued is False
+        assert cancel_requested.is_set()
+        assert elapsed < 0.15, elapsed
+
+        row = await load_job(result.job_id)
+        assert row is not None
+        assert row.state == "pending"
+    finally:
+        release.set()
+        try:
+            await asyncio.wait_for(request, timeout=1.0)
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0)
+        loop.set_exception_handler(previous_handler)
+        for job_id in sent_job_ids:
+            if job_id not in inbox_cleanup:
+                inbox_cleanup.append(job_id)
+
+    assert late_failure_seen.is_set()
+    assert not [
+        context
+        for context in loop_errors
+        if "Task exception was never retrieved" in str(context.get("message", ""))
+    ], loop_errors
 
 
 @pytest.mark.asyncio
