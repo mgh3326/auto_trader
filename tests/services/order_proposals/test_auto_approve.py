@@ -913,7 +913,7 @@ def test_policy_caps_match_the_operator_declared_limits():
     # approval caps independently of those bands.
     # §106차 (2026-08-19): daily caps no longer constrict the approval lane;
     # per-order caps remain the maximum-loss boundary for one automation error.
-    assert (kr.per_order_cap, kr.daily_cap) == (Decimal("1000000"), Decimal("5000000"))
+    assert (kr.per_order_cap, kr.daily_cap) == (Decimal("2000000"), Decimal("5000000"))
     assert (us.per_order_cap, us.daily_cap) == (Decimal("1500"), Decimal("20000"))
     assert (crypto.per_order_cap, crypto.daily_cap) == (
         Decimal("1000000"),
