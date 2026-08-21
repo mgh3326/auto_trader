@@ -22,6 +22,7 @@ immediately and the lock still held until the unlock or the backend dies.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 
 import pytest
@@ -88,6 +89,7 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
 
     monkeypatch.setattr(db, "engine", _Capturing(), raising=True)
     lock = locks_module.PostgresJobAdvisoryLock()
+    released = False
     try:
         assert await lock.try_acquire(key) is True
         assert len(captured) == 1
@@ -131,6 +133,7 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
         await observer.commit()
 
         await lock.release(key)
+        released = True
 
         # Released cleanly, so it can be taken again.
         retaken = bool(
@@ -146,6 +149,17 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
         )
         await observer.commit()
     finally:
+        # A failing assertion above must not leave a live backend holding a
+        # lock for the rest of the session -- every later test that picks a
+        # colliding key would then fail for the wrong reason.
+        if not released:
+            with contextlib.suppress(Exception):
+                await lock.release(key)
+            with contextlib.suppress(Exception):
+                for connection in captured:
+                    await connection.close()
+        with contextlib.suppress(Exception):
+            await observer.rollback()
         await observer.close()
 
 
@@ -220,11 +234,12 @@ class _CommitFails:
             def invalidate() -> None:
                 events.append("raw_invalidate")
 
-        self._raw = _Raw()
+        self.raw = _Raw()
+        self.driver = self.raw.driver_connection
 
     async def get_raw_connection(self):
         self.events.append("get_raw_connection")
-        return self._raw
+        return self.raw
 
     async def execute(self, *_args, **_kwargs):
         self.events.append("execute")
@@ -361,10 +376,10 @@ async def test_a_cancelled_cleanup_carries_the_commit_failure_as_its_cause(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_an_unterminable_commit_failure_quarantines_the_connection(
+async def test_an_unterminable_commit_failure_quarantines_every_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R30 x R27d — unproven termination still means no close and no checkin."""
+    """R30 x R27d — unproven termination: nothing closed, nothing let go."""
     from app.core import db
     from app.services.order_proposals.callback_inbox.locks import (
         LockTerminationUnproven,
@@ -374,14 +389,94 @@ async def test_an_unterminable_commit_failure_quarantines_the_connection(
     connection = _CommitFails(error=OSError("commit failed"), terminates=False)
     monkeypatch.setattr(db, "engine", _engine_returning(connection), raising=True)
 
+    # Isolated, so the assertions are about *this* acquire rather than
+    # whatever an earlier test left behind. Module-private on purpose: the
+    # public accessor is a test-only surface on the runtime, and R31 removes
+    # those.
+    quarantine: set = set()
+    monkeypatch.setattr(locks_module, "_QUARANTINE", quarantine, raising=True)
+
     entered: list[int] = []
     with pytest.raises(LockTerminationUnproven):
         async with job_advisory_lock(4321) as acquired:  # pragma: no cover
             entered.append(1 if acquired else 0)
 
     assert entered == [], "the handler ran on a backend we could not terminate"
+
+    # Both routes were tried, once each ...
+    assert connection.events.count("detach") == 1, connection.events
+    assert connection.events.count("driver_terminate") == 1, connection.events
+    # ... and neither ending happened.
     assert "close" not in connection.events, connection.events
     assert "raw_invalidate" not in connection.events, connection.events
-    # Module-private on purpose: the accessor is a test-only surface on the
-    # runtime and is on the list for removal (R31).
-    assert connection in locks_module._QUARANTINE  # noqa: SLF001
+
+    # Every handle is strongly retained: dropping any of them lets the
+    # collector check the connection back in on our behalf.
+    assert connection in quarantine
+    assert connection.raw in quarantine
+    assert connection.driver in quarantine
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_proven_commit_failure_leaves_no_holder_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R30 — the lock must not be recorded as held by a discarded connection.
+
+    Assigning ``self._connection`` before committing would pass every
+    context-manager test here: the acquire still raises, the handler still
+    does not run. But the lock object would be left pointing at a terminated
+    connection, so ``release`` would later run against a dead backend and
+    ``closed`` would lie about what is held.
+    """
+    from app.core import db
+
+    connection = _CommitFails(error=OSError("commit failed"))
+    monkeypatch.setattr(db, "engine", _engine_returning(connection), raising=True)
+
+    lock = locks_module.PostgresJobAdvisoryLock()
+    with pytest.raises(OSError):
+        await lock.try_acquire(4321)
+
+    assert "invalidate_completed" in connection.events, connection.events
+    assert lock._connection is None, (  # noqa: SLF001
+        "a terminated connection is still recorded as the held lock"
+    )
+
+
+def test_the_commit_precedes_the_holder_assignment() -> None:
+    """R30 — structurally, in the order the two statements appear.
+
+    The behavioural test above catches the assignment happening first. This
+    catches it moving *out* of the try/except boundary, where a commit failure
+    would no longer be treated as an ambiguous acquire at all.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(
+        inspect.getsource(locks_module.PostgresJobAdvisoryLock.try_acquire).strip()
+    )
+    handler = next(node for node in ast.walk(tree) if isinstance(node, ast.Try))
+
+    commits = [
+        node.lineno
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "commit"
+    ]
+    assert commits, "the acquire never commits, so the holder stays in a transaction"
+
+    assignments = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute) and target.attr == "_connection"
+    ]
+    assert assignments, "the acquire never records the connection"
+    assert max(commits) < min(assignments), (
+        "the connection is recorded as held before the commit that could fail"
+    )
