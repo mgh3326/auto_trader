@@ -155,6 +155,7 @@ tests/services/naver_finance/test_investor_detail_cache_wiring.py
 tests/services/order_proposals/callback_inbox/test_action_round_trip.py
 tests/services/order_proposals/callback_inbox/test_attempt_exhaustion.py
 tests/services/order_proposals/callback_inbox/test_crash_points.py
+tests/services/order_proposals/callback_inbox/test_enqueue_deadline.py
 tests/services/order_proposals/callback_inbox/test_exhausted_retry_bypass.py
 tests/services/order_proposals/callback_inbox/test_job_advisory_lock.py
 tests/services/order_proposals/callback_inbox/test_lock_authority.py
@@ -331,6 +332,7 @@ tests/test_kr_market_ranking_collector.py
 tests/test_kr_news_symbol_mapping_freshness.py
 tests/test_live_reconcile_backfill_report_cli.py
 tests/test_local_docker_vcs_ref_contract.py
+tests/test_main_w5_callback_enqueue_shutdown.py
 tests/test_manual_holdings_service.py
 tests/test_market_events_freshness_router.py
 tests/test_market_report.py
