@@ -18,6 +18,8 @@ import builtins
 import copy
 import logging
 import math
+import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -3060,7 +3062,7 @@ async def test_internal_recovery_item_exception_surfaces_are_redacted(
 def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage() -> (
     None
 ):
-    """Only a real UUID MRO may reach the trusted candidate conversion seam."""
+    """Only exact stdlib and asyncpg UUID representations receive authority."""
     __tracebackhide__ = True
     from app.services.order_proposals.callback_inbox import recovery as recovery_module
 
@@ -3090,6 +3092,12 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         _raise_generic("test UUID int-subclass poison did not reach base storage")
     hostile_raw_int.calls.clear()
 
+    hostile_storage = _hostile_storage_uuid(raw_int)
+    stored_hostile_storage = uuid.UUID.int.__get__(hostile_storage, uuid.UUID)
+    if type(stored_hostile_storage) is not int:
+        _raise_generic("test UUID subtype did not retain its base integer storage")
+    hostile_storage.calls.clear()
+
     # ``uuid.UUID.__new__`` without initialization is an ordinary malformed
     # storage object: the base ``int`` descriptor raises AttributeError.
     malformed_values: tuple[object, ...] = (
@@ -3099,6 +3107,7 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         uuid.UUID.__new__(uuid.UUID),
         poisoned_bool,
         poisoned_subclass,
+        hostile_storage,
     )
     failures = 0
     for value in malformed_values:
@@ -3115,41 +3124,85 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         failures += 1
     if hostile_raw_int.calls:
         failures += 1
+    if hostile_storage.calls:
+        failures += 1
     if failures:
         _raise_generic(
             "recovery UUID materializer accepted, rendered, or raised on malformed storage"
         )
 
 
-def test_recovery_uuid_materializer_reads_uuid_subtype_storage_via_base_descriptor() -> (
-    None
-):
-    """A database UUID subtype is copied without invoking its overrides."""
+def test_recovery_uuid_materializer_copies_exact_builtin_uuid() -> None:
+    """An exact stdlib UUID is retained as an exact stdlib UUID."""
     __tracebackhide__ = True
     from app.services.order_proposals.callback_inbox import recovery as recovery_module
 
-    source = _hostile_storage_uuid(uuid.uuid4().int)
+    source = uuid.uuid4()
+    if type(source) is not uuid.UUID:
+        _raise_generic("uuid4 test source was not an exact built-in UUID")
     source_int = uuid.UUID.int.__get__(source, uuid.UUID)
     if type(source_int) is not int:
         _raise_generic("base UUID descriptor did not expose an exact built-in integer")
-    source.calls.clear()
 
     materialized: object | None = None
     try:
         materialized = recovery_module._materialize_trusted_candidate_uuid(source)
     except Exception:
-        _raise_generic("recovery UUID materializer rejected valid UUID subtype storage")
+        _raise_generic("recovery UUID materializer rejected valid UUID storage")
     if type(materialized) is not uuid.UUID:
         _raise_generic("recovery UUID materializer did not return an exact UUID")
     materialized_int = uuid.UUID.int.__get__(materialized, uuid.UUID)
     if type(materialized_int) is not int or materialized_int != source_int:
         _raise_generic("recovery UUID materializer changed the UUID storage value")
-    if source.calls:
-        _raise_generic("recovery UUID materializer invoked a UUID subtype override")
+
+
+def test_recovery_uuid_materializer_copies_asyncpg_uuid_in_child_subprocess() -> None:
+    """The real asyncpg UUID representation is isolated from a parent crash."""
+    __tracebackhide__ = True
+    child_source = """
+import resource
+import uuid
+
+try:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except (AttributeError, OSError, ValueError):
+    pass
+
+from asyncpg.pgproto import pgproto
+from app.services.order_proposals.callback_inbox import recovery
+
+canonical = \"01234567-89ab-4def-8abc-def012345678\"
+source = pgproto.UUID(canonical)
+if type(source) is not pgproto.UUID:
+    raise SystemExit(10)
+result = recovery._materialize_trusted_candidate_uuid(source)
+expected = uuid.UUID(canonical)
+if type(result) is not uuid.UUID:
+    raise SystemExit(11)
+if result.int != expected.int:
+    raise SystemExit(12)
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", child_source],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        _raise_generic("asyncpg UUID child materializer timed out")
+    else:
+        if (
+            completed.returncode != 0
+            or completed.stdout != ""
+            or completed.stderr != ""
+        ):
+            _raise_generic("asyncpg UUID child materializer did not exit cleanly")
 
 
 @pytest.mark.asyncio
-async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_subtype(
+async def test_recovery_loop_skips_malformed_candidate_and_continues_with_exact_uuid(
     monkeypatch: pytest.MonkeyPatch,
     production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
 ) -> None:
@@ -3160,12 +3213,13 @@ async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_s
 
     log_sink, events, envelope_item_types = production_sentry_sinks
     malformed = _UUIDClassSpoof(uuid.uuid4().int)
-    valid = _hostile_storage_uuid(uuid.uuid4().int)
+    valid = uuid.uuid4()
+    if type(valid) is not uuid.UUID:
+        _raise_generic("recovery valid candidate was not an exact built-in UUID")
     valid_int = uuid.UUID.int.__get__(valid, uuid.UUID)
     if type(valid_int) is not int:
         _raise_generic("test UUID subtype did not retain an exact integer payload")
     malformed.calls.clear()
-    valid.calls.clear()
 
     summary_message = "order_proposals.telegram.callback_recovery_swept"
     summary_extras: dict[str, int] = {
@@ -3446,8 +3500,8 @@ async def test_recovery_loop_skips_malformed_candidate_and_continues_with_uuid_s
             or uuid.UUID.int.__get__(process_job_id, uuid.UUID) != valid_int
         ):
             _raise_generic("recovery executed a candidate other than the valid UUID")
-        if malformed.calls or valid.calls:
-            _raise_generic("recovery rendered or dynamically read a candidate UUID")
+        if malformed.calls:
+            _raise_generic("recovery rendered or dynamically read a malformed UUID")
 
     def _assert_exact_summary_observability() -> None:
         new_records = log_sink.records[records_before:]
