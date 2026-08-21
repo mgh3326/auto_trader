@@ -1040,3 +1040,184 @@ async def test_quick_prior_decision_status_smoke_marker_excludes_row():
         "(not `rationale`) must still be excluded, matching canonical "
         "`_is_smoke(rationale, status)`"
     )
+
+
+# ---------------------------------------------------------------------------
+# R6 — remaining active consumer contracts that still describe the pre-fix
+# quick semantics (live price / consensus / position from a quick call, a
+# `mode=quick` or `max_symbols` argument that was never a real parameter, or
+# missing quick=False annotations for upside/deep-confirm/position guidance).
+# ---------------------------------------------------------------------------
+
+
+def test_get_quote_description_does_not_claim_quick_batch_has_fresh_price():
+    import inspect
+
+    from app.mcp_server.tooling import market_data_quotes
+
+    source = inspect.getsource(market_data_quotes)
+    start = source.index('name="get_quote"')
+    end = source.index("async def get_quote", start)
+    description = source[start:end]
+
+    assert "already includes" not in description.lower(), (
+        "get_quote description must not claim a planned analyze_stock_batch "
+        "call already includes a fresh price — quick=True (the default) is "
+        "a DB-only stale projection with no live price fetch"
+    )
+    if "analyze_stock_batch" in description:
+        assert "quick=false" in description.lower(), (
+            "any redundancy claim against analyze_stock_batch must be "
+            "scoped to quick=False (the only path that fetches a live "
+            "price internally)"
+        )
+
+
+def test_route_request_buy_lane_uses_real_quick_parameter_name():
+    from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
+
+    buy_step = next(
+        step
+        for step in LANE_SEQUENCES["buy"]
+        if step["tool"] == "analyze_stock_batch"
+    )
+    purpose = buy_step["purpose"]
+
+    assert "mode=quick" not in purpose, (
+        "analyze_stock_batch has no `mode` parameter — the real parameter "
+        "is `quick` (bool, default True)"
+    )
+    assert "max_symbols" not in purpose, (
+        "analyze_stock_batch has no `max_symbols` parameter"
+    )
+    assert "consensus" not in purpose.lower(), (
+        "quick=True no longer returns consensus — removed by PR #1915"
+    )
+    assert "per-account position" not in purpose.lower(), (
+        "analyze_stock_batch never attaches a position field regardless of "
+        "quick (include_position is always forced False internally) — "
+        "use get_holdings"
+    )
+
+
+def test_route_request_sell_and_discovery_lanes_annotate_quick_false_for_upside_and_deep_confirm():
+    from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
+
+    sell_step = next(
+        step
+        for step in LANE_SEQUENCES["sell"]
+        if step["tool"] == "analyze_stock_batch"
+    )
+    assert "quick=false" in sell_step["purpose"].lower(), (
+        "the sell lane's analyze_stock_batch step confirms 'upside', which "
+        "requires the full quick=False path — this must be explicit so a "
+        "caller does not rely on the quick=True default and get nothing"
+    )
+
+    discovery_step = next(
+        step
+        for step in LANE_SEQUENCES["discovery"]
+        if step["tool"] == "analyze_stock_batch"
+    )
+    assert "quick=false" in discovery_step["purpose"].lower(), (
+        "the discovery lane's 'deep confirm' analyze_stock_batch step must "
+        "explicitly say quick=False — quick=True is the default and would "
+        "silently skip the deep confirmation this step exists to do"
+    )
+
+
+def test_playbook_buy_lane_uses_real_quick_parameter_name():
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    playbook = (
+        repo_root / "docs" / "playbooks" / "trading-decision-playbook.md"
+    ).read_text(encoding="utf-8")
+
+    assert "mode=quick" not in playbook, (
+        "trading-decision-playbook.md prose must use the real "
+        "analyze_stock_batch parameter `quick`, not `mode`"
+    )
+    assert "mode: quick" not in playbook, (
+        "trading-decision-playbook.md machine-readable args must use the "
+        "real analyze_stock_batch parameter `quick`, not `mode`"
+    )
+
+    tool_start = playbook.index("tool: analyze_stock_batch\n        args:")
+    args_line_start = playbook.index("args:", tool_start)
+    args_line_end = playbook.index("\n", args_line_start)
+    args_line = playbook[args_line_start:args_line_end]
+    assert "max_symbols" not in args_line, (
+        "analyze_stock_batch has no `max_symbols` parameter — the "
+        "machine-readable buy-lane args block must not invent one"
+    )
+
+
+def test_playbook_buy_prose_position_guidance_matches_get_holdings_contract():
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    playbook = (
+        repo_root / "docs" / "playbooks" / "trading-decision-playbook.md"
+    ).read_text(encoding="utf-8")
+
+    section_start = playbook.index("## 1) Buy pipeline")
+    section = playbook[section_start : section_start + 1500]
+
+    assert "position require `quick=false`" not in section.lower(), (
+        "analyze_stock_batch never attaches a `position` field for any "
+        "quick value (include_position is always forced False internally) "
+        "— the playbook must not imply quick=False returns it"
+    )
+    assert "get_holdings" in section, (
+        "the buy-pipeline prose must point position lookups at get_holdings, "
+        "the only tool that returns per-account position"
+    )
+
+
+def test_playbook_sell_lane_upside_step_annotates_quick_false():
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    playbook = (
+        repo_root / "docs" / "playbooks" / "trading-decision-playbook.md"
+    ).read_text(encoding="utf-8")
+
+    section_start = playbook.index("## 2) Sell (profit-taking) pipeline")
+    section = playbook[section_start : section_start + 600]
+
+    assert "quick=false" in section.lower(), (
+        "the sell pipeline's analyze_stock_batch step (confirm distance to "
+        "resistance, RSI, upside) must explicitly say quick=False — upside "
+        "is not part of the quick=True (default) allowlist"
+    )
+
+
+def test_mcp_readme_screener_snapshot_section_does_not_claim_live_holdings_or_enrichment():
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    readme = (repo_root / "app" / "mcp_server" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    section_start = readme.index('screen_stocks_snapshot(preset=None')
+    next_tool_start = readme.index("get_top_stocks(market=", section_start)
+    section = readme[section_start:next_tool_start]
+
+    assert "kis-live portfolio" not in section.lower(), (
+        "screen_stocks_snapshot is DB-only (ROB-1309) and never calls "
+        "live KIS holdings — that claim belongs to screen_stocks_enrich"
+    )
+    assert "returned rows include `analysiscontext`" not in section.lower(), (
+        "screen_stocks_snapshot never returns analysisContext (consensus, "
+        "RSI) inline anymore — that requires the separate "
+        "screen_stocks_enrich tool"
+    )
+    assert "zero external http" in section.lower(), (
+        "the README must state the DB-only / zero-external-HTTP contract "
+        "for screen_stocks_snapshot (ROB-1309)"
+    )
+    assert "screen_stocks_enrich" in readme, (
+        "the README must document the screen_stocks_enrich tool that now "
+        "owns live KIS holdings / analyst-consensus / sector enrichment"
+    )
