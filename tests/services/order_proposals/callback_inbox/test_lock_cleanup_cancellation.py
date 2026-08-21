@@ -166,18 +166,67 @@ async def test_an_uncancelled_failure_path_is_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cleanup_survives_an_invalidate_that_always_fails() -> None:
-    """No weaker fallback: a failing invalidate must not become a pool return."""
+async def test_unprovable_termination_is_fatal_not_a_pool_return() -> None:
+    """No weaker fallback, and no quiet one either.
+
+    If ``invalidate`` fails and the driver offers no way to prove the backend
+    is gone, the safe options are exhausted. Returning the connection to the
+    pool would strand a possibly-held lock for the life of the process, and
+    swallowing the failure would hide that. So the failure surfaces, and the
+    holder keeps its reference rather than handing the connection on.
+    """
+    from app.services.order_proposals.callback_inbox.locks import (
+        LockTerminationUnproven,
+    )
 
     class _Broken(_Recorder):
         async def invalidate(self) -> None:
             self.events.append("invalidate_started")
             raise OSError("cannot invalidate")
 
+    lock = locks_module.PostgresJobAdvisoryLock()
     connection = _Broken(cancel_on="never")
+    lock._connection = connection  # noqa: SLF001
+    with pytest.raises(LockTerminationUnproven):
+        await lock.release(1234)
+
+    assert lock.closed is False, "an unterminated backend was handed on"
+
+
+@pytest.mark.asyncio
+async def test_a_driver_terminate_is_proof_enough() -> None:
+    """When ``invalidate`` fails, the driver's own terminate is the fallback."""
+    terminated: list[str] = []
+
+    class _Driver:
+        @staticmethod
+        def terminate() -> None:
+            terminated.append("driver")
+
+    class _Raw:
+        driver_connection = _Driver()
+
+        @staticmethod
+        def detach() -> None:
+            terminated.append("detach")
+
+        @staticmethod
+        def invalidate() -> None:
+            terminated.append("raw_invalidate")
+
+    class _BrokenWithDriver(_Recorder):
+        async def get_raw_connection(self):
+            return _Raw()
+
+        async def invalidate(self) -> None:
+            self.events.append("invalidate_started")
+            raise OSError("cannot invalidate")
+
+    connection = _BrokenWithDriver(cancel_on="never")
     escaped = await _release_with(connection)
 
     assert escaped is None
+    assert "driver" in terminated, terminated
     assert "close" in connection.events, connection.events
 
 
