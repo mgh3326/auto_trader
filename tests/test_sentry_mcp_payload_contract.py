@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 import sentry_sdk
+from sentry_sdk.consts import SPANDATA
 from sentry_sdk.transport import Transport
 
 import app.monitoring.sentry as sentry_module
@@ -22,6 +23,9 @@ _QUERY_SENTINEL = "ordinary query prose that must not be collected"
 _PROMPT_SENTINEL = "ordinary prompt prose that must not be collected"
 _RESULT_SENTINEL = "ordinary tool result sentence that must not be collected"
 _SENSITIVE_SENTINEL = "FAKE_SENSITIVE_FIXTURE"
+_MCP_REQUEST_ARGUMENT_PREFIX = "mcp.request.argument."
+_MCP_TOOL_RESULT_CONTENT_KEY = SPANDATA.MCP_TOOL_RESULT_CONTENT
+_MCP_PROMPT_RESULT_CONTENT_KEY = SPANDATA.MCP_PROMPT_RESULT_MESSAGE_CONTENT
 
 
 class _CapturingTransport(Transport):
@@ -88,18 +92,23 @@ def _event_payloads(
 
 @pytest.mark.unit
 def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_events():
+    assert _MCP_REQUEST_ARGUMENT_PREFIX == "mcp.request.argument."
+    assert _MCP_TOOL_RESULT_CONTENT_KEY == "mcp.tool.result.content"
+    assert _MCP_PROMPT_RESULT_CONTENT_KEY == "mcp.prompt.result.message_content"
     transaction_event = {
         "transaction": "POST http://127.0.0.1:8765/mcp",
-        "tags": {"mcp.request.argument.tagged": _QUERY_SENTINEL},
+        "tags": {f"{_MCP_REQUEST_ARGUMENT_PREFIX}tagged": _QUERY_SENTINEL},
         "contexts": {
             "mcp_tool_call": {
                 "tool_name": "query_tool",
                 "arguments": {"query": _QUERY_SENTINEL},
             }
         },
-        "extra": {"mcp.request.argument.extra": _QUERY_SENTINEL},
+        "extra": {f"{_MCP_REQUEST_ARGUMENT_PREFIX}extra": _QUERY_SENTINEL},
         "breadcrumbs": {
-            "values": [{"data": {"mcp.request.argument.breadcrumb": _QUERY_SENTINEL}}]
+            "values": [
+                {"data": {f"{_MCP_REQUEST_ARGUMENT_PREFIX}breadcrumb": _QUERY_SENTINEL}}
+            ]
         },
         "measurements": {"mcp.duration_ms": {"value": 12.5}},
         "spans": [
@@ -112,9 +121,12 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
                 "data": {
                     "mcp.tool.name": "query_tool",
                     "mcp.method.name": "tools/call",
-                    "mcp.request.argument.query": _QUERY_SENTINEL,
-                    "mcp.prompt.result.message.content": _PROMPT_SENTINEL,
-                    "mcp.tool.result.content": _RESULT_SENTINEL,
+                    f"{_MCP_REQUEST_ARGUMENT_PREFIX}query": _QUERY_SENTINEL,
+                    SPANDATA.MCP_PROMPT_NAME: "query_prompt",
+                    SPANDATA.MCP_PROMPT_RESULT_MESSAGE_ROLE: "user",
+                    SPANDATA.MCP_PROMPT_RESULT_MESSAGE_COUNT: 1,
+                    _MCP_PROMPT_RESULT_CONTENT_KEY: _PROMPT_SENTINEL,
+                    _MCP_TOOL_RESULT_CONTENT_KEY: _RESULT_SENTINEL,
                 },
             }
         ],
@@ -124,13 +136,16 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
             "mcp_tool_call": {
                 "tool_name": "query_tool",
                 "arguments": {"query": _QUERY_SENTINEL},
-            }
+            },
+            "mcp_result_context": {
+                _MCP_TOOL_RESULT_CONTENT_KEY: _RESULT_SENTINEL,
+                _MCP_PROMPT_RESULT_CONTENT_KEY: _PROMPT_SENTINEL,
+                SPANDATA.MCP_PROMPT_RESULT_MESSAGE_ROLE: "user",
+                SPANDATA.MCP_PROMPT_RESULT_MESSAGE_COUNT: 1,
+            },
         },
         "exception": {"values": [{"type": "RuntimeError", "value": "boom"}]},
-        "extra": {
-            "mcp.tool.result.content": _RESULT_SENTINEL,
-            "mcp.prompt.result.message.content": _PROMPT_SENTINEL,
-        },
+        "extra": {f"{_MCP_REQUEST_ARGUMENT_PREFIX}error": _QUERY_SENTINEL},
     }
 
     scrubbed_transaction = sentry_module._before_send_transaction(transaction_event, {})
@@ -149,6 +164,9 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
     assert span["op"] == "mcp.server"
     assert span["data"]["mcp.tool.name"] == "query_tool"
     assert span["data"]["mcp.method.name"] == "tools/call"
+    assert span["data"][SPANDATA.MCP_PROMPT_NAME] == "query_prompt"
+    assert span["data"][SPANDATA.MCP_PROMPT_RESULT_MESSAGE_ROLE] == "user"
+    assert span["data"][SPANDATA.MCP_PROMPT_RESULT_MESSAGE_COUNT] == 1
     assert span["status"] == "ok"
     assert span["start_timestamp"] == 1000.1
     assert span["timestamp"] == 1000.4
@@ -162,23 +180,26 @@ def test_false_gate_removes_payload_from_serialized_transaction_and_error_envelo
     transport = _init_in_memory(monkeypatch, include_prompts=False)
 
     with sentry_sdk.start_transaction(name="/mcp", op="http.server") as transaction:
-        sentry_sdk.set_tag("mcp.request.argument.tagged", _QUERY_SENTINEL)
+        sentry_sdk.set_tag(f"{_MCP_REQUEST_ARGUMENT_PREFIX}tagged", _QUERY_SENTINEL)
         sentry_sdk.set_context(
             "mcp_tool_call",
             {"tool_name": "query_tool", "arguments": {"query": _QUERY_SENTINEL}},
         )
-        sentry_sdk.set_extra("mcp.request.argument.extra", _QUERY_SENTINEL)
+        sentry_sdk.set_extra(f"{_MCP_REQUEST_ARGUMENT_PREFIX}extra", _QUERY_SENTINEL)
         sentry_sdk.add_breadcrumb(
             category="mcp",
-            data={"mcp.request.argument.breadcrumb": _QUERY_SENTINEL},
+            data={f"{_MCP_REQUEST_ARGUMENT_PREFIX}breadcrumb": _QUERY_SENTINEL},
         )
         with transaction.start_child(op="mcp.server", name="tools/call") as span:
             span.set_data("mcp.tool.name", "query_tool")
             span.set_data("mcp.method.name", "tools/call")
-            span.set_data("mcp.request.argument.query", _QUERY_SENTINEL)
-            span.set_data("mcp.tool.result.content", _RESULT_SENTINEL)
-            span.set_data("mcp.prompt.result.message.content", _PROMPT_SENTINEL)
-            span.set_tag("mcp.request.argument.span_tag", _QUERY_SENTINEL)
+            span.set_data(f"{_MCP_REQUEST_ARGUMENT_PREFIX}query", _QUERY_SENTINEL)
+            span.set_data(_MCP_TOOL_RESULT_CONTENT_KEY, _RESULT_SENTINEL)
+            span.set_data(_MCP_PROMPT_RESULT_CONTENT_KEY, _PROMPT_SENTINEL)
+            span.set_data(SPANDATA.MCP_PROMPT_NAME, "query_prompt")
+            span.set_data(SPANDATA.MCP_PROMPT_RESULT_MESSAGE_ROLE, "user")
+            span.set_data(SPANDATA.MCP_PROMPT_RESULT_MESSAGE_COUNT, 1)
+            span.set_tag(f"{_MCP_REQUEST_ARGUMENT_PREFIX}span_tag", _QUERY_SENTINEL)
             span.set_status("ok")
 
     with sentry_sdk.new_scope() as scope:
@@ -186,7 +207,7 @@ def test_false_gate_removes_payload_from_serialized_transaction_and_error_envelo
             "mcp_tool_call",
             {"tool_name": "query_tool", "arguments": {"query": _QUERY_SENTINEL}},
         )
-        scope.set_extra("mcp.tool.result.content", _RESULT_SENTINEL)
+        scope.set_extra(_MCP_TOOL_RESULT_CONTENT_KEY, _RESULT_SENTINEL)
         sentry_sdk.capture_exception(RuntimeError("MCP operation failed"))
 
     sentry_sdk.flush()
@@ -201,6 +222,10 @@ def test_false_gate_removes_payload_from_serialized_transaction_and_error_envelo
     transaction_payload = transaction_payloads[-1]
     assert transaction_payload["transaction"] == "tools/call query_tool"
     assert any(span["op"] == "mcp.server" for span in transaction_payload["spans"])
+    serialized_transaction = json.dumps(transaction_payload, sort_keys=True)
+    assert "query_prompt" in serialized_transaction
+    assert '"user"' in serialized_transaction
+    assert '"mcp.prompt.result.message_count": 1' in serialized_transaction
 
 
 @pytest.mark.unit
@@ -213,9 +238,10 @@ def test_true_gate_allows_non_sensitive_payload_but_keeps_sensitive_scrubber():
                 "data": {
                     "mcp.tool.name": "query_tool",
                     "mcp.method.name": "tools/call",
-                    "mcp.request.argument.query": _QUERY_SENTINEL,
-                    "mcp.request.argument.api_key": _SENSITIVE_SENTINEL,
-                    "mcp.tool.result.content": _RESULT_SENTINEL,
+                    f"{_MCP_REQUEST_ARGUMENT_PREFIX}query": _QUERY_SENTINEL,
+                    f"{_MCP_REQUEST_ARGUMENT_PREFIX}api_key": _SENSITIVE_SENTINEL,
+                    _MCP_TOOL_RESULT_CONTENT_KEY: _RESULT_SENTINEL,
+                    _MCP_PROMPT_RESULT_CONTENT_KEY: _PROMPT_SENTINEL,
                 },
             }
         ],
@@ -232,5 +258,6 @@ def test_true_gate_allows_non_sensitive_payload_but_keeps_sensitive_scrubber():
     serialized = json.dumps(kept, sort_keys=True)
     assert _QUERY_SENTINEL in serialized
     assert _RESULT_SENTINEL in serialized
+    assert _PROMPT_SENTINEL in serialized
     assert _SENSITIVE_SENTINEL not in serialized
     assert kept["spans"][0]["data"]["mcp.request.argument.api_key"] == "[Filtered]"
