@@ -40,10 +40,17 @@ def main() -> None:
         print("|---|---|---:|---:|---:|---:|---|---:|")
         for market in MARKETS:
             path = os.path.join(args.directory, f"{market}.bootstrap.json")
-            if not os.path.exists(path):
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                # A still-running annex writes an empty file; report it as
+                # pending rather than crashing or silently omitting the row.
+                print(f"| {TITLES[market]} | — | 부트스트랩 미완 | | | | | |")
                 continue
-            with open(path, encoding="utf-8") as handle:
-                data = json.load(handle)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except json.JSONDecodeError:
+                print(f"| {TITLES[market]} | — | 부트스트랩 미완 | | | | | |")
+                continue
             block = data["windows"][window]
             for key, name in GAPS:
                 row = block[key]
