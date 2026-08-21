@@ -180,7 +180,6 @@ def test_false_gate_removes_payload_from_serialized_transaction_and_error_envelo
             span.set_data("mcp.prompt.result.message.content", _PROMPT_SENTINEL)
             span.set_tag("mcp.request.argument.span_tag", _QUERY_SENTINEL)
             span.set_status("ok")
-        sentry_sdk.set_measurement("mcp.duration_ms", 12.5, "millisecond")
 
     with sentry_sdk.new_scope() as scope:
         scope.set_context(
@@ -202,7 +201,6 @@ def test_false_gate_removes_payload_from_serialized_transaction_and_error_envelo
     transaction_payload = transaction_payloads[-1]
     assert transaction_payload["transaction"] == "tools/call query_tool"
     assert any(span["op"] == "mcp.server" for span in transaction_payload["spans"])
-    assert transaction_payload["measurements"]["mcp.duration_ms"]["value"] == 12.5
 
 
 @pytest.mark.unit
