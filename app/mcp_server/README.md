@@ -252,9 +252,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Batch analysis for up to 10 symbols. `quick=True` is the default DB-only fast projection;
     `quick=False` is the explicit full/deep analysis path.
   - `screen_stocks_snapshot` is DB-only (ROB-1309) and never returns consensus/RSI
-    inline. For analyst consensus/sector labels on a snapshot page, call
-    `screen_stocks_enrich` on that page's symbols instead; for RSI/support/resistance
-    or full `quick=False` analysis on individual symbols, call `analyze_stock_batch`.
+    inline. For analyst consensus/sector labels, call `screen_stocks_enrich` with
+    the same preset/filter/pagination inputs (it has no `symbols` parameter — it
+    reruns the identical discovery query, then enriches the returned page); for
+    RSI/support/resistance or full `quick=False` analysis on individual symbols,
+    call `analyze_stock_batch`.
   - Quick returns only the allowlisted projection: symbol, market_type, source,
     current_price, latest OHLCV, rsi_14, supports (top 3), resistances (top 3),
     and the freshness envelope. It also preserves compact `decision_history`
