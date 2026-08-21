@@ -13,7 +13,7 @@ import io
 import os
 from contextlib import redirect_stdout
 
-from research.buy_gate_ab_backtest import render_bootstrap, report
+from research.buy_gate_ab_backtest import render_bootstrap, render_censoring, report
 
 
 def _capture(fn, directory: str) -> str:
@@ -41,6 +41,7 @@ def main() -> None:
 
     tables = _capture(report.main, args.results_dir)
     bootstrap = _capture(render_bootstrap.main, args.results_dir)
+    censoring = _capture(render_censoring.main, args.results_dir)
 
     document = "\n".join(
         [
@@ -50,6 +51,8 @@ def main() -> None:
             tables,
             prose("report-tail.md"),
             bootstrap,
+            "\n---\n\n## 6.2 B2 — D+20 검열 분해와 유계 민감도\n",
+            censoring,
             prose("report-close.md"),
         ]
     )

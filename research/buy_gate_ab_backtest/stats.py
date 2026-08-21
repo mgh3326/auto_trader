@@ -22,6 +22,12 @@ import numpy as np
 
 BOOTSTRAP_DRAWS = 2000
 SEED = 20260821
+# A D+20 window spans four consecutive decision dates, so resampling dates
+# independently breaks an overlap that is really there. The adversarial review
+# measured the resulting lag-1 autocorrelation of D+20 returns at +0.807 (A)
+# and +0.785 (B-A). A circular moving block of four dates keeps that overlap
+# inside a block; it widens the interval, which is the honest direction.
+BLOCK_DATES = 4
 
 
 def _by_date(
@@ -74,10 +80,23 @@ def _cluster_bootstrap(
     }
 
 
+def _block_indices(
+    n: int, rng: np.random.Generator, block: int
+) -> np.ndarray:
+    """Circular moving-block resample of date positions."""
+    if n <= block:
+        return rng.choice(np.arange(n), size=n, replace=True)
+    starts = rng.integers(0, n, size=int(np.ceil(n / block)))
+    picked = np.concatenate([(np.arange(s, s + block) % n) for s in starts])
+    return picked[:n]
+
+
 def _paired_difference(
     left: dict[str, np.ndarray],
     right: dict[str, np.ndarray],
     rng: np.random.Generator,
+    *,
+    block: int | None = None,
 ) -> dict[str, Any]:
     """Bootstrap the median gap between two cohorts on the *same* dates."""
     shared = sorted(set(left) & set(right))
@@ -88,7 +107,10 @@ def _paired_difference(
     diffs: list[float] = []
     index = np.arange(len(shared))
     for _ in range(BOOTSTRAP_DRAWS):
-        picked = rng.choice(index, size=len(shared), replace=True)
+        if block:
+            picked = _block_indices(len(shared), rng, block)
+        else:
+            picked = rng.choice(index, size=len(shared), replace=True)
         pooled_left = np.concatenate([left_arrays[position] for position in picked])
         pooled_right = np.concatenate([right_arrays[position] for position in picked])
         if pooled_left.size == 0 or pooled_right.size == 0:
@@ -128,6 +150,7 @@ def annex(result: dict[str, Any]) -> dict[str, Any]:
         "draws": BOOTSTRAP_DRAWS,
         "seed": SEED,
         "added_after_addendum_freeze": True,
+        "moving_block_dates": BLOCK_DATES,
         "windows": {},
     }
     for window in ("5", "20"):
@@ -142,6 +165,11 @@ def annex(result: dict[str, Any]) -> dict[str, Any]:
             },
             "b_only_minus_a_and_b": _paired_difference(
                 grouped["b_only"], grouped["a_and_b"], rng
+            ),
+            # Overlap-preserving companion to the line above. Reported beside
+            # it, never instead of it.
+            "b_only_minus_a_and_b_moving_block": _paired_difference(
+                grouped["b_only"], grouped["a_and_b"], rng, block=BLOCK_DATES
             ),
             "b_only_minus_neither": _paired_difference(
                 grouped["b_only"], grouped["neither"], rng
