@@ -387,6 +387,7 @@ tests/test_screening_common.py
 tests/test_screening_enrichment.py
 tests/test_screening_kr.py
 tests/test_screening_us.py
+tests/test_sentry_process_config_seam.py
 tests/test_services_kis_client.py
 tests/test_services_kis_market_data_unit.py
 tests/test_session_context_web_read.py
