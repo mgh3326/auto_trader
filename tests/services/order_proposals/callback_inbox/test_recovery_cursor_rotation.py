@@ -463,6 +463,90 @@ async def test_fresh_process_sweeps_follow_the_committed_cursor_tier_order(
 
 
 @pytest.mark.asyncio
+async def test_claimable_order_uses_its_explicit_start_not_the_stored_cursor(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """The service argument, not a cursor reread, controls each scan order."""
+    from app.services.order_proposals.callback_inbox.contracts import recovery_scan_cap
+    from app.services.order_proposals.callback_inbox.service import CallbackInboxService
+
+    now = now_kst()
+    async with _persistent_four_tier_backlog(inbox_cleanup, now=now) as tiers:
+        # Both requested starts conflict with this stored value.  Direct scans
+        # must never treat cursor state as a second local ordering authority.
+        await _replace_cursor_next_tier(1)
+        try:
+            async with AsyncSessionLocal() as session:
+                service = CallbackInboxService(session)
+                first = await service.claimable_job_ids(
+                    now=now,
+                    limit=1,
+                    tier_start=2,
+                )
+                await session.rollback()
+                second = await service.claimable_job_ids(
+                    now=now,
+                    limit=1,
+                    tier_start=0,
+                )
+                await session.rollback()
+
+            assert first and tiers[first[0]] == 2, first
+            assert second and tiers[second[0]] == 0, second
+            assert len(first) <= recovery_scan_cap(1), first
+            assert len(second) <= recovery_scan_cap(1), second
+            assert await _cursor_next_tier() == 1
+        finally:
+            await _clear_raw_cursor_if_present()
+
+
+@pytest.mark.asyncio
+async def test_same_process_cursor_jump_immediately_controls_the_next_tier(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """A DB jump wins over any hidden state retained on a service class."""
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+    from app.services.order_proposals.callback_inbox.contracts import recovery_scan_cap
+
+    now = now_kst()
+    offered: list[int] = []
+    async with _persistent_four_tier_backlog(inbox_cleanup, now=now) as tiers:
+
+        async def _persistent_process(
+            job_id: uuid.UUID, **kwargs: Any
+        ) -> dict[str, str]:
+            offered.append(tiers[job_id])
+            return {"status": "succeeded"}
+
+        await _replace_cursor_next_tier(2)
+        try:
+            first = await recovery_module.recover_callback_jobs(
+                process_fn=_persistent_process,
+                now_fn=lambda: now,
+                limit=1,
+            )
+            assert offered == [2], offered
+            assert first["claimed"] <= 1, first
+            assert first["scanned"] <= recovery_scan_cap(1), first
+            assert await _cursor_next_tier() == 3
+
+            # The normal q=1 successor would be 3.  Replacing it with 0
+            # makes a process-local cycle's next value observably wrong.
+            await _replace_cursor_next_tier(0)
+            second = await recovery_module.recover_callback_jobs(
+                process_fn=_persistent_process,
+                now_fn=lambda: now,
+                limit=1,
+            )
+            assert offered == [2, 0], offered
+            assert second["claimed"] <= 1, second
+            assert second["scanned"] <= recovery_scan_cap(1), second
+            assert await _cursor_next_tier() == 1
+        finally:
+            await _clear_raw_cursor_if_present()
+
+
+@pytest.mark.asyncio
 async def test_atomic_l1_reservations_cover_every_start_once(
     _bootstrap_test_schema,
 ) -> None:
@@ -1072,6 +1156,98 @@ def _direct_named_definitions(
     return definitions
 
 
+def _definition_time_named_expressions(
+    scope: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.NamedExpr]:
+    """Walruses evaluated while defining nested functions/classes/lambdas.
+
+    Function and class bodies are separate scopes, but decorators, defaults,
+    annotations, bases, class keywords, and lambda defaults run in the
+    enclosing scope.  Comprehension iteration targets are deliberately not
+    visited because they are local to the comprehension in Python 3.
+    """
+    expressions: list[ast.NamedExpr] = []
+
+    def _visit_arguments(arguments: ast.arguments) -> None:
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            _visit_expression(argument.annotation)
+        if arguments.vararg is not None:
+            _visit_expression(arguments.vararg.annotation)
+        if arguments.kwarg is not None:
+            _visit_expression(arguments.kwarg.annotation)
+        for default in (*arguments.defaults, *arguments.kw_defaults):
+            _visit_expression(default)
+
+    def _visit_comprehension(expression: ast.AST) -> None:
+        if isinstance(expression, ast.DictComp):
+            _visit_expression(expression.key)
+            _visit_expression(expression.value)
+            generators = expression.generators
+        else:
+            assert isinstance(expression, ast.ListComp | ast.SetComp | ast.GeneratorExp)
+            _visit_expression(expression.elt)
+            generators = expression.generators
+        for generator in generators:
+            _visit_expression(generator.iter)
+            for condition in generator.ifs:
+                _visit_expression(condition)
+
+    def _visit_definition(
+        definition: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    ) -> None:
+        for decorator in definition.decorator_list:
+            _visit_expression(decorator)
+        if isinstance(definition, ast.ClassDef):
+            for base in definition.bases:
+                _visit_expression(base)
+            for keyword in definition.keywords:
+                _visit_expression(keyword.value)
+            return
+        _visit_arguments(definition.args)
+        _visit_expression(definition.returns)
+
+    def _visit_expression(expression: ast.AST | None) -> None:
+        if expression is None:
+            return
+        if isinstance(expression, ast.NamedExpr):
+            expressions.append(expression)
+            _visit_expression(expression.value)
+            return
+        if isinstance(expression, ast.Lambda):
+            _visit_arguments(expression.args)
+            return
+        if isinstance(
+            expression, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+        ):
+            _visit_comprehension(expression)
+            return
+        for child in ast.iter_child_nodes(expression):
+            _visit_expression(child)
+
+    def _visit_direct(node: ast.AST) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            _visit_definition(node)
+            return
+        if isinstance(node, ast.Lambda):
+            _visit_arguments(node.args)
+            return
+        if isinstance(
+            node, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+        ):
+            _visit_comprehension(node)
+            return
+        for child in ast.iter_child_nodes(node):
+            _visit_direct(child)
+
+    for statement in scope.body:
+        _visit_direct(statement)
+    return expressions
+
+
 def _tier_start_store_offenders(
     recover: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -1119,6 +1295,14 @@ def _tier_start_store_offenders(
         if definition.name == "tier_start":
             offenders.append(
                 f"line {definition.lineno}: tier_start is rebound by a nested definition"
+            )
+    for expression in _definition_time_named_expressions(recover):
+        if (
+            isinstance(expression.target, ast.Name)
+            and expression.target.id == "tier_start"
+        ):
+            offenders.append(
+                f"line {expression.lineno}: tier_start is rebound by a definition-time expression"
             )
     return offenders
 
@@ -1343,6 +1527,41 @@ def test_durable_tier_start_guard_allows_the_direct_reservation_passthrough() ->
             "tier_start is rebound by a nested definition",
         ),
         (
+            "decorator_named_expression",
+            "    @(tier_start := _decorator)\n    def inner():\n        pass\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
+            "function_default_named_expression",
+            "    def inner(value=(tier_start := 0)):\n        return value\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
+            "parameter_annotation_named_expression",
+            "    def inner(value: (tier_start := int)):\n        return value\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
+            "return_annotation_named_expression",
+            "    def inner() -> (tier_start := int):\n        return 0\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
+            "class_base_named_expression",
+            "    class Inner((tier_start := object)):\n        pass\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
+            "class_keyword_named_expression",
+            "    class Inner(metaclass=(tier_start := type)):\n        pass\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
+            "lambda_default_named_expression",
+            "    inner = lambda value=(tier_start := 0): value\n",
+            "tier_start is rebound by a definition-time expression",
+        ),
+        (
             "subscript_mutation",
             "    tier_start[0] = 1\n",
             "tier_start is mutated after reservation",
@@ -1363,11 +1582,19 @@ def test_durable_tier_start_guard_rejects_every_post_reservation_mutation(
 
 
 @pytest.mark.unit
-def test_durable_tier_start_guard_allows_a_comprehension_local_target() -> None:
+@pytest.mark.parametrize(
+    "after_reservation",
+    (
+        "    ignored = [tier_start for tier_start in ()]\n",
+        "    def inner():\n        return (tier_start := 0)\n",
+        "    inner = lambda: (tier_start := 0)\n",
+    ),
+)
+def test_durable_tier_start_guard_allows_scope_local_targets(
+    after_reservation: str,
+) -> None:
     offenders = _durable_tier_start_offenders(
-        recovery_source=_valid_recovery_source(
-            after_reservation="    ignored = [tier_start for tier_start in ()]\n"
-        ),
+        recovery_source=_valid_recovery_source(after_reservation=after_reservation),
         service_source=_rotating_service_source(),
     )
     assert offenders == []
@@ -1449,6 +1676,28 @@ def test_nonzero_start_semantics_reject_a_noop_four_tier_order() -> None:
             tier_start=2,
         )
     _assert_nonzero_start_controls_first_tier(_modulo_rotation, tier_start=2)
+
+
+@pytest.mark.unit
+def test_cursor_jump_semantics_reject_a_dynamic_type_cycle_mutant() -> None:
+    """A fresh process can reset this mutant; an in-process DB jump cannot."""
+    import itertools
+
+    class _DynamicTypeCycleMutant:
+        def select_tiers(self, tier_start: int) -> tuple[int, ...]:
+            state_name = "_tier_cycle"
+            if not hasattr(type(self), state_name):
+                setattr(
+                    type(self),
+                    state_name,
+                    itertools.cycle((tier_start + offset) % 4 for offset in range(4)),
+                )
+            return (next(getattr(type(self), state_name)),)
+
+    mutant = _DynamicTypeCycleMutant()
+    _assert_nonzero_start_controls_first_tier(mutant.select_tiers, tier_start=2)
+    with pytest.raises(AssertionError, match="first offered tier"):
+        _assert_nonzero_start_controls_first_tier(mutant.select_tiers, tier_start=0)
 
 
 @pytest.mark.unit
