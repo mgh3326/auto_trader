@@ -139,7 +139,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
+    logging.basicConfig(
+        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    )
     args = build_arg_parser().parse_args(argv)
 
     if args.send != args.confirm:

@@ -99,9 +99,7 @@ def test_send_confirm_with_dsn_uses_fixed_transaction_and_bounded_flush(
 
 
 @pytest.mark.unit
-def test_send_confirm_when_init_sentry_returns_false_fails_closed(
-    monkeypatch, capsys
-):
+def test_send_confirm_when_init_sentry_returns_false_fails_closed(monkeypatch, capsys):
     monkeypatch.setattr(canary.settings, "SENTRY_DSN", "fake-dsn-fixture-not-a-secret")
 
     with patch.object(canary, "init_sentry", return_value=False) as mock_init_sentry:
