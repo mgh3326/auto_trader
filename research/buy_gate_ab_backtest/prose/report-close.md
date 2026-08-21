@@ -62,11 +62,15 @@ B−A 는 A 의 **KR 3.3배 · US 1.8배**다. strong 요구가 하는 일의 �
 D+5 MDD 중앙값은 B−A 가 A 보다 네 시장 모두에서 더 깊다
 (KR -3.46% 대 -2.88%, US -2.93% 대 -2.34%). p10/p90 폭도 B−A 가 넓다.
 
-🔴 **D+20 의 tail-risk·전분포 동등성 주장은 하지 않는다.** §5.7 이 보여주듯
-D+20 검열은 비무작위이고 B−A 를 더 많이 지우며, 지워진 표본이 남긴 D+5 흔적은
-크게 음(-)이다. 즉 보고된 D+20 하방은 **양 코호트 모두에서 실제보다 얕게**
-보이고 **B−A 쪽이 더 얕게** 보인다. 이 상태에서 D+20 꼬리위험을 비교하는 문장은
-이 문서에 없다.
+🔴 **D+20 의 tail-risk·전분포 동등성 주장은 하지 않는다.** §5.7 대로 D+20
+검열은 비무작위이고, 지워진 표본이 남긴 D+5 흔적은 (KR 에서) 크게 음(-)이다.
+즉 보고된 D+20 하방은 **양 코호트 모두 실제보다 얕게** 보인다.
+
+🔴 **어느 쪽이 더 얕게 보이는지는 시장마다 반대다**: KR 은 B−A 가 더 많이
+지워지고(A 0.047% 대 B−A 0.144%, 3.05배), **US 는 A 가 더 많이 지워진다**
+(A 0.409% 대 B−A 0.300%, 0.73배). 그래서 "검열이 B−A 를 돋보이게 한다"는
+**KR 한정 관측**이며 일반화하지 않는다. 어느 쪽이든 이 상태에서 D+20
+꼬리위험을 비교하는 문장은 이 문서에 없다.
 
 ---
 
@@ -106,7 +110,9 @@ D+20 검열은 비무작위이고 B−A 를 더 많이 지우며, 지워진 표�
 | 항목 | 상태 |
 |---|---|
 | 봉인 홀드아웃(2025-01-01…2026-07-31) 확장 | **운영자 결정** — 이 잡은 열지 않았다 |
-| 적대검증 1라운드 | **미실시** — 이 결과의 정책 사용 전제조건 |
+| 적대검증 1라운드 | **완료(2026-08-21) → VERIFIED=NO 반려** — 이 문서가 그 수리본. **재검증 필요** |
+| 재검증(2라운드) | **미실시** — 이 결과의 정책 사용 전제조건 |
+| D+20 검열의 근본 해소 | 미해결 — terminal exit 규칙이 없어 **유계 제시**에 머문다. 사라진 D+20 값은 복원 불가 |
 | `honest_upside` 등 중화 게이트의 대역 확보 | 미해결(코퍼스에 입력 자체가 없음) |
 | US 생존편향 보정 | 미해결(us-corpus-v1 구조적 한계) |
 | ROB-1301 라이브 4주 셰도우 | 진행 중 — **정본은 이쪽** |
@@ -117,15 +123,31 @@ D+20 검열은 비무작위이고 B−A 를 더 많이 지우며, 지워진 표�
 cd <worktree>
 uv run python -m research.buy_gate_ab_backtest.run_backtest --market kr  --out kr.json
 uv run python -m research.buy_gate_ab_backtest.stats            kr.json > kr.bootstrap.json
+uv run python -m research.buy_gate_ab_backtest.censoring        kr.json > kr.censoring.json
 uv run python -m research.buy_gate_ab_backtest.verify_spotcheck kr.json
-uv run pytest research/buy_gate_ab_backtest/tests/ -q
+uv run pytest research/buy_gate_ab_backtest/tests/ -q          # 13 passed
+# 보고서 재조립(숫자는 전부 위 산출물에서 생성 — 손으로 적는 표 없음)
+uv run python -m research.buy_gate_ab_backtest.assemble_report \
+  <results_dir> research/buy_gate_ab_backtest/prose --out answer-gatebt-20260821.md
+```
+
+**B1 뮤턴트 재현**(가드가 살아 있는지 직접 확인하려면):
+
+```bash
+sed -i '' 's|bars=group.iloc\[: pos + 1\],|bars=group.iloc[: pos + 2],|' \
+  research/buy_gate_ab_backtest/run_backtest.py
+uv run pytest research/buy_gate_ab_backtest/tests/ -q   # 1 failed 여야 정상
+sed -i '' 's|bars=group.iloc\[: pos + 2\],|bars=group.iloc[: pos + 1],|' \
+  research/buy_gate_ab_backtest/run_backtest.py
 ```
 
 - 코드: PR #1930 (draft), `research/` 한정 · `app/` 변경 0
-- 사전등록 digest: 상류 `spec_sha256()` = `a2814c87…e672`,
-  백테스트 addendum `addendum_sha256()` = `648005cb…55da`
-- 원시 결과: `~/work/herdr-artifacts/gatebt-ab-20260821/v2/`
-  (초판 v1 은 같은 디렉토리 상위에 보존 — §7-3 의 수정 전 상태)
+- 사전등록 digest: 상류 `spec_sha256()` = `a2814c87…e672` (불변),
+  백테스트 addendum = `64816142…5c67` (r2 에서 상수 4종을 커버 범위로 편입),
+  최초 freeze digest `648005cb…55da` 는 `FIRST_FREEZE_ADDENDUM_SHA256` 로 보존
+- 원시 결과: `~/work/herdr-artifacts/gatebt-ab-20260821/v3/` (r2 수리 후 재실행)
+  - `v1` = 초판, `v2` = 진입가 기준 수정본, `v3` = **정본**. 셋 다 보존
+  - 각 시장마다 `.json` / `.bootstrap.json` / `.censoring.json`
 
 ---
 

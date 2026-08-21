@@ -6,7 +6,7 @@
 **주장: 지표는 결정일까지의 봉으로만 계산된다.**
 
 증명 절차는 세 겹이고, 세 겹 모두 테스트로 기계 검증된다
-(`research/buy_gate_ab_backtest/tests/`, 10 passed).
+(`research/buy_gate_ab_backtest/tests/`, **13 passed**).
 
 1. **입력 슬라이스** — 증거 생성기는 `bars = group.iloc[: pos + 1]` 로만
    호출된다. `pos` 는 결정 세션의 위치이므로 결정일 **이후 행은 함수에 들어가지
