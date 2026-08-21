@@ -18,7 +18,13 @@ import pytest
 
 from app.core.timezone import now_kst
 
-from .conftest import CHAT_ID, load_job, make_update
+from .conftest import (
+    CHAT_ID,
+    load_job,
+    make_update,
+    shape_owned_callback_inbox_row,
+    simulate_lock_process_death_for_test,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -114,9 +120,6 @@ async def test_recovery_will_not_touch_a_job_whose_lock_is_alive(
     from app.services.order_proposals.callback_inbox.locks import (
         PostgresJobAdvisoryLock,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -126,8 +129,8 @@ async def test_recovery_will_not_touch_a_job_whose_lock_is_alive(
     # Park the row in `processing` and back-date it far past any staleness
     # window, so only the live lock can hold recovery off.
     async with AsyncSessionLocal() as session:
-        service = CallbackInboxService(session)
-        await service.force_state_for_test(
+        await shape_owned_callback_inbox_row(
+            session,
             job_id,
             state="processing",
             started_at=now_kst() - timedelta(hours=6),
@@ -170,9 +173,6 @@ async def test_a_crashed_worker_releases_the_lock_and_recovery_reclaims(
     from app.services.order_proposals.callback_inbox.locks import (
         PostgresJobAdvisoryLock,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -184,14 +184,15 @@ async def test_a_crashed_worker_releases_the_lock_and_recovery_reclaims(
     crashed = PostgresJobAdvisoryLock()
     assert await crashed.try_acquire(key) is True
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
+        await shape_owned_callback_inbox_row(
+            session,
             job_id,
             state="processing",
             started_at=now_kst() - timedelta(hours=6),
             attempt_count=1,
         )
         await session.commit()
-    await crashed.simulate_process_death()
+    await simulate_lock_process_death_for_test(crashed)
 
     calls: list[int] = []
 
@@ -218,16 +219,14 @@ async def test_the_per_job_worker_never_steals_a_processing_row(
 ) -> None:
     """Only recovery may reclaim `processing`, and only behind the lock."""
     from app.core.db import AsyncSessionLocal
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
 
     job_id = await _queue_job(inbox_cleanup, data=_valid_data())
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
+        await shape_owned_callback_inbox_row(
+            session,
             job_id,
             state="processing",
             started_at=now_kst() - timedelta(hours=6),

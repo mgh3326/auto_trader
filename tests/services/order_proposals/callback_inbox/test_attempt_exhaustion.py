@@ -31,6 +31,7 @@ from app.core.timezone import now_kst
 from .conftest import (
     load_job,
     make_update,
+    shape_owned_callback_inbox_row,
     without_the_retry_budget_check,
 )
 
@@ -103,13 +104,9 @@ async def _queue(inbox_cleanup: list[uuid.UUID]) -> uuid.UUID:
 
 async def _make_due(job_id: uuid.UUID) -> None:
     """Bring a parked retry forward, exactly as its backoff elapsing would."""
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
-
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
-            job_id, available_at=now_kst() - timedelta(seconds=1)
+        await shape_owned_callback_inbox_row(
+            session, job_id, available_at=now_kst() - timedelta(seconds=1)
         )
         await session.commit()
 
@@ -254,7 +251,8 @@ async def test_an_exhausted_row_is_classified_exhausted_not_merely_not_due(
     async with without_the_retry_budget_check():
         async with AsyncSessionLocal() as session:
             service = CallbackInboxService(session)
-            await service.force_state_for_test(
+            await shape_owned_callback_inbox_row(
+                session,
                 job_id,
                 state="retry_wait",
                 attempt_count=3,
@@ -290,9 +288,6 @@ async def test_repeated_process_death_still_dead_letters_at_the_budget(
         MAX_ATTEMPTS,
         RECOVERY_CLAIMABLE_STATES,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import process_callback_job
 
     job_id = await _queue(inbox_cleanup)
@@ -320,8 +315,8 @@ async def test_repeated_process_death_still_dead_letters_at_the_budget(
             assert row.state == "processing"
             assert row.handler_entered_at is None
             async with AsyncSessionLocal() as session:
-                await CallbackInboxService(session).force_state_for_test(
-                    job_id, started_at=now_kst() - timedelta(hours=6)
+                await shape_owned_callback_inbox_row(
+                    session, job_id, started_at=now_kst() - timedelta(hours=6)
                 )
                 await session.commit()
 

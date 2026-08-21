@@ -32,6 +32,7 @@ from .conftest import (
     make_update,
     proposal_callback_data,
     seed_proposal,
+    shape_owned_callback_inbox_row,
 )
 
 pytestmark = pytest.mark.integration
@@ -298,9 +299,6 @@ async def test_repeated_pre_entry_crashes_exhaust_the_attempt_budget(
         MAX_ATTEMPTS,
         RECOVERY_CLAIMABLE_STATES,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -335,8 +333,8 @@ async def test_repeated_pre_entry_crashes_exhaust_the_attempt_budget(
             # A crashed worker leaves no lock behind; age the row past the
             # recovery scan filter so the next tick can reclaim it.
             async with AsyncSessionLocal() as session:
-                await CallbackInboxService(session).force_state_for_test(
-                    job_id, started_at=now_kst() - timedelta(hours=6)
+                await shape_owned_callback_inbox_row(
+                    session, job_id, started_at=now_kst() - timedelta(hours=6)
                 )
                 await session.commit()
 
@@ -386,9 +384,6 @@ async def test_a_crash_inside_the_core_is_ambiguous_and_never_re_invoked(
     from app.services.order_proposals.callback_inbox.contracts import (
         RECOVERY_CLAIMABLE_STATES,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -413,8 +408,8 @@ async def test_a_crash_inside_the_core_is_ambiguous_and_never_re_invoked(
     assert row.handler_completed_at is None
 
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
-            job_id, started_at=now_kst() - timedelta(hours=6)
+        await shape_owned_callback_inbox_row(
+            session, job_id, started_at=now_kst() - timedelta(hours=6)
         )
         await session.commit()
 
@@ -478,9 +473,6 @@ async def test_a_pre_core_failure_is_the_only_thing_that_schedules_a_retry(
 async def test_a_retry_wait_row_is_not_claimable_before_its_backoff_elapses(
     _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID]
 ) -> None:
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -488,7 +480,8 @@ async def test_a_retry_wait_row_is_not_claimable_before_its_backoff_elapses(
     group = await seed_proposal(db_session, nonce="backoff1234", symbol="BKFKR")
     job_id = await _queue(inbox_cleanup, group)
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
+        await shape_owned_callback_inbox_row(
+            session,
             job_id,
             state="retry_wait",
             attempt_count=1,
@@ -518,9 +511,6 @@ async def test_a_failed_terminal_commit_is_repaired_not_re_executed(
     from app.services.order_proposals.callback_inbox.contracts import (
         RECOVERY_CLAIMABLE_STATES,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -532,7 +522,8 @@ async def test_a_failed_terminal_commit_is_repaired_not_re_executed(
     # Reproduce the exact post-crash shape: verdict recorded, terminal not
     # applied, no lock held (the worker's backend is gone).
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
+        await shape_owned_callback_inbox_row(
+            session,
             job_id,
             state="processing",
             attempt_count=1,
@@ -570,9 +561,6 @@ async def test_a_stored_envelope_that_cannot_be_rebuilt_is_discarded(
     _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID]
 ) -> None:
     """Corruption is a fail-closed discard, never a guess or a retry."""
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
     from app.services.order_proposals.callback_inbox.worker import (
         process_callback_job,
     )
@@ -580,9 +568,7 @@ async def test_a_stored_envelope_that_cannot_be_rebuilt_is_discarded(
     group = await seed_proposal(db_session, nonce="corrupt1234", symbol="CRPKR")
     job_id = await _queue(inbox_cleanup, group)
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
-            job_id, subject_short="zzzzzzzz"
-        )
+        await shape_owned_callback_inbox_row(session, job_id, subject_short="zzzzzzzz")
         await session.commit()
 
     broker = _BrokerCounter()

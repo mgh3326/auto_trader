@@ -29,6 +29,14 @@ from sqlalchemy import text
 
 from app.services.order_proposals.callback_inbox import locks as locks_module
 
+from .conftest import (
+    held_lock_backend_pid_for_test,
+    held_lock_connection_for_test,
+    lock_is_released_for_test,
+    quarantined_handles_for_test,
+    simulate_lock_process_death_for_test,
+)
+
 pytestmark = pytest.mark.unit
 
 
@@ -107,7 +115,9 @@ async def test_a_cancellation_during_cleanup_does_not_abandon_the_backend() -> N
     # Before the gate: the cleanup is unfinished and the holder still owns
     # the connection, because dropping it here is what orphans the backend.
     assert task.done() is False
-    assert lock.closed is False, "the holder let go before cleanup finished"
+    assert lock_is_released_for_test(lock) is False, (
+        "the holder let go before cleanup finished"
+    )
 
     task.cancel()
     await asyncio.sleep(0)
@@ -121,7 +131,7 @@ async def test_a_cancellation_during_cleanup_does_not_abandon_the_backend() -> N
 
     assert "invalidate_completed" in events, events
     assert "close" in events, events
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
 
 
 @pytest.mark.asyncio
@@ -154,7 +164,7 @@ async def test_the_holder_keeps_authority_until_cleanup_finishes() -> None:
 
     class _Watching(_Recorder):
         async def invalidate(self) -> None:
-            seen.append(lock.closed)
+            seen.append(lock_is_released_for_test(lock))
             await super().invalidate()
 
     lock = locks_module.PostgresJobAdvisoryLock()
@@ -165,7 +175,7 @@ async def test_the_holder_keeps_authority_until_cleanup_finishes() -> None:
     # Both attempts happen while the object still owns the connection.
     assert seen == [False, False], seen
     # Cleanup finished, so the handle may be dropped now -- and only now.
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
     assert connection.events.count("invalidate_started") == 2
     assert "close" in connection.events
 
@@ -249,7 +259,9 @@ async def test_unprovable_termination_is_fatal_not_a_pool_return() -> None:
     with pytest.raises(LockTerminationUnproven):
         await lock.release(1234)
 
-    assert lock.closed is False, "an unterminated backend was handed on"
+    assert lock_is_released_for_test(lock) is False, (
+        "an unterminated backend was handed on"
+    )
 
 
 @pytest.mark.asyncio
@@ -311,7 +323,7 @@ async def test_a_double_cancelled_release_leaves_no_lock_behind(
 
     lock = locks_module.PostgresJobAdvisoryLock()
     assert await lock.try_acquire(key) is True
-    held_by = await lock.backend_pid()
+    held_by = await held_lock_backend_pid_for_test(lock)
 
     # A contender cannot take it while it is held -- anti-vacuity for the
     # assertion at the end.
@@ -330,7 +342,7 @@ async def test_a_double_cancelled_release_leaves_no_lock_behind(
         # cleanup be cancelled the first time it tries to invalidate.
         monkeypatch.setattr(locks_module, "_RELEASE", text("SELECT no_such_fn()"))
 
-        real_invalidate = type(lock.connection_for_test()).invalidate
+        real_invalidate = type(held_lock_connection_for_test(lock)).invalidate
         at_gate = asyncio.Event()
         gate = asyncio.Event()
 
@@ -340,7 +352,7 @@ async def test_a_double_cancelled_release_leaves_no_lock_behind(
             await real_invalidate(self)
 
         monkeypatch.setattr(
-            type(lock.connection_for_test()),
+            type(held_lock_connection_for_test(lock)),
             "invalidate",
             _gated_invalidate,
             raising=True,
@@ -429,7 +441,7 @@ async def test_an_ambiguous_acquire_terminates_the_backend(
     assert isinstance(caught.value, OSError | asyncio.CancelledError)
     assert "invalidate_completed" in connection.events, connection.events
     assert "close" in connection.events, connection.events
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
 
 
 @pytest.mark.asyncio
@@ -559,7 +571,7 @@ async def test_a_raising_logger_cannot_preempt_the_cleanup(
 
     assert "invalidate_completed" in connection.events, connection.events
     assert "close" in connection.events, connection.events
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
     assert spy.attempted, "the failure was never reported at all"
 
 
@@ -574,7 +586,7 @@ async def test_simulate_process_death_keeps_authority_until_it_finishes() -> Non
 
     class _Watching(_Recorder):
         async def invalidate(self) -> None:
-            seen.append(lock.closed)
+            seen.append(lock_is_released_for_test(lock))
             self.events.append("invalidate_started")
             self.events.append("invalidate_completed")
 
@@ -582,12 +594,12 @@ async def test_simulate_process_death_keeps_authority_until_it_finishes() -> Non
     connection = _Watching(cancel_on="never")
     lock._connection = connection  # noqa: SLF001
 
-    await lock.simulate_process_death()
+    await simulate_lock_process_death_for_test(lock)
 
     assert seen == [False], seen
     assert "invalidate_completed" in connection.events
     assert "close" in connection.events
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
 
 
 @pytest.mark.asyncio
@@ -613,9 +625,11 @@ async def test_simulate_process_death_refuses_to_drop_an_unterminated_backend() 
     lock._connection = connection  # noqa: SLF001
 
     with pytest.raises(LockTerminationUnproven):
-        await lock.simulate_process_death()
+        await simulate_lock_process_death_for_test(lock)
 
-    assert lock.closed is False, "an unterminated backend was handed on"
+    assert lock_is_released_for_test(lock) is False, (
+        "an unterminated backend was handed on"
+    )
 
 
 @pytest.mark.asyncio
@@ -641,7 +655,7 @@ async def test_simulate_process_death_re_delivers_a_cancellation() -> None:
     lock = locks_module.PostgresJobAdvisoryLock()
     lock._connection = _Gated()  # noqa: SLF001
 
-    task = asyncio.create_task(lock.simulate_process_death())
+    task = asyncio.create_task(simulate_lock_process_death_for_test(lock))
     await asyncio.wait_for(at_gate.wait(), timeout=5)
     task.cancel()
     await asyncio.sleep(0)
@@ -655,7 +669,7 @@ async def test_simulate_process_death_re_delivers_a_cancellation() -> None:
 
     assert "invalidate_completed" in events, events
     assert "close" in events, events
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
 
 
 # ---------------------------------------------------------------------------
@@ -731,11 +745,7 @@ class _Unterminable:
 
 
 def _quarantined() -> set:
-    from app.services.order_proposals.callback_inbox.locks import (
-        quarantined_handles,
-    )
-
-    return quarantined_handles()
+    return quarantined_handles_for_test()
 
 
 @pytest.mark.asyncio
@@ -763,7 +773,7 @@ async def test_an_unproven_release_never_closes_or_checks_in() -> None:
         "driver_terminate",
     ], connection.events
 
-    assert lock.closed is False
+    assert lock_is_released_for_test(lock) is False
     quarantine = _quarantined()
     assert connection in quarantine, "the connection was left to the garbage collector"
     assert connection.raw in quarantine
@@ -814,10 +824,10 @@ async def test_an_unproven_simulated_death_keeps_its_connection() -> None:
     lock._connection = connection  # noqa: SLF001
 
     with pytest.raises(LockTerminationUnproven):
-        await lock.simulate_process_death()
+        await simulate_lock_process_death_for_test(lock)
 
     assert "close" not in connection.events, connection.events
-    assert lock.closed is False
+    assert lock_is_released_for_test(lock) is False
     assert connection in _quarantined()
 
 
@@ -839,7 +849,7 @@ async def test_the_driver_fallback_runs_in_order_when_it_does_prove_it() -> None
         "raw_invalidate",
         "close",
     ], connection.events
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
     assert connection not in _quarantined()
 
 
@@ -896,7 +906,7 @@ async def test_an_inner_close_failure_is_not_reported_as_success(
     # invalidated instead, so nothing hands it back to the pool.
     assert "close_attempted" in events, events
     assert "invalidate" in events, "a connection that would not close was pooled"
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
 
 
 # ---------------------------------------------------------------------------
@@ -933,9 +943,9 @@ async def test_an_unproven_backend_is_never_handed_back_by_the_pool(
         monkeypatch.setattr(db, "engine", pooled, raising=True)
         lock = locks_module.PostgresJobAdvisoryLock()
         assert await lock.try_acquire(key) is True
-        held_by = await lock.backend_pid()
+        held_by = await held_lock_backend_pid_for_test(lock)
 
-        connection_type = type(lock.connection_for_test())
+        connection_type = type(held_lock_connection_for_test(lock))
         monkeypatch.setattr(locks_module, "_RELEASE", text("SELECT no_such_fn()"))
 
         async def _no_invalidate(self):
@@ -970,13 +980,23 @@ async def test_an_unproven_backend_is_never_handed_back_by_the_pool(
         await observer.execute(
             text("SELECT pg_terminate_backend(:pid)"), {"pid": held_by}
         )
-        retaken = bool(
-            (
-                await observer.execute(
-                    text("SELECT pg_try_advisory_lock(CAST(:k AS bigint))"), {"k": key}
-                )
-            ).scalar_one()
-        )
+        # ``pg_terminate_backend`` signals the backend; PostgreSQL releases
+        # its session locks once that backend exits. Bound the real server
+        # handoff rather than treating one immediate observer query as proof
+        # that the fatal R27 path leaked authority.
+        retaken = False
+        for _ in range(20):
+            retaken = bool(
+                (
+                    await observer.execute(
+                        text("SELECT pg_try_advisory_lock(CAST(:k AS bigint))"),
+                        {"k": key},
+                    )
+                ).scalar_one()
+            )
+            if retaken:
+                break
+            await asyncio.sleep(0.05)
         assert retaken is True
         await observer.execute(
             text("SELECT pg_advisory_unlock(CAST(:k AS bigint))"), {"k": key}

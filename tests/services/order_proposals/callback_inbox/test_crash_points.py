@@ -46,6 +46,7 @@ from .conftest import (
     make_update,
     proposal_callback_data,
     seed_proposal,
+    shape_owned_callback_inbox_row,
 )
 
 pytestmark = pytest.mark.integration
@@ -100,13 +101,9 @@ async def _queue(inbox_cleanup: list[uuid.UUID], group) -> uuid.UUID:
 
 async def _age_for_recovery(job_id: uuid.UUID) -> None:
     """A crashed worker's row: no lock held, old enough for the scan filter."""
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
-
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
-            job_id, started_at=now_kst() - timedelta(hours=6)
+        await shape_owned_callback_inbox_row(
+            session, job_id, started_at=now_kst() - timedelta(hours=6)
         )
         await session.commit()
 

@@ -18,7 +18,13 @@ import pytest
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 
-from .conftest import FakeNotifier, load_job, make_update, proposal_callback_data
+from .conftest import (
+    FakeNotifier,
+    load_job,
+    make_update,
+    proposal_callback_data,
+    shape_owned_callback_inbox_row,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -187,13 +193,11 @@ async def test_recovery_leaves_a_not_yet_due_retry_alone(
     from app.services.order_proposals.callback_inbox.recovery import (
         recover_callback_jobs,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
 
     job_id = await _queue_without_kick(inbox_cleanup)
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
+        await shape_owned_callback_inbox_row(
+            session,
             job_id,
             state="retry_wait",
             attempt_count=1,
@@ -223,14 +227,11 @@ async def test_recovery_ignores_a_processing_row_that_is_not_yet_stale(
     from app.services.order_proposals.callback_inbox.recovery import (
         recover_callback_jobs,
     )
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
 
     job_id = await _queue_without_kick(inbox_cleanup)
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(
-            job_id, state="processing", attempt_count=1, started_at=now_kst()
+        await shape_owned_callback_inbox_row(
+            session, job_id, state="processing", attempt_count=1, started_at=now_kst()
         )
         await session.commit()
 

@@ -24,6 +24,14 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy import text
 
+from .conftest import (
+    commit_held_lock_for_test,
+    held_lock_backend_pid_for_test,
+    held_lock_connection_for_test,
+    lock_is_released_for_test,
+    simulate_lock_process_death_for_test,
+)
+
 pytestmark = pytest.mark.integration
 
 
@@ -101,11 +109,11 @@ async def test_the_lock_lives_on_its_own_backend_and_survives_a_commit(
     try:
         holder_pids = await _advisory_lock_pids(key)
         assert len(holder_pids) == 1, holder_pids
-        assert holder_pids == [await lock.backend_pid()]
+        assert holder_pids == [await held_lock_backend_pid_for_test(lock)]
 
         # The callback core commits several times while the lock is held. A
         # transaction-scoped lock would evaporate right here.
-        await lock.commit_for_test()
+        await commit_held_lock_for_test(lock)
         assert await _advisory_lock_pids(key) == holder_pids
         assert await _acquire_probe(key) is False
     finally:
@@ -131,7 +139,7 @@ async def test_a_second_holder_cannot_take_a_held_key(_bootstrap_test_schema) ->
     try:
         assert await second.try_acquire(key) is False
         # A refused acquirer must not hold a connection open either.
-        assert second.closed is True
+        assert lock_is_released_for_test(second) is True
     finally:
         await first.release(key)
     assert await second.try_acquire(key) is True
@@ -153,7 +161,7 @@ async def test_an_abrupt_disconnect_releases_the_lock(_bootstrap_test_schema) ->
     assert await lock.try_acquire(key) is True
     assert await _acquire_probe(key) is False
 
-    await lock.simulate_process_death()
+    await simulate_lock_process_death_for_test(lock)
 
     assert await _advisory_lock_pids(key) == []
     assert await _acquire_probe(key) is True
@@ -176,7 +184,7 @@ async def test_an_unlock_failure_invalidates_instead_of_pooling_the_backend(
     lock = PostgresJobAdvisoryLock()
     assert await lock.try_acquire(key) is True
 
-    connection = lock.connection_for_test()
+    connection = held_lock_connection_for_test(lock)
 
     # A *real* server-side failure, not a Python-level fake: the unlock
     # statement itself is made invalid, so PostgreSQL rejects it exactly as it
@@ -194,7 +202,7 @@ async def test_an_unlock_failure_invalidates_instead_of_pooling_the_backend(
     # but it must not leave a lock-holding backend usable.
     await lock.release(key)
 
-    assert lock.closed is True
+    assert lock_is_released_for_test(lock) is True
     assert connection.invalidated or connection.closed
     # End-to-end proof: the key is genuinely free again.
     assert await _advisory_lock_pids(key) == []

@@ -35,7 +35,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.timezone import now_kst
 from app.services.order_proposals.callback_inbox import locks as locks_module
 
-from .conftest import FakeNotifier, load_job, make_update, proposal_callback_data
+from .conftest import (
+    FakeNotifier,
+    held_lock_backend_pid_for_test,
+    held_lock_connection_for_test,
+    load_job,
+    make_update,
+    proposal_callback_data,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -208,7 +215,11 @@ async def test_the_shipped_lock_is_held_on_its_own_backend_across_the_real_core(
         got = await original_try(self, lock_key)
         if got:
             acquired_by.append(
-                (self, await self.backend_pid(), self.connection_for_test())
+                (
+                    self,
+                    await held_lock_backend_pid_for_test(self),
+                    held_lock_connection_for_test(self),
+                )
             )
         return got
 

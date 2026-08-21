@@ -34,6 +34,7 @@ from app.core.timezone import now_kst
 from .conftest import (
     RETRY_BUDGET_CONSTRAINT,
     make_update,
+    shape_owned_callback_inbox_row,
     without_the_retry_budget_check,
 )
 
@@ -106,12 +107,8 @@ async def _queue(inbox_cleanup: list[uuid.UUID]) -> uuid.UUID:
 
 
 async def _force(job_id: uuid.UUID, **fields: Any) -> None:
-    from app.services.order_proposals.callback_inbox.service import (
-        CallbackInboxService,
-    )
-
     async with AsyncSessionLocal() as session:
-        await CallbackInboxService(session).force_state_for_test(job_id, **fields)
+        await shape_owned_callback_inbox_row(session, job_id, **fields)
         await session.commit()
 
 

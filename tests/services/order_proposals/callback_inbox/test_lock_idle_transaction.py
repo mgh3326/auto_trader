@@ -73,10 +73,9 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
     class _Capturing:
         """Hands out the real connection and keeps a reference to it.
 
-        The test needs to look at the holder's connection, and the runtime
-        exposes ``connection_for_test`` for that -- but that method exists
-        only for tests and is on the list for removal (R31). Capturing it at
-        the engine keeps this test independent of that decision.
+        The test needs to look at the holder's connection without running a
+        statement on it. Capturing it at the engine keeps this observation
+        independent of any shipped lock-introspection surface.
 
         Bound to ``real_engine`` rather than reading ``db.engine`` at call
         time, which would find this class and recurse.

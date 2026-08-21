@@ -16,13 +16,15 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals import OrderProposalsService
@@ -400,22 +402,180 @@ async def consume_nonce(proposal_id: uuid.UUID) -> None:
         await session.commit()
 
 
-@pytest_asyncio.fixture
-async def inbox_cleanup(_bootstrap_test_schema) -> AsyncIterator[list[uuid.UUID]]:
-    """Delete every inbox row a test created, whatever the outcome."""
+_OWNED_INBOX_JOB_IDS: ContextVar[set[uuid.UUID] | None] = ContextVar(
+    "owned_callback_inbox_job_ids", default=None
+)
+
+
+class _OwnedInboxJobIds(list[uuid.UUID]):
+    """Fixture-owned job IDs that also authorize narrow test row shaping."""
+
+    def __init__(self, owned: set[uuid.UUID]) -> None:
+        super().__init__()
+        self._owned = owned
+
+    def append(self, job_id: uuid.UUID) -> None:
+        if not isinstance(job_id, uuid.UUID):
+            raise TypeError("inbox cleanup accepts UUID job ids only")
+        self._owned.add(job_id)
+        super().append(job_id)
+
+
+# Crash/recovery tests need to reproduce only these durable shapes. This is
+# intentionally not a generic test mutation API: immutable identity/digest
+# fields and timestamps remain outside the allowlist, while authority fields
+# are limited to their terminal-scrub value below. Normal ORM flushes still
+# enforce every live marker/cross-field constraint.
+_TEST_OWNED_INBOX_SHAPE_FIELDS: frozenset[str] = frozenset(
+    {
+        "attempt_count",
+        "available_at",
+        "action",
+        "callback_query_id",
+        "chat_id",
+        "dispatch_attempt_id",
+        "error_class",
+        "handler_completed_at",
+        "handler_entered_at",
+        "membership_digest",
+        "membership_revision",
+        "message_id",
+        "nonce",
+        "outcome",
+        "received_at",
+        "started_at",
+        "state",
+        "subject_short",
+        "terminal_state_pending",
+        "telegram_user_id",
+        "update_identity_digest",
+    }
+)
+
+_TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS: frozenset[str] = frozenset(
+    {
+        "action",
+        "callback_query_id",
+        "chat_id",
+        "dispatch_attempt_id",
+        "membership_digest",
+        "membership_revision",
+        "message_id",
+        "nonce",
+        "telegram_user_id",
+        "update_identity_digest",
+    }
+)
+
+
+async def shape_owned_callback_inbox_row(
+    session: AsyncSession,
+    job_id: uuid.UUID,
+    **fields: Any,
+) -> Any:
+    """Shape one fixture-owned row through normal ORM constraint enforcement."""
+    unknown = set(fields) - _TEST_OWNED_INBOX_SHAPE_FIELDS
+    if unknown:
+        raise ValueError(f"unexpected inbox shape field names: {sorted(unknown)}")
+    if not fields:
+        raise ValueError("an inbox shape needs explicit fields")
+    rearmed = {
+        field
+        for field in _TEST_OWNED_TERMINAL_SCRUB_ONLY_FIELDS
+        if field in fields and fields[field] is not None
+    }
+    if rearmed:
+        raise ValueError(
+            f"terminal authority fields may only be scrubbed: {sorted(rearmed)}"
+        )
+
+    owned = _OWNED_INBOX_JOB_IDS.get()
+    if owned is None or job_id not in owned:
+        raise PermissionError("test row shaping requires an inbox_cleanup-owned job")
+
     from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
 
-    created: list[uuid.UUID] = []
-    yield created
-    if not created:
-        return
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            delete(TelegramCallbackInboxJob).where(
-                TelegramCallbackInboxJob.job_id.in_(created)
-            )
+    row = await session.scalar(
+        select(TelegramCallbackInboxJob).where(
+            TelegramCallbackInboxJob.job_id == job_id
         )
-        await session.commit()
+    )
+    if row is None:
+        raise LookupError(f"owned inbox row was not found: {job_id}")
+    for field, value in fields.items():
+        setattr(row, field, value)
+    await session.flush()
+    return row
+
+
+def lock_is_released_for_test(lock: Any) -> bool:
+    """Observe private holder state without a shipped introspection API."""
+    return getattr(lock, "_connection", None) is None
+
+
+def held_lock_connection_for_test(lock: Any) -> Any:
+    """Return the private dedicated connection only for test observation."""
+    connection = getattr(lock, "_connection", None)
+    if connection is None:
+        raise RuntimeError("advisory lock is not held")
+    return connection
+
+
+async def held_lock_backend_pid_for_test(lock: Any) -> int:
+    """Read the real holder PID through the private test-held connection."""
+    connection = held_lock_connection_for_test(lock)
+    return int((await connection.execute(text("SELECT pg_backend_pid()"))).scalar_one())
+
+
+async def commit_held_lock_for_test(lock: Any) -> None:
+    """Commit the private lock connection to prove session-lock survival."""
+    await held_lock_connection_for_test(lock).commit()
+
+
+async def simulate_lock_process_death_for_test(lock: Any) -> None:
+    """Exercise the real private discard path without shipping a crash API."""
+    from app.services.order_proposals.callback_inbox import locks as locks_module
+
+    connection = getattr(lock, "_connection", None)
+    if connection is None:
+        return
+    terminated, during = await locks_module._hard_discard(connection)  # noqa: SLF001
+    if not terminated:
+        raise locks_module.LockTerminationUnproven("simulate_process_death")
+    lock._connection = None  # noqa: SLF001 - test-only crash bookkeeping
+    if during is not None:
+        raise during
+
+
+def quarantined_handles_for_test() -> set[Any]:
+    """Inspect the private R27 quarantine without exporting it from app code."""
+    from app.services.order_proposals.callback_inbox import locks as locks_module
+
+    return locks_module._QUARANTINE  # noqa: SLF001 - R27 retention assertion
+
+
+@pytest_asyncio.fixture
+async def inbox_cleanup(_bootstrap_test_schema) -> AsyncIterator[list[uuid.UUID]]:
+    """Delete every fixture-owned inbox row, whatever the test outcome."""
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+
+    owned: set[uuid.UUID] = set()
+    token = _OWNED_INBOX_JOB_IDS.set(owned)
+    created = _OwnedInboxJobIds(owned)
+    try:
+        yield created
+    finally:
+        try:
+            if created:
+                async with AsyncSessionLocal() as session:
+                    await session.execute(
+                        delete(TelegramCallbackInboxJob).where(
+                            TelegramCallbackInboxJob.job_id.in_(created)
+                        )
+                    )
+                    await session.commit()
+        finally:
+            _OWNED_INBOX_JOB_IDS.reset(token)
 
 
 async def load_job(job_id: uuid.UUID):
