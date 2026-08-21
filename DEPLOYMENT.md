@@ -63,6 +63,7 @@ Sentry:
 - `SENTRY_TRACES_SAMPLE_RATE=1.0`
 - `SENTRY_PROFILES_SAMPLE_RATE=1.0`
 - `SENTRY_SEND_DEFAULT_PII=false` (ROB-1305 기본값, 옵트인 필요)
+- `SENTRY_MCP_INCLUDE_PROMPTS=false` (ROB-1305 기본값, 옵트인 필요)
 - `SENTRY_ENABLE_LOG_EVENTS=true`
 - release는 이미지 빌드 SHA가 자동으로 주입됩니다.
 
