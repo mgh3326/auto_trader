@@ -29,13 +29,23 @@ _CONTRACTS = _REPO / "app/services/order_proposals/callback_inbox/contracts.py"
 _RETRY_KEYS = ("mutation_not_started", "safe_to_retry", "retryable")
 
 
+#: How far around a mentioning line to look for its denial. A denial often
+#: lands on the next line (or is the sentence that introduces a list), and
+#: `IGNORED_HANDLER_RETRY_KEYS`'s own literal sits below its explanation.
+_DENIAL_WINDOW = 8
+
+
 def _retry_verdict_lines(text: str) -> list[str]:
     """Lines that mention a retry key and a retry-granting verdict together."""
     offenders: list[str] = []
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
         if not any(key in line for key in _RETRY_KEYS):
             continue
         lowered = line.lower()
+        context = "\n".join(
+            lines[max(0, index - _DENIAL_WINDOW) : index + _DENIAL_WINDOW + 1]
+        ).lower()
         grants = (
             "retry_wait" in lowered
             or "re-runnable" in lowered
@@ -47,7 +57,7 @@ def _retry_verdict_lines(text: str) -> list[str]:
         # a denial of the grant, and reading it as one is how the runbook's
         # table row survived the first version of this check.
         denies = any(
-            marker in lowered
+            marker in context
             for marker in (
                 "ignored",
                 "buys nothing",
@@ -56,6 +66,8 @@ def _retry_verdict_lines(text: str) -> list[str]:
                 "not honored",
                 "no authority",
                 "never grants",
+                "diagnostic",
+                "진단용",
                 "무시",
                 "권한이 생기지 않",
                 "얻지 못",
@@ -117,3 +129,46 @@ def test_the_error_class_comment_matches_the_runtime() -> None:
             f"PRE_CORE_FAILURE's comment still offers {key!r} as a way in"
         )
     assert ErrorClass.PRE_CORE_FAILURE.value == "pre_core_failure"
+
+
+#: The exact wording this commit's sibling removed. Kept verbatim so the
+#: detector's strength is itself a pinned property: widening the denial window
+#: to stop false positives must never stop catching these.
+_REMOVED_UNSAFE_WORDING = (
+    (
+        "CLAUDE.md",
+        "- `retry_wait` \u2190 pre-core \uc2e4\ud328, \ub610\ub294 typed "
+        "`mutation_not_started`(\ud604 \ucf54\uc5b4\ub294 \uc808\ub300 "
+        "\uc548 \uc500)",
+    ),
+    (
+        "runbook",
+        "| typed `mutation_not_started: True` from a handler | `retry_wait` | "
+        "`pre_core_failure` | yes (today's core never sets it) |",
+    ),
+    (
+        "contracts.py",
+        "    #: The mutating region was provably not entered (pre-core failure, "
+        "or the\n    #: typed ``mutation_not_started`` flag). The only "
+        "re-runnable class.",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "wording"),
+    _REMOVED_UNSAFE_WORDING,
+    ids=[case[0] for case in _REMOVED_UNSAFE_WORDING],
+)
+def test_the_detector_still_catches_the_wording_it_was_built_for(
+    label: str, wording: str
+) -> None:
+    """Anti-erosion: the checker must still flag the exact removed lines.
+
+    Loosening the detector until the real surfaces pass is the obvious way to
+    make this suite green for the wrong reason. Feeding it the original text
+    makes that impossible without this test going red.
+    """
+    assert _retry_verdict_lines(wording), (
+        f"the detector would no longer catch the {label} wording it exists for"
+    )
