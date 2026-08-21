@@ -10,10 +10,31 @@ way it should, and not that a real ``alembic upgrade`` would succeed at all.
 So this module drives the actual ``alembic`` CLI, in a subprocess, against a
 scratch database created for this test and dropped afterwards:
 
-    stamp 20260820_rob1290_reconcile
+    build the parent schema -> stamp 20260820_rob1290_reconcile
       -> upgrade head   (must land on the W5 revision, table + constraints live)
       -> downgrade 20260820_rob1290_reconcile   (table gone, version back)
       -> upgrade head   (idempotent; constraints live again)
+
+R9 B19 asked for the parent to be reached by replaying the real chain from an
+empty database rather than stamped. **That is not achievable on this repo's
+test infrastructure, and the deviation is deliberate.** Replaying from base
+runs `alembic/versions/*_timescale*.py`, which abort with
+
+    timescaledb extension version % is below required minimum 2.8.1
+
+CI's database service is `postgres:15-alpine` (`.github/workflows/test.yml`),
+which has no TimescaleDB at all, so a base replay can never be green there.
+That constraint is why every pre-existing migration roundtrip in this
+repository -- `paper_cohort`, `paper_evaluation` -- uses the same
+create_all-plus-stamp construction.
+
+What this file does instead closes B19's actual complaint, which was that the
+parent schema was never *constructed*: the scratch database is materialised
+from `Base.metadata` (the real schema, all schemas, every table), the objects
+this branch adds after the parent are dropped so the migration genuinely
+creates them, and only then is the parent stamped. The upgrade, the
+downgrade and the re-upgrade are all real `alembic` CLI invocations against
+that real schema.
 
 Nothing here touches the run-owned test database, and nothing touches a
 production database: the scratch name carries its own prefix and a random
@@ -57,10 +78,21 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
     }
 
 
+#: Objects this branch adds *after* the parent revision. ``Base.metadata`` is
+#: the current head, so they must be removed to reconstruct the parent-era
+#: schema -- otherwise the migration collides with what create_all already
+#: made. Same maintenance point the sibling roundtrip tests carry.
+_POST_PARENT_TABLES: tuple[str, ...] = ("review.telegram_callback_inbox",)
+
+
 @pytest_asyncio.fixture
 async def scratch_database() -> AsyncIterator[str]:
-    """A private database, created and dropped by this test alone."""
+    """A private database holding the real parent-era schema."""
     import asyncpg
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.models.base import Base
 
     base = make_url(os.environ["DATABASE_URL"])
     name = _scratch_name()
@@ -70,15 +102,19 @@ async def scratch_database() -> AsyncIterator[str]:
     finally:
         await admin.close()
 
-    target = await asyncpg.connect(**_admin_kwargs(base, database=name))
-    try:
-        # The migration creates its table in ``review``; the parent revision is
-        # stamped rather than replayed, so nothing else has created it.
-        await target.execute("CREATE SCHEMA IF NOT EXISTS review")
-    finally:
-        await target.close()
-
     url = base.set(database=name)
+    engine = create_async_engine(url.render_as_string(hide_password=False))
+    try:
+        async with engine.begin() as connection:
+            for schema in ("paper", "research", "review"):
+                await connection.execute(
+                    text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                )
+            await connection.run_sync(Base.metadata.create_all)
+            for table in _POST_PARENT_TABLES:
+                await connection.execute(text(f"DROP TABLE {table}"))
+    finally:
+        await engine.dispose()
     try:
         yield url.render_as_string(hide_password=False)
     finally:
@@ -195,6 +231,58 @@ async def _terminal_check_rejects_a_retained_nonce(database_url: str) -> bool:
         await connection.close()
 
 
+async def _other_parent_tables_exist(database_url: str) -> bool:
+    """Anti-vacuity: the parent-era schema is genuinely present."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        for table in (
+            "review.order_proposals",
+            "review.order_proposal_rungs",
+            "review.order_proposal_approval_batches",
+        ):
+            if not await connection.fetchval(
+                f"SELECT to_regclass('{table}') IS NOT NULL"
+            ):
+                return False
+        return True
+    finally:
+        await connection.close()
+
+
+async def _processing_check_rejects_a_missing_started_at(database_url: str) -> bool:
+    """R9 B19 + R7 B11 — the new invariant, exercised on the real schema."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        try:
+            await connection.execute(
+                "INSERT INTO review.telegram_callback_inbox "
+                "(job_id, update_digest, state, attempt_count, max_attempts, "
+                " received_at, available_at, started_at, chat_id, action, "
+                " subject_short, dispatch_attempt_id, membership_revision, "
+                " membership_digest, nonce) "
+                "VALUES ($1, $2, 'processing', 1, 3, now(), now(), NULL, '42', "
+                "'op', '0123abcd', $3, 1, 'abcdefghijkl', 'nonce123456')",
+                uuid.uuid4(),
+                uuid.uuid4().hex * 2,
+                uuid.uuid4(),
+            )
+        except asyncpg.exceptions.CheckViolationError:
+            return True
+        return False
+    finally:
+        await connection.close()
+
+
 def test_alembic_reports_exactly_one_head() -> None:
     """R3 B3 — asked of the CLI, not of a Python API that might differ."""
     output = (
@@ -209,6 +297,7 @@ def test_alembic_reports_exactly_one_head() -> None:
 async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     scratch_database: str,
 ) -> None:
+    """R9 B19 — real parent schema -> head -> parent -> head, all via the CLI."""
     expected_constraints = {
         "ck_telegram_callback_inbox_action",
         "ck_telegram_callback_inbox_active_reconstructable",
@@ -216,6 +305,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         "ck_telegram_callback_inbox_error_class",
         "ck_telegram_callback_inbox_max_attempts",
         "ck_telegram_callback_inbox_outcome",
+        "ck_telegram_callback_inbox_processing_started_at",
         "ck_telegram_callback_inbox_state",
         "ck_telegram_callback_inbox_terminal_scrubbed",
         "ck_telegram_callback_inbox_terminal_state_pending",
@@ -224,35 +314,42 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         "uq_telegram_callback_inbox_update_digest",
     }
 
-    # -- start from the exact parent this branch is based on ----------------
+    # -- the parent-era schema really is there, minus what this branch adds --
     assert await _stamped_revision(scratch_database) is None
+    assert await _other_parent_tables_exist(scratch_database) is True, (
+        "the parent schema was not constructed; this test would prove nothing"
+    )
+    assert await _table_exists(scratch_database) is False
     _alembic("stamp", PARENT_REVISION, database_url=scratch_database)
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
-    assert await _table_exists(scratch_database) is False
+    assert await _table_exists(scratch_database) is False, (
+        "the inbox table exists at the parent revision; the chain is not additive"
+    )
 
-    # -- upgrade ------------------------------------------------------------
+    async def _check_head_state() -> None:
+        assert await _stamped_revision(scratch_database) == W5_REVISION
+        assert await _table_exists(scratch_database) is True
+        objects = await _live_objects(scratch_database)
+        missing = expected_constraints - set(objects["constraints"])
+        assert not missing, missing
+        assert "ix_telegram_callback_inbox_state_available" in objects["indexes"], (
+            objects["indexes"]
+        )
+        assert await _terminal_check_rejects_a_retained_nonce(scratch_database) is True
+        assert (
+            await _processing_check_rejects_a_missing_started_at(scratch_database)
+            is True
+        )
+
+    # -- upgrade -------------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
-    assert await _stamped_revision(scratch_database) == W5_REVISION
-    assert await _table_exists(scratch_database) is True
+    await _check_head_state()
 
-    objects = await _live_objects(scratch_database)
-    assert expected_constraints <= set(objects["constraints"]), objects["constraints"]
-    assert "ix_telegram_callback_inbox_state_available" in objects["indexes"], objects[
-        "indexes"
-    ]
-    assert await _terminal_check_rejects_a_retained_nonce(scratch_database) is True
-
-    # -- downgrade back to the exact parent ---------------------------------
+    # -- downgrade back to the exact parent ----------------------------------
     _alembic("downgrade", PARENT_REVISION, database_url=scratch_database)
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False
 
-    # -- and up again -------------------------------------------------------
+    # -- and up again --------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
-    assert await _stamped_revision(scratch_database) == W5_REVISION
-    assert await _table_exists(scratch_database) is True
-
-    objects = await _live_objects(scratch_database)
-    assert expected_constraints <= set(objects["constraints"]), objects["constraints"]
-    assert "ix_telegram_callback_inbox_state_available" in objects["indexes"]
-    assert await _terminal_check_rejects_a_retained_nonce(scratch_database) is True
+    await _check_head_state()

@@ -79,58 +79,79 @@ _ALLOWED_OPS = frozenset({"create_table", "drop_table", "create_index", "drop_in
 
 @pytest.mark.unit
 def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
-    """R6 strengthening 5 — cover the whole surface, not just literal SQL.
+    """R6 strengthening 5 + R9 B21 — the whole operation surface.
 
     A string-literal scan misses ``op.bulk_insert``, ``sa.text`` built from a
     variable, and every ALTER-shaped op. This walks the call graph instead:
-    only ``create_table``/``drop_table``/``create_index``/``drop_index`` may
-    appear, every one of them must name ``telegram_callback_inbox`` in the
-    ``review`` schema, and no row-writing or schema-mutating op may be present
-    at all.
+
+    * only ``create_table``/``drop_table``/``create_index``/``drop_index`` may
+      appear, and every one must name this table;
+    * every one must be schema-qualified to ``review`` -- an unqualified DDL
+      call lands in ``public`` on a default ``search_path``, which is a
+      different table that no constraint in this repo governs;
+    * ``op`` may not be aliased or re-bound, so the scan cannot be walked
+      around by ``o = op`` or ``from alembic.op import create_table``;
+    * no other table name appears in the file's code at all.
     """
     source = _MIGRATION.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    ops: list[tuple[str, int]] = []
+    # 1. `op` is the imported alembic op module and nothing else re-binds it.
+    op_imports = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "alembic"
+    ]
+    assert op_imports, "the migration does not import alembic.op"
+    for node in op_imports:
+        for alias in node.names:
+            assert alias.name == "op" and alias.asname is None, ast.dump(node)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        owner = node.func.value
-        if isinstance(owner, ast.Name) and owner.id == "op":
-            ops.append((node.func.attr, node.lineno))
+        if isinstance(node, ast.Assign):
+            for target in ast.walk(node):
+                if isinstance(target, ast.Name) and target.id == "op":
+                    raise AssertionError(f"line {node.lineno}: `op` is re-bound")
+        if isinstance(node, ast.ImportFrom) and node.module == "alembic.op":
+            raise AssertionError(
+                "direct `from alembic.op import ...` bypasses the scan"
+            )
 
-    used = {name for name, _ in ops if name != "f"}
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "op"
+    ]
+    used = {node.func.attr for node in calls} - {"f"}
+
     assert not (used & _ROW_DML_OPS), f"row DML in an additive migration: {used}"
     assert not (used & _MUTATION_OPS), f"schema mutation: {used & _MUTATION_OPS}"
     assert used <= _ALLOWED_OPS, (
         f"unexpected alembic ops: {sorted(used - _ALLOWED_OPS)}"
     )
-    assert "create_table" in used and "drop_table" in used
+    assert used == _ALLOWED_OPS, f"expected all four DDL ops, got {sorted(used)}"
 
-    # Every op names this table, in this schema, and nothing else.
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        owner = node.func.value
-        if not (isinstance(owner, ast.Name) and owner.id == "op"):
-            continue
-        if node.func.attr not in _ALLOWED_OPS:
-            continue
+    # 2. Every DDL call names this table, in this schema.
+    ddl_calls = [node for node in calls if node.func.attr in _ALLOWED_OPS]
+    assert len(ddl_calls) == 4, [node.func.attr for node in ddl_calls]
+    for node in ddl_calls:
         rendered = ast.dump(node)
         assert "_TABLE" in rendered or "telegram_callback_inbox" in rendered, (
-            f"line {node.lineno}: an op that does not name the inbox table"
+            f"line {node.lineno}: {node.func.attr} does not name the inbox table"
         )
-        schemas = [
-            kw for kw in node.keywords if kw.arg in {"schema", "table_name", "schema_"}
-        ]
-        if any(kw.arg == "schema" for kw in schemas):
-            schema_kw = next(kw for kw in schemas if kw.arg == "schema")
-            rendered_schema = ast.dump(schema_kw.value)
-            assert "_SCHEMA" in rendered_schema or "review" in rendered_schema, (
-                f"line {node.lineno}: an op outside the review schema"
-            )
+        schema_kw = next((kw for kw in node.keywords if kw.arg == "schema"), None)
+        assert schema_kw is not None, (
+            f"line {node.lineno}: {node.func.attr} is not schema-qualified; "
+            "it would land in `public`"
+        )
+        rendered_schema = ast.dump(schema_kw.value)
+        assert "_SCHEMA" in rendered_schema or "review" in rendered_schema, (
+            f"line {node.lineno}: {node.func.attr} targets a schema other than review"
+        )
 
-    # The module-level constants those ops resolve to.
+    # 3. The constants those ops resolve to.
     namespace: dict[str, object] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
@@ -139,15 +160,32 @@ def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
     assert namespace.get("_TABLE") == "telegram_callback_inbox"
     assert namespace.get("_SCHEMA") == "review"
 
-    # And no other table name appears anywhere in the file's SQL text.
+    # 4. Only the intended objects are created.
+    created_indexes = {
+        ast.literal_eval(node.args[0])
+        for node in ddl_calls
+        if node.func.attr == "create_index" and isinstance(node.args[0], ast.Constant)
+    }
+    assert created_indexes == {"ix_telegram_callback_inbox_state_available"}
+
+    # 5. No other table name appears anywhere in the file's *code*.
+    code = source.split('"""', 2)[-1]
     for other_table in (
         "order_proposals",
         "order_proposal_rungs",
         "order_proposal_approval_batches",
         "alembic_version",
         "watch_event_repricing_claims",
+        "kis_live_order_ledger",
+        "live_order_ledger",
+        "toss_live_order_ledger",
+        "order_send_intents",
     ):
-        assert other_table not in source.split('"""', 2)[-1], other_table
+        assert other_table not in code, other_table
+    # ... and no raw SQL execution smuggled in as a variable.
+    assert "sa.text(" not in code or "server_default" in code
+    for banned in ("op.execute", "op.bulk_insert", "connection.execute"):
+        assert banned not in code, banned
 
 
 @pytest.mark.unit
@@ -177,13 +215,14 @@ _INSERT = sa.text(
     """
     INSERT INTO review.telegram_callback_inbox
         (job_id, update_digest, state, attempt_count, max_attempts,
-         received_at, available_at, terminal_state_pending, callback_query_id,
+         received_at, available_at, started_at, terminal_state_pending,
+         callback_query_id,
          chat_id, message_id, telegram_user_id, action, subject_short,
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
          outcome, error_class)
     VALUES
         (:job_id, :update_digest, :state, :attempt_count, 3,
-         :now, :now, :terminal_state_pending, :callback_query_id,
+         :now, :now, :started_at, :terminal_state_pending, :callback_query_id,
          :chat_id, :message_id, :telegram_user_id, :action, :subject_short,
          :dispatch_attempt_id, :membership_revision, :membership_digest, :nonce,
          :outcome, :error_class)
@@ -200,6 +239,7 @@ def _row(**overrides: object) -> dict[str, object]:
         "state": "pending",
         "attempt_count": 0,
         "now": _NOW,
+        "started_at": None,
         "terminal_state_pending": None,
         "callback_query_id": "cbq-1",
         "chat_id": "42",
@@ -308,8 +348,14 @@ def _terminal_probe(connection: sa.Connection, state: str, retained: str | None)
 
 
 def _active_probe(connection: sa.Connection, state: str, missing: str | None):
-    """Insert an active row, optionally dropping exactly one required field."""
+    """Insert an active row, optionally dropping exactly one required field.
+
+    ``processing`` additionally carries ``started_at``: a claimed row without
+    one has no defined age, which is what the recovery scan filters on.
+    """
     overrides: dict[str, object] = {"state": state}
+    if state == "processing":
+        overrides["started_at"] = _NOW
     if missing is not None:
         overrides[missing] = None
     return _accepts(connection, **overrides)
@@ -379,6 +425,76 @@ async def test_every_claimable_state_requires_every_reconstruction_field(
         for field in RECONSTRUCTION_FIELDS:
             expected[f"{state}::{field}"] = False
     assert observed == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_processing_row_must_carry_the_moment_it_started(
+    _bootstrap_test_schema,
+) -> None:
+    """R7 B11 — a claimed row with no ``started_at`` has no defined age.
+
+    The recovery scan decides whether a ``processing`` row is stale enough to
+    look at by comparing ``started_at`` against a window. A NULL there is not
+    "very old" or "very new" -- the comparison is simply never true, so the
+    row is invisible to the scan forever while occupying the state that says
+    a worker owns it. The database must refuse to create that row at all.
+
+    ``pending`` and ``retry_wait`` have not started, so they must still be
+    accepted without one; this is a ``processing``-only invariant.
+    """
+    from app.core.db import AsyncSessionLocal
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        return {
+            "__sanity__": _sanity(connection),
+            "processing_without_started_at": _accepts(
+                connection, state="processing", started_at=None
+            ),
+            "processing_with_started_at": _accepts(
+                connection, state="processing", started_at=_NOW
+            ),
+            "pending_without_started_at": _accepts(
+                connection, state="pending", started_at=None
+            ),
+            "retry_wait_without_started_at": _accepts(
+                connection, state="retry_wait", started_at=None
+            ),
+            # A terminal row keeps its timestamps; only authority is scrubbed.
+            "terminal_with_started_at": _accepts(
+                connection, state="succeeded", started_at=_NOW, **_scrubbed()
+            ),
+        }
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    assert observed == {
+        "__sanity__": True,
+        "processing_without_started_at": False,
+        "processing_with_started_at": True,
+        "pending_without_started_at": True,
+        "retry_wait_without_started_at": True,
+        "terminal_with_started_at": True,
+    }
+
+
+@pytest.mark.unit
+def test_the_model_declares_the_processing_started_at_check() -> None:
+    """Pinned on the ORM too, so ``create_all`` and Alembic cannot diverge."""
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in TelegramCallbackInboxJob.__table__.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert "processing_started_at" in checks, sorted(checks)
+    expression = checks["processing_started_at"]
+    assert "started_at IS NOT NULL" in expression
+    assert "processing" in expression
 
 
 @pytest.mark.integration

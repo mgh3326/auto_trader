@@ -188,15 +188,73 @@ _OUTCOMES: tuple[tuple[str, Any, str, str | None], ...] = (
         "handler_ambiguous",
     ),
     ("not_a_dict", "surprise", "dead_letter", "handler_ambiguous"),
+    # R8 B15: a handler-returned marker is forgeable by a handler that has
+    # already mutated. None of these may buy a replay.
     (
-        "typed_mutation_not_started",
+        "forged_marker_true",
+        {"handled": False, "reason": "internal_error", "mutation_not_started": True},
+        "dead_letter",
+        "handler_ambiguous",
+    ),
+    (
+        "forged_marker_truthy_int",
+        {"handled": False, "reason": "internal_error", "mutation_not_started": 1},
+        "dead_letter",
+        "handler_ambiguous",
+    ),
+    (
+        "forged_marker_string",
+        {"handled": False, "reason": "internal_error", "mutation_not_started": "yes"},
+        "dead_letter",
+        "handler_ambiguous",
+    ),
+    (
+        "forged_marker_object",
         {
             "handled": False,
             "reason": "internal_error",
+            "mutation_not_started": object,
+        },
+        "dead_letter",
+        "handler_ambiguous",
+    ),
+    (
+        "forged_marker_false",
+        {"handled": False, "reason": "internal_error", "mutation_not_started": False},
+        "dead_letter",
+        "handler_ambiguous",
+    ),
+    (
+        "forged_marker_on_handled",
+        {
+            "handled": True,
+            "reason": "approved",
+            "results": ["unverified"],
             "mutation_not_started": True,
         },
-        "retry_wait",
-        "pre_core_failure",
+        "succeeded",
+        None,
+    ),
+    (
+        "forged_marker_on_rejection",
+        {
+            "handled": False,
+            "reason": "nonce_replay",
+            "mutation_not_started": True,
+        },
+        "discarded",
+        None,
+    ),
+    (
+        "forged_marker_with_retry_words",
+        {
+            "handled": False,
+            "reason": "pre_core_failure",
+            "mutation_not_started": True,
+            "retry": True,
+        },
+        "discarded",
+        None,
     ),
 )
 
@@ -237,23 +295,24 @@ async def test_every_core_outcome_lands_in_its_documented_state(
     assert row.attempt_count == 1, label
     assert calls == [1], label
 
-    if expected_state == "retry_wait":
-        # A next attempt is scheduled, in the future, and the row stays runnable.
-        assert row.available_at > row.received_at, label
-        assert row.nonce is not None and row.chat_id is not None, label
-    else:
-        # Terminal: authority gone, and a real recovery tick must not touch it.
-        assert row.nonce is None and row.chat_id is None, label
-        await recover_callback_jobs(handler=_handler)
-        assert calls == [1], f"{label}: a terminal job re-entered the core"
-        assert (await load_job(job_id)).state == expected_state
+    # No handler return shape reaches ``retry_wait``: the core was entered.
+    assert row.state != "retry_wait", (
+        f"{label}: a handler-returned value bought a replay"
+    )
+    assert row.handler_entered_at is not None, label
+    # Terminal: authority gone, and a real recovery tick must not touch it.
+    assert row.nonce is None and row.chat_id is None, label
+    await recover_callback_jobs(handler=_handler)
+    assert calls == [1], f"{label}: a terminal job re-entered the core"
+    assert (await load_job(job_id)).state == expected_state
 
 
 @pytest.mark.asyncio
-async def test_a_typed_retry_re_enters_only_after_its_backoff(
+async def test_only_a_pre_core_failure_re_enters_and_only_after_its_backoff(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
 ) -> None:
-    """The only re-runnable class, and it still waits its turn."""
+    """R8 B15 — retry authority is worker-owned and raised before entry."""
+    from app.services.order_proposals.callback_inbox import worker as worker_module
     from app.services.order_proposals.callback_inbox.recovery import (
         recover_callback_jobs,
     )
@@ -262,29 +321,165 @@ async def test_a_typed_retry_re_enters_only_after_its_backoff(
     job_id = await _queue(inbox_cleanup)
     calls: list[int] = []
 
-    async def _handler(normalized, **kwargs):
+    async def _handler(normalized, **kwargs):  # pragma: no cover - never reached
         calls.append(1)
-        return {
-            "handled": False,
-            "reason": "internal_error",
-            "mutation_not_started": True,
-        }
+        return {"handled": True, "reason": "approved"}
 
-    await process_callback_job(job_id, handler=_handler)
-    row = await load_job(job_id)
-    assert row is not None and row.state == "retry_wait"
-    assert calls == [1]
+    def _fail_pre_core(*args, **kwargs):
+        raise RuntimeError("notifier unavailable")
 
-    # Not due yet.
-    await recover_callback_jobs(handler=_handler)
-    assert calls == [1], "a retry ran before its backoff elapsed"
+    original = worker_module.resolve_notifier
+    worker_module.resolve_notifier = _fail_pre_core
+    try:
+        result = await process_callback_job(job_id, handler=_handler)
+        assert result["status"] == "retry_scheduled"
+        assert calls == []
+
+        row = await load_job(job_id)
+        assert row is not None
+        assert row.state == "retry_wait"
+        assert row.error_class == "pre_core_failure"
+        assert row.handler_entered_at is None
+        assert row.available_at > row.received_at
+
+        # Not due yet.
+        await recover_callback_jobs(handler=_handler)
+        assert (await load_job(job_id)).state == "retry_wait"
+    finally:
+        worker_module.resolve_notifier = original
 
     await _force(job_id, available_at=now_kst() - timedelta(seconds=1))
     await recover_callback_jobs(handler=_handler)
-    assert calls == [1, 1]
+    assert calls == [1]
     row = await load_job(job_id)
     assert row is not None
     assert row.attempt_count == 2
+    assert row.state == "succeeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "post_entry_state",
+    ["entered", "completed", "terminal_pending"],
+)
+async def test_schedule_retry_refuses_any_row_that_is_not_provably_pre_entry(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], post_entry_state: str
+) -> None:
+    """R10 — the service itself is the last line, not just the worker.
+
+    Called directly, on a row whose durable markers say the core was entered,
+    ``schedule_retry`` must refuse *and leave every marker untouched*. A
+    version that simply wrote ``retry_wait`` and cleared the markers would
+    erase the only evidence that a replay is unsafe.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+        RetryAuthorityRefused,
+    )
+
+    job_id = await _queue(inbox_cleanup)
+    fields: dict[str, Any] = {
+        "state": "processing",
+        "attempt_count": 1,
+        "started_at": now_kst(),
+    }
+    if post_entry_state == "entered":
+        fields["handler_entered_at"] = now_kst()
+    elif post_entry_state == "completed":
+        fields["handler_entered_at"] = now_kst()
+        fields["handler_completed_at"] = now_kst()
+    else:
+        fields["handler_entered_at"] = now_kst()
+        fields["handler_completed_at"] = now_kst()
+        fields["terminal_state_pending"] = "succeeded"
+        fields["outcome"] = "approved"
+    await _force(job_id, **fields)
+
+    async with AsyncSessionLocal() as session:
+        service = CallbackInboxService(session)
+        row = await service.get(job_id)
+        assert row is not None
+        with pytest.raises(RetryAuthorityRefused):
+            await service.schedule_retry(row, now=now_kst())
+        await session.rollback()
+
+    # A fresh session: every marker survived, and the state did not move.
+    fresh = await load_job(job_id)
+    assert fresh is not None
+    assert fresh.state == "processing"
+    assert fresh.handler_entered_at is not None
+    if post_entry_state != "entered":
+        assert fresh.handler_completed_at is not None
+    if post_entry_state == "terminal_pending":
+        assert fresh.terminal_state_pending == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_orm_row_cannot_erase_entry_evidence(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R10 — the precondition is evaluated in the database, not in memory.
+
+    The classic shape: a worker loads the row *before* entry, the entry marker
+    is committed by the work in between, and the worker then asks for a retry
+    holding an object that still says ``handler_entered_at is None``. An
+    in-memory check passes; a conditional UPDATE does not.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+        RetryAuthorityRefused,
+    )
+
+    job_id = await _queue(inbox_cleanup)
+    await _force(job_id, state="processing", attempt_count=1, started_at=now_kst())
+
+    async with AsyncSessionLocal() as stale_session:
+        stale = await CallbackInboxService(stale_session).get(job_id)
+        assert stale is not None
+        assert stale.handler_entered_at is None  # what this session still believes
+
+        # Meanwhile, the entry marker is committed by someone else.
+        await _force(job_id, handler_entered_at=now_kst())
+
+        with pytest.raises(RetryAuthorityRefused):
+            await CallbackInboxService(stale_session).schedule_retry(
+                stale, now=now_kst()
+            )
+        await stale_session.rollback()
+
+    fresh = await load_job(job_id)
+    assert fresh is not None
+    assert fresh.handler_entered_at is not None, "entry evidence was erased"
+    assert fresh.state == "processing"
+
+
+@pytest.mark.asyncio
+async def test_schedule_retry_accepts_only_the_pre_entry_processing_shape(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """The positive half, so the guard above cannot be vacuous."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    job_id = await _queue(inbox_cleanup)
+    await _force(job_id, state="processing", attempt_count=1, started_at=now_kst())
+
+    async with AsyncSessionLocal() as session:
+        service = CallbackInboxService(session)
+        row = await service.get(job_id)
+        assert row is not None
+        await service.schedule_retry(row, now=now_kst())
+        await session.commit()
+
+    fresh = await load_job(job_id)
+    assert fresh is not None
+    assert fresh.state == "retry_wait"
+    assert fresh.error_class == "pre_core_failure"
+    assert fresh.handler_entered_at is None
 
 
 # ---------------------------------------------------------------------------

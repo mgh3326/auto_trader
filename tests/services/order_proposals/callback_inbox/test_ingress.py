@@ -20,7 +20,8 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
@@ -276,22 +277,104 @@ async def test_concurrent_duplicate_deliveries_still_create_one_row(
     assert await _count_rows(digest) == 1
 
 
+#: Every field of the normalized envelope this row persists. Each is raced
+#: on its own: the two deliveries share a delivery identity and differ in
+#: exactly one place, so an implementation that compares only some of them
+#: (or only the nonce) lets a different call through as a "duplicate".
+CONFLICTING_FIELDS = (
+    "action",
+    "subject_short",
+    "dispatch_attempt_id",
+    "membership_revision",
+    "membership_digest",
+    "nonce",
+    "chat_id",
+    "telegram_user_id",
+    "message_id",
+)
+
+
+def _envelope_variant(field: str | None) -> dict[str, Any]:
+    """Build one delivery, optionally differing in exactly one field."""
+    from app.services.order_proposals.dispatch_contract import build_membership_digest
+
+    proposal_id = uuid.UUID("22222222-3333-4444-8555-666666666666")
+    attempt_id = uuid.UUID("77777777-8888-4999-8aaa-bbbbbbbbbbbb")
+    action = "op"
+    nonce = "baselinenon"
+    revision = 1
+    chat_id = CHAT_ID
+    user_id = 777
+    message_id = 555
+    digest_members = [{"proposal_id": str(proposal_id), "approval_nonce": nonce}]
+
+    if field == "action":
+        action = "dn"
+    elif field == "subject_short":
+        proposal_id = uuid.UUID("99999999-3333-4444-8555-666666666666")
+        digest_members = [{"proposal_id": str(proposal_id), "approval_nonce": nonce}]
+    elif field == "dispatch_attempt_id":
+        attempt_id = uuid.UUID("cccccccc-8888-4999-8aaa-bbbbbbbbbbbb")
+    elif field == "membership_revision":
+        revision = 2
+    elif field == "membership_digest":
+        digest_members = [{"proposal_id": str(proposal_id), "approval_nonce": "other"}]
+    elif field == "nonce":
+        nonce = "variantnonc"
+        digest_members = [{"proposal_id": str(proposal_id), "approval_nonce": nonce}]
+    elif field == "chat_id":
+        chat_id = CHAT_ID + 1
+    elif field == "telegram_user_id":
+        user_id = 888
+    elif field == "message_id":
+        message_id = 556
+
+    data = build_callback_data(
+        action=action,
+        proposal_id=proposal_id,
+        nonce=nonce,
+        binding=DispatchBinding(
+            attempt_id=attempt_id,
+            card_kind=ApprovalCardKind.MANUAL,
+            membership_revision=revision,
+            membership_digest=build_membership_digest(
+                card_kind=ApprovalCardKind.MANUAL,
+                membership_revision=revision,
+                members=digest_members,
+            ),
+        ),
+    )
+    return {
+        "data": data,
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "message_id": message_id,
+    }
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", CONFLICTING_FIELDS)
 async def test_a_concurrent_conflicting_delivery_loses_and_fails_closed(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
 ) -> None:
-    """R3 B2 — two *different* calls racing on one delivery identity.
+    """R7 B13 — two different calls, one delivery identity, one field apart.
 
-    The sequential mismatch test cannot distinguish a correct implementation
-    from one that pre-reads, sees nothing, inserts, and then converts every
-    ``IntegrityError`` into "duplicate, already queued". Under a real race the
-    loser reaches the unique violation with a genuinely different envelope, and
-    reporting that as a benign duplicate would silently drop an approval click
-    while telling Telegram everything is fine.
+    Two independent sessions meet at the **repository insert boundary**, not
+    merely before ``ingest_callback_update``, so a process-global lock in front
+    of the ingress cannot serialise them into a benign sequence. One wins at
+    the unique index; the loser reaches the conflict path with a genuinely
+    different envelope and must fail closed.
 
-    Whatever the interleaving: exactly one envelope is accepted, exactly one is
-    refused as a conflict, exactly one row exists, and exactly one kick fires.
+    Racing one field at a time is what makes a partial comparison visible: an
+    implementation that checks only the nonce (or only the binding, and not
+    the Telegram identifiers this row persists) passes the other parameters
+    and fails exactly the field it forgot.
     """
+    from app.core.config import settings
+    from app.services.order_proposals.callback_inbox import repository as repo_module
     from app.services.order_proposals.callback_inbox.contracts import (
         build_update_digest,
     )
@@ -299,33 +382,60 @@ async def test_a_concurrent_conflicting_delivery_loses_and_fails_closed(
         ingest_callback_update,
     )
 
-    update_id = 780_000 + uuid.uuid4().int % 10_000
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        f"{CHAT_ID},{CHAT_ID + 1}",
+        raising=False,
+    )
+
+    update_id = 790_000 + uuid.uuid4().int % 10_000
     callback_id = f"cbq-{update_id}"
-    barrier = asyncio.Barrier(2)
     kicked: list[uuid.UUID] = []
 
     async def _enqueue(job_id: uuid.UUID) -> None:
         kicked.append(job_id)
 
-    async def _attempt(nonce: str):
-        update = make_update(
-            data=_valid_callback_data(nonce=nonce),
-            update_id=update_id,
-            callback_id=callback_id,
-        )
-        await barrier.wait()
-        return await ingest_callback_update(update, now=now_kst(), enqueue_fn=_enqueue)
+    # The barrier sits inside the repository, immediately before the INSERT
+    # is flushed, so both sessions are already open and race at PostgreSQL.
+    barrier = asyncio.Barrier(2)
+    original_insert = repo_module.CallbackInboxRepository.insert
 
-    first, second = await asyncio.gather(
-        _attempt("noncealpha1"), _attempt("noncebravo1")
+    async def _barriered_insert(self, **fields: Any):
+        await barrier.wait()
+        return await original_insert(self, **fields)
+
+    monkeypatch.setattr(
+        repo_module.CallbackInboxRepository, "insert", _barriered_insert, raising=True
     )
 
-    accepted = [result for result in (first, second) if result.accepted]
+    async def _attempt(variant: dict[str, Any]):
+        return await ingest_callback_update(
+            make_update(
+                data=variant["data"],
+                update_id=update_id,
+                callback_id=callback_id,
+                chat_id=variant["chat_id"],
+                user_id=variant["user_id"],
+                message_id=variant["message_id"],
+            ),
+            now=now_kst(),
+            enqueue_fn=_enqueue,
+        )
+
+    baseline, variant = await asyncio.gather(
+        _attempt(_envelope_variant(None)), _attempt(_envelope_variant(field))
+    )
+
+    accepted = [result for result in (baseline, variant) if result.accepted]
     conflicted = [
-        result for result in (first, second) if result.reason == "delivery_conflict"
+        result for result in (baseline, variant) if result.reason == "delivery_conflict"
     ]
-    assert len(accepted) == 1, (first, second)
-    assert len(conflicted) == 1, (first, second)
+    assert len(accepted) == 1, (field, baseline, variant)
+    assert len(conflicted) == 1, (
+        f"{field}: a different envelope was not recognised as a conflict "
+        f"({baseline.reason} / {variant.reason})"
+    )
 
     winner = accepted[0]
     assert winner.job_id is not None
@@ -335,19 +445,70 @@ async def test_a_concurrent_conflicting_delivery_loses_and_fails_closed(
 
     loser = conflicted[0]
     assert loser.accepted is False
-    assert loser.duplicate is False, "a different envelope is not a duplicate"
-    assert loser.job_id is None, "a refused delivery must not name the winner's job"
+    assert loser.duplicate is False, f"{field}: a different envelope is not a duplicate"
+    assert loser.job_id is None
     assert loser.enqueued is False
 
-    assert kicked == [winner.job_id], kicked
+    assert kicked == [winner.job_id], (field, kicked)
     digest = build_update_digest(update_id=update_id, callback_query_id=callback_id)
     assert await _count_rows(digest) == 1
 
-    # Exactly one authority row, and it is the winner's envelope untouched.
-    row = await load_job(winner.job_id)
-    assert row is not None
-    assert row.nonce in {"noncealpha1", "noncebravo1"}
-    assert row.state == "pending"
+
+@pytest.mark.asyncio
+async def test_an_identical_concurrent_redelivery_is_still_a_duplicate(
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half: conflict handling must not reject a genuine retry."""
+    from app.services.order_proposals.callback_inbox import repository as repo_module
+    from app.services.order_proposals.callback_inbox.ingress import (
+        ingest_callback_update,
+    )
+
+    update_id = 795_000 + uuid.uuid4().int % 10_000
+    callback_id = f"cbq-{update_id}"
+    kicked: list[uuid.UUID] = []
+
+    async def _enqueue(job_id: uuid.UUID) -> None:
+        kicked.append(job_id)
+
+    barrier = asyncio.Barrier(2)
+    original_insert = repo_module.CallbackInboxRepository.insert
+
+    async def _barriered_insert(self, **fields: Any):
+        await barrier.wait()
+        return await original_insert(self, **fields)
+
+    monkeypatch.setattr(
+        repo_module.CallbackInboxRepository, "insert", _barriered_insert, raising=True
+    )
+
+    variant = _envelope_variant(None)
+
+    async def _attempt():
+        return await ingest_callback_update(
+            make_update(
+                data=variant["data"],
+                update_id=update_id,
+                callback_id=callback_id,
+                chat_id=variant["chat_id"],
+                user_id=variant["user_id"],
+                message_id=variant["message_id"],
+            ),
+            now=now_kst(),
+            enqueue_fn=_enqueue,
+        )
+
+    first, second = await asyncio.gather(_attempt(), _attempt())
+    job_ids = {result.job_id for result in (first, second) if result.job_id}
+    assert len(job_ids) == 1
+    job_id = job_ids.pop()
+    inbox_cleanup.append(job_id)
+
+    assert {result.reason for result in (first, second)} == {"queued", "duplicate"}
+    assert all(result.accepted for result in (first, second))
+    assert kicked == [job_id]
 
 
 @pytest.mark.asyncio
@@ -629,3 +790,305 @@ async def test_an_update_without_any_delivery_identity_is_refused(
     )
     assert result.accepted is False
     assert result.reason == "no_delivery_identity"
+
+
+# ---------------------------------------------------------------------------
+# R11 — the equality projection itself
+# ---------------------------------------------------------------------------
+
+#: The exact ten fields ingress persists. Equality must cover all of them.
+PERSISTED_ENVELOPE_FIELDS = (
+    "callback_query_id",
+    "chat_id",
+    "message_id",
+    "telegram_user_id",
+    "action",
+    "subject_short",
+    "dispatch_attempt_id",
+    "membership_revision",
+    "membership_digest",
+    "nonce",
+)
+
+
+@pytest.mark.unit
+def test_equality_and_insert_share_one_projection() -> None:
+    """R11 — drift between "what we store" and "what we compare" is the bug.
+
+    ``callback_query_id`` cannot be raced through the concurrent test because
+    changing it changes the delivery digest, so there is no conflict to have.
+    That is exactly why the projection is pinned here directly: it is the one
+    field whose coverage the race cannot demonstrate.
+    """
+    from app.services.order_proposals.callback_inbox.ingress import (
+        normalized_envelope_projection,
+    )
+    from app.services.order_proposals.telegram_callback import (
+        normalize_callback_update,
+    )
+
+    variant = _envelope_variant(None)
+    normalized = normalize_callback_update(
+        make_update(
+            data=variant["data"],
+            update_id=1,
+            callback_id="cbq-projection",
+            chat_id=variant["chat_id"],
+            user_id=variant["user_id"],
+            message_id=variant["message_id"],
+        )
+    )
+    projection = normalized_envelope_projection(normalized)
+    assert set(projection) == set(PERSISTED_ENVELOPE_FIELDS), sorted(projection)
+
+    # The projection is what a stored row is compared against, field for field.
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+
+    for field in PERSISTED_ENVELOPE_FIELDS:
+        assert field in TelegramCallbackInboxJob.__table__.columns, field
+
+    # Normalisation matches the insert exactly: str-or-None, never int.
+    assert projection["telegram_user_id"] == str(variant["user_id"])
+    assert projection["chat_id"] == str(variant["chat_id"])
+    assert projection["callback_query_id"] == "cbq-projection"
+    assert projection["message_id"] == variant["message_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", PERSISTED_ENVELOPE_FIELDS)
+async def test_matches_rejects_a_row_differing_in_any_single_field(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], field: str
+) -> None:
+    """R11 — one-field-at-a-time over all ten, including the digest-bound one."""
+    from app.services.order_proposals.callback_inbox.ingress import (
+        envelope_matches_row,
+    )
+    from app.services.order_proposals.telegram_callback import (
+        normalize_callback_update,
+    )
+
+    baseline = _envelope_variant(None)
+    normalized = normalize_callback_update(
+        make_update(
+            data=baseline["data"],
+            update_id=1,
+            callback_id="cbq-base",
+            chat_id=baseline["chat_id"],
+            user_id=baseline["user_id"],
+            message_id=baseline["message_id"],
+        )
+    )
+
+    class _Row:
+        pass
+
+    row = _Row()
+    from app.services.order_proposals.callback_inbox.ingress import (
+        normalized_envelope_projection,
+    )
+
+    projection = normalized_envelope_projection(normalized)
+    for key, value in projection.items():
+        setattr(row, key, value)
+    assert envelope_matches_row(row, normalized) is True, "baseline must match"
+
+    # Perturb exactly one field.
+    current = getattr(row, field)
+    if field == "message_id":
+        setattr(row, field, (current or 0) + 1)
+    elif field == "membership_revision":
+        setattr(row, field, (current or 0) + 1)
+    elif field == "dispatch_attempt_id":
+        setattr(row, field, uuid.uuid4())
+    else:
+        setattr(row, field, f"{current}-different")
+    assert envelope_matches_row(row, normalized) is False, (
+        f"a row differing in {field!r} was treated as the same call"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_redelivery_landing_on_a_terminal_row_is_a_benign_duplicate(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R11 — after the scrub, equality is deliberately no longer decidable.
+
+    A terminal row has all ten equality fields NULL, so an exact redelivery and
+    a tampered one are indistinguishable. Rather than retain a reconstructible
+    binding fingerprint to tell them apart -- which would undo the privacy
+    contract the scrub exists for -- a terminal digest hit is treated as a
+    benign duplicate: acknowledged, never rehydrated, never queued.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        build_update_digest,
+    )
+    from app.services.order_proposals.callback_inbox.ingress import (
+        ingest_callback_update,
+    )
+
+    update_id = 798_000 + uuid.uuid4().int % 10_000
+    callback_id = f"cbq-{update_id}"
+    kicked: list[uuid.UUID] = []
+
+    async def _enqueue(job_id: uuid.UUID) -> None:
+        kicked.append(job_id)
+
+    baseline = _envelope_variant(None)
+    first = await ingest_callback_update(
+        make_update(
+            data=baseline["data"],
+            update_id=update_id,
+            callback_id=callback_id,
+            chat_id=baseline["chat_id"],
+            user_id=baseline["user_id"],
+            message_id=baseline["message_id"],
+        ),
+        now=now_kst(),
+        enqueue_fn=_enqueue,
+    )
+    assert first.job_id is not None
+    inbox_cleanup.append(first.job_id)
+    assert kicked == [first.job_id]
+
+    # Drive it to a real terminal state, which scrubs all ten fields.
+    from app.services.order_proposals.callback_inbox.worker import process_callback_job
+
+    async def _handler(normalized, **kwargs):
+        return {"handled": False, "reason": "proposal_not_found"}
+
+    assert (await process_callback_job(first.job_id, handler=_handler))[
+        "status"
+    ] == "discarded"
+    row = await load_job(first.job_id)
+    assert row is not None and row.state == "discarded"
+    assert row.nonce is None and row.chat_id is None
+
+    for variant in (_envelope_variant(None), _envelope_variant("nonce")):
+        again = await ingest_callback_update(
+            make_update(
+                data=variant["data"],
+                update_id=update_id,
+                callback_id=callback_id,
+                chat_id=variant["chat_id"],
+                user_id=variant["user_id"],
+                message_id=variant["message_id"],
+            ),
+            now=now_kst(),
+            enqueue_fn=_enqueue,
+        )
+        assert again.accepted is True
+        assert again.duplicate is True
+        assert again.reason == "duplicate"
+        assert again.enqueued is False, "a terminal redelivery was re-queued"
+
+    # Nothing was rehydrated: the row is still terminal and still scrubbed.
+    final = await load_job(first.job_id)
+    assert final is not None
+    assert final.state == "discarded"
+    assert final.nonce is None and final.chat_id is None
+    assert kicked == [first.job_id]
+    digest = build_update_digest(update_id=update_id, callback_query_id=callback_id)
+    assert await _count_rows(digest) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_conflict_seam_really_is_two_backends_waiting_on_the_index(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
+) -> None:
+    """R11 — the loser blocks on PostgreSQL's unique index, not on Python.
+
+    A holds its INSERT open after the real flush; B then flushes the same
+    delivery digest and must *not* complete until A commits, because that is
+    what a unique index does. The two are on distinct backends, proved by
+    ``pg_backend_pid()``.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    digest = uuid.uuid4().hex * 2
+    pids: list[int] = []
+
+    def _row_fields(nonce: str) -> dict[str, Any]:
+        return {
+            "update_digest": digest,
+            "now": now_kst(),
+            "callback_query_id": "cbq-seam",
+            "chat_id": str(CHAT_ID),
+            "message_id": 555,
+            "telegram_user_id": "777",
+            "action": "op",
+            "subject_short": "0123abcd",
+            "dispatch_attempt_id": uuid.uuid4(),
+            "membership_revision": 1,
+            "membership_digest": "abcdefghijkl",
+            "nonce": nonce,
+        }
+
+    a_flushed = asyncio.Event()
+    a_may_commit = asyncio.Event()
+    b_finished = asyncio.Event()
+
+    async def _writer_a() -> uuid.UUID:
+        async with AsyncSessionLocal() as session:
+            pids.append(
+                int(
+                    (
+                        await session.execute(text("SELECT pg_backend_pid()"))
+                    ).scalar_one()
+                )
+            )
+            row = await CallbackInboxService(session).enqueue(
+                **_row_fields("aaaaaaaaaaa")
+            )
+            job_id = row.job_id
+            a_flushed.set()
+            await a_may_commit.wait()
+            await session.commit()
+            return job_id
+
+    async def _writer_b() -> bool:
+        async with AsyncSessionLocal() as session:
+            pids.append(
+                int(
+                    (
+                        await session.execute(text("SELECT pg_backend_pid()"))
+                    ).scalar_one()
+                )
+            )
+            try:
+                await CallbackInboxService(session).enqueue(
+                    **_row_fields("bbbbbbbbbbb")
+                )
+                await session.commit()
+                return True
+            except IntegrityError:
+                await session.rollback()
+                return False
+            finally:
+                b_finished.set()
+
+    task_a = asyncio.create_task(_writer_a())
+    await asyncio.wait_for(a_flushed.wait(), timeout=15)
+    task_b = asyncio.create_task(_writer_b())
+
+    # B is now waiting on the index. Give it real time to prove it is stuck.
+    await asyncio.sleep(0.3)
+    assert not b_finished.is_set(), "B did not block on the unique index"
+
+    a_may_commit.set()
+    job_id = await task_a
+    inbox_cleanup.append(job_id)
+    b_won = await asyncio.wait_for(task_b, timeout=15)
+
+    assert b_won is False, "both writers committed the same delivery digest"
+    assert len(set(pids)) == 2, f"the two writers shared a backend: {pids}"
+
+    # The winner is readable from an independent session, and it is A's.
+    async with AsyncSessionLocal() as session:
+        stored = await CallbackInboxService(session).get_by_update_digest(digest)
+        assert stored is not None
+        assert stored.job_id == job_id
+        assert stored.nonce == "aaaaaaaaaaa"
+    assert await _count_rows(digest) == 1
