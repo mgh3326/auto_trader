@@ -1304,6 +1304,10 @@ def test_get_quote_description_positive_contract_states_live_price_source():
         "get_quote description must positively state that get_quote itself "
         "is the live-price source"
     )
+    assert "always call get_quote for that" in description, (
+        "get_quote description must literally state that get_quote is the "
+        "thing to call for a live price"
+    )
 
 
 def test_route_request_buy_purpose_positive_contract():
@@ -1431,13 +1435,28 @@ def test_mcp_readme_analyze_batch_section_does_not_contradict_snapshot_enrich_sp
     )
 
     section = _heading_section(
-        readme, "`analyze_stock_batch(symbols", "### Snapshot-backed report generation"
+        readme,
+        "`analyze_stock_batch(symbols",
+        "### Snapshot-backed report generation",
     )
-    assert "screen_stocks_enrich" in section or "quick=false" in section.lower(), (
+    lowered = section.lower()
+
+    assert "on that page's symbols" not in lowered, (
+        "screen_stocks_enrich has no `symbols` parameter — it reruns the "
+        "same preset/filter/pagination query, it does not take a page's "
+        "symbol list as input; the README must not describe a call shape "
+        "the tool doesn't support"
+    )
+    assert "screen_stocks_enrich" in section, (
         "the follow-up-after-snapshot guidance must point at "
-        "screen_stocks_enrich or an explicit quick=False call, not imply "
-        "the DB-only snapshot already carries consensus/RSI"
+        "screen_stocks_enrich, not imply the DB-only snapshot already "
+        "carries consensus/RSI"
     )
+    assert "same preset" in lowered, (
+        "must describe the executable contract: screen_stocks_enrich takes "
+        "the same preset/filter/pagination inputs as screen_stocks_snapshot"
+    )
+    assert "pagination" in lowered
 
 
 def test_mcp_readme_screen_stocks_enrich_section_positively_owns_live_holdings_and_consensus():
@@ -1445,7 +1464,7 @@ def test_mcp_readme_screen_stocks_enrich_section_positively_owns_live_holdings_a
     section = _heading_section(
         readme,
         "- `screen_stocks_enrich(preset=None",
-        "### Snapshot-backed report generation",
+        "- `get_top_stocks(market=",
     )
     lowered = section.lower()
     assert "live kis holdings" in lowered
@@ -1492,7 +1511,14 @@ def test_analysis_registration_include_position_has_no_effect_for_any_quick_valu
         "must not imply quick=False attaches position — analyze_stock_batch "
         "never attaches a position field for any quick value"
     )
-    assert "no effect" in description or "has no effect" in description
+    assert "any quick value" in description, (
+        "must positively state the no-effect claim covers ANY quick value, "
+        "not just quick=True"
+    )
+    assert "never attaches a position field" in description, (
+        "must positively state analyze_stock_batch never attaches a "
+        "position field at all"
+    )
     assert "get_holdings" in description, "must point position lookups at get_holdings"
 
 
@@ -1504,9 +1530,18 @@ def test_mcp_readme_include_position_note_has_no_effect_for_any_quick_value():
         "### Snapshot-backed report generation",
     )
     lowered = section.lower()
+    normalized = re.sub(r"[`\s]+", " ", lowered)
 
     assert "ignored in quick mode" not in lowered, (
         "must not imply quick=False attaches position — analyze_stock_batch "
         "never attaches a position field for any quick value"
+    )
+    assert "any quick value" in normalized, (
+        "must positively state the no-effect claim covers ANY quick value, "
+        "not just quick=True"
+    )
+    assert "never attaches a position field" in normalized, (
+        "must positively state analyze_stock_batch never attaches a "
+        "position field at all"
     )
     assert "get_holdings" in section
