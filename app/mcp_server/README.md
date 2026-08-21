@@ -251,28 +251,30 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True, decision_history_account_mode=None)`
   - Batch analysis for up to 10 symbols. `quick=True` is the default DB-only fast projection;
     `quick=False` is the explicit full/deep analysis path.
-  - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
-    rows now expose consensus and RSI context directly.
-  - Keep using it when support/resistance or full `quick=False` analysis is needed
-    for symbols outside the snapshot result path.
+  - `screen_stocks_snapshot` is DB-only (ROB-1309) and never returns consensus/RSI
+    inline. For analyst consensus/sector labels on a snapshot page, call
+    `screen_stocks_enrich` on that page's symbols instead; for RSI/support/resistance
+    or full `quick=False` analysis on individual symbols, call `analyze_stock_batch`.
   - Quick returns only the allowlisted projection: symbol, market_type, source,
     current_price, latest OHLCV, rsi_14, supports (top 3), resistances (top 3),
     and the freshness envelope. It also preserves compact `decision_history`
     and `earnings` meaning through set-based DB read models. It makes zero HTTP
     requests and reads all requested data in at most 12 DB executions per batch.
     The quick path does not run news, profile, provider earnings, consensus,
-    recommendation, or holdings work; `include_position` is accepted for
-    compatibility and ignored in quick mode.
+    recommendation, or holdings work.
   - **`current_price` is NOT live.** It is the close of the most recent
     CLOSED daily candle (`data_state="stale"`,
     `data_state_reason="db_only_projection"`). Call `get_quote` for a live
     price or live session/NXT-tradability state.
+  - `include_position` is accepted for compatibility but has no effect for
+    any `quick` value — `analyze_stock_batch` never attaches a `position`
+    field, quick or full. Use `get_holdings` for per-account positions.
   - **Removed from the quick contract (PR #1915, deep/`quick=False`-only now):**
     `nxt_tradable`/`nxt_tradable_source`/`nxt_tradable_asof`/`nxt_tradable_stale`
     (ROB-668), `price_source`/`session`/`session_state`/`krx_prev_close`/
     `change_pct` (ROB-725/ROB-888), `venue`/`quote_asof`/`delayed` (quote
     provenance), `price_data_state` (ROB-1048), `fresh_artifact_exists`
-    (ROB-648), and `consensus`/`recommendation`/`position` (holdings). Use
+    (ROB-648), and `consensus`/`recommendation` (holdings). Use
     `get_quote` for the live-price/session-provenance fields.
   - Use `quick=False` when consensus, recommendation, news, profile, provider
     earnings,

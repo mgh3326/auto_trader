@@ -323,6 +323,7 @@ lanes:
     steps:
       - tool: toss_get_positions
       - tool: analyze_stock_batch
+        args: {quick: false}
       - policy_tier: sell.breakeven_reserve_trim
         advisory: true
         priority_source: decision_rules.sell.trim_preplace.tie_breaks.tier_priority
@@ -402,7 +403,8 @@ lanes:
     screen:
       - tool: get_disclosures         # rights-issue / overhang filter
     rank_and_execute:
-      - tool: analyze_stock_batch     # deep confirm on ranked survivors (quick=false)
+      - tool: analyze_stock_batch     # deep confirm on ranked survivors
+        args: {quick: false}
       - tool: toss_place_order        # winners only, support-line limit
         confirm: true
 ```
