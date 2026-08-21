@@ -65,7 +65,8 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
     # Small and positive so it lands in ``pg_locks`` as classid 0 / objid key.
     key = int(uuid.uuid4().int % 1_000_000_000) + 1
 
-    observer = await db.engine.connect()
+    real_engine = db.engine
+    observer = await real_engine.connect()
     captured: list = []
 
     class _Capturing:
@@ -75,10 +76,13 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
         exposes ``connection_for_test`` for that -- but that method exists
         only for tests and is on the list for removal (R31). Capturing it at
         the engine keeps this test independent of that decision.
+
+        Bound to ``real_engine`` rather than reading ``db.engine`` at call
+        time, which would find this class and recurse.
         """
 
         async def connect(self):
-            connection = await db.engine.connect()
+            connection = await real_engine.connect()
             captured.append(connection)
             return connection
 
