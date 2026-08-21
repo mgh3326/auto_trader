@@ -4,7 +4,8 @@ Everything the worker reports about a job goes through here, so there is one
 place to check when asking "can a nonce reach Sentry". The answer is
 structural rather than careful: the builders below accept only the fields
 listed in :data:`SAFE_SPAN_KEYS`, and the one free-ish value (``outcome``) is
-reduced to a slug by :func:`normalize_outcome` before it can be attached.
+projected to a closed category by :func:`normalize_outcome` before it can be
+attached.
 
 ROB-1305's whole-event scrubber still runs downstream; this is the layer that
 means it never has anything to scrub.

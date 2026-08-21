@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import uuid
 from enum import StrEnum
 
@@ -224,29 +223,125 @@ TERMINAL_STATE_STATUS: dict[str, str] = {
 
 
 # --------------------------------------------------------------------------
-# Outcome labels
+# Outcome categories
 # --------------------------------------------------------------------------
 
-OUTCOME_LABEL_SQL_REGEX = "^[a-z0-9_]{1,64}$"
-OUTCOME_LABEL_PATTERN = re.compile(r"[a-z0-9_]{1,64}")
 UNCLASSIFIED_OUTCOME = "unclassified"
+
+#: The only labels allowed to survive a terminal scrub. This is deliberately a
+#: closed display vocabulary, not a shape rule: a syntactically-valid callback
+#: reason can carry authority material just as readily as an invalid one.
+#: Keep this inventory aligned with the callback-core reason audit.
+OUTCOME_CATEGORIES: tuple[str, ...] = (
+    # decisions / successful completion
+    "approved",
+    "approved_with_window_block",
+    "denied",
+    "needs_reconfirm",
+    "batch_approved",
+    "auto_veto_cancelled",
+    "auto_veto_filled",
+    "auto_veto_failed",
+    "auto_veto_unconfirmed",
+    "loss_cut_confirmation_required",
+    # window / callback core
+    "expired",
+    "invalid_valid_until",
+    "defer_session_closed",
+    "calendar_unknown",
+    "no_executable_window",
+    "approval_window_blocked",
+    "proposal_not_found",
+    "chat_not_allowed",
+    "lease_held",
+    "nonce_mismatch",
+    "nonce_replay",
+    "internal_error",
+    # loss-cut confirmation
+    "loss_cut_confirmation_missing",
+    "loss_cut_confirmation_invalid",
+    "loss_cut_confirmation_expired",
+    "loss_cut_confirmation_principal_mismatch",
+    "loss_cut_confirmation_binding_mismatch",
+    "loss_cut_confirmation_dispatch_failed",
+    # published binding / dispatch
+    "approval_callback_subject_mismatch",
+    "approval_dispatch_state_invalid",
+    "approval_dispatch_card_kind_invalid",
+    "approval_dispatch_pending",
+    "approval_dispatch_sent_superseded",
+    "approval_dispatch_failed",
+    "approval_dispatch_partial_failed",
+    "approval_dispatch_failed_superseded",
+    "approval_dispatch_attempt_mismatch",
+    "approval_membership_revision_mismatch",
+    "approval_membership_digest_mismatch",
+    "approval_card_action_mismatch",
+    "auto_veto_not_available",
+    "auto_veto_nonce_requires_vc",
+    # batch
+    "batch_window_blocked",
+    "approval_batch_not_found",
+    "approval_batch_too_small",
+    "approval_batch_expired",
+    "approval_batch_chat_mismatch",
+    "approval_batch_nonce_mismatch",
+    "approval_batch_nonce_replay",
+    "approval_batch_member_snapshot_invalid",
+    "approval_batch_membership_changed",
+    "approval_batch_membership_digest_mismatch",
+    # Explicit projection families, followed by the safe fallback.
+    "proposal_superseded_by",
+    "proposal_terminal",
+    "approval_window",
+    "approval_batch_member_stale",
+    UNCLASSIFIED_OUTCOME,
+)
+
+#: Raw ``prefix:payload`` families that preserve only their fixed prefix. The
+#: suffix never reaches a terminal row, log record, or Sentry field.
+PAYLOAD_OUTCOME_CATEGORIES: tuple[str, ...] = (
+    "proposal_superseded_by",
+    "proposal_terminal",
+    "approval_window",
+    "approval_batch_member_stale",
+)
+
+_OUTCOME_CATEGORY_SET = frozenset(OUTCOME_CATEGORIES)
+_PAYLOAD_OUTCOME_CATEGORY_SET = frozenset(PAYLOAD_OUTCOME_CATEGORIES)
 
 
 def normalize_outcome(reason: object) -> str | None:
-    """Reduce a callback-core reason to a storable slug.
+    """Project a raw callback-core reason onto one closed safe category.
 
-    The core's reasons are stable identifiers, but some carry a payload
-    (``proposal_superseded_by:<uuid>``, ``approval_window:EXPIRED:<detail>``).
-    Only the leading identifier is kept, so a terminal row can never hold
-    anything reconstructable, and anything that is not a clean slug degrades
-    to ``unclassified`` rather than being stored verbatim.
+    ``classify_verdict`` first derives state and retry authority from the raw
+    typed reason. This post-classification boundary then keeps only a display
+    category. Four audited ``prefix:payload`` families project to their fixed
+    prefix; every other value, including an otherwise-valid lowercase slug,
+    becomes ``unclassified``.
+
+    Only an exact built-in ``str`` or a genuine ``StrEnum`` is accepted.
+    Arbitrary objects and ``str`` subclasses are never coerced or dispatched:
+    their ``str``/``repr`` or overridden string methods could itself carry
+    authority material.
     """
     if reason is None:
         return None
-    label = str(reason).split(":", 1)[0].strip().lower()
-    if not OUTCOME_LABEL_PATTERN.fullmatch(label):
+    if type(reason) is str:
+        raw_reason = reason
+    elif isinstance(reason, StrEnum):
+        raw_reason = reason.value
+    else:
         return UNCLASSIFIED_OUTCOME
-    return label
+    if type(raw_reason) is not str:
+        return UNCLASSIFIED_OUTCOME
+    label = str.lower(str.strip(raw_reason))
+    if label in _OUTCOME_CATEGORY_SET:
+        return label
+    category, separator, _payload = label.partition(":")
+    if separator and category in _PAYLOAD_OUTCOME_CATEGORY_SET:
+        return category
+    return UNCLASSIFIED_OUTCOME
 
 
 # --------------------------------------------------------------------------
@@ -346,8 +441,8 @@ __all__ = [
     "INBOX_STATES",
     "MAX_ATTEMPTS",
     "IGNORED_HANDLER_RETRY_KEYS",
-    "OUTCOME_LABEL_PATTERN",
-    "OUTCOME_LABEL_SQL_REGEX",
+    "OUTCOME_CATEGORIES",
+    "PAYLOAD_OUTCOME_CATEGORIES",
     "PROCESSING_STALE_AFTER_SECONDS",
     "RECOVERY_CLAIMABLE_STATES",
     "TIER_EXHAUSTED",

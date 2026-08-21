@@ -257,8 +257,10 @@ operand can be SQL `UNKNOWN` — which a CHECK treats as satisfied, and is
 exactly how a scrub constraint silently stops constraining anything.
 
 What survives is `update_digest` (one-way, cannot reconstruct what it was
-built from), a slug `outcome` label constrained to `^[a-z0-9_]{1,64}$`, and a
-closed-vocabulary `error_class`.
+built from), one `outcome` from a closed category vocabulary, and a
+closed-vocabulary `error_class`. Unknown raw reasons are retained only as the
+fixed `unclassified` category; no regex-valid arbitrary slug or payload suffix
+can survive in the row, logs, or Sentry.
 
 **While a job is pending or processing the row does hold minimal PII** — chat
 id, user id, and the single-use nonce. That is unavoidable: the worker cannot

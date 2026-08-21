@@ -651,7 +651,8 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
 컬럼 자체가 없음). terminal 도달 즉시 권한/PII 10개 컬럼 NULL — DB CHECK 2개가 강제
 (`terminal_scrubbed` / `active_reconstructable`, 둘 다 `CASE WHEN … THEN … ELSE true END`
 + `IS NULL`/`IS NOT NULL` 이라 SQL `UNKNOWN` 이 통과 못 함). 살아남는 건 `update_digest`
-(도메인 분리 일방향 dedupe tombstone) · slug `outcome` · 닫힌 `error_class` 뿐.
+(도메인 분리 일방향 dedupe tombstone) · closed-category `outcome`(unknown raw reason은
+고정 `unclassified`) · 닫힌 `error_class` 뿐.
 Redis 에는 job UUID 만 들어가고 `{status, job_id}` 만 나온다.
 
 🔴 **advisory lock 은 브로커 fencing 이 아니고**, PostgreSQL 재시작을 가로지르는 분산

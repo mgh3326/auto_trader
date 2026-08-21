@@ -56,6 +56,12 @@ The two constraints that carry the safety
     row would occupy "a worker owns this" forever while being invisible to the
     sweep. ``pending`` and ``retry_wait`` have not started and are unaffected.
 
+``ck_telegram_callback_inbox_outcome``
+    The terminal display label is a closed category, not a regex-shaped raw
+    reason. Unknown callback reasons are projected to ``unclassified`` before
+    persistence; this CHECK rejects a raw unknown slug or payload if a caller
+    tries to bypass that boundary.
+
 Both are ``CASE WHEN ... THEN ... ELSE true END`` over ``IS NULL`` /
 ``IS NOT NULL`` predicates. Written as a bare ``state <> '...' OR col IS NULL``
 they would evaluate to SQL ``UNKNOWN`` if any operand were NULL, and a CHECK
@@ -94,6 +100,71 @@ depends_on: str | Sequence[str] | None = None
 _TABLE = "telegram_callback_inbox"
 _SCHEMA = "review"
 
+# This migration is unmerged, so R32 changes its create-table CHECK directly.
+# Keep this literal snapshot in behavioural parity with OUTCOME_CATEGORIES in
+# callback_inbox.contracts; the live parent->head chain test exercises both.
+_OUTCOME_CATEGORIES: tuple[str, ...] = (
+    "approved",
+    "approved_with_window_block",
+    "denied",
+    "needs_reconfirm",
+    "batch_approved",
+    "auto_veto_cancelled",
+    "auto_veto_filled",
+    "auto_veto_failed",
+    "auto_veto_unconfirmed",
+    "loss_cut_confirmation_required",
+    "expired",
+    "invalid_valid_until",
+    "defer_session_closed",
+    "calendar_unknown",
+    "no_executable_window",
+    "approval_window_blocked",
+    "proposal_not_found",
+    "chat_not_allowed",
+    "lease_held",
+    "nonce_mismatch",
+    "nonce_replay",
+    "internal_error",
+    "loss_cut_confirmation_missing",
+    "loss_cut_confirmation_invalid",
+    "loss_cut_confirmation_expired",
+    "loss_cut_confirmation_principal_mismatch",
+    "loss_cut_confirmation_binding_mismatch",
+    "loss_cut_confirmation_dispatch_failed",
+    "approval_callback_subject_mismatch",
+    "approval_dispatch_state_invalid",
+    "approval_dispatch_card_kind_invalid",
+    "approval_dispatch_pending",
+    "approval_dispatch_sent_superseded",
+    "approval_dispatch_failed",
+    "approval_dispatch_partial_failed",
+    "approval_dispatch_failed_superseded",
+    "approval_dispatch_attempt_mismatch",
+    "approval_membership_revision_mismatch",
+    "approval_membership_digest_mismatch",
+    "approval_card_action_mismatch",
+    "auto_veto_not_available",
+    "auto_veto_nonce_requires_vc",
+    "batch_window_blocked",
+    "approval_batch_not_found",
+    "approval_batch_too_small",
+    "approval_batch_expired",
+    "approval_batch_chat_mismatch",
+    "approval_batch_nonce_mismatch",
+    "approval_batch_nonce_replay",
+    "approval_batch_member_snapshot_invalid",
+    "approval_batch_membership_changed",
+    "approval_batch_membership_digest_mismatch",
+    "proposal_superseded_by",
+    "proposal_terminal",
+    "approval_window",
+    "approval_batch_member_stale",
+    "unclassified",
+)
+_OUTCOME_CATEGORIES_SQL = ",".join(f"'{category}'" for category in _OUTCOME_CATEGORIES)
+_OUTCOME_CHECK = f"outcome IS NULL OR outcome IN ({_OUTCOME_CATEGORIES_SQL})"
+
 _TERMINAL_SCRUBBED = (
     "CASE WHEN state IN ('dead_letter','discarded','succeeded') THEN "
     "callback_query_id IS NULL AND chat_id IS NULL AND message_id IS NULL "
@@ -119,8 +190,7 @@ _RETRY_BUDGET = (
     # Both operands are NOT NULL columns, so there is no UNKNOWN loophole
     # here -- unlike the vocabulary check above, which needed
     # ``IS NOT DISTINCT FROM`` for exactly that reason.
-    "CASE WHEN state = 'retry_wait' "
-    "THEN attempt_count < max_attempts ELSE true END"
+    "CASE WHEN state = 'retry_wait' THEN attempt_count < max_attempts ELSE true END"
 )
 
 _RETRY_VOCABULARY = (
@@ -219,7 +289,7 @@ def upgrade() -> None:
             name=op.f("ck_telegram_callback_inbox_action"),
         ),
         sa.CheckConstraint(
-            "outcome IS NULL OR outcome ~ '^[a-z0-9_]{1,64}$'",
+            _OUTCOME_CHECK,
             name=op.f("ck_telegram_callback_inbox_outcome"),
         ),
         sa.CheckConstraint(
@@ -229,8 +299,7 @@ def upgrade() -> None:
             name=op.f("ck_telegram_callback_inbox_error_class"),
         ),
         sa.CheckConstraint(
-            "CASE WHEN state = 'processing' THEN started_at IS NOT NULL "
-            "ELSE true END",
+            "CASE WHEN state = 'processing' THEN started_at IS NOT NULL ELSE true END",
             name=op.f("ck_telegram_callback_inbox_processing_started_at"),
         ),
         sa.CheckConstraint(

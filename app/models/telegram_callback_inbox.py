@@ -27,8 +27,9 @@ slip past the constraint.
 
 What survives a terminal scrub is ``update_digest`` -- a one-way,
 domain-separated identity digest that can dedupe a re-delivery but cannot
-reconstruct the authority it was derived from -- plus a slug outcome label and
-a closed-vocabulary error class.
+reconstruct the authority it was derived from -- plus one closed outcome
+category (with ``unclassified`` as the only fallback) and a closed-vocabulary
+error class.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ from app.services.order_proposals.callback_inbox.contracts import (
     ERROR_CLASSES,
     INBOX_STATES,
     MAX_ATTEMPTS,
-    OUTCOME_LABEL_SQL_REGEX,
+    OUTCOME_CATEGORIES,
     SCRUBBED_ON_TERMINAL,
     TERMINAL_STATES,
     _sql_string_list,
@@ -65,6 +66,7 @@ _STATES_SQL = _sql_string_list(INBOX_STATES)
 _TERMINAL_SQL = _sql_string_list(sorted(TERMINAL_STATES))
 _ACTIVE_SQL = _sql_string_list(sorted(set(INBOX_STATES) - TERMINAL_STATES))
 _ERROR_CLASSES_SQL = _sql_string_list(sorted(ERROR_CLASSES))
+_OUTCOME_CATEGORIES_SQL = _sql_string_list(OUTCOME_CATEGORIES)
 _ACTIONS_SQL = "'op','dn','lc','vc','ba'"
 
 _TERMINAL_SCRUB_SQL = (
@@ -145,7 +147,7 @@ class TelegramCallbackInboxJob(Base):
         CheckConstraint("max_attempts > 0", name="max_attempts"),
         CheckConstraint(f"action IS NULL OR action IN ({_ACTIONS_SQL})", name="action"),
         CheckConstraint(
-            f"outcome IS NULL OR outcome ~ '{OUTCOME_LABEL_SQL_REGEX}'",
+            f"outcome IS NULL OR outcome IN ({_OUTCOME_CATEGORIES_SQL})",
             name="outcome",
         ),
         CheckConstraint(
