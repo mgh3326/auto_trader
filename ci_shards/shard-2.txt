@@ -186,6 +186,7 @@ tests/services/spike_attribution/test_hooks.py
 tests/services/spike_attribution/test_precompute.py
 tests/services/spike_attribution/test_scoring.py
 tests/services/test_account_routing.py
+tests/services/test_alpaca_paper_lab_recovery_contract.py
 tests/services/test_alpaca_paper_ledger_claim.py
 tests/services/test_alpaca_paper_market_evidence.py
 tests/services/test_alpaca_paper_order_application.py

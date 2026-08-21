@@ -25,6 +25,7 @@ tests/jobs/test_analyst_consensus_snapshots_job.py
 tests/jobs/test_kis_market_adapters.py
 tests/jobs/test_news_relevance_judgment.py
 tests/mcp/test_trade_journal_enrich.py
+tests/mcp_server/test_alpaca_paper_lab_automated_boundary.py
 tests/mcp_server/test_analyze_halted_suspect.py
 tests/mcp_server/test_binance_demo_ledger_status_tool.py
 tests/mcp_server/test_investment_report_context_get_description.py
@@ -76,6 +77,7 @@ tests/scripts/b0x/kr/test_ledger_pending_source.py
 tests/scripts/b0x/kr/test_submission_ast_guard.py
 tests/scripts/b0x/test_contract_stamp.py
 tests/scripts/b0x/test_cycle.py
+tests/scripts/b0x/us/test_alpaca_lab_mutation_seam.py
 tests/scripts/b0x/us/test_run_b0x_us_cycle_cli.py
 tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_smoke.py
