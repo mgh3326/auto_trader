@@ -180,7 +180,7 @@ async def test_a_locked_prefix_does_not_starve_a_lost_kick(
     calls: list[uuid.UUID] = []
 
     async def _handler(normalized, **kwargs):
-        calls.append(normalized.callback.proposal_id)
+        calls.append(normalized.callback.subject_short)
         return {"handled": True, "reason": "approved"}
 
     ticks = [
@@ -192,7 +192,8 @@ async def test_a_locked_prefix_does_not_starve_a_lost_kick(
     assert row is not None
     assert row.state == "succeeded", (
         f"the lost kick was never recovered; ticks={[t['statuses'] for t in ticks]}, "
-        f"pending_state={row.state}"
+        f"pending_state={row.state}, error_class={row.error_class}, "
+        f"outcome={row.outcome}"
     )
     assert len(calls) == 1, calls
 
@@ -236,7 +237,7 @@ async def test_contention_costs_a_scan_slot_not_an_execution_slot(
     executed: list[uuid.UUID] = []
 
     async def _handler(normalized, **kwargs):
-        executed.append(normalized.callback.proposal_id)
+        executed.append(normalized.callback.subject_short)
         return {"handled": False, "reason": "proposal_not_found"}
 
     report = await recover_callback_jobs(handler=_handler, limit=limit)
@@ -350,7 +351,7 @@ async def test_fairness_survives_a_fresh_recovery_instance(
     calls: list[Any] = []
 
     async def _handler(normalized, **kwargs):
-        calls.append(normalized.callback.proposal_id)
+        calls.append(normalized.callback.subject_short)
         return {"handled": True, "reason": "approved"}
 
     for _ in range(2):
@@ -395,7 +396,7 @@ async def test_two_concurrent_sweepers_make_progress_without_duplicating(
     calls: list[Any] = []
 
     async def _handler(normalized, **kwargs):
-        calls.append(normalized.callback.proposal_id)
+        calls.append(normalized.callback.subject_short)
         return {"handled": True, "reason": "approved"}
 
     await _asyncio.gather(
@@ -432,3 +433,103 @@ def test_the_sweep_carries_no_process_local_cursor() -> None:
                 f"{module.__name__}.{name} is mutable module state; fairness must "
                 f"come from the database, not from this process"
             )
+
+
+# ---------------------------------------------------------------------------
+# fairness runs both ways
+# ---------------------------------------------------------------------------
+#
+# Putting queued work first fixes the reported starvation and creates its
+# mirror image: if the queued backlog is larger than the scan cap, the stale
+# ``processing`` tier is never reached. Ordering alone cannot satisfy both --
+# whichever tier sorts first starves the other whenever it is big enough --
+# so each tier needs its own bounded share of the scan and of the execution
+# budget, computed from the rows themselves.
+#
+# This case starves the stale tier under *age* ordering too, by making the
+# queued backlog older, so it is a genuine counterexample to both designs.
+
+
+@pytest.mark.asyncio
+async def test_a_queued_backlog_does_not_starve_stale_recovery(
+    _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R29 — a stale row must progress even behind an oversized queue."""
+    import importlib
+
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+    from app.services.order_proposals.callback_inbox.contracts import (
+        recovery_scan_cap,
+    )
+
+    from .conftest import seed_proposal
+
+    limit = 2
+    backlog = recovery_scan_cap(limit) + 5
+    old = now_kst() - timedelta(hours=12)
+
+    # More queued work than one sweep can even look at, and all of it older
+    # than the stale row, so age ordering buries the stale row too.
+    for index in range(backlog):
+        await _queue(inbox_cleanup, received_at=old + timedelta(seconds=index))
+
+    group = await seed_proposal(db_session, nonce="stalefair12", symbol="SFRKR")
+    stale = await _queue(
+        inbox_cleanup,
+        data=proposal_callback_data(group),
+        received_at=now_kst() - timedelta(hours=6),
+    )
+    await _force(
+        stale,
+        state="processing",
+        attempt_count=1,
+        started_at=now_kst() - timedelta(hours=6),
+    )
+
+    async def _handler(normalized, **kwargs):
+        return {"handled": True, "reason": "approved"}
+
+    reports = []
+    for _ in range(2):
+        fresh = importlib.reload(recovery_module)
+        reports.append(await fresh.recover_callback_jobs(handler=_handler, limit=limit))
+
+    row = await load_job(stale)
+    assert row is not None
+    assert row.state == "succeeded", (
+        "the stale row starved behind the queued backlog; "
+        f"statuses={[report['statuses'] for report in reports]}, state={row.state}"
+    )
+
+    # The execution cap still holds on every tick.
+    for report in reports:
+        assert report["claimed"] <= limit, report
+
+
+@pytest.mark.asyncio
+async def test_every_tier_keeps_a_deterministic_age_order(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """Sharing the budget must not make selection arbitrary within a tier."""
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    base = now_kst() - timedelta(hours=9)
+    queued = [
+        await _queue(inbox_cleanup, received_at=base + timedelta(seconds=index))
+        for index in range(4)
+    ]
+
+    async with AsyncSessionLocal() as session:
+        first = await CallbackInboxService(session).claimable_job_ids(
+            now=now_kst(), limit=50
+        )
+        second = await CallbackInboxService(session).claimable_job_ids(
+            now=now_kst(), limit=50
+        )
+        await session.rollback()
+
+    assert first == second, "the same inbox produced two different orders"
+    positions = [first.index(job_id) for job_id in queued]
+    assert positions == sorted(positions), "oldest-first was lost inside the tier"
