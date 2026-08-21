@@ -655,3 +655,127 @@ async def test_a_due_retry_is_claimed_and_runs_exactly_once(
     assert row is not None
     assert row.state == "succeeded", f"a due retry was never claimed: {row.state}"
     assert len(calls) == 1, f"the due retry ran {len(calls)} times"
+
+
+# ---------------------------------------------------------------------------
+# the cap is applied once, and ties are broken the same way every time
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_execution_limit_is_capped_exactly_once(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
+) -> None:
+    """R29 — one number crosses the boundary, and it is the *execution* limit.
+
+    The sweep derived a scan cap and passed *that* down as ``limit``, and the
+    repository then derived a scan cap from it again. Two applications of the
+    same multiplier: a run limit of 2 asks for 10 by contract and fetched 50,
+    and the shipped default of 20 fetched 500. The early break on the
+    execution budget hid it from every test that counted work done.
+    """
+    from app.services.order_proposals.callback_inbox import repository as repo_module
+    from app.services.order_proposals.callback_inbox.recovery import (
+        recover_callback_jobs,
+    )
+
+    seen: list[int] = []
+    original = repo_module.CallbackInboxRepository.claimable_job_ids
+
+    async def _spy(self, **kwargs):
+        seen.append(kwargs["limit"])
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(
+        repo_module.CallbackInboxRepository, "claimable_job_ids", _spy, raising=True
+    )
+
+    await _queue(inbox_cleanup)
+
+    async def _handler(normalized, **kwargs):
+        return {"handled": False, "reason": "proposal_not_found"}
+
+    await recover_callback_jobs(handler=_handler, limit=2)
+
+    assert seen == [2], (
+        f"the repository was handed {seen}, not the execution limit; the scan "
+        f"cap is being applied more than once"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_scan_never_fetches_more_than_the_cap(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], held_locks
+) -> None:
+    """R29 — measured at the database, with nothing to break out early on.
+
+    Every candidate here is lock-contended, so the execution budget is never
+    spent and the loop walks the whole candidate list. ``scanned`` is then the
+    true number of rows the query returned.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        recovery_scan_cap,
+    )
+    from app.services.order_proposals.callback_inbox.recovery import (
+        recover_callback_jobs,
+    )
+
+    limit = 1
+    cap = recovery_scan_cap(limit)
+    stale_at = now_kst() - timedelta(hours=6)
+    for index in range(cap + 3):
+        job_id = await _queue(
+            inbox_cleanup, received_at=stale_at - timedelta(minutes=60 - index)
+        )
+        await _force(job_id, state="processing", attempt_count=1, started_at=stale_at)
+        await held_locks.hold(job_id)
+
+    async def _handler(normalized, **kwargs):  # pragma: no cover - all contended
+        return {"handled": True, "reason": "approved"}
+
+    report = await recover_callback_jobs(handler=_handler, limit=limit)
+
+    assert report["scanned"] <= cap, (
+        f"the scan fetched {report['scanned']} candidates for a cap of {cap}"
+    )
+    assert report["statuses"].get("lock_contended", 0) == report["scanned"], report
+
+
+@pytest.mark.asyncio
+async def test_ties_on_received_at_are_broken_deterministically(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R29 — identical timestamps must not make the order arbitrary.
+
+    Rows arriving in the same instant are ordinary: a burst of clicks, or a
+    backfill. Ordering by ``received_at`` alone leaves PostgreSQL free to
+    return them in any order, and a tier's share of the scan could then hold a
+    different subset every tick -- so a row could be skipped indefinitely
+    without anything looking wrong.
+    """
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    same_instant = now_kst() - timedelta(hours=4)
+    tied = [await _queue(inbox_cleanup) for _ in range(6)]
+    for job_id in tied:
+        await _force(job_id, received_at=same_instant)
+
+    orders = []
+    for _ in range(3):
+        async with AsyncSessionLocal() as session:
+            orders.append(
+                await CallbackInboxService(session).claimable_job_ids(
+                    now=now_kst(), limit=50
+                )
+            )
+            await session.rollback()
+
+    assert orders[0] == orders[1] == orders[2], "tied rows came back in a new order"
+
+    positions = {job_id: orders[0].index(job_id) for job_id in tied}
+    by_position = sorted(positions, key=lambda job_id: positions[job_id])
+    assert by_position == sorted(tied, key=str), (
+        "tied rows are not broken by a stable secondary key"
+    )

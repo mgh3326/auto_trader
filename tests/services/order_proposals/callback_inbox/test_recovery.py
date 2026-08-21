@@ -131,7 +131,10 @@ async def test_recovery_reports_aggregate_backlog_only(
     report = await recover_callback_jobs(handler=_handler)
 
     assert report["status"] == "ok"
-    assert set(report) == {"status", "claimed", "statuses", "backlog"}
+    # ``scanned`` joined the contract in R29: without it there is no way to
+    # tell from outside how much a tick looked at, so the scan cap could not
+    # be observed. Still aggregate-only -- a count, not an identifier.
+    assert set(report) == {"status", "scanned", "claimed", "statuses", "backlog"}
     assert isinstance(report["claimed"], int)
     # Counts by state and one age. No identifiers, no chat, no nonce.
     assert set(report["backlog"]) == {
