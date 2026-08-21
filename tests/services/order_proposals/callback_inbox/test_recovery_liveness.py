@@ -793,11 +793,19 @@ async def test_the_candidate_scan_is_bounded_in_the_database_too(
     """R29 — the tiers must be bounded SELECTs, not a window over the backlog.
 
     Ranking with ``row_number() OVER (PARTITION BY tier ...)`` and filtering
-    on the rank returns a bounded number of rows, but PostgreSQL still has to
-    classify and sort *every* eligible row to compute those ranks. During the
-    outage this sweep exists for -- when the backlog is at its largest -- that
-    is precisely when the work is unbounded. The brief asks for a bounded
-    scan, and rows returned is not what makes it bounded.
+    on the rank classifies and sorts *every* eligible row, in one query, to
+    produce a handful of ids.
+
+    What this test claims is exactly what it checks, and no more: at most
+    three statements, each separately ``LIMIT``ed, and no full-partition
+    ranking. It does **not** claim the database stops reading at the quota.
+    ``EXPLAIN`` on a tier query shows ``Limit -> Sort(received_at, job_id) ->
+    Index Scan using ix_telegram_callback_inbox_state_available``: the
+    predicate uses the index, but the ordering still sorts the eligible set
+    (as a bounded-memory top-N), because no index matches that order. Making
+    the read itself stop early would need an index built for these predicates
+    and this ordering, and that needs its own evidence -- not a claim smuggled
+    into a docstring here.
     """
     from app.services.order_proposals.callback_inbox.contracts import (
         recovery_scan_cap,
