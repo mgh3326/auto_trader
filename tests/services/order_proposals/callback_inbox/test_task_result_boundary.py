@@ -3098,6 +3098,13 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         _raise_generic("test UUID subtype did not retain its base integer storage")
     hostile_storage.calls.clear()
 
+    initialized_hostile = _HostileUUID(str(uuid.uuid4()))
+    initialized_int = uuid.UUID.int.__get__(initialized_hostile, uuid.UUID)
+    initialized_safe = uuid.UUID.is_safe.__get__(initialized_hostile, uuid.UUID)
+    if type(initialized_int) is not int or type(initialized_safe) is not uuid.SafeUUID:
+        _raise_generic("test UUID subtype did not complete normal UUID initialization")
+    initialized_hostile.calls.clear()
+
     # ``uuid.UUID.__new__`` without initialization is an ordinary malformed
     # storage object: the base ``int`` descriptor raises AttributeError.
     malformed_values: tuple[object, ...] = (
@@ -3108,6 +3115,7 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
         poisoned_bool,
         poisoned_subclass,
         hostile_storage,
+        initialized_hostile,
     )
     failures = 0
     for value in malformed_values:
@@ -3125,6 +3133,8 @@ def test_recovery_uuid_materializer_rejects_class_spoofs_and_malformed_storage()
     if hostile_raw_int.calls:
         failures += 1
     if hostile_storage.calls:
+        failures += 1
+    if initialized_hostile.calls:
         failures += 1
     if failures:
         _raise_generic(
