@@ -2623,3 +2623,398 @@ async def test_manual_valuation_warnings_do_not_cross_attribute_sources(
     for message in messages:
         assert "현재가" in message
         assert "Traceback" not in message
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 (B1 / B4) — manual quote-failure isolation, attribution, and
+# non-Toss broker identity. Fake/local only; no broker, credential, or
+# network access.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_isolates_kr_quote_exception_from_healthy_us_pricing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B1.
+
+    A raised ``fetch_kr_prices`` exception must not fall through to the
+    reader's outer catch-all: the KR holding must survive unpriced under its
+    real source, and a healthy concurrent US fetch must still value the US
+    holding. Previously any quote-fetch exception discarded every account and
+    holding and reported a hardcoded ``toss_manual`` source.
+    """
+
+    broker_toss = SimpleNamespace(
+        id=901, broker_type="toss", account_name="토스 수동계좌"
+    )
+    broker_kis = SimpleNamespace(id=902, broker_type="kis", account_name="KIS 수동계좌")
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=901,
+            broker_account=broker_toss,
+            ticker="005930",
+            market_type=MarketType.KR,
+            display_name="삼성전자",
+            quantity=10,
+            avg_price=70_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=902,
+            broker_account=broker_kis,
+            ticker="AAPL",
+            market_type=MarketType.US,
+            display_name="Apple",
+            quantity=5,
+            avg_price=100,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = AsyncMock(
+        side_effect=RuntimeError("fake-kr-provider-outage-ROB1310")
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={"AAPL": 120.0})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    by_symbol = {holding.symbol: holding for holding in result.holdings}
+    assert "005930" in by_symbol, "the KR holding must survive the KR quote failure"
+    assert by_symbol["005930"].priceState == "missing"
+    assert by_symbol["005930"].valueKrw is None
+
+    assert "AAPL" in by_symbol, "a healthy concurrent US fetch must not be discarded"
+    assert by_symbol["AAPL"].priceState == "live"
+    assert by_symbol["AAPL"].valueNative == pytest.approx(600.0)
+
+    assert {a.accountId for a in result.accounts} == {"901", "902"}
+
+    emitted = _emitted_warning_sources(result)
+    assert emitted == ["toss_manual"], (
+        f"only the actually-affected KR/toss source may be warned about; got {emitted!r}"
+    )
+    messages = [result.warning.message] if result.warning is not None else []
+    messages.extend(
+        warning.message for warning in (getattr(result, "extra_warnings", None) or [])
+    )
+    for message in messages:
+        assert "fake-kr-provider-outage-ROB1310" not in message
+        assert "RuntimeError" not in message
+        assert "Traceback" not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_holdings_load_failure_uses_unknown_source_without_leak(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ROB-1310 R9 / B1.
+
+    When the manual holdings load itself fails (before any broker/source is
+    even known), the reader must not guess ``toss_manual``: there is no
+    holding to attribute, so the explicit ``manual_unknown`` source is the
+    only truthful choice. The raw exception text/traceback must not leak into
+    the returned warning or the log record.
+    """
+
+    sentinel = "fake-manual-db-secret-ROB1310"
+
+    class _BrokenManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            raise RuntimeError(f"database password={sentinel}")
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _BrokenManualService)
+
+    with caplog.at_level("WARNING", logger="app.services.invest_home_readers"):
+        result = await readers.ManualHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "manual_unknown"
+    assert sentinel not in result.warning.message
+
+    for record in caplog.records:
+        assert sentinel not in record.getMessage()
+        assert sentinel not in repr(record.args)
+        assert sentinel not in repr(record.exc_info)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_unknown_broker_type_is_explicit_not_toss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B4.
+
+    ``broker_accounts.broker_type`` is a free-form column; an unrecognized
+    value must never be silently attributed to Toss. It must map to an
+    explicit, truthful, non-Toss source, and the holding must still be kept
+    (never dropped for having an unknown broker label).
+    """
+
+    broker_unknown = SimpleNamespace(
+        id=1001, broker_type="mystery_broker", account_name="Mystery"
+    )
+    holding = SimpleNamespace(
+        id=1,
+        broker_account_id=1001,
+        broker_account=broker_unknown,
+        ticker="000660",
+        market_type=MarketType.KR,
+        display_name="SK하이닉스",
+        quantity=1,
+        avg_price=100_000,
+    )
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return [holding]
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = AsyncMock(return_value={"000660": 105_000.0})
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    assert len(result.holdings) == 1
+    h = result.holdings[0]
+    assert h.source == "manual_unknown"
+    assert h.source != "toss_manual"
+    assert h.valueKrw == pytest.approx(105_000.0)
+    assert result.accounts[0].source == "manual_unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_isa_broker_type_maps_to_isa_manual_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B4.
+
+    ``isa_manual`` is already a declared ``AccountSourceLiteral`` value with
+    full frontend metadata, but no code path produced it yet. ISA is a known,
+    supported manual broker type -- it must map explicitly, not fall through
+    to the ``manual_unknown``/``toss_manual`` catch-all.
+    """
+
+    broker_isa = SimpleNamespace(id=1002, broker_type="isa", account_name="ISA 계좌")
+    holding = SimpleNamespace(
+        id=1,
+        broker_account_id=1002,
+        broker_account=broker_isa,
+        ticker="005930",
+        market_type=MarketType.KR,
+        display_name="삼성전자",
+        quantity=1,
+        avg_price=70_000,
+    )
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return [holding]
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = AsyncMock(return_value={"005930": 75_000.0})
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    assert len(result.holdings) == 1
+    assert result.holdings[0].source == "isa_manual"
+    assert result.accounts[0].source == "isa_manual"
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B1 — a total quote-fetch failure must not wipe every manual
+# holding/account, must not hardcode the affected source to toss_manual, and
+# must not leak the raw exception text/trace anywhere observable.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_isolates_total_quote_failure_and_leaks_no_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ROB-1310 R9 / B1 (R8 verifier blocker 1).
+
+    A total quote-fetch failure (e.g. the whole provider is unreachable) must
+    not fall into the outer exception handler and wipe out every manual
+    holding/account -- the affected holding must survive as unpriced, its
+    warning must name its actual (non-Toss) source, and the raw exception
+    text/traceback must not leak into the warning, the response, or the log.
+    """
+
+    fake_secret_marker = "FAKE_SECRET_zzq9x_do_not_leak"
+    broker_upbit = SimpleNamespace(
+        id=901, broker_type="upbit", account_name="업비트 수동계좌"
+    )
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=901,
+            broker_account=broker_upbit,
+            ticker="ETH",
+            market_type=MarketType.CRYPTO,
+            display_name="이더리움",
+            quantity=1,
+            avg_price=3_000_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = AsyncMock(
+        side_effect=RuntimeError(f"quote provider exploded: {fake_secret_marker}")
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    with caplog.at_level("WARNING"):
+        result = await readers.ManualHomeReader(
+            db=None,  # type: ignore[arg-type]
+            quote_service=quote_service,  # type: ignore[arg-type]
+        ).fetch(user_id=1)
+
+    # The holding/account must survive -- not wiped by the outer handler.
+    assert len(result.holdings) == 1
+    assert result.holdings[0].symbol == "ETH"
+    assert result.holdings[0].priceState == "missing"
+    assert len(result.accounts) == 1
+
+    emitted = _emitted_warning_sources(result)
+    assert emitted == ["upbit_manual"], (
+        "a non-Toss holding's failed valuation must not be hardcoded to "
+        f"toss_manual; got {emitted!r}"
+    )
+
+    messages = [result.warning.message] if result.warning is not None else []
+    messages.extend(
+        warning.message for warning in (getattr(result, "extra_warnings", None) or [])
+    )
+    for message in messages:
+        assert fake_secret_marker not in message
+
+    for record in caplog.records:
+        assert fake_secret_marker not in record.getMessage()
+        if record.exc_text:
+            assert fake_secret_marker not in record.exc_text
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B4 — an unknown manual broker_type must never be silently
+# attributed to Toss, and a known ISA broker_type must map to the isa_manual
+# source the schema already declares.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_maps_isa_broker_type_and_isolates_unknown_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B4 (R8 verifier blocker 4 / review 3826632061).
+
+    ``isa`` must map to the ``isa_manual`` source the schema already
+    declares, and a truly unknown ``broker_type`` string must never be
+    silently attributed to Toss -- it must surface a distinct, truthful,
+    non-Toss source, and the holding must still be present (not dropped).
+    """
+
+    broker_isa = SimpleNamespace(id=1001, broker_type="isa", account_name="ISA 계좌")
+    broker_unknown = SimpleNamespace(
+        id=1002, broker_type="mystery_broker", account_name="정체불명 계좌"
+    )
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=1001,
+            broker_account=broker_isa,
+            ticker="005930",
+            market_type=MarketType.KR,
+            display_name="삼성전자",
+            quantity=1,
+            avg_price=70_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=1002,
+            broker_account=broker_unknown,
+            ticker="000660",
+            market_type=MarketType.KR,
+            display_name="SK하이닉스",
+            quantity=1,
+            avg_price=100_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    requested_kr: list[list[str]] = []
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = _contract_faithful_kr_quote_fake(
+        {"005930": 75_000.0, "000660": 120_000.0}, requested_kr
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    by_symbol = {holding.symbol: holding for holding in result.holdings}
+    assert len(result.holdings) == 2, "an unknown broker_type must not drop the holding"
+    assert by_symbol["005930"].source == "isa_manual"
+    unknown_source = by_symbol["000660"].source
+    assert unknown_source != "toss_manual", (
+        "an unknown broker_type must never be silently attributed to Toss"
+    )
+    assert unknown_source == "manual_unknown"

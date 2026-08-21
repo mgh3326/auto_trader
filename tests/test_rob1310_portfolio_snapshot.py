@@ -2695,3 +2695,150 @@ async def test_toss_api_home_reader_survives_corrupt_cash_cache(
     assert result.warning is not None
     assert result.warning.source == "toss_api"
     assert "invalid_cash_snapshot_payload" in result.warning.message
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B5 — the shared snapshot cache must namespace both the cache
+# and singleflight lock by an opaque scope derived from non-secret Toss
+# account/environment identity, so two processes with different Toss
+# accounts on shared Redis do not silently exchange payloads.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_shared_snapshot_cache_scope_differs_by_account_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B5 (R8 verifier blocker 5 / review 3826632065).
+
+    Two processes with different Toss account/environment identity sharing
+    the same Redis must not collide on the same static cache key. The
+    production factory must derive the cache/lock key from a scope tied to
+    the configured Toss endpoint/account identity, and that scope must not
+    contain the raw client id or account sequence.
+    """
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+    from app.core.config import settings
+
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    monkeypatch.setattr(cache_module.redis, "from_url", lambda *a, **k: object())
+    try:
+        monkeypatch.setattr(settings, "toss_api_client_id", "client-account-a")
+        monkeypatch.setattr(settings, "toss_api_account_seq", 1, raising=False)
+        monkeypatch.setattr(
+            settings,
+            "toss_api_base_url",
+            "https://openapi.tossinvest.com",
+            raising=False,
+        )
+        cache_a = cache_module.get_shared_portfolio_snapshot_cache()
+        key_a = cache_a._cache_key("positions")
+        lock_a = cache_a._singleflight_key("positions")
+
+        cache_module.reset_shared_portfolio_snapshot_cache()
+        monkeypatch.setattr(settings, "toss_api_client_id", "client-account-b")
+        monkeypatch.setattr(settings, "toss_api_account_seq", 2, raising=False)
+        cache_b = cache_module.get_shared_portfolio_snapshot_cache()
+        key_b = cache_b._cache_key("positions")
+        lock_b = cache_b._singleflight_key("positions")
+
+        assert key_a != key_b, "different account identity must not share a cache key"
+        assert lock_a != lock_b, (
+            "different account identity must not share a singleflight lock"
+        )
+        # Only check the actual raw identity strings -- a bare digit
+        # (account_seq) substring check is unreliable: the pre-existing
+        # ``:v1:`` key-version literal already contains "1", which would be
+        # a false positive unrelated to any leaked identity.
+        for raw in ("client-account-a", "client-account-b"):
+            assert raw not in key_a
+            assert raw not in key_b
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_shared_snapshot_cache_scope_is_stable_for_the_same_account_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B5 companion: the same account identity across process
+    restarts must resolve to the same scope so same-account facades still
+    singleflight/dedupe against each other."""
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+    from app.core.config import settings
+
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    monkeypatch.setattr(cache_module.redis, "from_url", lambda *a, **k: object())
+    monkeypatch.setattr(settings, "toss_api_client_id", "client-account-a")
+    monkeypatch.setattr(settings, "toss_api_account_seq", 1, raising=False)
+    monkeypatch.setattr(
+        settings, "toss_api_base_url", "https://openapi.tossinvest.com", raising=False
+    )
+    try:
+        cache_1 = cache_module.get_shared_portfolio_snapshot_cache()
+        key_1 = cache_1._cache_key("positions")
+
+        cache_module.reset_shared_portfolio_snapshot_cache()
+        cache_2 = cache_module.get_shared_portfolio_snapshot_cache()
+        key_2 = cache_2._cache_key("positions")
+
+        assert key_1 == key_2
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_portfolio_snapshot_scopes_do_not_share_cached_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R9 / B5: two isolated-scope facades on the same Redis must not
+    exchange positions -- each fetches independently and caches under its own
+    key, proving the isolation actually blocks payload exchange, not merely
+    that the key strings differ."""
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        key_prefix="toss:portfolio:snapshot:v1:scope-a",
+        lock_prefix="toss:portfolio:snapshot:singleflight:v1:scope-a",
+    )
+    cache_b = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        key_prefix="toss:portfolio:snapshot:v1:scope-b",
+        lock_prefix="toss:portfolio:snapshot:singleflight:v1:scope-b",
+    )
+
+    client_a = _CountingTossClient()
+    client_b = _CountingTossClient()
+
+    snapshot_a = await fetch_toss_portfolio_snapshot(
+        client=client_a,
+        need_cash=False,
+        snapshot_cache=cache_a,
+        use_shared_snapshot=True,
+    )
+    snapshot_b = await fetch_toss_portfolio_snapshot(
+        client=client_b,
+        need_cash=False,
+        snapshot_cache=cache_b,
+        use_shared_snapshot=True,
+    )
+
+    # Each scope fetched independently -- no singleflight/result sharing.
+    assert client_a.holdings_calls == 1
+    assert client_b.holdings_calls == 1
+    assert snapshot_a.positions == snapshot_b.positions
+
+    cached_a = await cache_a.get("positions")
+    cached_b = await cache_b.get("positions")
+    assert cached_a is not None
+    assert cached_b is not None
+    # Each scope owns a distinct Redis key -- no shared storage slot.
+    assert cache_a._cache_key("positions") != cache_b._cache_key("positions")
+    assert await redis_client.get(cache_b._cache_key("positions")) is not None

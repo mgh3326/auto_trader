@@ -387,3 +387,85 @@ async def test_fetch_toss_portfolio_snapshot_default_still_fetches_cash() -> Non
     assert client.buying_power_calls == ["KRW", "USD"]
     assert snapshot.cash_krw == Decimal("123456")
     assert snapshot.cash_usd == Decimal("789.01")
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R9 / B3 — a raw broker buying-power exception must never reach the
+# cash snapshot errors, the shared Redis cache payload, a cache-hit replay,
+# or the log.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_toss_cash_snapshot_sanitizes_buying_power_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ROB-1310 R9 / B3 (R8 verifier blocker 3, cash half).
+
+    A raw broker exception for buying-power must never reach the cash
+    snapshot's ``errors`` list or the log -- only a stable, sanitized error.
+    """
+    fake_secret_marker = "FAKE_SECRET_qv7m2_do_not_leak"
+
+    class Client(_FakeTossClient):
+        async def buying_power(self, *, currency: str) -> TossBuyingPower:
+            if currency == "KRW":
+                raise RuntimeError(f"broker exploded: {fake_secret_marker}")
+            return await super().buying_power(currency=currency)
+
+    with caplog.at_level("WARNING"):
+        snapshot = await fetch_toss_cash_snapshot(client=Client())
+
+    assert snapshot.cash_krw is None
+    assert len(snapshot.errors) == 1
+    error_text = json.dumps(snapshot.errors)
+    assert fake_secret_marker not in error_text
+
+    for record in caplog.records:
+        assert fake_secret_marker not in record.getMessage()
+        if record.exc_text:
+            assert fake_secret_marker not in record.exc_text
+
+
+@pytest.mark.asyncio
+async def test_shared_snapshot_cache_does_not_persist_or_replay_raw_cash_error_text() -> (
+    None
+):
+    """ROB-1310 R9 / B3 (R8 verifier blocker 3 / review 3826632068).
+
+    A raw broker buying-power exception must not be persisted into the
+    shared Redis cash cache payload, and a subsequent cache-hit read must not
+    replay it either.
+    """
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    fake_secret_marker = "FAKE_SECRET_pk3f8_do_not_leak"
+
+    class Client(_FakeTossClient):
+        async def buying_power(self, *, currency: str) -> TossBuyingPower:
+            raise RuntimeError(f"broker exploded: {fake_secret_marker}")
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = TossPortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=Client(),
+        need_cash=True,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+    assert snapshot.cash_krw is None
+    assert fake_secret_marker not in json.dumps(snapshot.errors)
+
+    raw_cash = await redis_client.get(cache._cache_key("cash"))
+    assert raw_cash is not None
+    assert fake_secret_marker not in raw_cash
+
+    # A subsequent cache-hit read must not replay the marker either.
+    replay = await fetch_toss_portfolio_snapshot(
+        client=Client(),
+        need_cash=True,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+    assert fake_secret_marker not in json.dumps(replay.errors)
