@@ -860,6 +860,10 @@ async def test_an_update_without_any_delivery_identity_is_refused(
 #: The exact ten fields ingress persists. Equality must cover all of them.
 PERSISTED_ENVELOPE_FIELDS = (
     "callback_query_id",
+    # R28: a one-way digest of the Telegram update id. The identity is the
+    # callback query id alone, so a redelivery under a different update id
+    # lands on the same row and is only caught by comparing this.
+    "update_identity_digest",
     "chat_id",
     "message_id",
     "telegram_user_id",
@@ -1076,6 +1080,7 @@ async def test_the_conflict_seam_really_is_two_backends_waiting_on_the_index(
             "update_digest": digest,
             "now": now_kst(),
             "callback_query_id": "cbq-seam",
+            "update_identity_digest": None,
             "chat_id": str(CHAT_ID),
             "message_id": 555,
             "telegram_user_id": "777",

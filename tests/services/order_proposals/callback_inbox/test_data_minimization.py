@@ -89,6 +89,7 @@ def test_the_inbox_table_stores_no_raw_update_and_no_free_text() -> None:
         "terminal_state_pending",
         "finished_at",
         "callback_query_id",
+        "update_identity_digest",
         "chat_id",
         "message_id",
         "telegram_user_id",
@@ -135,13 +136,9 @@ def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
     assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
     assert_no_sentinels(digest, where="update_digest")
 
-    def _expected(domain: str, update_id: object, query_id: object) -> str:
+    def _expected(domain: str, kind: str, value: object) -> str:
         canonical = json.dumps(
-            {
-                "domain": domain,
-                "update_id": None if update_id is None else str(update_id),
-                "callback_query_id": None if query_id is None else str(query_id),
-            },
+            {"domain": domain, "identity_kind": kind, "value": str(value)},
             ensure_ascii=True,
             separators=(",", ":"),
             sort_keys=True,
@@ -149,7 +146,9 @@ def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     # The real separator is fed in: recomputing with it matches exactly ...
-    assert digest == _expected(UPDATE_DIGEST_DOMAIN, 123, FAKE_CALLBACK_QUERY_ID)
+    assert digest == _expected(
+        UPDATE_DIGEST_DOMAIN, "callback_query_id", FAKE_CALLBACK_QUERY_ID
+    )
     # ... and recomputing with any other domain does not.
     for other in (
         "",
@@ -158,20 +157,25 @@ def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
         UPDATE_DIGEST_DOMAIN.replace("v1", "v2"),
         "order_proposals.telegram_callback_inbox.delivery",
     ):
-        assert digest != _expected(other, 123, FAKE_CALLBACK_QUERY_ID), other
+        assert digest != _expected(
+            other, "callback_query_id", FAKE_CALLBACK_QUERY_ID
+        ), other
 
-    # Every identity component participates.
-    assert digest != build_update_digest(
+    # R28: the identity is the callback query id alone. The update id used to
+    # participate, which is what let the same click arrive twice under two
+    # update ids and be persisted twice.
+    assert digest == build_update_digest(
         update_id=124, callback_query_id=FAKE_CALLBACK_QUERY_ID
     )
     assert digest != build_update_digest(update_id=123, callback_query_id=None)
-    assert digest != build_update_digest(
+    assert digest == build_update_digest(
         update_id=None, callback_query_id=FAKE_CALLBACK_QUERY_ID
     )
-    # ... and the two are not interchangeable, so a swap cannot collide.
+    # The kinds are separated, so an update id and a callback query id with
+    # the same text cannot collide.
     assert build_update_digest(
-        update_id="a", callback_query_id="b"
-    ) != build_update_digest(update_id="b", callback_query_id="a")
+        update_id="a", callback_query_id=None
+    ) != build_update_digest(update_id=None, callback_query_id="a")
     # Deterministic.
     assert digest == build_update_digest(
         update_id=123, callback_query_id=FAKE_CALLBACK_QUERY_ID

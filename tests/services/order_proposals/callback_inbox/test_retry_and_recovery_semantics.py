@@ -551,6 +551,7 @@ async def test_the_real_scan_touches_exactly_the_eligible_rows(
             state="succeeded",
             outcome="approved",
             callback_query_id=None,
+            update_identity_digest=None,
             chat_id=None,
             message_id=None,
             telegram_user_id=None,
