@@ -283,8 +283,19 @@ async def seed_auto_veto_proposal(session, *, nonce: str, symbol: str = "005930"
     return group
 
 
-async def seed_loss_cut_proposal(session, monkeypatch, *, nonce: str):
-    """A loss-cut proposal carrying an `lc` (confirm) card."""
+async def seed_loss_cut_proposal(
+    session,
+    monkeypatch,
+    *,
+    nonce: str,
+    card_kind: ApprovalCardKind = ApprovalCardKind.LOSS_CUT_CONFIRMATION,
+):
+    """A loss-cut proposal.
+
+    The default card is the ``lc`` confirmation (the *second* click). Pass
+    ``ApprovalCardKind.MANUAL`` for the first click, which is an ``op`` on a
+    loss-cut proposal and is what opens the preview.
+    """
     retro = type(
         "Retro",
         (),
@@ -328,12 +339,7 @@ async def seed_loss_cut_proposal(session, monkeypatch, *, nonce: str):
         approval_window_policy_stamp=window.policy_stamp,
     )
     await service.set_approval_nonce(group.proposal_id, nonce)
-    await _publish_fixture_card(
-        service,
-        group,
-        nonce=nonce,
-        card_kind=ApprovalCardKind.LOSS_CUT_CONFIRMATION,
-    )
+    await _publish_fixture_card(service, group, nonce=nonce, card_kind=card_kind)
     await session.commit()
     return group
 
