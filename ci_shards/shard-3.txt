@@ -158,6 +158,9 @@ tests/services/market_events/test_session_calendar.py
 tests/services/market_events/test_us_earnings_coverage.py
 tests/services/mock_integration/test_kis_coordination_adapter.py
 tests/services/mock_integration/test_lineage.py
+tests/services/order_proposals/callback_inbox/test_data_minimization.py
+tests/services/order_proposals/callback_inbox/test_migration.py
+tests/services/order_proposals/callback_inbox/test_worker_outcomes.py
 tests/services/order_proposals/test_approval_message.py
 tests/services/order_proposals/test_buying_power.py
 tests/services/order_proposals/test_dispatch.py
