@@ -12,6 +12,7 @@ place.
 
 from __future__ import annotations
 
+import fnmatch
 import pathlib
 import re
 
@@ -21,19 +22,59 @@ pytestmark = pytest.mark.unit
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 
-#: Everything a deployment could read a gate from.
-_DEPLOYMENT_GLOBS = (
+#: Directories that never carry a deployment surface. Runbook prose, test
+#: fixtures and application source all legitimately contain the literal
+#: ``GATE=true``; reporting those would train a reader to ignore the guard.
+#: The heavy ones (``.venv``, ``node_modules``) are here to keep the walk
+#: cheap, not because they could arm anything.
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".smoke-out",
+        "htmlcov",
+        "dist",
+        "build",
+        "site-packages",
+        # deliberately out of scope, see above
+        "tests",
+        "docs",
+        "research",
+        "frontend",
+        "app",
+        "alembic",
+    }
+)
+
+#: Filename patterns that are a deployment surface wherever they appear.
+#: Matched at any depth, which is the R26 fix: ``scripts/*.sh`` missed
+#: ``scripts/deploy/native/deploy-native.sh``, and no rule at all covered the
+#: root launchers, the workflow shell scripts or the launchd plists.
+_SURFACE_NAMES = (
+    "env*.example",
+    ".env*.example",
+    "*.env",
     "docker-compose*.yml",
     "docker-compose*.yaml",
-    "env.example",
+    "Dockerfile*",
     "Makefile",
-    "ops/**/*.yml",
-    "ops/**/*.yaml",
-    "ops/**/*.sh",
-    "ops/**/*.env",
-    "ops/**/*.service",
-    "scripts/*.sh",
-    ".github/workflows/*.yml",
+    "*.sh",
+    "*.plist",
+    "*.plist.example",
+    "*.service",
+)
+
+#: Directories whose contents are a deployment surface regardless of suffix.
+_SURFACE_DIRS = (
+    ".github/workflows",
+    ".circleci",
+    "ops",
 )
 
 W5_GATES = (
@@ -50,15 +91,33 @@ _ENABLED = re.compile(
 )
 
 
+def _is_deployment_surface(relative: pathlib.PurePosixPath) -> bool:
+    """Closed-world allowlist: named surface, or inside a surface directory."""
+    parent = relative.parent.as_posix()
+    for directory in _SURFACE_DIRS:
+        if parent == directory or parent.startswith(f"{directory}/"):
+            return True
+    return any(fnmatch.fnmatch(relative.name, rule) for rule in _SURFACE_NAMES)
+
+
 def _deployment_files_in(root: pathlib.Path) -> list[pathlib.Path]:
-    """Every file under ``root`` a deployment could read a gate from."""
+    """Every file under ``root`` a deployment could read a gate from.
+
+    A recursive walk with an explicit skip set, rather than a glob list:
+    globs are enumerated by hand and therefore forget the surface nobody
+    thought of, which is exactly how ``env.prod.example`` and the launchd
+    plists went unread. Walking and *excluding* fails the other way -- a new
+    deployment surface is covered the day it is added.
+    """
     files: list[pathlib.Path] = []
-    for pattern in _DEPLOYMENT_GLOBS:
-        files.extend(
-            path
-            for path in root.glob(pattern)
-            if path.is_file() and "__pycache__" not in path.parts
-        )
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = pathlib.PurePosixPath(path.relative_to(root).as_posix())
+        if _SKIP_DIRS.intersection(relative.parts[:-1]):
+            continue
+        if _is_deployment_surface(relative):
+            files.append(path)
     return sorted(set(files))
 
 
@@ -74,10 +133,13 @@ def find_enabled_gates(text: str) -> list[str]:
 def test_the_guard_has_something_to_look_at() -> None:
     """Anti-vacuity: an empty file list would make the negative meaningless."""
     files = _deployment_files()
-    assert len(files) >= 5, [str(path) for path in files]
+    assert len(files) >= 40, [str(path) for path in files]
     names = {path.name for path in files}
     assert "env.example" in names
+    assert "env.prod.example" in names
     assert any(name.startswith("docker-compose") for name in names)
+    assert any(name.endswith(".plist") for name in names)
+    assert any(name.endswith(".sh") for name in names)
 
 
 def test_no_deployment_surface_enables_a_w5_gate() -> None:
