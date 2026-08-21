@@ -31,7 +31,7 @@ import pytest
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 
-from .conftest import load_job, make_update
+from .conftest import load_job, make_update, without_the_retry_budget_check
 
 pytestmark = pytest.mark.integration
 
@@ -531,66 +531,73 @@ async def test_the_real_scan_touches_exactly_the_eligible_rows(
         available_at=now_kst() + timedelta(hours=1),
     )
 
-    exhausted = await _queue(inbox_cleanup)
-    await _force(
-        exhausted,
-        state="retry_wait",
-        attempt_count=3,
-        error_class="pre_core_failure",
-        available_at=now_kst() - timedelta(minutes=1),
-    )
+    # R25: an exhausted ``retry_wait`` row is now refused by the database,
+    # so this legacy shape is built the way an older binary would have. The
+    # scan must still reach it, and the assertions run before the check is
+    # restored.
+    async with without_the_retry_budget_check():
+        exhausted = await _queue(inbox_cleanup)
+        await _force(
+            exhausted,
+            state="retry_wait",
+            attempt_count=3,
+            error_class="pre_core_failure",
+            available_at=now_kst() - timedelta(minutes=1),
+        )
 
-    terminal = await _queue(inbox_cleanup)
-    await _force(
-        terminal,
-        state="succeeded",
-        outcome="approved",
-        callback_query_id=None,
-        chat_id=None,
-        message_id=None,
-        telegram_user_id=None,
-        action=None,
-        subject_short=None,
-        dispatch_attempt_id=None,
-        membership_revision=None,
-        membership_digest=None,
-        nonce=None,
-    )
+        terminal = await _queue(inbox_cleanup)
+        await _force(
+            terminal,
+            state="succeeded",
+            outcome="approved",
+            callback_query_id=None,
+            chat_id=None,
+            message_id=None,
+            telegram_user_id=None,
+            action=None,
+            subject_short=None,
+            dispatch_attempt_id=None,
+            membership_revision=None,
+            membership_digest=None,
+            nonce=None,
+        )
 
-    executed: list[str] = []
+        executed: list[str] = []
 
-    async def _handler(normalized, **kwargs):
-        executed.append(normalized.callback.subject_short)
-        return {"handled": True, "reason": "approved"}
+        async def _handler(normalized, **kwargs):
+            executed.append(normalized.callback.subject_short)
+            return {"handled": True, "reason": "approved"}
 
-    report = await recover_callback_jobs(handler=_handler, limit=50)
-    assert report["status"] == "ok"
+        report = await recover_callback_jobs(handler=_handler, limit=50)
+        assert report["status"] == "ok"
 
-    states = {
-        "eligible_pending": (await load_job(eligible_pending)).state,
-        "eligible_retry": (await load_job(eligible_retry)).state,
-        "eligible_stale_processing": (await load_job(eligible_stale_processing)).state,
-        "fresh_processing": (await load_job(fresh_processing)).state,
-        "future_retry": (await load_job(future_retry)).state,
-        "exhausted": (await load_job(exhausted)).state,
-        "terminal": (await load_job(terminal)).state,
-    }
-    assert states == {
-        "eligible_pending": "succeeded",
-        "eligible_retry": "succeeded",
-        "eligible_stale_processing": "succeeded",
-        # untouched
-        "fresh_processing": "processing",
-        "future_retry": "retry_wait",
-        # selected, but the attempt budget is spent: dead-lettered without a
-        # single core call.
-        "exhausted": "dead_letter",
-        "terminal": "succeeded",
-    }
-    assert (await load_job(exhausted)).error_class == "attempts_exhausted"
-    # Three eligible rows ran, each exactly once.
-    assert len(executed) == 3, executed
-    assert len(set(executed)) == 3, executed
+        states = {
+            "eligible_pending": (await load_job(eligible_pending)).state,
+            "eligible_retry": (await load_job(eligible_retry)).state,
+            "eligible_stale_processing": (
+                await load_job(eligible_stale_processing)
+            ).state,
+            "fresh_processing": (await load_job(fresh_processing)).state,
+            "future_retry": (await load_job(future_retry)).state,
+            "exhausted": (await load_job(exhausted)).state,
+            "terminal": (await load_job(terminal)).state,
+        }
+        assert states == {
+            "eligible_pending": "succeeded",
+            "eligible_retry": "succeeded",
+            "eligible_stale_processing": "succeeded",
+            # untouched
+            "fresh_processing": "processing",
+            "future_retry": "retry_wait",
+            # selected, but the attempt budget is spent: dead-lettered without a
+            # single core call.
+            "exhausted": "dead_letter",
+            "terminal": "succeeded",
+        }
+        assert (await load_job(exhausted)).error_class == "attempts_exhausted"
+        # Three eligible rows ran, each exactly once.
+        assert len(executed) == 3, executed
+        assert len(set(executed)) == 3, executed
 
 
 @pytest.mark.asyncio

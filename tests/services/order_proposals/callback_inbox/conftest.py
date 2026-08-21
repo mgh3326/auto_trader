@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals import OrderProposalsService
@@ -436,3 +436,51 @@ async def load_job(job_id: uuid.UUID):
             return None
         session.expunge(row)
         return row
+
+
+RETRY_BUDGET_CONSTRAINT = "ck_telegram_callback_inbox_retry_budget"
+
+_RETRY_BUDGET_SQL = (
+    "CASE WHEN state = 'retry_wait' THEN attempt_count < max_attempts ELSE true END"
+)
+
+
+@contextlib.asynccontextmanager
+async def without_the_retry_budget_check() -> AsyncIterator[None]:
+    """Briefly drop the retry-budget CHECK so a legacy-shaped row can commit.
+
+    An exhausted ``retry_wait`` row is unconstructible once the constraint
+    exists -- that is the point of it (R25). But a database written by an
+    older binary can still hold one, and the recovery sweep has to cope, so
+    the only honest way to test that half is to make the row the old way.
+
+    Safe here: every xdist worker owns its own database, and the constraint is
+    restored in ``finally``. Rows that would block the restore are test rows
+    this helper's callers created, so they are cleared first.
+    """
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text(
+                "ALTER TABLE review.telegram_callback_inbox "
+                f"DROP CONSTRAINT IF EXISTS {RETRY_BUDGET_CONSTRAINT}"
+            )
+        )
+        await session.commit()
+    try:
+        yield
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                text(
+                    "DELETE FROM review.telegram_callback_inbox "
+                    "WHERE state = 'retry_wait' AND attempt_count >= max_attempts"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE review.telegram_callback_inbox "
+                    f"ADD CONSTRAINT {RETRY_BUDGET_CONSTRAINT} "
+                    f"CHECK ({_RETRY_BUDGET_SQL})"
+                )
+            )
+            await session.commit()

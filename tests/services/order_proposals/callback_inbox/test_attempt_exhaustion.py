@@ -28,7 +28,11 @@ import sqlalchemy as sa
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 
-from .conftest import load_job, make_update
+from .conftest import (
+    load_job,
+    make_update,
+    without_the_retry_budget_check,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -244,25 +248,29 @@ async def test_an_exhausted_row_is_classified_exhausted_not_merely_not_due(
     )
 
     job_id = await _queue(inbox_cleanup)
-    async with AsyncSessionLocal() as session:
-        service = CallbackInboxService(session)
-        await service.force_state_for_test(
-            job_id,
-            state="retry_wait",
-            attempt_count=3,
-            error_class="pre_core_failure",
-            available_at=now_kst() + timedelta(hours=1),
-        )
-        await session.commit()
+    # R25: the database now refuses this shape outright, so the only way to
+    # hold a classifier-level regression test on it is to build the row the
+    # way an older binary would have.
+    async with without_the_retry_budget_check():
+        async with AsyncSessionLocal() as session:
+            service = CallbackInboxService(session)
+            await service.force_state_for_test(
+                job_id,
+                state="retry_wait",
+                attempt_count=3,
+                error_class="pre_core_failure",
+                available_at=now_kst() + timedelta(hours=1),
+            )
+            await session.commit()
 
-    async with AsyncSessionLocal() as session:
-        service = CallbackInboxService(session)
-        row = await service.get(job_id)
-        assert row is not None
-        decision = service.classify_claim(
-            row, now=now_kst(), claimable_states=RECOVERY_CLAIMABLE_STATES
-        )
-        await session.rollback()
+        async with AsyncSessionLocal() as session:
+            service = CallbackInboxService(session)
+            row = await service.get(job_id)
+            assert row is not None
+            decision = service.classify_claim(
+                row, now=now_kst(), claimable_states=RECOVERY_CLAIMABLE_STATES
+            )
+            await session.rollback()
 
     assert decision.action == "exhausted", decision
 
