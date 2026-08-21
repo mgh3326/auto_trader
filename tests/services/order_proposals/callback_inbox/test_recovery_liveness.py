@@ -533,3 +533,125 @@ async def test_every_tier_keeps_a_deterministic_age_order(
     assert first == second, "the same inbox produced two different orders"
     positions = [first.index(job_id) for job_id in queued]
     assert positions == sorted(positions), "oldest-first was lost inside the tier"
+
+
+# ---------------------------------------------------------------------------
+# the caps and the due filter, asserted positively
+# ---------------------------------------------------------------------------
+#
+# Everything above is about what the sweep must *not* do. A sweep that claimed
+# nothing at all would satisfy most of it, so these pin the other side: the
+# scan really is capped, a full budget really is spent, and the positive half
+# of the due filter really does run.
+
+
+@pytest.mark.asyncio
+async def test_the_report_states_how_much_was_scanned_and_stays_capped(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R29 — ``scanned`` is part of the contract, and it obeys the scan cap."""
+    from app.services.order_proposals.callback_inbox.recovery import (
+        recover_callback_jobs,
+    )
+
+    limit = 2
+    for index in range(limit * 5 + 8):
+        await _queue(
+            inbox_cleanup, received_at=now_kst() - timedelta(minutes=90 - index)
+        )
+
+    async def _handler(normalized, **kwargs):
+        return {"handled": True, "reason": "approved"}
+
+    report = await recover_callback_jobs(handler=_handler, limit=limit)
+
+    assert "scanned" in report, sorted(report)
+
+    from app.services.order_proposals.callback_inbox.contracts import (
+        recovery_scan_cap,
+    )
+
+    assert report["scanned"] <= recovery_scan_cap(limit), report
+    assert report["scanned"] >= report["claimed"], report
+    assert report["claimed"] <= limit, report
+
+
+@pytest.mark.asyncio
+async def test_a_contended_tick_still_spends_its_whole_budget(
+    _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID], held_locks
+) -> None:
+    """R29 — contention costs scan slots, so the execution budget is *used*.
+
+    The negative version of this ("contention did not consume the budget") is
+    satisfied by a sweep that runs nothing whatsoever. This one counts real
+    handler invocations, so an unwired helper or a silently empty scan fails.
+    """
+    from app.services.order_proposals.callback_inbox.recovery import (
+        recover_callback_jobs,
+    )
+
+    from .conftest import seed_proposal
+
+    limit = 2
+    stale_at = now_kst() - timedelta(hours=6)
+    for index in range(3):
+        job_id = await _queue(
+            inbox_cleanup, received_at=stale_at - timedelta(minutes=30 - index)
+        )
+        await _force(job_id, state="processing", attempt_count=1, started_at=stale_at)
+        await held_locks.hold(job_id)
+
+    for index in range(3):
+        group = await seed_proposal(
+            db_session, nonce=f"budget{index:05d}", symbol=f"BDG{index}R"
+        )
+        await _queue(inbox_cleanup, data=proposal_callback_data(group))
+
+    calls: list[str] = []
+
+    async def _handler(normalized, **kwargs):
+        calls.append(normalized.callback.subject_short)
+        return {"handled": True, "reason": "approved"}
+
+    report = await recover_callback_jobs(handler=_handler, limit=limit)
+
+    assert report["statuses"].get("lock_contended", 0) >= 1, report["statuses"]
+    assert report["claimed"] == limit, report
+    assert len(calls) == limit, calls
+    assert len(set(calls)) == limit, calls
+
+
+@pytest.mark.asyncio
+async def test_a_due_retry_is_claimed_and_runs_exactly_once(
+    _bootstrap_test_schema, db_session, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R29 — the positive half of the due filter, through the real sweep."""
+    from app.services.order_proposals.callback_inbox.recovery import (
+        recover_callback_jobs,
+    )
+
+    from .conftest import seed_proposal
+
+    group = await seed_proposal(db_session, nonce="duepositiv", symbol="DUEKR")
+    job_id = await _queue(inbox_cleanup, data=proposal_callback_data(group))
+    await _force(
+        job_id,
+        state="retry_wait",
+        attempt_count=1,
+        error_class="pre_core_failure",
+        available_at=now_kst() - timedelta(minutes=1),
+    )
+
+    calls: list[str] = []
+
+    async def _handler(normalized, **kwargs):
+        calls.append(normalized.callback.subject_short)
+        return {"handled": True, "reason": "approved"}
+
+    await recover_callback_jobs(handler=_handler)
+    await recover_callback_jobs(handler=_handler)
+
+    row = await load_job(job_id)
+    assert row is not None
+    assert row.state == "succeeded", f"a due retry was never claimed: {row.state}"
+    assert len(calls) == 1, f"the due retry ran {len(calls)} times"
