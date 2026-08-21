@@ -253,6 +253,15 @@ def test_claim_classification_checks_malformed_budget_before_any_active_path() -
             ),
             ("ambiguous", None),
         ),
+        "malformed_entered_only_processing": (
+            _row(
+                state="processing",
+                attempt_count=-1,
+                started_at=now,
+                handler_entered_at=now,
+            ),
+            ("malformed", None),
+        ),
         "future_malformed_retry_not_due": (
             _row(
                 state="retry_wait",
@@ -309,7 +318,9 @@ def test_claim_classification_checks_malformed_budget_before_any_active_path() -
 
 @pytest.mark.asyncio
 async def test_enqueue_has_no_budget_override_and_persists_fixed_three(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ingress owns no tunable attempt budget surface."""
     from app.services.order_proposals.callback_inbox.service import (
@@ -319,6 +330,14 @@ async def test_enqueue_has_no_budget_override_and_persists_fixed_three(
     assert (
         "max_attempts" not in inspect.signature(CallbackInboxService.enqueue).parameters
     )
+    # These are deliberately not Settings fields. A direct environment read in
+    # an ingress/service path would make the persisted row prove it wrong.
+    for name in (
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_MAX_ATTEMPTS",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ATTEMPT_BUDGET",
+    ):
+        monkeypatch.setenv(name, "99")
     job_id = await _queue(inbox_cleanup)
     raw = await _raw_row(job_id)
     assert raw["attempt_count"] == 0

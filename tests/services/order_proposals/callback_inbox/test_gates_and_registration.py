@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -377,23 +378,98 @@ def test_max_attempts_is_three() -> None:
     assert MAX_ATTEMPTS == 3
 
 
-def test_callback_attempt_budget_has_no_settings_or_environment_override() -> None:
-    """R34 — three is protocol, not an operator-tunable retry budget."""
-    from app.services.order_proposals.callback_inbox import contracts
+def _is_callback_attempt_override_name(value: str) -> bool:
+    """Recognise an external callback/inbox attempt-budget control by meaning.
 
-    callback_attempt_fields = {
+    Normalising separators and case means a new environment variable cannot
+    evade the guard merely by using camelCase, dots, or a retry/budget synonym
+    instead of the original ``MAX_ATTEMPTS`` spelling.
+    """
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    return ("callback" in normalized or "inbox" in normalized) and any(
+        word in normalized for word in ("attempt", "retry", "budget")
+    )
+
+
+def find_callback_attempt_override_names(text: str) -> list[str]:
+    """Return candidate Settings/environment override names in arbitrary text."""
+    return sorted(
+        {
+            token
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", text)
+            if _is_callback_attempt_override_name(token)
+            # Dotted tokens are runtime member expressions, not an external
+            # setting name (for example ``InboxState.RETRY_WAIT.value``).
+            and "." not in token
+        }
+    )
+
+
+def _tracked_deployment_files() -> list[pathlib.Path]:
+    """Reuse W5's deployment-surface walk, narrowed to Git-tracked files."""
+    from .test_no_auto_activation import _deployment_files_in
+
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    tracked = subprocess.run(  # noqa: S603 - fixed Git argv, no shell
+        ["git", "ls-files", "-z"],
+        capture_output=True,
+        check=True,
+        cwd=repo,
+        text=True,
+    ).stdout.split("\0")
+    tracked_paths = frozenset(path for path in tracked if path)
+    return [
+        path
+        for path in _deployment_files_in(repo)
+        if path.relative_to(repo).as_posix() in tracked_paths
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_MAX_ATTEMPTS",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ATTEMPT_BUDGET",
+        "ORDER_PROPOSALS_TELEGRAM_INBOX_MAX_ATTEMPTS",
+        "telegramCallbackRetryBudget",
+    ),
+)
+def test_attempt_override_discovery_catches_alternate_external_names(name: str) -> None:
+    """Mutation-proof the negative scanner against spelling substitutions."""
+    assert find_callback_attempt_override_names(f"value = os.getenv('{name}')") == [
+        name
+    ]
+
+
+def test_callback_attempt_budget_has_no_settings_or_environment_override() -> None:
+    """R34 — three is protocol, not an operator/deployment-tunable budget."""
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    settings_offenders = sorted(
         name
         for name in Settings.model_fields
-        if ("CALLBACK" in name or "INBOX" in name) and "ATTEMPT" in name
-    }
-    assert callback_attempt_fields == set()
-
-    package = pathlib.Path(contracts.__file__).parent
-    package_source = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(package.glob("*.py"))
+        if _is_callback_attempt_override_name(name)
     )
-    assert "ORDER_PROPOSALS_TELEGRAM_CALLBACK_MAX_ATTEMPTS" not in package_source
-    assert "ORDER_PROPOSALS_TELEGRAM_CALLBACK_INBOX_MAX_ATTEMPTS" not in package_source
+
+    config_path = repo / "app/core/config.py"
+    sources = [(config_path, config_path.read_text(encoding="utf-8"))]
+    deployment_files = _tracked_deployment_files()
+    deployment_names = {path.name for path in deployment_files}
+    assert {"env.example", "env.prod.example"} <= deployment_names
+    assert any(name.startswith("docker-compose") for name in deployment_names)
+    for path in deployment_files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:  # pragma: no cover - tracked binary surface
+            continue
+        sources.append((path, text))
+    source_offenders: list[str] = []
+    for path, text in sources:
+        for name in find_callback_attempt_override_names(text):
+            source_offenders.append(f"{path.relative_to(repo)}: {name}")
+
+    assert settings_offenders == []
+    assert source_offenders == []
 
 
 def test_runbook_pins_fixed_three_budget_and_malformed_terminal_semantics() -> None:
