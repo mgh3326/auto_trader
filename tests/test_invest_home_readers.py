@@ -2344,3 +2344,282 @@ async def test_toss_cash_snapshot_drained_when_holdings_chain_raises(monkeypatch
     # client=False here) must NOT be closed — caller owns it.
     assert bp_cancelled.is_set(), "pending cash task was not cancelled"
     assert aclose_calls == 0, "client must not be closed when caller owns it"
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R8 — manual reader quote-key and warning-source regressions
+# ---------------------------------------------------------------------------
+
+
+def _contract_faithful_kr_quote_fake(
+    known: dict[str, float], requested: list[list[str]]
+):
+    """Fake ``fetch_kr_prices`` with the real resolver's key contract.
+
+    ``PriceFallbackResolver.resolve`` seeds ``dict.fromkeys(symbols, None)``
+    and only ever writes back under a *requested* key, so the returned map
+    never contains a key the caller did not ask for. A fake that invents an
+    unrequested key would hide exactly the defect under test.
+    """
+
+    async def _fetch(symbols: list[str]) -> dict[str, float | None]:
+        requested.append(list(symbols))
+        return {symbol: known.get(symbol) for symbol in symbols}
+
+    return AsyncMock(side_effect=_fetch)
+
+
+def _emitted_warning_sources(result: Any) -> list[str]:
+    """Every warning the reader actually emits, in emission order.
+
+    Written so it works against both the single-warning and the per-source
+    shapes: the assertion that fails must be about *attribution*, not about a
+    missing attribute name.
+    """
+
+    emitted = [result.warning] if result.warning is not None else []
+    emitted.extend(getattr(result, "extra_warnings", None) or [])
+    return [warning.source for warning in emitted]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_crypto_quote_is_requested_with_the_upbit_market_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R8 / review 3820016131.
+
+    A manual CRYPTO holding stored as the bare base coin (``BTC``) must be
+    normalized through the shared ``to_upbit_symbol`` helper *before* the
+    quote request, because the legacy quote contract keys crypto as
+    ``KRW-BTC`` and the resolver only returns requested keys. Requesting the
+    raw ``BTC`` makes the later ``KRW-BTC`` lookup structurally unable to hit,
+    so an available quote is reported missing.
+    """
+
+    broker_upbit = SimpleNamespace(
+        id=601, broker_type="upbit", account_name="업비트 수동계좌"
+    )
+    broker_toss = SimpleNamespace(
+        id=602, broker_type="toss", account_name="토스 수동계좌"
+    )
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=601,
+            broker_account=broker_upbit,
+            ticker="BTC",
+            market_type=MarketType.CRYPTO,
+            display_name="비트코인",
+            quantity=2,
+            avg_price=50_000_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=602,
+            broker_account=broker_toss,
+            ticker="005930",
+            market_type=MarketType.KR,
+            display_name="삼성전자",
+            quantity=10,
+            avg_price=70_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            assert user_id == 1
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    requested_kr: list[list[str]] = []
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = _contract_faithful_kr_quote_fake(
+        {"KRW-BTC": 130_000_000.0, "005930": 75_000.0}, requested_kr
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    assert len(requested_kr) == 1
+    requested = requested_kr[0]
+    assert "KRW-BTC" in requested, (
+        "manual crypto must be normalized to the Upbit market key before the "
+        f"quote request; requested={requested!r}"
+    )
+    assert "BTC" not in requested, (
+        f"the raw base coin must not be the requested quote key: {requested!r}"
+    )
+    # KR equity keys are untouched by the crypto normalization.
+    assert "005930" in requested
+
+    by_symbol = {holding.symbol: holding for holding in result.holdings}
+    crypto = by_symbol["BTC"]
+    assert crypto.market == "CRYPTO"
+    assert crypto.assetCategory == "crypto"
+    assert crypto.priceState == "live"
+    assert crypto.valueNative == pytest.approx(260_000_000.0)
+    assert crypto.valueKrw == pytest.approx(260_000_000.0)
+    assert crypto.pnlKrw == pytest.approx(160_000_000.0)
+
+    equity = by_symbol["005930"]
+    assert equity.priceState == "live"
+    assert equity.valueKrw == pytest.approx(750_000.0)
+
+    # Everything priced -> no partial-valuation warning at all.
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_valuation_warning_names_the_affected_non_toss_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R8 / review 3826407065.
+
+    W2 widened manual holdings past Toss. A valuation failure for an
+    ``upbit_manual`` holding must not be reported under the ``toss_manual``
+    source.
+    """
+
+    broker_upbit = SimpleNamespace(
+        id=701, broker_type="upbit", account_name="업비트 수동계좌"
+    )
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=701,
+            broker_account=broker_upbit,
+            ticker="DOGE",
+            market_type=MarketType.CRYPTO,
+            display_name="도지코인",
+            quantity=100,
+            avg_price=200,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    requested_kr: list[list[str]] = []
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = _contract_faithful_kr_quote_fake({}, requested_kr)
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    assert result.holdings[0].priceState == "missing"
+    assert _emitted_warning_sources(result) == ["upbit_manual"]
+    assert result.warning is not None
+    # Sanitized fixed text only -- no raw exception/secret material.
+    assert "현재가" in result.warning.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_valuation_warnings_do_not_cross_attribute_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R8 / review 3826407065 — mixed Toss / non-Toss batch.
+
+    Two distinct manual sources fail valuation and a third is priced. Each
+    failure must be reported under its own source, deterministically ordered,
+    and the healthy source must not be warned about at all.
+    """
+
+    broker_toss = SimpleNamespace(
+        id=801, broker_type="toss", account_name="토스 수동계좌"
+    )
+    broker_upbit = SimpleNamespace(
+        id=802, broker_type="upbit", account_name="업비트 수동계좌"
+    )
+    broker_pension = SimpleNamespace(
+        id=803, broker_type="samsung", account_name="삼성 퇴직연금 DC"
+    )
+    holdings = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=801,
+            broker_account=broker_toss,
+            ticker="000660",
+            market_type=MarketType.KR,
+            display_name="SK하이닉스",
+            quantity=1,
+            avg_price=100_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=802,
+            broker_account=broker_upbit,
+            ticker="ETH",
+            market_type=MarketType.CRYPTO,
+            display_name="이더리움",
+            quantity=1,
+            avg_price=3_000_000,
+        ),
+        SimpleNamespace(
+            id=3,
+            broker_account_id=803,
+            broker_account=broker_pension,
+            ticker="005930",
+            market_type=MarketType.KR,
+            display_name="삼성전자",
+            quantity=1,
+            avg_price=70_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    requested_kr: list[list[str]] = []
+    quote_service = MagicMock()
+    # Only the pension holding resolves.
+    quote_service.fetch_kr_prices = _contract_faithful_kr_quote_fake(
+        {"005930": 75_000.0}, requested_kr
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,  # type: ignore[arg-type]
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    emitted = _emitted_warning_sources(result)
+    assert emitted == ["toss_manual", "upbit_manual"], (
+        f"each failing manual source must be reported once, under its own "
+        f"source, deterministically ordered; got {emitted!r}"
+    )
+    # The priced source is healthy and must not be warned about.
+    assert "pension_manual" not in emitted
+    for source in emitted:
+        assert source in {"toss_manual", "upbit_manual"}
+    messages = [result.warning.message] if result.warning is not None else []
+    messages.extend(
+        warning.message for warning in (getattr(result, "extra_warnings", None) or [])
+    )
+    for message in messages:
+        assert "현재가" in message
+        assert "Traceback" not in message

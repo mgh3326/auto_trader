@@ -1631,3 +1631,88 @@ async def test_get_home_falls_back_to_manual_when_toss_api_has_cash_only_account
         "toss_manual",
     ]
     assert [h.source for h in result.holdings] == ["toss_manual"]
+
+
+@pytest.mark.asyncio
+async def test_home_warnings_attribute_manual_failures_to_each_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1310 R8 / review 3826407065 — end of the manual warning seam.
+
+    W2 widened manual holdings past Toss, so ``meta.warnings`` must name the
+    manual source that actually failed valuation. A batch with two distinct
+    failing manual sources must surface both, and must not attribute one
+    source's failure to another.
+    """
+    from types import SimpleNamespace
+
+    from app.models.manual_holdings import MarketType
+    from app.services import invest_home_readers as readers
+    from app.services.invest_home_service import InvestHomeService
+
+    broker_toss = SimpleNamespace(
+        id=901, broker_type="toss", account_name="토스 수동계좌"
+    )
+    broker_upbit = SimpleNamespace(
+        id=902, broker_type="upbit", account_name="업비트 수동계좌"
+    )
+    manual_rows = [
+        SimpleNamespace(
+            id=1,
+            broker_account_id=901,
+            broker_account=broker_toss,
+            ticker="000660",
+            market_type=MarketType.KR,
+            display_name="SK하이닉스",
+            quantity=1,
+            avg_price=100_000,
+        ),
+        SimpleNamespace(
+            id=2,
+            broker_account_id=902,
+            broker_account=broker_upbit,
+            ticker="ETH",
+            market_type=MarketType.CRYPTO,
+            display_name="이더리움",
+            quantity=1,
+            avg_price=3_000_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int):
+            return manual_rows
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+
+    async def _no_prices(symbols):
+        return dict.fromkeys(symbols, None)
+
+    quote_service = SimpleNamespace(
+        fetch_kr_prices=_no_prices, fetch_us_prices=_no_prices
+    )
+
+    service = InvestHomeService(
+        kis_reader=_Reader(),
+        upbit_reader=_Reader(),
+        manual_reader=readers.ManualHomeReader(
+            db=None,  # type: ignore[arg-type]
+            quote_service=quote_service,  # type: ignore[arg-type]
+        ),
+        toss_api_reader=_Reader(),
+    )
+
+    home = await service.get_home(user_id=1)
+
+    manual_warning_sources = [
+        warning.source
+        for warning in home.meta.warnings
+        if warning.source.endswith("_manual")
+    ]
+    assert manual_warning_sources == ["toss_manual", "upbit_manual"], (
+        "each failing manual source must reach meta.warnings under its own "
+        f"source; got {manual_warning_sources!r}"
+    )

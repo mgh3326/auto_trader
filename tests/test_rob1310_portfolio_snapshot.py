@@ -2543,3 +2543,155 @@ async def test_reset_shared_snapshot_cache_closes_the_client_it_owns(
         assert created[0].closed is True
     finally:
         module.reset_shared_portfolio_snapshot_cache()
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R8 — corrupt cash cache must not discard valid positions
+# ---------------------------------------------------------------------------
+
+
+class _CorruptCashTossClient:
+    """Valid holdings, but a ``buying_power`` value that can never round-trip.
+
+    Every cash payload this client produces fails ``_cash_from_snapshot_cache``
+    deserialization, so both bounded recovery reads stay corrupt. Positions are
+    fully reconstructible.
+    """
+
+    def __init__(self) -> None:
+        self.holdings_calls = 0
+        self.sellable_calls = 0
+        self.buying_power_calls = 0
+        self.closed = False
+
+    async def holdings(self) -> TossHoldings:
+        self.holdings_calls += 1
+        return TossHoldings(items=[_holding()])
+
+    async def sellable_quantity(self, *, symbol: str):
+        self.sellable_calls += 1
+        raise AssertionError(
+            f"general snapshot must not call sellable_quantity: {symbol}"
+        )
+
+    async def buying_power(self, *, currency: str):
+        self.buying_power_calls += 1
+        return SimpleNamespace(currency=currency, cash_buying_power="not-a-number")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_corrupt_cash_cache_keeps_positions_and_reports_unknown_cash() -> None:
+    """ROB-1310 R8 / review 3826407069.
+
+    Positions deserialize fine, then both bounded cash recovery reads stay
+    corrupt. Raising there threw away already-valid positions. Cash must
+    instead be reported as unknown (``None``, never a fabricated ``0``) with a
+    sanitized error, and the positions must survive.
+    """
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    client = _CorruptCashTossClient()
+    cache = TossPortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=client,
+        need_cash=True,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+
+    assert [position.symbol for position in snapshot.positions] == ["AAPL"]
+    assert snapshot.positions[0].sellable_quantity is None
+    assert snapshot.cash_krw is None
+    assert snapshot.cash_usd is None
+
+    assert snapshot.errors, "unavailable cash must surface an explicit error"
+    cash_errors = [
+        error for error in snapshot.errors if error.get("stage") == "cash_snapshot"
+    ]
+    assert len(cash_errors) == 1
+    assert cash_errors[0]["source"] == "toss_api"
+    # Sanitized: fixed text, never a raw exception message or cached payload.
+    assert cash_errors[0]["error"] == "invalid_cash_snapshot_payload"
+    assert "not-a-number" not in str(snapshot.errors)
+
+    # Recovery stays bounded: one positions fanout, exactly two bounded cash
+    # attempts (2 currencies x 2 attempts).
+    assert client.holdings_calls == 1
+    assert client.sellable_calls == 0
+    assert client.buying_power_calls == 4
+
+    # R7 task cleanup is not regressed.
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and not task.done()
+    ]
+    assert pending == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_api_home_reader_survives_corrupt_cash_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a corrupt cash cache must not blank the whole Toss source.
+
+    ``TossApiHomeReader`` catches any raise from the snapshot service and
+    degrades to empty accounts/holdings, so a cash-only corruption used to
+    erase valid Toss positions from /invest home entirely.
+    """
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    client = _CorruptCashTossClient()
+    cache = TossPortfolioSnapshotCache(
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        ttl_seconds=30,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+
+    async def _snapshot_through_real_service(*, need_sellable: bool = False, **kwargs):
+        assert need_sellable is False
+        return await fetch_toss_portfolio_snapshot(
+            client=client,
+            need_sellable=False,
+            need_cash=True,
+            snapshot_cache=cache,
+            use_shared_snapshot=True,
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", _snapshot_through_real_service
+    )
+    monkeypatch.setattr(readers, "get_usd_krw_rate", AsyncMock(return_value=1_350.0))
+    from app.core.config import settings as _cfg
+
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    assert [holding.symbol for holding in result.holdings] == ["AAPL"]
+    assert len(result.accounts) == 1
+    account = result.accounts[0]
+    assert account.accountId == "toss_api_account"
+    assert account.source == "toss_api"
+    # Cash is unknown, not fabricated as zero.
+    assert account.cashBalances.krw is None
+    assert account.cashBalances.usd is None
+    assert account.buyingPower.krw is None
+    assert account.buyingPower.usd is None
+    # The degradation is reported, not silent.
+    assert result.warning is not None
+    assert result.warning.source == "toss_api"
+    assert "invalid_cash_snapshot_payload" in result.warning.message
