@@ -9,6 +9,7 @@ all, and they must hold on a bare checkout with no environment configured.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -391,23 +392,137 @@ def _is_callback_attempt_override_name(value: str) -> bool:
     )
 
 
+def _is_semantic_callback_attempt_override_name(value: str) -> bool:
+    """Whether one token can name an external fixed-budget override."""
+    return (
+        _is_callback_attempt_override_name(value)
+        # Dotted tokens are runtime member expressions, not an external
+        # setting name (for example ``InboxState.RETRY_WAIT.value``).
+        and "." not in value
+        # Python sources include runtime event labels such as
+        # ``callback_job_attempt_budget_invalid``.  An external control is
+        # either env-style uppercase or names an actual cap/limit/budget.
+        and (
+            value.isupper()
+            or any(word in value.casefold() for word in ("max", "limit", "budget"))
+        )
+    )
+
+
 def find_callback_attempt_override_names(text: str) -> list[str]:
-    """Return semantic external attempt-budget control names in arbitrary text."""
+    """Return semantic external attempt-budget control names in non-Python text."""
     return sorted(
         {
             token
             for token in re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", text)
-            if _is_callback_attempt_override_name(token)
-            # Dotted tokens are runtime member expressions, not an external
-            # setting name (for example ``InboxState.RETRY_WAIT.value``).
-            and "." not in token
-            # Python sources include runtime event labels such as
-            # ``callback_job_attempts_exhausted``.  An external control is
-            # either env-style uppercase or names an actual cap/limit/budget.
-            and (
-                token.isupper()
-                or any(word in token.casefold() for word in ("max", "limit", "budget"))
+            if _is_semantic_callback_attempt_override_name(token)
+        }
+    )
+
+
+def _environment_import_names(
+    tree: ast.AST,
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Resolve common ``os`` module/direct-import aliases without execution."""
+    os_modules = {"os"}
+    getenv_names: set[str] = set()
+    environ_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    os_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "getenv":
+                    getenv_names.add(alias.asname or alias.name)
+                elif alias.name == "environ":
+                    environ_names.add(alias.asname or alias.name)
+    return frozenset(os_modules), frozenset(getenv_names), frozenset(environ_names)
+
+
+def _is_environment_mapping(
+    value: ast.expr,
+    *,
+    os_modules: frozenset[str],
+    environ_names: frozenset[str],
+) -> bool:
+    """Whether an expression denotes ``os.environ`` or a direct import."""
+    return (
+        isinstance(value, ast.Name)
+        and value.id in environ_names
+        or isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id in os_modules
+        and value.attr == "environ"
+    )
+
+
+def _literal_environment_read_name(
+    node: ast.AST,
+    *,
+    os_modules: frozenset[str],
+    getenv_names: frozenset[str],
+    environ_names: frozenset[str],
+) -> str | None:
+    """Return a literal string read through a common process-env API."""
+    value: ast.expr | None = None
+    if isinstance(node, ast.Call) and node.args:
+        if isinstance(node.func, ast.Name) and node.func.id in getenv_names:
+            value = node.args[0]
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "getenv"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in os_modules
+        ):
+            value = node.args[0]
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and _is_environment_mapping(
+                node.func.value,
+                os_modules=os_modules,
+                environ_names=environ_names,
             )
+        ):
+            value = node.args[0]
+    elif isinstance(node, ast.Subscript) and _is_environment_mapping(
+        node.value,
+        os_modules=os_modules,
+        environ_names=environ_names,
+    ):
+        value = node.slice
+
+    if isinstance(value, ast.Constant) and type(value.value) is str:
+        return value.value
+    return None
+
+
+def find_callback_attempt_override_environment_reads(text: str) -> list[str]:
+    """Find literal callback/inbox budget controls read by Python env APIs.
+
+    The app package necessarily contains telemetry labels with callback and
+    budget words.  This walks only direct process-environment reads, so a
+    literal import-time ``os.getenv(...)`` cannot evade the guard while those
+    runtime identifiers remain irrelevant.
+    """
+    tree = ast.parse(text)
+    os_modules, getenv_names, environ_names = _environment_import_names(tree)
+    return sorted(
+        {
+            name
+            for node in ast.walk(tree)
+            if (
+                name := _literal_environment_read_name(
+                    node,
+                    os_modules=os_modules,
+                    getenv_names=getenv_names,
+                    environ_names=environ_names,
+                )
+            )
+            is not None
+            and _is_semantic_callback_attempt_override_name(name)
         }
     )
 
@@ -461,8 +576,30 @@ def _tracked_callback_inbox_sources() -> list[pathlib.Path]:
 )
 def test_attempt_override_discovery_catches_alternate_external_names(name: str) -> None:
     """Mutation-proof the negative scanner against spelling substitutions."""
-    assert find_callback_attempt_override_names(f"value = os.getenv('{name}')") == [
-        name
+    assert find_callback_attempt_override_environment_reads(
+        f"import os\nvalue = os.getenv('{name}')"
+    ) == [name]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import os as runtime_os\n"
+        "value = runtime_os.getenv('ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT')",
+        "from os import getenv as read_env\n"
+        "value = read_env('ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT')",
+        "from os import environ as process_env\n"
+        "value = process_env.get('ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT')",
+        "import os as runtime_os\n"
+        "value = runtime_os.environ['ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT']",
+    ),
+)
+def test_attempt_override_discovery_catches_common_environment_aliases(
+    source: str,
+) -> None:
+    """Aliases and direct imports cannot bypass the Python-source scanner."""
+    assert find_callback_attempt_override_environment_reads(source) == [
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT"
     ]
 
 
@@ -476,11 +613,12 @@ def test_callback_attempt_budget_has_no_settings_or_environment_override() -> No
     )
 
     config_path = repo / "app/core/config.py"
-    sources = [(config_path, config_path.read_text(encoding="utf-8"))]
+    sources = [(config_path, config_path.read_text(encoding="utf-8"), True)]
     callback_inbox_sources = _tracked_callback_inbox_sources()
     assert any(path.name == "service.py" for path in callback_inbox_sources)
     sources.extend(
-        (path, path.read_text(encoding="utf-8")) for path in callback_inbox_sources
+        (path, path.read_text(encoding="utf-8"), True)
+        for path in callback_inbox_sources
     )
     deployment_files = _tracked_deployment_files()
     deployment_names = {path.name for path in deployment_files}
@@ -491,10 +629,15 @@ def test_callback_attempt_budget_has_no_settings_or_environment_override() -> No
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:  # pragma: no cover - tracked binary surface
             continue
-        sources.append((path, text))
+        sources.append((path, text, False))
     source_offenders: list[str] = []
-    for path, text in sources:
-        for name in find_callback_attempt_override_names(text):
+    for path, text, is_python_source in sources:
+        names = (
+            find_callback_attempt_override_environment_reads(text)
+            if is_python_source
+            else find_callback_attempt_override_names(text)
+        )
+        for name in names:
             source_offenders.append(f"{path.relative_to(repo)}: {name}")
 
     assert settings_offenders == []
