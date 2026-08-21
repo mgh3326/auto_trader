@@ -169,6 +169,7 @@ tests/services/mock_integration/test_rob1266_us_readiness_contract.py
 tests/services/naver_finance/test_detail_cache_store.py
 tests/services/order_proposals/callback_inbox/test_gates_and_registration.py
 tests/services/order_proposals/callback_inbox/test_migration_chain.py
+tests/services/order_proposals/callback_inbox/test_no_auto_activation.py
 tests/services/order_proposals/callback_inbox/test_production_wiring.py
 tests/services/order_proposals/callback_inbox/test_recovery.py
 tests/services/order_proposals/callback_inbox/test_retry_contract_surfaces.py

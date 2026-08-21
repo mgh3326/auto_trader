@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -608,6 +609,120 @@ async def test_a_rejected_update_never_reaches_the_real_producer(
         result = await ingest_callback_update(update, now=now_kst())
         assert result.accepted is False
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_the_configured_timeout_is_the_one_handed_to_wait_for(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
+) -> None:
+    """R24 — the *default producer* path, with the exact value spied on.
+
+    The elapsed-time assertion below bounds the wait, but a conditional that
+    ignored the setting on the default path and used its own number could
+    still sit inside a generous bound. This reads the value actually passed
+    to ``asyncio.wait_for`` on a run where nothing overrides ``enqueue_fn``.
+    """
+    import asyncio as _asyncio
+
+    from app.core.config import settings
+    from app.core.taskiq_broker import broker
+    from app.services.order_proposals.callback_inbox import ingress as ingress_module
+    from app.services.order_proposals.callback_inbox.ingress import (
+        ingest_callback_update,
+    )
+
+    configured = 0.37
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
+        configured,
+        raising=False,
+    )
+
+    timeouts: list[float | None] = []
+    real_wait_for = _asyncio.wait_for
+
+    async def _spy_wait_for(awaitable, timeout):
+        timeouts.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(ingress_module.asyncio, "wait_for", _spy_wait_for)
+
+    sent: list[Any] = []
+
+    async def _fake_transport(message):
+        sent.append(message)
+
+    monkeypatch.setattr(broker, "kick", _fake_transport)
+
+    update_id = 994_000 + uuid.uuid4().int % 10_000
+    result = await ingest_callback_update(
+        make_update(
+            data=_synthetic_data(),
+            update_id=update_id,
+            callback_id=f"cbq-{update_id}",
+        ),
+        now=now_kst(),
+    )
+    assert result.job_id is not None
+    inbox_cleanup.append(result.job_id)
+
+    assert result.enqueued is True
+    assert len(sent) == 1
+    assert timeouts == [configured], (
+        f"the default producer was given {timeouts!r}, not the configured {configured}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_default_producer_gives_up_at_the_configured_timeout(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
+) -> None:
+    """R24 — and the real `.kiq` path really stops there, deterministically."""
+    from app.core.config import settings
+    from app.core.taskiq_broker import broker
+    from app.services.order_proposals.callback_inbox.ingress import (
+        ingest_callback_update,
+    )
+
+    configured = 0.3
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
+        configured,
+        raising=False,
+    )
+
+    entered = asyncio.Event()
+
+    async def _hangs(message):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(broker, "kick", _hangs)
+
+    update_id = 996_000 + uuid.uuid4().int % 10_000
+    began = time.monotonic()
+    result = await ingest_callback_update(
+        make_update(
+            data=_synthetic_data(),
+            update_id=update_id,
+            callback_id=f"cbq-{update_id}",
+        ),
+        now=now_kst(),
+    )
+    elapsed = time.monotonic() - began
+    assert result.job_id is not None
+    inbox_cleanup.append(result.job_id)
+
+    assert entered.is_set(), "the real producer was never reached"
+    assert result.accepted is True
+    assert result.enqueued is False
+    assert configured <= elapsed < configured + 1.0, elapsed
+
+    row = await load_job(result.job_id)
+    assert row is not None
+    assert row.state == "pending"
 
 
 @pytest.mark.asyncio
