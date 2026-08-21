@@ -523,10 +523,10 @@ async def test_every_tier_keeps_a_deterministic_age_order(
 
     async with AsyncSessionLocal() as session:
         first = await CallbackInboxService(session).claimable_job_ids(
-            now=now_kst(), limit=50
+            now=now_kst(), limit=50, tier_start=0
         )
         second = await CallbackInboxService(session).claimable_job_ids(
-            now=now_kst(), limit=50
+            now=now_kst(), limit=50, tier_start=0
         )
         await session.rollback()
 
@@ -767,7 +767,7 @@ async def test_ties_on_received_at_are_broken_deterministically(
         async with AsyncSessionLocal() as session:
             orders.append(
                 await CallbackInboxService(session).claimable_job_ids(
-                    now=now_kst(), limit=50
+                    now=now_kst(), limit=50, tier_start=0
                 )
             )
             await session.rollback()
@@ -937,7 +937,7 @@ async def test_a_fresh_service_and_session_produce_the_same_order(
         async with AsyncSessionLocal() as session:
             orders.append(
                 await CallbackInboxService(session).claimable_job_ids(
-                    now=now_kst(), limit=50
+                    now=now_kst(), limit=50, tier_start=0
                 )
             )
             await session.rollback()
