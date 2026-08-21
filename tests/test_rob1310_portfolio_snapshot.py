@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
@@ -2842,3 +2843,201 @@ async def test_toss_portfolio_snapshot_scopes_do_not_share_cached_values(
     # Each scope owns a distinct Redis key -- no shared storage slot.
     assert cache_a._cache_key("positions") != cache_b._cache_key("positions")
     assert await redis_client.get(cache_b._cache_key("positions")) is not None
+
+
+# ---------------------------------------------------------------------------
+# ROB-1310 R10 (B5, R9 independent-verifier blocker) -- an identity-less
+# injected client passed to the explicit shared-snapshot path must never fall
+# back to the static settings-derived process-global cache scope. Two
+# distinct identity-less injected clients must not exchange positions/cash.
+# A client that declares a trustworthy ``snapshot_scope_identity`` may still
+# share/dedupe the shared cache under that (hashed) identity.
+# ---------------------------------------------------------------------------
+
+_UNSET = object()
+
+
+def _holding_with_symbol(symbol: str) -> TossHoldingItem:
+    return TossHoldingItem(
+        symbol=symbol,
+        name=symbol,
+        market_country="US",
+        currency="USD",
+        quantity=Decimal("10"),
+        last_price=Decimal("110"),
+        average_purchase_price=Decimal("100"),
+        market_value={"amount": Decimal("1100")},
+        profit_loss={"amount": Decimal("100"), "rate": Decimal("0.1")},
+        daily_profit_loss={},
+        cost={},
+    )
+
+
+class _SymbolTossClient:
+    """Fake Toss client returning one configurable holding symbol.
+
+    ``snapshot_identity`` left at the default sentinel models a pre-existing
+    fake/injected client that does not know about the ``snapshot_scope_identity``
+    protocol at all (attribute absent) -- the realistic "identity-less" shape.
+    Passing an explicit string models a client that declares a trustworthy
+    scope identity.
+    """
+
+    def __init__(self, symbol: str, *, snapshot_identity: Any = _UNSET) -> None:
+        self.holdings_calls = 0
+        self._symbol = symbol
+        if snapshot_identity is not _UNSET:
+            self.snapshot_scope_identity = snapshot_identity
+
+    async def holdings(self) -> TossHoldings:
+        self.holdings_calls += 1
+        return TossHoldings(items=[_holding_with_symbol(self._symbol)])
+
+    async def sellable_quantity(self, *, symbol: str):
+        raise AssertionError(
+            f"general snapshot must not call sellable_quantity: {symbol}"
+        )
+
+    async def buying_power(self, *, currency: str):
+        return SimpleNamespace(currency=currency, cash_buying_power=Decimal("100"))
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_identityless_injected_clients_do_not_share_shared_snapshot_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ROB-1310 R10 / B5 (R9 independent verifier blocker).
+
+    ``fetch_toss_portfolio_snapshot(client=<identity-less>, use_shared_snapshot=True)``
+    with no explicit ``snapshot_cache`` must not fall back to the static
+    settings-derived global scope. Two distinct identity-less injected clients
+    sharing the same underlying Redis must each fetch and see only their own
+    data, and the identity-less path must not write any shared positions/cash
+    key at all.
+    """
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+
+    caplog.set_level("DEBUG")
+    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    monkeypatch.setattr(cache_module.redis, "from_url", lambda *a, **k: fake_redis)
+    try:
+        client_a = _SymbolTossClient("AAA")
+        client_b = _SymbolTossClient("BBB")
+
+        snapshot_a = await fetch_toss_portfolio_snapshot(
+            client=client_a, need_cash=False, use_shared_snapshot=True
+        )
+        snapshot_b = await fetch_toss_portfolio_snapshot(
+            client=client_b, need_cash=False, use_shared_snapshot=True
+        )
+
+        assert snapshot_a.positions[0].symbol == "AAA"
+        assert snapshot_b.positions[0].symbol == "BBB"
+        assert client_a.holdings_calls == 1
+        assert client_b.holdings_calls == 1
+
+        shared_cache = cache_module.get_shared_portfolio_snapshot_cache()
+        assert await shared_cache.get("positions") is None
+        raw_keys = [key async for key in fake_redis.scan_iter("*")]
+        assert raw_keys == [], (
+            "identity-less injected clients must never write a shared "
+            f"positions/cash key: {raw_keys}"
+        )
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_trusted_injected_identity_shares_singleflight_scope_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ROB-1310 R10 / B5: two injected clients that declare the SAME
+    trustworthy ``snapshot_scope_identity`` and share one fakeredis-backed
+    process cache must dedupe to exactly one upstream holdings fetch, and the
+    raw identity string must never appear in a Redis key or a log record."""
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+
+    caplog.set_level("DEBUG")
+    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    monkeypatch.setattr(cache_module.redis, "from_url", lambda *a, **k: fake_redis)
+    try:
+        client_a = _SymbolTossClient("AAA", snapshot_identity="shared-account-x")
+        client_b = _SymbolTossClient("BBB", snapshot_identity="shared-account-x")
+
+        snapshot_a = await fetch_toss_portfolio_snapshot(
+            client=client_a, need_cash=False, use_shared_snapshot=True
+        )
+        snapshot_b = await fetch_toss_portfolio_snapshot(
+            client=client_b, need_cash=False, use_shared_snapshot=True
+        )
+
+        # Same trustworthy identity dedupes -- client_b never fetches; it
+        # reuses client_a's already-cached result under the shared identity.
+        assert client_a.holdings_calls == 1
+        assert client_b.holdings_calls == 0
+        assert snapshot_a.positions[0].symbol == "AAA"
+        assert snapshot_b.positions[0].symbol == "AAA"
+
+        raw_keys = [key async for key in fake_redis.scan_iter("*")]
+        assert raw_keys, "trusted identity must write exactly one shared cache key"
+        for key in raw_keys:
+            assert "shared-account-x" not in key
+        assert "shared-account-x" not in caplog.text
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_different_trusted_injected_identities_isolate_cash_and_lock_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ROB-1310 R10 / B5: distinct trustworthy identities must isolate not
+    only positions but cash and the singleflight lock namespace too -- and
+    never leak either raw identity string into a Redis key or a log."""
+    import app.services.toss_portfolio_snapshot_cache as cache_module
+
+    caplog.set_level("DEBUG")
+    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_module.reset_shared_portfolio_snapshot_cache()
+    monkeypatch.setattr(cache_module.redis, "from_url", lambda *a, **k: fake_redis)
+    try:
+        client_a = _SymbolTossClient("AAA", snapshot_identity="scope-a")
+        client_b = _SymbolTossClient("BBB", snapshot_identity="scope-b")
+
+        snapshot_a = await fetch_toss_portfolio_snapshot(
+            client=client_a, need_cash=True, use_shared_snapshot=True
+        )
+        snapshot_b = await fetch_toss_portfolio_snapshot(
+            client=client_b, need_cash=True, use_shared_snapshot=True
+        )
+
+        assert client_a.holdings_calls == 1
+        assert client_b.holdings_calls == 1
+        assert snapshot_a.positions[0].symbol == "AAA"
+        assert snapshot_b.positions[0].symbol == "BBB"
+        assert snapshot_a.cash_krw == Decimal("100")
+        assert snapshot_b.cash_krw == Decimal("100")
+
+        raw_keys = [key async for key in fake_redis.scan_iter("*")]
+        # Positions AND cash AND the singleflight lock namespace must all be
+        # isolated per identity -- at least 4 distinct keys (2 identities x
+        # {positions, cash}); locks are released after use so may not remain.
+        assert len(set(raw_keys)) >= 4
+        for key in raw_keys:
+            assert "scope-a" not in key
+            assert "scope-b" not in key
+        assert "scope-a" not in caplog.text
+        assert "scope-b" not in caplog.text
+    finally:
+        cache_module.reset_shared_portfolio_snapshot_cache()
