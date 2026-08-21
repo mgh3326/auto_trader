@@ -162,13 +162,14 @@ The exact cyclic order is malformed active budgets, exhausted canonical
 The scan still makes four separately bounded candidate SELECTs with
 deterministic `received_at, job_id` ordering inside each tier, then starts its
 round-robin emission at the committed tier. This is **cross-tier** fairness:
-with persistent runnable work, every tier is offered within
-`ceil(4 / min(limit, 4))` successful reservations. It does not promise
-per-row fairness behind a permanently lock-contended head. The staleness
-window is a **scan filter, never an authority**: a "stale" row whose lock is
-held is skipped. The candidate cap bounds returned rows/queries, not the
-physical index work required to find them. Reports counts by state plus one
-age — no identifiers.
+after the last interrupted or burned reservation, every persistent runnable
+tier is offered within `ceil(4 / q)` consecutive sweeps that reach candidate
+processing, where `q = min(limit, 4)`. It does not promise per-row fairness
+behind a permanently lock-contended head; an offered row still requires its
+advisory lock. The staleness window is a **scan filter, never an authority**:
+a "stale" row whose lock is held is skipped. The candidate cap bounds returned
+rows/queries, not the physical index work required to find them. Reports counts
+by state plus one age — no identifiers.
 
 `max_attempts` is fixed at `3` and is not configurable. Malformed active budgets terminalize as `dead_letter` / `attempt_budget_invalid`, normalize `max_attempts` to `3`, clamp `attempt_count` to `0..3`, and scrub authority before the handler.
 
