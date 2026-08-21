@@ -287,7 +287,9 @@ class SupportReserveNetAddCandidatePolicy(BaseModel):
     sizing_price: Literal["proposed_limit_price"]
     a_limit_lte_zero: Literal["NO_ORDER"]
     partial_A_limit_fill: Literal["FORBIDDEN"]
-    max_add_symbols_per_market: Literal[1]
+    # §136차 (2026-08-21): 1 → 2 — SOL·XRP 같은 회차 동시 add 허용.
+    # 자격 게이트(R-931 PASS·지지 앵커·A_limit>0·심볼당 1회/버전) 불변.
+    max_add_symbols_per_market: Literal[2]
     max_reserve_net_add_fills_per_symbol_per_policy_version: Literal[1]
     same_day_rearm_after_fill: Literal[False]
     crash_day_averaging_exemption: Literal[False]
@@ -295,8 +297,10 @@ class SupportReserveNetAddCandidatePolicy(BaseModel):
     @field_validator("k_used")
     @classmethod
     def validate_k_used(cls, value: float) -> float:
-        if value != 0.10:
-            raise ValueError("k_used must be 0.10")
+        # §136차 (2026-08-21) 운영자 사이징 결정: 0.10 → 0.20.
+        # 추가분 상한은 여전히 기존 포지션의 20%이며 자격 게이트는 불변.
+        if value != 0.20:
+            raise ValueError("k_used must be 0.20 (§136차; 2026-08-21 전까지 0.10)")
         return value
 
 
@@ -315,7 +319,7 @@ class SupportReserveNetPriorityRules(BaseModel):
     add_candidate_rank: Literal["SECONDARY_CANDIDATE_POOL"]
     add_candidate_r931_review_required: Literal["PASS"]
     add_candidate_a_limit_10: Literal["FULLY_SATISFIED"]
-    max_add_symbols_per_market: Literal[1]
+    max_add_symbols_per_market: Literal[2]
     same_intent_class_sort_order: list[str]
     exact_tie_break: Literal["NEW_BEFORE_ADD"]
 
@@ -394,6 +398,11 @@ class SupportReserveNetDecisionRule(BaseModel):
     all_pending_buy_required_cash_hard_cap_pct: Literal[90]
     tier_armed_required_cash_cap_pct: Literal[50]
     max_owned_or_open_symbols_per_market: Literal[2]
+    # §136차 (2026-08-21): the symbol cap bounds NEW-entry spread. An add to
+    # an already-owned lot does not grow the symbol count, so it is exempt —
+    # the 2026-08-21 20:20 crypto session measured this cap (5 held symbols
+    # > 2) blocking every A(k) add, which was never the cap's intent.
+    owned_symbol_add_exempt_from_symbol_cap: Literal[True]
     max_active_orders_per_symbol: Literal[1]
     max_symbols_per_sector_cluster: Literal[1]
     unknown_sector: Literal["INELIGIBLE"]
