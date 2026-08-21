@@ -97,7 +97,12 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
     assert _MCP_PROMPT_RESULT_CONTENT_KEY == "mcp.prompt.result.message_content"
     transaction_event = {
         "transaction": "POST http://127.0.0.1:8765/mcp",
-        "tags": {f"{_MCP_REQUEST_ARGUMENT_PREFIX}tagged": _QUERY_SENTINEL},
+        "tags": {
+            f"{_MCP_REQUEST_ARGUMENT_PREFIX}tagged": _QUERY_SENTINEL,
+            "mcp.profile": "hermes-paper-kis",
+            "mcp.session_label": "operator-session",
+            "mcp.lane": "evidence",
+        },
         "contexts": {
             "mcp_tool_call": {
                 "tool_name": "query_tool",
@@ -121,6 +126,9 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
                 "data": {
                     "mcp.tool.name": "query_tool",
                     "mcp.method.name": "tools/call",
+                    "mcp.profile": "hermes-paper-kis",
+                    "mcp.session_label": "operator-session",
+                    "mcp.lane": "evidence",
                     f"{_MCP_REQUEST_ARGUMENT_PREFIX}query": _QUERY_SENTINEL,
                     SPANDATA.MCP_PROMPT_NAME: "query_prompt",
                     SPANDATA.MCP_PROMPT_RESULT_MESSAGE_ROLE: "user",
@@ -167,6 +175,12 @@ def test_false_gate_removes_generic_mcp_payload_from_transaction_and_error_event
     assert span["data"][SPANDATA.MCP_PROMPT_NAME] == "query_prompt"
     assert span["data"][SPANDATA.MCP_PROMPT_RESULT_MESSAGE_ROLE] == "user"
     assert span["data"][SPANDATA.MCP_PROMPT_RESULT_MESSAGE_COUNT] == 1
+    assert scrubbed_transaction["tags"]["mcp.profile"] == "hermes-paper-kis"
+    assert scrubbed_transaction["tags"]["mcp.session_label"] == "operator-session"
+    assert scrubbed_transaction["tags"]["mcp.lane"] == "evidence"
+    assert span["data"]["mcp.profile"] == "hermes-paper-kis"
+    assert span["data"]["mcp.session_label"] == "operator-session"
+    assert span["data"]["mcp.lane"] == "evidence"
     assert span["status"] == "ok"
     assert span["start_timestamp"] == 1000.1
     assert span["timestamp"] == 1000.4

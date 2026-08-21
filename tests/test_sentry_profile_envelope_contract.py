@@ -162,6 +162,16 @@ def test_sampled_transaction_yields_linked_profile_and_transaction_items(monkeyp
         transaction_event_id,
         linked_transaction_ids,
     )
+    profile_transaction = next(
+        entry
+        for entry in profile_payload["transactions"]
+        if entry["id"] == transaction_payload["event_id"]
+    )
+    assert (
+        profile_transaction["trace_id"]
+        == transaction_payload["contexts"]["trace"]["trace_id"]
+    )
+    assert profile_transaction["name"] == transaction_payload["transaction"]
 
 
 @pytest.mark.unit

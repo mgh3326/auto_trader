@@ -33,6 +33,9 @@ _PII_TRUE_RE = re.compile(r"SENTRY_SEND_DEFAULT_PII\s*=\s*true", re.IGNORECASE)
 _MCP_PROMPTS_TRUE_RE = re.compile(
     r"SENTRY_MCP_INCLUDE_PROMPTS\s*=\s*true", re.IGNORECASE
 )
+_MCP_PROMPTS_FALSE_RE = re.compile(
+    r"SENTRY_MCP_INCLUDE_PROMPTS\s*=\s*false", re.IGNORECASE
+)
 
 
 @pytest.mark.unit
@@ -55,6 +58,17 @@ def test_doc_does_not_advertise_mcp_prompts_default_on(relative_path):
     assert match is None, (
         f"{relative_path} advertises SENTRY_MCP_INCLUDE_PROMPTS=true; MCP "
         "prompt/result content collection must stay default-off"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative_path", _SENTRY_PII_DOC_FILES)
+def test_doc_positively_advertises_mcp_prompts_default_off(relative_path):
+    text = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    assert _MCP_PROMPTS_FALSE_RE.search(text), (
+        f"{relative_path} must explicitly advertise "
+        "SENTRY_MCP_INCLUDE_PROMPTS=false so the default-off contract is "
+        "copyable and reviewable"
     )
 
 
