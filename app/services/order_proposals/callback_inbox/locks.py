@@ -11,6 +11,15 @@ this the right primitive and each of them is load-bearing:
     commits -- including the worker's own ``processing`` commit -- re-opening
     the window the lock exists to close.
 
+committed immediately, but still held
+    The transaction opened by ``pg_try_advisory_lock`` is committed as soon
+    as the result is read. A session-level advisory lock outlives the
+    transaction that took it, so the lock is unaffected -- but the backend
+    stops being ``idle in transaction``, which it otherwise would be for the
+    entire handler. That matters because
+    ``idle_in_transaction_session_timeout`` would then terminate it mid-job
+    and release the lock without anything noticing.
+
 a dedicated connection, not the ORM session
     A session-level lock taken on a pooled ORM connection outlives the
     ``AsyncSession``: the backend goes back to the pool still holding it, and
@@ -170,6 +179,26 @@ class PostgresJobAdvisoryLock:
             acquired = bool(
                 (await connection.execute(_TRY_ACQUIRE, {"key": key})).scalar_one()
             )
+            if acquired:
+                # Close the transaction, not the lock. A session-level
+                # advisory lock survives ``COMMIT`` -- that is why this module
+                # uses the session-scoped form -- so the lock is still held
+                # afterwards and the backend stops being ``idle in
+                # transaction`` for the whole handler (R30).
+                #
+                # If it stayed open and ``idle_in_transaction_session_timeout``
+                # were shorter than a job, PostgreSQL would terminate the
+                # backend, and that releases every advisory lock it held --
+                # silently, while the coroutine that believes it owns the job
+                # keeps running. Same-job exclusion would depend on a server
+                # setting this repository does not control.
+                #
+                # Deliberately inside this ``try`` and before
+                # ``self._connection`` is set: a failed commit is an ambiguous
+                # acquire like any other, so it must terminate rather than
+                # pool, and the handler must not run. Committing after the
+                # boundary would open exactly the window this closes.
+                await connection.commit()
         except BaseException as original:
             # The acquire is ambiguous, not failed: the server may have
             # granted the lock before the client lost the result. So this
