@@ -345,6 +345,68 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
     return value
 
 
+_MCP_REQUEST_ARGUMENT_PREFIX = "mcp.request.argument."
+_MCP_TOOL_CALL_CONTEXT_KEY = "mcp_tool_call"
+
+
+def _is_mcp_payload_field(key: str) -> bool:
+    """Return whether ``key`` names MCP input/output payload content.
+
+    MCPIntegration uses these stable public span-data names for arguments and
+    result content.  Keep the classifier deliberately narrow so protocol
+    identity, lane/profile metadata, timings, statuses, measurements, and
+    tool/prompt names remain available for observability.
+    """
+    normalized = key.lower()
+    return normalized.startswith(_MCP_REQUEST_ARGUMENT_PREFIX) or (
+        normalized.startswith("mcp.")
+        and ".result." in normalized
+        and normalized.endswith(".content")
+    )
+
+
+def _scrub_mcp_payload_in_place(value: Any, parent_key: str | None = None) -> Any:
+    """Remove MCP payloads when prompt/result collection is not opted in.
+
+    This is an outbound event transform, not an SDK-private hook.  The MCP
+    integration and the application middleware can both place request data in
+    spans, tags, breadcrumbs, extras, or contexts, so the same recursive
+    default-deny pass is applied at every public ``before_send*`` seam.
+    ``mcp_tool_call.arguments`` is the application's structured error context;
+    the tool name is retained while its raw argument mapping is removed.
+    """
+    if settings.SENTRY_MCP_INCLUDE_PROMPTS:
+        return value
+
+    if isinstance(value, dict):
+        if parent_key and parent_key.lower() == _MCP_TOOL_CALL_CONTEXT_KEY:
+            for key in list(value):
+                if str(key).lower() == "arguments":
+                    del value[key]
+
+        for key, nested_value in list(value.items()):
+            if _is_mcp_payload_field(str(key)):
+                if isinstance(nested_value, str) and nested_value in {
+                    "[Filtered]",
+                    _SYMBOL_REDACTION,
+                }:
+                    continue
+                del value[key]
+                continue
+            value[key] = _scrub_mcp_payload_in_place(nested_value, str(key))
+        return value
+
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _scrub_mcp_payload_in_place(item, parent_key)
+        return value
+
+    if isinstance(value, tuple):
+        return tuple(_scrub_mcp_payload_in_place(item, parent_key) for item in value)
+
+    return value
+
+
 def _before_send(event: Event, hint: Hint) -> Event | None:
     logger_name, message = _extract_log_context(event, hint)
     if _is_healthcheck_access_log(logger_name, message):
@@ -357,7 +419,8 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_expected_mcp_argument_noise(logger_name, message, event):
         return None
-    return _sanitize_in_place(event)
+    event = _sanitize_in_place(event)
+    return _scrub_mcp_payload_in_place(event)
 
 
 def _before_breadcrumb(crumb: Breadcrumb, hint: Hint) -> Breadcrumb | None:
@@ -367,7 +430,8 @@ def _before_breadcrumb(crumb: Breadcrumb, hint: Hint) -> Breadcrumb | None:
     if isinstance(category, str) and isinstance(message, str):
         if _is_healthcheck_access_log(category, message):
             return None
-    return _sanitize_in_place(crumb)
+    crumb = _sanitize_in_place(crumb)
+    return _scrub_mcp_payload_in_place(crumb)
 
 
 def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
@@ -382,16 +446,17 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
         return None
     if _is_expected_mcp_argument_noise(logger_name, message):
         return None
-    return _sanitize_in_place(sentry_log)
+    sentry_log = _sanitize_in_place(sentry_log)
+    return _scrub_mcp_payload_in_place(sentry_log)
 
 
 def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     del hint
 
     transaction_name = event.get("transaction", "")
-    if not isinstance(transaction_name, str):
-        return event
-    is_mcp_transport_transaction = "/mcp" in transaction_name
+    is_mcp_transport_transaction = (
+        isinstance(transaction_name, str) and "/mcp" in transaction_name
+    )
 
     # ROB-1305: one coherent whole-event sanitization boundary, reused by
     # error events (_before_send), logs (_before_send_log), breadcrumbs
@@ -404,6 +469,8 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     # through unchanged; span descriptions/data for spans of every op (not
     # just mcp.server) are covered by the same pass.
     event = _sanitize_in_place(event)
+    if not isinstance(transaction_name, str):
+        return _scrub_mcp_payload_in_place(event)
 
     spans = event.get("spans", [])
     if not isinstance(spans, list):
@@ -437,6 +504,8 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
             transaction_info["source"] = "custom"
             event["transaction_info"] = transaction_info
             transaction_renamed = True
+
+    event = _scrub_mcp_payload_in_place(event)
 
     if found_mcp_span:
         return event

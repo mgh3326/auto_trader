@@ -27,10 +27,11 @@ proof:
   and an in-memory transport. Confirms:
   - a transaction sampled with `traces_sample_rate=1.0,
     profiles_sample_rate=1.0` yields one envelope with both a `transaction`
-    and a `profile` item, linked via `profile.transactions[0].id ==
-    transaction.event_id` (the actual sentry-sdk 2.x linkage mechanism —
-    **not** a `contexts.profile` field, which this SDK version does not
-    populate on the transaction event).
+    and a `profile` item. The matching `profile.transactions[]` record has
+    `id == transaction.event_id`, `trace_id == transaction.contexts.trace.trace_id`,
+    and `name == transaction.transaction` after final scrubbing. These are
+    the actual sentry-sdk 2.x linkage fields — **not** a `contexts.profile`
+    field, which this SDK version does not populate on the transaction event.
   - `profiles_sample_rate` alone is **not sufficient**: with
     `traces_sample_rate=0.0`, no profile is produced even at
     `profiles_sample_rate=1.0`. The transaction profiler piggybacks on trace
@@ -38,10 +39,18 @@ proof:
   - an MCP `tools/call` transaction with a secret-KEY-named span field
     (`mcp.request.argument.api_key`) is scrubbed to `[Filtered]`, the
     `mcp.server` span and the `tools/call <tool>` transaction rename survive,
-    and the profile item is still present and linked.
+    and the profile item is still present and linked by id, trace id, and final
+    transaction name.
   - the ROB-1880 repo-wide socket guard reports zero blocked network
     attempts for every test in this file (`ROB-1296 external HTTP boundary:
     0 blocked requests` / `ROB-1880 socket guard: ... blocked_attempts=0`).
+- `tests/test_sentry_mcp_payload_contract.py` — uses serialized in-memory
+  events and envelopes to prove that `SENTRY_MCP_INCLUDE_PROMPTS=false`
+  removes generic MCP request arguments and tool/prompt result content from
+  spans, contexts, tags, breadcrumbs, extras, and MCP error-event context,
+  while preserving `mcp.server`, `tools/call <tool>`, lane/profile metadata,
+  timing/status, and measurements. Explicit `true` permits non-sensitive
+  payload but leaves the credential/PII scrubber in force.
 - `tests/test_sentry_process_config_seam.py` — AST-extracts the actual
   `init_sentry(...)` call from each of the four process entrypoints
   (`app/main.py`, `app/core/taskiq_broker.py` ×2 for worker/scheduler,
@@ -84,42 +93,34 @@ version. Consequence, confirmed empirically
 (`test_profile_frames_carry_unscrubbed_filesystem_paths`):
 
 - Profile item frames (`profile.frames[]`) carry real `abs_path` /
-  `filename` / `module` / `function` values — e.g. this repo's own source
-  tree path on whatever host runs the process (locally, or `/app/...` in the
-  production container image, per `_BUILD_VCS_REF_PATH`).
-- This is **not** a secret-value leak: sentry-sdk's transaction profiler is
-  a statistical stack sampler — it records which function/file/line was
-  executing, never local variable values. A fake secret placed in a local
-  variable during the sampled call never appears in the frame data (verified
-  in the same test). This differs from *exception* stack traces with
-  captured locals, which this repo's existing `_before_send`/
-  `_sanitize_in_place` scrubber does cover.
-- This is architecturally consistent with how this repo already treats
-  frame metadata for regular error events — `abs_path`/`filename` on
-  exception frames are not redacted there either; only known-sensitive
-  keys/values are.
-- No public-SDK remediation path exists today. If the operator later decides
-  container filesystem paths in profile data are unacceptable disclosure,
-  that is a **separate decision** requiring either a private-SDK-internals
-  workaround (against this repo's "public SDK APIs only" invariant) or
-  waiting on upstream sentry-sdk to add a profile-scrubbing hook — it is
-  called out here, not silently left as an unstated assumption.
+  `filename` / `module` / `function` values. These paths may expose host,
+  user, repository/project, or sensitive path-component names; this runbook
+  does **not** classify them as harmless or universally non-PII.
+- The profiler is a statistical stack sampler and does not place ordinary
+  local-variable values in frame metadata (verified by the test above), but
+  that does not remove the residual path-disclosure risk. Public sentry-sdk
+  2.57.0 has no `before_send_profile` or equivalent profile-item scrub hook.
+- Therefore production profiling requires operator risk acceptance of this
+  residual and a fixed synthetic canary only. Do not put user, broker, MCP,
+  prompt, or other sensitive workload data into the canary. Removing or
+  rewriting profile paths would require an explicit separate decision and a
+  public SDK capability; this repository does not use private SDK hooks or
+  envelope monkeypatching.
 
-## MCP tool-argument scrubbing: existing scope, not changed here
+## MCP payload collection contract (ROB-1305 R6)
 
-`app/monitoring/sentry.py::_safe_mcp_span_argument` scrubs
-`mcp.request.argument.*` span data by known sensitive key name/shape
-(`_SENSITIVE_KEYWORDS`) and known high-cardinality symbol field names
-(`_SYMBOL_FIELD_NAMES`) — it is not a blanket suppression of every argument
-value. Free-text tool arguments that don't match either list are recorded
-(truncated to 1024 chars) as span data by design (ROB-1305). This PR
-verifies the existing key-name-based scrub (a secret-named field like
-`api_key` is filtered) and leaves that scope untouched — widening it to
-suppress arbitrary free-text argument content is a separate decision outside
-this diagnosis brief, and the hard invariant here is to *preserve* the
-ROB-1305 scrubber, not redesign it. `SENTRY_MCP_INCLUDE_PROMPTS` (the SDK's
-own MCP-integration prompt/result capture toggle, independent of the above)
-remains default `false` everywhere, verified by the doc-drift tests above.
+At the shared public `before_send`, `before_send_transaction`,
+`before_send_log`, and `before_breadcrumb` seams, the default-deny transform
+removes every `mcp.request.argument.*` value and generic tool/prompt result
+content when `SENTRY_MCP_INCLUDE_PROMPTS=false`. It applies recursively across
+span data, contexts, tags, breadcrumbs, extras, and MCP error events. The
+`mcp.server` span, `tools/call <tool>` name, method/tool identity,
+lane/profile metadata, timing/status, and measurements remain usable.
+
+An explicit `SENTRY_MCP_INCLUDE_PROMPTS=true` permits non-sensitive MCP
+payload collection, but the existing key-name, value-shape, query/header, and
+symbol scrubbers still run and remove credential/PII fixtures. This gate does
+not use private SDK hooks, delete MCP spans, or rename away `tools/call`.
 
 ## Diagnosing after deploy (operator-only)
 
@@ -140,7 +141,9 @@ remains default `false` everywhere, verified by the doc-drift tests above.
    exit code 2). This sends exactly one fixed transaction
    (`sentry-profiling-canary`, op `canary.cpu_probe`) with a fixed
    deterministic CPU workload — no user input, no free text, no MCP
-   prompt/result, no account/broker data.
+   prompt/result, no account/broker data. The canary is a dedicated non-MCP
+   transaction: it must never use `/mcp`, `mcp.server`, or `tools/call`, so it
+   cannot contaminate MCP usage telemetry.
 5. Check the Sentry UI for a transaction named `sentry-profiling-canary` and
    whether it has a linked profile. Absence at this point means the gap is
    in one of: Sentry org/project entitlement (profiling not enabled on the
