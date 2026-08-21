@@ -28,13 +28,20 @@ Hard invariants:
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 
 from app.core.config import settings
 from app.core.timezone import now_kst
+from app.services.order_proposals.callback_inbox.ingress import (
+    CallbackInboxUnavailable,
+    ingest_callback_update,
+)
 from app.services.order_proposals.telegram_callback import handle_callback_update
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trading/api/telegram", tags=["telegram-approval"])
 
@@ -57,6 +64,50 @@ def _require_enabled() -> None:
         raise _gate_off_503()
 
 
+def _unavailable_503() -> HTTPException:
+    """A deliberately contentless 503 so Telegram retries and nothing leaks.
+
+    Whatever went wrong -- the inbox could not commit, or the consumers are
+    not armed -- the body is identical and says nothing about the database,
+    the driver, the row, or the callback. Diagnosis lives in the logs.
+    """
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={"error": "telegram_callback_unavailable"},
+    )
+
+
+def _require_durable_consumers() -> None:
+    """Refuse durable ingress that nothing would drain.
+
+    Durable mode turns the webhook into "commit and ACK". If no worker and no
+    recovery sweep are armed, that ACK would be a promise nobody keeps, so the
+    ingress fails closed instead. This is a config-level guard; the deployment
+    runbook additionally requires proving the processes are actually up.
+    """
+    if not (
+        settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED
+        and settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED
+    ):
+        logger.error("order_proposals.telegram.durable_consumers_not_armed")
+        raise _unavailable_503()
+
+
+async def _ingest_durably(body: dict[str, Any]) -> None:
+    """Commit the normalized envelope, then let the caller ACK."""
+    _require_durable_consumers()
+    try:
+        await ingest_callback_update(body, now=now_kst())
+    except CallbackInboxUnavailable:
+        raise _unavailable_503() from None
+    except Exception as exc:  # noqa: BLE001 - one sanitized failure mode
+        logger.error(
+            "order_proposals.telegram.durable_ingress_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        raise _unavailable_503() from None
+
+
 @router.post("/callback")
 async def telegram_callback(body: dict[str, Any]) -> dict[str, Any]:
     """Telegram webhook entrypoint for order-proposal approve/deny callbacks.
@@ -68,5 +119,8 @@ async def telegram_callback(body: dict[str, Any]) -> dict[str, Any]:
     internal result — Telegram only inspects the HTTP status.
     """
     _require_enabled()
+    if settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED:
+        await _ingest_durably(body)
+        return {"ok": True}
     await handle_callback_update(body, now=now_kst(), now_fn=now_kst)
     return {"ok": True}

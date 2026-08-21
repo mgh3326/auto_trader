@@ -904,6 +904,28 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
     ORDER_PROPOSALS_SUBMIT_AGENT_ID: str = ""
+    # W5 — durable Telegram callback inbox. Three INDEPENDENT default-off
+    # gates, armed in a fixed order (worker -> recovery schedule + process
+    # restart -> durable ingress); see
+    # docs/runbooks/telegram-callback-durable-inbox.md.
+    #
+    # Turning DURABLE on moves the webhook from "run the whole approval
+    # workflow inline" to "commit a normalized envelope and ACK". That is only
+    # safe if something is actually draining the inbox, so the ingress itself
+    # refuses traffic (sanitized 503) unless the worker and recovery gates are
+    # BOTH on -- a config-level guard, not a documentation-level one.
+    ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED: bool = False
+    # Arms the per-job TaskIQ worker. With this off the task returns
+    # {"status": "disabled"} before touching PostgreSQL at all.
+    ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED: bool = False
+    # Arms the recovery sweep's cron label AND its execution. Recovery runs
+    # handlers, so it is subordinate to the worker gate as well.
+    ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED: bool = False
+    # Read at import time by the schedule label; changing it needs a restart.
+    ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_CRON: str = "* * * * *"
+    # The Redis kick is best-effort: the committed row is the durable ACK, so
+    # a slow or dead broker must never hold the webhook thread open.
+    ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS: float = 2.0
     # B0/B1 loss-cut web surfaces. Both are physically absent from the app
     # unless an operator enables at least one flag after schema rollout.
     INVEST_LOSS_CUT_EVIDENCE_ENABLED: bool = False

@@ -795,6 +795,17 @@ this repo. It:
   default-off Toss fill-poller TaskIQ path may later project confirmed broker
   evidence onto proposal rungs, as required by the Toss loss-cut SLA above.
 
+**Durable inbox (W5), default-off.** The receiver above can be switched from
+"run the whole workflow inline" to "commit a normalized envelope and ACK",
+with a TaskIQ worker and a recovery sweep draining
+`review.telegram_callback_inbox`. All three gates ship `false` and the
+recovery task ships scheduleless, so nothing about this section changes until
+an operator arms them in order. The callback core, and every gate in the
+Approval Flow below, is unchanged — see
+`docs/runbooks/telegram-callback-durable-inbox.md` for the activation
+sequence, the retry algebra (a generic `internal_error` after core entry is
+**not** replayable) and the rollback ordering.
+
 **NOT implemented — long-polling alternative (documented only, out of
 scope).** `scripts/order_proposals_telegram_poller.py` is referenced in the
 plan's "Out of Scope (PR 3)" section as the alternative receiver for

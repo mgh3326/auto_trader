@@ -47,6 +47,7 @@ import logging
 import secrets
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -1664,8 +1665,82 @@ async def _handle_loss_cut_first_click(
     }
 
 
-async def handle_callback_update(
-    update: dict[str, Any],
+@dataclass(frozen=True, slots=True)
+class NormalizedCallback:
+    """One authenticated, allowlisted, parsed Telegram approval click.
+
+    Deliberately mirrors the values ``handle_callback_update`` used to derive
+    inline. ``chat_id``/``message_id``/``telegram_user_id`` keep whatever
+    Telegram sent so the notifier is called with byte-identical arguments;
+    ``chat_id_key`` is the stringified form the allowlist has always compared.
+    """
+
+    callback_query_id: str | None
+    chat_id: Any
+    chat_id_key: str
+    message_id: Any
+    telegram_user_id: Any
+    callback: CallbackEnvelope
+
+    @property
+    def telegram_user_id_str(self) -> str:
+        return "" if self.telegram_user_id is None else str(self.telegram_user_id)
+
+
+class CallbackNotNormalizable(Exception):
+    """The update is not an executable approval click.
+
+    ``reason`` carries the exact legacy result reason, so the inline path's
+    externally observable behaviour is unchanged and the durable ingress can
+    reject the same inputs without persisting anything.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def normalize_callback_update(update: dict[str, Any]) -> NormalizedCallback:
+    """Extract, authorise and parse one update -- and nothing else.
+
+    This is a pure re-arrangement of what ``handle_callback_update`` already
+    did first, in the same order: shape check, chat allowlist, then the
+    existing allowlisted callback-data parser. No authorisation gate lives
+    here that did not live here before, and none of the gates that follow
+    (published-binding preflight, nonce consumption, commit lease, target
+    lock, approval hash) is reachable from this function -- which is what
+    makes it safe for the durable ingress to call it without executing
+    anything.
+    """
+    callback_query = update.get("callback_query")
+    if not isinstance(callback_query, dict):
+        raise CallbackNotNormalizable("not_callback")
+
+    message = callback_query.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    from_user = callback_query.get("from") or {}
+
+    if str(chat_id) not in settings.order_proposals_telegram_chat_allowlist:
+        raise CallbackNotNormalizable("chat_not_allowed")
+
+    try:
+        callback = parse_callback_data(callback_query.get("data"))
+    except ValueError as exc:
+        raise CallbackNotNormalizable("malformed_callback_data") from exc
+
+    return NormalizedCallback(
+        callback_query_id=callback_query.get("id"),
+        chat_id=chat_id,
+        chat_id_key=str(chat_id),
+        message_id=message.get("message_id"),
+        telegram_user_id=from_user.get("id"),
+        callback=callback,
+    )
+
+
+async def handle_normalized_callback(
+    normalized: NormalizedCallback,
     *,
     now: datetime,
     service_factory: ServiceFactory = AsyncSessionLocal,
@@ -1678,37 +1753,33 @@ async def handle_callback_update(
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
 ) -> dict[str, Any]:
-    """Handle one Telegram webhook update. Never raises (fail-closed)."""
-    callback_query_id: str | None = None
+    """Execute one already-normalized callback. Never raises (fail-closed).
+
+    Shared by the inline webhook path and the W5 durable worker. The chat
+    allowlist is re-checked here on purpose: a durable job can sit in the
+    inbox while an operator revokes a chat, and a stored envelope must be
+    re-authorised against current settings rather than trusted because it was
+    authorised once.
+    """
     active_notifier = notifier
     evaluate_window = window_evaluator or evaluate_approval_window
     clock = now_fn or (lambda: now)
     try:
+        if str(normalized.chat_id_key) not in (
+            settings.order_proposals_telegram_chat_allowlist
+        ):
+            return {"handled": False, "reason": "chat_not_allowed"}
+
         if active_notifier is None:
             from app.monitoring.trade_notifier.notifier import get_trade_notifier
 
             active_notifier = get_trade_notifier()
 
-        callback_query = update.get("callback_query")
-        if not isinstance(callback_query, dict):
-            return {"handled": False, "reason": "not_callback"}
-
-        callback_query_id = callback_query.get("id")
-        message = callback_query.get("message") or {}
-        chat = message.get("chat") or {}
-        chat_id = chat.get("id")
-        message_id = message.get("message_id")
-        from_user = callback_query.get("from") or {}
-        telegram_user_id = from_user.get("id")
-        data = callback_query.get("data")
-
-        if str(chat_id) not in settings.order_proposals_telegram_chat_allowlist:
-            return {"handled": False, "reason": "chat_not_allowed"}
-
-        try:
-            callback = parse_callback_data(data)
-        except ValueError:
-            return {"handled": False, "reason": "malformed_callback_data"}
+        callback = normalized.callback
+        callback_query_id = normalized.callback_query_id
+        chat_id = normalized.chat_id
+        message_id = normalized.message_id
+        telegram_user_id = normalized.telegram_user_id
 
         if callback.action == "ba":
             return await _handle_batch_approve(
@@ -1838,6 +1909,52 @@ async def handle_callback_update(
             # call (see module docstring: commit-before-notify ordering) --
             # no end-of-function commit here.
             return result
+    except Exception as exc:  # noqa: BLE001 - fail-closed webhook contract
+        logger.error(
+            "order_proposals.telegram.normalized_callback_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        return {"handled": False, "reason": "internal_error"}
+
+
+async def handle_callback_update(
+    update: dict[str, Any],
+    *,
+    now: datetime,
+    service_factory: ServiceFactory = AsyncSessionLocal,
+    notifier: Any = None,
+    revalidate_fn: RevalidateFn = revalidate_and_submit,
+    loss_cut_preview_fn: RevalidateFn | None = None,
+    veto_cancel_fn: TargetCancelFn = cancel_target_order,
+    veto_fetch_fn: TargetFetchFn = fetch_target_order,
+    veto_toss_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> dict[str, Any]:
+    """Handle one Telegram webhook update inline. Never raises (fail-closed).
+
+    Unchanged externally: normalize, then execute, in the order this function
+    always used. The split exists so the W5 durable ingress can normalize
+    without executing, and the durable worker can execute a stored envelope.
+    """
+    try:
+        try:
+            normalized = normalize_callback_update(update)
+        except CallbackNotNormalizable as rejection:
+            return {"handled": False, "reason": rejection.reason}
+        return await handle_normalized_callback(
+            normalized,
+            now=now,
+            service_factory=service_factory,
+            notifier=notifier,
+            revalidate_fn=revalidate_fn,
+            loss_cut_preview_fn=loss_cut_preview_fn,
+            veto_cancel_fn=veto_cancel_fn,
+            veto_fetch_fn=veto_fetch_fn,
+            veto_toss_reconcile_fn=veto_toss_reconcile_fn,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+        )
     except Exception as exc:  # noqa: BLE001 - fail-closed webhook contract
         logger.error(
             "order_proposals.telegram.callback_handling_failed",

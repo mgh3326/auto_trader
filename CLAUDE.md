@@ -574,6 +574,76 @@ earnings는 전부 quick allowlist에서 제거됐다. 라이브 가격/세션 p
 null이며 `halt_suspect` 근거를 보존한다. DB 장애는 해당 행을 `missing`으로 남기며
 외부 provider로 우회하지 않는다.
 
+### Telegram 승인 콜백 durable inbox (W5)
+
+`POST /trading/api/telegram/callback` 은 지금까지 승인 워크플로 전체(재검증 →
+브로커 제출 → Telegram 메시지 수정)를 **요청 스레드 안에서 인라인 실행**했다.
+Sentry 프로덕션 7일 실측: n=44, avg 3.365s / p50 2.738s / p95 12.707s / max
+13.593s, child 집계는 `http.client`(359 spans, 86.90s)가 DB(3,106 spans, 4.47s)를
+압도. 더 큰 문제는 지연이 아니라 **내구성**이다 — taskiq-redis `ListQueueBroker`
+는 LPUSH/BRPOP 이라 워커가 죽기 전에 메시지가 Redis 에서 이미 사라진다.
+
+**PostgreSQL 이 권한자, TaskIQ 는 opaque job UUID 를 나르는 best-effort 깨우기.**
+Redis 를 잃으면 지연을 잃지 클릭을 잃지 않는다.
+
+- **테이블**: `review.telegram_callback_inbox` (`app/models/telegram_callback_inbox.py`)
+- **마이그레이션**: `alembic/versions/20260821_w5_telegram_callback_inbox.py` (additive)
+- **패키지**: `app/services/order_proposals/callback_inbox/` — `contracts`(닫힌 어휘·digest·lock key) ·
+  `repository`(service 전용) · `service`(유일한 writer) · `locks`(job advisory lock) ·
+  `ingress` · `worker` · `recovery` · `observability`(텔레메트리 allowlist)
+- **TaskIQ**: `app/tasks/telegram_callback_inbox_tasks.py` — `order_proposals.telegram_callback_job`
+  (per-job) + `order_proposals.telegram_callback_recovery` (**scheduleless 출고**)
+- **런북**: `docs/runbooks/telegram-callback-durable-inbox.md`
+
+**콜백 코어는 변경 없음.** `handle_callback_update` 를
+`normalize_callback_update`(shape → chat allowlist → 기존 콜백 파서)와
+`handle_normalized_callback`(그 이후 전부, 순서 동일)로 **분리만** 했다. 인라인
+경로는 여전히 normalize → execute 이고, 승인 게이트(published-binding preflight,
+단일소비 nonce, commit lease, target-mutation lock, approval hash, fresh preview)는
+전부 원래 자리에 있다.
+
+**게이트 3개 전부 default false**:
+- `ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED` — durable ingress
+- `ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED` — per-job 워커
+- `ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED` — 복구 스윕 cron **및** 실행
+
+🔴 durable ingress 는 worker/recovery 게이트가 **둘 다** 켜져 있지 않으면 sanitized
+503 으로 트래픽을 거부한다(설정 레벨 가드 — **프로세스 생존 확인은 런북 §4 절차**).
+활성화 순서: 마이그레이션 → 코드 배포 → worker 게이트 → recovery 게이트 + **스케줄러
+재시작**(schedule 라벨은 import 시점 고정) → ingress 게이트.
+
+**재시도 대수 (🔴 이걸 바꾸기 전에 런북 §5 를 읽을 것)**:
+콜백 코어는 모든 예외를 `{"handled": False, "reason": "internal_error"}` 로 삼킨다.
+그 문자열은 **브로커 leg 가 시작되지 않았다는 증거가 아니다** —
+`revalidate_and_submit` 가 브로커에 닿은 뒤 commit 전에 던져진 예외도 같은 결과이고,
+롤백은 nonce 를 **미소비** 상태로, published binding 을 **유효** 상태로 남긴다.
+재시도하면 합법으로 보이면서 두 번 제출된다.
+
+따라서 재실행 가능한 유일한 부류는 **코어에 진입하지 않았음이 증명된 실패**뿐:
+- `retry_wait` ← pre-core 실패, 또는 typed `mutation_not_started`(현 코어는 절대 안 씀)
+- `succeeded` ← `handled=True` (`results: ["unverified"]` 포함 — 모호한 *전송*은
+  proposal/order 상태머신 소관이고, 콜백 재실행은 해결이 아니라 중복 위험)
+- `discarded` ← 명시적 비즈니스 거부(nonce_replay/expired/guard_blocked/…), chat 취소,
+  복원 불가 envelope
+- `dead_letter` ← 코어 진입 후 `internal_error`·크래시·contract 위반, 또는 3회 소진.
+  **자동 replay 없음. 권한 필드 스크럽됨. 운영자가 새 승인 카드를 발급해야 한다.**
+
+내구 마커 2개가 프로세스가 죽은 뒤에도 이 판정을 가능하게 한다:
+`handler_entered_at`(코어 호출 직전 단독 커밋 — "진입 전 사망"과 "진입 후 사망"의
+유일한 내구 차이) / `handler_completed_at` + `terminal_state_pending`(코어 반환 직후
+단독 커밋 — 마지막 커밋을 잃으면 recovery 가 **재실행이 아니라 스크럽 보수**를 한다).
+
+**데이터 최소화 = 스키마 속성**: raw Telegram `Update` 저장 안 함(JSON/JSONB/ARRAY
+컬럼 자체가 없음). terminal 도달 즉시 권한/PII 10개 컬럼 NULL — DB CHECK 2개가 강제
+(`terminal_scrubbed` / `active_reconstructable`, 둘 다 `CASE WHEN … THEN … ELSE true END`
++ `IS NULL`/`IS NOT NULL` 이라 SQL `UNKNOWN` 이 통과 못 함). 살아남는 건 `update_digest`
+(도메인 분리 일방향 dedupe tombstone) · slug `outcome` · 닫힌 `error_class` 뿐.
+Redis 에는 job UUID 만 들어가고 `{status, job_id}` 만 나온다.
+
+🔴 **advisory lock 은 브로커 fencing 이 아니고**, PostgreSQL 재시작을 가로지르는 분산
+락도 아니다. pending/processing 행은 그 수명 동안 최소 PII 를 보유한다. 실제 프로세스
+활성화는 post-deploy 리스크다. 한계는 런북 §7.
+
 ### 매수 게이트 A/B shadow (ROB-1301)
 
 KR/US 매수 스크리닝의 **variant B(moderate+ 지지)** 는 계좌 불사용 shadow

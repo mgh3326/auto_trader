@@ -39,6 +39,14 @@
    실패·스킵을 성공으로 보고 금지. push 완료 주장은 `git ls-remote`로 대조 가능해야 한다.
 10. **Secrets**: API 키·토큰 repo 커밋 금지. 로그·보고에 secret 값 출력 금지
    (missing env는 key 이름만 보고).
+11. **Telegram 승인 콜백 durable inbox (W5)**: 게이트 3종
+    (`ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED` / `..._WORKER_ENABLED` /
+    `..._RECOVERY_SCHEDULE_ENABLED`) 전부 default false 유지. 콜백 코어의 게이트
+    (published-binding preflight, 단일소비 nonce, commit lease, target lock,
+    approval hash) 우회·이동 금지. **코어 진입 후의 generic `internal_error` 를
+    재시도로 바꾸지 마라** — 브로커 미전송 증거가 아니라서 재주문이 된다
+    (`docs/runbooks/telegram-callback-durable-inbox.md` §5). terminal 스크럽 DB
+    CHECK 완화 금지.
 11. **매수 게이트 A/B shadow (ROB-1301)**: variant B는 순수 기록이다.
     라이브 게이트 문언·주문·워치·제안 승격 금지. 채점 전 중간값으로 정책
     변경 금지. 스케줄러/자동화 트리거로 연결하지 마라.
