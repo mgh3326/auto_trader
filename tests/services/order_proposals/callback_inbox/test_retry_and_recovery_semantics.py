@@ -505,6 +505,7 @@ async def test_the_real_scan_touches_exactly_the_eligible_rows(
         eligible_retry,
         state="retry_wait",
         attempt_count=1,
+        error_class="pre_core_failure",
         available_at=now_kst() - timedelta(minutes=1),
     )
 
@@ -526,6 +527,7 @@ async def test_the_real_scan_touches_exactly_the_eligible_rows(
         future_retry,
         state="retry_wait",
         attempt_count=1,
+        error_class="pre_core_failure",
         available_at=now_kst() + timedelta(hours=1),
     )
 
@@ -534,6 +536,7 @@ async def test_the_real_scan_touches_exactly_the_eligible_rows(
         exhausted,
         state="retry_wait",
         attempt_count=3,
+        error_class="pre_core_failure",
         available_at=now_kst() - timedelta(minutes=1),
     )
 

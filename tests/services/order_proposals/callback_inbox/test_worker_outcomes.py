@@ -492,6 +492,7 @@ async def test_a_retry_wait_row_is_not_claimable_before_its_backoff_elapses(
             job_id,
             state="retry_wait",
             attempt_count=1,
+            error_class="pre_core_failure",
             available_at=datetime.now(UTC) + timedelta(hours=1),
         )
         await session.commit()

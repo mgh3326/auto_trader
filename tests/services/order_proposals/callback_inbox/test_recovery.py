@@ -182,6 +182,7 @@ async def test_recovery_leaves_a_not_yet_due_retry_alone(
             job_id,
             state="retry_wait",
             attempt_count=1,
+            error_class="pre_core_failure",
             available_at=now_kst() + timedelta(hours=1),
         )
         await session.commit()

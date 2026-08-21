@@ -359,6 +359,9 @@ def _active_probe(connection: sa.Connection, state: str, missing: str | None):
     overrides: dict[str, object] = {"state": state}
     if state == "processing":
         overrides["started_at"] = _NOW
+    if state == "retry_wait":
+        # R21: `retry_wait` implies `pre_core_failure` and no outcome.
+        overrides["error_class"] = "pre_core_failure"
     if missing is not None:
         overrides[missing] = None
     return _accepts(connection, **overrides)
@@ -461,7 +464,10 @@ async def test_a_processing_row_must_carry_the_moment_it_started(
                 connection, state="pending", started_at=None
             ),
             "retry_wait_without_started_at": _accepts(
-                connection, state="retry_wait", started_at=None
+                connection,
+                state="retry_wait",
+                started_at=None,
+                error_class="pre_core_failure",
             ),
             # A terminal row keeps its timestamps; only authority is scrubbed.
             "terminal_with_started_at": _accepts(
@@ -557,6 +563,7 @@ async def test_the_handler_markers_can_only_appear_in_causal_order(
                 connection,
                 state="retry_wait",
                 handler_entered_at=entered,
+                error_class="pre_core_failure",
             ),
             "retry_wait_with_verdict": _accepts(
                 connection,
@@ -564,6 +571,7 @@ async def test_the_handler_markers_can_only_appear_in_causal_order(
                 handler_entered_at=entered,
                 handler_completed_at=completed,
                 terminal_state_pending="succeeded",
+                error_class="pre_core_failure",
             ),
             # A pre-core discard never entered the core; it stays legal.
             "terminal_without_any_marker": _accepts(
