@@ -24,6 +24,11 @@ def _pct(value) -> str:
     return "—" if value is None else f"{float(value) * 100:+.2f}%"
 
 
+def _pp(value) -> str:
+    """A difference between two returns is percentage POINTS, not percent."""
+    return "—" if value is None else f"{float(value) * 100:+.3f}%p"
+
+
 def _rate(value) -> str:
     return "—" if value is None else f"{float(value) * 100:.4f}%"
 
@@ -104,8 +109,8 @@ def main() -> None:
         for key, label in names.items():
             row = bounds.get(key, {})
             print(
-                f"| {TITLES[market]} | {label} | {_pct(row.get('median'))} | "
-                f"{_pct(row.get('mean'))} |"
+                f"| {TITLES[market]} | {label} | {_pp(row.get('median'))} | "
+                f"{_pp(row.get('mean'))} |"
             )
     print()
 

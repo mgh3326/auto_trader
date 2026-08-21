@@ -22,8 +22,14 @@ COHORT_ROWS = (
 MARKET_TITLES = {
     "kr": "KR (kr-corpus-v1, KOSPI+KOSDAQ)",
     "us": "US (us-corpus-v1) — 🔴 생존편향",
-    "crypto_upbit_krw": "부록: crypto / upbit_krw",
-    "crypto_binance_usdt_spot": "부록: crypto / binance_usdt_spot",
+    "crypto_upbit_krw": (
+        "부록(🔴비정본): crypto / upbit_krw — upstream spec 시장 밖, "
+        "정책 근거 사용 금지"
+    ),
+    "crypto_binance_usdt_spot": (
+        "부록(🔴비정본): crypto / binance_usdt_spot — upstream spec 시장 밖, "
+        "센트 반올림 왜곡 큼(§5.8), 정책 근거 사용 금지"
+    ),
 }
 
 
@@ -68,12 +74,15 @@ def render_market(result: dict[str, Any]) -> str:
         f"| corpus | `{result['corpus_id']}` (main scope, holdout 미개봉) |",
         f"| 창 | {result['corpus_first_session']} … {result['corpus_last_session']} |",
         f"| 채점 as-of (단일) | {result['scoring_as_of'][:10]} |",
-        f"| 결정일 수 | {result['decision_sessions']:,} |",
+        f"| 결정일 수 (eligible) | {result['decision_sessions']:,} |",
+        f"| phase 그리드 총수 (참고, S3) | {result.get('phase_sessions_total', '—'):,} |",
         f"| corpus 행/종목 | {result['corpus_rows']:,} / {result['corpus_symbols']:,} |",
         f"| 결정일 유니버스 행 | {result['universe_rows_at_decision_dates']:,} |",
         f"| 유동성 하한 미달로 제외 | {result['rejected_below_liquidity_floor']:,} |",
         f"| 평가된 표본 | {sum(summary['cohorts'][key]['n'] for key, _ in COHORT_ROWS):,} |",
         f"| 재구성 실패 | {result['reconstruction_failures'] or '없음'} |",
+        f"| addendum digest | `{result['addendum_sha256'][:8]}…` (최초 freeze "
+        f"`{result.get('first_freeze_addendum_sha256', '')[:8]}…`) |",
         "",
     ]
     for window, label in (("5", "D+5"), ("20", "D+20")):

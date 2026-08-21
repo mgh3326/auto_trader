@@ -10,8 +10,8 @@ MARKETS = ("kr", "us", "crypto_upbit_krw", "crypto_binance_usdt_spot")
 TITLES = {
     "kr": "KR",
     "us": "US 🔴생존편향",
-    "crypto_upbit_krw": "crypto/upbit",
-    "crypto_binance_usdt_spot": "crypto/binance",
+    "crypto_upbit_krw": "crypto/upbit 🔴비정본",
+    "crypto_binance_usdt_spot": "crypto/binance 🔴비정본",
 }
 GAPS = (
     ("b_only_minus_a_and_b", "**B−A 대 A**"),

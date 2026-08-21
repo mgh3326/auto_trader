@@ -51,7 +51,7 @@ def main() -> None:
             tables,
             prose("report-tail.md"),
             bootstrap,
-            "\n---\n\n## 6.2 B2 — D+20 검열 분해와 유계 민감도\n",
+            "\n---\n\n## 6.1 B2 — D+20 검열 분해와 유계 민감도\n",
             censoring,
             prose("report-close.md"),
         ]
