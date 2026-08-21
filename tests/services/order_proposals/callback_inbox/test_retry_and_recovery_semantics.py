@@ -925,3 +925,89 @@ def test_no_marker_is_ever_written_back_to_null() -> None:
             f"{marker}=None",
         ):
             assert clearing not in source, f"{clearing!r} makes {marker} non-monotonic"
+
+
+# ---------------------------------------------------------------------------
+# R8 B16 — recovery tells pre-entry stale from in-core stale
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_real_recovery_task_separates_pre_entry_from_in_core_stale(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
+) -> None:
+    """R8 B16 — through the production TaskIQ entrypoint, both gates armed.
+
+    Two stale ``processing`` rows that differ only in ``handler_entered_at``.
+    The one that provably never entered the core may run, exactly once. The
+    one that did is ambiguous: it must finalise without the handler being
+    called and without earning another attempt.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    for gate in (
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+    ):
+        monkeypatch.setattr(settings, gate, True, raising=False)
+
+    stamp = now_kst() - timedelta(hours=6)
+
+    pre_entry = await _queue(inbox_cleanup)
+    await _force(pre_entry, state="processing", attempt_count=1, started_at=stamp)
+
+    in_core = await _queue(inbox_cleanup)
+    await _force(
+        in_core,
+        state="processing",
+        attempt_count=1,
+        started_at=stamp,
+        handler_entered_at=stamp,
+    )
+
+    executed: list[uuid.UUID] = []
+    notifier_calls: list[int] = []
+
+    class _Notifier:
+        async def answer_callback(self, *args, **kwargs):
+            notifier_calls.append(1)
+            return True
+
+        async def edit_message(self, *args, **kwargs):
+            notifier_calls.append(1)
+            return None
+
+    monkeypatch.setattr(worker_module, "resolve_notifier", lambda: _Notifier())
+
+    original_core = worker_module.handle_normalized_callback
+
+    async def _counting_core(normalized, **kwargs):
+        executed.append(normalized.callback.subject_short)
+        return {"handled": False, "reason": "proposal_not_found"}
+
+    monkeypatch.setattr(worker_module, "handle_normalized_callback", _counting_core)
+    assert original_core is not None
+
+    report = await task_module.recover_telegram_callback_jobs()
+    assert report["status"] == "ok", report
+
+    pre_row = await load_job(pre_entry)
+    core_row = await load_job(in_core)
+    assert pre_row is not None and core_row is not None
+
+    assert pre_row.state == "discarded"
+    assert pre_row.attempt_count == 2, "the pre-entry row did not get its attempt"
+
+    assert core_row.state == "dead_letter"
+    assert core_row.error_class == "handler_ambiguous"
+    assert core_row.attempt_count == 1, "an ambiguous row was charged an attempt"
+
+    # Exactly one core entry, and it was the pre-entry row's.
+    assert len(executed) == 1, executed
+
+    # A second tick changes nothing: both are terminal.
+    again = await task_module.recover_telegram_callback_jobs()
+    assert again["status"] == "ok"
+    assert len(executed) == 1, "a terminal row was re-entered"

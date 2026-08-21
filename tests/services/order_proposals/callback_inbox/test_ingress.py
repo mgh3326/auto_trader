@@ -632,6 +632,67 @@ async def test_a_failure_at_the_real_commit_returns_503_and_never_enqueues(
 
 
 @pytest.mark.asyncio
+async def test_the_ack_is_bounded_by_the_configured_enqueue_timeout(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
+) -> None:
+    """R9 B20 — the bound is the configured timeout, not "under ten seconds".
+
+    A kick that never completes must cost exactly the configured budget plus
+    scheduler overhead. The old assertion allowed nearly 10s for a 0.05s
+    setting, which would have passed even if the timeout were ignored
+    entirely and the request had waited on something else.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals.callback_inbox.ingress import (
+        ingest_callback_update,
+    )
+
+    timeout_seconds = 0.25
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS",
+        timeout_seconds,
+        raising=False,
+    )
+
+    started_waiting = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _never_completes(job_id: uuid.UUID) -> None:
+        started_waiting.set()
+        await never.wait()
+
+    update_id = 742_000 + uuid.uuid4().int % 10_000
+    began = time.monotonic()
+    result = await ingest_callback_update(
+        make_update(
+            data=_valid_callback_data(),
+            update_id=update_id,
+            callback_id=f"cbq-{update_id}",
+        ),
+        now=now_kst(),
+        enqueue_fn=_never_completes,
+    )
+    elapsed = time.monotonic() - began
+    assert result.job_id is not None
+    inbox_cleanup.append(result.job_id)
+
+    assert started_waiting.is_set(), "the producer was never called"
+    assert result.accepted is True
+    assert result.enqueued is False
+    # It really waited the budget ...
+    assert elapsed >= timeout_seconds, elapsed
+    # ... and then gave up, rather than waiting on anything else.
+    assert elapsed < timeout_seconds + 1.0, (
+        f"the ACK took {elapsed:.3f}s for a {timeout_seconds}s enqueue budget"
+    )
+
+    row = await load_job(result.job_id)
+    assert row is not None
+    assert row.state == "pending"
+
+
+@pytest.mark.asyncio
 async def test_a_hung_kick_keeps_the_committed_row_and_returns_bounded(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
 ) -> None:

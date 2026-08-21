@@ -25,6 +25,15 @@ FORBIDDEN_IMPORT_MODULES: frozenset[str] = frozenset(
         "google.genai",
         "google.generativeai",
         "openai",
+        # ROB-501 vocabulary keeps pace with the model lanes this repo
+        # actually uses. Grok/xAI is one of them (see the operator notes on
+        # the grok lane), and an in-process xAI client would be the same
+        # boundary violation as an in-process Gemini or OpenAI one.
+        "xai",
+        "xai_sdk",
+        "grok",
+        "anthropic",
+        "litellm",
     }
 )
 
@@ -38,6 +47,10 @@ FORBIDDEN_DEFINED_NAMES: frozenset[str] = frozenset(
         "ModelRunner",
         "OpenAIProvider",
         "RateLimitedGeminiProvider",
+        "GrokProvider",
+        "XAIProvider",
+        "XaiProvider",
+        "AnthropicProvider",
     }
 )
 

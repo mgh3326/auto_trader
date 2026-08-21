@@ -23,6 +23,7 @@ which the core guarantees make no external call at all.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -356,3 +357,189 @@ async def test_a_batch_action_reaches_the_batch_branch_and_fails_closed(
         for group in groups:
             _refreshed, rungs = await service.get_proposal(group.proposal_id)
             assert [rung.state for rung in rungs] == ["pending_approval"]
+
+
+# ---------------------------------------------------------------------------
+# R8 B14 + SHOULD 3 — the positive paths, through the production default seam
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_valid_approval_traverses_the_real_core_to_a_real_submission(
+    _bootstrap_test_schema,
+    db_session,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R8 B14 — an *active* ``op``, end to end, no ``handler=`` override.
+
+    Every other production-default test steers into a fail-closed gate. This
+    one lets a live approval through: only the broker leg is a fake, and it is
+    an exact counter. A worker that shortcut valid approvals through some
+    other mutation route would show up here as a broker call that never
+    happened, or a proposal that never moved.
+    """
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+    from app.services.order_proposals.revalidation import RungOutcome
+
+    group = await seed_proposal(db_session, nonce="activeop123", symbol="ACTKR")
+    data = proposal_callback_data(group, action="op")
+    job_id = await _queue(inbox_cleanup, data)
+
+    submissions: list[tuple[uuid.UUID, Any]] = []
+
+    async def _fake_broker(*, service, proposal_id, now, **kwargs):
+        submissions.append((proposal_id, now))
+        return [RungOutcome(0, "submitted_acked", {})]
+
+    monkeypatch.setattr(callback_module, "revalidate_and_submit", _fake_broker)
+
+    entered: list[str] = []
+    real_core = callback_module.handle_normalized_callback
+
+    async def _spy(normalized, **kwargs):
+        entered.append(normalized.callback.action)
+        return await real_core(normalized, **kwargs)
+
+    monkeypatch.setattr(worker_module, "handle_normalized_callback", _spy)
+
+    notifier = FakeNotifier()
+    result = await _run_default_seam(job_id, notifier, monkeypatch)
+
+    # -- the real core, once, with the real action --------------------------
+    assert entered == ["op"]
+    assert result["status"] == "succeeded", result
+
+    # -- the gated broker leg ran exactly once, for this proposal -----------
+    assert len(submissions) == 1, submissions
+    assert submissions[0][0] == group.proposal_id
+
+    # -- and the proposal really moved --------------------------------------
+    async with AsyncSessionLocal() as session:
+        refreshed, rungs = await OrderProposalsService(session).get_proposal(
+            group.proposal_id
+        )
+    assert refreshed.approval_nonce_used_at is not None, "the nonce was not consumed"
+    assert refreshed.approved_at is not None
+    assert refreshed.approved_by_telegram_user_id == "777"
+    assert [rung.state for rung in rungs] == ["acked"]
+
+    row = await load_job(job_id)
+    assert row is not None
+    assert row.state == "succeeded"
+    assert row.outcome == "approved"
+
+    # -- a redelivery must not submit a second time -------------------------
+    replay_job = await _queue(inbox_cleanup, data)
+    replay = await _run_default_seam(replay_job, FakeNotifier(), monkeypatch)
+    assert replay["status"] == "discarded"
+    assert len(submissions) == 1, "a replay reached the broker leg"
+
+
+@pytest.mark.asyncio
+async def test_an_auto_veto_reaches_its_own_cancel_branch(
+    _bootstrap_test_schema,
+    db_session,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R8 SHOULD 3 — ``vc`` reaches the cancel branch, not a shared preflight."""
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    group = await seed_auto_veto_proposal(db_session, nonce="vetolive123")
+    data = proposal_callback_data(group, action="vc")
+    job_id = await _queue(inbox_cleanup, data)
+
+    cancelled: list[str] = []
+
+    async def _fake_cancel(*args, **kwargs):
+        cancelled.append("cancel")
+        return {"success": True}
+
+    async def _fake_fetch(*args, **kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id="broker-x",
+            status="cancelled",
+            filled_quantity=Decimal("0"),
+            remaining_quantity=Decimal("0"),
+            raw={},
+        )
+
+    monkeypatch.setattr(callback_module, "cancel_target_order", _fake_cancel)
+    monkeypatch.setattr(callback_module, "fetch_target_order", _fake_fetch)
+
+    entered: list[str] = []
+    real_core = callback_module.handle_normalized_callback
+
+    async def _spy(normalized, **kwargs):
+        entered.append(normalized.callback.action)
+        return await real_core(normalized, **kwargs)
+
+    monkeypatch.setattr(worker_module, "handle_normalized_callback", _spy)
+
+    await _run_default_seam(job_id, FakeNotifier(), monkeypatch)
+
+    assert entered == ["vc"]
+    assert cancelled == ["cancel"], "the veto action did not reach the cancel branch"
+
+
+@pytest.mark.asyncio
+async def test_a_loss_cut_first_click_reaches_its_own_preview_branch(
+    _bootstrap_test_schema,
+    db_session,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R8 SHOULD 3 — ``lc`` opens the two-click ceremony, not the approve path."""
+    from app.services.order_proposals import revalidation as revalidation_module
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+
+    group = await seed_loss_cut_proposal(db_session, monkeypatch, nonce="losslive12")
+    data = proposal_callback_data(group, action="lc")
+    job_id = await _queue(inbox_cleanup, data)
+
+    previews: list[int] = []
+
+    async def _fake_preview(**kwargs):
+        previews.append(1)
+        return {
+            "rungs": [
+                {
+                    "rung_index": 0,
+                    "current_price": "100",
+                    "avg_buy_price": "200",
+                    "loss_pct": "-50.00",
+                    "loss_cut_slip_band": "98",
+                }
+            ],
+            "retrospective_id": 42,
+            "lesson_excerpt": "손절 기준을 늦추지 않는다",
+        }
+
+    monkeypatch.setattr(
+        revalidation_module, "preview_loss_cut_confirmation", _fake_preview
+    )
+
+    submissions: list[int] = []
+
+    async def _never_submit(**kwargs):  # pragma: no cover - must not run
+        submissions.append(1)
+        return []
+
+    monkeypatch.setattr(callback_module, "revalidate_and_submit", _never_submit)
+
+    entered: list[str] = []
+    real_core = callback_module.handle_normalized_callback
+
+    async def _spy(normalized, **kwargs):
+        entered.append(normalized.callback.action)
+        return await real_core(normalized, **kwargs)
+
+    monkeypatch.setattr(worker_module, "handle_normalized_callback", _spy)
+
+    await _run_default_seam(job_id, FakeNotifier(), monkeypatch)
+
+    assert entered == ["lc"]
+    assert previews == [1], "the loss-cut action did not reach its preview branch"
+    assert submissions == [], "a first click submitted without the second"

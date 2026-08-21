@@ -178,16 +178,110 @@ def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
     )
 
 
-def test_a_changed_binding_changes_the_stored_envelope_not_the_digest() -> None:
-    """The digest is a *delivery* identity, which is why a tampered envelope
-    reusing one is a conflict rather than a duplicate (see the ingress suite).
+def test_the_digest_really_reads_the_module_constant() -> None:
+    """R8 SHOULD 1 — the separator is *loaded*, not duplicated as a literal.
+
+    A copy of the string inside the function would satisfy the recomputation
+    test above while leaving ``UPDATE_DIGEST_DOMAIN`` decorative -- and a
+    later edit to the constant would silently not change the digest. Rebinding
+    the module attribute must change the output.
     """
+    from app.services.order_proposals.callback_inbox import contracts
+
+    before = contracts.build_update_digest(update_id=5, callback_query_id="cbq-5")
+    original = contracts.UPDATE_DIGEST_DOMAIN
+    try:
+        contracts.UPDATE_DIGEST_DOMAIN = original + ".rebound"
+        after = contracts.build_update_digest(update_id=5, callback_query_id="cbq-5")
+    finally:
+        contracts.UPDATE_DIGEST_DOMAIN = original
+    assert after != before, (
+        "the domain constant is not read at hash time; it is duplicated"
+    )
+    assert contracts.build_update_digest(update_id=5, callback_query_id="cbq-5") == (
+        before
+    )
+
+
+def test_a_changed_binding_changes_the_stored_envelope_and_not_the_digest() -> None:
+    """R8 SHOULD 5 — the replacement for a test that changed nothing.
+
+    The delivery digest is an *identity* of the delivery, deliberately
+    independent of the envelope it carries. That is the whole reason a
+    tampered envelope reusing one delivery identity is a conflict rather than
+    a duplicate: the digest cannot tell them apart, so the stored envelope has
+    to. This pins both halves.
+    """
+    import uuid as _uuid
+
+    from app.services.order_proposals.approval_message import build_callback_data
     from app.services.order_proposals.callback_inbox.contracts import (
         build_update_digest,
     )
+    from app.services.order_proposals.callback_inbox.ingress import (
+        normalized_envelope_projection,
+    )
+    from app.services.order_proposals.dispatch_contract import (
+        ApprovalCardKind,
+        DispatchBinding,
+        build_membership_digest,
+    )
+    from app.services.order_proposals.telegram_callback import (
+        normalize_callback_update,
+    )
 
-    same = build_update_digest(update_id=7, callback_query_id="cbq-7")
-    assert same == build_update_digest(update_id=7, callback_query_id="cbq-7")
+    def _build(nonce: str) -> str:
+        proposal_id = _uuid.UUID("31111111-2222-4333-8444-555555555555")
+        return build_callback_data(
+            action="op",
+            proposal_id=proposal_id,
+            nonce=nonce,
+            binding=DispatchBinding(
+                attempt_id=_uuid.UUID("32222222-2222-4333-8444-555555555555"),
+                card_kind=ApprovalCardKind.MANUAL,
+                membership_revision=1,
+                membership_digest=build_membership_digest(
+                    card_kind=ApprovalCardKind.MANUAL,
+                    membership_revision=1,
+                    members=[
+                        {"proposal_id": str(proposal_id), "approval_nonce": nonce}
+                    ],
+                ),
+            ),
+        )
+
+    def _update(data: str) -> dict[str, Any]:
+        return {
+            "update_id": 9001,
+            "callback_query": {
+                "id": "cbq-9001",
+                "from": {"id": 777},
+                "message": {"chat": {"id": 42}, "message_id": 555},
+                "data": data,
+            },
+        }
+
+    import app.core.config as config_module
+
+    original = config_module.settings.ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR
+    config_module.settings.ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR = "42"
+    try:
+        first = normalize_callback_update(_update(_build("bindingaaaa")))
+        second = normalize_callback_update(_update(_build("bindingbbbb")))
+    finally:
+        config_module.settings.ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR = original
+
+    # The binding really did change ...
+    projection_a = normalized_envelope_projection(first)
+    projection_b = normalized_envelope_projection(second)
+    assert projection_a != projection_b
+    assert projection_a["nonce"] != projection_b["nonce"]
+    assert projection_a["membership_digest"] != projection_b["membership_digest"]
+
+    # ... and the delivery identity deliberately did not.
+    digest_a = build_update_digest(update_id=9001, callback_query_id="cbq-9001")
+    digest_b = build_update_digest(update_id=9001, callback_query_id="cbq-9001")
+    assert digest_a == digest_b
 
 
 def test_only_a_job_uuid_ever_reaches_the_queue() -> None:

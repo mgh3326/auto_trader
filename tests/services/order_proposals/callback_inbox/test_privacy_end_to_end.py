@@ -52,6 +52,13 @@ SENTINEL_USER = "8811223344556"
 SENTINEL_CBQ = "cbqLEAK-8f2a1c7d9e"
 SENTINEL_EXC = "boom appkey=W5SECRETLEAKVALUE0123 bearer W5TOKENLEAK987"
 SENTINEL_ARG = "W5ARGLEAK-556677"
+# Retained authority fields the earlier sweep did not sentinelize. Each has to
+# satisfy the real parser, so they are distinctive *within* their format.
+SENTINEL_SUBJECT = "deadbeef"
+SENTINEL_DIGEST = "ZzDigestSen1"
+SENTINEL_ATTEMPT = "5eee5eee-1111-4222-8333-444444444444"
+SENTINEL_MESSAGE_ID = 909090909091
+SENTINEL_REVISION = 35
 
 SENTINELS = (
     SENTINEL_NONCE,
@@ -62,6 +69,10 @@ SENTINELS = (
     "W5TOKENLEAK987",
     SENTINEL_ARG,
     "boom appkey",
+    SENTINEL_SUBJECT,
+    SENTINEL_DIGEST,
+    SENTINEL_ATTEMPT,
+    str(SENTINEL_MESSAGE_ID),
 )
 
 #: Only these may appear in a log record's own attributes or a span's data.
@@ -241,24 +252,22 @@ def _sentinel_data() -> str:
         build_membership_digest,
     )
 
-    proposal_id = uuid.uuid4()
-    return build_callback_data(
+    # A proposal id whose first eight characters are the subject sentinel, so
+    # the *retained* subject field carries one too.
+    proposal_id = uuid.UUID(f"{SENTINEL_SUBJECT}-1111-4222-8333-444444444444")
+    data = build_callback_data(
         action="op",
         proposal_id=proposal_id,
         nonce=SENTINEL_NONCE,
         binding=DispatchBinding(
-            attempt_id=uuid.uuid4(),
+            attempt_id=uuid.UUID(SENTINEL_ATTEMPT),
             card_kind=ApprovalCardKind.MANUAL,
-            membership_revision=1,
-            membership_digest=build_membership_digest(
-                card_kind=ApprovalCardKind.MANUAL,
-                membership_revision=1,
-                members=[
-                    {"proposal_id": str(proposal_id), "approval_nonce": SENTINEL_NONCE}
-                ],
-            ),
+            membership_revision=SENTINEL_REVISION,
+            membership_digest=SENTINEL_DIGEST,
         ),
     )
+    assert build_membership_digest is not None
+    return data
 
 
 async def _queue_sentinel_job(
@@ -288,6 +297,7 @@ async def _queue_sentinel_job(
             callback_id=SENTINEL_CBQ,
             chat_id=int(SENTINEL_CHAT),
             user_id=int(SENTINEL_USER),
+            message_id=SENTINEL_MESSAGE_ID,
         ),
         now=now_kst(),
         enqueue_fn=_no_kick,
@@ -635,3 +645,81 @@ def _is_exception_class_name(call: ast.Call, name: ast.AST) -> bool:
         ):
             return True
     return False
+
+
+@pytest.mark.asyncio
+async def test_a_deep_real_core_dependency_may_explode_without_leaking(
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
+    log_sink: _RecordSink,
+    sentry_sink: list[dict[str, Any]],
+) -> None:
+    """R8 SHOULD 2 — the secret comes from *inside* the real core.
+
+    The earlier sweep raised from the handler seam. Here the exception is
+    raised by a dependency the real ``handle_normalized_callback`` reaches on
+    its own, with a secret-shaped message, while every retained authority
+    field in the row is itself a sentinel: chat, user, callback-query id,
+    message id, subject, attempt id, revision and digest.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals import telegram_callback as core_module
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    job_id = await _queue_sentinel_job(inbox_cleanup, monkeypatch)
+
+    row = await load_job(job_id)
+    assert row is not None
+    # The row really does carry the sentinels the sweep will look for.
+    assert row.nonce == SENTINEL_NONCE
+    assert row.chat_id == SENTINEL_CHAT
+    assert row.telegram_user_id == SENTINEL_USER
+    assert row.callback_query_id == SENTINEL_CBQ
+    assert row.message_id == SENTINEL_MESSAGE_ID
+    assert row.subject_short == SENTINEL_SUBJECT
+    assert str(row.dispatch_attempt_id) == SENTINEL_ATTEMPT
+    assert row.membership_digest == SENTINEL_DIGEST
+    assert row.membership_revision == SENTINEL_REVISION
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        True,
+        raising=False,
+    )
+    notifier = FakeNotifier()
+    monkeypatch.setattr(worker_module, "resolve_notifier", lambda: notifier)
+
+    async def _explode_deep(service, proposal_short):
+        raise _Exploding
+
+    # A dependency the real core calls itself, well below the seam.
+    monkeypatch.setattr(core_module, "_resolve_proposal_id", _explode_deep)
+
+    result = await task_module.run_telegram_callback_job(str(job_id))
+
+    # The core swallowed it into its own ambiguous report, as it must.
+    assert result["status"] == "dead_letter"
+    assert_no_leak(result, where="task result")
+
+    terminal = await load_job(job_id)
+    assert terminal is not None
+    assert terminal.error_class == "handler_ambiguous"
+    for field in (
+        "callback_query_id",
+        "chat_id",
+        "message_id",
+        "telegram_user_id",
+        "action",
+        "subject_short",
+        "dispatch_attempt_id",
+        "membership_revision",
+        "membership_digest",
+        "nonce",
+    ):
+        assert getattr(terminal, field) is None, field
+
+    assert_records_clean(log_sink)
+    assert_events_clean(sentry_sink, expect_any=True)

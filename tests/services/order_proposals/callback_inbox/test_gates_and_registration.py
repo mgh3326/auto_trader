@@ -374,3 +374,152 @@ def test_max_attempts_is_three() -> None:
     from app.services.order_proposals.callback_inbox.contracts import MAX_ATTEMPTS
 
     assert MAX_ATTEMPTS == 3
+
+
+def test_the_task_module_binds_no_database_name_at_all() -> None:
+    """R9 B18 — a task-local sessionmaker would sidestep the callee tripwires.
+
+    The gate-off tripwires patch the modules the tasks *call*. If the task
+    module itself bound a sessionmaker or an engine, it could touch the
+    database before its gate without any of them noticing, so the structural
+    rule is that it binds none.
+    """
+    import ast
+
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    path = pathlib.Path(task_module.__file__)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
+                imported.add(f"{module}.{alias.name}")
+
+    for banned in (
+        "AsyncSessionLocal",
+        "engine",
+        "create_async_engine",
+        "sessionmaker",
+        "app.core.db",
+        "app.core.db.AsyncSessionLocal",
+        "app.core.db.engine",
+    ):
+        assert banned not in imported, f"the task module binds {banned!r}"
+
+    # Nothing DB-shaped is bound at module level either.
+    for name in dir(task_module):
+        value = getattr(task_module, name)
+        assert "sessionmaker" not in type(value).__name__.lower(), name
+        assert "engine" not in type(value).__name__.lower(), name
+
+
+@pytest.mark.parametrize(
+    ("durable", "worker", "recovery"),
+    [
+        ("false", "false", "false"),
+        ("true", "false", "false"),
+        ("false", "true", "false"),
+        ("false", "false", "true"),
+        ("true", "true", "false"),
+        ("true", "false", "true"),
+    ],
+)
+def test_a_fresh_interpreter_touches_no_database_under_any_disabled_gate(
+    durable: str, worker: str, recovery: str
+) -> None:
+    """R9 B18 — fresh import, tripwires installed *before* anything loads.
+
+    Run in a new interpreter so nothing this session already imported can
+    mask a module-level binding, and so the ``schedule`` label is evaluated
+    under the environment being tested.
+    """
+    env = dict(os.environ)
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED"] = durable
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED"] = worker
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED"] = recovery
+
+    program = """
+import asyncio, json, sys
+
+import sqlalchemy.ext.asyncio as sa_asyncio
+
+trips = []
+
+
+def _trip(name):
+    def _boom(*args, **kwargs):
+        trips.append(name)
+        raise AssertionError("gate-off task touched " + name)
+    return _boom
+
+
+# Arm before anything application-shaped is imported.
+sa_asyncio.async_sessionmaker.__call__ = _trip("async_sessionmaker")
+sa_asyncio.AsyncEngine.connect = _trip("engine.connect")
+sa_asyncio.AsyncSession.execute = _trip("session.execute")
+
+from app.core import db
+
+db.AsyncSessionLocal = _trip("AsyncSessionLocal")
+
+
+class _EngineTrip:
+    async def connect(self, *a, **k):
+        trips.append("engine.connect")
+        raise AssertionError("gate-off task connected")
+
+
+db.engine = _EngineTrip()
+
+from app.tasks import telegram_callback_inbox_tasks as t
+
+for module_name in ("ingress", "recovery", "worker"):
+    module = __import__(
+        "app.services.order_proposals.callback_inbox." + module_name,
+        fromlist=["x"],
+    )
+    if hasattr(module, "AsyncSessionLocal"):
+        module.AsyncSessionLocal = _trip(module_name + ".AsyncSessionLocal")
+
+import os
+
+results = {"schedule": t.recover_telegram_callback_jobs.labels.get("schedule")}
+
+# Only invoke a task whose own gate is OFF: an armed task is *supposed* to
+# reach the database, so calling it here would prove nothing about the gate.
+if os.environ["ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED"] == "false":
+    results["worker"] = asyncio.run(
+        t.run_telegram_callback_job("1b3a3b3e-0000-4000-8000-000000000000")
+    )
+results["recovery"] = asyncio.run(t.recover_telegram_callback_jobs())
+results["trips"] = trips
+print(json.dumps(results))
+"""
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(pathlib.Path(__file__).resolve().parents[4]),
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert payload["trips"] == [], payload["trips"]
+    if worker == "false":
+        assert payload["worker"] == {
+            "status": "disabled",
+            "job_id": "1b3a3b3e-0000-4000-8000-000000000000",
+        }
+    if recovery == "false":
+        assert payload["recovery"] == {"status": "disabled"}
+    elif worker == "false":
+        assert payload["recovery"] == {"status": "worker_disabled"}
+    # The schedule label reflects the environment it was imported under.
+    assert (payload["schedule"] != []) == (recovery == "true")
