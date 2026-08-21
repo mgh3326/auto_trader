@@ -110,11 +110,13 @@ lanes:
 
 1. `get_operating_briefing` + `get_market_index` (+ `get_fx_rate`) — load regime
    and the prior session's decisions.
-2. `analyze_stock_batch(symbols ≤ 10, mode=quick)` — RSI and support/resistance
+2. `analyze_stock_batch(symbols ≤ 10, quick=True)` — RSI and support/resistance
    (Bollinger band, fib, volume profile) from the last CLOSED daily candle
    (`current_price` is stale, not live — call `get_quote` for a live price).
-   `include_position` is accepted for compatibility but ignored by quick
-   (ROB-1311); consensus/recommendation/position require `quick=False`.
+   `include_position` is accepted for compatibility but has no effect for any
+   `quick` value — `analyze_stock_batch` never attaches a `position` field;
+   use `get_holdings` for per-account positions. Consensus/recommendation
+   require `quick=False`.
 3. `get_intraday_investor_flow(symbol)` — the foreign-flow gate (today's slot +
    the confirmed multi-day net-buy history / foreign-holding burn-down embedded
    by ROB-626/640).
@@ -227,7 +229,7 @@ lanes:
       - tool: get_market_index
       - tool: get_fx_rate
       - tool: analyze_stock_batch
-        args: {mode: quick, include_position: true, max_symbols: 10}
+        args: {quick: true}
       - tool: get_intraday_investor_flow
         gate: recovery_gate
       - tool: order_proposal_create
@@ -249,7 +251,8 @@ lanes:
 
 1. `toss_get_positions` — scan for in-the-money / near-breakeven
    (± `sell.breakeven_near_pct`) names.
-2. `analyze_stock_batch` — confirm distance to resistance, RSI, upside.
+2. `analyze_stock_batch(quick=False)` — confirm distance to resistance, RSI,
+   upside (upside is not part of the quick=True default allowlist).
 3. **Verdict frame:**
    - **PLACE** = in-the-money AND (resistance within `sell.resistance_near_pct`
      ∨ RSI ≥ `sell.rsi_place_min` ∨ over-concentrated sector ∨ upside <
@@ -399,7 +402,7 @@ lanes:
     screen:
       - tool: get_disclosures         # rights-issue / overhang filter
     rank_and_execute:
-      - tool: analyze_stock_batch     # deep confirm on ranked survivors
+      - tool: analyze_stock_batch     # deep confirm on ranked survivors (quick=false)
       - tool: toss_place_order        # winners only, support-line limit
         confirm: true
 ```

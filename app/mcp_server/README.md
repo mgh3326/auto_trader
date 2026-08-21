@@ -218,27 +218,31 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_krx_session_health()`
   - Read-only authenticated KRX-session probe. It uses the normal KRX login/re-authentication path and reports `status`, `reason`, `retryable`, and `authenticated`; no market, broker, or order state is changed.
 - `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
-  - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
+  - **DB-only (ROB-1309): makes zero external HTTP calls** — no sector lazy-fill, no analyst-consensus fetch, no live KIS holdings lookup, no live price fetch. Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
   - Supports multi-preset sweeps with symbol deduplication and `matchedPresets` tagging.
-  - `exclude_held` (bool): hide symbols already in the KIS-live portfolio; if KIS holdings degrade, the response keeps results and emits a warning.
+  - `exclude_held` is NOT supported here — it would require the live KIS holdings call this DB-only tool never makes; passing `exclude_held=True` returns a fail-closed error pointing at `screen_stocks_enrich` (same redirect pattern as `min_analyst_count`/`min_analyst_buy_count`). `isHeld` is always `false` on every returned row.
   - `exclude_watched` (bool): accepted for compatibility, but currently unsupported in MCP because no user watchlist context is wired; requests emit an explicit warning.
   - `exclude_symbols`: explicit symbols to remove after dedupe.
-  - `min_analyst_count` (int): quality filter — filters enriched results by consensus total coverage.
-  - `min_analyst_buy_count` (int): compatibility filter — filters enriched results by consensus buy count.
+  - `min_analyst_count` / `min_analyst_buy_count`: NOT applied here — this tool never returns consensus data; passing either returns the same fail-closed redirect error as `exclude_held`. Use `screen_stocks_enrich` for analyst-count filtering.
   - `min_market_cap` (float): size filter using raw numeric `marketCapValue` (`KRW` for KR, `USD` for US/crypto).
   - `min/max_market_cap_eok` (float): KR compatibility size filter — unit is 1억원.
   - `sort="matched_presets_desc"`: ranks intersections (stocks in multiple presets) first.
   - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
-  - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
   - `preset="support_proximity"` is KR-only and reads persisted price/support/distance plus Naver-normalized KRW market cap. It performs no query-time OHLCV fetch or support recalculation; revalidate only the returned top symbols with `get_support_resistance`/`get_quote` when acting.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
-  - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
+  - Preset sweeps are capped at 5 presets.
   - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
+  - `priceLabel`/`changePctLabel`/`metricValueLabel` are values at the snapshot time and may be stale by up to one session; revalidate a top candidate with `get_quote`/`get_support_resistance`/`analyze_stock_batch` before acting.
   - Crypto snapshot examples:
     - `screen_stocks_snapshot(preset="crypto_high_volume", market="crypto", limit=40)`
     - `screen_stocks_snapshot(preset="crypto_momentum", market="crypto", filters=[{"field":"trade_amount_24h","operator":"gte","value":10000000000}], limit=40)`
   - Use `get_crypto_top_movers` for live Upbit top movers; use `screen_stocks_snapshot(..., market="crypto")` for persisted snapshot-backed filtering.
+- `screen_stocks_enrich(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
+  - **ROB-1309 opt-in live-enrichment counterpart to `screen_stocks_snapshot`.** Runs the identical preset/filter/discovery/pagination pipeline (same params), then makes external calls: KR/US analyst consensus (buy/hold/sell counts + target prices, Redis cache-aside with a call-time-fresh target-upside recompute), sector-label lazy-fill, RSI14 from persisted snapshot closes, and the one live KIS holdings call for `exclude_held`/`isHeld`.
+  - `min_analyst_count`/`min_analyst_buy_count` filter on resolved consensus counts before pagination (capped at 200 merged rows before enrichment); only the returned page is fully enriched with `analysisContext`.
+  - Only call this after `screen_stocks_snapshot` when analyst consensus / sector labels / analyst-count filtering / `exclude_held` are actually needed — every call fans out one HTTP round-trip per uncached symbol on the page and can take tens of seconds for a full page.
+  - A symbol whose sector/consensus fetch just failed is not retried within a bounded window (`meta.enrichment_excluded`); a symbol with >=3 consecutive failures is dropped from `results` on that call only, reported under `meta.chronic_failure_candidates` (self-healing on the next success). Read-only wrt broker/order/watch state.
 - `get_top_stocks(market="kr", ranking_type="volume", limit=20, min_market_cap=None, min_turnover=None)` - Cross-market rankings. KR quality floors are raw KRW and fail closed; `min_market_cap` uses normalized Naver-backed valuation snapshots, while turnover uses trade amount or price × volume. Crypto supports `volume`, `gainers`, `losers`, and `relative_strength`.
 - `get_crypto_top_movers(ranking_type="relative_strength", limit=20)` - Crypto-only Upbit KRW discovery wrapper. Default ranking sorts non-BTC coins by 24h outperformance vs KRW-BTC.
 - `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.

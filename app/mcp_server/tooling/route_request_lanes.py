@@ -87,7 +87,11 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
         {"tool": "get_fx_rate", "purpose": "FX"},
         {
             "tool": "analyze_stock_batch",
-            "purpose": "RSI, honest consensus, support/resistance, per-account position (mode=quick, include_position, <=10)",
+            "purpose": "RSI, support/resistance from the last closed daily candle "
+            "(quick=True default, DB-only, <=10 symbols); current_price is stale, "
+            "not live — call get_quote for a live price. quick no longer returns "
+            "analyst/holdings fields; use quick=False for those, get_holdings for "
+            "position.",
         },
         {
             "tool": "get_intraday_investor_flow",
@@ -105,7 +109,8 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
         },
         {
             "tool": "analyze_stock_batch",
-            "purpose": "confirm distance to resistance, RSI, upside",
+            "purpose": "confirm distance to resistance, RSI, upside (quick=False — "
+            "upside requires the full analysis path)",
         },
         {
             "tool": "sell_ladder_fill_preview",
@@ -126,7 +131,10 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
         {"tool": "screen_stocks", "purpose": "value/RSI screen fan-out"},
         {"tool": "get_sector_peers", "purpose": "rotation-sector peers"},
         {"tool": "get_disclosures", "purpose": "rights-issue / overhang filter"},
-        {"tool": "analyze_stock_batch", "purpose": "deep confirm on ranked survivors"},
+        {
+            "tool": "analyze_stock_batch",
+            "purpose": "deep confirm on ranked survivors (quick=False)",
+        },
         {"tool": "toss_place_order", "purpose": "winners only, support-line limit"},
     ],
 }
