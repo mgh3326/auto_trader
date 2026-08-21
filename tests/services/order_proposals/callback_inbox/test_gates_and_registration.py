@@ -392,7 +392,7 @@ def _is_callback_attempt_override_name(value: str) -> bool:
 
 
 def find_callback_attempt_override_names(text: str) -> list[str]:
-    """Return candidate Settings/environment override names in arbitrary text."""
+    """Return semantic external attempt-budget control names in arbitrary text."""
     return sorted(
         {
             token
@@ -401,15 +401,19 @@ def find_callback_attempt_override_names(text: str) -> list[str]:
             # Dotted tokens are runtime member expressions, not an external
             # setting name (for example ``InboxState.RETRY_WAIT.value``).
             and "." not in token
+            # Python sources include runtime event labels such as
+            # ``callback_job_attempts_exhausted``.  An external control is
+            # either env-style uppercase or names an actual cap/limit/budget.
+            and (
+                token.isupper()
+                or any(word in token.casefold() for word in ("max", "limit", "budget"))
+            )
         }
     )
 
 
-def _tracked_deployment_files() -> list[pathlib.Path]:
-    """Reuse W5's deployment-surface walk, narrowed to Git-tracked files."""
-    from .test_no_auto_activation import _deployment_files_in
-
-    repo = pathlib.Path(__file__).resolve().parents[4]
+def _tracked_paths(repo: pathlib.Path) -> frozenset[str]:
+    """Return Git-tracked repository-relative paths without shell expansion."""
     tracked = subprocess.run(  # noqa: S603 - fixed Git argv, no shell
         ["git", "ls-files", "-z"],
         capture_output=True,
@@ -417,10 +421,30 @@ def _tracked_deployment_files() -> list[pathlib.Path]:
         cwd=repo,
         text=True,
     ).stdout.split("\0")
-    tracked_paths = frozenset(path for path in tracked if path)
+    return frozenset(path for path in tracked if path)
+
+
+def _tracked_deployment_files() -> list[pathlib.Path]:
+    """Reuse W5's deployment-surface walk, narrowed to Git-tracked files."""
+    from .test_no_auto_activation import _deployment_files_in
+
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    tracked_paths = _tracked_paths(repo)
     return [
         path
         for path in _deployment_files_in(repo)
+        if path.relative_to(repo).as_posix() in tracked_paths
+    ]
+
+
+def _tracked_callback_inbox_sources() -> list[pathlib.Path]:
+    """Return every tracked callback-inbox Python source, including service.py."""
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    package = repo / "app/services/order_proposals/callback_inbox"
+    tracked_paths = _tracked_paths(repo)
+    return [
+        path
+        for path in sorted(package.glob("*.py"))
         if path.relative_to(repo).as_posix() in tracked_paths
     ]
 
@@ -453,6 +477,11 @@ def test_callback_attempt_budget_has_no_settings_or_environment_override() -> No
 
     config_path = repo / "app/core/config.py"
     sources = [(config_path, config_path.read_text(encoding="utf-8"))]
+    callback_inbox_sources = _tracked_callback_inbox_sources()
+    assert any(path.name == "service.py" for path in callback_inbox_sources)
+    sources.extend(
+        (path, path.read_text(encoding="utf-8")) for path in callback_inbox_sources
+    )
     deployment_files = _tracked_deployment_files()
     deployment_names = {path.name for path in deployment_files}
     assert {"env.example", "env.prod.example"} <= deployment_names
