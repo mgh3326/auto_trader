@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 import sentry_sdk
+from sentry_sdk import logger as sentry_logger
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 from taskiq import TaskiqMessage
@@ -170,6 +171,25 @@ class _DynamicRecoveryFailure(Exception):
         return "<dynamic recovery failure>"
 
 
+class _RenderTrackedExceptionGroup(ExceptionGroup):
+    """An outer group that fails safely if a boundary renders the group itself."""
+
+    def __new__(
+        cls, message: str, exceptions: list[Exception]
+    ) -> _RenderTrackedExceptionGroup:
+        instance = super().__new__(cls, message, exceptions)
+        instance.render_calls: list[str] = []
+        return instance
+
+    def __str__(self) -> str:
+        self.render_calls.append("str")
+        raise AssertionError("boundary exception group was rendered")
+
+    def __repr__(self) -> str:
+        self.render_calls.append("repr")
+        raise AssertionError("boundary exception group was rendered")
+
+
 # Make the baseline's ``type(exc).__name__`` log leak the exact marker too,
 # while its string rendering remains safe if pytest ever has to show it.
 _DynamicRecoveryFailure.__name__ = _FAKE_SECRET
@@ -196,6 +216,8 @@ def _assert_exact_string(value: object, expected: str, *, where: str) -> None:
 def _assert_exact_keys(value: object, expected: frozenset[str], *, where: str) -> None:
     if type(value) is not dict:
         _raise_generic(f"{where} was not an exact built-in dict")
+    if any(type(key) is not str for key in value):
+        _raise_generic(f"{where} contained a non-built-in-string key")
     if set(value) != expected:
         _raise_generic(f"{where} did not contain the exact closed key set")
 
@@ -307,6 +329,45 @@ class _RecordSink(logging.Handler):
         self.records.append(record)
 
 
+def _test_sentry_scopes() -> tuple[object, ...]:
+    current = sentry_sdk.get_current_scope()
+    isolation = sentry_sdk.get_isolation_scope()
+    return (current,) if current is isolation else (current, isolation)
+
+
+def _assert_test_sentry_breadcrumbs_clean() -> None:
+    for scope in _test_sentry_scopes():
+        breadcrumbs = getattr(scope, "_breadcrumbs", ())
+        _assert_no_protected_text(
+            list(breadcrumbs), where="Sentry isolation breadcrumbs"
+        )
+
+
+def _clear_test_sentry_scopes() -> None:
+    for scope in _test_sentry_scopes():
+        clear = getattr(scope, "clear_breadcrumbs", None)
+        if not callable(clear):
+            _raise_generic("Sentry test scope did not expose breadcrumb cleanup")
+        clear()
+    for scope in _test_sentry_scopes():
+        if list(getattr(scope, "_breadcrumbs", ())):
+            _raise_generic("Sentry test scope retained breadcrumbs after cleanup")
+    _assert_test_sentry_breadcrumbs_clean()
+
+
+def _clear_contaminated_sentry_controls(
+    log_sink: _RecordSink,
+    events: list[dict[str, Any]],
+    envelope_item_types: list[str],
+) -> None:
+    log_sink.records.clear()
+    events.clear()
+    envelope_item_types.clear()
+    _clear_test_sentry_scopes()
+    if log_sink.records or events or envelope_item_types:
+        _raise_generic("contaminated Sentry controls were not cleared")
+
+
 @pytest.fixture
 def task_boundary_sinks():
     """Unfiltered receiver leak proof: capture upstream log/event payloads."""
@@ -333,31 +394,38 @@ def task_boundary_sinks():
         auto_enabling_integrations=False,
         default_integrations=False,
     )
-    scope = sentry_sdk.get_global_scope()
-    previous_client = scope.client
-    scope.set_client(client)
+    with sentry_sdk.isolation_scope() as isolation_scope:
+        current_scope = sentry_sdk.get_current_scope()
+        previous_current_client = current_scope.client
+        previous_isolation_client = isolation_scope.client
+        current_scope.set_client(client)
+        isolation_scope.set_client(client)
 
-    sink = _RecordSink()
-    sink.setFormatter(logging.Formatter("%(message)s"))
-    root = logging.getLogger()
-    previous_level = root.level
-    root.addHandler(sink)
-    root.setLevel(logging.DEBUG)
-    try:
-        # Positive controls keep the privacy scan from passing over empty sinks
-        # or only unserialised Python values.
-        logging.getLogger("r35.task_boundary.control").error(
-            "safe TaskIQ boundary log control"
-        )
-        sentry_sdk.capture_message("safe TaskIQ boundary event control")
-        with sentry_sdk.start_transaction(name="r35 task boundary transaction") as tx:
-            tx.set_data("boundary", "safe")
-        yield sink, events
-    finally:
-        root.removeHandler(sink)
-        root.setLevel(previous_level)
-        client.close(timeout=0)
-        scope.set_client(previous_client)
+        sink = _RecordSink()
+        sink.setFormatter(logging.Formatter("%(message)s"))
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(sink)
+        root.setLevel(logging.DEBUG)
+        try:
+            # Positive controls keep the privacy scan from passing over empty
+            # sinks or only unserialised Python values.
+            logging.getLogger("r35.task_boundary.control").error(
+                "safe TaskIQ boundary log control"
+            )
+            sentry_sdk.capture_message("safe TaskIQ boundary event control")
+            with sentry_sdk.start_transaction(
+                name="r35 task boundary transaction"
+            ) as tx:
+                tx.set_data("boundary", "safe")
+            yield sink, events
+        finally:
+            root.removeHandler(sink)
+            root.setLevel(previous_level)
+            _clear_test_sentry_scopes()
+            current_scope.set_client(previous_current_client)
+            isolation_scope.set_client(previous_isolation_client)
+            client.close(timeout=0)
 
 
 _PRODUCTION_SAFE_LOGGER = "r35.task_boundary.production.safe_control"
@@ -377,10 +445,14 @@ def production_sentry_sinks():
     )
 
     events: list[dict[str, Any]] = []
+    envelope_item_types: list[str] = []
 
     class _ListTransport(Transport):
         def capture_envelope(self, envelope) -> None:  # type: ignore[no-untyped-def]
             for item in envelope.items:
+                item_type = item.headers.get("type")
+                if type(item_type) is str:
+                    envelope_item_types.append(item_type)
                 payload = item.payload.json
                 if payload is not None:
                     events.append(payload)
@@ -404,38 +476,45 @@ def production_sentry_sinks():
         before_send_transaction=_before_send_transaction,
         enable_logs=True,
     )
-    scope = sentry_sdk.get_global_scope()
-    previous_client = scope.client
-    scope.set_client(client)
+    with sentry_sdk.isolation_scope() as isolation_scope:
+        current_scope = sentry_sdk.get_current_scope()
+        previous_current_client = current_scope.client
+        previous_isolation_client = isolation_scope.client
+        current_scope.set_client(client)
+        isolation_scope.set_client(client)
 
-    sink = _RecordSink()
-    sink.setFormatter(logging.Formatter("%(message)s"))
-    root = logging.getLogger()
-    previous_level = root.level
-    root.addHandler(sink)
-    root.setLevel(logging.DEBUG)
-    try:
-        # The distinct logger must arrive as a LoggingIntegration event; a
-        # standalone capture_message cannot satisfy this control.
-        sentry_sdk.add_breadcrumb(
-            category="r35.production.control",
-            message="safe production-hook breadcrumb control",
-        )
-        logging.getLogger(_PRODUCTION_SAFE_LOGGER).error(
-            "safe production-hook logger control"
-        )
-        job_id = uuid.uuid4()
-        with worker_transaction(job_id) as transaction:
-            if transaction is not None:
-                transaction.set_data("callback_job.state", "succeeded")
-                transaction.set_data("callback_job.attempt", 1)
-                transaction.set_data("r35.control", "safe")
-        yield sink, events
-    finally:
-        root.removeHandler(sink)
-        root.setLevel(previous_level)
-        client.close(timeout=0)
-        scope.set_client(previous_client)
+        sink = _RecordSink()
+        sink.setFormatter(logging.Formatter("%(message)s"))
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(sink)
+        root.setLevel(logging.DEBUG)
+        try:
+            # The distinct logger must arrive as a LoggingIntegration event; a
+            # standalone capture_message cannot satisfy this control.
+            sentry_sdk.add_breadcrumb(
+                category="r35.production.control",
+                message="safe production-hook breadcrumb control",
+            )
+            logging.getLogger(_PRODUCTION_SAFE_LOGGER).error(
+                "safe production-hook logger control"
+            )
+            sentry_logger.error("safe production-hook Sentry log control")
+            job_id = uuid.uuid4()
+            with worker_transaction(job_id) as transaction:
+                if transaction is not None:
+                    transaction.set_data("callback_job.state", "succeeded")
+                    transaction.set_data("callback_job.attempt", 1)
+                    transaction.set_data("r35.control", "safe")
+            client.flush(timeout=1.0)
+            yield sink, events, envelope_item_types
+        finally:
+            root.removeHandler(sink)
+            root.setLevel(previous_level)
+            _clear_test_sentry_scopes()
+            current_scope.set_client(previous_current_client)
+            isolation_scope.set_client(previous_isolation_client)
+            client.close(timeout=0)
 
 
 def _contains_mapping_pair(value: object, *, key: str, expected: object) -> bool:
@@ -453,7 +532,9 @@ def _contains_mapping_pair(value: object, *, key: str, expected: object) -> bool
     return False
 
 
-def _assert_production_sentry_controls(events: list[dict[str, Any]]) -> None:
+def _assert_production_sentry_controls(
+    events: list[dict[str, Any]], envelope_item_types: list[str]
+) -> None:
     from app.services.order_proposals.callback_inbox.observability import (
         WORKER_TRANSACTION_NAME,
         WORKER_TRANSACTION_OP,
@@ -461,6 +542,8 @@ def _assert_production_sentry_controls(events: list[dict[str, Any]]) -> None:
 
     if not any(event.get("logger") == _PRODUCTION_SAFE_LOGGER for event in events):
         _raise_generic("production LoggingIntegration logger control was not captured")
+    if "log" not in envelope_item_types:
+        _raise_generic("production before_send_log control was not captured")
     transactions = [event for event in events if event.get("type") == "transaction"]
     if not any(
         event.get("transaction") == WORKER_TRANSACTION_NAME for event in transactions
@@ -501,21 +584,21 @@ def test_task_boundary_log_and_sentry_positive_controls_are_nonvacuous(
 
 
 def test_production_sentry_hook_controls_are_nonvacuous(
-    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]]],
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
 ) -> None:
-    log_sink, events = production_sentry_sinks
+    log_sink, events, envelope_item_types = production_sentry_sinks
     _assert_log_records_clean(log_sink.records)
     _assert_events_clean(events)
-    _assert_production_sentry_controls(events)
+    _assert_production_sentry_controls(events, envelope_item_types)
 
 
-def test_task_boundary_scanners_reject_contaminated_controls_and_clear_them(
-    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]]],
+def test_task_boundary_raw_scanners_reject_contaminated_controls_and_clear_them(
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
 ) -> None:
-    """Prove every scanner rejects contamination before target fixtures run."""
+    """Prove LogRecord and actual TaskIQ/Pickle scanners reject contamination."""
     from app.core.taskiq_broker import broker, result_backend
 
-    log_sink, events = production_sentry_sinks
+    log_sink, events, envelope_item_types = production_sentry_sinks
     if broker.result_backend is not result_backend:
         _raise_generic(
             "configured broker result backend drifted during scanner control"
@@ -546,25 +629,8 @@ def test_task_boundary_scanners_reject_contaminated_controls_and_clear_them(
     raw = broker.result_backend.serializer.dumpb(payload)
     decoded = broker.result_backend.serializer.loadb(raw)
 
-    # Actual in-memory Sentry payloads: an event with a breadcrumb and a
-    # transaction data value.  Production hooks are intentionally installed
-    # for this client, so this catches a scanner that only inspects one kind.
-    sentry_sdk.add_breadcrumb(
-        category="r35.contaminated_control",
-        message=_FAKE_SECRET,
-    )
-    sentry_sdk.capture_event(
-        {
-            "message": _FAKE_SECRET,
-            "breadcrumbs": {"values": [{"message": _FAKE_SECRET}]},
-        }
-    )
-    with sentry_sdk.start_transaction(name="r35 contaminated scanner control") as tx:
-        tx.set_data("r35.contaminated", _FAKE_SECRET)
-
     controls: tuple[Callable[[], None], ...] = (
         lambda: _assert_log_records_clean([contaminated_record]),
-        lambda: _assert_events_clean(events),
         lambda: _assert_no_protected_text(
             payload, where="contaminated TaskiqResult model"
         ),
@@ -577,13 +643,52 @@ def test_task_boundary_scanners_reject_contaminated_controls_and_clear_them(
         with pytest.raises(AssertionError):
             control()
 
-    # Target tests use freshly installed clients, and no contaminated record,
-    # envelope, or breadcrumb may survive this proof into a target scan.
-    log_sink.records.clear()
-    events.clear()
-    sentry_sdk.get_current_scope().clear_breadcrumbs()
-    if log_sink.records or events:
-        _raise_generic("contaminated scanner controls were not cleared")
+    _clear_contaminated_sentry_controls(log_sink, events, envelope_item_types)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ("event", "breadcrumb", "sentry_log", "transaction"),
+    ids=("event", "breadcrumb", "sentry-log", "transaction"),
+)
+def test_production_sentry_scanners_reject_each_isolated_contaminated_surface(
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    surface: str,
+) -> None:
+    """Each in-memory Sentry surface must fail its scanner independently."""
+    log_sink, events, envelope_item_types = production_sentry_sinks
+    log_envelopes_before = envelope_item_types.count("log")
+
+    if surface == "event":
+        sentry_sdk.capture_event({"message": _FAKE_SECRET})
+    elif surface == "breadcrumb":
+        sentry_sdk.add_breadcrumb(
+            category="r35.contaminated_control",
+            message=_FAKE_SECRET,
+        )
+        sentry_sdk.capture_message("safe breadcrumb scanner trigger")
+    elif surface == "sentry_log":
+        sentry_logger.error(_FAKE_SECRET)
+    elif surface == "transaction":
+        with sentry_sdk.start_transaction(
+            name="r35 contaminated scanner control"
+        ) as tx:
+            tx.set_data("r35.contaminated", _FAKE_SECRET)
+    else:
+        _raise_generic("unknown isolated Sentry contamination surface")
+
+    sentry_sdk.flush(timeout=1.0)
+    if (
+        surface == "sentry_log"
+        and envelope_item_types.count("log") <= log_envelopes_before
+    ):
+        _raise_generic("isolated Sentry log control did not create a log envelope")
+    if surface == "breadcrumb":
+        with pytest.raises(AssertionError):
+            _assert_test_sentry_breadcrumbs_clean()
+    with pytest.raises(AssertionError):
+        _assert_events_clean(events)
+    _clear_contaminated_sentry_controls(log_sink, events, envelope_item_types)
 
 
 def _valid_recovery_report(*, populated: bool = True) -> dict[str, object]:
@@ -792,13 +897,19 @@ async def test_all_uuid_version_and_variant_nibbles_use_the_canonical_wire_form(
     canonical_values = [
         "00000000-0000-0000-0000-000000000000",
         *(
-            f"01234567-89ab-{version}def-{variant}234-56789abcdef"
+            f"01234567-89ab-{version}def-{variant}234-56789abcdef0"
             for version in "0123456789abcdef"
             for variant in "0123456789abcdef"
         ),
     ]
     for canonical in canonical_values:
-        if str(uuid.UUID(canonical)) != canonical:
+        if tuple(map(len, canonical.split("-"))) != (8, 4, 4, 4, 12):
+            _raise_generic("test UUID inventory did not have canonical group lengths")
+        try:
+            parsed = uuid.UUID(canonical)
+        except (TypeError, ValueError):
+            _raise_generic("test UUID inventory did not parse")
+        if str(parsed) != canonical:
             _raise_generic("test UUID inventory was not canonical")
         result = await task_module.run_telegram_callback_job(canonical)
         _assert_job_result(result, status="succeeded", job_id=canonical)
@@ -947,12 +1058,13 @@ async def test_ordinary_worker_exception_and_exception_group_collapse_without_ec
     ordinary = _BoundaryRuntimeError(reject_render=True)
     cause = _BoundaryRuntimeError(reject_render=True)
     grouped = _BoundaryRuntimeError(reject_render=True)
+    group = _RenderTrackedExceptionGroup("safe exception group", [grouped])
 
     async def _explode(job_id: object) -> object:
         raise ordinary from cause
 
     async def _group(job_id: object) -> object:
-        raise ExceptionGroup("safe exception group", [grouped])
+        raise group
 
     monkeypatch.setattr(
         settings,
@@ -966,7 +1078,9 @@ async def test_ordinary_worker_exception_and_exception_group_collapse_without_ec
         result = await task_module.run_telegram_callback_job.original_func(canonical)
     except Exception:
         _raise_generic("ordinary worker failure escaped the TaskIQ boundary")
-    for exception in (ordinary, cause) if failure_kind == "ordinary" else (grouped,):
+    for exception in (
+        (ordinary, cause) if failure_kind == "ordinary" else (group, grouped)
+    ):
         _assert_exception_unrendered(exception, where="worker exception boundary")
     _assert_job_result(result, status="error", job_id=canonical)
     _assert_no_protected_text(result, where="ordinary worker error result")
@@ -1195,7 +1309,11 @@ def _mutated_recovery_report(case: str) -> object:
     elif case == "claimed_negative":
         report["claimed"] = -1
     elif case == "claimed_over_scanned":
-        report["claimed"] = 2
+        # This necessarily also disagrees with the closed status arithmetic:
+        # keeping the status sum valid isolates the claim-vs-scan violation.
+        scanned = report["scanned"]
+        assert type(scanned) is int
+        report["claimed"] = scanned + 1
     elif case == "cap_only":
         from app.services.order_proposals.callback_inbox.contracts import (
             RECOVERY_SCAN_LIMIT,
@@ -1410,12 +1528,13 @@ async def test_ordinary_recovery_exception_and_exception_group_collapse_to_error
 
     ordinary = _BoundaryRuntimeError(reject_render=True)
     grouped = _BoundaryRuntimeError(reject_render=True)
+    group = _RenderTrackedExceptionGroup("safe exception group", [grouped])
 
     async def _ordinary() -> object:
         raise ordinary
 
     async def _group() -> object:
-        raise ExceptionGroup("safe exception group", [grouped])
+        raise group
 
     monkeypatch.setattr(
         settings,
@@ -1435,10 +1554,8 @@ async def test_ordinary_recovery_exception_and_exception_group_collapse_to_error
         result = await task_module.recover_telegram_callback_jobs.original_func()
     except Exception:
         _raise_generic("ordinary recovery failure escaped the TaskIQ boundary")
-    _assert_exception_unrendered(
-        ordinary if failure_kind == "ordinary" else grouped,
-        where="recovery exception boundary",
-    )
+    for exception in (ordinary,) if failure_kind == "ordinary" else (group, grouped):
+        _assert_exception_unrendered(exception, where="recovery exception boundary")
     _assert_recovery_error(result)
 
 
@@ -1545,6 +1662,8 @@ def _invalid_recovery_item(case: str, job_id: uuid.UUID, hostile: _Hostile) -> o
         return {"status": "succeeded", "job_id": f"urn:uuid:{job_id}"}
     if case == "uuid_job_id":
         return {"status": "succeeded", "job_id": job_id}
+    if case == "job_id_subclass":
+        return {"status": "succeeded", "job_id": _StringSubclass(str(job_id))}
     if case == "job_id_hostile":
         return {"status": "succeeded", "job_id": hostile}
     if case == "missing_status":
@@ -1577,6 +1696,7 @@ def _invalid_recovery_item(case: str, job_id: uuid.UUID, hostile: _Hostile) -> o
         "job_id_brace",
         "job_id_urn",
         "uuid_job_id",
+        "job_id_subclass",
         "job_id_hostile",
         "missing_status",
         "missing_job_id",
@@ -1613,6 +1733,42 @@ async def test_internal_recovery_item_rejects_malformed_worker_results(
 
 
 @pytest.mark.asyncio
+async def test_internal_recovery_item_protected_returned_id_is_redacted_everywhere(
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+) -> None:
+    """A rejected returned identifier must never cross the log/Sentry boundary."""
+    from app.core.timezone import now_kst
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    log_sink, events, envelope_item_types = production_sentry_sinks
+    job_id = uuid.uuid4()
+
+    async def _process(*args: object, **kwargs: object) -> dict[str, str]:
+        return {"status": "succeeded", "job_id": _FAKE_SECRET}
+
+    try:
+        result = await recovery_module._process_one(
+            job_id,
+            process_fn=_process,
+            now_fn=now_kst,
+            worker_kwargs={},
+        )
+    except Exception:
+        _raise_generic("protected returned identifier escaped the item boundary")
+    _assert_all_clean(
+        (
+            lambda: _assert_exact_string(
+                result, "error", where="protected returned identifier result"
+            ),
+            lambda: _assert_production_sentry_controls(events, envelope_item_types),
+            lambda: _assert_log_records_clean(log_sink.records),
+            lambda: _assert_events_clean(events),
+        ),
+        message="protected returned identifier crossed the recovery boundary",
+    )
+
+
+@pytest.mark.asyncio
 async def test_internal_recovery_item_hides_dynamic_exception_details(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1626,12 +1782,15 @@ async def test_internal_recovery_item_hides_dynamic_exception_details(
     async def _explode(*args: object, **kwargs: object) -> object:
         raise error
 
-    result = await recovery_module._process_one(
-        job_id,
-        process_fn=_explode,
-        now_fn=now_kst,
-        worker_kwargs={},
-    )
+    try:
+        result = await recovery_module._process_one(
+            job_id,
+            process_fn=_explode,
+            now_fn=now_kst,
+            worker_kwargs={},
+        )
+    except Exception:
+        _raise_generic("dynamic recovery item escaped its boundary")
     _assert_exception_unrendered(error, where="dynamic recovery item exception")
     _assert_exact_string(result, "error", where="exception recovery item result")
     records = [
@@ -1653,11 +1812,12 @@ async def test_internal_recovery_item_collapses_exception_and_exception_group(
 
     job_id = uuid.uuid4()
     error = _BoundaryRuntimeError(reject_render=True)
+    group = _RenderTrackedExceptionGroup("safe exception group", [error])
 
     async def _explode(*args: object, **kwargs: object) -> object:
         if failure_kind == "ordinary":
             raise error
-        raise ExceptionGroup("safe exception group", [error])
+        raise group
 
     try:
         result = await recovery_module._process_one(
@@ -1669,6 +1829,8 @@ async def test_internal_recovery_item_collapses_exception_and_exception_group(
     except Exception:
         _raise_generic("internal recovery item leaked an ordinary exception")
     _assert_exception_unrendered(error, where="internal recovery ordinary exception")
+    if failure_kind == "exception_group":
+        _assert_exception_unrendered(group, where="internal recovery outer group")
     _assert_exact_string(result, "error", where="internal recovery ordinary result")
 
 
@@ -1711,7 +1873,7 @@ async def test_internal_recovery_item_preserves_every_non_exception_baseexceptio
 
 @pytest.mark.asyncio
 async def test_internal_recovery_item_exception_surfaces_are_redacted(
-    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]]],
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
 ) -> None:
     """Ordinary item failures must be safe in the real W5 log and span hooks."""
     from app.core.timezone import now_kst
@@ -1720,25 +1882,28 @@ async def test_internal_recovery_item_exception_surfaces_are_redacted(
         worker_transaction,
     )
 
-    log_sink, events = production_sentry_sinks
+    log_sink, events, envelope_item_types = production_sentry_sinks
     job_id = uuid.uuid4()
     error = _DynamicRecoveryFailure(reject_render=True)
 
     async def _explode(*args: object, **kwargs: object) -> object:
         raise error
 
-    with worker_transaction(job_id) as transaction:
-        transaction.set_data("callback_job.state", "processing")
-        transaction.set_data("callback_job.attempt", 1)
-        result = await recovery_module._process_one(
-            job_id,
-            process_fn=_explode,
-            now_fn=now_kst,
-            worker_kwargs={},
-        )
+    try:
+        with worker_transaction(job_id) as transaction:
+            transaction.set_data("callback_job.state", "processing")
+            transaction.set_data("callback_job.attempt", 1)
+            result = await recovery_module._process_one(
+                job_id,
+                process_fn=_explode,
+                now_fn=now_kst,
+                worker_kwargs={},
+            )
+    except Exception:
+        _raise_generic("dynamic recovery Sentry item escaped its boundary")
     _assert_exception_unrendered(error, where="internal recovery exception")
     _assert_exact_string(result, "error", where="internal recovery exception result")
-    _assert_production_sentry_controls(events)
+    _assert_production_sentry_controls(events, envelope_item_types)
     _assert_all_clean(
         (
             lambda: _assert_log_records_clean(log_sink.records),
