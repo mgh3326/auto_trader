@@ -153,11 +153,26 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
         # lock for the rest of the session -- every later test that picks a
         # colliding key would then fail for the wrong reason.
         if not released:
+            # The ordinary path first. If it cannot prove the backend is dead
+            # it raises and keeps the connection quarantined, and closing it
+            # here would be exactly the pool checkin R27d forbids: a possibly
+            # locked backend handed back for unrelated work.
             with contextlib.suppress(Exception):
                 await lock.release(key)
+            # So kill it from the outside instead, which is what an operator
+            # would have to do. ``pg_locks`` finds the holder without touching
+            # it, and the guard excludes the observer's own backend.
             with contextlib.suppress(Exception):
-                for connection in captured:
-                    await connection.close()
+                await observer.execute(
+                    text(
+                        "SELECT pg_terminate_backend(l.pid) FROM pg_locks l "
+                        "WHERE l.locktype = 'advisory' AND l.classid = 0 "
+                        "AND l.objid = :key AND l.objsubid = 1 "
+                        "AND l.pid <> pg_backend_pid()"
+                    ),
+                    {"key": key},
+                )
+                await observer.commit()
         with contextlib.suppress(Exception):
             await observer.rollback()
         await observer.close()
