@@ -396,6 +396,42 @@ def _test_sentry_scopes() -> tuple[object, ...]:
     return (current,) if current is isolation else (current, isolation)
 
 
+def _snapshot_test_sentry_breadcrumbs() -> tuple[
+    tuple[int, tuple[int, ...], tuple[object, ...]], ...
+]:
+    """Capture both scope buffers without rendering a breadcrumb value."""
+    snapshots: list[tuple[int, tuple[int, ...], tuple[object, ...]]] = []
+    for scope in _test_sentry_scopes():
+        breadcrumbs = list(getattr(scope, "_breadcrumbs", ()))
+        snapshots.append(
+            (
+                id(scope),
+                tuple(id(breadcrumb) for breadcrumb in breadcrumbs),
+                tuple(copy.deepcopy(breadcrumbs)),
+            )
+        )
+    return tuple(snapshots)
+
+
+def _assert_test_sentry_breadcrumbs_unchanged(
+    snapshot: tuple[tuple[int, tuple[int, ...], tuple[object, ...]], ...],
+) -> None:
+    """An invalid identifier may not add or alter even a fixed-safe breadcrumb."""
+    scopes = _test_sentry_scopes()
+    if len(scopes) != len(snapshot):
+        _raise_generic("invalid recovery id changed the active Sentry scope count")
+    for scope, (scope_id, expected_ids, expected_contents) in zip(
+        scopes, snapshot, strict=True
+    ):
+        if id(scope) != scope_id:
+            _raise_generic("invalid recovery id replaced an active Sentry scope")
+        breadcrumbs = list(getattr(scope, "_breadcrumbs", ()))
+        if tuple(id(breadcrumb) for breadcrumb in breadcrumbs) != expected_ids:
+            _raise_generic("invalid recovery id changed Sentry breadcrumb count")
+        if tuple(copy.deepcopy(breadcrumbs)) != expected_contents:
+            _raise_generic("invalid recovery id changed Sentry breadcrumb contents")
+
+
 def _assert_test_sentry_breadcrumbs_clean() -> None:
     for scope in _test_sentry_scopes():
         breadcrumbs = getattr(scope, "_breadcrumbs", ())
@@ -783,6 +819,21 @@ def test_production_sentry_hook_controls_are_nonvacuous(
     _assert_log_records_clean(log_sink.records)
     _assert_events_clean(events)
     _assert_production_sentry_controls(events, envelope_item_types)
+
+
+def test_breadcrumb_snapshot_rejects_a_fixed_safe_delta(
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+) -> None:
+    """The no-observability assertion is not merely a count-free no-op."""
+    _log_sink, events, envelope_item_types = production_sentry_sinks
+    _assert_production_sentry_controls(events, envelope_item_types)
+    snapshot = _snapshot_test_sentry_breadcrumbs()
+    sentry_sdk.add_breadcrumb(
+        category="r35.breadcrumb.snapshot.control",
+        message="safe breadcrumb snapshot control",
+    )
+    with pytest.raises(AssertionError):
+        _assert_test_sentry_breadcrumbs_unchanged(snapshot)
 
 
 def test_task_boundary_raw_scanners_reject_contaminated_controls_and_clear_them(
@@ -2498,6 +2549,7 @@ async def test_internal_recovery_item_rejects_a_non_uuid_job_id_before_coercion(
     observability_before = _snapshot_production_observability(
         log_sink, events, envelope_item_types
     )
+    breadcrumbs_before = _snapshot_test_sentry_breadcrumbs()
 
     async def _process(*args: object, **kwargs: object) -> object:
         process_calls.append(args)
@@ -2536,10 +2588,70 @@ async def test_internal_recovery_item_rejects_a_non_uuid_job_id_before_coercion(
                 envelope_item_types,
                 observability_before,
             ),
+            lambda: _assert_test_sentry_breadcrumbs_unchanged(breadcrumbs_before),
+            _assert_test_sentry_breadcrumbs_clean,
             lambda: _assert_log_records_clean(log_sink.records),
             lambda: _assert_events_clean(events),
         ),
         message="non-UUID recovery job id crossed the recovery boundary",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ("plain_object", "uuid_subclass", "canonical_impersonator"),
+    ids=("plain-object", "uuid-subclass", "canonical-impersonator"),
+)
+async def test_invalid_recovery_id_does_not_change_sentry_breadcrumbs(
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    case: str,
+) -> None:
+    """Invalid IDs must leave both scoped breadcrumb buffers unchanged."""
+    __tracebackhide__ = True
+    from app.core.timezone import now_kst
+    from app.services.order_proposals.callback_inbox import recovery as recovery_module
+
+    _log_sink, _events, _envelope_item_types = production_sentry_sinks
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    hostile: _Hostile | _HostileUUID | _CanonicalUUIDImpersonator
+    if case == "plain_object":
+        hostile = _Hostile()
+    elif case == "uuid_subclass":
+        hostile = _HostileUUID(canonical)
+    elif case == "canonical_impersonator":
+        hostile = _CanonicalUUIDImpersonator(canonical)
+    else:
+        _raise_generic("unknown test-only breadcrumb invalid UUID case")
+    hostile.calls.clear()
+    breadcrumbs_before = _snapshot_test_sentry_breadcrumbs()
+    process_error = _BoundaryRuntimeError(reject_render=True)
+
+    async def _explode(*args: object, **kwargs: object) -> object:
+        raise process_error
+
+    try:
+        result = await recovery_module._process_one(
+            hostile,  # type: ignore[arg-type]
+            process_fn=_explode,
+            now_fn=now_kst,
+            worker_kwargs={},
+        )
+    except Exception:
+        _raise_generic("invalid recovery id breadcrumb path escaped its boundary")
+    sentry_sdk.flush(timeout=1.0)
+    _assert_all_clean(
+        (
+            lambda: _assert_exact_string(
+                result, "error", where="invalid recovery breadcrumb result"
+            ),
+            lambda: _assert_test_sentry_breadcrumbs_unchanged(breadcrumbs_before),
+            _assert_test_sentry_breadcrumbs_clean,
+            lambda: _assert_exception_unrendered(
+                process_error, where="invalid recovery breadcrumb exception"
+            ),
+        ),
+        message="invalid recovery id changed Sentry breadcrumbs",
     )
 
 
