@@ -166,6 +166,7 @@ tests/services/mock_integration/test_kiwoom_coordination_adapter.py
 tests/services/order_proposals/callback_inbox/test_ingress.py
 tests/services/order_proposals/callback_inbox/test_repository_boundary.py
 tests/services/order_proposals/callback_inbox/test_retry_and_recovery_semantics.py
+tests/services/order_proposals/callback_inbox/test_retry_vocabulary.py
 tests/services/order_proposals/callback_inbox/test_seam_equivalence.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
