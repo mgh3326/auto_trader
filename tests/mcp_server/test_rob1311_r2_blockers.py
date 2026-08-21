@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
+import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
@@ -1217,3 +1219,294 @@ def test_mcp_readme_screener_snapshot_section_does_not_claim_live_holdings_or_en
         "the README must document the screen_stocks_enrich tool that now "
         "owns live KIS holdings / analyst-consensus / sector enrichment"
     )
+
+
+# ---------------------------------------------------------------------------
+# R7 — independent-audit corrections: positive contracts (not just absence
+# of stale text), structural YAML parsing for machine-readable playbook
+# args, heading-bounded prose extraction, README internal-consistency
+# (analyze_stock_batch section must not contradict the snapshot/enrich
+# split), W2 portfolio/sellable README contract preservation, and the
+# include_position no-effect-for-any-quick-value contract on both active
+# description surfaces.
+# ---------------------------------------------------------------------------
+
+
+def _playbook_text() -> str:
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    return (
+        repo_root / "docs" / "playbooks" / "trading-decision-playbook.md"
+    ).read_text(encoding="utf-8")
+
+
+def _readme_text() -> str:
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    return (repo_root / "app" / "mcp_server" / "README.md").read_text(encoding="utf-8")
+
+
+def _heading_section(text: str, heading: str, next_heading: str) -> str:
+    start = text.index(heading)
+    end = text.index(next_heading, start)
+    return text[start:end]
+
+
+_YAML_BLOCK_RE_R7 = re.compile(r"```yaml\n(.*?)```", re.DOTALL)
+
+
+def _lane_yaml_block(playbook: str, marker_comment: str) -> dict:
+    for block in _YAML_BLOCK_RE_R7.findall(playbook):
+        if marker_comment in block:
+            parsed = yaml.safe_load(block)
+            assert isinstance(parsed, dict)
+            return parsed
+    raise AssertionError(f"no yaml block found containing {marker_comment!r}")
+
+
+def _find_tool_step(node, tool_name: str) -> dict | None:
+    if isinstance(node, dict):
+        if node.get("tool") == tool_name:
+            return node
+        for value in node.values():
+            found = _find_tool_step(value, tool_name)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_tool_step(item, tool_name)
+            if found is not None:
+                return found
+    return None
+
+
+def test_get_quote_description_positive_contract_states_live_price_source():
+    import inspect
+
+    from app.mcp_server.tooling import market_data_quotes
+
+    source = inspect.getsource(market_data_quotes)
+    start = source.index('name="get_quote"')
+    end = source.index("async def get_quote", start)
+    description = source[start:end].lower()
+
+    assert "quick=true" in description, (
+        "get_quote description must positively state that "
+        "analyze_stock_batch's quick=True path is the one that never "
+        "fetches a live price"
+    )
+    assert "db-only" in description, (
+        "get_quote description must positively state quick=True is DB-only"
+    )
+    assert "always call get_quote" in description, (
+        "get_quote description must positively state that get_quote itself "
+        "is the live-price source"
+    )
+
+
+def test_route_request_buy_purpose_positive_contract():
+    from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
+
+    buy_step = next(
+        step for step in LANE_SEQUENCES["buy"] if step["tool"] == "analyze_stock_batch"
+    )
+    purpose = buy_step["purpose"].lower()
+
+    assert "quick=true" in purpose
+    assert "db-only" in purpose
+    assert "get_quote" in purpose
+    assert "get_holdings" in purpose, (
+        "position lookups must be routed to get_holdings, the only tool "
+        "that returns per-account position"
+    )
+
+
+def test_route_request_sell_purpose_requires_upside_and_quick_false_together():
+    from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
+
+    sell_step = next(
+        step for step in LANE_SEQUENCES["sell"] if step["tool"] == "analyze_stock_batch"
+    )
+    purpose = sell_step["purpose"].lower()
+
+    assert "upside" in purpose, (
+        "must retain the positive claim that this step confirms upside"
+    )
+    assert "quick=false" in purpose, (
+        "must explicitly require quick=False for that upside claim to be true"
+    )
+
+
+def test_route_request_discovery_purpose_requires_deep_confirm_and_quick_false_together():
+    from app.mcp_server.tooling.route_request_lanes import LANE_SEQUENCES
+
+    discovery_step = next(
+        step
+        for step in LANE_SEQUENCES["discovery"]
+        if step["tool"] == "analyze_stock_batch"
+    )
+    purpose = discovery_step["purpose"].lower()
+
+    assert "deep confirm" in purpose
+    assert "quick=false" in purpose
+
+
+def test_playbook_buy_lane_analyze_step_args_are_exactly_quick_true_structural():
+    playbook = _playbook_text()
+    parsed = _lane_yaml_block(playbook, "playbook-machine-readable: buy lane")
+    step = _find_tool_step(parsed, "analyze_stock_batch")
+    assert step is not None, "buy lane must have an analyze_stock_batch step"
+    assert step.get("args") == {"quick": True}, (
+        f"buy lane analyze_stock_batch args must be exactly "
+        f"{{'quick': True}} — no mode/max_symbols/unknown keys, got "
+        f"{step.get('args')!r}"
+    )
+
+
+def test_playbook_sell_lane_analyze_step_args_are_exactly_quick_false_structural():
+    playbook = _playbook_text()
+    parsed = _lane_yaml_block(playbook, "playbook-machine-readable: sell lane")
+    step = _find_tool_step(parsed, "analyze_stock_batch")
+    assert step is not None, "sell lane must have an analyze_stock_batch step"
+    assert step.get("args") == {"quick": False}, (
+        "sell lane's analyze_stock_batch step confirms 'upside', which "
+        "requires the full analysis path — this must be a real `args: "
+        f"{{quick: false}}` key, not just a comment; got {step.get('args')!r}"
+    )
+
+
+def test_playbook_discovery_lane_analyze_step_args_are_exactly_quick_false_structural():
+    playbook = _playbook_text()
+    parsed = _lane_yaml_block(playbook, "playbook-machine-readable: discovery lane")
+    step = _find_tool_step(parsed, "analyze_stock_batch")
+    assert step is not None, "discovery lane must have an analyze_stock_batch step"
+    assert step.get("args") == {"quick": False}, (
+        "discovery lane's 'deep confirm' analyze_stock_batch step must be a "
+        "real `args: {quick: false}` key, not just a trailing comment; got "
+        f"{step.get('args')!r}"
+    )
+
+
+def test_playbook_buy_prose_position_guidance_heading_bounded():
+    playbook = _playbook_text()
+    section = _heading_section(
+        playbook, "## 1) Buy pipeline", "## 2) Sell (profit-taking) pipeline"
+    )
+
+    assert "position require `quick=false`" not in section.lower(), (
+        "analyze_stock_batch never attaches a `position` field for any "
+        "quick value (include_position is always forced False internally) "
+        "— the playbook must not imply quick=False returns it"
+    )
+    assert "get_holdings" in section, (
+        "the buy-pipeline prose must point position lookups at get_holdings"
+    )
+
+
+def test_playbook_sell_lane_upside_step_quick_false_heading_bounded():
+    playbook = _playbook_text()
+    section = _heading_section(
+        playbook,
+        "## 2) Sell (profit-taking) pipeline",
+        "## 3) New-idea discovery pipeline",
+    )
+
+    assert "upside" in section.lower()
+    assert "quick=false" in section.lower(), (
+        "the sell pipeline's analyze_stock_batch step (confirm distance to "
+        "resistance, RSI, upside) must explicitly say quick=False — upside "
+        "is not part of the quick=True (default) allowlist"
+    )
+
+
+def test_mcp_readme_analyze_batch_section_does_not_contradict_snapshot_enrich_split():
+    readme = _readme_text()
+
+    assert "rows now expose consensus and rsi context directly" not in readme.lower(), (
+        "screen_stocks_snapshot is DB-only (ROB-1309) and never returns "
+        "consensus/RSI inline — the analyze_stock_batch section must not "
+        "claim snapshot rows expose that context directly"
+    )
+
+    section = _heading_section(
+        readme, "`analyze_stock_batch(symbols", "### Snapshot-backed report generation"
+    )
+    assert "screen_stocks_enrich" in section or "quick=false" in section.lower(), (
+        "the follow-up-after-snapshot guidance must point at "
+        "screen_stocks_enrich or an explicit quick=False call, not imply "
+        "the DB-only snapshot already carries consensus/RSI"
+    )
+
+
+def test_mcp_readme_screen_stocks_enrich_section_positively_owns_live_holdings_and_consensus():
+    readme = _readme_text()
+    section = _heading_section(
+        readme,
+        "- `screen_stocks_enrich(preset=None",
+        "### Snapshot-backed report generation",
+    )
+    lowered = section.lower()
+    assert "live kis holdings" in lowered
+    assert "consensus" in lowered
+
+
+def test_mcp_readme_snapshot_section_states_zero_http_heading_bounded():
+    readme = _readme_text()
+    section = _heading_section(
+        readme,
+        "- `screen_stocks_snapshot(preset=None",
+        "- `screen_stocks_enrich(preset=None",
+    )
+    assert "zero external http" in section.lower()
+    assert "kis-live portfolio" not in section.lower()
+
+
+def test_mcp_readme_preserves_w2_portfolio_sellable_contract():
+    readme = _readme_text()
+
+    for phrase in (
+        "Redis distributed singleflight (ROB-1310)",
+        "portfolio_snapshot_unavailable",
+        "need_sellable=false` paths skip Toss sellable reads entirely",
+        'sellable_quantity_source="toss_broker_preflight"',
+    ):
+        assert phrase in readme, (
+            f"W2's portfolio/sellable README contract must be preserved "
+            f"verbatim — missing: {phrase!r}"
+        )
+
+
+def test_analysis_registration_include_position_has_no_effect_for_any_quick_value():
+    import inspect
+
+    from app.mcp_server.tooling import analysis_registration
+
+    source = inspect.getsource(analysis_registration)
+    start = source.index('name="analyze_stock_batch"')
+    end = source.index("async def analyze_stock_batch", start)
+    description = source[start:end].lower()
+
+    assert "ignored by quick" not in description, (
+        "must not imply quick=False attaches position — analyze_stock_batch "
+        "never attaches a position field for any quick value"
+    )
+    assert "no effect" in description or "has no effect" in description
+    assert "get_holdings" in description, "must point position lookups at get_holdings"
+
+
+def test_mcp_readme_include_position_note_has_no_effect_for_any_quick_value():
+    readme = _readme_text()
+    section = _heading_section(
+        readme,
+        "- `analyze_stock_batch(symbols",
+        "### Snapshot-backed report generation",
+    )
+    lowered = section.lower()
+
+    assert "ignored in quick mode" not in lowered, (
+        "must not imply quick=False attaches position — analyze_stock_batch "
+        "never attaches a position field for any quick value"
+    )
+    assert "get_holdings" in section
