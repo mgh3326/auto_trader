@@ -38,7 +38,7 @@ _ROB1298_ADDITIVE_TIE_BREAK_KEYS = (
 )
 
 _ROB1292_ALLOWED_POLICY_DELTAS = (
-    ("order_proposals.auto_approve.per_order_cap.kr", 400000, 1000000),
+    ("order_proposals.auto_approve.per_order_cap.kr", 400000, 2000000),
     ("order_proposals.auto_approve.per_order_cap.us", 800, 1500),
     ("order_proposals.auto_approve.per_order_cap.crypto", 100000, 1000000),
     ("order_proposals.auto_approve.daily_cap.kr", 400000, 5000000),
@@ -151,7 +151,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-21.2"
+    assert doc.version == "2026-08-21.3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
