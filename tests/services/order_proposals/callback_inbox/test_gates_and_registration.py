@@ -271,23 +271,31 @@ def test_inbox_state_vocabulary_matches_the_brief() -> None:
     assert TERMINAL_STATES == frozenset({"succeeded", "discarded", "dead_letter"})
 
 
-def test_no_handler_reason_string_is_ever_retry_evidence() -> None:
-    """RED item 13, hardened by adversarial review R1 blocker 2.
+def test_no_handler_return_value_is_ever_retry_evidence() -> None:
+    """RED item 13, hardened by adversarial reviews R1, R8 B15 and R10.
 
     The brief's first cut retried a generic ``internal_error``. That string is
-    *not* evidence that the broker leg never started: the callback core catches
-    every exception, including one raised after ``revalidate_and_submit``
-    submitted and before the transaction committed. Re-running that job would
-    re-submit. So no reason string is retry evidence; only a *typed*
-    ``mutation_not_started`` flag, which today's core never sets, is.
+    not evidence the broker leg never started: the callback core catches every
+    exception, including one raised after ``revalidate_and_submit`` submitted
+    and before the transaction committed. Re-running that job would re-submit.
+
+    The second cut accepted a typed ``mutation_not_started`` flag *returned by
+    the handler*. That is no better, because a handler that has already
+    mutated can return it just as easily as one that has not.
+
+    So retry authority is worker-owned: a ``PreCoreFailure`` raised from the
+    phase that runs before the core is entered, re-checked against the durable
+    ``handler_entered_at`` marker in the database before anything is written.
     """
     from app.services.order_proposals.callback_inbox.contracts import (
-        MUTATION_NOT_STARTED_KEY,
+        IGNORED_HANDLER_RETRY_KEYS,
         RETRYABLE_HANDLER_REASONS,
     )
+    from app.services.order_proposals.callback_inbox.worker import PreCoreFailure
 
     assert RETRYABLE_HANDLER_REASONS == frozenset()
-    assert MUTATION_NOT_STARTED_KEY == "mutation_not_started"
+    assert "mutation_not_started" in IGNORED_HANDLER_RETRY_KEYS
+    assert issubclass(PreCoreFailure, Exception)
     for never_retried in (
         "internal_error",
         "unverified",
@@ -301,19 +309,45 @@ def test_no_handler_reason_string_is_ever_retry_evidence() -> None:
         assert never_retried not in RETRYABLE_HANDLER_REASONS
 
 
-def test_todays_callback_core_never_emits_mutation_not_started() -> None:
-    """The typed escape hatch must be inert until a core change earns it."""
-    import pathlib
+def test_the_worker_never_consults_a_handler_returned_retry_key() -> None:
+    """The classifier must not read any of them, by name or by lookup."""
+    import inspect
 
+    from app.services.order_proposals.callback_inbox import worker as worker_module
     from app.services.order_proposals.callback_inbox.contracts import (
-        MUTATION_NOT_STARTED_KEY,
+        IGNORED_HANDLER_RETRY_KEYS,
     )
 
-    core = (
-        pathlib.Path(__file__).resolve().parents[4]
-        / "app/services/order_proposals/telegram_callback.py"
-    ).read_text(encoding="utf-8")
-    assert MUTATION_NOT_STARTED_KEY not in core
+    verdict_source = inspect.getsource(worker_module.classify_verdict)
+    for key in IGNORED_HANDLER_RETRY_KEYS:
+        assert key not in verdict_source, key
+    # And the classifier has no way to reach `retry_wait` at all.
+    assert "RETRY_WAIT" not in verdict_source
+
+
+def test_the_only_retry_grant_is_raised_before_the_core_is_entered() -> None:
+    """``PreCoreFailure`` is raised only above the entry marker."""
+    import inspect
+    import re
+
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+
+    source = inspect.getsource(worker_module._run_locked)
+    raise_lines = [
+        index
+        for index, line in enumerate(source.splitlines())
+        if re.search(r"raise PreCoreFailure", line)
+    ]
+    entry_lines = [
+        index
+        for index, line in enumerate(source.splitlines())
+        if "mark_handler_entered" in line
+    ]
+    assert raise_lines, "nothing grants retry authority"
+    assert entry_lines, "the entry marker is not committed here"
+    assert max(raise_lines) < min(entry_lines), (
+        "retry authority is granted after the core-entry marker"
+    )
 
 
 def test_error_class_vocabulary_is_closed() -> None:

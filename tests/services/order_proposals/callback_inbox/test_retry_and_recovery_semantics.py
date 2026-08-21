@@ -675,3 +675,253 @@ async def test_recovered_jobs_still_obey_the_lock_and_run_once(
     # A second tick must not produce a second execution.
     await recover_callback_jobs(handler=_handler)
     assert executed == [1]
+
+
+# ---------------------------------------------------------------------------
+# R13 — the durable marker algebra
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "markers", "expected_action"),
+    [
+        (
+            "complete_verdict",
+            {
+                "handler_entered_at": True,
+                "handler_completed_at": True,
+                "terminal_state_pending": "succeeded",
+            },
+            "repair",
+        ),
+        (
+            "entered_only",
+            {"handler_entered_at": True},
+            "ambiguous",
+        ),
+        (
+            "entered_and_completed_without_verdict",
+            {"handler_entered_at": True, "handler_completed_at": True},
+            "ambiguous",
+        ),
+        (
+            "never_entered",
+            {},
+            "run",
+        ),
+    ],
+)
+async def test_classify_repair_requires_all_three_facts_in_order(
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    label: str,
+    markers: dict[str, Any],
+    expected_action: str,
+) -> None:
+    """R13 — repair finalises without re-running, so it needs the full chain.
+
+    ``handler_completed_at`` + ``terminal_state_pending`` alone used to be
+    enough. That let a row that never recorded an entry be finalised as
+    ``succeeded`` on the strength of a verdict nothing had produced.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.order_proposals.callback_inbox.contracts import (
+        RECOVERY_CLAIMABLE_STATES,
+    )
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    job_id = await _queue(inbox_cleanup)
+    stamp = now_kst() - timedelta(hours=6)
+    fields: dict[str, Any] = {
+        "state": "processing",
+        "attempt_count": 1,
+        "started_at": stamp,
+    }
+    for key, value in markers.items():
+        fields[key] = stamp if value is True else value
+    if markers.get("terminal_state_pending"):
+        fields["outcome"] = "approved"
+    await _force(job_id, **fields)
+
+    async with AsyncSessionLocal() as session:
+        service = CallbackInboxService(session)
+        row = await service.get(job_id)
+        assert row is not None
+        decision = service.classify_claim(
+            row, now=now_kst(), claimable_states=RECOVERY_CLAIMABLE_STATES
+        )
+        await session.rollback()
+
+    assert decision.action == expected_action, label
+
+
+@pytest.mark.unit
+def test_classify_refuses_to_repair_a_verdict_that_has_no_entry() -> None:
+    """R13, the exact fail-open — and it cannot be built in the database.
+
+    ``handler_completed_at`` + ``terminal_state_pending`` without
+    ``handler_entered_at`` is precisely the shape the old repair branch
+    accepted: it would finalise the job as ``succeeded`` on the strength of a
+    verdict no handler entry ever produced. The new CHECK makes the row
+    unstorable, so this is asserted against the classifier directly -- defence
+    in depth, because a state machine should not depend on a constraint to
+    avoid a wrong answer.
+    """
+    from types import SimpleNamespace
+
+    from app.services.order_proposals.callback_inbox.contracts import (
+        RECOVERY_CLAIMABLE_STATES,
+    )
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    stamp = now_kst() - timedelta(hours=6)
+    malformed = SimpleNamespace(
+        state="processing",
+        attempt_count=1,
+        max_attempts=3,
+        available_at=stamp,
+        started_at=stamp,
+        handler_entered_at=None,
+        handler_completed_at=stamp,
+        terminal_state_pending="succeeded",
+    )
+    decision = CallbackInboxService.classify_claim(
+        CallbackInboxService(None),  # type: ignore[arg-type]
+        malformed,
+        now=now_kst(),
+        claimable_states=RECOVERY_CLAIMABLE_STATES,
+    )
+    assert decision.action == "ambiguous", (
+        "a verdict with no entry was accepted as a repair"
+    )
+
+    # The same row *with* an entry is a legitimate repair, so the guard above
+    # is not simply refusing everything.
+    well_formed = SimpleNamespace(**{**vars(malformed), "handler_entered_at": stamp})
+    assert (
+        CallbackInboxService.classify_claim(
+            CallbackInboxService(None),  # type: ignore[arg-type]
+            well_formed,
+            now=now_kst(),
+            claimable_states=RECOVERY_CLAIMABLE_STATES,
+        ).action
+        == "repair"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_without_an_entry_never_finalises_as_succeeded(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R13 — end to end, through the worker, on the malformed shape.
+
+    The database refuses to store this shape, so it is built by hand at the
+    service boundary with the constraint deferred out of the picture: the
+    point is that even if such a row somehow existed, the worker would not
+    turn it into a success.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        RECOVERY_CLAIMABLE_STATES,
+    )
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+    from app.services.order_proposals.callback_inbox.worker import process_callback_job
+
+    job_id = await _queue(inbox_cleanup)
+    stamp = now_kst() - timedelta(hours=6)
+    await _force(
+        job_id,
+        state="processing",
+        attempt_count=1,
+        started_at=stamp,
+        handler_entered_at=stamp,
+    )
+
+    calls: list[int] = []
+
+    async def _handler(normalized, **kwargs):  # pragma: no cover - must not run
+        calls.append(1)
+        return {"handled": True, "reason": "approved"}
+
+    result = await process_callback_job(
+        job_id, handler=_handler, claimable_states=RECOVERY_CLAIMABLE_STATES
+    )
+    assert result["status"] == "dead_letter"
+    assert calls == []
+
+    row = await load_job(job_id)
+    assert row is not None
+    assert row.state == "dead_letter"
+    assert row.error_class == "handler_ambiguous"
+
+    # And a classify pass over the terminal row is a no-op, not a repair.
+    async with AsyncSessionLocal() as session:
+        service = CallbackInboxService(session)
+        refreshed = await service.get(job_id)
+        assert refreshed is not None
+        assert (
+            service.classify_claim(
+                refreshed, now=now_kst(), claimable_states=RECOVERY_CLAIMABLE_STATES
+            ).action
+            == "skip"
+        )
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_begin_attempt_never_erases_a_handler_marker(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R13 — markers are monotonic; no API may clear post-entry evidence."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    job_id = await _queue(inbox_cleanup)
+    stamp = now_kst() - timedelta(hours=6)
+    await _force(
+        job_id,
+        state="processing",
+        attempt_count=1,
+        started_at=stamp,
+        handler_entered_at=stamp,
+    )
+
+    async with AsyncSessionLocal() as session:
+        service = CallbackInboxService(session)
+        row = await service.get(job_id)
+        assert row is not None
+        granted = await service.begin_attempt(row, now=now_kst())
+        assert granted is False, "a post-entry row was re-armed"
+        await session.commit()
+
+    fresh = await load_job(job_id)
+    assert fresh is not None
+    assert fresh.handler_entered_at is not None, "entry evidence was erased"
+    assert fresh.attempt_count == 1, "an attempt was spent on a refused claim"
+
+
+@pytest.mark.unit
+def test_no_marker_is_ever_written_back_to_null() -> None:
+    """R13 — structural: the service contains no marker-clearing write."""
+    import inspect
+
+    from app.services.order_proposals.callback_inbox import service as service_module
+
+    source = inspect.getsource(service_module)
+    for marker in (
+        "handler_entered_at",
+        "handler_completed_at",
+    ):
+        for clearing in (
+            f'"{marker}": None',
+            f"{marker}=None",
+        ):
+            assert clearing not in source, f"{clearing!r} makes {marker} non-monotonic"

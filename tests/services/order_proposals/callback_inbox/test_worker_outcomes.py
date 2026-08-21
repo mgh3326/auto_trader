@@ -536,6 +536,10 @@ async def test_a_failed_terminal_commit_is_repaired_not_re_executed(
             state="processing",
             attempt_count=1,
             started_at=now_kst() - timedelta(hours=6),
+            # All three durable facts, in causal order. R13: a verdict
+            # without an entry is a shape the database now refuses, and
+            # repair must never accept it either.
+            handler_entered_at=now_kst() - timedelta(hours=6),
             handler_completed_at=now_kst() - timedelta(hours=6),
             terminal_state_pending="succeeded",
             outcome="approved",

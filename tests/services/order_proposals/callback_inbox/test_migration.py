@@ -215,14 +215,15 @@ _INSERT = sa.text(
     """
     INSERT INTO review.telegram_callback_inbox
         (job_id, update_digest, state, attempt_count, max_attempts,
-         received_at, available_at, started_at, terminal_state_pending,
-         callback_query_id,
+         received_at, available_at, started_at, handler_entered_at,
+         handler_completed_at, terminal_state_pending, callback_query_id,
          chat_id, message_id, telegram_user_id, action, subject_short,
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
          outcome, error_class)
     VALUES
         (:job_id, :update_digest, :state, :attempt_count, 3,
-         :now, :now, :started_at, :terminal_state_pending, :callback_query_id,
+         :now, :now, :started_at, :handler_entered_at, :handler_completed_at,
+         :terminal_state_pending, :callback_query_id,
          :chat_id, :message_id, :telegram_user_id, :action, :subject_short,
          :dispatch_attempt_id, :membership_revision, :membership_digest, :nonce,
          :outcome, :error_class)
@@ -240,6 +241,8 @@ def _row(**overrides: object) -> dict[str, object]:
         "attempt_count": 0,
         "now": _NOW,
         "started_at": None,
+        "handler_entered_at": None,
+        "handler_completed_at": None,
         "terminal_state_pending": None,
         "callback_query_id": "cbq-1",
         "chat_id": "42",
@@ -481,6 +484,139 @@ async def test_a_processing_row_must_carry_the_moment_it_started(
     }
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_the_handler_markers_can_only_appear_in_causal_order(
+    _bootstrap_test_schema,
+) -> None:
+    """R13 — a verdict without an entry is a shape that must not exist.
+
+    Repair finalises a job *without re-running it* on the strength of
+    ``handler_completed_at`` + ``terminal_state_pending``. If a row could
+    carry those without ``handler_entered_at``, some other path could
+    manufacture a "the handler already decided" claim for a job whose handler
+    never ran. The three facts are causal, so the database enforces the order.
+    """
+    from app.core.db import AsyncSessionLocal
+
+    entered = _NOW
+    completed = _NOW
+
+    def _probe(connection: sa.Connection) -> dict[str, bool]:
+        return {
+            "__sanity__": _sanity(connection),
+            # legal shapes, in order
+            "processing_entered": _accepts(
+                connection,
+                state="processing",
+                started_at=_NOW,
+                handler_entered_at=entered,
+            ),
+            "processing_entered_completed": _accepts(
+                connection,
+                state="processing",
+                started_at=_NOW,
+                handler_entered_at=entered,
+                handler_completed_at=completed,
+            ),
+            "processing_full_verdict": _accepts(
+                connection,
+                state="processing",
+                started_at=_NOW,
+                handler_entered_at=entered,
+                handler_completed_at=completed,
+                terminal_state_pending="succeeded",
+            ),
+            # illegal: completion without entry
+            "completed_without_entry": _accepts(
+                connection,
+                state="processing",
+                started_at=_NOW,
+                handler_completed_at=completed,
+            ),
+            # illegal: a verdict without entry
+            "verdict_without_entry": _accepts(
+                connection,
+                state="processing",
+                started_at=_NOW,
+                terminal_state_pending="succeeded",
+            ),
+            # illegal: a verdict without completion
+            "verdict_without_completion": _accepts(
+                connection,
+                state="processing",
+                started_at=_NOW,
+                handler_entered_at=entered,
+                terminal_state_pending="succeeded",
+            ),
+            # illegal: a queued row cannot remember a handler
+            "pending_with_entry": _accepts(
+                connection, state="pending", handler_entered_at=entered
+            ),
+            "retry_wait_with_entry": _accepts(
+                connection,
+                state="retry_wait",
+                handler_entered_at=entered,
+            ),
+            "retry_wait_with_verdict": _accepts(
+                connection,
+                state="retry_wait",
+                handler_entered_at=entered,
+                handler_completed_at=completed,
+                terminal_state_pending="succeeded",
+            ),
+            # A pre-core discard never entered the core; it stays legal.
+            "terminal_without_any_marker": _accepts(
+                connection, state="discarded", **_scrubbed()
+            ),
+            # A terminal row may keep the timestamps; only authority is scrubbed.
+            "terminal_with_entry_and_completion": _accepts(
+                connection,
+                state="succeeded",
+                handler_entered_at=entered,
+                handler_completed_at=completed,
+                **_scrubbed(),
+            ),
+        }
+
+    async with AsyncSessionLocal() as session:
+        connection = await session.connection()
+        observed = await connection.run_sync(_probe)
+        await session.rollback()
+
+    assert observed == {
+        "__sanity__": True,
+        "processing_entered": True,
+        "processing_entered_completed": True,
+        "processing_full_verdict": True,
+        "completed_without_entry": False,
+        "verdict_without_entry": False,
+        "verdict_without_completion": False,
+        "pending_with_entry": False,
+        "retry_wait_with_entry": False,
+        "retry_wait_with_verdict": False,
+        "terminal_without_any_marker": True,
+        "terminal_with_entry_and_completion": True,
+    }
+
+
+@pytest.mark.unit
+def test_the_model_declares_the_handler_marker_order_checks() -> None:
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in TelegramCallbackInboxJob.__table__.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    name = "ck_telegram_callback_inbox_handler_marker_order"
+    assert name in checks, sorted(checks)
+    expression = checks[name]
+    assert "handler_entered_at" in expression
+    assert "handler_completed_at" in expression
+    assert "terminal_state_pending" in expression
+
+
 @pytest.mark.unit
 def test_the_model_declares_the_processing_started_at_check() -> None:
     """Pinned on the ORM too, so ``create_all`` and Alembic cannot diverge."""
@@ -491,8 +627,9 @@ def test_the_model_declares_the_processing_started_at_check() -> None:
         for constraint in TelegramCallbackInboxJob.__table__.constraints
         if isinstance(constraint, sa.CheckConstraint)
     }
-    assert "processing_started_at" in checks, sorted(checks)
-    expression = checks["processing_started_at"]
+    name = "ck_telegram_callback_inbox_processing_started_at"
+    assert name in checks, sorted(checks)
+    expression = checks[name]
     assert "started_at IS NOT NULL" in expression
     assert "processing" in expression
 
