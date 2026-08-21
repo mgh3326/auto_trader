@@ -46,7 +46,7 @@ def main() -> None:
         [
             prose("report-head.md"),
             prose("report-mid.md"),
-            "\n---\n\n## 4. 시장별 결과 (풀링 — §6.1 먼저 읽을 것)\n",
+            "\n---\n\n## 4. 시장별 결과 (풀링 — §5.1 먼저 읽을 것)\n",
             tables,
             prose("report-tail.md"),
             bootstrap,
