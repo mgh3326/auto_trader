@@ -2143,6 +2143,7 @@ def _held_key_home_response():
                 buyingPower=CashAmounts(),
             )
         ],
+        groupedHoldings=[],
         holdings=[
             Holding(
                 holdingId="kis:us:BRK-B",

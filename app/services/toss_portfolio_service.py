@@ -338,7 +338,10 @@ def _decimal_from_snapshot_cache(raw: Any, *, field: str) -> Decimal:
         raise ValueError(f"Toss snapshot cache missing {field}")
     try:
         value = Decimal(str(raw))
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        # decimal.InvalidOperation derives from ArithmeticError, not
+        # ValueError: without it a corrupt cached decimal escapes this
+        # converter untyped and reads as an upstream failure downstream.
         raise ValueError(f"Toss snapshot cache has invalid {field}") from exc
     if not value.is_finite():
         raise ValueError(f"Toss snapshot cache has non-finite {field}")
@@ -503,10 +506,14 @@ async def fetch_toss_portfolio_snapshot(
                     snapshot_cache.get_or_fetch("cash", fetch_cash_payload)
                 )
 
-            positions: list[TossPortfolioPosition] | None = None
-            positions_payload: dict[str, Any] | None = None
-            for attempt in range(2):
-                try:
+            try:
+                # ROB-1310: an upstream fetch failure is *not* corrupt-cache
+                # evidence. Only a deserialization failure may CAS-delete and
+                # re-enter the shared singleflight; a broker/Redis fetch error
+                # propagates after a single fanout so an outage is not
+                # amplified into repeated holdings/buying_power fanouts.
+                positions: list[TossPortfolioPosition] | None = None
+                for attempt in range(2):
                     positions_payload = (
                         await position_task
                         if attempt == 0
@@ -514,26 +521,28 @@ async def fetch_toss_portfolio_snapshot(
                             "positions", fetch_positions_payload
                         )
                     )
-                    positions = _positions_from_snapshot_cache(positions_payload)
-                    break
-                except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
-                    logger.warning(
-                        "Toss portfolio snapshot cache read failed (%s)",
-                        type(exc).__name__,
-                    )
-                    if isinstance(positions_payload, dict):
-                        await snapshot_cache.delete(
-                            "positions",
-                            expected_payload=positions_payload,
-                        )
-            if positions is None:
-                raise ValueError("Toss portfolio snapshot recovery payload is invalid")
-
-            cash_snapshot = TossCashSnapshot()
-            if cash_task is not None:
-                cash_payload: dict[str, Any] | None = None
-                for attempt in range(2):
                     try:
+                        positions = _positions_from_snapshot_cache(positions_payload)
+                        break
+                    except Exception as exc:  # noqa: BLE001 — corrupt cache only
+                        logger.warning(
+                            "Toss portfolio snapshot cache payload invalid (%s)",
+                            type(exc).__name__,
+                        )
+                        if isinstance(positions_payload, dict):
+                            await snapshot_cache.delete(
+                                "positions",
+                                expected_payload=positions_payload,
+                            )
+                if positions is None:
+                    raise ValueError(
+                        "Toss portfolio snapshot recovery payload is invalid"
+                    )
+
+                cash_snapshot = TossCashSnapshot()
+                if cash_task is not None:
+                    parsed_cash: TossCashSnapshot | None = None
+                    for attempt in range(2):
                         cash_payload = (
                             await cash_task
                             if attempt == 0
@@ -541,27 +550,41 @@ async def fetch_toss_portfolio_snapshot(
                                 "cash", fetch_cash_payload
                             )
                         )
-                        cash_snapshot = _cash_from_snapshot_cache(cash_payload)
-                        break
-                    except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
-                        logger.warning(
-                            "Toss cash snapshot cache read failed (%s)",
-                            type(exc).__name__,
-                        )
-                        if isinstance(cash_payload, dict):
-                            await snapshot_cache.delete(
-                                "cash",
-                                expected_payload=cash_payload,
+                        try:
+                            parsed_cash = _cash_from_snapshot_cache(cash_payload)
+                            break
+                        except Exception as exc:  # noqa: BLE001 — corrupt cache only
+                            logger.warning(
+                                "Toss cash snapshot cache payload invalid (%s)",
+                                type(exc).__name__,
                             )
-                else:
-                    raise ValueError("Toss cash snapshot recovery payload is invalid")
+                            if isinstance(cash_payload, dict):
+                                await snapshot_cache.delete(
+                                    "cash",
+                                    expected_payload=cash_payload,
+                                )
+                    if parsed_cash is None:
+                        raise ValueError(
+                            "Toss cash snapshot recovery payload is invalid"
+                        )
+                    cash_snapshot = parsed_cash
 
-            return TossPortfolioSnapshot(
-                positions=positions,
-                cash_krw=cash_snapshot.cash_krw,
-                cash_usd=cash_snapshot.cash_usd,
-                errors=list(cash_snapshot.errors),
-            )
+                return TossPortfolioSnapshot(
+                    positions=positions,
+                    cash_krw=cash_snapshot.cash_krw,
+                    cash_usd=cash_snapshot.cash_usd,
+                    errors=list(cash_snapshot.errors),
+                )
+            finally:
+                # ROB-707 parity for the shared path: if the positions chain
+                # raised before the cash task was awaited, cancel and drain it
+                # so it never touches the client the outer finally closes and
+                # never leaves an unretrieved task exception.
+                for pending_task in (position_task, cash_task):
+                    if pending_task is not None and not pending_task.done():
+                        pending_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await pending_task
 
         return await _fetch_toss_portfolio_snapshot_uncached(
             active_client=active_client,

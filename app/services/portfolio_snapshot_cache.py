@@ -7,6 +7,9 @@ singleflight implementation with a portfolio-wide key namespace.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import inspect
 import logging
 from typing import Any
 
@@ -48,6 +51,43 @@ class PortfolioSnapshotCache(TossPortfolioSnapshotCache):
 
 
 _shared_portfolio_snapshot_cache: PortfolioSnapshotCache | None = None
+_shared_snapshot_redis_client: Any | None = None
+
+
+def _close_owned_redis_client(client: Any) -> None:
+    """Best-effort release of a Redis client this module created.
+
+    The reset hook is synchronous but ``redis.asyncio`` closes are awaitable,
+    so schedule the close on the running loop when there is one and drain it
+    directly otherwise. Every failure path is suppressed: dropping the
+    singleton must never raise, but it must also not leak the connection pool.
+    """
+
+    if client is None:
+        return
+    closer = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if closer is None:
+        return
+    try:
+        result = closer()
+    except Exception as exc:  # noqa: BLE001 — teardown never raises
+        logger.warning("Snapshot cache Redis close failed: %s", exc)
+        return
+    if not inspect.isawaitable(result):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        with contextlib.suppress(Exception):
+            asyncio.run(_drain(result))
+        return
+    task = loop.create_task(_drain(result))
+    task.add_done_callback(lambda finished: finished.exception())
+
+
+async def _drain(awaitable: Any) -> None:
+    with contextlib.suppress(Exception):
+        await awaitable
 
 
 def get_shared_portfolio_snapshot_cache() -> PortfolioSnapshotCache:
@@ -76,6 +116,8 @@ def get_shared_portfolio_snapshot_cache() -> PortfolioSnapshotCache:
             "test",
             "testing",
         }
+        global _shared_snapshot_redis_client
+        _shared_snapshot_redis_client = redis_client
         _shared_portfolio_snapshot_cache = PortfolioSnapshotCache(
             redis_client=redis_client,
             ttl_seconds=float(
@@ -95,8 +137,11 @@ def get_shared_portfolio_snapshot_cache() -> PortfolioSnapshotCache:
 def reset_shared_portfolio_snapshot_cache() -> None:
     """Test hook for dropping the process-local Redis facade."""
 
-    global _shared_portfolio_snapshot_cache
+    global _shared_portfolio_snapshot_cache, _shared_snapshot_redis_client
     _shared_portfolio_snapshot_cache = None
+    client = _shared_snapshot_redis_client
+    _shared_snapshot_redis_client = None
+    _close_owned_redis_client(client)
 
 
 __all__ = [

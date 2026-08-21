@@ -8,6 +8,8 @@ time of the order and must never use this read cache for sizing or approval.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import json
 import logging
 import time
@@ -212,7 +214,12 @@ class TossPortfolioSnapshotCache:
                             "portfolio snapshot recovery lock unavailable"
                         )
                     deadline = loop.time() + self._owner_wait_budget_seconds()
-                    observed_owner_token = recovery_token
+                    # ``recovery_token`` is None here by construction (this
+                    # branch is the lost SET NX). Recording it would make the
+                    # next comparison always read as "a new owner took over"
+                    # and grant one unearned extra wait window. Observe the
+                    # owner that actually won instead.
+                    observed_owner_token = await self._lock_token(scope)
                     continue
                 current_owner_token = await self._lock_token(scope)
                 if (
@@ -461,7 +468,12 @@ class TossPortfolioSnapshotCache:
                     if not self.usable:
                         return await fetcher()
                     deadline = loop.time() + self._owner_wait_budget_seconds()
-                    observed_owner_token = recovery_token
+                    # ``recovery_token`` is None here by construction (this
+                    # branch is the lost SET NX). Recording it would make the
+                    # next comparison always read as "a new owner took over"
+                    # and grant one unearned extra wait window. Observe the
+                    # owner that actually won instead.
+                    observed_owner_token = await self._lock_token(scope)
                     continue
                 # A positive PTTL proves ownership is live, but renewal is not
                 # proof of fetch progress.  If the token changed, a recovery
@@ -483,6 +495,43 @@ class TossPortfolioSnapshotCache:
 
 
 _shared_portfolio_snapshot_cache: TossPortfolioSnapshotCache | None = None
+_shared_snapshot_redis_client: Any | None = None
+
+
+def _close_owned_redis_client(client: Any) -> None:
+    """Best-effort release of a Redis client this module created.
+
+    The reset hook is synchronous but ``redis.asyncio`` closes are awaitable,
+    so schedule the close on the running loop when there is one and drain it
+    directly otherwise. Every failure path is suppressed: dropping the
+    singleton must never raise, but it must also not leak the connection pool.
+    """
+
+    if client is None:
+        return
+    closer = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if closer is None:
+        return
+    try:
+        result = closer()
+    except Exception as exc:  # noqa: BLE001 — teardown never raises
+        logger.warning("Snapshot cache Redis close failed: %s", exc)
+        return
+    if not inspect.isawaitable(result):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        with contextlib.suppress(Exception):
+            asyncio.run(_drain(result))
+        return
+    task = loop.create_task(_drain(result))
+    task.add_done_callback(lambda finished: finished.exception())
+
+
+async def _drain(awaitable: Any) -> None:
+    with contextlib.suppress(Exception):
+        await awaitable
 
 
 def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
@@ -500,6 +549,8 @@ def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
             )
         except Exception as exc:  # noqa: BLE001 — cache fails open
             logger.warning("Toss portfolio snapshot Redis client init failed: %s", exc)
+        global _shared_snapshot_redis_client
+        _shared_snapshot_redis_client = redis_client
         _shared_portfolio_snapshot_cache = TossPortfolioSnapshotCache(
             redis_client=redis_client,
             ttl_seconds=float(
@@ -528,8 +579,11 @@ def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
 
 def reset_shared_portfolio_snapshot_cache() -> None:
     """Test hook for dropping the process-local Redis facade."""
-    global _shared_portfolio_snapshot_cache
+    global _shared_portfolio_snapshot_cache, _shared_snapshot_redis_client
     _shared_portfolio_snapshot_cache = None
+    client = _shared_snapshot_redis_client
+    _shared_snapshot_redis_client = None
+    _close_owned_redis_client(client)
 
 
 __all__ = [

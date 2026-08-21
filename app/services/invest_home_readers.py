@@ -753,14 +753,22 @@ class ManualHomeReader:
     async def fetch_held_pairs(self, *, user_id: int) -> list[tuple[str, str]]:
         """Read manual held keys without quote/FX enrichment for calendar."""
 
+        from app.services.portfolio_snapshot import (
+            HELD_KEY_MARKETS,
+            held_key_symbol,
+        )
+
         raw_holdings = await self._service.get_holdings_by_user(user_id)
         pairs: set[tuple[str, str]] = set()
         for holding in raw_holdings:
             if float(holding.quantity or 0) <= 0:
                 continue
             market = str(holding.market_type).lower()
-            symbol = str(holding.ticker or "").strip().upper()
-            if market in {"kr", "us", "crypto"} and symbol:
+            if market not in HELD_KEY_MARKETS:
+                continue
+            # ROB-1310: one market-aware seam for every held-key projection.
+            symbol = held_key_symbol(market, holding.ticker or "")
+            if symbol:
                 pairs.add((market, symbol))
         return sorted(pairs)
 

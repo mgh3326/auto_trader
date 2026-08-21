@@ -2276,7 +2276,13 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "preview/submit identity and correlation are bound internally and "
             "cannot be supplied by MCP callers. Direct loss_cut is disabled; use "
             "order_proposal_create for Telegram two-click confirmation and a full "
-            "second-click preview/retrospective/slip/hash revalidation. Live sells "
+            "second-click preview/retrospective/slip/hash revalidation. Every live "
+            "sell requires an explicit, finite, positive quantity: an "
+            "orderAmount-only sell is rejected with "
+            "error_code='sell_quantity_required' before any broker mutation, "
+            "because Toss's orderAmount shape carries no broker-authoritative "
+            "quantity and one must never be synthesized from holdings, "
+            "snapshots, or sellable caches. Live sells "
             "also require a fresh Toss broker sellable-quantity preflight before POST."
         ),
     )(toss_place_order)

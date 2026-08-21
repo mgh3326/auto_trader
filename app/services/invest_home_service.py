@@ -561,6 +561,8 @@ class InvestHomeService:
         misleading manual-only subset.
         """
         from app.services.portfolio_snapshot import (
+            HELD_KEY_MARKETS,
+            held_key_symbol,
             held_pairs_from_portfolio_snapshot,
             portfolio_snapshot_scope,
         )
@@ -593,10 +595,13 @@ class InvestHomeService:
                 raise PortfolioSnapshotUnavailableError(
                     "held_key_projection_unavailable"
                 ) from None
+            # ROB-1310: the manual fallback must speak the same held-key
+            # dialect as the snapshot projection, not strip()/upper().
             manual_pairs = [
-                (str(market).lower(), _normalize_symbol(symbol))
+                (str(market).lower(), held_key_symbol(market, symbol))
                 for market, symbol in raw_pairs
-                if str(market).lower() in {"kr", "us", "crypto"} and str(symbol).strip()
+                if str(market).lower() in HELD_KEY_MARKETS
+                and held_key_symbol(market, symbol)
             ]
 
         reason = (

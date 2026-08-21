@@ -51,19 +51,43 @@ def _strip_sellable_fields(value: Any) -> Any:
     return value
 
 
+HELD_KEY_MARKETS = frozenset({"kr", "us", "crypto"})
+
+
+def held_key_symbol(market: str, symbol: str) -> str:
+    """Canonical held-key symbol for one market.
+
+    This is the single market-aware seam every held-key projection goes
+    through -- the snapshot serializer, the cached-payload reader, the manual
+    DB reader and the service-level manual fallback -- so calendar/relation
+    lookups never compare two dialects of the same holding.
+
+    KR/US use the repository's DB spelling (``BRK-B``/``BRK/B`` -> ``BRK.B``)
+    via ``to_db_symbol``.  Crypto uses the Upbit market key (``BTC`` ->
+    ``KRW-BTC``) via ``to_upbit_symbol``; ``to_db_symbol`` must never touch a
+    crypto symbol because it would rewrite the market separator
+    (``KRW-BTC`` -> ``KRW.BTC``).
+    """
+
+    normalized = str(symbol).strip()
+    if not normalized:
+        return ""
+    if str(market).lower() == "crypto":
+        return to_upbit_symbol(normalized)
+    return to_db_symbol(normalized).upper()
+
+
 def _held_pairs_from_response(response: InvestHomeResponse) -> list[list[str]]:
     all_holdings = [*response.holdings, *response.meta.hiddenHoldings]
-    return [
-        [market, symbol]
-        for market, symbol in sorted(
-            {
-                (str(holding.market).lower(), holding.symbol.strip().upper())
-                for holding in all_holdings
-                if holding.quantity > 0
-                and str(holding.market).lower() in {"kr", "us", "crypto"}
-            }
-        )
-    ]
+    pairs: set[tuple[str, str]] = set()
+    for holding in all_holdings:
+        market = str(holding.market).lower()
+        if holding.quantity <= 0 or market not in HELD_KEY_MARKETS:
+            continue
+        symbol = held_key_symbol(market, holding.symbol)
+        if symbol:
+            pairs.add((market, symbol))
+    return [[market, symbol] for market, symbol in sorted(pairs)]
 
 
 def serialize_portfolio_snapshot(response: InvestHomeResponse) -> dict[str, Any]:
@@ -103,8 +127,12 @@ def held_pairs_from_portfolio_snapshot(
         if not isinstance(market, str) or not isinstance(symbol, str):
             raise ValueError("portfolio snapshot held pair values are invalid")
         normalized_market = market.lower()
-        normalized_symbol = symbol.strip().upper()
-        if normalized_market in {"kr", "us", "crypto"} and normalized_symbol:
+        if normalized_market not in HELD_KEY_MARKETS:
+            continue
+        # Re-normalize on read: a payload written by an older process may still
+        # carry a broker-specific spelling.
+        normalized_symbol = held_key_symbol(normalized_market, symbol)
+        if normalized_symbol:
             pairs.add((normalized_market, normalized_symbol))
     return sorted(pairs)
 
@@ -354,6 +382,7 @@ __all__ = [
     "PORTFOLIO_SNAPSHOT_SCHEMA_VERSION",
     "deserialize_portfolio_snapshot",
     "fetch_uncached_portfolio_snapshot_payload",
+    "held_key_symbol",
     "held_pairs_from_portfolio_snapshot",
     "portfolio_snapshot_scope",
     "portfolio_snapshot_to_mcp_positions",
