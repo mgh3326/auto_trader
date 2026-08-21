@@ -260,10 +260,17 @@ class CallbackInboxService:
         row: TelegramCallbackInboxJob,
         *,
         now: datetime,
-        error_class: str = ErrorClass.PRE_CORE_FAILURE.value,
-        outcome: object = None,
     ) -> None:
         """Park a provably-unexecuted job until its backoff elapses.
+
+        There is deliberately no ``error_class``/``outcome`` parameter.
+        ``retry_wait`` has exactly one meaning -- a failure that provably
+        never reached the mutating region -- so the vocabulary is written
+        here, not accepted from a caller. Validating an argument would be
+        weaker: the parameter itself is the vulnerability, because every
+        future caller would have to be reviewed for it. A job that never
+        entered the core also produced no verdict, so ``outcome`` stays NULL.
+        The database enforces the same rule (``ck_..._retry_vocabulary``).
 
         The precondition is the whole point, and it is checked **in the
         database**: the row must still be a ``processing`` row that has not
@@ -288,8 +295,8 @@ class CallbackInboxService:
             values={
                 "state": InboxState.RETRY_WAIT.value,
                 "available_at": now + timedelta(seconds=RETRY_BACKOFF_SECONDS[index]),
-                "outcome": normalize_outcome(outcome),
-                "error_class": error_class,
+                "outcome": None,
+                "error_class": ErrorClass.PRE_CORE_FAILURE.value,
             },
         )
         if not granted:

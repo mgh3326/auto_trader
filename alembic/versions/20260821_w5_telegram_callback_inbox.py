@@ -36,6 +36,12 @@ The two constraints that carry the safety
     verdict that no handler entry ever produced has to be an impossible row.
     A pre-core ``discarded`` row legitimately carries no markers at all.
 
+``ck_telegram_callback_inbox_retry_vocabulary``
+    ``retry_wait`` implies ``error_class = 'pre_core_failure'`` and no
+    outcome, and a ``pending`` row carries neither. The service writes that
+    vocabulary itself rather than accepting it from a caller; this is the
+    database saying the same thing, so the next writer cannot talk around it.
+
 ``ck_telegram_callback_inbox_processing_started_at``
     A ``processing`` row must say when it started. The recovery sweep decides
     whether to look at a claimed row by comparing that timestamp against a
@@ -99,6 +105,19 @@ _HANDLER_MARKER_ORDER = (
     "CASE WHEN state IN ('pending','retry_wait') THEN "
     "handler_entered_at IS NULL AND handler_completed_at IS NULL "
     "AND terminal_state_pending IS NULL ELSE true END"
+)
+
+_RETRY_VOCABULARY = (
+    # ``IS NOT DISTINCT FROM``, not ``=``: with a NULL ``error_class`` the
+    # equality is SQL UNKNOWN, and a CHECK treats UNKNOWN as satisfied -- so
+    # ``=`` would have let a retry with no error class through. Caught by
+    # `test_the_database_refuses_any_other_retry_vocabulary`.
+    "CASE WHEN state = 'retry_wait' THEN "
+    "error_class IS NOT DISTINCT FROM 'pre_core_failure' "
+    "AND outcome IS NULL ELSE true END"
+    " AND "
+    "CASE WHEN state = 'pending' THEN "
+    "error_class IS NULL AND outcome IS NULL ELSE true END"
 )
 
 _ACTIVE_RECONSTRUCTABLE = (
@@ -200,6 +219,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             _HANDLER_MARKER_ORDER,
             name=op.f("ck_telegram_callback_inbox_handler_marker_order"),
+        ),
+        sa.CheckConstraint(
+            _RETRY_VOCABULARY,
+            name=op.f("ck_telegram_callback_inbox_retry_vocabulary"),
         ),
         sa.CheckConstraint(
             _TERMINAL_SCRUBBED,

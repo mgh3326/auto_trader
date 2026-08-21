@@ -88,6 +88,22 @@ _HANDLER_MARKER_ORDER_SQL = (
     "AND terminal_state_pending IS NULL ELSE true END"
 )
 
+_RETRY_VOCABULARY_SQL = (
+    # `retry_wait` has exactly one meaning, and it is not negotiable by a
+    # caller: a failure that provably never reached the mutating region.
+    # ``IS NOT DISTINCT FROM``, not ``=``: with a NULL ``error_class`` the
+    # equality is SQL UNKNOWN, and a CHECK treats UNKNOWN as satisfied -- so
+    # ``=`` would have let a retry with no error class through. Caught by
+    # `test_the_database_refuses_any_other_retry_vocabulary`.
+    "CASE WHEN state = 'retry_wait' THEN "
+    "error_class IS NOT DISTINCT FROM 'pre_core_failure' "
+    "AND outcome IS NULL ELSE true END"
+    " AND "
+    # A queued row has not failed at anything yet.
+    "CASE WHEN state = 'pending' THEN "
+    "error_class IS NULL AND outcome IS NULL ELSE true END"
+)
+
 _ACTIVE_RECONSTRUCTABLE_SQL = (
     f"CASE WHEN state IN ({_ACTIVE_SQL}) THEN "
     + " AND ".join(f"{column} IS NOT NULL" for column in ACTIVE_REQUIRED_COLUMNS)
@@ -135,6 +151,7 @@ class TelegramCallbackInboxJob(Base):
         # recorded verdict, so a verdict that no entry ever produced must be
         # an impossible row, and a queued row must not remember a handler.
         CheckConstraint(_HANDLER_MARKER_ORDER_SQL, name="handler_marker_order"),
+        CheckConstraint(_RETRY_VOCABULARY_SQL, name="retry_vocabulary"),
         CheckConstraint(_TERMINAL_SCRUB_SQL, name="terminal_scrubbed"),
         CheckConstraint(_ACTIVE_RECONSTRUCTABLE_SQL, name="active_reconstructable"),
         Index("ix_telegram_callback_inbox_state_available", "state", "available_at"),
