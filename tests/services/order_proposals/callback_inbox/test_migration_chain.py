@@ -59,7 +59,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
 W5_INBOX_REVISION = "20260821_w5_callback_inbox"
-R32_HEAD_REVISION = "20260821_w5_outcome_allowlist"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -374,7 +373,7 @@ def test_alembic_reports_exactly_one_head() -> None:
     )
     heads = [line for line in output if line.strip()]
     assert len(heads) == 1, output
-    assert heads[0].startswith(R32_HEAD_REVISION), output
+    assert heads[0].startswith(W5_INBOX_REVISION), output
 
 
 @pytest.mark.asyncio
@@ -420,9 +419,9 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         assert await _table_exists(scratch_database) is True
         # This is deliberately performed before checking the revision label so
         # the inherited regex-only implementation fails on the actual database
-        # behaviour, not merely because a future head name is absent.
+        # behaviour, not merely because a revision label is absent.
         await _assert_outcome_constraint_matrix(scratch_database)
-        assert await _stamped_revision(scratch_database) == R32_HEAD_REVISION
+        assert await _stamped_revision(scratch_database) == W5_INBOX_REVISION
         objects = await _live_objects(scratch_database)
         live = {
             name

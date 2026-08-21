@@ -30,7 +30,7 @@ _REPO = pathlib.Path(__file__).resolve().parents[4]
 _MIGRATION = _REPO / "alembic/versions/20260821_w5_telegram_callback_inbox.py"
 _REVISION = "20260821_w5_callback_inbox"
 _PARENT = "20260820_rob1290_reconcile"
-_R32_REVISION = "20260821_w5_outcome_allowlist"
+_MIGRATION_DIR = _REPO / "alembic/versions"
 
 
 @pytest.mark.unit
@@ -104,7 +104,30 @@ def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
 def test_the_migration_chain_still_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
     heads = tuple(script.get_heads())
-    assert heads == (_R32_REVISION,), heads
+    assert heads == (_REVISION,), heads
+
+
+@pytest.mark.unit
+def test_r32_edits_only_the_original_w5_create_table_migration() -> None:
+    """W5 is unmerged: its original revision, not a follow-on, owns R32 DDL."""
+    script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
+    assert tuple(script.get_heads()) == (_REVISION,)
+
+    # A named R32/outcome-allowlist revision would be a forbidden follow-on.
+    assert not tuple(
+        path
+        for path in _MIGRATION_DIR.glob("*.py")
+        if "r32" in path.name.lower() or "outcome_allowlist" in path.name.lower()
+    )
+
+    # The original additive create-table revision is the only migration that
+    # may mention the inbox table; a later constraint/backfill revision fails.
+    inbox_migrations = tuple(
+        path
+        for path in sorted(_MIGRATION_DIR.glob("*.py"))
+        if "telegram_callback_inbox" in path.read_text(encoding="utf-8")
+    )
+    assert inbox_migrations == (_MIGRATION,)
 
 
 @pytest.mark.unit

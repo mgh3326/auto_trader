@@ -459,8 +459,10 @@ def test_the_span_builder_cannot_be_fed_authority_material() -> None:
 def test_an_outcome_label_is_a_closed_category_never_a_payload() -> None:
     from app.services.order_proposals.callback_inbox.contracts import (
         OUTCOME_CATEGORIES,
-        PAYLOAD_OUTCOME_CATEGORIES as RUNTIME_PAYLOAD_OUTCOME_CATEGORIES,
         normalize_outcome,
+    )
+    from app.services.order_proposals.callback_inbox.contracts import (
+        PAYLOAD_OUTCOME_CATEGORIES as RUNTIME_PAYLOAD_OUTCOME_CATEGORIES,
     )
 
     assert OUTCOME_CATEGORIES == CANONICAL_OUTCOME_CATEGORIES
@@ -502,6 +504,34 @@ def test_an_outcome_label_is_a_closed_category_never_a_payload() -> None:
         "approved",
         where="StrEnum input",
     )
+    _assert_category(
+        normalize_outcome(_StringifyingObject()),
+        "unclassified",
+        where="arbitrary object",
+    )
+
+
+def test_an_unknown_valid_slug_never_becomes_a_terminal_category() -> None:
+    """R32: shape-valid raw reasons and arbitrary objects use the fallback."""
+    from app.services.order_proposals.callback_inbox.contracts import normalize_outcome
+
+    # Neither a bare raw slug nor a raw slug carrying an opaque suffix is an
+    # audited outcome family.  The assertion is deliberately generic so RED
+    # output does not reproduce either protected form.
+    for unknown in (
+        "r32nonceopaquevalue",
+        "r32nonceopaquevalue:opaque_payload",
+    ):
+        _assert_category(
+            normalize_outcome(unknown),
+            "unclassified",
+            where="unknown valid slug",
+        )
+
+    class _StringifyingObject:
+        def __str__(self) -> str:
+            return "approved"
+
     _assert_category(
         normalize_outcome(_StringifyingObject()),
         "unclassified",

@@ -69,6 +69,10 @@ R32_UNKNOWN_OUTCOME_FRAGMENTS = (
     R32_UNKNOWN_OUTCOME[7:13],
     R32_UNKNOWN_OUTCOME[-7:],
 )
+R32_PROTECTED_UNKNOWN_REASONS = (
+    R32_UNKNOWN_OUTCOME,
+    f"{R32_UNKNOWN_OUTCOME}:opaque_payload",
+)
 
 SENTINELS = (
     SENTINEL_NONCE,
@@ -144,8 +148,8 @@ def assert_no_leak(value: Any, *, where: str) -> None:
                 # The sentinel is deliberately not interpolated into the
                 # message: a leak report must not become the leak.
                 raise Leak(
-                    f"{where}: a sentinel appeared at {path} "
-                    f"(length {len(rendered)} string)"
+                    f"protected material at {where}/{path} "
+                    f"(rendered length {len(rendered)})"
                 )
 
 
@@ -338,10 +342,7 @@ def _assert_unclassified(value: object, *, where: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "reason",
-    (
-        R32_UNKNOWN_OUTCOME,
-        f"unknown_outcome_family:{R32_UNKNOWN_OUTCOME}",
-    ),
+    R32_PROTECTED_UNKNOWN_REASONS,
     ids=("bare", "unknown-prefix-payload"),
 )
 async def test_regex_valid_unknown_worker_reasons_are_discarded_as_unclassified(
@@ -389,12 +390,18 @@ async def test_regex_valid_unknown_worker_reasons_are_discarded_as_unclassified(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    R32_PROTECTED_UNKNOWN_REASONS,
+    ids=("bare", "unknown-prefix-payload"),
+)
 async def test_regex_valid_unknown_outcome_never_reaches_row_logs_or_sentry(
     _bootstrap_test_schema,
     inbox_cleanup: list[uuid.UUID],
     monkeypatch: pytest.MonkeyPatch,
     log_sink: _RecordSink,
     sentry_sink: list[dict[str, Any]],
+    reason: str,
 ) -> None:
     """R32 RED: recursive full/prefix/middle/suffix scans stay private."""
     from app.services.order_proposals.callback_inbox.worker import process_callback_job
@@ -406,7 +413,7 @@ async def test_regex_valid_unknown_outcome_never_reaches_row_logs_or_sentry(
     )
 
     async def _unknown_reason_handler(normalized, **kwargs):
-        return {"handled": False, "reason": R32_UNKNOWN_OUTCOME}
+        return {"handled": False, "reason": reason}
 
     result = await process_callback_job(job_id, handler=_unknown_reason_handler)
     assert result["status"] == "discarded"
