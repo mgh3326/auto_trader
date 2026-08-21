@@ -1,9 +1,23 @@
 # Durable Telegram callback inbox (W5)
 
-**Status: shipped inert.** All three gates default to `false`, the recovery
-task ships scheduleless, and no process in this repository starts a worker. The
-activation sequence in §4 is documentation; nothing in this PR performed any
-step of it.
+**Status: shipped inert.** All three gates default to `false` and the recovery
+task ships scheduleless (its cron label is `[]` while the gate is off, so the
+scheduler registers nothing for it).
+
+To be precise about what that does and does not claim: this change adds no
+worker or scheduler process and activates none. It does not claim the
+repository starts no workers at all — the existing Makefile, compose files and
+ops launchers do run TaskIQ worker and scheduler processes, and once this code
+is deployed those processes **will discover both new tasks**. They are inert
+when discovered: the per-job task returns `{"status": "disabled"}` before
+opening a database session, and the recovery task carries no schedule to fire
+on. What arms them is an operator setting the gates in §4, and a static guard
+(`test_no_auto_activation.py`) asserts that no tracked compose file, ops
+launcher, Makefile target, env template or CI workflow sets any of the three
+to true.
+
+The activation sequence in §4 is documentation; nothing in this PR performed
+any step of it.
 
 ---
 
