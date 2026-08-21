@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -46,9 +47,15 @@ from app.services.buy_gate_ab_shadow.evaluate import (  # noqa: E402
     SUPPORT_WITHIN_PCT,
     UPSIDE_MIN_PCT,
 )
+from research.buy_gate_ab_backtest.preregistration import ADDENDUM  # noqa: E402
 
-RSI_WINDOW_BARS = 250
-SR_WINDOW_BARS = 60
+# S2 -- read from the digest-covered addendum, not restated here.
+RSI_WINDOW_BARS: int = int(ADDENDUM["constants"]["rsi_window_bars"])
+SR_WINDOW_BARS: int = int(ADDENDUM["constants"]["support_resistance_window_bars"])
+
+
+class LookAheadError(AssertionError):
+    """A bar at or after the decision session reached the evidence input."""
 
 
 async def _no_live_price(symbol: str) -> None:  # noqa: ARG001
@@ -102,12 +109,27 @@ def build_evidence(
     symbol: str,
     market: str,
     bars: pd.DataFrame,
+    decision_date: date,
 ) -> dict[str, Any] | ReconstructionFailure:
     """Return one ``CandidateEvidence`` mapping for a single decision session.
 
     ``bars`` must already end at the decision session and hold at least
     ``RSI_WINDOW_BARS`` rows.
+
+    🔴 B1: ``decision_date`` is required and checked here. The caller's slice
+    used to be the only thing standing between a future bar and the evidence,
+    which meant a wrong slice in the runner was silently acceptable to every
+    test. This raises instead -- a look-ahead regression now stops the run.
     """
+
+    if decision_date is None:
+        raise LookAheadError("decision_date is required")
+    observed_last = pd.Timestamp(bars["session_date"].max()).date()
+    if observed_last != decision_date:
+        raise LookAheadError(
+            f"{symbol}: evidence input ends {observed_last}, "
+            f"decision session is {decision_date}"
+        )
 
     if len(bars) < RSI_WINDOW_BARS:
         return ReconstructionFailure(symbol, "insufficient_history")

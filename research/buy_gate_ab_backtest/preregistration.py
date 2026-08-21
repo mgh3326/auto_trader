@@ -85,6 +85,18 @@ ADDENDUM: Final[dict[str, Any]] = {
         "reads": 0,
         "extension_requires": "explicit_operator_approval",
     },
+    # ---- implementation constants (S2) ------------------------------------
+    # 🔴 These four literals used to live only in the runner and reconstructor,
+    # so the digest test could not see them drift. They are authoritative here
+    # now and the modules read them from this dict. The VALUES are unchanged
+    # from the first freeze commit c9a3270 -- git blame is the evidence that
+    # nothing was retuned; only their home moved.
+    "constants": {
+        "cadence_sessions": 5,
+        "liquidity_lookback_sessions": 20,
+        "rsi_window_bars": 250,
+        "support_resistance_window_bars": 60,
+    },
     # ---- decision-date sampling -------------------------------------------
     "decision_dates": {
         "cadence": "every_5th_trading_session",
@@ -209,6 +221,27 @@ ADDENDUM: Final[dict[str, Any]] = {
     # number, and it is applied identically to all three cohorts. The report
     # labels it as post-freeze.
     "forbidden": list(FORBIDDEN),
+    # ---- r2 repair round (2026-08-21, post adversarial verification) ------
+    # The T2 review returned BLOCKER 2 / SHOULD 5. The repairs that touch this
+    # dict are recorded here rather than applied silently:
+    #   S2  the four constants above moved into the digest's coverage
+    #   B1  build_evidence now takes decision_date and refuses future bars
+    #   B2  D+20 censoring is classified and reported, D+5 becomes primary
+    # Re-pinning the digest is unavoidable when the covered dict grows. The
+    # first freeze digest is kept below so the original freeze stays checkable.
+    "amendments": {
+        "r2_2026_08_21": {
+            "trigger": "adversarial verification BLOCKER 2 / SHOULD 5",
+            "superseded_addendum_sha256": (
+                "648005cb032f1db202151eb2f813c6f7b7e8796e6ff457764aeaa212572055da"
+            ),
+            "constant_values_changed": False,
+            "gate_thresholds_changed": False,
+            "sampling_rule_changed": False,
+            "universe_rule_changed": False,
+            "what_changed": "coverage and reporting, not the experiment",
+        },
+    },
     "network_calls": 0,
     "operating_db_reads": 0,
     "operating_db_writes": 0,
@@ -218,6 +251,11 @@ ADDENDUM: Final[dict[str, Any]] = {
 
 # Recomputed by research/buy_gate_ab_backtest/tests/test_addendum_freeze.py.
 PINNED_ADDENDUM_SHA256: Final = (
+    "64816142bc820547bde366cf10fe2e440edcbb1d7773e3f5f7aa5a67a1635c67"
+)
+# The digest as it stood at the first freeze, before the r2 repair round grew
+# the covered dict. Kept so that freeze can still be checked independently.
+FIRST_FREEZE_ADDENDUM_SHA256: Final = (
     "648005cb032f1db202151eb2f813c6f7b7e8796e6ff457764aeaa212572055da"
 )
 

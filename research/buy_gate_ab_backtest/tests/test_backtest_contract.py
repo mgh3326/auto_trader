@@ -26,6 +26,7 @@ from research.buy_gate_ab_backtest.preregistration import (
 )
 from research.buy_gate_ab_backtest.reconstruct import (
     RSI_WINDOW_BARS,
+    LookAheadError,
     build_evidence,
 )
 
@@ -62,27 +63,71 @@ def test_addendum_declares_holdout_unopened() -> None:
     assert ADDENDUM["holdout"]["reads"] == 0
 
 
-def test_no_future_bar_can_reach_the_evidence() -> None:
-    """Appending future bars after the decision session changes nothing."""
+def test_build_evidence_refuses_a_slice_past_the_decision_session() -> None:
+    """🔴 B1 core guard: the evidence input must END on the decision session.
+
+    The previous version of this test compared two identical slices and could
+    not have failed. This one hands build_evidence exactly the off-by-one the
+    runner could commit.
+    """
     frame = _synthetic(400, seed=7)
     cut = 300
-    past_only = frame.iloc[:cut]
-    with_future = frame.iloc[:cut].copy()
+    decision = frame["session_date"].iloc[cut - 1].date()
 
-    baseline = build_evidence(symbol="005930", market="kr", bars=past_only)
-    # The runner always slices to the decision session; this asserts the slice
-    # is the *only* thing that matters — identical input, identical evidence.
-    repeat = build_evidence(symbol="005930", market="kr", bars=with_future)
-    assert baseline == repeat
-
-    # A different future does not exist in the evidence: evidence built from the
-    # same past prefix of a *diverging* series is unchanged.
-    diverged = frame.copy()
-    diverged.loc[cut:, ["open", "high", "low", "close"]] *= 3
-    from_diverged = build_evidence(
-        symbol="005930", market="kr", bars=diverged.iloc[:cut]
+    ok = build_evidence(
+        symbol="005930", market="kr", bars=frame.iloc[:cut], decision_date=decision
     )
-    assert from_diverged == baseline
+    assert isinstance(ok, dict)
+
+    with pytest.raises(LookAheadError):
+        build_evidence(
+            symbol="005930",
+            market="kr",
+            bars=frame.iloc[: cut + 1],  # one bar past the decision session
+            decision_date=decision,
+        )
+
+
+def test_runner_slice_is_covered_by_the_look_ahead_guard() -> None:
+    """🔴 B1 mutant guard: drives the REAL runner loop, not a stand-in.
+
+    Mutating run_backtest's ``group.iloc[: pos + 1]`` to ``pos + 2`` must turn
+    this test red. It goes through run_market with a stubbed panel, so the
+    slice under test is the production one.
+    """
+    from research.buy_gate_ab_backtest import corpus, run_backtest
+
+    frame = _synthetic(400, seed=5)
+    frame["value"] = frame["close"] * frame["volume"]
+    sessions = tuple(sorted(frame["session_date"].unique()))
+    panel = corpus.MarketPanel(
+        market="kr",
+        frame=frame,
+        sessions=sessions,
+        corpus_id="synthetic-look-ahead-fixture",
+        files_read=0,
+    )
+    original_loader = corpus.load_kr
+    original_floor = run_backtest._FLOORS["kr"]
+    corpus.load_kr = lambda: panel
+    run_backtest._FLOORS["kr"] = 0.0
+    try:
+        result = run_backtest.run_market("kr")
+    finally:
+        corpus.load_kr = original_loader
+        run_backtest._FLOORS["kr"] = original_floor
+
+    assert result["samples"], "fixture must produce samples or it guards nothing"
+    by_date = {row["session_date"]: row for _, row in frame.iterrows()}
+    for sample in result["samples"]:
+        decision = pd.Timestamp(sample["decision_date"])
+        # The frozen entry is the decision session's own close, rounded the way
+        # the live support impl rounds it. A pos+2 slice moves it one bar on.
+        expected = round(float(by_date[decision]["close"]), 2)
+        assert float(sample["entry_price"]) == expected, (
+            f"{sample['symbol']} {sample['decision_date']}: entry "
+            f"{sample['entry_price']} is not the decision-session close {expected}"
+        )
 
 
 def test_scoring_ignores_bars_at_or_before_the_decision_date() -> None:
@@ -167,7 +212,8 @@ def test_unroutable_symbol_is_dropped_not_guessed() -> None:
     # a falling series keeps RSI under the shared gate, so the row reaches the
     # support/resistance call where the live router is consulted
     frame = _synthetic(300, seed=13, drift=-0.004)
-    result = build_evidence(symbol="KRW-BTC", market="us", bars=frame)
+    result = build_evidence(symbol="KRW-BTC", market="us", bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date())
     assert getattr(result, "reason", None) == "symbol_not_resolvable_by_live_router"
 
 
@@ -180,7 +226,8 @@ def test_both_evidence_paths_share_one_entry_basis() -> None:
     """
     for seed, drift in ((21, 0.006), (22, -0.006)):
         frame = _synthetic(300, seed=seed, drift=drift)
-        evidence = build_evidence(symbol="AAPL", market="us", bars=frame)
+        evidence = build_evidence(symbol="AAPL", market="us", bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date())
         assert isinstance(evidence, dict)
         raw_close = float(frame["close"].iloc[-1])
         assert evidence["current_price"] == Decimal(str(round(raw_close, 2)))
@@ -201,13 +248,15 @@ def test_micro_priced_row_is_dropped_by_both_paths() -> None:
         for column in ("open", "high", "low", "close"):
             frame[column] = frame[column] * scale
         assert round(float(frame["close"].iloc[-1]), 2) == 0.0
-        result = build_evidence(symbol="KRW-BTT", market="crypto_upbit_krw", bars=frame)
+        result = build_evidence(symbol="KRW-BTT", market="crypto_upbit_krw", bars=frame,
+            decision_date=frame["session_date"].iloc[-1].date())
         assert not isinstance(result, dict), "a zero-rounding row must not be gated"
 
 
 def test_evidence_requires_full_indicator_history() -> None:
     frame = _synthetic(RSI_WINDOW_BARS - 1, seed=3)
-    result = build_evidence(symbol="005930", market="kr", bars=frame)
+    result = build_evidence(symbol="005930", market="kr", bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date())
     assert getattr(result, "reason", None) == "insufficient_history"
 
 
@@ -215,7 +264,8 @@ def test_evidence_requires_full_indicator_history() -> None:
 def test_neutralised_gates_are_identical_for_both_arms(market: str) -> None:
     frame = _synthetic(300, seed=11)
     symbol = "005930" if market == "kr" else "AAPL"
-    evidence = build_evidence(symbol=symbol, market=market, bars=frame)
+    evidence = build_evidence(symbol=symbol, market=market, bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date())
     assert isinstance(evidence, dict)
     assert evidence["honest_upside_pct"] == Decimal("40")
     assert set(evidence["other_gate_bits"].values()) == {True}

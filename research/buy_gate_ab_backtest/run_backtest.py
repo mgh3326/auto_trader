@@ -27,7 +27,11 @@ from app.services.buy_gate_ab_shadow.evaluate import (
 from app.services.buy_gate_ab_shadow.scoring import DailyBar, ScoringError, score_window
 from app.services.buy_gate_ab_shadow.spec import PRE_REGISTRATION, spec_sha256
 from research.buy_gate_ab_backtest import corpus
-from research.buy_gate_ab_backtest.preregistration import ADDENDUM, addendum_sha256
+from research.buy_gate_ab_backtest.preregistration import (
+    ADDENDUM,
+    FIRST_FREEZE_ADDENDUM_SHA256,
+    addendum_sha256,
+)
 from research.buy_gate_ab_backtest.reconstruct import (
     RSI_WINDOW_BARS,
     ReconstructionFailure,
@@ -35,8 +39,9 @@ from research.buy_gate_ab_backtest.reconstruct import (
 )
 
 WINDOWS: tuple[int, ...] = tuple(PRE_REGISTRATION["windows_trading_days"])
-CADENCE = 5
-LIQUIDITY_LOOKBACK = 20
+# S2 -- read from the digest-covered addendum, not restated here.
+CADENCE: int = int(ADDENDUM["constants"]["cadence_sessions"])
+LIQUIDITY_LOOKBACK: int = int(ADDENDUM["constants"]["liquidity_lookback_sessions"])
 _FLOORS = ADDENDUM["universe"]["liquidity_floor_20d_median_traded_value"]
 
 COHORTS = ("a_and_b", "b_only", "neither")
@@ -88,9 +93,24 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
     scoring_as_of = datetime.combine(
         pd.Timestamp(panel.sessions[-1]).date(), datetime.min.time(), tzinfo=UTC
     )
-    decision_sessions = set(panel.sessions[::CADENCE])
+    phase_sessions = panel.sessions[::CADENCE]
+    # S3 -- the first phase dates cannot yield a sample because no symbol has
+    # 250 prior sessions yet. They were counted as decision dates before, which
+    # overstated the sampling grid. Both numbers are now reported.
+    eligible_phase_sessions = tuple(
+        session
+        for index, session in enumerate(panel.sessions)
+        if index % CADENCE == 0 and index >= RSI_WINDOW_BARS - 1
+    )
+    decision_sessions = set(eligible_phase_sessions)
     if limit_dates is not None:
         decision_sessions = set(sorted(decision_sessions)[-limit_dates:])
+    # How many market sessions follow each decision date, for B2 censoring.
+    session_rank = {session: index for index, session in enumerate(panel.sessions)}
+    last_index = len(panel.sessions) - 1
+    global_forward_sessions = {
+        session: last_index - session_rank[session] for session in decision_sessions
+    }
     floor = _floor_for(market)
     max_window = max(WINDOWS)
 
@@ -119,8 +139,12 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
             if not np.isfinite(liquidity) or liquidity < floor:
                 liquidity_rejects += 1
                 continue
+            decision_day = pd.Timestamp(dates[pos]).date()
             evidence = build_evidence(
-                symbol=symbol, market=market, bars=group.iloc[: pos + 1]
+                symbol=symbol,
+                market=market,
+                bars=group.iloc[: pos + 1],
+                decision_date=decision_day,
             )
             if isinstance(evidence, ReconstructionFailure):
                 failures[evidence.reason] += 1
@@ -133,7 +157,7 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
             evaluation = evaluate_candidate(
                 CandidateEvidence.from_mapping(evidence),
                 evaluation_as_of=datetime.combine(
-                    pd.Timestamp(dates[pos]).date(), datetime.min.time(), tzinfo=UTC
+                    decision_day, datetime.min.time(), tzinfo=UTC
                 ),
             )
             forward, invalid = _bars_for_scoring(group, pos + 1, max_window)
@@ -141,7 +165,7 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
                 window: score_window(
                     entry=evaluation.entry_price,
                     bars=forward,
-                    decision_date=pd.Timestamp(dates[pos]).date(),
+                    decision_date=decision_day,
                     scoring_as_of=scoring_as_of,
                     window_trading_days=window,
                 )
@@ -166,6 +190,15 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
                         "_support_resistance_computed"
                     ),
                     "invalid_forward_bars": invalid,
+                    # B2 censoring inputs: how many forward bars this symbol
+                    # actually has, against how many sessions the market ran
+                    # after the decision. Equal-and-short means corpus end;
+                    # short-while-the-market-kept-trading means the symbol
+                    # stopped, which is informative censoring, not truncation.
+                    "forward_bars_available": len(forward),
+                    "global_forward_sessions": int(
+                        global_forward_sessions.get(dates[pos], 0)
+                    ),
                     "scores": {
                         str(window): score.as_dict() for window, score in scores.items()
                     },
@@ -181,7 +214,13 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
         "corpus_first_session": str(pd.Timestamp(panel.sessions[0]).date()),
         "corpus_last_session": str(pd.Timestamp(panel.sessions[-1]).date()),
         "scoring_as_of": scoring_as_of.isoformat(),
+        "phase_sessions_total": len(phase_sessions),
         "decision_sessions": len(decision_sessions),
+        "decision_sessions_note": (
+            "eligible phase dates only; phase_sessions_total includes the "
+            "leading dates with under 250 prior sessions, which can produce "
+            "no sample (S3)"
+        ),
         "universe_rows_at_decision_dates": universe_rows,
         "rejected_insufficient_history": history_rejects,
         "rejected_below_liquidity_floor": liquidity_rejects,
@@ -189,6 +228,7 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
         "reconstruction_failures": dict(failures),
         "upstream_spec_sha256": spec_sha256(),
         "addendum_sha256": addendum_sha256(),
+        "first_freeze_addendum_sha256": FIRST_FREEZE_ADDENDUM_SHA256,
         "elapsed_seconds": round(time.time() - started, 1),
         "samples": samples,
     }
