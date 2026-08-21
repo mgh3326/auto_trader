@@ -519,10 +519,8 @@ def test_before_send_transaction_redacts_raw_symbols_from_mcp_span_attributes():
     assert span_data["mcp.request.argument.symbol"] == (
         "[Filtered: high-cardinality symbol]"
     )
-    assert "AAPL" not in span_data["mcp.request.argument.payload"]
-    assert "MSFT" not in span_data["mcp.request.argument.payload"]
-    assert "AAPL" not in span_data["mcp.tool.result.content"]
-    assert "MSFT" not in span_data["mcp.tool.result.content"]
+    assert "mcp.request.argument.payload" not in span_data
+    assert "mcp.tool.result.content" not in span_data
     assert span_data["mcp.symbol.mode"] == "single"
     assert span_data["mcp.symbol.count"] == 1
 
@@ -815,7 +813,7 @@ def test_before_send_transaction_preserves_tools_call_span_while_scrubbing_paylo
     mcp_span = next(s for s in spans if s["op"] == "mcp.server")
     assert mcp_span["span_id"] == "cccc3333dddd4444"
     assert mcp_span["data"]["mcp.request.argument.api_key"] == "[Filtered]"
-    assert "FAKE_RESULT_TOKEN_888" not in mcp_span["data"]["mcp.tool.result.content"]
+    assert "mcp.tool.result.content" not in mcp_span["data"]
 
     other_span = next(s for s in spans if s["op"] == "db.sql.query")
     assert other_span["span_id"] == "eeee5555ffff6666"

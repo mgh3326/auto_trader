@@ -174,14 +174,10 @@ def test_mcp_tool_call_transaction_is_scrubbed_but_span_and_profile_survive(
     secret-named field must not, and the profile item must still be present
     and linked.
 
-    This test asserts scrubbing of one secret-KEY-named field
-    (``mcp.request.argument.api_key``), matching the existing ROB-1305
-    scrubber contract (key-name/value-shape based). It does not assert that
-    arbitrary free-text tool-argument values are suppressed — the repo's
-    `_safe_mcp_span_argument` scrubber is scoped to known sensitive key
-    names/shapes (see app/monitoring/sentry.py ``_SENSITIVE_KEYWORDS`` /
-    ``_SYMBOL_FIELD_NAMES``), by design, and widening that scope is a
-    separate decision outside this diagnosis brief's remit.
+    This test asserts that a secret-KEY-named field is still scrubbed by the
+    existing ROB-1305 key-name/value-shape sanitizer, while the R6 default-
+    deny transform removes MCP payload fields without deleting the span or
+    its protocol/performance metadata.
     """
     transport = _init_via_real_seam(
         monkeypatch, traces_sample_rate=1.0, profiles_sample_rate=1.0
