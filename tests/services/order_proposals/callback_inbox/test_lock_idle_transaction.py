@@ -57,7 +57,7 @@ async def _holder_activity(observer, key: int) -> dict:
 
 @pytest.mark.asyncio
 async def test_the_holder_is_idle_not_idle_in_transaction(
-    _bootstrap_test_schema,
+    _bootstrap_test_schema, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """R30 — the transaction is closed the moment the lock is taken."""
     from app.core import db
@@ -65,13 +65,31 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
     # Small and positive so it lands in ``pg_locks`` as classid 0 / objid key.
     key = int(uuid.uuid4().int % 1_000_000_000) + 1
 
-    lock = locks_module.PostgresJobAdvisoryLock()
     observer = await db.engine.connect()
+    captured: list = []
+
+    class _Capturing:
+        """Hands out the real connection and keeps a reference to it.
+
+        The test needs to look at the holder's connection, and the runtime
+        exposes ``connection_for_test`` for that -- but that method exists
+        only for tests and is on the list for removal (R31). Capturing it at
+        the engine keeps this test independent of that decision.
+        """
+
+        async def connect(self):
+            connection = await db.engine.connect()
+            captured.append(connection)
+            return connection
+
+    monkeypatch.setattr(db, "engine", _Capturing(), raising=True)
+    lock = locks_module.PostgresJobAdvisoryLock()
     try:
         assert await lock.try_acquire(key) is True
+        assert len(captured) == 1
 
         # Client side: nothing open.
-        assert lock.connection_for_test().in_transaction() is False, (
+        assert captured[0].in_transaction() is False, (
             "the lock holder is still inside a transaction"
         )
 
@@ -152,15 +170,32 @@ async def test_the_holder_stays_idle_across_a_handler(_bootstrap_test_schema) ->
 # ---------------------------------------------------------------------------
 # the commit is inside the acquire's own failure boundary
 # ---------------------------------------------------------------------------
+#
+# A commit failure is an ambiguous acquire like any other: the server may hold
+# the lock even though the client lost the transaction. So it has to terminate
+# rather than pool, the handler must not run, and -- because the cleanup can
+# itself be cancelled -- the cleanup has to finish before anything else does
+# (R27, R27d).
 
 
 class _CommitFails:
-    """Acquires the lock, then loses the connection at the commit."""
+    """Acquires the lock, then loses the connection at the commit.
 
-    def __init__(self, *, error: BaseException, terminates: bool = True) -> None:
+    ``invalidate`` blocks at a gate so a test can cancel the *outer* task
+    while the retained cleanup is genuinely mid-flight. A cleanup that can be
+    interrupted there is the exact failure R27 closed, and a fake that raises
+    immediately cannot tell the difference.
+    """
+
+    def __init__(
+        self, *, error: BaseException, terminates: bool = True, gated: bool = False
+    ) -> None:
         self.events: list[str] = []
+        self.at_gate = asyncio.Event()
+        self.gate = asyncio.Event()
         self._error = error
         self._terminates = terminates
+        self._gated = gated
         events = self.events
 
         class _Driver:
@@ -203,6 +238,9 @@ class _CommitFails:
 
     async def invalidate(self) -> None:
         self.events.append("invalidate_started")
+        if self._gated:
+            self.at_gate.set()
+            await self.gate.wait()
         if not self._terminates:
             raise OSError("cannot invalidate")
         self.events.append("invalidate_completed")
@@ -219,6 +257,27 @@ def _engine_returning(connection):
     return _Engine()
 
 
+async def _acquire_under_gate(connection, key: int, cancels: int):
+    """Run one acquire, cancel the outer task ``cancels`` times mid-cleanup."""
+    from app.services.order_proposals.callback_inbox.locks import job_advisory_lock
+
+    entered: list[int] = []
+
+    async def _body() -> None:
+        async with job_advisory_lock(key) as acquired:  # pragma: no cover
+            entered.append(1 if acquired else 0)
+
+    task = asyncio.create_task(_body())
+    await asyncio.wait_for(connection.at_gate.wait(), timeout=5)
+    for _ in range(cancels):
+        task.cancel()
+        await asyncio.sleep(0)
+    assert task.done() is False, "a cancellation abandoned the cleanup"
+    assert "invalidate_completed" not in connection.events
+    connection.gate.set()
+    return task, entered
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_failed_commit_discards_the_lock_and_blocks_the_handler(
@@ -227,8 +286,8 @@ async def test_a_failed_commit_discards_the_lock_and_blocks_the_handler(
     """R30 — the commit shares the acquire's failure boundary.
 
     Committing outside the ``try`` -- or after ``self._connection`` is set --
-    would open a fresh window in which the lock is held, the transaction is
-    broken, and the handler runs anyway.
+    would open a window in which the lock is held, the transaction is broken,
+    and the handler runs anyway.
     """
     from app.core import db
     from app.services.order_proposals.callback_inbox.locks import job_advisory_lock
@@ -248,24 +307,52 @@ async def test_a_failed_commit_discards_the_lock_and_blocks_the_handler(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_a_cancelled_commit_keeps_the_original_cancellation(
+async def test_a_cancelled_commit_re_raises_that_cancellation_after_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R30 x R27 — cleanup finishes, then the first cancellation is re-raised."""
+    """R30 x R27 — gated cleanup, cancelled twice, original identity preserved."""
     from app.core import db
 
-    original = asyncio.CancelledError()
-    connection = _CommitFails(error=original)
+    original = asyncio.CancelledError("the-commit-cancellation")
+    connection = _CommitFails(error=original, gated=True)
     monkeypatch.setattr(db, "engine", _engine_returning(connection), raising=True)
 
-    lock = locks_module.PostgresJobAdvisoryLock()
+    task, entered = await _acquire_under_gate(connection, 4321, cancels=2)
+
     with pytest.raises(asyncio.CancelledError) as raised:
-        await lock.try_acquire(4321)
+        await task
 
     assert raised.value is original, "a later cancellation displaced the first"
+    assert raised.value.args == ("the-commit-cancellation",)
+    assert entered == [], "the handler ran on a lock whose commit was cancelled"
+    # Re-raised only after the cleanup genuinely finished.
     assert "invalidate_completed" in connection.events, connection.events
     assert "close" in connection.events, connection.events
-    assert lock.closed is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_cancelled_cleanup_carries_the_commit_failure_as_its_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R30 x R27 — a non-cancellation original must not be lost either."""
+    from app.core import db
+
+    original = RuntimeError("commit failed")
+    connection = _CommitFails(error=original, gated=True)
+    monkeypatch.setattr(db, "engine", _engine_returning(connection), raising=True)
+
+    task, entered = await _acquire_under_gate(connection, 4321, cancels=2)
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+
+    assert raised.value.__cause__ is original, (
+        "the commit failure was dropped when the cleanup was cancelled"
+    )
+    assert entered == []
+    assert "invalidate_completed" in connection.events, connection.events
+    assert "close" in connection.events, connection.events
 
 
 @pytest.mark.unit
@@ -278,7 +365,6 @@ async def test_an_unterminable_commit_failure_quarantines_the_connection(
     from app.services.order_proposals.callback_inbox.locks import (
         LockTerminationUnproven,
         job_advisory_lock,
-        quarantined_handles,
     )
 
     connection = _CommitFails(error=OSError("commit failed"), terminates=False)
@@ -292,4 +378,6 @@ async def test_an_unterminable_commit_failure_quarantines_the_connection(
     assert entered == [], "the handler ran on a backend we could not terminate"
     assert "close" not in connection.events, connection.events
     assert "raw_invalidate" not in connection.events, connection.events
-    assert connection in quarantined_handles()
+    # Module-private on purpose: the accessor is a test-only surface on the
+    # runtime and is on the list for removal (R31).
+    assert connection in locks_module._QUARANTINE  # noqa: SLF001
