@@ -171,6 +171,21 @@ def test_unroutable_symbol_is_dropped_not_guessed() -> None:
     assert getattr(result, "reason", None) == "symbol_not_resolvable_by_live_router"
 
 
+def test_both_evidence_paths_share_one_entry_basis() -> None:
+    """The RSI shortcut must not hand the control cohort a different entry.
+
+    The shortcut path feeds only the control cohort. If it rounded the entry
+    differently from the support/resistance path, the control would be priced
+    on a different basis from the two treated cohorts.
+    """
+    for seed, drift in ((21, 0.006), (22, -0.006)):
+        frame = _synthetic(300, seed=seed, drift=drift)
+        evidence = build_evidence(symbol="AAPL", market="us", bars=frame)
+        assert isinstance(evidence, dict)
+        raw_close = float(frame["close"].iloc[-1])
+        assert evidence["current_price"] == Decimal(str(round(raw_close, 2)))
+
+
 def test_evidence_requires_full_indicator_history() -> None:
     frame = _synthetic(RSI_WINDOW_BARS - 1, seed=3)
     result = build_evidence(symbol="005930", market="kr", bars=frame)

@@ -103,9 +103,22 @@ def main() -> int:
         entry = float(row["entry_price"])
         corpus_close = float(frame.loc[frame["d"] == decision, "close"].iloc[0])
         forward = frame[frame["d"] > decision].reset_index(drop=True)
-        if abs(entry - corpus_close) > 1e-6:
-            print(f"FAIL entry {symbol} {decision.date()}: {entry} != {corpus_close}")
+        # The live get_support_resistance_impl rounds current_price to 2
+        # decimals, so the frozen entry is the cent-rounded close, not the raw
+        # one. That rounding is reproduced deliberately, not worked around --
+        # but anything beyond half a cent would be a real defect.
+        if abs(entry - round(corpus_close, 2)) > 1e-9:
+            print(
+                f"FAIL entry {symbol} {decision.date()}: "
+                f"{entry} != round({corpus_close}, 2)"
+            )
             failures += 1
+        elif abs(entry - corpus_close) > 1e-6:
+            print(
+                f"note {symbol} {decision.date()}: entry {entry} is the "
+                f"cent-rounded close {corpus_close} "
+                f"({abs(entry - corpus_close) / corpus_close * 100:.4f}%)"
+            )
         for window in ("5", "20"):
             expected = float(row["scores"][window]["primary"]["simple_return_to_close"])
             actual = (float(forward["close"].iloc[int(window) - 1]) - entry) / entry

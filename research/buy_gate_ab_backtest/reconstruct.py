@@ -127,7 +127,12 @@ def build_evidence(
         return _evidence(
             symbol=symbol,
             market=market,
-            current_price=float(window_250["close"].iloc[-1]),
+            # 🔴 Must match the SR path exactly. get_support_resistance_impl
+            # returns round(close, 2), so the shortcut has to round too --
+            # otherwise the control cohort (the only cohort this path feeds)
+            # would carry a different entry basis from the two treated
+            # cohorts, i.e. an asymmetry between the compared arms.
+            current_price=round(float(window_250["close"].iloc[-1]), 2),
             rsi_value=rsi_value,
             chosen={
                 "price": None,
