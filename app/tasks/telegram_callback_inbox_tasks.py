@@ -25,7 +25,20 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.taskiq_broker import broker
+from app.services.order_proposals.callback_inbox.contracts import (
+    RECOVERY_SCAN_LIMIT,
+    recovery_scan_cap,
+)
 from app.services.order_proposals.callback_inbox.recovery import recover_callback_jobs
+from app.services.order_proposals.callback_inbox.result_boundary import (
+    canonical_job_id,
+    disabled_job_result,
+    error_job_result,
+    invalid_job_id_result,
+    project_job_result,
+    project_recovery_report,
+    recovery_error_result,
+)
 from app.services.order_proposals.callback_inbox.worker import process_callback_job
 
 
@@ -45,15 +58,20 @@ def recovery_schedule_labels() -> list[dict[str, str]]:
 async def run_telegram_callback_job(job_id: str) -> dict[str, str]:
     """Process one durable callback job.
 
-    The gate is checked before anything else, so a disabled deployment does
-    not open a database session, let alone reach the approval machinery.
+    Invalid wire values are rejected before the gate, so neither gate branch
+    can reflect arbitrary TaskIQ input or open durable-inbox authority.
     """
+    canonical_job_id_value = canonical_job_id(job_id)
+    if canonical_job_id_value is None:
+        return invalid_job_id_result()
     if not settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED:
-        return {"status": "disabled", "job_id": str(job_id)}
-    result = await process_callback_job(job_id)
-    # Re-project deliberately: only these two keys may reach the result
-    # backend, whatever a future refactor decides to return internally.
-    return {"status": str(result["status"]), "job_id": str(result["job_id"])}
+        return disabled_job_result(canonical_job_id_value)
+    try:
+        result = await process_callback_job(canonical_job_id_value)
+        projected = project_job_result(result, job_id=canonical_job_id_value)
+    except Exception:  # noqa: BLE001 - TaskIQ result boundary; BaseException propagates
+        return error_job_result(canonical_job_id_value)
+    return projected or error_job_result(canonical_job_id_value)
 
 
 @broker.task(
@@ -71,7 +89,15 @@ async def recover_telegram_callback_jobs() -> dict[str, Any]:
         return {"status": "disabled"}
     if not settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED:
         return {"status": "worker_disabled"}
-    return await recover_callback_jobs()
+    try:
+        report = await recover_callback_jobs()
+        projected = project_recovery_report(
+            report,
+            scan_cap=recovery_scan_cap(RECOVERY_SCAN_LIMIT),
+        )
+    except Exception:  # noqa: BLE001 - TaskIQ result boundary; BaseException propagates
+        return recovery_error_result()
+    return projected or recovery_error_result()
 
 
 __all__ = [

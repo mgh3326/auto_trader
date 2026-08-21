@@ -27,6 +27,11 @@ from app.services.order_proposals.callback_inbox.contracts import (
     RECOVERY_CLAIMABLE_STATES,
     RECOVERY_SCAN_LIMIT,
 )
+from app.services.order_proposals.callback_inbox.result_boundary import (
+    NON_CLAIMED_RECOVERY_ITEM_STATUSES,
+    empty_recovery_statuses,
+    recovery_item_status,
+)
 from app.services.order_proposals.callback_inbox.service import CallbackInboxService
 from app.services.order_proposals.callback_inbox.worker import process_callback_job
 
@@ -115,7 +120,10 @@ async def recover_callback_jobs(
         )
         await session.rollback()
 
-    statuses: dict[str, int] = {}
+    # Keep the aggregate report closed even when a sweep looks at no rows.
+    # The boundary module owns this vocabulary so a future internal worker
+    # result cannot silently introduce a serializable status bucket.
+    statuses = empty_recovery_statuses()
     claimed = 0
     scanned = 0
     for job_id in candidates:
@@ -128,7 +136,7 @@ async def recover_callback_jobs(
         statuses[result] = statuses.get(result, 0) + 1
         # A job someone else is holding, or that turned out not to be
         # claimable, cost a look. Only work actually done costs budget.
-        if result not in {"lock_contended", "not_claimable", "not_found"}:
+        if result not in NON_CLAIMED_RECOVERY_ITEM_STATUSES:
             claimed += 1
 
     now = clock()
@@ -167,6 +175,7 @@ async def _process_one(
     worker_kwargs: dict[str, Any],
 ) -> str:
     """One job's failure must not end the sweep for the others."""
+    canonical_job_id = str(job_id)
     try:
         result = await process_fn(
             job_id,
@@ -174,16 +183,14 @@ async def _process_one(
             claimable_states=RECOVERY_CLAIMABLE_STATES,
             **worker_kwargs,
         )
-    except Exception as exc:  # noqa: BLE001 - keep sweeping
+        status = recovery_item_status(result, job_id=canonical_job_id)
+    except Exception:  # noqa: BLE001 - keep sweeping; BaseException propagates
         logger.error(
             "order_proposals.telegram.callback_recovery_job_failed",
-            extra={
-                "callback_job.id": str(job_id),
-                "exception_type": type(exc).__name__,
-            },
+            extra={"callback_job.id": canonical_job_id},
         )
         return "error"
-    return str(result.get("status", "error"))
+    return status or "error"
 
 
 __all__ = ["recover_callback_jobs", "reserve_recovery_tier_block"]
