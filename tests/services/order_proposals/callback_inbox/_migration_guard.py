@@ -99,19 +99,44 @@ def _keyword(call: ast.Call, name: str) -> ast.expr | None:
     return None
 
 
-def _mentions(node: ast.AST | None, *, wanted: str, constant: str) -> bool:
-    """Does this argument resolve to the wanted table/schema?
+def _literal_assignments(tree: ast.AST) -> dict[str, str]:
+    """Resolve only exact module-level string constants, never name-shaped hints."""
+    values: dict[str, str] = {}
+    for node in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        if not isinstance(target, ast.Name) or value is None:
+            continue
+        if isinstance(value, ast.Constant) and type(value.value) is str:
+            values[target.id] = value.value
+    return values
 
-    Accepts either the literal or a module constant whose name carries it,
-    since the real migration uses ``_TABLE``/``_SCHEMA``.
+
+def _resolve_literal(node: ast.AST | None, *, constants: dict[str, str]) -> str | None:
+    """Resolve a literal or one of the three approved literal constants.
+
+    ``_TABLE`` used to be accepted merely because its spelling contained the
+    expected table name. Only ``_INBOX_TABLE``, ``_CURSOR_TABLE``, and
+    ``_SCHEMA`` are legitimate aliases, and each must resolve exactly.
     """
-    if node is None:
-        return False
-    rendered = ast.dump(node)
-    return wanted in rendered or constant in rendered
+    if isinstance(node, ast.Constant) and type(node.value) is str:
+        return node.value
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    return None
 
 
-def scan(source: str, *, table: str, schema: str) -> ScanResult:
+def scan(
+    source: str,
+    *,
+    inbox_table: str,
+    cursor_table: str,
+    schema: str,
+) -> ScanResult:
     """Scan an Alembic migration for what it actually does, per phase.
 
     Closed-world about *receivers*: only a direct attribute call on ``op`` or
@@ -128,6 +153,24 @@ def scan(source: str, *, table: str, schema: str) -> ScanResult:
     except SyntaxError as exc:  # pragma: no cover - corpus is valid python
         result.offenders.append(f"unparseable: {exc}")
         return result
+
+    expected_constants = {
+        "_INBOX_TABLE": inbox_table,
+        "_CURSOR_TABLE": cursor_table,
+        "_SCHEMA": schema,
+    }
+    assigned_constants = _literal_assignments(tree)
+    constants: dict[str, str] = {}
+    for name, expected in expected_constants.items():
+        if name not in assigned_constants:
+            continue
+        actual = assigned_constants[name]
+        if actual != expected:
+            result.offenders.append(
+                f"{name} resolves to {actual!r}, not exact {expected!r}"
+            )
+        else:
+            constants[name] = actual
 
     aliases = _alias_names(tree)
     if aliases != {"op"}:
@@ -169,53 +212,73 @@ def scan(source: str, *, table: str, schema: str) -> ScanResult:
             if attr == "f":
                 continue
             phase = _enclosing_phase(tree, node)
-            result.ops_by_phase.setdefault(phase, []).append(attr)
             if attr in ESCAPE_HATCHES:
+                result.ops_by_phase.setdefault(phase, []).append(attr)
                 result.offenders.append(f"line {node.lineno}: op.{attr} is an escape")
                 continue
             if attr in ROW_DML_OPS:
+                result.ops_by_phase.setdefault(phase, []).append(attr)
                 result.offenders.append(f"line {node.lineno}: row DML op.{attr}")
                 continue
             if attr in MUTATION_OPS:
+                result.ops_by_phase.setdefault(phase, []).append(attr)
                 result.offenders.append(
                     f"line {node.lineno}: schema mutation op.{attr}"
                 )
                 continue
             if attr not in ALLOWED_OPS:
+                result.ops_by_phase.setdefault(phase, []).append(attr)
                 result.offenders.append(f"line {node.lineno}: unexpected op.{attr}")
                 continue
             allowed_here = PHASE_OPS.get(phase)
             if allowed_here is None:
+                result.ops_by_phase.setdefault(phase, []).append(attr)
                 result.offenders.append(
                     f"line {node.lineno}: op.{attr} outside upgrade/downgrade"
                 )
                 continue
             if attr not in allowed_here:
+                result.ops_by_phase.setdefault(phase, []).append(attr)
                 result.offenders.append(
                     f"line {node.lineno}: op.{attr} is not allowed in {phase}"
                 )
                 continue
-            # Every allowed DDL call must name this table, in this schema.
-            positional = node.args[0] if node.args else None
-            table_arg = _keyword(node, "table_name") or (
-                node.args[1] if attr == "create_index" and len(node.args) > 1 else None
-            )
-            names_table = _mentions(
-                positional, wanted=table, constant="_TABLE"
-            ) or _mentions(table_arg, wanted=table, constant="_TABLE")
-            if not names_table:
+            # The two-table migration has an exact closed operation trace.
+            # Resolve values, never substring-match an AST dump or a generic
+            # ``_TABLE`` identifier.
+            table_arg = _keyword(node, "table_name")
+            if table_arg is None:
+                if attr == "create_index":
+                    table_arg = node.args[1] if len(node.args) > 1 else None
+                else:
+                    table_arg = node.args[0] if node.args else None
+            table_name = _resolve_literal(table_arg, constants=constants)
+            if table_name not in {inbox_table, cursor_table}:
                 result.offenders.append(
-                    f"line {node.lineno}: op.{attr} does not name {table}"
+                    f"line {node.lineno}: op.{attr} targets an unknown table"
                 )
             schema_arg = _keyword(node, "schema")
             if schema_arg is None:
                 result.offenders.append(
                     f"line {node.lineno}: op.{attr} is not schema-qualified"
                 )
-            elif not _mentions(schema_arg, wanted=schema, constant="_SCHEMA"):
+            elif _resolve_literal(schema_arg, constants=constants) != schema:
                 result.offenders.append(
                     f"line {node.lineno}: op.{attr} targets another schema"
                 )
+            if attr in {"create_index", "drop_index"}:
+                index_arg = node.args[0] if node.args else None
+                if _resolve_literal(index_arg, constants=constants) != (
+                    "ix_telegram_callback_inbox_state_available"
+                ):
+                    result.offenders.append(
+                        f"line {node.lineno}: op.{attr} uses an unexpected index"
+                    )
+                if table_name != inbox_table:
+                    result.offenders.append(
+                        f"line {node.lineno}: cursor table may not carry an index"
+                    )
+            result.ops_by_phase.setdefault(phase, []).append(f"{attr}:{table_name}")
         else:
             # A raw connection obtained any other way.
             if attr in {"execute", "executemany", "exec_driver_sql"}:
@@ -223,7 +286,24 @@ def scan(source: str, *, table: str, schema: str) -> ScanResult:
                     f"line {node.lineno}: raw {attr} outside the op proxy"
                 )
 
-    for phase, ops in result.ops_by_phase.items():
-        if phase in PHASE_OPS and not ops:  # pragma: no cover - defensive
-            result.offenders.append(f"{phase} does nothing")
+    expected_trace = {
+        "upgrade": [
+            f"create_table:{inbox_table}",
+            f"create_index:{inbox_table}",
+            f"create_table:{cursor_table}",
+        ],
+        "downgrade": [
+            f"drop_table:{cursor_table}",
+            f"drop_index:{inbox_table}",
+            f"drop_table:{inbox_table}",
+        ],
+    }
+    for phase, expected in expected_trace.items():
+        actual = result.ops_by_phase.get(phase, [])
+        if actual != expected:
+            result.offenders.append(
+                f"{phase} trace is {actual}, expected exactly {expected}"
+            )
+    if set(result.ops_by_phase) - set(expected_trace):
+        result.offenders.append("operations appear outside the two migration phases")
     return result

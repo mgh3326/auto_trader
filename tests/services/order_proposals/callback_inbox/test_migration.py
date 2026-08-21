@@ -78,7 +78,7 @@ _ALLOWED_OPS = frozenset({"create_table", "drop_table", "create_index", "drop_in
 
 
 @pytest.mark.unit
-def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
+def test_the_migration_is_additive_and_touches_only_its_two_owned_tables() -> None:
     """Delegates to the scanner that has been shown hostile input.
 
     The version that lived here was closed-world about op *names* but not
@@ -92,12 +92,21 @@ def test_the_migration_is_additive_and_touches_only_its_own_table() -> None:
 
     result = scan(
         _MIGRATION.read_text(encoding="utf-8"),
-        table="telegram_callback_inbox",
+        inbox_table="telegram_callback_inbox",
+        cursor_table="telegram_callback_recovery_cursor",
         schema="review",
     )
     assert result.ok, result.offenders
-    assert result.ops_by_phase["upgrade"] == ["create_table", "create_index"]
-    assert result.ops_by_phase["downgrade"] == ["drop_index", "drop_table"]
+    assert result.ops_by_phase["upgrade"] == [
+        "create_table:telegram_callback_inbox",
+        "create_index:telegram_callback_inbox",
+        "create_table:telegram_callback_recovery_cursor",
+    ]
+    assert result.ops_by_phase["downgrade"] == [
+        "drop_table:telegram_callback_recovery_cursor",
+        "drop_index:telegram_callback_inbox",
+        "drop_table:telegram_callback_inbox",
+    ]
 
 
 @pytest.mark.unit
@@ -121,25 +130,75 @@ def test_r32_edits_only_the_original_w5_create_table_migration() -> None:
     )
 
     # The original additive create-table revision is the only migration that
-    # may mention the inbox table; a later constraint/backfill revision fails.
-    inbox_migrations = tuple(
+    # may mention either W5-owned table; a later constraint/backfill revision
+    # fails and a bootstrap-only cursor table would leave production unready.
+    w5_migrations = tuple(
         path
         for path in sorted(_MIGRATION_DIR.glob("*.py"))
-        if "telegram_callback_inbox" in path.read_text(encoding="utf-8")
+        if (
+            "telegram_callback_inbox" in path.read_text(encoding="utf-8")
+            or "telegram_callback_recovery_cursor" in path.read_text(encoding="utf-8")
+        )
     )
-    assert inbox_migrations == (_MIGRATION,)
+    assert w5_migrations == (_MIGRATION,)
 
 
 @pytest.mark.unit
 def test_the_orm_model_is_registered_and_exported() -> None:
     from app import models
-    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+    from app.models.telegram_callback_inbox import (
+        TelegramCallbackInboxJob,
+        TelegramCallbackRecoveryCursor,
+    )
 
     assert models.TelegramCallbackInboxJob is TelegramCallbackInboxJob
+    assert models.TelegramCallbackRecoveryCursor is TelegramCallbackRecoveryCursor
     assert TelegramCallbackInboxJob.__table__.schema == "review"
+    assert TelegramCallbackRecoveryCursor.__table__.schema == "review"
     assert "review.telegram_callback_inbox" in Base.metadata.tables, sorted(
         Base.metadata.tables
     )
+    assert "review.telegram_callback_recovery_cursor" in Base.metadata.tables, sorted(
+        Base.metadata.tables
+    )
+
+
+@pytest.mark.unit
+def test_the_cursor_orm_is_a_pii_free_singleton_with_no_index() -> None:
+    from app.models.telegram_callback_inbox import TelegramCallbackRecoveryCursor
+
+    table = TelegramCallbackRecoveryCursor.__table__
+    assert tuple(table.columns.keys()) == ("id", "next_tier", "updated_at")
+    assert table.c.id.primary_key is True
+    assert isinstance(table.c.id.type, sa.SmallInteger)
+    assert table.c.next_tier.nullable is False
+    assert isinstance(table.c.next_tier.type, sa.SmallInteger)
+    assert table.c.updated_at.nullable is False
+    checks = {
+        check.name: str(check.sqltext)
+        for check in table.constraints
+        if isinstance(check, sa.CheckConstraint)
+    }
+    assert checks == {
+        "ck_telegram_callback_recovery_cursor_id": "id = 1",
+        "ck_telegram_callback_recovery_cursor_next_tier": "next_tier >= 0 AND next_tier < 4",
+    }
+    assert table.indexes == set()
+
+
+@pytest.mark.unit
+def test_r34_records_that_r36_owns_the_persistent_schema_bootstrap_bump() -> None:
+    """R34 adds ORM metadata only; R36 separately owns v38 -> v39 bootstrap."""
+    from tests._schema_bootstrap import SCHEMA_BOOTSTRAP_VERSION
+
+    runbook = (_REPO / "docs/runbooks/telegram-callback-durable-inbox.md").read_text(
+        encoding="utf-8"
+    )
+    assert SCHEMA_BOOTSTRAP_VERSION == 38
+    assert (
+        "R36 owns the test-schema bootstrap bump from v38 to v39 for "
+        "`telegram_callback_recovery_cursor`."
+    ) in runbook
 
 
 @pytest.mark.unit
@@ -801,6 +860,24 @@ def _table_exists(connection: sa.Connection) -> bool:
     )
 
 
+def _cursor_table_exists(connection: sa.Connection) -> bool:
+    return bool(
+        connection.execute(
+            sa.text(
+                "SELECT to_regclass('review.telegram_callback_recovery_cursor') IS NOT NULL"
+            )
+        ).scalar_one()
+    )
+
+
+def _cursor_row_count(connection: sa.Connection) -> int:
+    return int(
+        connection.execute(
+            sa.text("SELECT count(*) FROM review.telegram_callback_recovery_cursor")
+        ).scalar_one()
+    )
+
+
 def _index_names(connection: sa.Connection) -> set[str]:
     return {
         row[0]
@@ -821,11 +898,15 @@ def _roundtrip(connection: sa.Connection) -> list[str]:
     )
     trace: list[str] = []
     with Operations.context(context):
-        trace.append(f"initial={_table_exists(connection)}")
+        trace.append(f"initial_inbox={_table_exists(connection)}")
+        trace.append(f"initial_cursor={_cursor_table_exists(connection)}")
         migration.downgrade()
-        trace.append(f"after_downgrade={_table_exists(connection)}")
+        trace.append(f"after_downgrade_inbox={_table_exists(connection)}")
+        trace.append(f"after_downgrade_cursor={_cursor_table_exists(connection)}")
         migration.upgrade()
-        trace.append(f"after_upgrade={_table_exists(connection)}")
+        trace.append(f"after_upgrade_inbox={_table_exists(connection)}")
+        trace.append(f"after_upgrade_cursor={_cursor_table_exists(connection)}")
+        trace.append(f"cursor_empty={_cursor_row_count(connection) == 0}")
         trace.append(
             "recovery_index="
             f"{'ix_telegram_callback_inbox_state_available' in _index_names(connection)}"
@@ -852,9 +933,13 @@ async def test_upgrade_downgrade_upgrade_against_the_real_database(
         await session.rollback()
 
     assert trace == [
-        "initial=True",
-        "after_downgrade=False",
-        "after_upgrade=True",
+        "initial_inbox=True",
+        "initial_cursor=True",
+        "after_downgrade_inbox=False",
+        "after_downgrade_cursor=False",
+        "after_upgrade_inbox=True",
+        "after_upgrade_cursor=True",
+        "cursor_empty=True",
         "recovery_index=True",
         "terminal_check_alive=True",
     ]
@@ -868,5 +953,7 @@ async def test_the_shared_schema_survives_the_roundtrip(_bootstrap_test_schema) 
     async with AsyncSessionLocal() as session:
         connection = await session.connection()
         exists = await connection.run_sync(_table_exists)
+        cursor_exists = await connection.run_sync(_cursor_table_exists)
         await session.rollback()
     assert exists is True
+    assert cursor_exists is True

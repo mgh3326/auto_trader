@@ -82,7 +82,10 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: the current head, so they must be removed to reconstruct the parent-era
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
-_POST_PARENT_TABLES: tuple[str, ...] = ("review.telegram_callback_inbox",)
+_POST_PARENT_TABLES: tuple[str, ...] = (
+    "review.telegram_callback_recovery_cursor",
+    "review.telegram_callback_inbox",
+)
 
 
 @pytest_asyncio.fixture
@@ -179,6 +182,40 @@ async def _table_exists(database_url: str) -> bool:
         await connection.close()
 
 
+async def _cursor_table_exists(database_url: str) -> bool:
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        return bool(
+            await connection.fetchval(
+                "SELECT to_regclass('review.telegram_callback_recovery_cursor') IS NOT NULL"
+            )
+        )
+    finally:
+        await connection.close()
+
+
+async def _cursor_row_count(database_url: str) -> int:
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        return int(
+            await connection.fetchval(
+                "SELECT count(*) FROM review.telegram_callback_recovery_cursor"
+            )
+        )
+    finally:
+        await connection.close()
+
+
 async def _live_objects(database_url: str) -> dict[str, list[str]]:
     """The constraints and indexes PostgreSQL actually has after the upgrade."""
     import asyncpg
@@ -202,6 +239,71 @@ async def _live_objects(database_url: str) -> dict[str, list[str]]:
             "constraints": [row[0] for row in constraints],
             "indexes": [row[0] for row in indexes],
         }
+    finally:
+        await connection.close()
+
+
+async def _cursor_live_objects(database_url: str) -> dict[str, list[str]]:
+    """The cursor's exact singleton constraints after a real upgrade."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        constraints = await connection.fetch(
+            "SELECT conname FROM pg_constraint "
+            "WHERE conrelid = 'review.telegram_callback_recovery_cursor'::regclass "
+            "ORDER BY conname"
+        )
+        indexes = await connection.fetch(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = 'review' "
+            "AND tablename = 'telegram_callback_recovery_cursor' ORDER BY indexname"
+        )
+        return {
+            "constraints": [row[0] for row in constraints],
+            "indexes": [row[0] for row in indexes],
+        }
+    finally:
+        await connection.close()
+
+
+async def _assert_cursor_constraint_matrix(database_url: str) -> None:
+    """Exercise singleton and ring bounds on the real migrated cursor table."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    cases = (
+        ("lower_bound", 1, 0, True),
+        ("upper_bound", 1, 3, True),
+        ("wrong_singleton", 2, 0, False),
+        ("negative_tier", 1, -1, False),
+        ("tier_past_ring", 1, 4, False),
+    )
+    try:
+        for name, row_id, next_tier, expected in cases:
+            try:
+                await connection.execute(
+                    "INSERT INTO review.telegram_callback_recovery_cursor "
+                    "(id, next_tier, updated_at) VALUES ($1, $2, now())",
+                    row_id,
+                    next_tier,
+                )
+            except asyncpg.exceptions.CheckViolationError:
+                accepted = False
+            else:
+                accepted = True
+                await connection.execute(
+                    "DELETE FROM review.telegram_callback_recovery_cursor WHERE id = $1",
+                    row_id,
+                )
+            if accepted != expected:
+                raise AssertionError(f"cursor constraint matrix mismatch: {name}")
     finally:
         await connection.close()
 
@@ -536,6 +638,11 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         "uq_telegram_callback_inbox_job_id",
         "uq_telegram_callback_inbox_update_digest",
     }
+    expected_cursor_constraints = {
+        "ck_telegram_callback_recovery_cursor_id",
+        "ck_telegram_callback_recovery_cursor_next_tier",
+        "pk_telegram_callback_recovery_cursor",
+    }
 
     # -- the parent-era schema really is there, minus what this branch adds --
     assert await _stamped_revision(scratch_database) is None
@@ -543,14 +650,22 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         "the parent schema was not constructed; this test would prove nothing"
     )
     assert await _table_exists(scratch_database) is False
+    assert await _cursor_table_exists(scratch_database) is False
     _alembic("stamp", PARENT_REVISION, database_url=scratch_database)
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False, (
         "the inbox table exists at the parent revision; the chain is not additive"
     )
+    assert await _cursor_table_exists(scratch_database) is False, (
+        "the recovery cursor exists at the parent revision; the chain is not additive"
+    )
 
     async def _check_head_state() -> None:
         assert await _table_exists(scratch_database) is True
+        assert await _cursor_table_exists(scratch_database) is True
+        assert await _cursor_row_count(scratch_database) == 0
+        await _assert_cursor_constraint_matrix(scratch_database)
+        assert await _cursor_row_count(scratch_database) == 0
         # This is deliberately performed before checking the revision label so
         # the inherited regex-only implementation fails on the actual database
         # behaviour, not merely because a revision label is absent.
@@ -571,6 +686,9 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         assert "ix_telegram_callback_inbox_state_available" in objects["indexes"], (
             objects["indexes"]
         )
+        cursor_objects = await _cursor_live_objects(scratch_database)
+        assert set(cursor_objects["constraints"]) == expected_cursor_constraints
+        assert cursor_objects["indexes"] == ["pk_telegram_callback_recovery_cursor"]
         assert await _terminal_check_rejects_a_retained_nonce(scratch_database) is True
         assert (
             await _processing_check_rejects_a_missing_started_at(scratch_database)
@@ -590,6 +708,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     _alembic("downgrade", PARENT_REVISION, database_url=scratch_database)
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False
+    assert await _cursor_table_exists(scratch_database) is False
 
     # -- and up again --------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
