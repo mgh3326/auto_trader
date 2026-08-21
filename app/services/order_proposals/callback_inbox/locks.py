@@ -66,6 +66,34 @@ _RELEASE = text("SELECT pg_advisory_unlock(CAST(:key AS bigint))")
 _BACKEND_PID = text("SELECT pg_backend_pid()")
 
 
+#: Handles for backends we could not prove are dead.
+#:
+#: A connection whose termination is unproven must never be closed, because
+#: closing checks it back into the pool and the next caller inherits whatever
+#: advisory lock it still holds. Not closing it is only half the job: nothing
+#: else may drop the last reference either, or the garbage collector performs
+#: the checkin on our behalf. ``try_acquire`` is the clearest case -- it owns
+#: its connection in a local, so once the function unwinds the traceback is
+#: the only thing holding it, and a traceback is a transient.
+#:
+#: So the handles are owned here, for the life of the process: the
+#: ``AsyncConnection``, its raw handle, and the driver connection. The set only
+#: grows on a path that also raises :class:`LockTerminationUnproven`, which is
+#: fatal to the job, so it cannot grow quietly or without bound.
+_QUARANTINE: set[Any] = set()
+
+
+def quarantined_handles() -> set[Any]:
+    """The handles held back from the pool. Exposed so tests can assert on it."""
+    return _QUARANTINE
+
+
+def _quarantine(*handles: Any) -> None:
+    for handle in handles:
+        if handle is not None:
+            _QUARANTINE.add(handle)
+
+
 class LockTerminationUnproven(RuntimeError):
     """A backend that may still hold the lock could not be killed.
 
@@ -157,7 +185,12 @@ class PostgresJobAdvisoryLock:
         if not acquired:
             # A refused acquirer holds nothing, so an ordinary close is
             # right -- retained, so repeated cancellation cannot leak it.
-            _, during = await _retained_close(connection)
+            closed, during = await _retained_close(connection)
+            if not closed:
+                terminated, also = await _hard_discard(connection)
+                during = during or also
+                if not terminated:
+                    raise LockTerminationUnproven(str(key))
             if during is not None:
                 raise during
             return False
@@ -210,7 +243,17 @@ class PostgresJobAdvisoryLock:
         if released is True:
             # Unlocked for certain, so the backend is safe to hand back --
             # but only once the close has genuinely finished.
-            _, during = await _retained_close(connection)
+            closed, during = await _retained_close(connection)
+            if not closed:
+                # It is not holding the lock any more, so nothing can be
+                # submitted twice; but a connection that would not close is
+                # also not back in the pool, and pretending otherwise leaks
+                # the checkout. Invalidate it instead, and only clear the
+                # reference if that can be proven (R27d).
+                terminated, also = await _hard_discard(connection)
+                during = during or also
+                if not terminated:
+                    raise LockTerminationUnproven(str(key))
             self._connection = None
             escaping = original or during
             if escaping is not None:
@@ -317,38 +360,54 @@ async def _terminate_now(connection: AsyncConnection) -> bool:
         break
 
     if invalidated:
-        await _close_quietly(connection)
+        # Proven: the backend is gone, so the bookkeeping close is safe.
+        await _close_now(connection)
         return True
 
-    # ``invalidate`` failed. An ordinary pool close is not an option here --
-    # it would hand on a possibly-locked backend -- so prove termination
-    # through the driver instead.
-    terminated = False
+    # ``invalidate`` failed. An ordinary pool close is not an option -- it
+    # would hand on a possibly-locked backend -- so try to prove termination
+    # through the driver instead. Detach first, so nothing that follows can
+    # check this connection in.
     if raw is not None:
         with contextlib.suppress(Exception):
             raw.detach()
+    proven = False
     if driver is not None:
         try:
             driver.terminate()
         except BaseException:
-            terminated = False
+            proven = False
         else:
-            terminated = True
+            proven = True
+
+    if not proven:
+        # Both routes exhausted. Do nothing further: no raw invalidate, no
+        # close, no checkin. The handles are kept alive explicitly so the
+        # collector cannot finish the job for us, and the caller turns this
+        # into a fatal error.
+        _quarantine(connection, raw, driver)
+        return False
+
     if raw is not None:
         with contextlib.suppress(Exception):
             raw.invalidate()
-    await _close_quietly(connection)
-    return terminated
+    await _close_now(connection)
+    return True
 
 
-async def _close_quietly(connection: AsyncConnection) -> None:
-    """Bookkeeping close. The backend is already gone by the time this runs."""
+async def _close_now(connection: AsyncConnection) -> bool:
+    """Bookkeeping close. Returns whether it actually finished.
+
+    Reporting the result matters even here: a close that raises leaves the
+    connection neither closed nor checked in, and believing it succeeded
+    leaks the checkout. The exception itself is dropped -- there is nothing
+    useful to do with it at this depth -- but the failure is not.
+    """
     try:
         await connection.close()
-    except asyncio.CancelledError:
-        return
     except BaseException:
-        return
+        return False
+    return True
 
 
 async def _hard_discard(
@@ -361,10 +420,14 @@ async def _hard_discard(
 
 async def _retained_close(
     connection: AsyncConnection,
-) -> tuple[None, asyncio.CancelledError | None]:
-    """Close an unlocked connection, surviving any number of cancellations."""
-    _, cancelled = await _await_retained(_close_quietly(connection))
-    return None, cancelled
+) -> tuple[bool, asyncio.CancelledError | None]:
+    """Close an unlocked connection, surviving any number of cancellations.
+
+    Returns whether the close completed, so a caller cannot mistake "we tried"
+    for "it is back in the pool".
+    """
+    completed, cancelled = await _await_retained(_close_now(connection))
+    return bool(completed), cancelled
 
 
 @contextlib.asynccontextmanager
