@@ -779,3 +779,161 @@ async def test_ties_on_received_at_are_broken_deterministically(
     assert by_position == sorted(tied, key=str), (
         "tied rows are not broken by a stable secondary key"
     )
+
+
+# ---------------------------------------------------------------------------
+# bounded rows is not the same as bounded work
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_candidate_scan_is_bounded_in_the_database_too(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R29 — the tiers must be bounded SELECTs, not a window over the backlog.
+
+    Ranking with ``row_number() OVER (PARTITION BY tier ...)`` and filtering
+    on the rank returns a bounded number of rows, but PostgreSQL still has to
+    classify and sort *every* eligible row to compute those ranks. During the
+    outage this sweep exists for -- when the backlog is at its largest -- that
+    is precisely when the work is unbounded. The brief asks for a bounded
+    scan, and rows returned is not what makes it bounded.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        recovery_scan_cap,
+        recovery_tier_quotas,
+    )
+    from app.services.order_proposals.callback_inbox.repository import (
+        CallbackInboxRepository,
+    )
+
+    limit = 2
+    cap = recovery_scan_cap(limit)
+    quotas = recovery_tier_quotas(limit)
+    assert sum(quotas.values()) <= cap, quotas
+
+    for index in range(8):
+        await _queue(
+            inbox_cleanup, received_at=now_kst() - timedelta(minutes=60 - index)
+        )
+
+    statements: list[str] = []
+
+    async with AsyncSessionLocal() as session:
+        original_execute = session.execute
+
+        async def _recording(statement, *args, **kwargs):
+            statements.append(str(statement))
+            return await original_execute(statement, *args, **kwargs)
+
+        session.execute = _recording  # type: ignore[method-assign]
+        rows = await CallbackInboxRepository(session).claimable_job_ids(
+            now=now_kst(),
+            stale_before=now_kst() - timedelta(hours=1),
+            limit=limit,
+        )
+        await session.rollback()
+
+    assert len(rows) <= cap, len(rows)
+    assert statements, "no query was issued at all"
+    assert len(statements) <= 3, (
+        f"{len(statements)} queries for three tiers: one bounded SELECT each, "
+        f"or one bounded UNION ALL"
+    )
+    for sql in statements:
+        lowered = sql.lower()
+        assert "row_number" not in lowered, (
+            "ranking over the whole eligible set makes the database do "
+            "unbounded work even though it returns bounded rows"
+        )
+        assert "over (" not in lowered, sql
+        assert "limit" in lowered, f"an unbounded SELECT in the candidate scan: {sql}"
+
+
+# ---------------------------------------------------------------------------
+# the fairness ordering is a pure function, wherever it lives
+# ---------------------------------------------------------------------------
+
+
+def test_the_fairness_ordering_keeps_no_state_anywhere() -> None:
+    """R29 — including the service, which is where the interleave actually is.
+
+    The earlier structural guard scanned the recovery and repository modules
+    and skipped classes, and ``importlib.reload(recovery)`` leaves the service
+    module loaded -- so a counter on the service, on its class, or captured in
+    a closure would have passed everything.
+    """
+    import ast
+    import inspect
+
+    from app.services.order_proposals.callback_inbox import (
+        recovery as recovery_module,
+    )
+    from app.services.order_proposals.callback_inbox import repository as repo_module
+    from app.services.order_proposals.callback_inbox import service as service_module
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    # 1. no mutable state at module level, and none on the classes either.
+    for module in (recovery_module, repo_module, service_module):
+        for name, value in vars(module).items():
+            if name.startswith("__"):
+                continue
+            if inspect.isclass(value):
+                if value.__module__ != module.__name__:
+                    continue
+                for attribute, attribute_value in vars(value).items():
+                    if attribute.startswith("__"):
+                        continue
+                    assert not isinstance(attribute_value, list | dict | set), (
+                        f"{module.__name__}.{name}.{attribute} is mutable class state"
+                    )
+                continue
+            assert not isinstance(value, list | dict | set), (
+                f"{module.__name__}.{name} is mutable module state; fairness must "
+                f"come from the database, not from this process"
+            )
+
+    # 2. the ordering method itself writes nothing outside its own locals.
+    tree = ast.parse(inspect.getsource(CallbackInboxService.claimable_job_ids).strip())
+    for node in ast.walk(tree):
+        assert not isinstance(node, ast.Global | ast.Nonlocal), ast.dump(node)
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+            targets = [node.target]
+        for target in targets:
+            assert not isinstance(target, ast.Attribute), (
+                f"the ordering writes to {ast.dump(target)}; it must be a pure "
+                f"function of the rows the query returned"
+            )
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_service_and_session_produce_the_same_order(
+    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
+) -> None:
+    """R29 — behaviourally, across instances as well as across processes."""
+    from app.services.order_proposals.callback_inbox.service import (
+        CallbackInboxService,
+    )
+
+    base = now_kst() - timedelta(hours=7)
+    for index in range(5):
+        await _queue(inbox_cleanup, received_at=base + timedelta(seconds=index))
+
+    orders = []
+    for _ in range(3):
+        async with AsyncSessionLocal() as session:
+            orders.append(
+                await CallbackInboxService(session).claimable_job_ids(
+                    now=now_kst(), limit=50
+                )
+            )
+            await session.rollback()
+
+    assert orders[0] == orders[1] == orders[2], (
+        "a new service on a new session saw a different order"
+    )
