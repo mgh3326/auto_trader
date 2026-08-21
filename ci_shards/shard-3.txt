@@ -161,6 +161,7 @@ tests/services/mock_integration/test_lineage.py
 tests/services/order_proposals/callback_inbox/test_data_minimization.py
 tests/services/order_proposals/callback_inbox/test_full_core_toss_sell.py
 tests/services/order_proposals/callback_inbox/test_migration.py
+tests/services/order_proposals/callback_inbox/test_migration_phase_guard.py
 tests/services/order_proposals/callback_inbox/test_privacy_end_to_end.py
 tests/services/order_proposals/callback_inbox/test_worker_outcomes.py
 tests/services/order_proposals/test_approval_message.py
