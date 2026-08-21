@@ -110,6 +110,16 @@ lock -> classify -> attempt -> rebuild -> re-authorise -> enter -> run -> verdic
 - **Lock first.** A PostgreSQL *session* advisory lock on a *dedicated*
   connection, held for the whole handler execution. Two tasks for one job
   invoke the handler once.
+- **The acquire commits immediately.** A session advisory lock survives
+  `COMMIT`, so the transaction opened by `pg_try_advisory_lock` is closed as
+  soon as the result is read and the lock is still held. The holder therefore
+  shows as `idle` in `pg_stat_activity`, not `idle in transaction`, for the
+  whole handler. **You do not need to configure
+  `idle_in_transaction_session_timeout` for this path, and you must not rely
+  on it**: if that timeout were shorter than a job, PostgreSQL would terminate
+  the holder mid-job and release its advisory locks silently, while the
+  coroutine that believes it owns the job kept running. The code closes the
+  transaction so the guarantee does not depend on a server setting.
 - **Attempt before work.** `processing` + `attempt_count + 1` are committed
   before the handler runs, so a crash loop converges on the dead-letter.
 - **Re-authorise.** The chat allowlist is checked again against *current*
@@ -276,6 +286,12 @@ coming out. Nothing else. Logs and Sentry spans use the allowlist in
   validated. No live Telegram, broker or production database was touched.
 - **The staleness window is a heuristic** for *when to look*, never for
   whether a job is claimable.
+- **A terminated holder still releases its lock.** Committing the acquire
+  removes the `idle in transaction` reason for a backend to be killed, but any
+  administrative `pg_terminate_backend`, an OOM kill or a server restart drops
+  the lock the same way — see the second bullet above. This is the same
+  extreme-tail window, not a new one, and the callback core's nonce, commit
+  lease and idempotency key are what cover it.
 
 ---
 
