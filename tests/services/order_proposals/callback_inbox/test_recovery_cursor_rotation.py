@@ -21,7 +21,7 @@ import pathlib
 import subprocess
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -1034,6 +1034,44 @@ def _target_mentions_name(target: ast.AST, name: str) -> bool:
     )
 
 
+def _effective_import_bindings(node: ast.Import | ast.ImportFrom) -> set[str]:
+    """Names bound locally by one import statement, including implicit aliases."""
+    if isinstance(node, ast.Import):
+        return {alias.asname or alias.name.split(".", 1)[0] for alias in node.names}
+    return {alias.asname or alias.name for alias in node.names}
+
+
+def _comprehension_target_ids(
+    scope: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[int]:
+    """Python 3 comprehension iteration targets do not bind this scope."""
+    return {
+        id(name)
+        for generator in _direct_scope_nodes(scope)
+        if isinstance(generator, ast.comprehension)
+        for name in ast.walk(generator.target)
+        if isinstance(name, ast.Name)
+    }
+
+
+def _direct_named_definitions(
+    scope: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
+    """Definitions bind in the enclosing function, but their bodies do not."""
+    definitions: list[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef] = []
+
+    def _visit(node: ast.AST) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            definitions.append(node)
+            return
+        for child in ast.iter_child_nodes(node):
+            _visit(child)
+
+    for statement in scope.body:
+        _visit(statement)
+    return definitions
+
+
 def _tier_start_store_offenders(
     recover: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -1041,12 +1079,14 @@ def _tier_start_store_offenders(
 ) -> list[str]:
     """The reservation result is immutable local data until the scan call."""
     offenders: list[str] = []
+    comprehension_targets = _comprehension_target_ids(recover)
     for node in _direct_scope_nodes(recover):
         if (
             isinstance(node, ast.Name)
             and node.id == "tier_start"
             and isinstance(node.ctx, ast.Store | ast.Del)
             and id(node) not in initial_targets
+            and id(node) not in comprehension_targets
         ):
             offenders.append(
                 f"line {node.lineno}: tier_start is rebound or deleted after reservation"
@@ -1055,9 +1095,11 @@ def _tier_start_store_offenders(
             offenders.append(
                 f"line {node.lineno}: tier_start is rebound by an exception handler"
             )
-        elif isinstance(node, ast.alias) and node.asname == "tier_start":
+        elif isinstance(node, ast.Import | ast.ImportFrom) and "tier_start" in (
+            _effective_import_bindings(node)
+        ):
             offenders.append(
-                f"line {node.lineno}: tier_start is rebound by an import alias"
+                f"line {node.lineno}: tier_start is rebound by an import binding"
             )
         elif (
             isinstance(node, ast.MatchAs | ast.MatchStar) and node.name == "tier_start"
@@ -1073,139 +1115,12 @@ def _tier_start_store_offenders(
             offenders.append(
                 f"line {node.lineno}: tier_start is mutated after reservation"
             )
-    return offenders
-
-
-def _contains_name_load(node: ast.AST, name: str) -> bool:
-    return any(
-        isinstance(child, ast.Name)
-        and child.id == name
-        and isinstance(child.ctx, ast.Load)
-        for child in ast.walk(node)
-    )
-
-
-def _target_names(target: ast.AST) -> set[str]:
-    return {
-        child.id
-        for child in ast.walk(target)
-        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
-    }
-
-
-def _is_name_load(node: ast.AST | None, name: str) -> bool:
-    return (
-        isinstance(node, ast.Name)
-        and node.id == name
-        and isinstance(node.ctx, ast.Load)
-    )
-
-
-def _is_tier_start_slice(slice_: ast.AST, *, lower: bool) -> bool:
-    if not isinstance(slice_, ast.Slice):
-        return False
-    endpoint = slice_.lower if lower else slice_.upper
-    other_endpoint = slice_.upper if lower else slice_.lower
-    return _is_name_load(endpoint, "tier_start") and other_endpoint is None
-
-
-def _rotation_ring_name(value: ast.expr | None) -> str | None:
-    """Return the ring name only for ``ring[start:] + ring[:start]``."""
-    if not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.Add):
-        return None
-    left, right = value.left, value.right
-    if not isinstance(left, ast.Subscript) or not isinstance(right, ast.Subscript):
-        return None
-    if not (
-        isinstance(left.value, ast.Name)
-        and isinstance(right.value, ast.Name)
-        and left.value.id == right.value.id
-    ):
-        return None
-    if not _is_tier_start_slice(left.slice, lower=True):
-        return None
-    if not _is_tier_start_slice(right.slice, lower=False):
-        return None
-    return left.value.id
-
-
-def _is_exact_tier_ring(value: ast.expr | None) -> bool:
-    if not isinstance(value, ast.Tuple | ast.List):
-        return False
-    elements = value.elts
-    integer_ring = [
-        element.value
-        for element in elements
-        if isinstance(element, ast.Constant) and type(element.value) is int
-    ]
-    if integer_ring == [0, 1, 2, 3] and len(integer_ring) == len(elements):
-        return True
-    return [element.id for element in elements if isinstance(element, ast.Name)] == [
-        "TIER_MALFORMED",
-        "TIER_EXHAUSTED",
-        "TIER_QUEUED",
-        "TIER_STALE",
-    ]
-
-
-def _call_uses_loop_name(call: ast.Call, loop_names: set[str]) -> bool:
-    return any(
-        _contains_name_load(argument, name)
-        for argument in (*call.args, *(keyword.value for keyword in call.keywords))
-        for name in loop_names
-    )
-
-
-def _tier_order_rotation_offenders(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[str]:
-    """Require a real cyclic ``tier_start`` rotation to drive selection.
-
-    Merely accepting or reading ``tier_start`` is not enough: the selected
-    candidate loop must iterate an order derived as ``ring[start:] +
-    ring[:start]``.  That shape makes the complete four-tier cycle visible to
-    the verifier without accepting an unrelated conditional or an imported
-    process-local iterator as a lookalike.
-    """
-    exact_rings: set[str] = set()
-    assignments: list[tuple[ast.expr | None, list[ast.expr]]] = []
-    for node in _direct_scope_nodes(method):
-        value, targets = _assignment_parts(node)
-        assignments.append((value, targets))
-        if _is_exact_tier_ring(value):
-            exact_rings.update(
-                target.id for target in targets if isinstance(target, ast.Name)
+    for definition in _direct_named_definitions(recover):
+        if definition.name == "tier_start":
+            offenders.append(
+                f"line {definition.lineno}: tier_start is rebound by a nested definition"
             )
-
-    rotated_orders: dict[str, str] = {}
-    for value, targets in assignments:
-        ring_name = _rotation_ring_name(value)
-        if ring_name is None or ring_name not in exact_rings:
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                rotated_orders[target.id] = ring_name
-    if not rotated_orders:
-        return [
-            "claimable_job_ids does not rotate the exact four-tier order from "
-            "tier_start"
-        ]
-
-    for node in _direct_scope_nodes(method):
-        if not isinstance(node, ast.For | ast.AsyncFor):
-            continue
-        if not any(_contains_name_load(node.iter, name) for name in rotated_orders):
-            continue
-        loop_names = _target_names(node.target)
-        if any(
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "get"
-            and _call_uses_loop_name(call, loop_names)
-            for call in ast.walk(node)
-        ):
-            return []
-    return ["claimable_job_ids does not select candidates in the rotated tier order"]
+    return offenders
 
 
 def _durable_tier_start_offenders(
@@ -1322,7 +1237,6 @@ def _durable_tier_start_offenders(
             for node in _direct_scope_nodes(service_claimable)
         ):
             offenders.append("claimable_job_ids ignores tier_start")
-        offenders.extend(_tier_order_rotation_offenders(service_claimable))
     return offenders
 
 
@@ -1349,10 +1263,10 @@ def _rotating_service_source() -> str:
 class CallbackInboxService:
     async def claimable_job_ids(self, *, now, limit, tier_start):
         tier_ring = (0, 1, 2, 3)
-        rotated_tiers = tier_ring[tier_start:] + tier_ring[:tier_start]
         by_tier = {}
         ordered = []
-        for tier in rotated_tiers:
+        for offset in range(len(tier_ring)):
+            tier = tier_ring[(tier_start + offset) % len(tier_ring)]
             ordered.extend(by_tier.get(tier, []))
         return ordered
 """
@@ -1401,7 +1315,32 @@ def test_durable_tier_start_guard_allows_the_direct_reservation_passthrough() ->
         (
             "import_alias",
             "    import itertools as tier_start\n",
-            "tier_start is rebound by an import alias",
+            "tier_start is rebound by an import binding",
+        ),
+        (
+            "direct_module_binding",
+            "    import tier_start\n",
+            "tier_start is rebound by an import binding",
+        ),
+        (
+            "direct_from_binding",
+            "    from a import tier_start\n",
+            "tier_start is rebound by an import binding",
+        ),
+        (
+            "nested_function",
+            "    def tier_start():\n        return 0\n",
+            "tier_start is rebound by a nested definition",
+        ),
+        (
+            "nested_async_function",
+            "    async def tier_start():\n        return 0\n",
+            "tier_start is rebound by a nested definition",
+        ),
+        (
+            "nested_class",
+            "    class tier_start:\n        pass\n",
+            "tier_start is rebound by a nested definition",
         ),
         (
             "subscript_mutation",
@@ -1424,7 +1363,18 @@ def test_durable_tier_start_guard_rejects_every_post_reservation_mutation(
 
 
 @pytest.mark.unit
-def test_rotation_verifiers_reject_an_imported_itertools_cycle_bypass() -> None:
+def test_durable_tier_start_guard_allows_a_comprehension_local_target() -> None:
+    offenders = _durable_tier_start_offenders(
+        recovery_source=_valid_recovery_source(
+            after_reservation="    ignored = [tier_start for tier_start in ()]\n"
+        ),
+        service_source=_rotating_service_source(),
+    )
+    assert offenders == []
+
+
+@pytest.mark.unit
+def test_rotation_state_guard_rejects_an_imported_itertools_cycle_bypass() -> None:
     service_source = """
 import itertools
 
@@ -1446,52 +1396,59 @@ class CallbackInboxService:
     assert any("itertools.cycle" in offender for offender in state_offenders), (
         state_offenders
     )
-    flow_offenders = _durable_tier_start_offenders(
-        recovery_source=_valid_recovery_source(),
-        service_source=service_source,
-    )
-    assert any("tier order" in offender for offender in flow_offenders), flow_offenders
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "service_source",
-    (
-        """
-class CallbackInboxService:
-    async def claimable_job_ids(self, *, now, limit, tier_start):
-        tier_ring = (0, 1, 2, 3)
-        accepted = tier_start
-        rotated_tiers = tier_ring[0:] + tier_ring[:0]
-        by_tier = {}
-        ordered = []
-        for tier in rotated_tiers:
-            ordered.extend(by_tier.get(tier, []))
-        return ordered
-""",
-        """
-class CallbackInboxService:
-    async def claimable_job_ids(self, *, now, limit, tier_start):
-        tier_ring = (0, 1, 2)
-        rotated_tiers = tier_ring[tier_start:] + tier_ring[:tier_start]
-        by_tier = {}
-        ordered = []
-        for tier in rotated_tiers:
-            ordered.extend(by_tier.get(tier, []))
-        return ordered
-""",
-    ),
-)
-def test_durable_tier_start_guard_rejects_acceptance_or_a_nonfour_tier_ring(
-    service_source: str,
-) -> None:
-    offenders = _durable_tier_start_offenders(
-        recovery_source=_valid_recovery_source(),
-        service_source=service_source,
+def test_durable_tier_start_guard_accepts_a_correct_modulo_rotation() -> None:
+    """The structural guard stays neutral about equivalent rotation syntax."""
+    assert (
+        _durable_tier_start_offenders(
+            recovery_source=_valid_recovery_source(),
+            service_source=_rotating_service_source(),
+        )
+        == []
     )
-    assert any(
-        "rotate the exact four-tier order" in offender for offender in offenders
-    ), offenders
+
+
+def _assert_nonzero_start_controls_first_tier(
+    select_tiers: Callable[[int], tuple[int, ...]], *, tier_start: int
+) -> None:
+    four_runnable_tiers = frozenset(_TIER_NAMES)
+    processed_tier = next(
+        tier for tier in select_tiers(tier_start) if tier in four_runnable_tiers
+    )
+    assert processed_tier == tier_start, (
+        "a nonzero durable tier start must control the first offered tier"
+    )
+
+
+@pytest.mark.unit
+def test_nonzero_start_semantics_reject_a_noop_four_tier_order() -> None:
+    """The DB-backed fresh-process test is the production semantic authority."""
+
+    def _noop_exact_ring_then_fixed_return(tier_start: int) -> tuple[int, ...]:
+        tier_ring = (0, 1, 2, 3)
+        discarded: list[int] = []
+        for tier in tier_ring:
+            discarded.append(tier)
+        assert discarded
+        if tier_start < 0:
+            return ()
+        return (0,)
+
+    def _modulo_rotation(tier_start: int) -> tuple[int, ...]:
+        tier_ring = (0, 1, 2, 3)
+        return tuple(
+            tier_ring[(tier_start + offset) % len(tier_ring)]
+            for offset in range(len(tier_ring))
+        )
+
+    with pytest.raises(AssertionError, match="first offered tier"):
+        _assert_nonzero_start_controls_first_tier(
+            _noop_exact_ring_then_fixed_return,
+            tier_start=2,
+        )
+    _assert_nonzero_start_controls_first_tier(_modulo_rotation, tier_start=2)
 
 
 @pytest.mark.unit
