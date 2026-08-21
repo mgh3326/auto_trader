@@ -381,6 +381,7 @@ tests/test_screening_crypto.py
 tests/test_screening_filter_extensions.py
 tests/test_sentry_diagnostics.py
 tests/test_sentry_init.py
+tests/test_sentry_mcp_payload_contract.py
 tests/test_sentry_profile_envelope_contract.py
 tests/test_services_dart.py
 tests/test_services_kis_logging.py
