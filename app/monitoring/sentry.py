@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 import sentry_sdk
-from sentry_sdk.consts import SPANSTATUS
+from sentry_sdk.consts import SPANDATA, SPANSTATUS
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.httpx import HttpxIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -347,21 +347,25 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
 
 _MCP_REQUEST_ARGUMENT_PREFIX = "mcp.request.argument."
 _MCP_TOOL_CALL_CONTEXT_KEY = "mcp_tool_call"
+_MCP_RESULT_CONTENT_KEYS = frozenset(
+    {
+        SPANDATA.MCP_TOOL_RESULT_CONTENT,
+        SPANDATA.MCP_PROMPT_RESULT_MESSAGE_CONTENT,
+    }
+)
 
 
 def _is_mcp_payload_field(key: str) -> bool:
     """Return whether ``key`` names MCP input/output payload content.
 
     MCPIntegration uses these stable public span-data names for arguments and
-    result content.  Keep the classifier deliberately narrow so protocol
-    identity, lane/profile metadata, timings, statuses, measurements, and
-    tool/prompt names remain available for observability.
+    result content. Keep the predicate deliberately narrow so protocol
+    identity, lane/profile metadata, timings, statuses, measurements, result
+    counts, roles, and tool/prompt names remain available for observability.
     """
     normalized = key.lower()
-    return normalized.startswith(_MCP_REQUEST_ARGUMENT_PREFIX) or (
-        normalized.startswith("mcp.")
-        and ".result." in normalized
-        and normalized.endswith(".content")
+    return normalized.startswith(_MCP_REQUEST_ARGUMENT_PREFIX) or normalized in (
+        _MCP_RESULT_CONTENT_KEYS
     )
 
 
