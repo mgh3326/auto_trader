@@ -12,6 +12,7 @@ from typing import Any
 
 from app.services.buy_gate_ab_shadow.evaluate import (
     EvaluationError,
+    candidate_input_contract,
     evaluate_candidates,
 )
 from app.services.buy_gate_ab_shadow.forecast_tag import build_shadow_buy_forecasts
@@ -50,6 +51,7 @@ def evaluate_buy_gate_ab_shadow_impl(
         return {
             "success": False,
             "error": "candidates must be a non-empty list",
+            "input_contract": candidate_input_contract(),
             "promote": False,
             "live_gate_impact": False,
         }
@@ -57,9 +59,14 @@ def evaluate_buy_gate_ab_shadow_impl(
         as_of = _parse_as_of(evaluation_as_of)
         rows = evaluate_candidates(candidates, evaluation_as_of=as_of)
     except EvaluationError as exc:
+        # ROB-1315 §5-1: a mis-keyed candidate set is refused loudly and the
+        # contract is echoed, so the caller fixes it in one round trip instead
+        # of collecting a day of all-reject rows that mean nothing.
         return {
             "success": False,
             "error": str(exc),
+            "input_contract": candidate_input_contract(),
+            "candidates_evaluated": 0,
             "promote": False,
             "live_gate_impact": False,
         }
@@ -79,6 +86,7 @@ def evaluate_buy_gate_ab_shadow_impl(
         "do_not_use_for_policy_change": True,
         "candidates": [row.as_dict() for row in rows],
         "shadow_buy_forecasts": shadow_forecasts,
+        "input_contract": candidate_input_contract(),
         "counts": {
             "n": len(rows),
             "a_and_b": sum(row.cohort == "a_and_b" for row in rows),

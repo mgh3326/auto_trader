@@ -45,6 +45,52 @@ Giving one arm later bars, a different entry, or a different other-gate
 bit is a contract violation; the evaluator/scorer drop bars after
 `scoring_as_of` and do not impute holes.
 
+## Candidate input contract (ROB-1315 §5-1)
+
+**An unknown key is rejected, not ignored.** On 2026-08-21 a US session sent
+`rsi_14` and `nearest_support_strength`; both were silently dropped, both
+fields read as absent, and all seven candidates were rejected for gates they
+would have passed. Nothing in the response said so. The evaluator now refuses
+the call and names the correct key.
+
+| Key | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `symbol` | yes | string | upper-cased |
+| `market` | yes | `kr` \| `us` | crypto is out of scope |
+| `current_price` | yes | number/decimal string | must be > 0; this is the frozen entry |
+| `support_strength` | no | `weak` \| `moderate` \| `strong` | the A/B fork; an unknown word is rejected |
+| `support_distance_pct` | no | number | percent below current price |
+| `rsi` | no | number | **`rsi`, not `rsi_14`** |
+| `honest_upside_pct` | no | number | percent |
+| `other_gate_bits` | no | object of booleans | keys exactly `liquid_midcap`, `concentration`, `overhang` |
+
+Rejection names the offending row (`candidates[1] (RDDT): ...`) and echoes
+`input_contract`, whose `common_mistakes` map spells out the correction. The
+same `input_contract` block rides on successful responses, so the contract is
+readable without triggering an error.
+
+An **omitted optional field is still a rejection** — a gate cannot pass on
+absent evidence — but that is now the caller's explicit choice rather than a
+typo the evaluator swallowed. Do not fill a field with a guess to make a
+candidate pass.
+
+## 🔴 US overhang: structurally uncollectable today
+
+`other_gate_bits.overhang` has **no US data source in this repo**.
+`get_disclosures` is DART/KR-only; there is no SEC EDGAR client, and the
+`market_events` `lockup_expiry` category is declared but has no ingester.
+
+Measured on 2026-08-21: the valid US call returned `n=7 · a_and_b 0 · b_only 0
+· neither 7`, with CRH and UPST failing on `overhang` alone under variant B.
+The session set `overhang=false` for all seven rather than inventing a pass —
+that was correct, and it is also why US B-only is pinned at zero.
+
+**Do not work around this by setting `overhang=true`.** Options (neutralize and
+flag / build an EDGAR ingester / drop US from scope) are laid out in
+`docs/superpowers/specs/2026-08-22-us-overhang-gate-design.md` and are
+**awaiting an operator decision**. Until one is approved, US shadow logic is
+unchanged and the US arm is not collecting. KR collection is unaffected.
+
 ## Session procedure
 
 1. Run the live screen as today (variant A). Winners still go through
