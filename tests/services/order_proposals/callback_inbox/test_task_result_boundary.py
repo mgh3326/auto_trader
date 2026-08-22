@@ -74,7 +74,7 @@ NON_CLAIMED_ITEM_STATUSES = frozenset({"lock_contended", "not_claimable", "not_f
 # The assertion helpers below must never echo these values.  Stable fragments
 # catch a future truncation/redaction attempt just as reliably as the full
 # marker, without allowing a failed RED test to become a disclosure surface.
-_FAKE_SECRET = "r35-taskiq-secret-4e31d7c9a6b2"
+_FAKE_SECRET = "r35-taskiq-private-fixture-do-not-log"
 _FAKE_FRAGMENTS = (
     _FAKE_SECRET,
     _FAKE_SECRET[:9],
