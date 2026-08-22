@@ -521,12 +521,41 @@ decision_rules:
   # 1,842에서 03:00봉 저가 1,688까지 1시간에 -8.36% 플러시를 냈다 —
   # moderate 지지가 그 속도를 버틴다는 증거는 없다.
   # 신규 코인 발굴 게이트는 이 티어와 무관하며 하나도 완화되지 않는다.
+  #
+  # 🔴 집행 표면(B1 수리, 2026-08-22): "LIVE" 는 실자금이라는 뜻이지 이 레포에
+  # 집행기가 있다는 뜻이 아니다. 이 파일의 모든 티어와 동일하게 advisory 다
+  # (authority.scope: judgment_policy_only — §115차/§127차/§129차와 같은 구조).
+  # 아래 조건을 읽어 주문을 만들거나 막는 코드는 레포에 없다. 세션이 판단으로
+  # 적용하고, 결과 주문에 걸리는 유일한 코드 경계는 서버측 자동승인 게이트다:
+  # crypto per-order 100만 KRW 초과는 자동승인 불가 → 카드(수동 승인)로 내려간다.
+  # 그 아래의 30만/90만·(코인,지지레벨)당 1회·급락 중지·forecast 의무는 전부
+  # 세션 계약이며 기계 가드가 아니다 — 무시하는 세션을 레포가 멈추지 못한다.
+  # 그래서 대응 절이 운영자 레포(auto_trader-operator live/CLAUDE.md)에 있다.
+  # "메이저" 역시 기계 판정 대상이 아니다 — 코인 allowlist/classifier 조건은
+  # 없고, 기계로 표현된 것은 보유 여부와 이익권뿐이다.
   buy.held_majors_support_net:
     lanes: [buy]
     markets: [crypto]
     semantics: >-
-      Pre-registered LIVE tier, time-boxed (§139차; armed 2026-08-22, scored
-      2026-09-19). Eligibility is crypto HOLDINGS ONLY and only while the
+      Pre-registered tier for LIVE funds, time-boxed (§139차; armed
+      2026-08-22, scored 2026-09-19). ENFORCEMENT SURFACE — advisory, exactly
+      like every other tier in this file (authority.scope:
+      judgment_policy_only; same structure as §115차/§127차/§129차): no code
+      in this repo reads these conditions to place, size, aggregate, or block
+      an order. "LIVE" describes the funds, not an armed executor. The
+      session applies the conditions as judgment, and the only code-enforced
+      boundary on a resulting order is the server-side auto-approve gate — a
+      crypto order above the 1,000,000 KRW per-order cap cannot auto-approve
+      and falls back to a manual card. Everything below that line — the
+      300,000 KRW per-coin cap, the 900,000 KRW tier total, the
+      one-placement-per-(coin, support level) rule, the crash-day suspension,
+      and the forecast obligation — is a SESSION CONTRACT, not a machine
+      guard; the repo will not stop a session that ignores it, which is why
+      the matching clause lives in the operator prompt
+      (auto_trader-operator live/CLAUDE.md). "Major" is likewise session
+      judgment: this tier carries no coin allowlist or classifier, so held
+      and profitable are the only machine-expressed eligibility conditions.
+      Eligibility is crypto HOLDINGS ONLY and only while the
       holding's unrealized P&L is positive at decision time — this tier can
       never admit an unheld coin and never averages down a losing lot, so the
       new-coin discovery gate is untouched by it. A resting LIMIT may be
@@ -564,6 +593,10 @@ decision_rules:
           max_placements_per_coin_per_support_level_per_policy_version: 1
           forecast_save_required: true
           forecast_scored_fields: "touch, fill, d20_outcome"
+          # B1 수리 — 이 세 키가 "무엇이 기계로 강제되는가"의 정본이다.
+          enforcement_surface: advisory_session_contract
+          code_enforced_boundary: crypto_per_order_auto_approve_cap_then_card
+          major_classification: session_judgment_no_machine_allowlist
           crash_day_new_batch_suspended: true
           crypto_crash_24h_drawdown_pct_max: -10
           review_date: "2026-09-19"

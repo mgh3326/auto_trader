@@ -332,6 +332,34 @@ class PolicyDecisionRule(BaseModel):
                 "filled-cohort D+20 lower-quartile floor of -8"
             )
 
+        # ENFORCEMENT SURFACE (B1) — the tier is advisory like every other
+        # tier here. Saying so is the honest description, so it is pinned:
+        # a later edit claiming this tier is code-enforced, or claiming a
+        # machine "major" allowlist exists, fails the build instead of
+        # shipping a promise the repo cannot keep.
+        if conditions.get("enforcement_surface") != "advisory_session_contract":
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must declare "
+                "enforcement_surface: advisory_session_contract"
+            )
+        if (
+            conditions.get("code_enforced_boundary")
+            != "crypto_per_order_auto_approve_cap_then_card"
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must name the only "
+                "code-enforced boundary: crypto_per_order_auto_approve_cap_then_card"
+            )
+        if (
+            conditions.get("major_classification")
+            != "session_judgment_no_machine_allowlist"
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must declare "
+                "major_classification: session_judgment_no_machine_allowlist — "
+                "the tier carries no coin allowlist or classifier"
+            )
+
         # CRASH REGIME — explicitly NOT the preplanned ladder's "keep".
         if conditions.get("crash_day_new_batch_suspended") is not True:
             raise ValueError(

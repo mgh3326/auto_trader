@@ -1775,6 +1775,13 @@ def test_s139_held_majors_support_net_parses_as_a_bounded_time_boxed_tier():
         conditions["retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"]
         == -8
     )
+    # Enforcement surface (B1): advisory, with the one real boundary named.
+    assert conditions["enforcement_surface"] == "advisory_session_contract"
+    assert (
+        conditions["code_enforced_boundary"]
+        == "crypto_per_order_auto_approve_cap_then_card"
+    )
+    assert conditions["major_classification"] == "session_judgment_no_machine_allowlist"
     # Crash regime: explicitly NOT the preplanned ladder's "keep".
     assert conditions["crash_day_new_batch_suspended"] is True
     assert conditions["crypto_crash_24h_drawdown_pct_max"] == -10
@@ -1806,6 +1813,34 @@ def test_s139_held_majors_semantics_records_the_counter_evidence():
 
     assert "2026-09-19" in semantics
     assert "RETIRED" in semantics
+
+
+def test_s139_held_majors_semantics_does_not_overclaim_enforcement():
+    """B1 — "LIVE" must not read as "this repo enforces it".
+
+    Every tier in this file is advisory (``authority.scope:
+    judgment_policy_only``). The caps, the once-per-level rule, the crash
+    suspension, and the forecast obligation are a session contract carried by
+    the operator prompt; the only boundary code actually enforces on a
+    resulting order is the crypto per-order auto-approve cap.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    semantics = doc.decision_rules[_HELD_MAJORS_RULE_KEY].semantics
+
+    assert "ENFORCEMENT SURFACE" in semantics
+    assert "advisory" in semantics
+    assert "judgment_policy_only" in doc.authority.scope
+    assert "SESSION CONTRACT" in semantics
+    assert "not a machine" in semantics
+    assert '"LIVE" describes the funds, not an armed executor' in semantics
+    # The operator-side counterpart is named, so the contract has an owner.
+    assert "auto_trader-operator live/CLAUDE.md" in semantics
+    # "Major" is not claimed to be machine-checked, because it is not.
+    assert "no coin allowlist or classifier" in semantics
+    # And the named boundary is the one that is really enforced in code.
+    assert "1,000,000 KRW per-order cap" in semantics
+    assert doc.order_proposals.auto_approve.per_order_cap["crypto"] == 1000000
 
 
 def test_s139_held_majors_is_scoped_out_of_the_equity_lanes():
@@ -1998,6 +2033,23 @@ def _mutate_net_leaks_into_equity_lanes(rule) -> None:
     rule["markets"] = ["kr", "us", "crypto"]
 
 
+def _mutate_net_claims_code_enforcement(rule) -> None:
+    rule["tiers"][0]["conditions"]["enforcement_surface"] = "code_enforced"
+
+
+def _mutate_net_drops_the_enforcement_surface(rule) -> None:
+    del rule["tiers"][0]["conditions"]["enforcement_surface"]
+
+
+def _mutate_net_claims_a_major_allowlist(rule) -> None:
+    conditions = rule["tiers"][0]["conditions"]
+    conditions["major_classification"] = "machine_allowlist_btc_eth_link"
+
+
+def _mutate_net_renames_the_real_boundary(rule) -> None:
+    rule["tiers"][0]["conditions"]["code_enforced_boundary"] = "tier_total_900000_krw"
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -2020,6 +2072,10 @@ def _mutate_net_leaks_into_equity_lanes(rule) -> None:
         _mutate_net_raises_the_per_order_cap,
         _mutate_net_drops_new_coin_exclusion,
         _mutate_net_leaks_into_equity_lanes,
+        _mutate_net_claims_code_enforcement,
+        _mutate_net_drops_the_enforcement_surface,
+        _mutate_net_claims_a_major_allowlist,
+        _mutate_net_renames_the_real_boundary,
     ],
     ids=[
         "admits_an_unheld_coin",
@@ -2041,6 +2097,10 @@ def _mutate_net_leaks_into_equity_lanes(rule) -> None:
         "raises_the_per_order_cap",
         "drops_the_new_coin_exclusion",
         "leaks_into_the_equity_lanes",
+        "claims_code_enforcement",
+        "drops_the_enforcement_surface",
+        "claims_a_machine_major_allowlist",
+        "renames_the_real_code_boundary",
     ],
 )
 def test_s139_held_majors_support_net_mutants_are_rejected(mutate):
