@@ -12,6 +12,10 @@ from app.core.config import settings
 from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import init_sentry
 from app.monitoring.trade_notifier.runtime import configure_trade_notifier_from_settings
+from app.services.order_proposals.callback_inbox.taskiq_receiver_boundary import (
+    W5ReceiverBoundaryFormatter,
+    W5ReceiverBoundaryMiddleware,
+)
 
 configure_dependency_log_levels()
 
@@ -43,21 +47,23 @@ retry_schedule_source = ListRedisScheduleSource(
     settings.get_redis_url(), prefix="task-retry"
 )
 
-broker = (
-    ListQueueBroker(
-        url=settings.get_redis_url(),
-        queue_name="auto-trader",
-    )
-    .with_result_backend(result_backend)
-    .with_middlewares(
-        WorkerInitMiddleware(),
-        SmartRetryMiddleware(
-            default_retry_label=False,
-            default_retry_count=3,
-            default_delay=5,
-            use_delay_exponent=True,
-            max_delay_exponent=30,
-            schedule_source=retry_schedule_source,
-        ),
-    )
+broker = ListQueueBroker(
+    url=settings.get_redis_url(),
+    queue_name="auto-trader",
+).with_result_backend(result_backend)
+
+# TaskIQ logs a decoded message before middleware hooks.  Wrap the configured
+# formatter first, while leaving producer ``dumps`` behavior delegated intact.
+broker.with_formatter(W5ReceiverBoundaryFormatter(broker.formatter))
+broker.with_middlewares(
+    WorkerInitMiddleware(),
+    SmartRetryMiddleware(
+        default_retry_label=False,
+        default_retry_count=3,
+        default_delay=5,
+        use_delay_exponent=True,
+        max_delay_exponent=30,
+        schedule_source=retry_schedule_source,
+    ),
+    W5ReceiverBoundaryMiddleware(),
 )

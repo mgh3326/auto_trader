@@ -56,6 +56,7 @@ tests/routers/test_investment_hermes_http.py
 tests/routers/test_market_calendar_router.py
 tests/routers/test_mock_auto_read_model.py
 tests/routers/test_pagination.py
+tests/routers/test_telegram_callback_durable_route.py
 tests/routers/test_telegram_callback_route.py
 tests/routers/test_trade_journals_router.py
 tests/schemas/test_hermes_news_citations.py
@@ -166,6 +167,14 @@ tests/services/kis_websocket/test_protocol.py
 tests/services/market_events/test_coverage_gate.py
 tests/services/mock_integration/test_rob1266_us_readiness_contract.py
 tests/services/naver_finance/test_detail_cache_store.py
+tests/services/order_proposals/callback_inbox/test_gates_and_registration.py
+tests/services/order_proposals/callback_inbox/test_lock_idle_transaction.py
+tests/services/order_proposals/callback_inbox/test_migration_chain.py
+tests/services/order_proposals/callback_inbox/test_no_auto_activation.py
+tests/services/order_proposals/callback_inbox/test_production_wiring.py
+tests/services/order_proposals/callback_inbox/test_recovery.py
+tests/services/order_proposals/callback_inbox/test_recovery_cursor_rotation.py
+tests/services/order_proposals/callback_inbox/test_retry_contract_surfaces.py
 tests/services/order_proposals/test_alerts.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
 tests/services/paper_cohort/test_kill_switch.py

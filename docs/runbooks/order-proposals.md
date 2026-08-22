@@ -773,7 +773,8 @@ changing any of these (same restart as § Activation above).
 
 ## Callback Receiver — Design
 
-**Implemented (default): webhook.** `POST /trading/api/telegram/callback`
+**Implemented (default inline mode): webhook.**
+`POST /trading/api/telegram/callback`
 (`app/routers/telegram_callback.py`) is the only receiver that exists in
 this repo. It:
 
@@ -784,16 +785,33 @@ this repo. It:
   the router itself does no auth.
 - Accepts the raw Telegram `Update` payload as a permissive `dict` (Telegram's
   schema is large/evolving; the endpoint must not reject on unknown fields).
-- Delegates everything else to
+- When `ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED=false`, delegates
+  the accepted canonical callback to
   `app.services.order_proposals.telegram_callback.handle_callback_update`,
   which never raises (fail-closed webhook contract — always returns
   `200 {"ok": true}` once past the enable gate, regardless of what happened
   inside).
 - Is driven purely by Telegram's own push (Telegram calls your server); there
-  is **no Telegram long-polling loop, TaskIQ receiver, cron, or Prefect flow**.
-  This receiver statement does not cover broker fill reconciliation: the
+  is **no Telegram long-polling loop or Prefect receiver flow**. In default
+  inline mode no callback TaskIQ worker or recovery cron participates. This
+  receiver statement does not cover broker fill reconciliation: the
   default-off Toss fill-poller TaskIQ path may later project confirmed broker
   evidence onto proposal rungs, as required by the Toss loss-cut SLA above.
+
+**Durable inbox (W5), default-off.** The receiver above can be switched from
+"run the whole workflow inline" to "commit a normalized envelope and ACK",
+with a TaskIQ worker and a recovery sweep draining
+`review.telegram_callback_inbox`. All three gates ship `false` and the
+recovery task ships scheduleless, so nothing about this section changes until
+an operator arms them in order. Durable ingress returns the same generic
+sanitized `503` when the worker/recovery gates are not both armed or durable
+persistence is unavailable. For accepted canonical inputs, the
+post-normalization callback core and the existing Approval Flow gates below
+are unchanged; R37 identifier validation may reject noncanonical input before
+that core — see
+`docs/runbooks/telegram-callback-durable-inbox.md` for the activation
+sequence, the retry algebra (a generic `internal_error` after core entry is
+**not** replayable) and the rollback ordering.
 
 **NOT implemented — long-polling alternative (documented only, out of
 scope).** `scripts/order_proposals_telegram_poller.py` is referenced in the

@@ -1,0 +1,807 @@
+"""W5 — default-off gates, schedule labels, and closed-world task registration.
+
+RED-before-fix items 6, 7 and 17.
+
+Nothing here touches Redis, Telegram, a broker or the DB: these are the
+declaration-level invariants that decide whether the durable path can run at
+all, and they must hold on a bare checkout with no environment configured.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+import pytest
+
+from app.core.config import Settings, settings
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+    ],
+)
+def test_every_durable_gate_defaults_false(field: str) -> None:
+    """RED item 6 — durable/worker/scheduler defaults are all false."""
+    model_field = Settings.model_fields[field]
+    assert model_field.default is False, f"{field} must ship default-off"
+    assert model_field.annotation is bool
+
+
+def test_recovery_cron_default_is_every_minute() -> None:
+    assert (
+        Settings.model_fields["ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_CRON"].default
+        == "* * * * *"
+    )
+
+
+def _schedule_label_in_fresh_interpreter(*, enabled: bool, cron: str) -> object:
+    """Import the task module in a *new* interpreter and report its real label.
+
+    Adversarial review R2: ``schedule=`` is evaluated once, at import. A test
+    that monkeypatches the helper after import proves nothing about the label
+    the scheduler actually reads, so this re-imports from scratch under the
+    environment the deployment would have.
+    """
+    env = dict(os.environ)
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED"] = (
+        "true" if enabled else "false"
+    )
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_CRON"] = cron
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [
+            sys.executable,
+            "-c",
+            "import json;"
+            "from app.tasks import telegram_callback_inbox_tasks as m;"
+            "print(json.dumps("
+            "m.recover_telegram_callback_jobs.labels.get('schedule')))",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(pathlib.Path(__file__).resolve().parents[4]),
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def test_schedule_is_empty_when_the_recovery_gate_is_off() -> None:
+    """RED item 7 (off half) — a disabled scheduler registers no cron label."""
+    assert _schedule_label_in_fresh_interpreter(enabled=False, cron="*/2 * * * *") == []
+
+
+def test_schedule_is_exactly_one_label_when_the_recovery_gate_is_on() -> None:
+    """RED item 7 (on half) — exactly one recovery schedule, never more."""
+    labels = _schedule_label_in_fresh_interpreter(enabled=True, cron="*/2 * * * *")
+    assert labels == [{"cron": "*/2 * * * *", "cron_offset": "Asia/Seoul"}]
+
+
+def test_the_shipped_recovery_task_declaration_is_scheduleless() -> None:
+    """The module ships with the gate off, so the registered label list is empty."""
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    schedule = task_module.recover_telegram_callback_jobs.labels.get("schedule")
+    assert schedule == []
+
+
+def test_worker_task_carries_no_schedule_label_at_all() -> None:
+    """The per-job worker task is kicked, never cronned."""
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    assert task_module.run_telegram_callback_job.labels.get("schedule") in (None, [])
+
+
+def test_neither_task_opts_into_taskiq_smart_retry() -> None:
+    """R2 — the DB state machine is the only retry authority.
+
+    ``SmartRetryMiddleware`` is installed broker-wide with
+    ``default_retry_label=False``, so a task re-runs only if it opts in via
+    ``retry_on_error``. A W5 task that opted in would replay an order-adjacent
+    callback outside the inbox's attempt accounting.
+    """
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    for task in (
+        task_module.run_telegram_callback_job,
+        task_module.recover_telegram_callback_jobs,
+    ):
+        assert "retry_on_error" not in task.labels, task.task_name
+        assert "max_retries" not in task.labels, task.task_name
+
+
+def test_task_module_is_registered_closed_world() -> None:
+    """RED item 17 — ``taskiq worker app.tasks`` must discover the new tasks."""
+    from app import tasks as task_package
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    assert task_module in task_package.TASKIQ_TASK_MODULES
+
+
+def test_task_names_are_stable_and_namespaced() -> None:
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    assert (
+        task_module.run_telegram_callback_job.task_name
+        == "order_proposals.telegram_callback_job"
+    )
+    assert (
+        task_module.recover_telegram_callback_jobs.task_name
+        == "order_proposals.telegram_callback_recovery"
+    )
+
+
+@pytest.fixture
+def _database_is_a_tripwire(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make *any* DB touch an immediate, loud failure.
+
+    R2 asks for "worker gate off => DB access 0" proved as an actual absence,
+    not as a mocked-away call. Both entry points into PostgreSQL — the ORM
+    session factory and the raw engine connection the advisory lock uses —
+    are replaced by tripwires.
+    """
+    from app.core import db
+    from app.services.order_proposals.callback_inbox import (
+        ingress,
+        recovery,
+        worker,
+    )
+
+    touched: list[str] = []
+
+    def _session_tripwire(*args, **kwargs):
+        touched.append("AsyncSessionLocal")
+        raise AssertionError("gate-off task opened a database session")
+
+    class _EngineTripwire:
+        # ``AsyncEngine.connect`` is read-only, so swap the engine itself --
+        # the advisory lock resolves ``db.engine`` at call time.
+        async def connect(self, *args, **kwargs):
+            touched.append("engine.connect")
+            raise AssertionError("gate-off task opened a database connection")
+
+    monkeypatch.setattr(db, "AsyncSessionLocal", _session_tripwire)
+    monkeypatch.setattr(db, "engine", _EngineTripwire())
+    # The modules bind the factory by name at call time (never as a default
+    # argument), so patching the module attribute really does disarm them.
+    for module in (ingress, recovery, worker):
+        monkeypatch.setattr(module, "AsyncSessionLocal", _session_tripwire)
+    return touched
+
+
+@pytest.mark.asyncio
+async def test_worker_task_touches_no_database_while_its_gate_is_off(
+    monkeypatch: pytest.MonkeyPatch, _database_is_a_tripwire: list[str]
+) -> None:
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        False,
+        raising=False,
+    )
+    result = await task_module.run_telegram_callback_job(
+        "1b3a3b3e-0000-4000-8000-000000000000"
+    )
+    assert result == {
+        "status": "disabled",
+        "job_id": "1b3a3b3e-0000-4000-8000-000000000000",
+    }
+    assert _database_is_a_tripwire == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("recovery_on", "worker_on", "expected"),
+    [
+        (False, False, "disabled"),
+        (False, True, "disabled"),
+        (True, False, "worker_disabled"),
+    ],
+)
+async def test_recovery_task_touches_no_database_unless_both_gates_are_on(
+    monkeypatch: pytest.MonkeyPatch,
+    _database_is_a_tripwire: list[str],
+    recovery_on: bool,
+    worker_on: bool,
+    expected: str,
+) -> None:
+    """Recovery *executes* handlers, so it inherits the worker gate too."""
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        recovery_on,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        worker_on,
+        raising=False,
+    )
+    assert await task_module.recover_telegram_callback_jobs() == {"status": expected}
+    assert _database_is_a_tripwire == []
+
+
+def test_worker_status_vocabulary_is_closed() -> None:
+    """RED item 5 (result half) — only allowlisted statuses may leave the task."""
+    from app.services.order_proposals.callback_inbox.contracts import WORKER_STATUSES
+
+    assert WORKER_STATUSES == frozenset(
+        {
+            "dead_letter",
+            "disabled",
+            "discarded",
+            "lock_contended",
+            "not_claimable",
+            "not_found",
+            "retry_scheduled",
+            "succeeded",
+        }
+    )
+
+
+def test_inbox_state_vocabulary_matches_the_brief() -> None:
+    from app.services.order_proposals.callback_inbox.contracts import (
+        INBOX_STATES,
+        TERMINAL_STATES,
+    )
+
+    assert set(INBOX_STATES) == {
+        "pending",
+        "processing",
+        "succeeded",
+        "discarded",
+        "retry_wait",
+        "dead_letter",
+    }
+    assert TERMINAL_STATES == frozenset({"succeeded", "discarded", "dead_letter"})
+
+
+def test_no_handler_return_value_is_ever_retry_evidence() -> None:
+    """RED item 13, hardened by adversarial reviews R1, R8 B15 and R10.
+
+    The brief's first cut retried a generic ``internal_error``. That string is
+    not evidence the broker leg never started: the callback core catches every
+    exception, including one raised after ``revalidate_and_submit`` submitted
+    and before the transaction committed. Re-running that job would re-submit.
+
+    The second cut accepted a typed ``mutation_not_started`` flag *returned by
+    the handler*. That is no better, because a handler that has already
+    mutated can return it just as easily as one that has not.
+
+    So retry authority is worker-owned: a ``PreCoreFailure`` raised from the
+    phase that runs before the core is entered, re-checked against the durable
+    ``handler_entered_at`` marker in the database before anything is written.
+    """
+    from app.services.order_proposals.callback_inbox.contracts import (
+        IGNORED_HANDLER_RETRY_KEYS,
+        RETRYABLE_HANDLER_REASONS,
+    )
+    from app.services.order_proposals.callback_inbox.worker import PreCoreFailure
+
+    assert RETRYABLE_HANDLER_REASONS == frozenset()
+    assert "mutation_not_started" in IGNORED_HANDLER_RETRY_KEYS
+    assert issubclass(PreCoreFailure, Exception)
+    for never_retried in (
+        "internal_error",
+        "unverified",
+        "submit_rejected",
+        "nonce_replay",
+        "guard_blocked",
+        "expired",
+        "chat_not_allowed",
+        "approval_batch_nonce_replay",
+    ):
+        assert never_retried not in RETRYABLE_HANDLER_REASONS
+
+
+def test_the_worker_never_consults_a_handler_returned_retry_key() -> None:
+    """The classifier must not read any of them, by name or by lookup."""
+    import inspect
+
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+    from app.services.order_proposals.callback_inbox.contracts import (
+        IGNORED_HANDLER_RETRY_KEYS,
+    )
+
+    verdict_source = inspect.getsource(worker_module.classify_verdict)
+    for key in IGNORED_HANDLER_RETRY_KEYS:
+        assert key not in verdict_source, key
+    # And the classifier has no way to reach `retry_wait` at all.
+    assert "RETRY_WAIT" not in verdict_source
+
+
+def test_the_only_retry_grant_is_raised_before_the_core_is_entered() -> None:
+    """``PreCoreFailure`` is raised only above the entry marker."""
+    import inspect
+    import re
+
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+
+    source = inspect.getsource(worker_module._run_locked)
+    raise_lines = [
+        index
+        for index, line in enumerate(source.splitlines())
+        if re.search(r"raise PreCoreFailure", line)
+    ]
+    entry_lines = [
+        index
+        for index, line in enumerate(source.splitlines())
+        if "mark_handler_entered" in line
+    ]
+    assert raise_lines, "nothing grants retry authority"
+    assert entry_lines, "the entry marker is not committed here"
+    assert max(raise_lines) < min(entry_lines), (
+        "retry authority is granted after the core-entry marker"
+    )
+
+
+def test_error_class_vocabulary_is_closed() -> None:
+    from app.services.order_proposals.callback_inbox.contracts import (
+        ERROR_CLASSES,
+        RETRYABLE_ERROR_CLASSES,
+    )
+
+    assert ERROR_CLASSES == frozenset(
+        {
+            "attempt_budget_invalid",
+            "attempts_exhausted",
+            "chat_revoked",
+            "envelope_invalid",
+            "handler_ambiguous",
+            "handler_exception",
+            "pre_core_failure",
+        }
+    )
+    # Only a failure that provably never entered the core may re-run.
+    assert RETRYABLE_ERROR_CLASSES == frozenset({"pre_core_failure"})
+
+
+def test_max_attempts_is_three() -> None:
+    from app.services.order_proposals.callback_inbox.contracts import MAX_ATTEMPTS
+
+    assert MAX_ATTEMPTS == 3
+
+
+def _is_callback_attempt_override_name(value: str) -> bool:
+    """Recognise an external callback/inbox attempt-budget control by meaning.
+
+    Normalising separators and case means a new environment variable cannot
+    evade the guard merely by using camelCase, dots, or a retry/budget synonym
+    instead of the original ``MAX_ATTEMPTS`` spelling.
+    """
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    return ("callback" in normalized or "inbox" in normalized) and any(
+        word in normalized for word in ("attempt", "retry", "budget")
+    )
+
+
+def _is_semantic_callback_attempt_override_name(value: str) -> bool:
+    """Whether one token can name an external fixed-budget override."""
+    return (
+        _is_callback_attempt_override_name(value)
+        # Dotted tokens are runtime member expressions, not an external
+        # setting name (for example ``InboxState.RETRY_WAIT.value``).
+        and "." not in value
+        # Python sources include runtime event labels such as
+        # ``callback_job_attempt_budget_invalid``.  An external control is
+        # either env-style uppercase or names an actual cap/limit/budget.
+        and (
+            value.isupper()
+            or any(word in value.casefold() for word in ("max", "limit", "budget"))
+        )
+    )
+
+
+def find_callback_attempt_override_names(text: str) -> list[str]:
+    """Return semantic external attempt-budget control names in non-Python text."""
+    return sorted(
+        {
+            token
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", text)
+            if _is_semantic_callback_attempt_override_name(token)
+        }
+    )
+
+
+def _environment_import_names(
+    tree: ast.AST,
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Resolve common ``os`` module/direct-import aliases without execution."""
+    os_modules = {"os"}
+    getenv_names: set[str] = set()
+    environ_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    os_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "getenv":
+                    getenv_names.add(alias.asname or alias.name)
+                elif alias.name == "environ":
+                    environ_names.add(alias.asname or alias.name)
+    return frozenset(os_modules), frozenset(getenv_names), frozenset(environ_names)
+
+
+def _is_environment_mapping(
+    value: ast.expr,
+    *,
+    os_modules: frozenset[str],
+    environ_names: frozenset[str],
+) -> bool:
+    """Whether an expression denotes ``os.environ`` or a direct import."""
+    return (
+        isinstance(value, ast.Name)
+        and value.id in environ_names
+        or isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id in os_modules
+        and value.attr == "environ"
+    )
+
+
+def _literal_environment_read_name(
+    node: ast.AST,
+    *,
+    os_modules: frozenset[str],
+    getenv_names: frozenset[str],
+    environ_names: frozenset[str],
+) -> str | None:
+    """Return a literal string read through a common process-env API."""
+    value: ast.expr | None = None
+    if isinstance(node, ast.Call) and node.args:
+        if isinstance(node.func, ast.Name) and node.func.id in getenv_names:
+            value = node.args[0]
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "getenv"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in os_modules
+        ):
+            value = node.args[0]
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and _is_environment_mapping(
+                node.func.value,
+                os_modules=os_modules,
+                environ_names=environ_names,
+            )
+        ):
+            value = node.args[0]
+    elif isinstance(node, ast.Subscript) and _is_environment_mapping(
+        node.value,
+        os_modules=os_modules,
+        environ_names=environ_names,
+    ):
+        value = node.slice
+
+    if isinstance(value, ast.Constant) and type(value.value) is str:
+        return value.value
+    return None
+
+
+def find_callback_attempt_override_environment_reads(text: str) -> list[str]:
+    """Find literal callback/inbox budget controls read by Python env APIs.
+
+    The app package necessarily contains telemetry labels with callback and
+    budget words.  This walks only direct process-environment reads, so a
+    literal import-time ``os.getenv(...)`` cannot evade the guard while those
+    runtime identifiers remain irrelevant.
+    """
+    tree = ast.parse(text)
+    os_modules, getenv_names, environ_names = _environment_import_names(tree)
+    return sorted(
+        {
+            name
+            for node in ast.walk(tree)
+            if (
+                name := _literal_environment_read_name(
+                    node,
+                    os_modules=os_modules,
+                    getenv_names=getenv_names,
+                    environ_names=environ_names,
+                )
+            )
+            is not None
+            and _is_semantic_callback_attempt_override_name(name)
+        }
+    )
+
+
+def _tracked_paths(repo: pathlib.Path) -> frozenset[str]:
+    """Return Git-tracked repository-relative paths without shell expansion."""
+    tracked = subprocess.run(  # noqa: S603 - fixed Git argv, no shell
+        ["git", "ls-files", "-z"],
+        capture_output=True,
+        check=True,
+        cwd=repo,
+        text=True,
+    ).stdout.split("\0")
+    return frozenset(path for path in tracked if path)
+
+
+def _tracked_deployment_files() -> list[pathlib.Path]:
+    """Reuse W5's deployment-surface walk, narrowed to Git-tracked files."""
+    from .test_no_auto_activation import _deployment_files_in
+
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    tracked_paths = _tracked_paths(repo)
+    return [
+        path
+        for path in _deployment_files_in(repo)
+        if path.relative_to(repo).as_posix() in tracked_paths
+    ]
+
+
+def _tracked_callback_inbox_sources() -> list[pathlib.Path]:
+    """Return every tracked callback-inbox Python source, including service.py."""
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    package = repo / "app/services/order_proposals/callback_inbox"
+    tracked_paths = _tracked_paths(repo)
+    return [
+        path
+        for path in sorted(package.glob("*.py"))
+        if path.relative_to(repo).as_posix() in tracked_paths
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_MAX_ATTEMPTS",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT",
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_ATTEMPT_BUDGET",
+        "ORDER_PROPOSALS_TELEGRAM_INBOX_MAX_ATTEMPTS",
+        "telegramCallbackRetryBudget",
+    ),
+)
+def test_attempt_override_discovery_catches_alternate_external_names(name: str) -> None:
+    """Mutation-proof the negative scanner against spelling substitutions."""
+    assert find_callback_attempt_override_environment_reads(
+        f"import os\nvalue = os.getenv('{name}')"
+    ) == [name]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import os as runtime_os\n"
+        "value = runtime_os.getenv('ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT')",
+        "from os import getenv as read_env\n"
+        "value = read_env('ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT')",
+        "from os import environ as process_env\n"
+        "value = process_env.get('ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT')",
+        "import os as runtime_os\n"
+        "value = runtime_os.environ['ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT']",
+    ),
+)
+def test_attempt_override_discovery_catches_common_environment_aliases(
+    source: str,
+) -> None:
+    """Aliases and direct imports cannot bypass the Python-source scanner."""
+    assert find_callback_attempt_override_environment_reads(source) == [
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RETRY_LIMIT"
+    ]
+
+
+def test_callback_attempt_budget_has_no_settings_or_environment_override() -> None:
+    """R34 — three is protocol, not an operator/deployment-tunable budget."""
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    settings_offenders = sorted(
+        name
+        for name in Settings.model_fields
+        if _is_callback_attempt_override_name(name)
+    )
+
+    config_path = repo / "app/core/config.py"
+    sources = [(config_path, config_path.read_text(encoding="utf-8"), True)]
+    callback_inbox_sources = _tracked_callback_inbox_sources()
+    assert any(path.name == "service.py" for path in callback_inbox_sources)
+    sources.extend(
+        (path, path.read_text(encoding="utf-8"), True)
+        for path in callback_inbox_sources
+    )
+    deployment_files = _tracked_deployment_files()
+    deployment_names = {path.name for path in deployment_files}
+    assert {"env.example", "env.prod.example"} <= deployment_names
+    assert any(name.startswith("docker-compose") for name in deployment_names)
+    for path in deployment_files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:  # pragma: no cover - tracked binary surface
+            continue
+        sources.append((path, text, False))
+    source_offenders: list[str] = []
+    for path, text, is_python_source in sources:
+        names = (
+            find_callback_attempt_override_environment_reads(text)
+            if is_python_source
+            else find_callback_attempt_override_names(text)
+        )
+        for name in names:
+            source_offenders.append(f"{path.relative_to(repo)}: {name}")
+
+    assert settings_offenders == []
+    assert source_offenders == []
+
+
+def test_runbook_pins_fixed_three_budget_and_malformed_terminal_semantics() -> None:
+    runbook = (
+        pathlib.Path(__file__).resolve().parents[4]
+        / "docs/runbooks/telegram-callback-durable-inbox.md"
+    ).read_text(encoding="utf-8")
+
+    assert "`max_attempts` is fixed at `3` and is not configurable." in runbook
+    assert (
+        "Malformed active budgets terminalize as `dead_letter` / "
+        "`attempt_budget_invalid`, normalize `max_attempts` to `3`, clamp "
+        "`attempt_count` to `0..3`, and scrub authority before the handler." in runbook
+    )
+
+
+def test_the_task_module_binds_no_database_name_at_all() -> None:
+    """R9 B18 — a task-local sessionmaker would sidestep the callee tripwires.
+
+    The gate-off tripwires patch the modules the tasks *call*. If the task
+    module itself bound a sessionmaker or an engine, it could touch the
+    database before its gate without any of them noticing, so the structural
+    rule is that it binds none.
+    """
+    import ast
+
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    path = pathlib.Path(task_module.__file__)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
+                imported.add(f"{module}.{alias.name}")
+
+    for banned in (
+        "AsyncSessionLocal",
+        "engine",
+        "create_async_engine",
+        "sessionmaker",
+        "app.core.db",
+        "app.core.db.AsyncSessionLocal",
+        "app.core.db.engine",
+    ):
+        assert banned not in imported, f"the task module binds {banned!r}"
+
+    # Nothing DB-shaped is bound at module level either.
+    for name in dir(task_module):
+        value = getattr(task_module, name)
+        assert "sessionmaker" not in type(value).__name__.lower(), name
+        assert "engine" not in type(value).__name__.lower(), name
+
+
+@pytest.mark.parametrize(
+    ("durable", "worker", "recovery"),
+    [
+        ("false", "false", "false"),
+        ("true", "false", "false"),
+        ("false", "true", "false"),
+        ("false", "false", "true"),
+        ("true", "true", "false"),
+        ("true", "false", "true"),
+    ],
+)
+def test_a_fresh_interpreter_touches_no_database_under_any_disabled_gate(
+    durable: str, worker: str, recovery: str
+) -> None:
+    """R9 B18 — fresh import, tripwires installed *before* anything loads.
+
+    Run in a new interpreter so nothing this session already imported can
+    mask a module-level binding, and so the ``schedule`` label is evaluated
+    under the environment being tested.
+    """
+    env = dict(os.environ)
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED"] = durable
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED"] = worker
+    env["ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED"] = recovery
+
+    program = """
+import asyncio, json, sys
+
+import sqlalchemy.ext.asyncio as sa_asyncio
+
+trips = []
+
+
+def _trip(name):
+    def _boom(*args, **kwargs):
+        trips.append(name)
+        raise AssertionError("gate-off task touched " + name)
+    return _boom
+
+
+# Arm before anything application-shaped is imported.
+sa_asyncio.async_sessionmaker.__call__ = _trip("async_sessionmaker")
+sa_asyncio.AsyncEngine.connect = _trip("engine.connect")
+sa_asyncio.AsyncSession.execute = _trip("session.execute")
+
+from app.core import db
+
+db.AsyncSessionLocal = _trip("AsyncSessionLocal")
+
+
+class _EngineTrip:
+    async def connect(self, *a, **k):
+        trips.append("engine.connect")
+        raise AssertionError("gate-off task connected")
+
+
+db.engine = _EngineTrip()
+
+from app.tasks import telegram_callback_inbox_tasks as t
+
+for module_name in ("ingress", "recovery", "worker"):
+    module = __import__(
+        "app.services.order_proposals.callback_inbox." + module_name,
+        fromlist=["x"],
+    )
+    if hasattr(module, "AsyncSessionLocal"):
+        module.AsyncSessionLocal = _trip(module_name + ".AsyncSessionLocal")
+
+import os
+
+results = {"schedule": t.recover_telegram_callback_jobs.labels.get("schedule")}
+
+# Only invoke a task whose own gate is OFF: an armed task is *supposed* to
+# reach the database, so calling it here would prove nothing about the gate.
+if os.environ["ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED"] == "false":
+    results["worker"] = asyncio.run(
+        t.run_telegram_callback_job("1b3a3b3e-0000-4000-8000-000000000000")
+    )
+results["recovery"] = asyncio.run(t.recover_telegram_callback_jobs())
+results["trips"] = trips
+print(json.dumps(results))
+"""
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(pathlib.Path(__file__).resolve().parents[4]),
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert payload["trips"] == [], payload["trips"]
+    if worker == "false":
+        assert payload["worker"] == {
+            "status": "disabled",
+            "job_id": "1b3a3b3e-0000-4000-8000-000000000000",
+        }
+    if recovery == "false":
+        assert payload["recovery"] == {"status": "disabled"}
+    elif worker == "false":
+        assert payload["recovery"] == {"status": "worker_disabled"}
+    # The schedule label reflects the environment it was imported under.
+    assert (payload["schedule"] != []) == (recovery == "true")

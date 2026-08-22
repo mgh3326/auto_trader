@@ -80,6 +80,9 @@ from app.services.error_serialization import (
     is_domain_error,
     serialize_domain_error,
 )
+from app.services.order_proposals.callback_inbox.ingress import (
+    shutdown_callback_enqueue_tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +132,10 @@ def create_app() -> FastAPI:
         finally:
             await cleanup_monitoring()
             if not broker.is_worker_process:
+                # R33: an enqueue timeout can leave a cancellation-resistant
+                # producer alive. Ask it to stop and give cooperative tasks a
+                # bounded reap window before tearing down the TaskIQ broker.
+                await shutdown_callback_enqueue_tasks()
                 await broker.shutdown()
 
     app = FastAPI(

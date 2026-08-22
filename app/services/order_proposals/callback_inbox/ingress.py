@@ -1,0 +1,427 @@
+"""Durable ingress: authenticate, validate, commit, ACK.
+
+The order is the contract:
+
+1. the webhook token middleware has already run (``AuthMiddleware``);
+2. shape / chat allowlist / exact present ``update_id`` gate /
+   callback-data/action parse / exact ``callback_query.from`` dict plus
+   required bounded user-id gate, via the existing
+   :func:`normalize_callback_update`. The R37 identifier boundary is new; the
+   action vocabulary remains unchanged;
+3. insert the normalized envelope and **commit**;
+4. a bounded, best-effort Redis kick;
+5. 200.
+
+A failure at step 3 raises :class:`CallbackInboxUnavailable`, the caller
+answers a sanitized 503, and step 4 never happens -- Telegram retries and
+nothing has been half-accepted. A failure at step 4 changes nothing: the
+committed row is the durable acknowledgement, and the recovery sweep will find
+it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Final
+
+from sqlalchemy.exc import IntegrityError
+
+from app.core.config import settings
+from app.core.db import AsyncSessionLocal
+from app.services.order_proposals.callback_inbox.contracts import (
+    TERMINAL_STATES,
+    DeliveryIdentityMissing,
+    build_update_digest,
+    build_update_identity_digest,
+    canonical_telegram_user_id_text,
+    validate_telegram_update_id,
+    validate_telegram_user_id,
+)
+from app.services.order_proposals.callback_inbox.service import CallbackInboxService
+from app.services.order_proposals.telegram_callback import (
+    CallbackNotNormalizable,
+    NormalizedCallback,
+    normalize_callback_update,
+)
+
+logger = logging.getLogger(__name__)
+
+EnqueueFn = Callable[[uuid.UUID], Awaitable[None]]
+SessionFactory = Callable[[], Any]
+
+# The ACK path must never turn one stuck Redis producer into unbounded detached
+# work. This is deliberately a strong set rather than a WeakSet: a timeout
+# only requests cancellation, and a producer may legally delay or ignore that
+# request. Its done callback is the sole owner that consumes the outcome and
+# removes the reference.
+_INFLIGHT_ENQUEUE_TASK_CAP: Final = 16
+_INFLIGHT_ENQUEUE_TASKS: set[asyncio.Task[None]] = set()
+
+# This is a graceful-shutdown budget, not an ingress-ACK budget. Same-loop
+# coroutines that suppress cancellation cannot be force-killed by Python; see
+# the durable-inbox runbook for the supervisor hard-kill fallback.
+_ENQUEUE_SHUTDOWN_REAP_TIMEOUT_SECONDS: Final = 0.5
+_ENQUEUE_TIMEOUT_MAX_SECONDS: Final = 10.0
+
+
+class CallbackInboxUnavailable(Exception):
+    """The durable envelope could not be committed.
+
+    Carries no detail the caller may surface: the HTTP layer turns this into a
+    generic 503 precisely so a driver message or a row value cannot reach a
+    Telegram-visible response.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class IngressResult:
+    accepted: bool
+    duplicate: bool
+    job_id: uuid.UUID | None
+    reason: str
+    enqueued: bool
+
+
+async def _default_enqueue(job_id: uuid.UUID) -> None:
+    """Kick the per-job worker. Imported lazily to avoid an import cycle."""
+    from app.tasks.telegram_callback_inbox_tasks import run_telegram_callback_job
+
+    await run_telegram_callback_job.kiq(str(job_id))
+
+
+def _valid_enqueue_timeout_seconds(timeout_seconds: object) -> float | None:
+    """Return a safe ACK deadline, or fail closed without starting a producer."""
+    if isinstance(timeout_seconds, bool):
+        return None
+    try:
+        seconds = float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(seconds) or not 0.0 < seconds <= _ENQUEUE_TIMEOUT_MAX_SECONDS:
+        return None
+    return seconds
+
+
+async def _run_enqueue_producer(enqueue_fn: EnqueueFn, job_id: uuid.UUID) -> None:
+    """Keep every producer behind one explicit Task owned by the registry."""
+    await enqueue_fn(job_id)
+
+
+def _consume_enqueue_task(task: asyncio.Task[None]) -> None:
+    """Consume a terminal producer outcome before releasing its cap slot."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        # Cooperative timeout/cancellation is expected. Calling ``result`` is
+        # nevertheless essential: it marks the terminal state as observed.
+        pass
+    except Exception as exc:  # noqa: BLE001 - background best-effort producer
+        # This can be a late failure after the durable ACK already returned.
+        # It changes no inbox authority; recovery owns eventual execution.
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_late_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+    finally:
+        # Do not move this to the timeout path. A cancellation-resistant task
+        # remains an active cap consumer until this callback has observed it.
+        _INFLIGHT_ENQUEUE_TASKS.discard(task)
+
+
+def _round_trippable(normalized: NormalizedCallback) -> bool:
+    """Refuse anything the worker could not faithfully rebuild.
+
+    The inline path passes ``chat_id``/``message_id`` straight through to the
+    notifier. Storing them means round-tripping them through text/bigint
+    columns, so an update whose values do not survive that trip is rejected
+    rather than stored in a shape the worker would have to guess at.
+    """
+    if validate_telegram_user_id(normalized.telegram_user_id) is None:
+        return False
+    if (
+        normalized.update_id is not None
+        and validate_telegram_update_id(normalized.update_id) is None
+    ):
+        return False
+
+    chat_id = normalized.chat_id
+    if not isinstance(chat_id, int | str) or isinstance(chat_id, bool):
+        return False
+    if not str(chat_id).strip():
+        return False
+    message_id = normalized.message_id
+    if message_id is not None and (
+        isinstance(message_id, bool) or not isinstance(message_id, int)
+    ):
+        return False
+    callback_query_id = normalized.callback_query_id
+    return not (
+        callback_query_id is not None and not isinstance(callback_query_id, str)
+    )
+
+
+def normalized_envelope_projection(
+    normalized: NormalizedCallback,
+) -> dict[str, Any]:
+    """The exact fields this row persists, normalised exactly as inserted.
+
+    One helper, used by both the INSERT and the equality check, because the
+    failure mode is drift: a field that is stored but not compared lets a
+    *different* call reuse a delivery identity and be waved through as a
+    benign duplicate.
+
+    ``update_identity_digest`` is here rather than in the delivery identity
+    (R28). The identity is the callback query id alone, so a redelivery
+    carrying a different ``update_id`` lands on the *same* row and has to be
+    caught by comparison -- which only works if it is compared.
+    """
+    callback = normalized.callback
+    return {
+        "callback_query_id": normalized.callback_query_id,
+        "update_identity_digest": build_update_identity_digest(
+            update_id=normalized.update_id
+        ),
+        "chat_id": str(normalized.chat_id),
+        "message_id": normalized.message_id,
+        "telegram_user_id": canonical_telegram_user_id_text(
+            normalized.telegram_user_id
+        ),
+        "action": callback.action,
+        "subject_short": callback.subject_short,
+        "dispatch_attempt_id": callback.attempt_id,
+        "membership_revision": callback.membership_revision,
+        "membership_digest": callback.membership_digest,
+        "nonce": callback.nonce,
+    }
+
+
+def envelope_matches_row(row: Any, normalized: NormalizedCallback) -> bool:
+    """Is the stored row the same call, or a different one reusing the id?"""
+    return all(
+        getattr(row, field, None) == value
+        for field, value in normalized_envelope_projection(normalized).items()
+    )
+
+
+async def ingest_callback_update(
+    update: dict[str, Any],
+    *,
+    now: datetime,
+    session_factory: SessionFactory | None = None,
+    enqueue_fn: EnqueueFn | None = None,
+    enqueue_timeout_seconds: float | None = None,
+) -> IngressResult:
+    """Persist one approval click and best-effort kick its worker."""
+    try:
+        normalized = normalize_callback_update(update)
+    except CallbackNotNormalizable as rejection:
+        return IngressResult(False, False, None, rejection.reason, False)
+
+    if not _round_trippable(normalized):
+        return IngressResult(False, False, None, "unstorable_envelope", False)
+
+    callback_query = update.get("callback_query") or {}
+    try:
+        update_digest = build_update_digest(
+            update_id=update.get("update_id"),
+            callback_query_id=callback_query.get("id"),
+        )
+    except DeliveryIdentityMissing:
+        return IngressResult(False, False, None, "no_delivery_identity", False)
+
+    factory = session_factory or AsyncSessionLocal
+    try:
+        job_id, duplicate, conflict = await _persist(
+            factory, normalized=normalized, update_digest=update_digest, now=now
+        )
+    except CallbackInboxUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - one sanitized failure mode
+        logger.error(
+            "order_proposals.telegram.callback_inbox_persist_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        raise CallbackInboxUnavailable("callback inbox persist failed") from exc
+
+    if conflict:
+        # Same delivery identity, different call. Not a benign retry: do not
+        # overwrite, do not queue, do not report it as already-accepted.
+        logger.error("order_proposals.telegram.callback_delivery_conflict")
+        return IngressResult(False, False, None, "delivery_conflict", False)
+
+    if duplicate:
+        return IngressResult(True, True, job_id, "duplicate", False)
+
+    enqueued = await _kick(
+        job_id,
+        enqueue_fn=enqueue_fn or _default_enqueue,
+        timeout_seconds=(
+            enqueue_timeout_seconds
+            if enqueue_timeout_seconds is not None
+            else settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS
+        ),
+    )
+    return IngressResult(True, False, job_id, "queued", enqueued)
+
+
+async def _persist(
+    factory: SessionFactory,
+    *,
+    normalized: NormalizedCallback,
+    update_digest: str,
+    now: datetime,
+) -> tuple[uuid.UUID | None, bool, bool]:
+    """Insert, or resolve an existing row. Returns ``(job_id, dup, conflict)``."""
+    async with factory() as session:
+        service = CallbackInboxService(session)
+        try:
+            row = await service.enqueue(
+                update_digest=update_digest,
+                now=now,
+                **normalized_envelope_projection(normalized),
+            )
+            job_id = row.job_id
+            await session.commit()
+            return job_id, False, False
+        except IntegrityError:
+            await session.rollback()
+
+    # Read the winner back through an INDEPENDENT session: the one above is
+    # poisoned by the failed insert, and a rolled-back session cannot be
+    # trusted to report what actually committed.
+    async with factory() as session:
+        existing = await CallbackInboxService(session).get_by_update_digest(
+            update_digest
+        )
+        if existing is None:
+            # The unique violation came from somewhere we cannot explain.
+            raise CallbackInboxUnavailable("callback inbox dedupe unresolved")
+        # A terminal row has had all eleven equality fields scrubbed, so an exact
+        # redelivery and a tampered one are no longer distinguishable. Keeping
+        # a reconstructible binding fingerprint to tell them apart would undo
+        # the privacy contract the scrub exists for, so a terminal digest hit
+        # is a benign duplicate: acknowledged, never rehydrated, never queued.
+        # See docs/runbooks/telegram-callback-durable-inbox.md §6.
+        if existing.state in TERMINAL_STATES:
+            job_id = existing.job_id
+            await session.rollback()
+            return job_id, True, False
+        matched = envelope_matches_row(existing, normalized)
+        job_id = existing.job_id
+        await session.rollback()
+    return (job_id, True, False) if matched else (None, False, True)
+
+
+async def _kick(
+    job_id: uuid.UUID, *, enqueue_fn: EnqueueFn, timeout_seconds: object
+) -> bool:
+    """Best-effort, bounded. A dead broker costs latency, never a click.
+
+    A timeout requests cancellation, but deliberately does not await cleanup:
+    ``asyncio.wait_for`` would wait for a cancellation-resistant producer and
+    let it exceed the webhook ACK budget. The task stays strongly held until
+    its done callback consumes the terminal result.
+    """
+    timeout = _valid_enqueue_timeout_seconds(timeout_seconds)
+    if timeout is None:
+        # Never echo a raw runtime-tampered value into logs: this is a fixed
+        # classification only, and it happens before producer invocation.
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_timeout_invalid",
+            extra={"enqueue_timeout_error": "invalid_timeout"},
+        )
+        return False
+
+    if len(_INFLIGHT_ENQUEUE_TASKS) >= _INFLIGHT_ENQUEUE_TASK_CAP:
+        # No producer invocation on backpressure: the committed inbox row is
+        # already durable and R29 recovery will find it fairly later.
+        logger.warning(
+            "order_proposals.telegram.callback_job_enqueue_backpressure",
+            extra={"inflight_enqueue_tasks": len(_INFLIGHT_ENQUEUE_TASKS)},
+        )
+        return False
+
+    producer_task = asyncio.create_task(
+        _run_enqueue_producer(enqueue_fn, job_id),
+        name=f"telegram-callback-enqueue:{job_id}",
+    )
+    _INFLIGHT_ENQUEUE_TASKS.add(producer_task)
+    producer_task.add_done_callback(_consume_enqueue_task)
+
+    try:
+        done, _ = await asyncio.wait((producer_task,), timeout=timeout)
+    except asyncio.CancelledError:
+        # The request's original cancellation remains authoritative. Asking
+        # the child to stop is best-effort; registry accounting stays with its
+        # done callback if it resists.
+        producer_task.cancel()
+        raise
+
+    if producer_task not in done:
+        producer_task.cancel()
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_timeout",
+            extra={"callback_job.id": str(job_id)},
+        )
+        return False
+
+    try:
+        producer_task.result()
+    except asyncio.CancelledError:
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_cancelled",
+            extra={"callback_job.id": str(job_id)},
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 - the row is already durable
+        logger.error(
+            "order_proposals.telegram.callback_job_enqueue_failed",
+            extra={
+                "callback_job.id": str(job_id),
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return False
+    return True
+
+
+async def shutdown_callback_enqueue_tasks() -> None:
+    """Boundedly ask outstanding enqueue producers to stop before broker exit.
+
+    This intentionally does not promise an empty registry: a coroutine that
+    keeps swallowing cancellation on this event loop cannot be force-killed by
+    Python. It remains strongly referenced until it actually finishes; a
+    process supervisor must enforce the hard-stop fallback documented in the
+    runbook.
+    """
+    tasks = tuple(_INFLIGHT_ENQUEUE_TASKS)
+    if not tasks:
+        return
+
+    for task in tasks:
+        task.cancel()
+
+    _, pending = await asyncio.wait(
+        tasks, timeout=_ENQUEUE_SHUTDOWN_REAP_TIMEOUT_SECONDS
+    )
+    if pending:
+        logger.warning(
+            "order_proposals.telegram.callback_job_enqueue_shutdown_pending",
+            extra={"inflight_enqueue_tasks": len(pending)},
+        )
+
+
+__all__ = [
+    "CallbackInboxUnavailable",
+    "IngressResult",
+    "envelope_matches_row",
+    "ingest_callback_update",
+    "normalized_envelope_projection",
+    "shutdown_callback_enqueue_tasks",
+]

@@ -88,8 +88,21 @@ def _render(*, upgrade: bool) -> str:
 
 
 def test_the_chain_still_has_exactly_one_head() -> None:
+    """One head, and this revision is still on the path to it.
+
+    Asserting the head *is* ``AFTER`` made every later additive migration
+    fail this test for no reason. What this file actually cares about is that
+    the chain never forks and that ROB-1290 is still an ancestor of the head,
+    which is what the render tests below depend on.
+    """
     script = ScriptDirectory.from_config(_config())
-    assert list(script.get_heads()) == [AFTER]
+    heads = list(script.get_heads())
+    assert len(heads) == 1, heads
+    ancestry = {
+        revision.revision for revision in script.iterate_revisions(heads[0], "base")
+    }
+    assert AFTER in ancestry
+    assert BEFORE in ancestry
 
 
 def test_upgrade_drops_and_recreates_the_state_check_by_its_real_name() -> None:
