@@ -18,6 +18,7 @@ import builtins
 import copy
 import logging
 import math
+import os
 import subprocess
 import sys
 import uuid
@@ -3164,6 +3165,55 @@ def test_recovery_uuid_materializer_copies_exact_builtin_uuid() -> None:
     materialized_int = uuid.UUID.int.__get__(materialized, uuid.UUID)
     if type(materialized_int) is not int or materialized_int != source_int:
         _raise_generic("recovery UUID materializer changed the UUID storage value")
+
+
+def test_default_off_task_registration_import_does_not_load_asyncpg() -> None:
+    """A fresh default-off task registration must not import the DB driver."""
+    __tracebackhide__ = True
+    child_source = """
+import importlib
+import sys
+
+
+def _has_asyncpg() -> bool:
+    return any(name == "asyncpg" or name.startswith("asyncpg.") for name in sys.modules)
+
+
+if _has_asyncpg():
+    raise SystemExit(10)
+
+tasks = importlib.import_module("app.tasks.telegram_callback_inbox_tasks")
+if tasks.recovery_schedule_labels() != []:
+    raise SystemExit(11)
+if _has_asyncpg():
+    raise SystemExit(12)
+"""
+    child_env = os.environ.copy()
+    child_env.update(
+        {
+            "ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED": "false",
+            "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED": "false",
+            "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED": "false",
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", child_source],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=child_env,
+        )
+    except subprocess.TimeoutExpired:
+        _raise_generic("default-off task import child timed out")
+    else:
+        if (
+            completed.returncode != 0
+            or completed.stdout != ""
+            or completed.stderr != ""
+        ):
+            _raise_generic("default-off task registration eagerly loaded asyncpg")
 
 
 def test_recovery_uuid_materializer_copies_asyncpg_uuid_in_child_subprocess() -> None:
