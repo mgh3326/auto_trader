@@ -88,6 +88,10 @@ from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
     fetch_target_order,
 )
+from app.services.order_proposals.callback_inbox.contracts import (
+    validate_telegram_update_id,
+    validate_telegram_user_id,
+)
 from app.services.order_proposals.dispatch import (
     _resolve_card_display_name,
     publish_approval_messages,
@@ -1679,16 +1683,16 @@ class NormalizedCallback:
     chat_id: Any
     chat_id_key: str
     message_id: Any
-    telegram_user_id: Any
+    telegram_user_id: int
     callback: CallbackEnvelope
     #: Carried for the durable ingress only, which digests it for tamper
     #: detection (R28). The inline path has never read it, and nothing here
     #: retains the raw value past that digest.
-    update_id: Any = None
+    update_id: int | None = None
 
     @property
     def telegram_user_id_str(self) -> str:
-        return "" if self.telegram_user_id is None else str(self.telegram_user_id)
+        return str(self.telegram_user_id)
 
 
 class CallbackNotNormalizable(Exception):
@@ -1723,24 +1727,39 @@ def normalize_callback_update(update: dict[str, Any]) -> NormalizedCallback:
     message = callback_query.get("message") or {}
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
-    from_user = callback_query.get("from") or {}
+    from_user = callback_query.get("from")
 
     if str(chat_id) not in settings.order_proposals_telegram_chat_allowlist:
         raise CallbackNotNormalizable("chat_not_allowed")
+
+    update_id_value = update.get("update_id")
+    update_id = (
+        None
+        if update_id_value is None
+        else validate_telegram_update_id(update_id_value)
+    )
+    if update_id_value is not None and update_id is None:
+        raise CallbackNotNormalizable("invalid_telegram_identifier")
 
     try:
         callback = parse_callback_data(callback_query.get("data"))
     except ValueError as exc:
         raise CallbackNotNormalizable("malformed_callback_data") from exc
 
+    if type(from_user) is not dict:
+        raise CallbackNotNormalizable("invalid_telegram_identifier")
+    telegram_user_id = validate_telegram_user_id(from_user.get("id"))
+    if telegram_user_id is None:
+        raise CallbackNotNormalizable("invalid_telegram_identifier")
+
     return NormalizedCallback(
         callback_query_id=callback_query.get("id"),
         chat_id=chat_id,
         chat_id_key=str(chat_id),
         message_id=message.get("message_id"),
-        telegram_user_id=from_user.get("id"),
+        telegram_user_id=telegram_user_id,
         callback=callback,
-        update_id=update.get("update_id"),
+        update_id=update_id,
     )
 
 

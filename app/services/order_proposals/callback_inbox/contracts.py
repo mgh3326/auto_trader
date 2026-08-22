@@ -76,6 +76,7 @@ SCRUBBED_ON_TERMINAL: tuple[str, ...] = (
 #: requiring them would reject updates today's code accepts.
 ACTIVE_REQUIRED_COLUMNS: tuple[str, ...] = (
     "chat_id",
+    "telegram_user_id",
     "action",
     "subject_short",
     "dispatch_attempt_id",
@@ -85,6 +86,50 @@ ACTIVE_REQUIRED_COLUMNS: tuple[str, ...] = (
 )
 
 MAX_ATTEMPTS = 3
+
+TELEGRAM_USER_ID_MIN = 1
+TELEGRAM_USER_ID_MAX = 2**52 - 1
+TELEGRAM_UPDATE_ID_MIN = 1
+TELEGRAM_UPDATE_ID_MAX = 2_147_483_647
+
+
+def validate_telegram_user_id(value: object) -> int | None:
+    """Return an exact bounded Telegram user id, without coercion."""
+    if type(value) is not int:
+        return None
+    if not TELEGRAM_USER_ID_MIN <= value <= TELEGRAM_USER_ID_MAX:
+        return None
+    return value
+
+
+def validate_telegram_update_id(value: object) -> int | None:
+    """Return an exact bounded update id, without coercion."""
+    if type(value) is not int:
+        return None
+    if not TELEGRAM_UPDATE_ID_MIN <= value <= TELEGRAM_UPDATE_ID_MAX:
+        return None
+    return value
+
+
+def canonical_telegram_user_id_text(value: object) -> str | None:
+    """Canonical decimal text for a validated exact Telegram user id."""
+    user_id = validate_telegram_user_id(value)
+    return None if user_id is None else str(user_id)
+
+
+def parse_canonical_telegram_user_id_text(value: object) -> int | None:
+    """Parse only canonical bounded decimal text retained by the inbox."""
+    if type(value) is not str or not value or value[0] == "0":
+        return None
+    if not value.isascii() or not value.isdecimal():
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if validate_telegram_user_id(parsed) != parsed:
+        return None
+    return parsed if str(parsed) == value else None
 
 
 def is_malformed_attempt_budget(*, attempt_count: object, max_attempts: object) -> bool:
@@ -430,8 +475,15 @@ def build_update_digest(*, update_id: object, callback_query_id: object) -> str:
     never from the raw payload -- and canonicalised so the digest depends on
     the identity rather than on JSON key order.
     """
+    normalized_update_id = (
+        None if update_id is None else validate_telegram_update_id(update_id)
+    )
+    if update_id is not None and normalized_update_id is None:
+        raise ValueError("invalid_telegram_identifier")
     normalized_query = None if callback_query_id is None else str(callback_query_id)
-    normalized_update = None if update_id is None else str(update_id)
+    normalized_update = (
+        None if normalized_update_id is None else str(normalized_update_id)
+    )
     if normalized_query is not None:
         kind, value = "callback_query_id", normalized_query
     elif normalized_update is not None:
@@ -456,8 +508,11 @@ def build_update_identity_digest(*, update_id: object) -> str | None:
     """
     if update_id is None:
         return None
+    normalized_update_id = validate_telegram_update_id(update_id)
+    if normalized_update_id is None:
+        raise ValueError("invalid_telegram_identifier")
     canonical = json.dumps(
-        {"domain": UPDATE_IDENTITY_DOMAIN, "update_id": str(update_id)},
+        {"domain": UPDATE_IDENTITY_DOMAIN, "update_id": str(normalized_update_id)},
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,

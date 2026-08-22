@@ -54,6 +54,7 @@ from app.services.order_proposals.callback_inbox.contracts import (
     WorkerStatus,
     clamp_attempt_count,
     job_advisory_lock_key,
+    parse_canonical_telegram_user_id_text,
 )
 from app.services.order_proposals.callback_inbox.locks import (
     JobAdvisoryLock,
@@ -142,6 +143,9 @@ def rebuild_normalized(row: Any) -> NormalizedCallback:
         raise EnvelopeInvalid("dispatch_attempt_id")
     if not isinstance(row.chat_id, str) or not row.chat_id.strip():
         raise EnvelopeInvalid("chat_id")
+    telegram_user_id = parse_canonical_telegram_user_id_text(row.telegram_user_id)
+    if telegram_user_id is None:
+        raise EnvelopeInvalid("telegram_user_id")
 
     chat_id: Any = row.chat_id
     candidate = chat_id[1:] if chat_id.startswith("-") else chat_id
@@ -153,7 +157,7 @@ def rebuild_normalized(row: Any) -> NormalizedCallback:
         chat_id=chat_id,
         chat_id_key=row.chat_id,
         message_id=row.message_id,
-        telegram_user_id=row.telegram_user_id,
+        telegram_user_id=telegram_user_id,
         callback=CallbackEnvelope(
             action=row.action,
             subject_short=row.subject_short,

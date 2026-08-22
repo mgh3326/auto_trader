@@ -37,6 +37,9 @@ from app.services.order_proposals.callback_inbox.contracts import (
     DeliveryIdentityMissing,
     build_update_digest,
     build_update_identity_digest,
+    canonical_telegram_user_id_text,
+    validate_telegram_update_id,
+    validate_telegram_user_id,
 )
 from app.services.order_proposals.callback_inbox.service import CallbackInboxService
 from app.services.order_proposals.telegram_callback import (
@@ -137,6 +140,14 @@ def _round_trippable(normalized: NormalizedCallback) -> bool:
     columns, so an update whose values do not survive that trip is rejected
     rather than stored in a shape the worker would have to guess at.
     """
+    if validate_telegram_user_id(normalized.telegram_user_id) is None:
+        return False
+    if (
+        normalized.update_id is not None
+        and validate_telegram_update_id(normalized.update_id) is None
+    ):
+        return False
+
     chat_id = normalized.chat_id
     if not isinstance(chat_id, int | str) or isinstance(chat_id, bool):
         return False
@@ -176,10 +187,8 @@ def normalized_envelope_projection(
         ),
         "chat_id": str(normalized.chat_id),
         "message_id": normalized.message_id,
-        "telegram_user_id": (
-            None
-            if normalized.telegram_user_id is None
-            else str(normalized.telegram_user_id)
+        "telegram_user_id": canonical_telegram_user_id_text(
+            normalized.telegram_user_id
         ),
         "action": callback.action,
         "subject_short": callback.subject_short,

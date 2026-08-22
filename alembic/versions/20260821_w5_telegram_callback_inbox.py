@@ -217,7 +217,8 @@ _RETRY_VOCABULARY = (
 
 _ACTIVE_RECONSTRUCTABLE = (
     "CASE WHEN state IN ('pending','processing','retry_wait') THEN "
-    "chat_id IS NOT NULL AND action IS NOT NULL AND subject_short IS NOT NULL "
+    "chat_id IS NOT NULL AND telegram_user_id IS NOT NULL "
+    "AND action IS NOT NULL AND subject_short IS NOT NULL "
     "AND dispatch_attempt_id IS NOT NULL AND membership_revision IS NOT NULL "
     "AND membership_digest IS NOT NULL AND nonce IS NOT NULL ELSE true END"
 )
