@@ -171,6 +171,7 @@ tests/services/order_proposals/callback_inbox/test_retry_and_recovery_semantics.
 tests/services/order_proposals/callback_inbox/test_retry_vocabulary.py
 tests/services/order_proposals/callback_inbox/test_runtime_surface.py
 tests/services/order_proposals/callback_inbox/test_seam_equivalence.py
+tests/services/order_proposals/callback_inbox/test_telegram_identifier_boundary.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
 tests/services/order_proposals/test_no_repository_imports.py
