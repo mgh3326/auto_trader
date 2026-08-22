@@ -21,8 +21,6 @@ order-adjacent callback. The inbox's own state machine is the only one.
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.core.config import settings
 from app.core.taskiq_broker import broker
 from app.services.order_proposals.callback_inbox.contracts import (
@@ -39,6 +37,11 @@ from app.services.order_proposals.callback_inbox.result_boundary import (
     project_recovery_report,
     recovery_error_result,
 )
+from app.services.order_proposals.callback_inbox.taskiq_receiver_boundary import (
+    CALLBACK_JOB_TASK_NAME,
+    CALLBACK_RECOVERY_TASK_NAME,
+    control_signal_for_exception,
+)
 from app.services.order_proposals.callback_inbox.worker import process_callback_job
 
 
@@ -54,14 +57,16 @@ def recovery_schedule_labels() -> list[dict[str, str]]:
     ]
 
 
-@broker.task(task_name="order_proposals.telegram_callback_job")
-async def run_telegram_callback_job(job_id: object) -> dict[str, str]:
+@broker.task(task_name=CALLBACK_JOB_TASK_NAME)
+async def run_telegram_callback_job(
+    *wire_args: object, **wire_kwargs: object
+) -> object:
     """Process one durable callback job.
 
-    Invalid wire values are rejected before the gate, so neither gate branch
-    can reflect arbitrary TaskIQ input or open durable-inbox authority.
+    The exact envelope is one positional canonical UUID string and no keyword
+    fields.  Validation precedes every gate and worker authority.
     """
-    canonical_job_id_value = canonical_job_id(job_id)
+    canonical_job_id_value = _canonical_job_wire(wire_args, wire_kwargs)
     if canonical_job_id_value is None:
         return invalid_job_id_result()
     if not settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED:
@@ -69,22 +74,29 @@ async def run_telegram_callback_job(job_id: object) -> dict[str, str]:
     try:
         result = await process_callback_job(canonical_job_id_value)
         projected = project_job_result(result, job_id=canonical_job_id_value)
-    except Exception:  # noqa: BLE001 - TaskIQ result boundary; BaseException propagates
+    except BaseException as exc:  # noqa: BLE001 - closed TaskIQ receiver boundary
+        control_signal = control_signal_for_exception(exc)
+        if control_signal is not None:
+            return control_signal
         return error_job_result(canonical_job_id_value)
     return projected or error_job_result(canonical_job_id_value)
 
 
 @broker.task(
-    task_name="order_proposals.telegram_callback_recovery",
+    task_name=CALLBACK_RECOVERY_TASK_NAME,
     schedule=recovery_schedule_labels(),
 )
-async def recover_telegram_callback_jobs() -> dict[str, Any]:
+async def recover_telegram_callback_jobs(
+    *wire_args: object, **wire_kwargs: object
+) -> object:
     """Sweep for work a lost Redis kick left behind.
 
     Subordinate to the worker gate as well as its own: this task *executes*
     handlers, so arming the schedule alone must not start running
-    order-adjacent callbacks.
+    order-adjacent callbacks.  Its wire envelope is exactly empty.
     """
+    if wire_args or wire_kwargs:
+        return recovery_error_result()
     if not settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED:
         return {"status": "disabled"}
     if not settings.ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED:
@@ -96,9 +108,21 @@ async def recover_telegram_callback_jobs() -> dict[str, Any]:
             execution_limit=RECOVERY_SCAN_LIMIT,
             scan_cap=recovery_scan_cap(RECOVERY_SCAN_LIMIT),
         )
-    except Exception:  # noqa: BLE001 - TaskIQ result boundary; BaseException propagates
+    except BaseException as exc:  # noqa: BLE001 - closed TaskIQ receiver boundary
+        control_signal = control_signal_for_exception(exc)
+        if control_signal is not None:
+            return control_signal
         return recovery_error_result()
     return projected or recovery_error_result()
+
+
+def _canonical_job_wire(
+    wire_args: tuple[object, ...], wire_kwargs: dict[str, object]
+) -> str | None:
+    """Validate the consumer's untrusted variadic envelope without coercion."""
+    if len(wire_args) != 1 or wire_kwargs:
+        return None
+    return canonical_job_id(wire_args[0])
 
 
 __all__ = [
