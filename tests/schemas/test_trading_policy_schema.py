@@ -2110,6 +2110,24 @@ def test_s139_held_majors_support_net_mutants_are_rejected(mutate):
         )
 
 
+@pytest.mark.parametrize("rule_key", [_ETF_RULE_KEY, _HELD_MAJORS_RULE_KEY])
+def test_s139_renaming_a_tier_id_cannot_bypass_its_validators(rule_key):
+    """B2 — the per-tier pins key off the tier id; the key binds it.
+
+    Before this binding, renaming the tier while keeping the rule key made
+    every §139차 validator return early, so a policy surface still named
+    ``buy.held_majors_support_net`` could carry an unpinned tier.
+    """
+
+    raw = _raw()
+    rule = raw["decision_rules"][rule_key]
+    original_id = rule["tiers"][0]["id"]
+    rule["tiers"][0]["id"] = f"{original_id}_v2"
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
 def test_s139_new_rules_reject_typo_keys():
     for key in (_ETF_RULE_KEY, _HELD_MAJORS_RULE_KEY):
         raw = _raw()

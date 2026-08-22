@@ -82,6 +82,13 @@ INDEX_ETF_CANDIDATE_TIER_ID = "index_etf_candidate"
 HELD_MAJORS_SUPPORT_NET_TIER_ID = "held_majors_support_net"
 _NOT_APPLICABLE_GATE = "not_applicable_structurally_absent"
 _INDEX_ETF_REQUIRED_EXCLUSIONS = ("leveraged_etf", "inverse_etf")
+# §139차 B2 — the per-tier validators below key off the TIER id, so renaming a
+# tier silently skips every pin on it. Bind each §139차 rule KEY to the tier id
+# it must declare, checked at document level where the key is known.
+_S139_REQUIRED_TIER_IDS = {
+    "buy.index_etf_candidate": INDEX_ETF_CANDIDATE_TIER_ID,
+    "buy.held_majors_support_net": HELD_MAJORS_SUPPORT_NET_TIER_ID,
+}
 _HELD_MAJORS_REQUIRED_EXCLUSIONS = (
     "new_coin_entry",
     "unheld_symbol",
@@ -1153,3 +1160,24 @@ class TradingPolicyDocument(BaseModel):
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
     user_stances: list[UserStance]
+
+    @model_validator(mode="after")
+    def validate_s139_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
+        """A §139차 rule key must carry the tier id its validators key off.
+
+        Removing the rule entirely is a sanctioned retirement (§139차 ⓒ is
+        scored and retired on 2026-09-19); renaming its tier while keeping the
+        key is not — that keeps the policy surface and drops every guard.
+        """
+
+        for key, tier_id in _S139_REQUIRED_TIER_IDS.items():
+            rule = self.decision_rules.get(key)
+            if rule is None:
+                continue
+            tier_ids = [tier.id for tier in getattr(rule, "tiers", [])]
+            if not isinstance(rule, PolicyDecisionRule) or tier_id not in tier_ids:
+                raise ValueError(
+                    f"{key} must declare tier id {tier_id!r} so its §139차 "
+                    f"validators run; got {tier_ids}"
+                )
+        return self
