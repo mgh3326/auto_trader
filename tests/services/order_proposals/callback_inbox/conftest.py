@@ -121,7 +121,7 @@ def make_update(
     chat_id: Any = CHAT_ID,
     user_id: Any = USER_ID,
     callback_id: str = "cbq-1",
-    update_id: int = 1,
+    update_id: object = 1,
     message_id: int = 555,
 ) -> dict[str, Any]:
     return {

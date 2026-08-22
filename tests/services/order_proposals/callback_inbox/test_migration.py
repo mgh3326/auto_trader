@@ -344,6 +344,7 @@ AUTHORITY_FIELDS: tuple[str, ...] = (
 #: and re-gate the envelope.
 RECONSTRUCTION_FIELDS: tuple[str, ...] = (
     "chat_id",
+    "telegram_user_id",
     "action",
     "subject_short",
     "dispatch_attempt_id",
@@ -351,6 +352,47 @@ RECONSTRUCTION_FIELDS: tuple[str, ...] = (
     "membership_digest",
     "nonce",
 )
+
+
+def test_active_reconstructability_has_exact_orm_and_original_migration_parity() -> (
+    None
+):
+    """R37 — an active row cannot lack the user id needed by the callback core.
+
+    This is deliberately independent of the production tuple.  The ORM
+    bootstrap and the original still-unmerged Alembic create-table migration
+    must express the same complete active reconstruction contract, while a
+    terminal row remains nullable because terminal scrubbing removes authority.
+    """
+    from app.models.telegram_callback_inbox import _ACTIVE_RECONSTRUCTABLE_SQL
+    from app.services.order_proposals.callback_inbox.contracts import (
+        ACTIVE_REQUIRED_COLUMNS,
+    )
+
+    expected = (
+        "chat_id",
+        "telegram_user_id",
+        "action",
+        "subject_short",
+        "dispatch_attempt_id",
+        "membership_revision",
+        "membership_digest",
+        "nonce",
+    )
+    expected_sql = (
+        "CASE WHEN state IN ('pending','processing','retry_wait') THEN "
+        "chat_id IS NOT NULL AND telegram_user_id IS NOT NULL "
+        "AND action IS NOT NULL AND subject_short IS NOT NULL "
+        "AND dispatch_attempt_id IS NOT NULL AND membership_revision IS NOT NULL "
+        "AND membership_digest IS NOT NULL AND nonce IS NOT NULL ELSE true END"
+    )
+
+    migration = _load_migration()
+    assert RECONSTRUCTION_FIELDS == expected
+    assert ACTIVE_REQUIRED_COLUMNS == expected
+    assert _ACTIVE_RECONSTRUCTABLE_SQL == expected_sql
+    assert migration._ACTIVE_RECONSTRUCTABLE == expected_sql  # noqa: SLF001
+
 
 TERMINAL_STATES: tuple[str, ...] = ("succeeded", "discarded", "dead_letter")
 ACTIVE_STATES: tuple[str, ...] = ("pending", "processing", "retry_wait")

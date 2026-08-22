@@ -151,12 +151,12 @@ _INSERT = sa.text(
     """
     INSERT INTO review.telegram_callback_inbox
         (job_id, update_digest, state, attempt_count, max_attempts,
-         received_at, available_at, started_at, chat_id, action, subject_short,
+         received_at, available_at, started_at, chat_id, telegram_user_id, action, subject_short,
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
          outcome, error_class)
     VALUES
         (:job_id, :update_digest, :state, 1, 3, now(), now(), :started_at,
-         '42', 'op', '0123abcd', :attempt_id, 1, 'abcdefghijkl', 'nonce123456',
+         '42', :telegram_user_id, 'op', '0123abcd', :attempt_id, 1, 'abcdefghijkl', 'nonce123456',
          :outcome, :error_class)
     """
 )
@@ -178,6 +178,9 @@ def _accepts(
                 "update_digest": uuid.uuid4().hex * 2,
                 "state": state,
                 "started_at": None if state != "processing" else now_kst(),
+                "telegram_user_id": (
+                    "777" if state in {"pending", "processing", "retry_wait"} else None
+                ),
                 "attempt_id": uuid.uuid4(),
                 "outcome": outcome,
                 "error_class": error_class,

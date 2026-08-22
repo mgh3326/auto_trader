@@ -153,6 +153,56 @@ async def test_durable_route_commits_before_200_and_never_runs_the_inline_handle
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_durable_route_rejects_an_invalid_identifier_before_durable_authority(
+    _armed: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R37 — ASGI ingress rejects a bad Telegram user id without a DB/queue seam.
+
+    ``_persist`` and ``_kick`` are deliberately record-only production seams:
+    the real router and real ingress/normalizer run, while neither database
+    nor TaskIQ/Redis can be reached by this unit test.
+    """
+    from app.services.order_proposals.callback_inbox import ingress as ingress_module
+
+    calls: list[str] = []
+    session_factory_calls: list[str] = []
+
+    def _session_factory():
+        session_factory_calls.append("session_factory")
+        raise AssertionError("invalid identifier reached the session factory")
+
+    async def _persist(*args, **kwargs):
+        calls.append("persist")
+        return uuid.uuid4(), False, False
+
+    async def _kick(*args, **kwargs):
+        calls.append("kick")
+        return True
+
+    invalid = {
+        **_VALID_UPDATE,
+        "callback_query": {
+            **_VALID_UPDATE["callback_query"],
+            "from": {"id": 0},
+        },
+    }
+    inline = AsyncMock()
+    monkeypatch.setattr(ingress_module, "AsyncSessionLocal", _session_factory)
+    monkeypatch.setattr(ingress_module, "_persist", _persist)
+    monkeypatch.setattr(ingress_module, "_kick", _kick)
+    with patch("app.routers.telegram_callback.handle_callback_update", inline):
+        response = await _post(_build_app(), invalid)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert calls == []
+    assert session_factory_calls == []
+    inline.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_durable_route_503s_when_the_consumers_are_not_both_armed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

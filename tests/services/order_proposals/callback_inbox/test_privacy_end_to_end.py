@@ -59,6 +59,16 @@ SENTINEL_DIGEST = "ZzDigestSen1"
 SENTINEL_ATTEMPT = "5eee5eee-1111-4222-8333-444444444444"
 SENTINEL_MESSAGE_ID = 909090909091
 SENTINEL_REVISION = 35
+# R37: an invalid numeric Telegram identifier must not reach durable storage,
+# queue arguments, logs, or any Sentry surface.  The fragments are kept with
+# the existing privacy corpus so a partial disclosure cannot false-green.
+R37_IDENTIFIER_SENTINEL = "r37-identifier-private-marker"
+R37_IDENTIFIER_FRAGMENTS = (
+    R37_IDENTIFIER_SENTINEL,
+    R37_IDENTIFIER_SENTINEL[:8],
+    R37_IDENTIFIER_SENTINEL[8:18],
+    R37_IDENTIFIER_SENTINEL[-8:],
+)
 # R32: syntactically valid as the old slug regex but deliberately absent from
 # the closed terminal category vocabulary. Full and partial scans use only
 # generic failure messages so a failed privacy test does not print it.
@@ -87,6 +97,7 @@ SENTINELS = (
     SENTINEL_DIGEST,
     SENTINEL_ATTEMPT,
     str(SENTINEL_MESSAGE_ID),
+    *R37_IDENTIFIER_FRAGMENTS,
     *R32_UNKNOWN_OUTCOME_FRAGMENTS,
 )
 
@@ -283,6 +294,110 @@ def _sentinel_data() -> str:
     )
     assert build_membership_digest is not None
     return data
+
+
+def _identifier_boundary_data() -> str:
+    """A valid callback envelope whose only poison is the external user id."""
+    from app.services.order_proposals.approval_message import build_callback_data
+    from app.services.order_proposals.dispatch_contract import (
+        ApprovalCardKind,
+        DispatchBinding,
+        build_membership_digest,
+    )
+
+    proposal_id = uuid.UUID("0123abcd-1111-4222-8333-444444444444")
+    nonce = "nonce123456"
+    return build_callback_data(
+        action="op",
+        proposal_id=proposal_id,
+        nonce=nonce,
+        binding=DispatchBinding(
+            attempt_id=uuid.UUID("11111111-2222-4333-8444-555555555555"),
+            card_kind=ApprovalCardKind.MANUAL,
+            membership_revision=1,
+            membership_digest=build_membership_digest(
+                card_kind=ApprovalCardKind.MANUAL,
+                membership_revision=1,
+                members=[{"proposal_id": str(proposal_id), "approval_nonce": nonce}],
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_invalid_telegram_identifier_never_reaches_durable_or_observability_surfaces(
+    _bootstrap_test_schema,
+    inbox_cleanup: list[uuid.UUID],
+    log_sink: _RecordSink,
+    sentry_sink: list[dict[str, Any]],
+) -> None:
+    """R37 — scanner-positive proof for ingress rejection before persistence."""
+    __tracebackhide__ = True
+    from sqlalchemy import select
+
+    from app.models.telegram_callback_inbox import TelegramCallbackInboxJob
+    from app.services.order_proposals.callback_inbox.ingress import (
+        IngressResult,
+        ingest_callback_update,
+    )
+
+    queued: list[uuid.UUID] = []
+
+    async def _enqueue(job_id: uuid.UUID) -> None:
+        queued.append(job_id)
+
+    result = await ingest_callback_update(
+        make_update(
+            data=_identifier_boundary_data(),
+            user_id=R37_IDENTIFIER_SENTINEL,
+            update_id=700_037,
+            callback_id="cbq-r37-privacy",
+        ),
+        now=now_kst(),
+        enqueue_fn=_enqueue,
+    )
+    if result.job_id is not None:
+        inbox_cleanup.append(result.job_id)
+
+    row_surface: dict[str, Any] = {}
+    if result.job_id is not None:
+        async with AsyncSessionLocal() as session:
+            row = await session.scalar(
+                select(TelegramCallbackInboxJob).where(
+                    TelegramCallbackInboxJob.job_id == result.job_id
+                )
+            )
+            if row is not None:
+                row_surface = {
+                    column.name: getattr(row, column.name)
+                    for column in TelegramCallbackInboxJob.__table__.columns
+                }
+
+    # Non-vacuous safe controls ensure the log/Sentry scanners actually walk
+    # a record, event, breadcrumb and message before checking the rejection.
+    logging.getLogger(__name__).info("r37 identifier-boundary scanner control")
+    sentry_sdk.add_breadcrumb(
+        category="r37.identifier", message="r37 identifier-boundary scanner control"
+    )
+    sentry_sdk.capture_message("r37 identifier-boundary scanner control")
+    sentry_sdk.flush()
+
+    assert_no_leak(row_surface, where="invalid identifier DB row surface")
+    assert_no_leak(queued, where="invalid identifier queue surface")
+    assert_records_clean(log_sink)
+    assert_events_clean(sentry_sink, expect_any=True)
+    for fragment in R37_IDENTIFIER_FRAGMENTS:
+        with pytest.raises(Leak):
+            assert_no_leak({"scanner_control": fragment}, where="scanner control")
+
+    assert result == IngressResult(
+        accepted=False,
+        duplicate=False,
+        job_id=None,
+        reason="invalid_telegram_identifier",
+        enqueued=False,
+    )
+    assert queued == []
 
 
 async def _queue_sentinel_job(

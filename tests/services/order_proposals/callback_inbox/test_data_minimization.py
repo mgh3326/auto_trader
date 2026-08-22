@@ -259,8 +259,8 @@ def test_the_delivery_digest_is_domain_separated_and_one_way() -> None:
     # The kinds are separated, so an update id and a callback query id with
     # the same text cannot collide.
     assert build_update_digest(
-        update_id="a", callback_query_id=None
-    ) != build_update_digest(update_id=None, callback_query_id="a")
+        update_id=7, callback_query_id=None
+    ) != build_update_digest(update_id=None, callback_query_id="7")
     # Deterministic.
     assert digest == build_update_digest(
         update_id=123, callback_query_id=FAKE_CALLBACK_QUERY_ID

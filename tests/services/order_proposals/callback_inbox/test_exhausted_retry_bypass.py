@@ -210,12 +210,12 @@ _INSERT = sa.text(
     """
     INSERT INTO review.telegram_callback_inbox
         (job_id, update_digest, state, attempt_count, max_attempts,
-         received_at, available_at, chat_id, action, subject_short,
+         received_at, available_at, chat_id, telegram_user_id, action, subject_short,
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
          error_class)
     VALUES
         (:job_id, :update_digest, :state, :attempt_count, :max_attempts,
-         now(), now(), '42', 'op', '0123abcd', :attempt_id, 1,
+         now(), now(), '42', :telegram_user_id, 'op', '0123abcd', :attempt_id, 1,
          'abcdefghijkl', 'nonce123456', :error_class)
     """
 )
@@ -240,6 +240,11 @@ async def test_the_database_refuses_an_exhausted_retry_wait_row(
                     "state": state,
                     "attempt_count": attempts,
                     "max_attempts": maximum,
+                    "telegram_user_id": (
+                        "777"
+                        if state in {"pending", "processing", "retry_wait"}
+                        else None
+                    ),
                     "attempt_id": uuid.uuid4(),
                     "error_class": (
                         "pre_core_failure" if state == "retry_wait" else None

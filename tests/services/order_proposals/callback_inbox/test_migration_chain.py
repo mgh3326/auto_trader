@@ -406,10 +406,10 @@ async def _processing_check_rejects_a_missing_started_at(database_url: str) -> b
             await connection.execute(
                 "INSERT INTO review.telegram_callback_inbox "
                 "(job_id, update_digest, state, attempt_count, max_attempts, "
-                " received_at, available_at, started_at, chat_id, action, "
+                " received_at, available_at, started_at, chat_id, telegram_user_id, action, "
                 " subject_short, dispatch_attempt_id, membership_revision, "
                 " membership_digest, nonce) "
-                "VALUES ($1, $2, 'processing', 1, 3, now(), now(), NULL, '42', "
+                "VALUES ($1, $2, 'processing', 1, 3, now(), now(), NULL, '42', '777', "
                 "'op', '0123abcd', $3, 1, 'abcdefghijkl', 'nonce123456')",
                 uuid.uuid4(),
                 uuid.uuid4().hex * 2,
@@ -418,6 +418,56 @@ async def _processing_check_rejects_a_missing_started_at(database_url: str) -> b
         except asyncpg.exceptions.CheckViolationError:
             return True
         return False
+    finally:
+        await connection.close()
+
+
+async def _active_telegram_user_id_constraint_matrix(
+    database_url: str,
+) -> tuple[bool, str | None]:
+    """Return the valid control and exact CHECK that rejects a missing user."""
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        valid_user_accepted = False
+        try:
+            await connection.execute(
+                "INSERT INTO review.telegram_callback_inbox "
+                "(job_id, update_digest, state, attempt_count, max_attempts, "
+                " received_at, available_at, chat_id, telegram_user_id, action, "
+                " subject_short, dispatch_attempt_id, membership_revision, "
+                " membership_digest, nonce) "
+                "VALUES ($1, $2, 'pending', 0, 3, now(), now(), '42', '777', "
+                "'op', '0123abcd', $3, 1, 'abcdefghijkl', 'nonce123456')",
+                uuid.uuid4(),
+                uuid.uuid4().hex * 2,
+                uuid.uuid4(),
+            )
+        except asyncpg.exceptions.CheckViolationError:
+            valid_user_accepted = False
+        else:
+            valid_user_accepted = True
+
+        try:
+            await connection.execute(
+                "INSERT INTO review.telegram_callback_inbox "
+                "(job_id, update_digest, state, attempt_count, max_attempts, "
+                " received_at, available_at, chat_id, telegram_user_id, action, "
+                " subject_short, dispatch_attempt_id, membership_revision, "
+                " membership_digest, nonce) "
+                "VALUES ($1, $2, 'pending', 0, 3, now(), now(), '42', NULL, "
+                "'op', '0123abcd', $3, 1, 'abcdefghijkl', 'nonce123456')",
+                uuid.uuid4(),
+                uuid.uuid4().hex * 2,
+                uuid.uuid4(),
+            )
+        except asyncpg.exceptions.CheckViolationError as exc:
+            return valid_user_accepted, exc.constraint_name
+        return valid_user_accepted, None
     finally:
         await connection.close()
 
@@ -469,18 +519,19 @@ async def _attempt_budget_matrix(
                     await connection.execute(
                         "INSERT INTO review.telegram_callback_inbox "
                         "(job_id, update_digest, state, attempt_count, max_attempts, "
-                        "received_at, available_at, started_at, chat_id, action, "
+                        "received_at, available_at, started_at, chat_id, telegram_user_id, action, "
                         "subject_short, dispatch_attempt_id, membership_revision, "
                         "membership_digest, nonce, error_class) "
                         "VALUES ($1, $2, $3, $4, $5, now(), now(), "
                         "CASE WHEN $3 = 'processing' THEN now() ELSE NULL END, "
-                        "$6, $7, $8, $9, $10, $11, $12, $13)",
+                        "$6, $7, $8, $9, $10, $11, $12, $13, $14)",
                         uuid.uuid4(),
                         uuid.uuid4().hex * 2,
                         state,
                         candidate_count,
                         maximum,
                         "42" if active else None,
+                        "777" if active else None,
                         "op" if active else None,
                         "0123abcd" if active else None,
                         uuid.uuid4() if active else None,
@@ -570,11 +621,11 @@ async def _marker_check_rejects_a_verdict_without_entry(database_url: str) -> bo
                 "INSERT INTO review.telegram_callback_inbox "
                 "(job_id, update_digest, state, attempt_count, max_attempts, "
                 " received_at, available_at, started_at, handler_completed_at, "
-                " terminal_state_pending, chat_id, action, subject_short, "
+                " terminal_state_pending, chat_id, telegram_user_id, action, subject_short, "
                 " dispatch_attempt_id, membership_revision, membership_digest, "
                 " nonce) "
                 "VALUES ($1, $2, 'processing', 1, 3, now(), now(), now(), now(), "
-                "'succeeded', '42', 'op', '0123abcd', $3, 1, 'abcdefghijkl', "
+                "'succeeded', '42', '777', 'op', '0123abcd', $3, 1, 'abcdefghijkl', "
                 "'nonce123456')",
                 uuid.uuid4(),
                 uuid.uuid4().hex * 2,
@@ -735,6 +786,15 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         assert (
             await _processing_check_rejects_a_missing_started_at(scratch_database)
             is True
+        )
+        (
+            valid_user_accepted,
+            missing_user_constraint,
+        ) = await _active_telegram_user_id_constraint_matrix(scratch_database)
+        assert valid_user_accepted is True
+        assert (
+            missing_user_constraint
+            == "ck_telegram_callback_inbox_active_reconstructable"
         )
         # R23: the marker-order constraint, exercised rather than merely named.
         assert (
