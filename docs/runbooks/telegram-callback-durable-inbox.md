@@ -9,9 +9,10 @@ worker or scheduler process and activates none. It does not claim the
 repository starts no workers at all — the existing Makefile, compose files and
 ops launchers do run TaskIQ worker and scheduler processes, and once this code
 is deployed those processes **will discover both new tasks**. They are inert
-when discovered: the per-job task returns `{"status": "disabled"}` before
-opening a database session, and the recovery task carries no schedule to fire
-on. What arms them is an operator setting the gates in §4, and a static guard
+when discovered: the per-job task returns
+`{"status": "disabled", "job_id": "<canonical UUID>"}` before opening a
+database session, and the recovery task carries no schedule to fire on. What
+arms them is an operator setting the gates in §4, and a static guard
 (`test_no_auto_activation.py`) asserts that no tracked compose file, ops
 launcher, Makefile target, env template or CI workflow sets any of the three
 to true.
@@ -250,8 +251,13 @@ Each concurrently processing job holds **one dedicated connection for the
 advisory lock** plus whatever the callback core's own sessions use. Budget at
 least `2 x max_concurrent_jobs` connections per worker process, on top of the
 web application's pool, and check it against `max_connections` before step 3.
-Exhausting the pool here fails jobs, it does not corrupt them — but it fails
-them as `pre_core_failure`, which retries, which uses more connections.
+Pool pressure is fail-closed, but the exact outcome depends on the stage.
+Failure to acquire the dedicated advisory-lock connection happens before a row
+is claimed and produces the fixed safe task error; it does **not** create
+`retry_wait`. After a row is claimed, only an explicitly classified
+worker-owned pre-core `PreCoreFailure` can pass the retry CAS. Pool pressure can
+delay both normal processing and recovery, so headroom remains an activation
+requirement; do not assume every pool-exhaustion path is automatically retried.
 
 ---
 
@@ -277,7 +283,7 @@ grants anything:
 
 | situation | state | error class | handler re-invoked? |
 |---|---|---|---|
-| pre-core failure (envelope rebuild, notifier resolution) | `retry_wait` | `pre_core_failure` | yes, up to 3 attempts |
+| current explicit pre-core failure (notifier resolution before core entry) | `retry_wait` | `pre_core_failure` | yes, up to 3 attempts |
 | a handler-returned `mutation_not_started` / `retry` / `retryable` / `safe_to_retry` | **ignored — buys no authority** | as per the row it actually lands in | never |
 | `handled: True` — including `results: ["unverified"]` | `succeeded` | — | never |
 | explicit business rejection (`nonce_replay`, `expired`, `guard_blocked`, …) | `discarded` | — | never |

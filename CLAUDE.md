@@ -621,15 +621,17 @@ target-mutation lock, approval hash, and fresh preview remain downstream gates.
 재시도하면 합법으로 보이면서 두 번 제출된다.
 
 따라서 재실행 가능한 유일한 부류는 **코어에 진입하지 않았음이 증명된 실패**뿐:
-- `retry_wait` ← **worker-owned pre-core phase 실패만**(envelope 재구성/allowlist
-  재검증/notifier 해석 등, 코어 진입 전). `PreCoreFailure` 로만 발생하고,
+- `retry_wait` ← **worker-owned pre-core phase 실패만**. 현재 명시적으로
+  `PreCoreFailure` 를 만드는 경로는 코어 진입 전 notifier 해석 실패뿐이고,
   `schedule_retry` 가 조건부 UPDATE 로 DB 에서 `state='processing'` +
   `handler_entered_at`/`handler_completed_at`/`terminal_state_pending` 전부 NULL
   임을 재확인해야 기록된다. 🔴 **핸들러가 반환하는
   `mutation_not_started`/`retry`/`retryable`/`safe_to_retry` 는 진단용이며 재실행
   권한을 전혀 만들지 못한다**(`IGNORED_HANDLER_RETRY_KEYS`) — 이미 mutate 한
   핸들러도 똑같이 반환할 수 있기 때문이다. 코어 진입 마커 이후의 모든
-  예외·결과·reason 은 terminal(succeeded/discarded/dead_letter)일 뿐 재시도 없음
+  예외·결과·reason 은 terminal(succeeded/discarded/dead_letter)일 뿐 재시도 없음.
+  저장 envelope 복원이 불가능하면 `discarded/envelope_invalid`, 현재 chat
+  allowlist 에서 빠졌으면 `discarded/chat_revoked` 이며 둘 다 재시도하지 않는다
 - `succeeded` ← `handled=True` (`results: ["unverified"]` 포함 — 모호한 *전송*은
   proposal/order 상태머신 소관이고, 콜백 재실행은 해결이 아니라 중복 위험)
 - `discarded` ← 명시적 비즈니스 거부(nonce_replay/expired/guard_blocked/…), chat 취소,

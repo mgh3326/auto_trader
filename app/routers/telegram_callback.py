@@ -1,8 +1,8 @@
 """ROB-816 PR 2 — Telegram webhook HTTP transport for order-proposal approvals.
 
-Wires the single Telegram webhook endpoint to
-``app.services.order_proposals.telegram_callback.handle_callback_update``
-(Task 14). Auth is delegated entirely to :class:`AuthMiddleware`, which
+Wires the single Telegram webhook endpoint to either the default inline
+``handle_callback_update`` path or the default-off durable inbox ingress.
+Auth is delegated entirely to :class:`AuthMiddleware`, which
 gates every path under ``/trading/api/telegram/`` on the
 ``ORDER_PROPOSALS_TELEGRAM_TOKEN`` shared secret supplied via Telegram's
 ``secret_token`` webhook mechanism (header name configurable via
@@ -16,14 +16,16 @@ Hard invariants:
 * When ``settings.ORDER_PROPOSALS_TELEGRAM_ENABLED`` is off, the endpoint
   short-circuits with ``503`` and a structured body — same shape as the
   Hermes HTTP transport's gate-off (``investment_hermes_http.py``).
-* The chat allowlist (authz) lives inside ``handle_callback_update``
-  itself, not here.
-* ``handle_callback_update`` never raises (Task 14's fail-closed
-  guarantee), so this endpoint always returns ``200 {"ok": True}`` once
-  past the enable gate — Telegram's webhook contract only cares about the
-  HTTP status, not the body.
-* No broker/order mutation reachable from this router directly; every
-  safety boundary is enforced inside ``handle_callback_update``.
+* The shared ``normalize_callback_update`` boundary applies the chat allowlist
+  and R37 exact Telegram-identifier checks for both inline and durable paths;
+  this router does not duplicate them.
+* Past the common Telegram enable gate, inline mode returns fail-closed
+  ``200 {"ok": True}``. Durable mode may instead return a sanitized ``503``
+  when its worker/recovery gates are not armed or durable persistence is
+  unavailable, so Telegram can retry without receiving internal details.
+* No broker/order mutation is reachable from this router directly; accepted
+  inline callbacks reach the existing downstream safety gates through
+  ``handle_callback_update``, while durable callbacks only commit an inbox row.
 """
 
 from __future__ import annotations

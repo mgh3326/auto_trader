@@ -916,7 +916,8 @@ class Settings(BaseSettings):
     # BOTH on -- a config-level guard, not a documentation-level one.
     ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED: bool = False
     # Arms the per-job TaskIQ worker. With this off the task returns
-    # {"status": "disabled"} before touching PostgreSQL at all.
+    # {"status": "disabled", "job_id": "<canonical UUID>"} before touching
+    # PostgreSQL at all.
     ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED: bool = False
     # Arms the recovery sweep's cron label AND its execution. Recovery runs
     # handlers, so it is subordinate to the worker gate as well.
