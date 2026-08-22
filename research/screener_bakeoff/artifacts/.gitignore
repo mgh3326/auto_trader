@@ -1,0 +1,6 @@
+# Row-level artifacts are large (12-19MB) and fully deterministic: rerun
+# run_bakeoff.py to regenerate them byte-identically. Only the aggregated
+# scorecards and the rendered report are committed.
+picks.csv
+picks_scored.csv
+universe_returns.csv

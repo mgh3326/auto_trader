@@ -53,6 +53,7 @@ tests/research/dfc_v22_research_min/test_a2_golden.py
 tests/research/kr_corpus/d3_engine/test_d3_calibration_guard.py
 tests/research/test_kr_backfill_collector_exit_codes.py
 tests/research/test_kr_backfill_fetch_window.py
+tests/research/test_screener_bakeoff_contract.py
 tests/research/us_stage_b/test_isolation.py
 tests/research/us_stage_b/test_signals.py
 tests/research/us_stage_b/test_verdict.py
