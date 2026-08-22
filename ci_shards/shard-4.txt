@@ -75,6 +75,7 @@ tests/scripts/test_list_recent_watch_events_cli.py
 tests/scripts/test_mock_session_mcp.py
 tests/scripts/test_native_bluegreen_lib.py
 tests/scripts/test_native_run_wrappers.py
+tests/scripts/test_policy_table_alt_breadth_naming.py
 tests/scripts/test_policy_table_halt_suspect.py
 tests/scripts/test_run_haproxy_wrapper.py
 tests/scripts/test_spot_smoke_report.py

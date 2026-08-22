@@ -116,6 +116,7 @@ tests/services/brokers/toss/test_dto.py
 tests/services/brokers/toss/test_market_calendar.py
 tests/services/brokers/toss/test_transport.py
 tests/services/buy_gate_ab_shadow/test_forecast_tag.py
+tests/services/buy_gate_ab_shadow/test_input_contract.py
 tests/services/daily_candles/test_crypto_candles_1d_migration.py
 tests/services/execution_ledger/test_fill_event_sanitizer.py
 tests/services/execution_ledger/test_reconciler.py
