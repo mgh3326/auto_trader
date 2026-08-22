@@ -885,7 +885,7 @@ async def test_an_update_without_any_delivery_identity_is_refused(
 # R11 — the equality projection itself
 # ---------------------------------------------------------------------------
 
-#: The exact ten fields ingress persists. Equality must cover all of them.
+#: The exact eleven fields ingress persists. Equality must cover all of them.
 PERSISTED_ENVELOPE_FIELDS = (
     "callback_query_id",
     # R28: a one-way digest of the Telegram update id. The identity is the
@@ -952,7 +952,7 @@ def test_equality_and_insert_share_one_projection() -> None:
 async def test_matches_rejects_a_row_differing_in_any_single_field(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], field: str
 ) -> None:
-    """R11 — one-field-at-a-time over all ten, including the digest-bound one."""
+    """R11 — one-field-at-a-time over all eleven, including the digest-bound one."""
     from app.services.order_proposals.callback_inbox.ingress import (
         envelope_matches_row,
     )
@@ -1006,7 +1006,7 @@ async def test_a_redelivery_landing_on_a_terminal_row_is_a_benign_duplicate(
 ) -> None:
     """R11 — after the scrub, equality is deliberately no longer decidable.
 
-    A terminal row has all ten equality fields NULL, so an exact redelivery and
+    A terminal row has all eleven equality fields NULL, so an exact redelivery and
     a tampered one are indistinguishable. Rather than retain a reconstructible
     binding fingerprint to tell them apart -- which would undo the privacy
     contract the scrub exists for -- a terminal digest hit is treated as a
@@ -1043,7 +1043,7 @@ async def test_a_redelivery_landing_on_a_terminal_row_is_a_benign_duplicate(
     inbox_cleanup.append(first.job_id)
     assert kicked == [first.job_id]
 
-    # Drive it to a real terminal state, which scrubs all ten fields.
+    # Drive it to a real terminal state, which scrubs all eleven fields.
     from app.services.order_proposals.callback_inbox.worker import process_callback_job
 
     async def _handler(normalized, **kwargs):

@@ -2,12 +2,13 @@
 
 RED-before-fix item 16. ``handle_callback_update`` is split so the durable
 ingress can validate an update without executing it, and the worker can
-execute a *stored* envelope. The split is only acceptable if the inline path
-behaves exactly as it did on the parent commit, in the same order.
+execute a *stored* envelope. Equivalence here covers accepted canonical inputs,
+the post-normalization execution core, and the pre-existing downstream
+authorization gates. R37 intentionally adds a numeric identifier trust
+boundary, so not every input behaves as on the parent commit.
 
 Mutants covered here: preflight bypass, nonce bypass, approval-hash bypass —
-none of those gates moved into the seam, and this file proves the seam is a
-pure re-arrangement of parsing, not of authorisation.
+none of those gates moved into the seam.
 """
 
 from __future__ import annotations

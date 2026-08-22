@@ -3,9 +3,10 @@
 Two tasks, both inert until an operator arms them:
 
 ``order_proposals.telegram_callback_job``
-    processes one job. The Redis argument is a job UUID and the Redis result
-    is that UUID plus an allowlisted status -- never a callback payload, a
-    nonce, a chat/user/message id, or an exception string.
+    processes one job. The W5 application payload contains one canonical job
+    UUID and the closed result projection contains only its allowlisted status
+    fields -- never a callback payload, a nonce, a chat/user/message id, or an
+    exception string. The producer wire shape is tested independently.
 
 ``order_proposals.telegram_callback_recovery``
     the safety net for a lost kick. Ships **scheduleless**: the ``schedule``
@@ -13,7 +14,11 @@ Two tasks, both inert until an operator arms them:
     registering it is an operator action plus a process restart, never a
     side effect of deploying this code.
 
-Neither task opts into ``retry_on_error``. The broker installs
+    The task body reduces exact control exceptions to private category-only
+    signals. The final W5 post-execute boundary raises a fresh safe exact
+    control after Receiver's task-exception catch but before SmartRetry
+    post-processing and result save; retry/save see nothing and no Receiver
+    error log is emitted. Neither task opts into ``retry_on_error``. The broker installs
 ``SmartRetryMiddleware`` with ``default_retry_label=False``, so opting in
 would put a *second*, uncoordinated retry authority in front of an
 order-adjacent callback. The inbox's own state machine is the only one.

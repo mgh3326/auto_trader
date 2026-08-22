@@ -1673,10 +1673,10 @@ async def _handle_loss_cut_first_click(
 class NormalizedCallback:
     """One authenticated, allowlisted, parsed Telegram approval click.
 
-    Deliberately mirrors the values ``handle_callback_update`` used to derive
-    inline. ``chat_id``/``message_id``/``telegram_user_id`` keep whatever
-    Telegram sent so the notifier is called with byte-identical arguments;
-    ``chat_id_key`` is the stringified form the allowlist has always compared.
+    Deliberately preserves the accepted canonical values used by the inline
+    execution core. Telegram numeric identifiers are exact bounded integers,
+    not arbitrary byte-identical wire values; ``chat_id_key`` is the
+    stringified form the allowlist has always compared.
     """
 
     callback_query_id: str | None
@@ -1698,9 +1698,10 @@ class NormalizedCallback:
 class CallbackNotNormalizable(Exception):
     """The update is not an executable approval click.
 
-    ``reason`` carries the exact legacy result reason, so the inline path's
-    externally observable behaviour is unchanged and the durable ingress can
-    reject the same inputs without persisting anything.
+    ``reason`` carries a fixed legacy rejection reason or the R37
+    ``invalid_telegram_identifier`` trust-boundary category, so accepted
+    canonical inputs keep the existing downstream behavior and durable ingress
+    can reject invalid values without persisting anything.
     """
 
     def __init__(self, reason: str) -> None:
@@ -1711,14 +1712,12 @@ class CallbackNotNormalizable(Exception):
 def normalize_callback_update(update: dict[str, Any]) -> NormalizedCallback:
     """Extract, authorise and parse one update -- and nothing else.
 
-    This is a pure re-arrangement of what ``handle_callback_update`` already
-    did first, in the same order: shape check, chat allowlist, then the
-    existing allowlisted callback-data parser. No authorisation gate lives
-    here that did not live here before, and none of the gates that follow
-    (published-binding preflight, nonce consumption, commit lease, target
-    lock, approval hash) is reachable from this function -- which is what
-    makes it safe for the durable ingress to call it without executing
-    anything.
+    Accepted canonical inputs reach the same post-normalization execution core
+    and pre-existing downstream authorization gates as the inline path. R37
+    additionally validates the numeric identifier trust boundary here; none of
+    the gates that follow (published-binding preflight, nonce consumption,
+    commit lease, target lock, approval hash) is reachable from this function,
+    which keeps durable ingress from executing anything.
     """
     callback_query = update.get("callback_query")
     if not isinstance(callback_query, dict):

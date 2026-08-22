@@ -46,8 +46,11 @@
     approval hash) 우회·이동 금지. **코어 진입 후의 generic `internal_error` 를
     재시도로 바꾸지 마라** — 브로커 미전송 증거가 아니라서 재주문이 된다
     (`docs/runbooks/telegram-callback-durable-inbox.md` §5). terminal 스크럽 DB
-    CHECK 완화 금지.
-11. **매수 게이트 A/B shadow (ROB-1301)**: variant B는 순수 기록이다.
+    CHECK 완화 금지. W5 TaskIQ envelope/result boundary는 job의 canonical UUID
+    하나 또는 빈 recovery envelope만 허용하며, incoming retry/private labels와
+    label metadata를 폐기하고 SmartRetry 권한을 주지 않는다. raw args/kwargs/
+    labels/results/exception strings를 확장하거나 로그·Sentry·결과에 남기지 마라.
+12. **매수 게이트 A/B shadow (ROB-1301)**: variant B는 순수 기록이다.
     라이브 게이트 문언·주문·워치·제안 승격 금지. 채점 전 중간값으로 정책
     변경 금지. 스케줄러/자동화 트리거로 연결하지 마라.
 

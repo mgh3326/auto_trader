@@ -62,18 +62,19 @@ opaque job UUID.** Losing Redis loses latency, never a click.
 | worker | `.../callback_inbox/worker.py` |
 | recovery sweep | `.../callback_inbox/recovery.py` |
 | telemetry allowlist | `.../callback_inbox/observability.py` |
+| result boundary | `.../callback_inbox/result_boundary.py` |
+| TaskIQ receiver boundary | `.../callback_inbox/taskiq_receiver_boundary.py` |
 | TaskIQ surface | `app/tasks/telegram_callback_inbox_tasks.py` |
 | HTTP surface | `app/routers/telegram_callback.py` |
 | normalize/execute seam | `app/services/order_proposals/telegram_callback.py` |
 
-The callback *core* is unchanged. `handle_callback_update` was split into
-`normalize_callback_update` (shape → chat allowlist → the existing callback-data
-parser) and `handle_normalized_callback` (everything else, in the same order).
-The inline path is `normalize` then `execute`, exactly as before; the durable
-ingress normalizes without executing, and the worker executes a stored
-envelope. Every authorisation gate — published-binding preflight, single-use
-nonce, commit lease, target-mutation lock, approval hash, fresh preview — still
-lives where it lived.
+For accepted canonical inputs, the post-normalization execution core and the
+pre-existing authorization gates remain unchanged. Normalization also has the
+R37 numeric identifier trust boundary: it validates the exact callback-query
+shape and identifiers before durable ingress or execution. The durable ingress
+normalizes without executing, and the worker executes a stored envelope.
+Published-binding preflight, single-use nonce, commit lease, target-mutation
+lock, approval hash, and fresh preview remain downstream gates.
 
 ---
 
@@ -106,11 +107,41 @@ R29 recovery path. A late result never changes row authority or delays an ACK;
 duplicate kicks remain harmless because the database row and per-job advisory
 lock are authoritative.
 
-**Dedupe.** `update_digest` is a domain-separated SHA-256 over
-`(update_id, callback_query_id)` only — never the payload. A re-delivery of the
-same call is a benign `duplicate`. A *different* envelope reusing the same
-delivery identity is `delivery_conflict`: not stored, not queued, not reported
-as accepted.
+**Delivery identity and dedupe.** A callback-query id is primary when present;
+a valid `update_id` is the fallback only when no callback-query id exists.
+`update_identity_digest` is a separate active-row verification field, so a
+changed update id on the same callback id is a `delivery_conflict`, not a second
+job. `update_digest` is the one-way dedupe tombstone that survives terminal
+scrubbing; `update_identity_digest` is scrubbed with the active authority.
+
+### R37 identifier boundary
+
+`callback_query.from` itself must be an exact built-in `dict`, and its `id` is
+required and accepted only as an exact built-in `int` in `1..2**52-1`.
+`update_id` is either `None` or an exact built-in `int` in
+`1..2_147_483_647`; every present update id is validated even when the
+callback-query id is the primary delivery identity. Booleans, subclasses,
+strings, and coercible values are rejected before durable authority. The
+database stores the user id as canonical decimal `Text`; the worker strictly
+reconstructs an exact integer, and active rows require that value.
+
+### TaskIQ receiver and result boundary
+
+The job wire envelope is exactly one positional canonical lowercase hyphenated
+UUID string with no kwargs. The recovery wire envelope is exactly empty. For
+the two W5 task names, formatter-load sanitization runs before the first
+decoded-message debug/Sentry surface, and the final W5 middleware re-sanitizes.
+Incoming labels and label-type metadata are discarded, so SmartRetry never
+receives retry authority for these callbacks. Malformed jobs return the fixed
+`invalid_job_id` result; malformed recovery returns fixed `error`.
+Endpoint-specific result fields and statuses are closed vocabularies, and
+worker/recovery extras or exception strings never cross Redis, logs, or Sentry.
+The task body converts only exact `CancelledError`, `KeyboardInterrupt`, and
+`SystemExit` into private category-only signals. The final W5 `post_execute`
+raises a fresh safe exact control after Receiver's task-exception catch but
+before SmartRetry post-processing and result-backend save; retry/save see
+nothing and no Receiver error log is emitted. Other failures collapse to fixed
+safe results.
 
 ### Worker
 
@@ -173,7 +204,14 @@ by state plus one age — no identifiers.
 
 `max_attempts` is fixed at `3` and is not configurable. Malformed active budgets terminalize as `dead_letter` / `attempt_budget_invalid`, normalize `max_attempts` to `3`, clamp `attempt_count` to `0..3`, and scrub authority before the handler.
 
-R36 owns the test-schema bootstrap bump from v38 to v39 for `telegram_callback_recovery_cursor`.
+Recovery UUID materialization accepts only an exact stdlib `uuid.UUID` or an
+exact `asyncpg.pgproto.UUID`. It copies through the owning base descriptor into
+a fresh stdlib UUID, rejects subclasses, spoofed values, and malformed storage
+without rendering them, and imports asyncpg lazily only after the stdlib fast
+path. A malformed candidate consumes one bounded scanned/claimed error slot;
+the sweep then continues.
+
+v39 now covers both `review.telegram_callback_inbox` and `review.telegram_callback_recovery_cursor`.
 
 ---
 
@@ -277,7 +315,7 @@ in the same write that applies the terminal state:
 
 `callback_query_id`, `chat_id`, `message_id`, `telegram_user_id`, `action`,
 `subject_short`, `dispatch_attempt_id`, `membership_revision`,
-`membership_digest`, `nonce`.
+`membership_digest`, `nonce`, `update_identity_digest`.
 
 Two CHECK constraints make that mechanical:
 
@@ -301,9 +339,9 @@ id, user id, and the single-use nonce. That is unavoidable: the worker cannot
 re-authorise or execute without them. It is bounded by the job's lifetime plus
 the retry backoff, and by `attempt_count <= 3`.
 
-Redis sees `{"job_id": "<uuid>"}` going in and `{"status": …, "job_id": …}`
-coming out. Nothing else. Logs and Sentry spans use the allowlist in
-`observability.py`.
+The W5 application payload carried by the producer contains only the canonical
+job UUID; its producer wire shape is mechanically tested. Logs and Sentry
+spans use the allowlist in `observability.py`.
 
 ---
 

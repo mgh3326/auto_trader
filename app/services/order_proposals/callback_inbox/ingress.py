@@ -300,7 +300,7 @@ async def _persist(
         if existing is None:
             # The unique violation came from somewhere we cannot explain.
             raise CallbackInboxUnavailable("callback inbox dedupe unresolved")
-        # A terminal row has had all ten equality fields scrubbed, so an exact
+        # A terminal row has had all eleven equality fields scrubbed, so an exact
         # redelivery and a tampered one are no longer distinguishable. Keeping
         # a reconstructible binding fingerprint to tell them apart would undo
         # the privacy contract the scrub exists for, so a terminal digest hit

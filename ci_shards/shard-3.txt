@@ -165,6 +165,7 @@ tests/services/order_proposals/callback_inbox/test_lock_cleanup_cancellation.py
 tests/services/order_proposals/callback_inbox/test_migration.py
 tests/services/order_proposals/callback_inbox/test_migration_phase_guard.py
 tests/services/order_proposals/callback_inbox/test_privacy_end_to_end.py
+tests/services/order_proposals/callback_inbox/test_task_result_boundary.py
 tests/services/order_proposals/callback_inbox/test_worker_outcomes.py
 tests/services/order_proposals/test_approval_message.py
 tests/services/order_proposals/test_buying_power.py

@@ -175,6 +175,7 @@ tests/services/order_proposals/callback_inbox/test_production_wiring.py
 tests/services/order_proposals/callback_inbox/test_recovery.py
 tests/services/order_proposals/callback_inbox/test_recovery_cursor_rotation.py
 tests/services/order_proposals/callback_inbox/test_retry_contract_surfaces.py
+tests/services/order_proposals/callback_inbox/test_telegram_identifier_boundary.py
 tests/services/order_proposals/test_alerts.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
 tests/services/paper_cohort/test_kill_switch.py

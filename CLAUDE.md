@@ -590,7 +590,8 @@ Redis 를 잃으면 지연을 잃지 클릭을 잃지 않는다.
 - **마이그레이션**: `alembic/versions/20260821_w5_telegram_callback_inbox.py` (additive)
 - **패키지**: `app/services/order_proposals/callback_inbox/` — `contracts`(닫힌 어휘·digest·lock key) ·
   `repository`(service 전용) · `service`(유일한 writer) · `locks`(job advisory lock) ·
-  `ingress` · `worker` · `recovery` · `observability`(텔레메트리 allowlist)
+  `ingress` · `worker` · `recovery` · `observability`(텔레메트리 allowlist) ·
+  `result_boundary.py` · `taskiq_receiver_boundary.py`
 - **TaskIQ**: `app/tasks/telegram_callback_inbox_tasks.py` — `order_proposals.telegram_callback_job`
   (per-job) + `order_proposals.telegram_callback_recovery` (**scheduleless 출고**)
 - **런북**: `docs/runbooks/telegram-callback-durable-inbox.md`
@@ -648,12 +649,47 @@ NULL 로 되돌리지 못한다. 재시도가 합법인 이유는 마커를 지�
 staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는다.
 
 **데이터 최소화 = 스키마 속성**: raw Telegram `Update` 저장 안 함(JSON/JSONB/ARRAY
-컬럼 자체가 없음). terminal 도달 즉시 권한/PII 10개 컬럼 NULL — DB CHECK 2개가 강제
+컬럼 자체가 없음). terminal 도달 즉시 권한/PII 11개 컬럼 NULL — DB CHECK 2개가 강제
 (`terminal_scrubbed` / `active_reconstructable`, 둘 다 `CASE WHEN … THEN … ELSE true END`
 + `IS NULL`/`IS NOT NULL` 이라 SQL `UNKNOWN` 이 통과 못 함). 살아남는 건 `update_digest`
 (도메인 분리 일방향 dedupe tombstone) · closed-category `outcome`(unknown raw reason은
 고정 `unclassified`) · 닫힌 `error_class` 뿐.
-Redis 에는 job UUID 만 들어가고 `{status, job_id}` 만 나온다.
+W5 애플리케이션 payload에는 canonical job UUID만 들어간다. producer wire
+shape는 테스트로 기계 검증되며, 결과·로그·Sentry에는 endpoint별 닫힌
+안전 projection만 남는다.
+
+**R37 identifier boundary**: `callback_query.from` 자체가 exact built-in
+`dict`여야 하며, `from.id`는 필수 exact built-in `int`이고
+`1..2**52-1`만 허용한다. `update_id`는 `None` 또는 exact built-in `int`이며
+`1..2_147_483_647`만 허용한다. callback id가 primary여도 present update id는
+항상 검증한다. bool·subclass·string·coercible 값은 durable authority 전에
+거부한다. DB user id는 canonical decimal `Text`이고 worker는 exact `int`로만
+복원하며 active row는 이를 필수로 한다. `callback_query_id`가 있으면
+delivery identity primary이고 valid `update_id`는 callback id가 없을 때만
+fallback이다. `update_identity_digest`는 별도 active 검증 필드라 같은
+callback id의 변경된 update id는 second job이 아니라 conflict이다. terminal
+scrub은 `update_identity_digest`를 제거하고 `update_digest` one-way dedupe
+tombstone은 남긴다.
+
+**TaskIQ receiver/result boundary**: job wire는 canonical lowercase hyphenated
+UUID string 하나의 positional arg와 빈 kwargs, recovery wire는 완전한 empty
+envelope다. exact 두 W5 task name은 formatter-load 단계에서 첫 decoded-message
+debug/Sentry surface 전에 sanitize되고 마지막 middleware가 다시 sanitize한다.
+incoming labels/label-type metadata는 버려지며 SmartRetry는 이 callback들의
+retry authority가 아니다. malformed job은 fixed `invalid_job_id`, malformed
+recovery는 fixed `error`이고 result/status/worker/recovery projection은 닫힌
+어휘다. raw args/kwargs/labels/results/exception strings는 Redis/log/Sentry를
+통과하지 않는다. task body는 exact CancelledError/KeyboardInterrupt/SystemExit만
+private category-only signal로 축약한다. final W5 post_execute는 Receiver의
+task-exception catch 이후, SmartRetry post-processing/result save 이전에 fresh
+safe exact control을 raise하며 retry/save는 이를 보지 못하고 Receiver error log도
+없다. 나머지 failure는 fixed safe result로 collapse된다.
+
+Recovery UUID materialization은 exact stdlib `uuid.UUID` 또는 exact
+`asyncpg.pgproto.UUID`만 허용한다. owning base descriptor를 통해 fresh stdlib
+UUID로 복사하고 subclass/spoof/malformed 값은 render 없이 거부한다. asyncpg는
+stdlib fast path 뒤에 lazy import하며 malformed candidate는 bounded
+scanned/claimed error slot 하나를 소비한 뒤 sweep을 계속한다.
 
 🔴 **advisory lock 은 브로커 fencing 이 아니고**, PostgreSQL 재시작을 가로지르는 분산
 락도 아니다. pending/processing 행은 그 수명 동안 최소 PII 를 보유한다. 실제 프로세스

@@ -189,17 +189,17 @@ def test_the_cursor_orm_is_a_pii_free_singleton_with_no_index() -> None:
 
 
 @pytest.mark.unit
-def test_r34_records_that_r36_owns_the_persistent_schema_bootstrap_bump() -> None:
-    """R34 adds ORM metadata only; R36 separately owns v38 -> v39 bootstrap."""
+def test_r36_records_the_v39_persistent_schema_bootstrap() -> None:
+    """The completed v39 bootstrap covers both W5 ORM tables."""
     from tests._schema_bootstrap import SCHEMA_BOOTSTRAP_VERSION
 
     runbook = (_REPO / "docs/runbooks/telegram-callback-durable-inbox.md").read_text(
         encoding="utf-8"
     )
-    assert SCHEMA_BOOTSTRAP_VERSION == 38
+    assert SCHEMA_BOOTSTRAP_VERSION == 39
     assert (
-        "R36 owns the test-schema bootstrap bump from v38 to v39 for "
-        "`telegram_callback_recovery_cursor`."
+        "v39 now covers both `review.telegram_callback_inbox` and "
+        "`review.telegram_callback_recovery_cursor`"
     ) in runbook
 
 
@@ -252,14 +252,16 @@ _INSERT = sa.text(
         (job_id, update_digest, state, attempt_count, max_attempts,
          received_at, available_at, started_at, handler_entered_at,
          handler_completed_at, terminal_state_pending, callback_query_id,
-         chat_id, message_id, telegram_user_id, action, subject_short,
+         chat_id, message_id, telegram_user_id, update_identity_digest,
+         action, subject_short,
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
          outcome, error_class)
     VALUES
         (:job_id, :update_digest, :state, :attempt_count, :max_attempts,
          :now, :now, :started_at, :handler_entered_at, :handler_completed_at,
          :terminal_state_pending, :callback_query_id,
-         :chat_id, :message_id, :telegram_user_id, :action, :subject_short,
+         :chat_id, :message_id, :telegram_user_id, :update_identity_digest,
+         :action, :subject_short,
          :dispatch_attempt_id, :membership_revision, :membership_digest, :nonce,
          :outcome, :error_class)
     """
@@ -284,6 +286,7 @@ def _row(**overrides: object) -> dict[str, object]:
         "chat_id": "42",
         "message_id": 555,
         "telegram_user_id": "777",
+        "update_identity_digest": "update-digest-1",
         "action": "op",
         "subject_short": "0123abcd",
         "dispatch_attempt_id": uuid.uuid4(),
@@ -314,6 +317,7 @@ def _scrubbed() -> dict[str, object]:
         "chat_id": None,
         "message_id": None,
         "telegram_user_id": None,
+        "update_identity_digest": None,
         "action": None,
         "subject_short": None,
         "dispatch_attempt_id": None,
@@ -332,6 +336,7 @@ AUTHORITY_FIELDS: tuple[str, ...] = (
     "chat_id",
     "message_id",
     "telegram_user_id",
+    "update_identity_digest",
     "action",
     "subject_short",
     "dispatch_attempt_id",
@@ -402,6 +407,7 @@ _LIVE_VALUES: dict[str, object] = {
     "chat_id": "42",
     "message_id": 555,
     "telegram_user_id": "777",
+    "update_identity_digest": "update-digest-1",
     "action": "op",
     "subject_short": "0123abcd",
     "dispatch_attempt_id": uuid.UUID("11111111-2222-4333-8444-555555555555"),
@@ -570,7 +576,7 @@ async def test_retry_wait_fixed_upper_boundary_is_rejected_by_the_retry_budget(
 async def test_every_terminal_state_rejects_every_retained_authority_field(
     _bootstrap_test_schema,
 ) -> None:
-    """R3 B1 — all 10 fields x all 3 terminal states, through raw SQL.
+    """R3 B1 — all 11 fields x all 3 terminal states, through raw SQL.
 
     The previous version of this test checked four fields on one state, which
     would have passed against a CHECK that only listed those four. Each probe
