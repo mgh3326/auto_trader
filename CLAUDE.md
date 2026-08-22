@@ -678,8 +678,10 @@ debug/Sentry surface 전에 sanitize되고 마지막 middleware가 다시 saniti
 incoming labels/label-type metadata는 버려지며 SmartRetry는 이 callback들의
 retry authority가 아니다. malformed job은 fixed `invalid_job_id`, malformed
 recovery는 fixed `error`이고 result/status/worker/recovery projection은 닫힌
-어휘다. raw args/kwargs/labels/results/exception strings는 Redis/log/Sentry를
-통과하지 않는다. task body는 exact CancelledError/KeyboardInterrupt/SystemExit만
+어휘다. Untrusted inbound args/kwargs/labels are collapsed on formatter load
+before the first decoded-message log/Sentry surface; only canonical producer
+envelopes are intentionally emitted. Worker/recovery extras and exception
+strings never enter the W5 result backend or W5 logs/Sentry. task body는 exact CancelledError/KeyboardInterrupt/SystemExit만
 private category-only signal로 축약한다. final W5 post_execute는 Receiver의
 task-exception catch 이후, SmartRetry post-processing/result save 이전에 fresh
 safe exact control을 raise하며 retry/save는 이를 보지 못하고 Receiver error log도

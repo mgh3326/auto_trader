@@ -50,6 +50,10 @@
     하나 또는 빈 recovery envelope만 허용하며, incoming retry/private labels와
     label metadata를 폐기하고 SmartRetry 권한을 주지 않는다. raw args/kwargs/
     labels/results/exception strings를 확장하거나 로그·Sentry·결과에 남기지 마라.
+    `callback_query.from`은 exact built-in dict, `from.id`는 required exact
+    bounded int, present `update_id`는 매번 exact bounded int여야 하며 coercion은
+    금지한다. terminal 11-field scrub과 마지막 `update_identity_digest`를
+    완화하지 마라.
 12. **매수 게이트 A/B shadow (ROB-1301)**: variant B는 순수 기록이다.
     라이브 게이트 문언·주문·워치·제안 승격 금지. 채점 전 중간값으로 정책
     변경 금지. 스케줄러/자동화 트리거로 연결하지 마라.

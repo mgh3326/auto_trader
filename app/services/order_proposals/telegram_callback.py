@@ -1,9 +1,9 @@
 """Telegram callback-query handler for order_proposals approvals (ROB-816 PR 2).
 
 Orchestrates the whole click-to-submit flow for a single Telegram webhook
-update: chat-allowlist authz -> callback-data parse -> short-prefix proposal
-resolution -> nonce replay guard -> commit lease -> approve/deny dispatch ->
-fresh re-validate & submit -> Telegram message update.
+update: shape -> chat allowlist -> exact present ``update_id`` gate ->
+callback-data/action parse -> exact ``callback_query.from`` dict plus required
+bounded user-id gate -> downstream callback core and authorization gates.
 
 This module owns the DB session it opens via ``service_factory`` (default
 ``AsyncSessionLocal``) and DOES commit -- unlike ``OrderProposalsService``/
@@ -1956,9 +1956,10 @@ async def handle_callback_update(
 ) -> dict[str, Any]:
     """Handle one Telegram webhook update inline. Never raises (fail-closed).
 
-    Unchanged externally: normalize, then execute, in the order this function
-    always used. The split exists so the W5 durable ingress can normalize
-    without executing, and the durable worker can execute a stored envelope.
+    For accepted canonical inputs, normalize then execute through the unchanged
+    downstream core. R37 rejects noncanonical Telegram numeric identifiers
+    before core execution; durable ingress can normalize without executing and
+    the worker can execute a stored envelope.
     """
     try:
         try:

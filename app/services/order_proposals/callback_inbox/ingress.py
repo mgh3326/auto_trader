@@ -3,9 +3,11 @@
 The order is the contract:
 
 1. the webhook token middleware has already run (``AuthMiddleware``);
-2. shape / callback-data parser / action allowlist / chat allowlist, via the
-   *existing* :func:`normalize_callback_update` -- no new parser, no new
-   action vocabulary;
+2. shape / chat allowlist / exact present ``update_id`` gate /
+   callback-data/action parse / exact ``callback_query.from`` dict plus
+   required bounded user-id gate, via the existing
+   :func:`normalize_callback_update`. The R37 identifier boundary is new; the
+   action vocabulary remains unchanged;
 3. insert the normalized envelope and **commit**;
 4. a bounded, best-effort Redis kick;
 5. 200.

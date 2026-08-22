@@ -70,9 +70,10 @@ opaque job UUID.** Losing Redis loses latency, never a click.
 
 For accepted canonical inputs, the post-normalization execution core and the
 pre-existing authorization gates remain unchanged. Normalization also has the
-R37 numeric identifier trust boundary: it validates the exact callback-query
-shape and identifiers before durable ingress or execution. The durable ingress
-normalizes without executing, and the worker executes a stored envelope.
+R37 numeric identifier trust boundary: it validates the exact
+`callback_query.from` shape and numeric identifiers before durable ingress or
+execution. The durable ingress normalizes without executing, and the worker
+executes a stored envelope.
 Published-binding preflight, single-use nonce, commit lease, target-mutation
 lock, approval hash, and fresh preview remain downstream gates.
 
@@ -83,7 +84,10 @@ lock, approval hash, and fresh preview remain downstream gates.
 ### Ingress (request thread)
 
 1. `AuthMiddleware` validates the Telegram webhook secret token (unchanged).
-2. `normalize_callback_update`: shape, chat allowlist, callback-data parser.
+2. `normalize_callback_update`: shape, chat allowlist, exact present
+   `update_id` gate, callback-data/action parse, then exact
+   `callback_query.from` dict plus required bounded user-id gate. The R37
+   identifier boundary is new; the action vocabulary is unchanged.
    A rejection here means **200, no row, no kick** — the same external effect
    the inline path has today for the same input.
 3. Insert the normalized envelope and **commit**.
@@ -211,7 +215,7 @@ without rendering them, and imports asyncpg lazily only after the stdlib fast
 path. A malformed candidate consumes one bounded scanned/claimed error slot;
 the sweep then continues.
 
-v39 now covers both `review.telegram_callback_inbox` and `review.telegram_callback_recovery_cursor`.
+The persistent pytest test-schema bootstrap is now v39 and covers both `review.telegram_callback_inbox` and `review.telegram_callback_recovery_cursor`.
 
 ---
 

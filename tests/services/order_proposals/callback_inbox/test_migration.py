@@ -198,8 +198,8 @@ def test_r36_records_the_v39_persistent_schema_bootstrap() -> None:
     )
     assert SCHEMA_BOOTSTRAP_VERSION == 39
     assert (
-        "v39 now covers both `review.telegram_callback_inbox` and "
-        "`review.telegram_callback_recovery_cursor`"
+        "The persistent pytest test-schema bootstrap is now v39 and covers both "
+        "`review.telegram_callback_inbox` and `review.telegram_callback_recovery_cursor`."
     ) in runbook
 
 
