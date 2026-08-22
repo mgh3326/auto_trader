@@ -30,8 +30,6 @@ from sqlalchemy import text
 
 from app.services.order_proposals.callback_inbox import locks as locks_module
 
-pytestmark = pytest.mark.integration
-
 
 async def _holder_activity(observer, key: int) -> dict:
     """Read the holder's session state without touching its connection.
@@ -56,6 +54,7 @@ async def _holder_activity(observer, key: int) -> dict:
     return dict(rows[0])
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_holder_is_idle_not_idle_in_transaction(
     _bootstrap_test_schema, monkeypatch: pytest.MonkeyPatch
@@ -177,6 +176,7 @@ async def test_the_holder_is_idle_not_idle_in_transaction(
         await observer.close()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_holder_stays_idle_across_a_handler(_bootstrap_test_schema) -> None:
     """R30 — and it is still idle later, not just at the instant of acquiring."""
@@ -459,6 +459,7 @@ async def test_a_proven_commit_failure_leaves_no_holder_reference(
     )
 
 
+@pytest.mark.unit
 def test_the_commit_precedes_the_holder_assignment() -> None:
     """R30 — structurally, in the order the two statements appear.
 

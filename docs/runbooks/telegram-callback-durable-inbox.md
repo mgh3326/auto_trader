@@ -142,11 +142,12 @@ receives retry authority for these callbacks. Malformed jobs return the fixed
 Endpoint-specific result fields and statuses are closed vocabularies, and
 worker/recovery extras or exception strings never cross Redis, logs, or Sentry.
 The task body converts only exact `CancelledError`, `KeyboardInterrupt`, and
-`SystemExit` into private category-only signals. The final W5 `post_execute`
-raises a fresh safe exact control after Receiver's task-exception catch but
-before SmartRetry post-processing and result-backend save; retry/save see
-nothing and no Receiver error log is emitted. Other failures collapse to fixed
-safe results.
+`SystemExit` into private category-only signals, so Receiver does not give
+SmartRetry an exception. The final W5 `post_execute` raises a fresh safe exact
+control after Receiver's task-exception catch but before result-backend save;
+the result is not saved, an ack-capable broker's `WHEN_SAVED` acknowledgement
+stage is not reached, and no Receiver error log is emitted.
+Other failures collapse to fixed safe results.
 
 ### Worker
 
@@ -366,6 +367,13 @@ spans use the allowlist in `observability.py`.
   commit lease and rung-stable idempotency key remain in force underneath —
   but the inbox lock alone does not cover it.
 - **The consumers-armed guard checks configuration, not liveness.** See §4.
+- **A TaskIQ `CancelledError` ends only its current callback.** The final W5
+  middleware still prevents result save and, for an ack-capable broker,
+  `WHEN_SAVED` acknowledgement. The current ListQueue transport has no queue
+  ACK hook after dequeue, so the three committed DB markers plus recovery own
+  the job's durable classification. It deliberately does not signal the shared
+  worker process: that process may also be running unrelated tasks from the
+  shared `auto-trader` queue.
 - **Real process activation is a post-deploy risk**, not something this PR
   validated. No live Telegram, broker or production database was touched.
 - **The staleness window is a heuristic** for *when to look*, never for

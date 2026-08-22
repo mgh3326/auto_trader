@@ -29,19 +29,44 @@ def _is_banned(module: str | None) -> bool:
     return module == _BANNED or module.startswith(_BANNED + ".")
 
 
+def _import_from_modules(path: pathlib.Path, node: ast.ImportFrom) -> set[str]:
+    """Resolve every absolute module named by one ``from`` import."""
+    if node.level:
+        package = path.relative_to(REPO_ROOT).with_suffix("").parts[:-1]
+        parents = node.level - 1
+        if parents > len(package):
+            return set()
+        prefix = package[: len(package) - parents]
+        if node.module:
+            prefix = (*prefix, *node.module.split("."))
+        module = ".".join(prefix)
+    else:
+        module = node.module or ""
+
+    names = {module} if module else set()
+    names.update(
+        f"{module}.{alias.name}" if module else alias.name for alias in node.names
+    )
+    return names
+
+
+def _imported_modules_from_tree(path: pathlib.Path, tree: ast.AST) -> set[str]:
+    """Return absolute module names, including relative-import aliases."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.update(_import_from_modules(path, node))
+    return names
+
+
 def _imports_repo(path: pathlib.Path) -> bool:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except SyntaxError:
         return False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and _is_banned(node.module):
-            return True
-        if isinstance(node, ast.Import) and any(
-            _is_banned(alias.name) for alias in node.names
-        ):
-            return True
-    return False
+    return any(_is_banned(module) for module in _imported_modules_from_tree(path, tree))
 
 
 def test_repository_import_boundary_enforced() -> None:
@@ -91,16 +116,24 @@ GUARDED_MODULES: tuple[pathlib.Path, ...] = (
 
 def _imported_modules(path: pathlib.Path) -> set[str]:
     """Every module name any import in this file brings in, alias by alias."""
-    names: set[str] = set()
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            names.add(module)
-            names.update(f"{module}.{alias.name}" for alias in node.names)
-    return names
+    return _imported_modules_from_tree(path, tree)
+
+
+def test_relative_imports_cannot_bypass_either_guard() -> None:
+    """Anti-vacuity for package-local and parent-relative import spellings."""
+    logical_path = (
+        REPO_ROOT / "app/services/order_proposals/callback_inbox/probe_module.py"
+    )
+    tree = ast.parse(
+        "from .repository import CallbackInboxRepository\n"
+        "from . import repository\n"
+        "from .. import revalidation\n"
+    )
+    modules = _imported_modules_from_tree(logical_path, tree)
+    assert _BANNED in modules
+    assert "app.services.order_proposals.revalidation" in modules
+    assert any(_is_banned(module) for module in modules)
 
 
 def test_the_closed_world_covers_the_task_module_too() -> None:

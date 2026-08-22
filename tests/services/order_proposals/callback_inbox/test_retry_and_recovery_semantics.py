@@ -73,6 +73,7 @@ async def _queue(inbox_cleanup: list[uuid.UUID]) -> uuid.UUID:
     )
 
     update_id = 620_000 + uuid.uuid4().int % 100_000
+    callback_id = f"cbq-retry-{uuid.uuid4().hex}"
 
     async def _no_kick(job_id: uuid.UUID) -> None:
         return None
@@ -81,7 +82,7 @@ async def _queue(inbox_cleanup: list[uuid.UUID]) -> uuid.UUID:
         make_update(
             data=_synthetic_data(),
             update_id=update_id,
-            callback_id=f"cbq-{update_id}",
+            callback_id=callback_id,
         ),
         now=now_kst(),
         enqueue_fn=_no_kick,

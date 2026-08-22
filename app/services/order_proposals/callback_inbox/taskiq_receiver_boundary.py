@@ -118,7 +118,7 @@ class W5ReceiverBoundaryFormatter(TaskiqFormatter):
 
 
 class W5ReceiverBoundaryMiddleware(TaskiqMiddleware):
-    """Repeat W5 sanitization and turn private exact-control signals into exits."""
+    """Repeat W5 sanitization and turn private signals into safe callback exits."""
 
     def pre_execute(self, message: TaskiqMessage) -> TaskiqMessage:
         """Close any in-process mutation between formatter decode and execution."""
@@ -132,9 +132,14 @@ class W5ReceiverBoundaryMiddleware(TaskiqMiddleware):
         }:
             return
         signal = result.return_value
-        # Receiver calls reverse post_execute after its task-exception catch and
-        # before result_backend.set_result, so no retry/error/save sees a signal.
+        # The task body kept exact controls out of on_error/SmartRetry. Receiver
+        # now calls reverse post_execute before result_backend.set_result, so no
+        # control signal can be saved or reach an ack-capable broker's
+        # WHEN_SAVED acknowledgement stage as a completed result.
         if signal is _CANCELLED_SIGNAL:
+            # Cancellation intentionally remains scoped to this callback.  The
+            # durable DB markers and recovery own its final classification;
+            # hostile task input must never gain process-wide shutdown power.
             raise asyncio.CancelledError()
         if signal is _KEYBOARD_INTERRUPT_SIGNAL:
             raise KeyboardInterrupt()

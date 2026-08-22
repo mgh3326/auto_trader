@@ -19,8 +19,10 @@ import copy
 import logging
 import math
 import os
+import pathlib
 import subprocess
 import sys
+import tomllib
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -69,6 +71,23 @@ EXPECTED_BACKLOG_KEYS = frozenset(
 EXPECTED_RECOVERY_REPORT_KEYS = frozenset(
     {"status", "scanned", "claimed", "statuses", "backlog"}
 )
+
+
+def test_taskiq_dependency_is_pinned_to_the_verified_receiver_lifecycle() -> None:
+    """W5 relies on the 0.12 reverse-post/save ordering exercised below."""
+    pyproject = tomllib.loads(
+        (pathlib.Path(__file__).resolve().parents[4] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    taskiq_specs = [
+        dependency
+        for dependency in pyproject["project"]["dependencies"]
+        if dependency.startswith("taskiq>")
+    ]
+    assert taskiq_specs == ["taskiq>=0.12.1,<0.13.0"]
+
+
 NON_CLAIMED_ITEM_STATUSES = frozenset({"lock_contended", "not_claimable", "not_found"})
 
 # The assertion helpers below must never echo these values.  Stable fragments
@@ -2320,7 +2339,7 @@ async def test_receiver_callback_replaces_only_exact_controls_before_save_or_ret
     endpoint: str,
     control: str,
 ) -> None:
-    """Exact built-in controls leave only a new safe process-control signal."""
+    """Exact built-in controls leave only a new safe callback control."""
     __tracebackhide__ = True
     from app.core.config import settings
     from app.tasks import telegram_callback_inbox_tasks as task_module
@@ -4650,3 +4669,72 @@ async def test_recovery_loop_skips_malformed_candidate_and_continues_with_exact_
         ),
         message="malformed recovery candidate crossed execution or observability authority",
     )
+
+
+class _FailingTransactionExit:
+    """A Sentry-like manager whose teardown is deliberately broken."""
+
+    def __init__(self, teardown_error: Exception) -> None:
+        self.teardown_error = teardown_error
+        self.transaction = _RecordingTransaction()
+        self.exit_args: tuple[object, object, object] | None = None
+
+    def __enter__(self) -> _RecordingTransaction:
+        return self.transaction
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        self.exit_args = (exc_type, exc, traceback)
+        raise self.teardown_error
+
+
+class _RecordingTransaction:
+    def __init__(self) -> None:
+        self.tags: dict[str, str] = {}
+
+    def set_tag(self, key: str, value: str) -> None:
+        self.tags[key] = value
+
+
+def test_worker_transaction_ignores_a_telemetry_teardown_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful job stays successful even when Sentry exit raises."""
+    from app.services.order_proposals.callback_inbox.observability import (
+        worker_transaction,
+    )
+
+    manager = _FailingTransactionExit(RuntimeError("safe teardown failure"))
+    monkeypatch.setattr(sentry_sdk, "start_transaction", lambda **_kwargs: manager)
+    job_id = uuid.uuid4()
+
+    with worker_transaction(job_id) as transaction:
+        assert transaction is manager.transaction
+
+    assert manager.transaction.tags == {"callback_job.id": str(job_id)}
+    assert manager.exit_args == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    "original",
+    (RuntimeError("safe worker failure"), asyncio.CancelledError()),
+    ids=("exception", "cancelled"),
+)
+def test_worker_transaction_preserves_the_original_failure_when_teardown_fails(
+    monkeypatch: pytest.MonkeyPatch, original: BaseException
+) -> None:
+    """Telemetry cannot mask or suppress a caller exception/control signal."""
+    from app.services.order_proposals.callback_inbox.observability import (
+        worker_transaction,
+    )
+
+    manager = _FailingTransactionExit(RuntimeError("safe teardown failure"))
+    monkeypatch.setattr(sentry_sdk, "start_transaction", lambda **_kwargs: manager)
+
+    with pytest.raises(type(original)) as caught:
+        with worker_transaction(uuid.uuid4()):
+            raise original
+
+    assert caught.value is original
+    assert manager.exit_args is not None
+    assert manager.exit_args[0] is type(original)
+    assert manager.exit_args[1] is original

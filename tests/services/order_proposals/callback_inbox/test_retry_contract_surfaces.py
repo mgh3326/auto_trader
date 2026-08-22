@@ -121,9 +121,9 @@ def test_the_error_class_comment_matches_the_runtime() -> None:
     source = _CONTRACTS.read_text(encoding="utf-8")
     block_start = source.index("class ErrorClass")
     block = source[block_start : source.index("ERROR_CLASSES", block_start)]
-    pre_core = block[
-        block.index("PRE_CORE_FAILURE") - 400 : block.index("PRE_CORE_FAILURE")
-    ]
+    position = block.index("PRE_CORE_FAILURE")
+    pre_core = block[max(0, position - 400) : position]
+    assert pre_core.strip(), "PRE_CORE_FAILURE's preceding contract vanished"
     for key in _RETRY_KEYS:
         assert key not in pre_core, (
             f"PRE_CORE_FAILURE's comment still offers {key!r} as a way in"

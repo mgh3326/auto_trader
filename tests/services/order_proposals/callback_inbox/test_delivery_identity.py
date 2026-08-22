@@ -41,8 +41,6 @@ from app.core.timezone import now_kst
 
 from .conftest import CHAT_ID, make_update
 
-pytestmark = pytest.mark.integration
-
 #: Every field the stored row is compared on, including the update identity
 #: that R28 moves out of the digest and into verification.
 COMPARISON_FIELDS = (
@@ -228,6 +226,7 @@ def _wide_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_reported_counterexample_directly(
     _bootstrap_test_schema, _wide_allowlist, inbox_cleanup: list[uuid.UUID]
@@ -290,6 +289,7 @@ async def test_the_reported_counterexample_directly(
     assert kicked == [first.job_id], kicked
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", TAMPERABLE_FIELDS)
 async def test_one_callback_query_id_admits_exactly_one_call(
@@ -354,6 +354,7 @@ async def test_one_callback_query_id_admits_exactly_one_call(
     assert kicked == [first.job_id], kicked
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_an_exact_redelivery_is_still_idempotent(
     _bootstrap_test_schema, _wide_allowlist, inbox_cleanup: list[uuid.UUID]
@@ -404,6 +405,7 @@ async def test_an_exact_redelivery_is_still_idempotent(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["nonce", "membership_revision", "chat_id"])
 async def test_a_two_backend_race_on_one_callback_query_id(

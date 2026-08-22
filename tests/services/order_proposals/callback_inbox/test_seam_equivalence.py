@@ -234,7 +234,9 @@ def test_the_seam_did_not_absorb_any_authorisation_gate() -> None:
     source = pathlib.Path(callback_module.__file__).read_text(encoding="utf-8")
     start = source.index("def normalize_callback_update(")
     end = source.index("async def handle_normalized_callback(")
+    assert start < end, "the normalization seam no longer precedes the callback core"
     seam = source[start:end]
+    assert seam.strip(), "the normalization seam slice is empty"
     for gate in (
         "preflight_published_proposal_callback",
         "consume_published_proposal_callback",

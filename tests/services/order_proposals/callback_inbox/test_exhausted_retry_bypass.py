@@ -38,8 +38,6 @@ from .conftest import (
     without_the_retry_budget_check,
 )
 
-pytestmark = pytest.mark.integration
-
 AUTHORITY_FIELDS = (
     "callback_query_id",
     "chat_id",
@@ -134,6 +132,7 @@ async def _raw_row(job_id: uuid.UUID) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_schedule_retry_refuses_a_job_with_no_attempts_left(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -161,6 +160,7 @@ async def test_schedule_retry_refuses_a_job_with_no_attempts_left(
     assert raw["attempt_count"] == 3
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_schedule_retry_still_grants_a_job_with_attempts_left(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -221,6 +221,7 @@ _INSERT = sa.text(
 )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_database_refuses_an_exhausted_retry_wait_row(
     _bootstrap_test_schema,
@@ -269,7 +270,7 @@ async def test_the_database_refuses_an_exhausted_retry_wait_row(
                 connection, state="retry_wait", attempts=3, maximum=1
             ),
             # Other states are unaffected: a spent budget is normal there.
-            "processing_at_budget": _accepts(
+            "pending_at_budget": _accepts(
                 connection, state="pending", attempts=3, maximum=3
             ),
         }
@@ -283,7 +284,7 @@ async def test_the_database_refuses_an_exhausted_retry_wait_row(
         "retry_wait_with_budget": True,
         "retry_wait_at_budget": False,
         "retry_wait_over_budget": False,
-        "processing_at_budget": True,
+        "pending_at_budget": True,
     }
 
 
@@ -292,6 +293,7 @@ async def test_the_database_refuses_an_exhausted_retry_wait_row(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_real_scanner_terminalises_a_legacy_exhausted_retry_row(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -334,6 +336,7 @@ async def test_the_real_scanner_terminalises_a_legacy_exhausted_retry_row(
         assert raw[field] is None, field
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_production_recovery_task_reaches_it_too(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
@@ -368,6 +371,7 @@ async def test_the_production_recovery_task_reaches_it_too(
         assert raw[field] is None, field
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_healthy_not_yet_due_retry_is_still_left_alone(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]

@@ -116,15 +116,15 @@ async def _nonce_consumed(proposal_id: uuid.UUID) -> bool:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "crash_point",
+    ("crash_point", "nonce"),
     [
-        "after_claim_commit",
-        "before_preflight",
-        "after_preflight",
-        "after_nonce_consume_before_broker",
-        "after_broker_send",
-        "after_outcome_recorded_before_core_commit",
-        "after_core_commit_before_job_terminal",
+        ("after_claim_commit", "crashpt000"),
+        ("before_preflight", "crashpt001"),
+        ("after_preflight", "crashpt002"),
+        ("after_nonce_consume_before_broker", "crashpt003"),
+        ("after_broker_send", "crashpt004"),
+        ("after_outcome_recorded_before_core_commit", "crashpt005"),
+        ("after_core_commit_before_job_terminal", "crashpt006"),
     ],
 )
 async def test_no_crash_point_can_produce_a_second_submission(
@@ -132,6 +132,7 @@ async def test_no_crash_point_can_produce_a_second_submission(
     db_session,
     inbox_cleanup: list[uuid.UUID],
     crash_point: str,
+    nonce: str,
 ) -> None:
     from app.services.order_proposals.callback_inbox import service as service_module
     from app.services.order_proposals.callback_inbox import worker as worker_module
@@ -142,9 +143,7 @@ async def test_no_crash_point_can_produce_a_second_submission(
         process_callback_job,
     )
 
-    group = await seed_proposal(
-        db_session, nonce=f"crash{crash_point[:6]}"[:11], symbol="CRSKR"
-    )
+    group = await seed_proposal(db_session, nonce=nonce, symbol="CRSKR")
     job_id = await _queue(inbox_cleanup, group)
 
     broker = _Broker()

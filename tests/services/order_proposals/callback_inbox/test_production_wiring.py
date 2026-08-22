@@ -357,14 +357,14 @@ async def test_the_pg_lock_is_still_held_while_the_handler_runs(
     result = await task
     assert result["status"] == "succeeded"
 
-    during_acquired, during_pid = observed["during"]
+    during_acquired, _ = observed["during"]
+    # Session advisory locks are re-entrant on the holder backend.  A false
+    # try-lock result therefore proves that this probe used a different
+    # backend and observed the worker's lock while the handler was running.
     assert during_acquired is False, "the lock was not held across the handler"
 
-    after_acquired, after_pid = await _independent_backend_can_take(key)
+    after_acquired, _ = await _independent_backend_can_take(key)
     assert after_acquired is True, "the lock outlived the job"
-    # Distinct backends throughout: the probe never rode the worker's own
-    # connection, which would have made the exclusion meaningless.
-    assert during_pid != after_pid or during_pid > 0
 
     row = await load_job(job_id)
     assert row is not None

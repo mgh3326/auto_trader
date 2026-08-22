@@ -684,10 +684,13 @@ recovery는 fixed `error`이고 result/status/worker/recovery projection은 닫�
 before the first decoded-message log/Sentry surface; only canonical producer
 envelopes are intentionally emitted. Worker/recovery extras and exception
 strings never enter the W5 result backend or W5 logs/Sentry. task body는 exact CancelledError/KeyboardInterrupt/SystemExit만
-private category-only signal로 축약한다. final W5 post_execute는 Receiver의
-task-exception catch 이후, SmartRetry post-processing/result save 이전에 fresh
-safe exact control을 raise하며 retry/save는 이를 보지 못하고 Receiver error log도
-없다. 나머지 failure는 fixed safe result로 collapse된다.
+private category-only signal로 축약해 SmartRetry에 exception을 주지 않는다. final W5
+post_execute는 Receiver의 task-exception catch 이후, result save 이전에 fresh safe
+exact control을 raise하며 result backend save 및 ack-capable broker의 WHEN_SAVED
+ACK 단계에 도달하지 않고 Receiver error log도 없다. `CancelledError`는 해당
+callback만 끝내며, TaskIQ result save/ACK와 독립적인 durable
+판정은 3개 DB marker와 recovery가 맡는다. shared `auto-trader` worker process에는
+신호를 보내지 않는다. 나머지 failure는 fixed safe result로 collapse된다.
 
 Recovery UUID materialization은 exact stdlib `uuid.UUID` 또는 exact
 `asyncpg.pgproto.UUID`만 허용한다. owning base descriptor를 통해 fresh stdlib

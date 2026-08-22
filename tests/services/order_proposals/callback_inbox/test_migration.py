@@ -309,22 +309,6 @@ def _accepts(connection: sa.Connection, **overrides: object) -> bool:
     return True
 
 
-def _scrubbed() -> dict[str, object]:
-    return {
-        "callback_query_id": None,
-        "chat_id": None,
-        "message_id": None,
-        "telegram_user_id": None,
-        "action": None,
-        "subject_short": None,
-        "dispatch_attempt_id": None,
-        "membership_revision": None,
-        "membership_digest": None,
-        "nonce": None,
-        "update_identity_digest": None,
-    }
-
-
 #: Every authority/PII column the threat brief requires a terminal row to
 #: have dropped. Kept literal, not imported from ``contracts``, so a future
 #: edit that *shrinks* the production tuple cannot silently shrink this test

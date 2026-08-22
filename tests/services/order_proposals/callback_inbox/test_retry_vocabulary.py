@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -33,8 +32,6 @@ from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 
 from .conftest import load_job, make_update, shape_owned_callback_inbox_row
-
-pytestmark = pytest.mark.integration
 
 
 def _synthetic_data(nonce: str = "nonce123456") -> str:
@@ -116,6 +113,7 @@ def test_schedule_retry_accepts_no_retry_vocabulary_from_its_caller() -> None:
         assert banned not in parameters, banned
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_granted_retry_always_records_the_pre_core_vocabulary(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -193,6 +191,7 @@ def _accepts(
     return True
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_database_refuses_any_other_retry_vocabulary(
     _bootstrap_test_schema,
@@ -286,6 +285,7 @@ def test_the_model_declares_the_retry_vocabulary_check() -> None:
     assert "pending" in expression
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_caller_cannot_launder_an_ambiguous_failure_into_a_retry(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -321,6 +321,7 @@ async def test_a_caller_cannot_launder_an_ambiguous_failure_into_a_retry(
     assert fresh.error_class is None
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_retry_row_survives_a_second_retry_with_the_same_vocabulary(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -347,4 +348,4 @@ async def test_a_retry_row_survives_a_second_retry_with_the_same_vocabulary(
         assert fresh.state == "retry_wait"
         assert fresh.error_class == "pre_core_failure"
         assert fresh.outcome is None
-        assert fresh.available_at > fresh.received_at + timedelta(seconds=-1)
+        assert fresh.available_at > fresh.received_at

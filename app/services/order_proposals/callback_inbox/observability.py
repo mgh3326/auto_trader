@@ -105,22 +105,34 @@ def worker_transaction(job_id: uuid.UUID) -> Iterator[Any]:
     this transaction once the durable path is armed. Sentry being absent or
     misbehaving must never fail a job, so every interaction is suppressed.
     """
-    span: Any = None
     try:
         import sentry_sdk
 
-        with sentry_sdk.start_transaction(
+        manager = sentry_sdk.start_transaction(
             op=WORKER_TRANSACTION_OP, name=WORKER_TRANSACTION_NAME
-        ) as transaction:
-            span = transaction
-            with contextlib.suppress(Exception):
-                transaction.set_tag("callback_job.id", str(job_id))
-            yield transaction
-        return
+        )
+        transaction = manager.__enter__()
     except Exception:  # noqa: BLE001 - telemetry must never break a job
-        if span is not None:
-            raise
         yield None
+        return
+
+    with contextlib.suppress(Exception):
+        transaction.set_tag("callback_job.id", str(job_id))
+    try:
+        yield transaction
+    except BaseException as caller_error:
+        # Sentry teardown may observe the failure, but it may neither replace
+        # nor suppress the worker's original exception or control signal.
+        with contextlib.suppress(Exception):
+            manager.__exit__(
+                type(caller_error), caller_error, caller_error.__traceback__
+            )
+        raise
+    else:
+        # A telemetry-only teardown failure cannot turn a successful job into
+        # a retry or dead letter.
+        with contextlib.suppress(Exception):
+            manager.__exit__(None, None, None)
 
 
 def annotate(span: Any, data: dict[str, Any]) -> None:

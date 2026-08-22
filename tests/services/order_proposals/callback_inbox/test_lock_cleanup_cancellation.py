@@ -37,8 +37,6 @@ from .conftest import (
     simulate_lock_process_death_for_test,
 )
 
-pytestmark = pytest.mark.unit
-
 
 class _Recorder:
     """A connection that is cancelled once, mid-cleanup, deterministically."""
@@ -76,6 +74,7 @@ async def _release_with(connection) -> BaseException | None:
     return None
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_cancellation_during_cleanup_does_not_abandon_the_backend() -> None:
     """R27 — the counterexample, at the seam it actually arrives from.
@@ -134,6 +133,7 @@ async def test_a_cancellation_during_cleanup_does_not_abandon_the_backend() -> N
     assert lock_is_released_for_test(lock) is True
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_spurious_inner_cancellation_is_retried_not_propagated() -> None:
     """A ``CancelledError`` from the driver call is not our cancellation.
@@ -152,6 +152,7 @@ async def test_a_spurious_inner_cancellation_is_retried_not_propagated() -> None
     assert "close" in connection.events
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_the_holder_keeps_authority_until_cleanup_finishes() -> None:
     """R27 — no orphan: the reference must not be dropped early.
@@ -180,6 +181,7 @@ async def test_the_holder_keeps_authority_until_cleanup_finishes() -> None:
     assert "close" in connection.events
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_real_task_cancelled_twice_still_terminates() -> None:
     """R27 — the same thing through genuine ``Task.cancel()`` calls."""
@@ -219,6 +221,7 @@ async def test_a_real_task_cancelled_twice_still_terminates() -> None:
     assert "close" in events, events
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_an_uncancelled_failure_path_is_unchanged() -> None:
     """Control: the ordinary discard still invalidates then closes, once."""
@@ -234,6 +237,7 @@ async def test_an_uncancelled_failure_path_is_unchanged() -> None:
     ]
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_unprovable_termination_is_fatal_not_a_pool_return() -> None:
     """No weaker fallback, and no quiet one either.
@@ -264,6 +268,7 @@ async def test_unprovable_termination_is_fatal_not_a_pool_return() -> None:
     )
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_driver_terminate_is_proof_enough() -> None:
     """When ``invalidate`` fails, the driver's own terminate is the fallback."""
@@ -413,6 +418,7 @@ async def test_a_double_cancelled_release_leaves_no_lock_behind(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_an_ambiguous_acquire_terminates_the_backend(
     monkeypatch: pytest.MonkeyPatch,
@@ -444,6 +450,7 @@ async def test_an_ambiguous_acquire_terminates_the_backend(
     assert lock_is_released_for_test(lock) is True
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_repeatedly_cancelled_close_still_finishes() -> None:
     """The success path has to be cancellation-proof too.
@@ -494,6 +501,7 @@ async def test_a_repeatedly_cancelled_close_still_finishes() -> None:
     assert "close_completed" in events, events
 
 
+@pytest.mark.unit
 def test_the_cleanup_never_rewrites_the_cancellation_bookkeeping() -> None:
     """``uncancel()`` would hide a cancellation from an enclosing TaskGroup.
 
@@ -530,6 +538,7 @@ class _RaisingLogger:
 
 
 @pytest.mark.parametrize("unlock", ["raises", "returns_false"])
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_raising_logger_cannot_preempt_the_cleanup(
     unlock: str, monkeypatch: pytest.MonkeyPatch
@@ -575,6 +584,7 @@ async def test_a_raising_logger_cannot_preempt_the_cleanup(
     assert spy.attempted, "the failure was never reported at all"
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_simulate_process_death_keeps_authority_until_it_finishes() -> None:
     """The test helper has the same obligation as the real path.
@@ -602,6 +612,7 @@ async def test_simulate_process_death_keeps_authority_until_it_finishes() -> Non
     assert lock_is_released_for_test(lock) is True
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_simulate_process_death_refuses_to_drop_an_unterminated_backend() -> None:
     """The helper obeys the same contract, including its failure half.
@@ -632,6 +643,7 @@ async def test_simulate_process_death_refuses_to_drop_an_unterminated_backend() 
     )
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_simulate_process_death_re_delivers_a_cancellation() -> None:
     """... and does not swallow the cancellation it absorbed while cleaning up."""
@@ -748,6 +760,7 @@ def _quarantined() -> set:
     return quarantined_handles_for_test()
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_an_unproven_release_never_closes_or_checks_in() -> None:
     """R27d — no close, no raw invalidate, no checkin. The handle is kept."""
@@ -780,6 +793,7 @@ async def test_an_unproven_release_never_closes_or_checks_in() -> None:
     assert connection.raw.driver_connection in quarantine
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_an_unproven_ambiguous_acquire_keeps_its_connection(
     monkeypatch: pytest.MonkeyPatch,
@@ -812,6 +826,7 @@ async def test_an_unproven_ambiguous_acquire_keeps_its_connection(
     assert connection in _quarantined()
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_an_unproven_simulated_death_keeps_its_connection() -> None:
     """R27d — and so does the helper that models a kill."""
@@ -831,6 +846,7 @@ async def test_an_unproven_simulated_death_keeps_its_connection() -> None:
     assert connection in _quarantined()
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_the_driver_fallback_runs_in_order_when_it_does_prove_it() -> None:
     """R27d — proven termination: exact order, and only then a close."""
@@ -859,6 +875,7 @@ async def test_the_driver_fallback_runs_in_order_when_it_does_prove_it() -> None
 
 
 @pytest.mark.parametrize("failure", ["runtime_error", "cancelled"])
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_an_inner_close_failure_is_not_reported_as_success(
     failure: str,

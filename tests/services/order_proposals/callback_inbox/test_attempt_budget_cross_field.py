@@ -28,9 +28,6 @@ from .conftest import (
     make_update,
 )
 
-pytestmark = pytest.mark.integration
-
-
 AUTHORITY_FIELDS: tuple[str, ...] = (
     "callback_query_id",
     "update_identity_digest",
@@ -316,6 +313,7 @@ def test_claim_classification_checks_malformed_budget_before_any_active_path() -
     assert observed == {name: expected for name, (_row, expected) in cases.items()}
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_enqueue_has_no_budget_override_and_persists_fixed_three(
     _bootstrap_test_schema,
@@ -344,6 +342,7 @@ async def test_enqueue_has_no_budget_override_and_persists_fixed_three(
     assert raw["max_attempts"] == 3
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_worker_scrubs_a_malformed_budget_before_handler_entry_and_telemetry(
     _bootstrap_test_schema,
@@ -413,6 +412,7 @@ async def test_worker_scrubs_a_malformed_budget_before_handler_entry_and_telemet
     assert 4 not in event_budget_data.values()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "attempt_count", "max_attempts", "extra", "normalised_attempt"),
@@ -504,6 +504,7 @@ async def test_recovery_scrubs_every_active_malformed_budget_in_one_sweep(
     assert after_second == after_first
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_malformed_future_retry_precedes_the_normal_exhausted_tier(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -552,6 +553,7 @@ async def test_malformed_future_retry_precedes_the_normal_exhausted_tier(
     assert calls == []
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_malformed_priority_preserves_queued_and_stale_recovery_progress(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -620,6 +622,7 @@ async def test_malformed_priority_preserves_queued_and_stale_recovery_progress(
     assert len(handler_calls) == len(set(handler_calls)) == 2
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_malformed_rows_are_excluded_from_the_normal_recovery_tiers(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -674,6 +677,7 @@ async def test_malformed_rows_are_excluded_from_the_normal_recovery_tiers(
     assert {tiers[pending], tiers[processing], tiers[future_retry]} == {TIER_MALFORMED}
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attempt_count", "max_attempts"),
@@ -717,6 +721,7 @@ async def test_begin_attempt_cas_refuses_every_malformed_budget_without_writing(
     assert raw["max_attempts"] == max_attempts
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_begin_attempt_cas_refuses_the_canonical_spent_budget_without_writing(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -742,6 +747,7 @@ async def test_begin_attempt_cas_refuses_the_canonical_spent_budget_without_writ
     assert raw["max_attempts"] == 3
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("attempt_count", (0, 2))
 async def test_begin_attempt_cas_still_accepts_canonical_unspent_budgets(
@@ -768,6 +774,7 @@ async def test_begin_attempt_cas_still_accepts_canonical_unspent_budgets(
     assert fresh.attempt_count == attempt_count + 1
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attempt_count", "max_attempts"),
@@ -812,6 +819,7 @@ async def test_schedule_retry_cas_refuses_every_malformed_budget_without_writing
     assert raw["max_attempts"] == max_attempts
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("attempt_count", (1, 2))
 async def test_schedule_retry_cas_still_accepts_canonical_unspent_budgets(

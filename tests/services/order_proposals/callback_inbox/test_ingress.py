@@ -34,8 +34,6 @@ from app.services.order_proposals.dispatch_contract import (
 
 from .conftest import CHAT_ID, load_job, make_update
 
-pytestmark = pytest.mark.integration
-
 
 def _valid_callback_data(*, action: str = "op", nonce: str = "nonce123456") -> str:
     proposal_id = uuid.uuid4()
@@ -70,6 +68,7 @@ async def _count_rows(update_digest: str) -> int:
         ).scalar_one()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_valid_callback_is_committed_and_kicked_once(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -113,6 +112,7 @@ async def test_a_valid_callback_is_committed_and_kicked_once(
     assert row.chat_id == str(CHAT_ID)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_duplicate_delivery_creates_exactly_one_row(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -149,6 +149,7 @@ async def test_duplicate_delivery_creates_exactly_one_row(
     assert await _count_rows(digest) == 1
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_reused_delivery_id_with_a_different_envelope_fails_closed(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -205,6 +206,7 @@ async def test_a_reused_delivery_id_with_a_different_envelope_fails_closed(
     assert row.nonce == "nonce123456", "the stored envelope was overwritten"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_row_is_visible_to_an_independent_session_before_the_kick(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -239,6 +241,7 @@ async def test_the_row_is_visible_to_an_independent_session_before_the_kick(
     assert seen == ["pending"], "the kick fired before the row was committed"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_concurrent_duplicate_deliveries_still_create_one_row(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -352,6 +355,7 @@ def _envelope_variant(field: str | None) -> dict[str, Any]:
     }
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", CONFLICTING_FIELDS)
 async def test_a_concurrent_conflicting_delivery_loses_and_fails_closed(
@@ -454,6 +458,7 @@ async def test_a_concurrent_conflicting_delivery_loses_and_fails_closed(
     assert await _count_rows(digest) == 1
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_an_identical_concurrent_redelivery_is_still_a_duplicate(
     _bootstrap_test_schema,
@@ -511,6 +516,7 @@ async def test_an_identical_concurrent_redelivery_is_still_a_duplicate(
     assert kicked == [job_id]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_persist_failure_raises_and_never_attempts_the_kick(
     _bootstrap_test_schema,
@@ -558,6 +564,7 @@ async def test_persist_failure_raises_and_never_attempts_the_kick(
     assert kicked == []
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_failure_at_the_real_commit_returns_503_and_never_enqueues(
     _bootstrap_test_schema,
@@ -631,6 +638,7 @@ async def test_a_failure_at_the_real_commit_returns_503_and_never_enqueues(
     assert await _count_rows(digest) == 0, "an uncommitted row became visible"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_ack_is_bounded_by_the_configured_enqueue_timeout(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
@@ -692,6 +700,7 @@ async def test_the_ack_is_bounded_by_the_configured_enqueue_timeout(
     assert row.state == "pending"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_cancellation_resistant_kick_keeps_the_committed_row_and_returns_bounded(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -758,6 +767,7 @@ async def test_a_cancellation_resistant_kick_keeps_the_committed_row_and_returns
                 inbox_cleanup.append(job_id)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_failing_kick_keeps_the_committed_row(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -788,6 +798,7 @@ async def test_a_failing_kick_keeps_the_committed_row(
     assert row is not None and row.state == "pending"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("update", "reason"),
@@ -854,6 +865,7 @@ async def test_rejected_updates_persist_nothing_and_kick_nothing(
     assert after == before
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_an_update_without_any_delivery_identity_is_refused(
     _bootstrap_test_schema,
@@ -947,11 +959,9 @@ def test_equality_and_insert_share_one_projection() -> None:
     assert projection["message_id"] == variant["message_id"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.unit
 @pytest.mark.parametrize("field", PERSISTED_ENVELOPE_FIELDS)
-async def test_matches_rejects_a_row_differing_in_any_single_field(
-    _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], field: str
-) -> None:
+def test_matches_rejects_a_row_differing_in_any_single_field(field: str) -> None:
     """R11 — one-field-at-a-time over all eleven, including the digest-bound one."""
     from app.services.order_proposals.callback_inbox.ingress import (
         envelope_matches_row,
@@ -1000,6 +1010,7 @@ async def test_matches_rejects_a_row_differing_in_any_single_field(
     )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_redelivery_landing_on_a_terminal_row_is_a_benign_duplicate(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID]
@@ -1084,6 +1095,7 @@ async def test_a_redelivery_landing_on_a_terminal_row_is_a_benign_duplicate(
     assert await _count_rows(digest) == 1
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_conflict_seam_really_is_two_backends_waiting_on_the_index(
     _bootstrap_test_schema, inbox_cleanup: list[uuid.UUID], monkeypatch
