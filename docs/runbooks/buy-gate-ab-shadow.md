@@ -8,6 +8,15 @@ watch, a policy edit, or a scheduler.
 Controlling issue: [ROB-1301](https://linear.app/mgh3326/issue/ROB-1301).
 Code pin: `app/services/buy_gate_ab_shadow/spec.py` (`PINNED_SPEC_SHA256`).
 
+🔴 **A second, stricter pre-registration is registered but not collecting.**
+`docs/preregistrations/2026-08-22-support-strength-two-source-equivalence.md`
+(retro §7-1, confirmed §139차 ②) declares a variant B of *moderate AND
+source_count>=2 AND independent families*, adds crypto `winner_pullback_add`,
+and adds a pre-committed numeric promotion rule. **That is not the experiment
+this runbook and the code pin describe.** Do not mix the two cohorts. Its
+start conditions (§7 of that file) are unmet, so everything below still
+describes the live, pinned ROB-1301 experiment.
+
 ## Forbidden (issue canonical, not paraphrased)
 
 * shadow가 제안·주문·워치로 승격 금지(순수 기록)

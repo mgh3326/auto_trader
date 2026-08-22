@@ -122,6 +122,7 @@ tests/services/brokers/toss/test_config.py
 tests/services/brokers/toss/test_errors.py
 tests/services/brokers/toss/test_smoke_script.py
 tests/services/buy_gate_ab_shadow/test_evaluate.py
+tests/services/buy_gate_ab_shadow/test_preregistration_freeze.py
 tests/services/buy_gate_ab_shadow/test_spec_freeze.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
