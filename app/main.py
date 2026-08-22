@@ -53,6 +53,7 @@ from app.routers import (
     kospi200,
     market_calendar,
     market_events,
+    mock_auto_read_model,
     news_analysis,
     news_issues,
     news_radar,
@@ -227,6 +228,7 @@ def create_app() -> FastAPI:
     app.include_router(alpaca_paper_ledger.router)
     app.include_router(market_calendar.router)
     app.include_router(market_events.router)
+    app.include_router(mock_auto_read_model.router)
     app.include_router(research_reports.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)

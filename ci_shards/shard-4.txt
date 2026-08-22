@@ -54,6 +54,7 @@ tests/routers/test_invest_open_orders_router.py
 tests/routers/test_invest_session_context_router.py
 tests/routers/test_investment_hermes_http.py
 tests/routers/test_market_calendar_router.py
+tests/routers/test_mock_auto_read_model.py
 tests/routers/test_pagination.py
 tests/routers/test_telegram_callback_route.py
 tests/routers/test_trade_journals_router.py
@@ -208,6 +209,7 @@ tests/services/test_market_events_expected_sources.py
 tests/services/test_market_events_ingestion.py
 tests/services/test_market_events_prioritization.py
 tests/services/test_mirror_counterfactual_plans.py
+tests/services/test_mock_auto_read_model.py
 tests/services/test_nxt_classifier_service.py
 tests/services/test_order_send_intent_service.py
 tests/services/test_paper_approval_packet.py
