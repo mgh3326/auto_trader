@@ -21,6 +21,8 @@ async def test_get_trading_policy_returns_thresholds_and_version():
         "buy.preplanned_support_ladder",
         "buy.winner_pullback_add",
         "buy.new_entry_overflow",
+        # §139차 — the index-ETF admission is a KR/US equity-universe rule.
+        "buy.index_etf_candidate",
     }
     reserve = out["decision_rules"]["buy.support_reserve_net"]
     assert reserve["eligible_only_when_regular_gate_failure"] == "RSI_ONLY"
@@ -217,7 +219,7 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-08-21.4"
+    assert out["version"] == "2026-08-22.1"
     assert out["content_hash"]
 
 
@@ -240,7 +242,9 @@ async def test_get_trading_policy_returns_us_notional_usd_range_with_one_share_e
     assert out["success"] is True
     us_range = out["thresholds"]["buy.per_symbol_notional_usd_range"]
     assert us_range["value"] == [150, 450]
-    assert us_range["one_share_exception"]["absolute_ceiling_usd"] == 700
+    # §139차 — 700 -> 10000; the effective boundary is cash plus the USD 1,500
+    # per-order auto-approve cap, not this number.
+    assert us_range["one_share_exception"]["absolute_ceiling_usd"] == 10000
     assert us_range["one_share_exception"]["max_deep_rungs"] == 1
 
 

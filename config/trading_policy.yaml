@@ -9,9 +9,13 @@
 # 저항 기반 매도 티어에 하나도 매칭되지 않아 익절 경로가 소멸한다. 그 공백만
 # 닫는 폴백 티어 sell.trim_preplace.breakeven_extension_ladder 를 신설한다.
 # 저항 티어의 대체가 아니며, exclusions.no_resistance_reference 는 유지된다.
-version: "2026-08-21.4"
+# §139차 (2026-08-22): 매수 회고 운영자 결정 3건이 정책 표면에 내려온다 — US
+# one_share 절대상한 철폐, 지수 ETF 유니버스 동등 편입, crypto 보유
+# 메이저 지지선 사전 그물(한시·4주 채점). 세 개 모두 게이트를 낮추지
+# 않고, 세 번째는 배치 전에 폐지 조건을 문서에 고정해 둔다.
+version: "2026-08-22.1"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion)"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised."
 
 authority:
   scope: judgment_policy_only
@@ -165,9 +169,20 @@ thresholds:
     lanes: [buy, discovery]
     value: [150, 450]  # 신규 진입 1차 트란치 밴드
     unit: usd
+    # §139차 (2026-08-22): 700 -> 10000. 운영자 문언 그대로 — "입금해둔 게
+    # 상한, 덜 거래하려면 출금하겠다". 즉 이 숫자는 더 이상 리스크 상한을
+    # 표현하지 않는다. 실질 경계는 두 가지로만 남는다: ① 계좌에 입금된 현금
+    # ② per-order 자동승인 캡 USD 1,500(order_proposals.auto_approve
+    # .per_order_cap.us) — 이를 넘는 1주는 카드(수동 승인)로 나간다. 10000은
+    # BRK.A/NVR급 초고가 오타를 막는 fat-finger 상한으로만 남는다.
+    # 반대 증거는 지우지 않고 기록한다(회고 §4-ⓕ-1): 상한 상향은 SNDK
+    # (1주 $1,237.92 -> +25.67%, MFE +43.82%)를 통과시켰겠지만 동시에
+    # AVGO(1주 $416.05 -> -11.58%)도 통과시켰을 것이다. n=2, 평균 +7.04% —
+    # 표본은 승격 근거가 되지 못하며, 이 변경은 실측이 아니라 운영자의
+    # 자산배분 권한 행사다.
     one_share_exception:
       enabled: true
-      absolute_ceiling_usd: 700
+      absolute_ceiling_usd: 10000
       max_deep_rungs: 1
     semantics: per-symbol first-tranche sizing for US new entries; advisory (ROB-646 원칙 — 코드 강제 아님)
   sell.loss_guard_min_multiple:
@@ -450,6 +465,118 @@ decision_rules:
         sizing: "0.5x standard tranche; gate-fitness rank order; label overflow in report"
     exclusions:
       - budget_consumption_entry
+
+  # §139차 (2026-08-22) — 지수 ETF는 발굴 유니버스의 "동등 후보"다.
+  # 회고 §4-ⓔ가 기각한 것은 "N회차 연속 후보 0이면 유휴 현금 X%를 지수
+  # ETF에"라는 자산배분 규칙이지 후보 자격이 아니다. 그 규칙을 기각한 근거는
+  # 그대로 유효하다 — 같은 창에서 KR 069500 +9.62% / US VOO -0.51%로 부호가
+  # 반대였고, 시장을 사후에 골라 적용하면 hindsight이며, KR 계좌는 이미 KR
+  # 베타에 과다 노출(45 lot 중 22 lot이 -15% 미만)이라 지수 ETF 추가는 베타
+  # 위의 베타다. 그래서 이 티어는 배분을 만들지 않고 "같은 게이트로 경쟁"만
+  # 시킨다. ETF에 구조적으로 부재한 게이트는 면제가 아니라 부적용이다.
+  buy.index_etf_candidate:
+    lanes: [buy, discovery]
+    markets: [kr, us]
+    semantics: >-
+      Advisory (§139차). A broad-market index ETF (KR 069500-class, US
+      VOO/IVV-class) enters the discovery universe as an EQUAL candidate. It
+      is never a special allocation rule, never an idle-cash fallback, and is
+      never promoted because the candidate set came back empty — zero passing
+      candidates still means zero orders. Gates that are structurally absent
+      for an index ETF (honest_upside, analyst consensus/count) are declared
+      NOT APPLICABLE for this instrument class; they are not waived for
+      equities and no equity inherits that non-applicability. Every gate an
+      ETF can satisfy — RSI, support strength, support distance — applies
+      unchanged, at the same thresholds. Sizing is the standard per-market
+      new-entry tranche with no ETF-specific multiplier, and the entry
+      consumes a normal new-entry slot rather than a reserved one. If another
+      candidate ranks higher, the other candidate wins: this tier adds an
+      entrant to the ranking, it does not reserve a place in it.
+    tiers:
+      - id: index_etf_candidate
+        conditions:
+          instrument_class: broad_market_index_etf
+          ranked_against_equities_in_same_pool: true
+          slot_reserved_for_etf: false
+          promoted_when_candidate_set_empty: false
+          idle_cash_allocation_rule: false
+          etf_specific_sizing_multiplier: false
+          rsi_gate_applies: true
+          support_strength_gate_applies: true
+          support_distance_gate_applies: true
+          honest_upside_gate: not_applicable_structurally_absent
+          analyst_gate: not_applicable_structurally_absent
+        action: rank_as_equal_new_entry_candidate
+        sizing: "standard per-market new-entry tranche (buy.per_symbol_notional_krw_range / buy.per_symbol_notional_usd_range); no ETF-specific multiplier"
+    exclusions:
+      - leveraged_etf
+      - inverse_etf
+
+  # §139차 (2026-08-22) — crypto 보유 메이저 지지선 사전 그물. 사전등록
+  # 라이브 티어이며 한시적이다: 2026-09-19 채점으로 존속/폐지가 갈리고,
+  # 폐지 조건은 배치 전에 여기 고정돼 있다. 운영자 문언 — "상승장이라면
+  # 지지선에 매수 걸면 돈 벌 거잖아". 그것이 가설이기 때문에 채점 게이트가
+  # 붙는다. 반대 증거는 지우지 않고 병기한다: ROB-1031 실측 지지 터치 후
+  # 붕괴율 60%·D+20 중앙값 음수, 그리고 XRP가 2026-08-22 02:00봉 고가
+  # 1,842에서 03:00봉 저가 1,688까지 1시간에 -8.36% 플러시를 냈다 —
+  # moderate 지지가 그 속도를 버틴다는 증거는 없다.
+  # 신규 코인 발굴 게이트는 이 티어와 무관하며 하나도 완화되지 않는다.
+  buy.held_majors_support_net:
+    lanes: [buy]
+    markets: [crypto]
+    semantics: >-
+      Pre-registered LIVE tier, time-boxed (§139차; armed 2026-08-22, scored
+      2026-09-19). Eligibility is crypto HOLDINGS ONLY and only while the
+      holding's unrealized P&L is positive at decision time — this tier can
+      never admit an unheld coin and never averages down a losing lot, so the
+      new-coin discovery gate is untouched by it. A resting LIMIT may be
+      pre-placed at a support of at least `moderate` strength that is
+      confirmed by at least 2 independent source families and sits between
+      -12% and -3% of the current price. Sizing is capped at 300,000 KRW per
+      coin and 900,000 KRW across the whole tier, at most one placement per
+      (coin, support level) per policy version. Orders route through the
+      EXISTING auto-approve path — each is far below the 1,000,000 KRW crypto
+      per-order cap, so no new approval surface is created and no cap is
+      raised. Crypto orders rest GTC by Upbit convention; DAY is not used
+      here. Every placement records a forecast (touch / fill / D+20 outcome).
+      On 2026-09-19 the tier is RETIRED unless the FILLED cohort's D+20
+      median is >= 0 AND its lower quartile is > -8%; those two numbers are
+      fixed in advance and may not be reinterpreted at scoring time. During a
+      crypto crash regime (24h drawdown worse than -10%) no new batch is
+      placed — this tier does not carry the preplanned-ladder "keep"
+      behaviour.
+    tiers:
+      - id: held_majors_support_net
+        conditions:
+          holding_required: true
+          unrealized_pnl_pct_min_exclusive: 0
+          new_coin_discovery_gate_unchanged: true
+          support_strength_min: moderate
+          independent_support_source_count_min: 2
+          support_distance_from_current_pct_range: [-12, -3]
+          order_type: limit
+          resting_only: true
+          tif: GTC
+          auto_approve_path: existing_per_order_cap
+          per_order_cap_raised: false
+          max_notional_krw_per_coin: 300000
+          max_notional_krw_per_tier: 900000
+          max_placements_per_coin_per_support_level_per_policy_version: 1
+          forecast_save_required: true
+          forecast_scored_fields: "touch, fill, d20_outcome"
+          crash_day_new_batch_suspended: true
+          crypto_crash_24h_drawdown_pct_max: -10
+          review_date: "2026-09-19"
+          retire_unless_filled_cohort_d20_median_pct_min: 0
+          retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive: -8
+        action: pre_place_resting_limit_at_support
+        sizing: "<= 300000 KRW per coin; <= 900000 KRW tier total; one placement per (coin, support level) per policy version; forecast_save required per placement"
+    exclusions:
+      - new_coin_entry
+      - unheld_symbol
+      - losing_position_averaging_down
+      - market_order
+      - crash_day_new_batch
 
   sell.trim_preplace:
     lanes: [sell]
