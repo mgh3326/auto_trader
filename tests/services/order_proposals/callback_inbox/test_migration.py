@@ -49,34 +49,6 @@ def test_the_migration_declares_the_exact_c86_parent() -> None:
     assert assignments == {"revision": _REVISION, "down_revision": _PARENT}
 
 
-#: Alembic operations that write or rewrite rows. None may appear.
-_ROW_DML_OPS = frozenset(
-    {
-        "bulk_insert",
-        "execute",
-        "executemany",
-    }
-)
-#: Alembic operations that touch an existing schema object.
-_MUTATION_OPS = frozenset(
-    {
-        "alter_column",
-        "drop_column",
-        "add_column",
-        "rename_table",
-        "drop_constraint",
-        "create_check_constraint",
-        "create_foreign_key",
-        "create_primary_key",
-        "create_unique_constraint",
-        "alter_table",
-        "batch_alter_table",
-    }
-)
-#: Every op the migration is allowed to use, and the object each may name.
-_ALLOWED_OPS = frozenset({"create_table", "drop_table", "create_index", "drop_index"})
-
-
 @pytest.mark.unit
 def test_the_migration_is_additive_and_touches_only_its_two_owned_tables() -> None:
     """Delegates to the scanner that has been shown hostile input.
@@ -853,27 +825,6 @@ async def test_a_terminal_row_may_not_retain_a_pending_terminal_marker(
         await session.rollback()
 
     assert observed == {"retained": False, "cleared": True}
-
-
-def _constraint_behaviour(connection: sa.Connection) -> dict[str, bool]:
-    """The non-field constraints: dedupe, vocabularies, attempt bounds."""
-    shared_digest = uuid.uuid4().hex * 2
-    connection.execute(_INSERT, _row(update_digest=shared_digest))
-    duplicate_digest_accepted = _accepts(connection, update_digest=shared_digest)
-
-    return {
-        "duplicate_digest": duplicate_digest_accepted,
-        "unknown_state": _accepts(connection, state="not_a_state"),
-        "negative_attempts": _accepts(connection, attempt_count=-1),
-        "attempts_over_max": _accepts(connection, attempt_count=4),
-        "attempts_at_max": _accepts(connection, attempt_count=3),
-        "unknown_action": _accepts(connection, action="zz"),
-        "unknown_terminal_pending": _accepts(
-            connection, terminal_state_pending="pending"
-        ),
-        "bad_outcome_label": _accepts(connection, outcome="leak: nonce123456"),
-        "bad_error_class": _accepts(connection, error_class="not_a_class"),
-    }
 
 
 def _load_migration():
