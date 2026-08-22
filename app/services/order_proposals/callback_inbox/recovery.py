@@ -21,8 +21,6 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from asyncpg.pgproto import pgproto
-
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals.callback_inbox.contracts import (
@@ -196,6 +194,9 @@ def _materialize_trusted_candidate_uuid(value: object) -> uuid.UUID | None:
             return uuid.UUID(int=raw_int)
         except (AttributeError, TypeError, ValueError):
             return None
+
+    from asyncpg.pgproto import pgproto
+
     if value_type is pgproto.UUID:
         try:
             raw_bytes = pgproto.UUID.bytes.__get__(value, pgproto.UUID)
