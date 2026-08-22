@@ -444,8 +444,8 @@ class LaneCoverageRow(_ReadModelRecord):
     quote_currency: QuoteCurrency
     synthetic: bool
     source_ids: tuple[str, ...]
-    configured_evidence_classes: tuple[EvidenceClass, ...]
     evidence_classes: tuple[EvidenceClass, ...]
+    observed_evidence_classes: tuple[EvidenceClass, ...]
     lifecycle_observation_count: int = Field(ge=0)
     unlinked_evidence_count: int = Field(ge=0)
     source_anomaly_codes: tuple[str, ...]
@@ -464,8 +464,8 @@ class LaneCoverageRow(_ReadModelRecord):
                 ReadModelReject.COVERAGE_SOURCE_IDS_NOT_CANONICAL, self.lane_id
             )
         for label, classes in (
-            ("configured_evidence_classes", self.configured_evidence_classes),
             ("evidence_classes", self.evidence_classes),
+            ("observed_evidence_classes", self.observed_evidence_classes),
         ):
             values = [item.value for item in classes]
             if values != sorted(set(values)):
@@ -474,11 +474,16 @@ class LaneCoverageRow(_ReadModelRecord):
                     f"{self.lane_id}:{label}",
                 )
 
+        # The reason field answers "is any evidence source bound to this lane",
+        # not "did this lane observe anything". Those are different states:
+        # a lane with a bound source that observed nothing reports a blank
+        # reason and carries the zero through unlinked_evidence_count /
+        # source_anomaly_codes instead.
         has_reason = bool(self.no_evidence_reason.strip())
-        if (self.lifecycle_observation_count == 0) != has_reason:
+        if (len(self.source_ids) == 0) != has_reason:
             raise _reject(
                 ReadModelReject.COVERAGE_NO_EVIDENCE_REASON_MISMATCH,
-                f"{self.lane_id}:count={self.lifecycle_observation_count}"
+                f"{self.lane_id}:source_ids={list(self.source_ids)}"
                 f":reason={self.no_evidence_reason!r}",
             )
 
@@ -565,19 +570,17 @@ class MockAutoReadModelResponse(_ReadModelRecord):
                     ReadModelReject.COVERAGE_UNKNOWN_SOURCE_ID,
                     f"{coverage.lane_id}:{unknown}",
                 )
-            configured = sorted(
+            bound = sorted(
                 {
                     binding.evidence_class.value
                     for binding in self.source_bindings
                     if binding.source_id in coverage.source_ids
                 }
             )
-            if [
-                item.value for item in coverage.configured_evidence_classes
-            ] != configured:
+            if [item.value for item in coverage.evidence_classes] != bound:
                 raise _reject(
                     ReadModelReject.COVERAGE_EVIDENCE_CLASS_MISMATCH,
-                    f"{coverage.lane_id}:configured",
+                    f"{coverage.lane_id}:bound",
                 )
 
             rows = by_lane.get(coverage.lane_id, [])
@@ -589,7 +592,7 @@ class MockAutoReadModelResponse(_ReadModelRecord):
             observed = sorted(
                 {ref.evidence_class.value for row in rows for ref in row.evidence_refs}
             )
-            if [item.value for item in coverage.evidence_classes] != observed:
+            if [item.value for item in coverage.observed_evidence_classes] != observed:
                 raise _reject(
                     ReadModelReject.COVERAGE_EVIDENCE_CLASS_MISMATCH,
                     f"{coverage.lane_id}:observed",

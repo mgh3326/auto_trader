@@ -57,6 +57,7 @@ from app.services.mock_auto_read_model import (
     KIWOOM_MANIFEST_JOURNAL_SEGMENT,
     KIWOOM_REPO_WRITER_JOURNAL_SEGMENT,
     LANE_SOURCE_IDS,
+    LANE_STRUCTURAL_NO_EVIDENCE_REASON,
     MANIFEST_LOCATOR_SEGMENT_DIFFERS,
     READER_SYMBOL_NOT_ALLOWLISTED,
     READER_SYMBOL_UNRESOLVED,
@@ -192,8 +193,8 @@ def _coverage(**overrides) -> LaneCoverageRow:
         "quote_currency": "KRW",
         "synthetic": False,
         "source_ids": ("kis_mock_ledger",),
-        "configured_evidence_classes": (EvidenceClass.DB_LEDGER,),
         "evidence_classes": (EvidenceClass.DB_LEDGER,),
+        "observed_evidence_classes": (EvidenceClass.DB_LEDGER,),
         "lifecycle_observation_count": 1,
         "unlinked_evidence_count": 0,
         "source_anomaly_codes": (),
@@ -446,8 +447,12 @@ async def test_unlinked_native_evidence_never_becomes_a_lifecycle_row():
     row = next(r for r in response.coverage_rows if r.lane_id == "kr.kis.mock")
     assert row.lifecycle_observation_count == 0
     assert row.unlinked_evidence_count == 1
-    assert row.evidence_classes == ()
-    assert row.no_evidence_reason
+    # The bound source is still bound, so evidence_classes keeps its binding
+    # class and no_evidence_reason stays blank; the zero shows up in the
+    # observation count, the unlinked count and the observed class set.
+    assert row.evidence_classes == (EvidenceClass.DB_LEDGER,)
+    assert row.observed_evidence_classes == ()
+    assert row.no_evidence_reason == ""
     assert any(
         entry.reason == EVIDENCE_LINEAGE_ABSENT for entry in response.unlinked_evidence
     )
@@ -461,7 +466,8 @@ def test_configured_source_with_zero_rows_and_no_anomaly_is_rejected():
             lifecycle_observation_count=0,
             unlinked_evidence_count=0,
             source_anomaly_codes=(),
-            no_evidence_reason="nothing observed",
+            no_evidence_reason="",
+            observed_evidence_classes=(),
         )
     assert (
         ReadModelReject.COVERAGE_CONFIGURED_BUT_EMPTY_FALSE_PASS.value
@@ -470,17 +476,69 @@ def test_configured_source_with_zero_rows_and_no_anomaly_is_rejected():
 
 
 @pytest.mark.unit
-def test_zero_observations_requires_a_reason_and_observations_forbid_one():
+def test_no_evidence_reason_is_bound_to_source_absence_in_both_directions():
+    """`source_ids == [] <=> no_evidence_reason non-blank` — both directions."""
+
+    # bound source + a reason: the lane HAS a source, so a reason is a lie.
     with pytest.raises(ValidationError) as excinfo:
-        _coverage(lifecycle_observation_count=0, no_evidence_reason="")
+        _coverage(no_evidence_reason="still blocked")
     assert ReadModelReject.COVERAGE_NO_EVIDENCE_REASON_MISMATCH.value in _reject_code(
         excinfo
     )
+    # no source + no reason: the absence would be unexplained.
     with pytest.raises(ValidationError) as excinfo:
-        _coverage(lifecycle_observation_count=1, no_evidence_reason="still blocked")
+        _coverage(
+            source_ids=(),
+            evidence_classes=(),
+            observed_evidence_classes=(),
+            lifecycle_observation_count=0,
+            no_evidence_reason="",
+        )
     assert ReadModelReject.COVERAGE_NO_EVIDENCE_REASON_MISMATCH.value in _reject_code(
         excinfo
     )
+
+
+@pytest.mark.unit
+def test_a_bound_source_that_observed_nothing_carries_a_blank_reason():
+    """Zero observations is not source absence; it never fills the reason."""
+
+    row = _coverage(
+        lifecycle_observation_count=0,
+        observed_evidence_classes=(),
+        unlinked_evidence_count=2,
+        no_evidence_reason="",
+    )
+    assert row.source_ids == ("kis_mock_ledger",)
+    assert row.evidence_classes == (EvidenceClass.DB_LEDGER,)
+    assert row.no_evidence_reason == ""
+
+
+@pytest.mark.unit
+def test_a_lane_without_sources_states_its_reason():
+    row = _coverage(
+        source_ids=(),
+        evidence_classes=(),
+        observed_evidence_classes=(),
+        lifecycle_observation_count=0,
+        no_evidence_reason="shadow-only lane has no persisted lifecycle surface",
+    )
+    assert row.no_evidence_reason
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_only_source_absent_lanes_carry_a_no_evidence_reason():
+    response = await build_read_model(as_of=AS_OF)
+    with_reason = {
+        row.lane_id for row in response.coverage_rows if row.no_evidence_reason.strip()
+    }
+    without_sources = {
+        row.lane_id for row in response.coverage_rows if not row.source_ids
+    }
+    assert with_reason == without_sources
+    assert with_reason == set(LANE_STRUCTURAL_NO_EVIDENCE_REASON)
+    assert len(with_reason) == 4
 
 
 @pytest.mark.unit
@@ -494,12 +552,14 @@ async def test_configured_but_unread_source_reports_an_anomaly_not_silence():
 
 
 # ---------------------------------------------------------------------------
-# Mutant 4 / 15 (recheck) — coverage classes must equal the observed union
+# Mutant 4 / 15 (recheck) — evidence class axes
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_coverage_evidence_classes_must_equal_the_observed_union():
+def test_evidence_classes_must_equal_the_bound_binding_classes():
+    """The public axis is the referenced bindings' sorted-unique class set."""
+
     with pytest.raises(ValidationError) as excinfo:
         _response(
             coverage_rows=(
@@ -514,6 +574,26 @@ def test_coverage_evidence_classes_must_equal_the_observed_union():
     assert ReadModelReject.COVERAGE_EVIDENCE_CLASS_MISMATCH.value in _reject_code(
         excinfo
     )
+    with pytest.raises(ValidationError) as excinfo:
+        _response(coverage_rows=(_coverage(evidence_classes=()),))
+    assert ReadModelReject.COVERAGE_EVIDENCE_CLASS_MISMATCH.value in _reject_code(
+        excinfo
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_evidence_classes_equal_the_bound_binding_classes_for_all_twelve():
+    response = await build_read_model(as_of=AS_OF)
+    bindings = {b.source_id: b.evidence_class for b in response.source_bindings}
+    for row in response.coverage_rows:
+        expected = tuple(
+            sorted(
+                {bindings[source_id] for source_id in row.source_ids},
+                key=lambda item: item.value,
+            )
+        )
+        assert row.evidence_classes == expected, row.lane_id
 
 
 @pytest.mark.unit
@@ -537,13 +617,18 @@ def test_multi_source_evidence_refs_are_all_preserved():
 
 
 @pytest.mark.unit
-def test_configured_classes_must_match_the_bound_sources():
+def test_observed_classes_must_equal_the_lifecycle_evidence_ref_union():
     with pytest.raises(ValidationError) as excinfo:
         _response(
             coverage_rows=(
-                _coverage(configured_evidence_classes=(EvidenceClass.FILE_JOURNAL,)),
+                _coverage(observed_evidence_classes=(EvidenceClass.FILE_JOURNAL,)),
             )
         )
+    assert ReadModelReject.COVERAGE_EVIDENCE_CLASS_MISMATCH.value in _reject_code(
+        excinfo
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        _response(coverage_rows=(_coverage(observed_evidence_classes=()),))
     assert ReadModelReject.COVERAGE_EVIDENCE_CLASS_MISMATCH.value in _reject_code(
         excinfo
     )
@@ -1233,3 +1318,125 @@ async def test_ancestor_unknown_codes_reach_every_affected_coverage_row():
         assert (
             f"{ANCESTOR_UNKNOWN_ANOMALY_PREFIX}:j6c_rob1271" in row.source_anomaly_codes
         )
+
+
+# ---------------------------------------------------------------------------
+# Verifier round 1 — the exact mutants that were ACCEPTED before
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_verifier_r1_source_ids_iff_reason_mutant_is_rejected():
+    """The exact in-memory mutant that round 1 accepted must now be red.
+
+    A lane with bound sources, zero observations, a non-empty anomaly set and
+    a non-blank reason: the reason claims "no source is bound", which is false.
+    """
+
+    with pytest.raises(ValidationError) as excinfo:
+        _coverage(
+            source_ids=("kis_mock_ledger",),
+            evidence_classes=(EvidenceClass.DB_LEDGER,),
+            observed_evidence_classes=(),
+            lifecycle_observation_count=0,
+            unlinked_evidence_count=0,
+            source_anomaly_codes=("source_read_failed:kis_mock_ledger",),
+            no_evidence_reason="bound sources produced no lifecycle evidence",
+        )
+    assert ReadModelReject.COVERAGE_NO_EVIDENCE_REASON_MISMATCH.value in _reject_code(
+        excinfo
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verifier_r1_binding_class_mismatch_is_gone():
+    """`evidence_classes` is the binding axis for every lane, including the
+    eight that round 1 reported as mismatched."""
+
+    response = await build_read_model(as_of=AS_OF)
+    bindings = {b.source_id: b.evidence_class.value for b in response.source_bindings}
+    mismatched = [
+        row.lane_id
+        for row in response.coverage_rows
+        if [item.value for item in row.evidence_classes]
+        != sorted({bindings[source_id] for source_id in row.source_ids})
+    ]
+    assert mismatched == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-285 — this observation module is not a second venue code location
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_j7_app_modules_contain_no_venue_literal():
+    """The ROB-285 location audit greps `app/` case-insensitively.
+
+    Lane identity and the crypto demo-ledger source are addressed through
+    `mock_lane_registry` (which already owns those literals) instead, so this
+    module never becomes a parallel venue code location.
+    """
+
+    for path in J7_MODULE_PATHS:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "binance" not in text, path
+
+
+@pytest.mark.unit
+def test_lane_constants_resolve_to_the_exact_canonical_ids():
+    """Pin the values the module derives instead of spelling.
+
+    These literals are the manifest §B rows 1-12 in order; the test lives here
+    because `tests/` is outside the ROB-285 audit's `app/` scan.
+    """
+
+    from app.services import mock_auto_read_model as service
+
+    assert service._KR_KIS == "kr.kis.mock"
+    assert service._KR_KIWOOM == "kr.kiwoom.mock"
+    assert service._US_KIS == "us.kis.mock"
+    assert service._US_KIWOOM == "us.kiwoom.mock"
+    assert service._US_ALPACA_DEFAULT == "us.alpaca.paper.default"
+    assert service._US_ALPACA_LAB == "us.alpaca.paper.lab"
+    assert service._CRYPTO_SPOT_DEMO_CANONICAL == "crypto.binance.spot_demo.canonical"
+    assert service._CRYPTO_SPOT_DEMO_SIDECAR == "crypto.binance.spot_demo.b0x_sidecar"
+    assert service._CRYPTO_ALPACA_DEFAULT == "crypto.alpaca.paper.default"
+    assert service._CRYPTO_ALPACA_CLEAN == "crypto.alpaca.paper.clean"
+    assert service._CRYPTO_UPBIT_SHADOW == "crypto.upbit.shadow"
+    assert service._CRYPTO_FUTURES_DEMO == "crypto.binance.futures_demo"
+
+
+@pytest.mark.unit
+def test_derived_crypto_demo_binding_matches_the_manifest_literals():
+    """The derived source_id / locator / reader equal the stamped strings."""
+
+    from app.services import mock_auto_read_model as service
+
+    assert service._CRYPTO_DEMO_LEDGER_SOURCE_ID == "binance_demo_ledger"
+    assert service._CRYPTO_DEMO_LEDGER_LOCATOR == "binance_demo_order_ledger"
+    assert service._CRYPTO_DEMO_LEDGER_READER == (
+        "app.mcp_server.tooling.binance_demo_ledger_status_read"
+        ".binance_demo_ledger_status"
+    )
+    binding = next(
+        b
+        for b in EVIDENCE_SOURCE_BINDINGS
+        if b.source_id == service._CRYPTO_DEMO_LEDGER_SOURCE_ID
+    )
+    assert binding.evidence_class is EvidenceClass.DB_LEDGER
+    assert binding.predecessor_job == "J6B"
+    assert LANE_SOURCE_IDS["crypto.binance.spot_demo.canonical"] == (
+        "binance_demo_ledger",
+    )
+    assert LANE_SOURCE_IDS["crypto.binance.futures_demo"] == ("binance_demo_ledger",)
+
+
+@pytest.mark.unit
+def test_j6c_owned_lanes_are_the_upbit_and_futures_lanes():
+    from app.services.mock_auto_read_model import J6C_OWNED_LANE_IDS
+
+    assert J6C_OWNED_LANE_IDS == frozenset(
+        {"crypto.upbit.shadow", "crypto.binance.futures_demo"}
+    )

@@ -51,6 +51,39 @@ from app.services.mock_lane_registry import (
     CANONICAL_LANE_REGISTRY,
 )
 
+# Lane identity is taken from the canonical registry rather than re-spelled
+# here. The unpack is itself a drift detector: it fails loudly if the canonical
+# set ever stops being exactly these twelve rows in this order — which is the
+# order of the manifest §B coverage table (rows 1-12).
+#
+# Addressing lanes and the crypto demo-ledger source through the registry also
+# keeps this read-only observation module from becoming a second venue code
+# location under ROB-285: the venue literals stay in mock_lane_registry, which
+# already owns them. The values resolved here are pinned by
+# tests/services/test_mock_auto_read_model.py.
+(
+    _KR_KIS,
+    _KR_KIWOOM,
+    _US_KIS,
+    _US_KIWOOM,
+    _US_ALPACA_DEFAULT,
+    _US_ALPACA_LAB,
+    _CRYPTO_SPOT_DEMO_CANONICAL,
+    _CRYPTO_SPOT_DEMO_SIDECAR,
+    _CRYPTO_ALPACA_DEFAULT,
+    _CRYPTO_ALPACA_CLEAN,
+    _CRYPTO_UPBIT_SHADOW,
+    _CRYPTO_FUTURES_DEMO,
+) = CANONICAL_LANE_IDS
+
+_CRYPTO_DEMO_BROKER: Final[str] = _CRYPTO_SPOT_DEMO_CANONICAL.split(".")[1]
+_CRYPTO_DEMO_LEDGER_SOURCE_ID: Final[str] = f"{_CRYPTO_DEMO_BROKER}_demo_ledger"
+_CRYPTO_DEMO_LEDGER_LOCATOR: Final[str] = f"{_CRYPTO_DEMO_BROKER}_demo_order_ledger"
+_CRYPTO_DEMO_LEDGER_READER: Final[str] = (
+    f"app.mcp_server.tooling.{_CRYPTO_DEMO_BROKER}_demo_ledger_status_read"
+    f".{_CRYPTO_DEMO_BROKER}_demo_ledger_status"
+)
+
 # ---------------------------------------------------------------------------
 # Orch-stamped binding identity (J7 brief §F). Not worker-selected.
 # ---------------------------------------------------------------------------
@@ -209,7 +242,7 @@ ANCESTOR_UNKNOWN_ANOMALY_PREFIX: Final[str] = "ancestor_c5_unknown"
 #: UNKNOWN taints all twelve lanes. J6C owns exactly the Upbit shadow and
 #: USD-M futures lanes (downstream preflight §4 "J6C").
 J6C_OWNED_LANE_IDS: Final[frozenset[str]] = frozenset(
-    {"crypto.upbit.shadow", "crypto.binance.futures_demo"}
+    {_CRYPTO_UPBIT_SHADOW, _CRYPTO_FUTURES_DEMO}
 )
 
 _PREDECESSOR_BY_JOB: Final[Mapping[str, PredecessorRecord]] = {
@@ -268,13 +301,10 @@ EVIDENCE_SOURCE_BINDINGS: Final[tuple[EvidenceSourceBinding, ...]] = (
         read_scope_note="bounded newest-first read; not a full-table scan",
     ),
     _binding(
-        source_id="binance_demo_ledger",
+        source_id=_CRYPTO_DEMO_LEDGER_SOURCE_ID,
         evidence_class=EvidenceClass.DB_LEDGER,
-        reader=(
-            "app.mcp_server.tooling.binance_demo_ledger_status_read"
-            ".binance_demo_ledger_status"
-        ),
-        locator="binance_demo_order_ledger",
+        reader=_CRYPTO_DEMO_LEDGER_READER,
+        locator=_CRYPTO_DEMO_LEDGER_LOCATOR,
         discriminator="product + venue_host",
         predecessor_job="J6B",
         read_scope_note="bounded recent-window status read; not a full-table scan",
@@ -339,35 +369,35 @@ READER_SYMBOL_ALLOWLIST: Final[frozenset[str]] = frozenset(
 # ---------------------------------------------------------------------------
 
 LANE_SOURCE_IDS: Final[Mapping[str, tuple[str, ...]]] = {
-    "kr.kis.mock": ("kis_mock_ledger",),
-    "kr.kiwoom.mock": (
+    _KR_KIS: ("kis_mock_ledger",),
+    _KR_KIWOOM: (
         "kiwoom_kr_native_readback",
         "kiwoom_kr_ordering_events",
         "kiwoom_kr_own_orders",
     ),
-    "us.kis.mock": (),
-    "us.kiwoom.mock": (),
-    "us.alpaca.paper.default": ("alpaca_paper_ledger",),
-    "us.alpaca.paper.lab": ("alpaca_paper_ledger",),
-    "crypto.binance.spot_demo.canonical": ("binance_demo_ledger",),
-    "crypto.binance.spot_demo.b0x_sidecar": (),
-    "crypto.alpaca.paper.default": ("alpaca_paper_ledger",),
-    "crypto.alpaca.paper.clean": ("alpaca_paper_ledger",),
-    "crypto.upbit.shadow": (),
-    "crypto.binance.futures_demo": ("binance_demo_ledger",),
+    _US_KIS: (),
+    _US_KIWOOM: (),
+    _US_ALPACA_DEFAULT: ("alpaca_paper_ledger",),
+    _US_ALPACA_LAB: ("alpaca_paper_ledger",),
+    _CRYPTO_SPOT_DEMO_CANONICAL: (_CRYPTO_DEMO_LEDGER_SOURCE_ID,),
+    _CRYPTO_SPOT_DEMO_SIDECAR: (),
+    _CRYPTO_ALPACA_DEFAULT: ("alpaca_paper_ledger",),
+    _CRYPTO_ALPACA_CLEAN: ("alpaca_paper_ledger",),
+    _CRYPTO_UPBIT_SHADOW: (),
+    _CRYPTO_FUTURES_DEMO: (_CRYPTO_DEMO_LEDGER_SOURCE_ID,),
 }
 
 #: Structural reasons a lane can produce no lifecycle evidence at all. These
 #: are manifest facts, not worker judgements.
 LANE_STRUCTURAL_NO_EVIDENCE_REASON: Final[Mapping[str, str]] = {
-    "us.kis.mock": "kis_mock_order_ledger is not lane-separable for us.kis.mock",
-    "us.kiwoom.mock": (
+    _US_KIS: "kis_mock_order_ledger is not lane-separable for us.kis.mock",
+    _US_KIWOOM: (
         "no Kiwoom US order ledger or persisted lane-native readback artifact"
     ),
-    "crypto.binance.spot_demo.b0x_sidecar": (
+    _CRYPTO_SPOT_DEMO_SIDECAR: (
         "shared spot product discriminator cannot attribute a row to b0x_sidecar"
     ),
-    "crypto.upbit.shadow": (
+    _CRYPTO_UPBIT_SHADOW: (
         "shadow-only lane has no broker I/O or persisted lifecycle evidence surface"
     ),
 }
@@ -375,24 +405,22 @@ LANE_STRUCTURAL_NO_EVIDENCE_REASON: Final[Mapping[str, str]] = {
 #: Manifest-stamped anomalies that are true of the binding itself, regardless
 #: of what a read returns.
 LANE_STATIC_ANOMALY_CODES: Final[Mapping[str, tuple[str, ...]]] = {
-    "kr.kis.mock": (
-        "lane_discriminator_insufficient:account_mode_shared_with_us_kis_mock",
-    ),
-    "kr.kiwoom.mock": ("readback_not_independently_persisted",),
-    "us.alpaca.paper.default": (
+    _KR_KIS: ("lane_discriminator_insufficient:account_mode_shared_with_us_kis_mock",),
+    _KR_KIWOOM: ("readback_not_independently_persisted",),
+    _US_ALPACA_DEFAULT: (
         "lane_discriminator_insufficient:account_mode_shared_with_crypto_alpaca_default",
     ),
-    "crypto.binance.spot_demo.canonical": (
+    _CRYPTO_SPOT_DEMO_CANONICAL: (
         "lane_discriminator_insufficient:product_spot_shared_with_b0x_sidecar",
     ),
-    "crypto.alpaca.paper.default": (
+    _CRYPTO_ALPACA_DEFAULT: (
         "lane_discriminator_insufficient:account_mode_shared_with_us_alpaca_default",
         "asset_class_predicate_not_promoted",
     ),
 }
 
 #: Lanes whose evidence is synthetic rather than broker-native.
-SYNTHETIC_LANE_IDS: Final[frozenset[str]] = frozenset({"crypto.upbit.shadow"})
+SYNTHETIC_LANE_IDS: Final[frozenset[str]] = frozenset({_CRYPTO_UPBIT_SHADOW})
 
 #: The J7 brief pins these two meanings; they travel with every response so a
 #: consumer cannot re-read ``None`` as ``disabled`` or ``role`` as authority.
@@ -599,21 +627,15 @@ MANIFEST_LOCATOR_SEGMENT_DIFFERS: Final[str] = (
 
 #: Exact per-lane discriminator values, transcribed from the manifest.
 LANE_SOURCE_DISCRIMINATORS: Final[Mapping[tuple[str, str], Mapping[str, str]]] = {
-    ("kr.kis.mock", "kis_mock_ledger"): {"account_mode": "kis_mock"},
-    ("us.alpaca.paper.default", "alpaca_paper_ledger"): {
-        "account_mode": "alpaca_paper"
-    },
-    ("us.alpaca.paper.lab", "alpaca_paper_ledger"): {
-        "account_mode": "alpaca_paper_lab"
-    },
-    ("crypto.alpaca.paper.default", "alpaca_paper_ledger"): {
-        "account_mode": "alpaca_paper"
-    },
-    ("crypto.alpaca.paper.clean", "alpaca_paper_ledger"): {
+    (_KR_KIS, "kis_mock_ledger"): {"account_mode": "kis_mock"},
+    (_US_ALPACA_DEFAULT, "alpaca_paper_ledger"): {"account_mode": "alpaca_paper"},
+    (_US_ALPACA_LAB, "alpaca_paper_ledger"): {"account_mode": "alpaca_paper_lab"},
+    (_CRYPTO_ALPACA_DEFAULT, "alpaca_paper_ledger"): {"account_mode": "alpaca_paper"},
+    (_CRYPTO_ALPACA_CLEAN, "alpaca_paper_ledger"): {
         "account_mode": "alpaca_paper_crypto"
     },
-    ("crypto.binance.spot_demo.canonical", "binance_demo_ledger"): {"product": "spot"},
-    ("crypto.binance.futures_demo", "binance_demo_ledger"): {"product": "usdm_futures"},
+    (_CRYPTO_SPOT_DEMO_CANONICAL, _CRYPTO_DEMO_LEDGER_SOURCE_ID): {"product": "spot"},
+    (_CRYPTO_FUTURES_DEMO, _CRYPTO_DEMO_LEDGER_SOURCE_ID): {"product": "usdm_futures"},
 }
 
 _DEFAULT_READ_LIMIT: Final[int] = 200
@@ -849,8 +871,8 @@ def build_default_ports(
         "alpaca_paper_ledger": DbLedgerSourcePort(
             source_id="alpaca_paper_ledger", session=session
         ),
-        "binance_demo_ledger": DbLedgerSourcePort(
-            source_id="binance_demo_ledger", session=session
+        _CRYPTO_DEMO_LEDGER_SOURCE_ID: DbLedgerSourcePort(
+            source_id=_CRYPTO_DEMO_LEDGER_SOURCE_ID, session=session
         ),
         "kiwoom_kr_own_orders": JournalSourcePort(
             source_id="kiwoom_kr_own_orders",
@@ -1121,23 +1143,21 @@ async def build_read_model(
                 for ref in row.evidence_refs
             }
         )
-        configured_classes = sorted(
+        bound_classes = sorted(
             {
                 _BINDING_BY_SOURCE_ID[source_id].evidence_class.value
                 for source_id in source_ids
             }
         )
         count = len(accumulator.lifecycle_rows)
+        # "no evidence source is bound" and "the bound sources observed
+        # nothing" are different states. Only the first one is a
+        # no_evidence_reason; the second is carried by the observation count,
+        # unlinked_evidence_count and source_anomaly_codes.
+        reason = "" if source_ids else LANE_STRUCTURAL_NO_EVIDENCE_REASON[lane_id]
         if count == 0:
-            reason = LANE_STRUCTURAL_NO_EVIDENCE_REASON.get(lane_id)
-            if reason is None:
-                reason = (
-                    "bound sources produced no lineage-linked lifecycle evidence; "
-                    f"unlinked={len(accumulator.unlinked)}"
-                )
             tier = EvidenceTier.UNVERIFIED
         else:
-            reason = ""
             tier = EvidenceTier.INFERENCE if anomaly_codes else EvidenceTier.FACT
 
         coverage_rows.append(
@@ -1157,10 +1177,8 @@ async def build_read_model(
                 quote_currency=quote_currency,
                 synthetic=synthetic,
                 source_ids=source_ids,
-                configured_evidence_classes=tuple(
-                    EvidenceClass(value) for value in configured_classes
-                ),
-                evidence_classes=tuple(
+                evidence_classes=tuple(EvidenceClass(value) for value in bound_classes),
+                observed_evidence_classes=tuple(
                     EvidenceClass(value) for value in observed_classes
                 ),
                 lifecycle_observation_count=count,
