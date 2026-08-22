@@ -560,7 +560,17 @@ def compute_policy_table(
             "halted_suspect": halted_suspect,
         },
         "market_context": {
-            "alt_breadth": {
+            # ROB-1315 §7-2 — renamed from ``alt_breadth``. This block counts
+            # markets whose 24h change is ABSOLUTELY positive. It is NOT the
+            # input to the no_chasing / recovery_gate breadth clause, which
+            # reads the BTC-relative ``breadth.alts_beating_btc_pct`` from
+            # get_upbit_altseason. The two diverged by 60.71pp on 2026-08-20
+            # (78.09% here vs 17.38% at the gate), so the old shared name
+            # invited reading this table row as a gate verdict.
+            "alt_positive_24h": {
+                "basis": "absolute_24h_change_gt_zero",
+                "gate_input": False,
+                "gate_input_metric": "breadth.alts_beating_btc_pct",
                 "swept_market_count": swept_count,
                 "positive_24h_count": positive_count,
                 "negative_24h_count": negative_count,

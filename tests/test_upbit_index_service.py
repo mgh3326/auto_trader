@@ -315,3 +315,85 @@ async def test_handle_get_upbit_altseason_passes_constituent_options(monkeypatch
         "include_constituents": True,
         "constituents_limit": 200,
     }
+
+
+# ---------------------------------------------------------------------------
+# ROB-1315 §7-2 — breadth metric disambiguation (reporting only, no gate change)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_altseason_reports_absolute_and_btc_relative_breadth(monkeypatch):
+    """A BTC-led rally: many alts up, few beating BTC. Both numbers surface."""
+
+    upbit_index._clear_caches()
+    mapping = {
+        **_datalab_mapping(),
+        "/market/all": _MARKET_ALL,
+        "/ticker": [
+            {"market": "KRW-BTC", "signed_change_rate": 0.0312},
+            # up in absolute terms, but behind BTC
+            {"market": "KRW-ETH", "signed_change_rate": 0.0200},
+            # up and ahead of BTC
+            {"market": "KRW-XRP", "signed_change_rate": 0.0500},
+        ],
+    }
+    monkeypatch.setattr(httpx.AsyncClient, "get", _route(mapping))
+
+    payload = await upbit_index.fetch_upbit_altseason()
+
+    breadth = payload["breadth"]
+    assert breadth["alts_total"] == 2
+    # absolute: both alts are above zero
+    assert breadth["alts_positive_24h"] == 2
+    assert breadth["alt_positive_24h_pct"] == pytest.approx(1.0)
+    # BTC-relative: only XRP beats BTC
+    assert breadth["alts_beating_btc"] == 1
+    assert breadth["alts_beating_btc_pct"] == pytest.approx(0.5)
+    # the two metrics disagree, which is exactly why both are reported
+    assert breadth["alt_positive_24h_pct"] != breadth["alts_beating_btc_pct"]
+
+
+@pytest.mark.asyncio
+async def test_altseason_names_the_gate_input_metric(monkeypatch):
+    upbit_index._clear_caches()
+    mapping = {
+        **_datalab_mapping(),
+        "/market/all": _MARKET_ALL,
+        "/ticker": _TICKER,
+    }
+    monkeypatch.setattr(httpx.AsyncClient, "get", _route(mapping))
+
+    payload = await upbit_index.fetch_upbit_altseason()
+
+    semantics = payload["breadth"]["metric_semantics"]
+    assert semantics["no_chasing_gate_input"] == "alts_beating_btc_pct"
+    assert "absolute" in semantics["alt_positive_24h_pct"]
+    assert "BTC-relative" in semantics["alts_beating_btc_pct"]
+
+
+@pytest.mark.asyncio
+async def test_btc_relative_breadth_value_is_unchanged_by_the_split(monkeypatch):
+    """Regression: adding the absolute metric must not move the gate metric."""
+
+    upbit_index._clear_caches()
+    mapping = {
+        **_datalab_mapping(),
+        "/market/all": _MARKET_ALL,
+        # all three alts negative but two still above BTC
+        "/ticker": [
+            {"market": "KRW-BTC", "signed_change_rate": -0.05},
+            {"market": "KRW-ETH", "signed_change_rate": -0.01},
+            {"market": "KRW-XRP", "signed_change_rate": -0.02},
+        ],
+    }
+    monkeypatch.setattr(httpx.AsyncClient, "get", _route(mapping))
+
+    payload = await upbit_index.fetch_upbit_altseason()
+
+    breadth = payload["breadth"]
+    assert breadth["alts_beating_btc"] == 2
+    assert breadth["alts_beating_btc_pct"] == pytest.approx(1.0)
+    # absolute breadth is zero in the same snapshot — a bear tape stays closed
+    assert breadth["alts_positive_24h"] == 0
+    assert breadth["alt_positive_24h_pct"] == pytest.approx(0.0)

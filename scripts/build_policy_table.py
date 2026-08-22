@@ -131,11 +131,15 @@ def _render_summary_md(payload: dict[str, Any]) -> str:
             + ", ".join(payload["universe"]["symbols_with_insufficient_history"])
         )
     lines.append("")
-    breadth = payload["market_context"]["alt_breadth"]
+    # ROB-1315 §7-2 — absolute breadth, printed under its own name so the
+    # summary can never be read as the BTC-relative gate metric.
+    breadth = payload["market_context"]["alt_positive_24h"]
     lines.append(
-        f"alt_breadth: {breadth['positive_24h_count']}/{breadth['swept_market_count']} "
+        f"alt_positive_24h: "
+        f"{breadth['positive_24h_count']}/{breadth['swept_market_count']} "
         f"positive 24h "
         f"({(breadth['positive_pct'] * 100) if breadth['positive_pct'] is not None else 'n/a'}%)"
+        " — absolute; not the no_chasing gate input (alts_beating_btc_pct)"
     )
     lines.append("")
 

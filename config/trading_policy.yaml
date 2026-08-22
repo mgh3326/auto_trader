@@ -9,7 +9,10 @@
 # 저항 기반 매도 티어에 하나도 매칭되지 않아 익절 경로가 소멸한다. 그 공백만
 # 닫는 폴백 티어 sell.trim_preplace.breakeven_extension_ladder 를 신설한다.
 # 저항 티어의 대체가 아니며, exclusions.no_resistance_reference 는 유지된다.
-version: "2026-08-21.4"
+# §138차 (2026-08-22): alt breadth 지표 이름 분리 — 게이트 임계·판정은 불변이고
+# 어느 필드를 읽는지만 명시한다. 게이트 입력은 BTC 상대(alts_beating_btc_pct)이며
+# 절대 breadth(alt_positive_24h_pct)는 정책표 표기용이지 게이트 입력이 아니다.
+version: "2026-08-22.1"
 captured_as_of: "2026-08-12"
 source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion)"
 
@@ -747,8 +750,19 @@ market_rules:
       of: 2
       missing_or_null_threshold: do_not_infer_or_count_as_met
       conditions:
+        # ROB-1315 §7-2 — metric disambiguation, NOT a relaxation. The
+        # threshold, operator, and verdict are unchanged. get_upbit_altseason
+        # returns two breadth numbers; this gate reads the BTC-RELATIVE one
+        # (breadth.alts_beating_btc_pct), never the absolute one
+        # (breadth.alt_positive_24h_pct). On 2026-08-20 they were 17.38% vs
+        # 78.09% (60.71pp apart) — reading the wrong field silently inverts
+        # this gate. The crypto policy table header reports the absolute
+        # metric under the name alt_positive_24h; it is not this gate's input.
         - id: alt_breadth_24h
           metric: upbit_alt_breadth_24h
+          input_field: breadth.alts_beating_btc_pct
+          input_basis: btc_relative
+          not_input_field: breadth.alt_positive_24h_pct
           sources: [upbit_open_api_ticker_derived]
           operator: gt
           threshold: 50
@@ -796,7 +810,11 @@ market_rules:
       min_trade_value_24h_krw: null
       criteria:
         - exclude low-liquidity rotation-pump candidates
-        - new alt candidates are ineligible when 24h alt breadth is below 50 percent
+        # ROB-1315 §7-2 — "24h alt breadth" here means the BTC-RELATIVE metric
+        # (breadth.alts_beating_btc_pct from get_upbit_altseason), the same
+        # input as market_rules.crypto.recovery_gate.conditions[alt_breadth_24h].
+        # It is NOT breadth.alt_positive_24h_pct. Threshold unchanged at 50.
+        - new alt candidates are ineligible when 24h alt breadth (BTC-relative, breadth.alts_beating_btc_pct) is below 50 percent
         - exclude sharply rising candidates without support structure or decision history
       follow_up: reports contain no quantitative cutoff; operator fills values after live-operation evidence in a follow-up PR
 
