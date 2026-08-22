@@ -78,8 +78,8 @@ from sqlalchemy import text
 # + index). create_all builds it on a fresh DB; this bump forces a persistent
 # local test DB to re-bootstrap once so the column exists there too.
 # v39 (W5 R36): review.telegram_callback_inbox and
-# review.telegram_callback_recovery_cursor are new ORM tables. Base.metadata
-# .create_all owns both test copies; neither has a mirrored ALTER in
+# review.telegram_callback_recovery_cursor are new ORM tables.
+# Base.metadata.create_all owns both test copies; neither has a mirrored ALTER in
 # _DDL_STATEMENTS, so this bump forces one rebuild of an already-v38 persistent
 # local test database.
 SCHEMA_BOOTSTRAP_VERSION = 39

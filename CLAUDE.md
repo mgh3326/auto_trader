@@ -586,7 +586,8 @@ Sentry 프로덕션 7일 실측: n=44, avg 3.365s / p50 2.738s / p95 12.707s / m
 **PostgreSQL 이 권한자, TaskIQ 는 opaque job UUID 를 나르는 best-effort 깨우기.**
 Redis 를 잃으면 지연을 잃지 클릭을 잃지 않는다.
 
-- **테이블**: `review.telegram_callback_inbox` (`app/models/telegram_callback_inbox.py`)
+- **테이블**: `review.telegram_callback_inbox` and
+  `review.telegram_callback_recovery_cursor` (`app/models/telegram_callback_inbox.py`)
 - **마이그레이션**: `alembic/versions/20260821_w5_telegram_callback_inbox.py` (additive)
 - **패키지**: `app/services/order_proposals/callback_inbox/` — `contracts`(닫힌 어휘·digest·lock key) ·
   `repository`(service 전용) · `service`(유일한 writer) · `locks`(job advisory lock) ·
@@ -596,12 +597,11 @@ Redis 를 잃으면 지연을 잃지 클릭을 잃지 않는다.
   (per-job) + `order_proposals.telegram_callback_recovery` (**scheduleless 출고**)
 - **런북**: `docs/runbooks/telegram-callback-durable-inbox.md`
 
-**콜백 코어는 변경 없음.** `handle_callback_update` 를
-`normalize_callback_update`(shape → chat allowlist → 기존 콜백 파서)와
-`handle_normalized_callback`(그 이후 전부, 순서 동일)로 **분리만** 했다. 인라인
-경로는 여전히 normalize → execute 이고, 승인 게이트(published-binding preflight,
-단일소비 nonce, commit lease, target-mutation lock, approval hash, fresh preview)는
-전부 원래 자리에 있다.
+Accepted canonical inputs retain the post-normalization execution core and the
+pre-existing downstream authorization gates. Normalization now also adds the
+R37 exact numeric identifier trust boundary before durable authority or core
+execution. Published-binding preflight, single-use nonce, commit lease,
+target-mutation lock, approval hash, and fresh preview remain downstream gates.
 
 **게이트 3개 전부 default false**:
 - `ORDER_PROPOSALS_TELEGRAM_CALLBACK_DURABLE_ENABLED` — durable ingress

@@ -252,18 +252,16 @@ _INSERT = sa.text(
         (job_id, update_digest, state, attempt_count, max_attempts,
          received_at, available_at, started_at, handler_entered_at,
          handler_completed_at, terminal_state_pending, callback_query_id,
-         chat_id, message_id, telegram_user_id, update_identity_digest,
-         action, subject_short,
+         chat_id, message_id, telegram_user_id, action, subject_short,
          dispatch_attempt_id, membership_revision, membership_digest, nonce,
-         outcome, error_class)
+         outcome, error_class, update_identity_digest)
     VALUES
         (:job_id, :update_digest, :state, :attempt_count, :max_attempts,
          :now, :now, :started_at, :handler_entered_at, :handler_completed_at,
          :terminal_state_pending, :callback_query_id,
-         :chat_id, :message_id, :telegram_user_id, :update_identity_digest,
-         :action, :subject_short,
+         :chat_id, :message_id, :telegram_user_id, :action, :subject_short,
          :dispatch_attempt_id, :membership_revision, :membership_digest, :nonce,
-         :outcome, :error_class)
+         :outcome, :error_class, :update_identity_digest)
     """
 )
 
@@ -286,7 +284,6 @@ def _row(**overrides: object) -> dict[str, object]:
         "chat_id": "42",
         "message_id": 555,
         "telegram_user_id": "777",
-        "update_identity_digest": "update-digest-1",
         "action": "op",
         "subject_short": "0123abcd",
         "dispatch_attempt_id": uuid.uuid4(),
@@ -295,6 +292,7 @@ def _row(**overrides: object) -> dict[str, object]:
         "nonce": "nonce123456",
         "outcome": None,
         "error_class": None,
+        "update_identity_digest": "update-digest-1",
     }
     base.update(overrides)
     return base
@@ -317,13 +315,13 @@ def _scrubbed() -> dict[str, object]:
         "chat_id": None,
         "message_id": None,
         "telegram_user_id": None,
-        "update_identity_digest": None,
         "action": None,
         "subject_short": None,
         "dispatch_attempt_id": None,
         "membership_revision": None,
         "membership_digest": None,
         "nonce": None,
+        "update_identity_digest": None,
     }
 
 
@@ -336,13 +334,13 @@ AUTHORITY_FIELDS: tuple[str, ...] = (
     "chat_id",
     "message_id",
     "telegram_user_id",
-    "update_identity_digest",
     "action",
     "subject_short",
     "dispatch_attempt_id",
     "membership_revision",
     "membership_digest",
     "nonce",
+    "update_identity_digest",
 )
 
 #: Every column a claimable row must carry, or the worker could not rebuild
@@ -407,13 +405,13 @@ _LIVE_VALUES: dict[str, object] = {
     "chat_id": "42",
     "message_id": 555,
     "telegram_user_id": "777",
-    "update_identity_digest": "update-digest-1",
     "action": "op",
     "subject_short": "0123abcd",
     "dispatch_attempt_id": uuid.UUID("11111111-2222-4333-8444-555555555555"),
     "membership_revision": 1,
     "membership_digest": "abcdefghijkl",
     "nonce": "nonce123456",
+    "update_identity_digest": "update-digest-1",
 }
 
 
