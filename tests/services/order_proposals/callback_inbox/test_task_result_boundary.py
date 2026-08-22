@@ -23,6 +23,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
@@ -31,8 +32,9 @@ import sentry_sdk
 from sentry_sdk import logger as sentry_logger
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
-from taskiq import TaskiqMessage
+from taskiq import TaskiqMessage, TaskiqMiddleware
 from taskiq.compat import model_dump
+from taskiq.middlewares import SmartRetryMiddleware
 from taskiq.receiver import Receiver
 from taskiq.result import TaskiqResult
 from taskiq.serializers import PickleSerializer
@@ -79,6 +81,7 @@ _FAKE_FRAGMENTS = (
     _FAKE_SECRET[9:20],
     _FAKE_SECRET[-10:],
 )
+_WIRE_LABEL_TYPE_PROBE = "r35-wire-label-type-probe"
 
 
 class _BoundaryRuntimeError(RuntimeError):
@@ -123,6 +126,34 @@ class _CustomBaseException(BaseException):
         if self.reject_render:
             raise AssertionError("boundary base exception was rendered")
         return "<task boundary base exception>"
+
+
+class _ReceiverCallbackBaseException(BaseException):
+    """A Receiver-only hostile control that records attempted rendering."""
+
+    def __init__(self) -> None:
+        self.render_calls: list[str] = []
+        super().__init__(_FAKE_SECRET)
+
+    def __str__(self) -> str:
+        self.render_calls.append("str")
+        return _FAKE_SECRET
+
+    def __repr__(self) -> str:
+        self.render_calls.append("repr")
+        return _FAKE_SECRET
+
+
+class _ReceiverCancelledErrorSubclass(asyncio.CancelledError):
+    """A cancellation-shaped error that must remain an ordinary W5 failure."""
+
+
+class _ReceiverKeyboardInterruptSubclass(KeyboardInterrupt):
+    """A keyboard-shaped error that must remain an ordinary W5 failure."""
+
+
+class _ReceiverSystemExitSubclass(SystemExit):
+    """A system-exit-shaped error that must remain an ordinary W5 failure."""
 
 
 class _StringSubclass(str):
@@ -375,11 +406,21 @@ def _raise_generic(message: str) -> None:
 
 
 def _assert_exception_unrendered(exception: object, *, where: str) -> None:
+    __tracebackhide__ = True
     calls = getattr(exception, "render_calls", None)
     if calls is None:
         return
     if type(calls) is not list or calls:
         _raise_generic(f"{where} rendered a protected exception")
+
+
+def _assert_callback_value_unrendered(value: object, *, where: str) -> None:
+    """The callback tests use only owned sentinels with an exact list field."""
+    __tracebackhide__ = True
+    _assert_exception_unrendered(value, where=where)
+    calls = getattr(value, "calls", None)
+    if calls is not None and (type(calls) is not list or calls):
+        _raise_generic(f"{where} rendered protected callback material")
 
 
 def _assert_exact_string(value: object, expected: str, *, where: str) -> None:
@@ -439,6 +480,7 @@ def _walk_protected_text(value: object) -> list[str]:
 
 
 def _assert_no_protected_text(value: object, *, where: str) -> None:
+    __tracebackhide__ = True
     for rendered in _walk_protected_text(value):
         if any(fragment in rendered for fragment in _FAKE_FRAGMENTS):
             _raise_generic(f"protected task-boundary material reached {where}")
@@ -446,6 +488,7 @@ def _assert_no_protected_text(value: object, *, where: str) -> None:
 
 def _assert_all_clean(checks: tuple[Callable[[], None], ...], *, message: str) -> None:
     """Run every privacy scan before raising one safe, non-diagnostic RED."""
+    __tracebackhide__ = True
     failures = 0
     for check in checks:
         try:
@@ -466,6 +509,7 @@ def _record_extras(record: logging.LogRecord) -> dict[str, object]:
 
 
 def _assert_log_records_clean(records: list[logging.LogRecord]) -> None:
+    __tracebackhide__ = True
     if not records:
         _raise_generic("log scanner had no records to inspect")
     for record in records:
@@ -480,6 +524,7 @@ def _assert_log_records_clean(records: list[logging.LogRecord]) -> None:
 
 
 def _assert_events_clean(events: list[dict[str, Any]]) -> None:
+    __tracebackhide__ = True
     if not events:
         _raise_generic("Sentry scanner had no events to inspect")
     for event in events:
@@ -569,6 +614,7 @@ def _test_sentry_breadcrumb_deltas(
 
 
 def _assert_test_sentry_breadcrumbs_clean() -> None:
+    __tracebackhide__ = True
     for scope in _test_sentry_scopes():
         breadcrumbs = getattr(scope, "_breadcrumbs", ())
         _assert_no_protected_text(
@@ -813,6 +859,10 @@ def _capture_safe_receiver_post_event(
     if not callable(flush):
         _raise_generic("fixture-bound Sentry client did not expose flush")
 
+    # Receiver logging integrations can queue an event until the next flush.
+    # Drain that pre-existing callback output first so the control's delta is
+    # genuinely its own one safe event rather than a timing-dependent bundle.
+    flush(timeout=1.0)
     before_count = len(events)
     sentry_sdk.capture_message(_RECEIVER_POST_EVENT_MESSAGE)
     flush(timeout=1.0)
@@ -902,6 +952,266 @@ def _assert_production_observability_unchanged(
         _raise_generic("invalid recovery id changed production Sentry event contents")
     if tuple(envelope_item_types) != expected_item_types:
         _raise_generic("invalid recovery id changed production Sentry envelope items")
+
+
+class _ReceiverCallbackLifecycleProbe(TaskiqMiddleware):
+    """Records the actual callback middleware direction without mutating it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.steps: list[str] = []
+        self.pre_labels: dict[str, object] | None = None
+        self.pre_labels_types: dict[str, int] | None = None
+
+    async def pre_execute(self, message: TaskiqMessage) -> TaskiqMessage:
+        self.steps.append("pre")
+        self.pre_labels = copy.deepcopy(message.labels)
+        self.pre_labels_types = copy.deepcopy(message.labels_types)
+        return message
+
+    async def post_execute(
+        self, message: TaskiqMessage, result: TaskiqResult[Any]
+    ) -> None:
+        del message, result
+        self.steps.append("post")
+
+
+@dataclass
+class _ReceiverCallbackCapture:
+    """All callback-only seams, kept in memory instead of talking to Redis."""
+
+    saved: list[TaskiqResult[Any]]
+    retry_calls: list[tuple[str, float]]
+    lifecycle: _ReceiverCallbackLifecycleProbe
+    outer: BaseException | None
+    post_receiver_events: list[dict[str, Any]]
+
+
+def _hostile_receiver_labels() -> dict[str, object]:
+    """A complete incoming retry-authority bundle, including private material."""
+    return {
+        "retry_on_error": True,
+        "max_retries": 97,
+        "_retries": 11,
+        "delay": 3600,
+        "timeout": 3600,
+        "private": _FAKE_SECRET,
+        _WIRE_LABEL_TYPE_PROBE: "safe",
+    }
+
+
+def _hostile_receiver_label_types() -> dict[str, int]:
+    """Valid TaskIQ label parsers, not an invalid-parser expansion of scope."""
+    from taskiq.labels import LabelType
+
+    return {
+        "retry_on_error": LabelType.BOOL.value,
+        "private": LabelType.STR.value,
+        _WIRE_LABEL_TYPE_PROBE: LabelType.STR.value,
+    }
+
+
+def _assert_callback_backend_is_the_configured_pickle_backend() -> None:
+    """The harness must exercise production's result representation, not a fake."""
+    from app.core.taskiq_broker import broker, result_backend
+
+    if broker.result_backend is not result_backend:
+        _raise_generic("configured broker no longer owns its imported result backend")
+    if type(broker.result_backend) is not RedisAsyncResultBackend:
+        _raise_generic("configured callback backend is not RedisAsyncResultBackend")
+    if type(broker.result_backend.serializer) is not PickleSerializer:
+        _raise_generic("configured callback serializer is not PickleSerializer")
+
+
+async def _invoke_actual_receiver_callback(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    message: TaskiqMessage,
+    events: list[dict[str, Any]],
+) -> _ReceiverCallbackCapture:
+    """Send formatter bytes through ``Receiver.callback`` with no Redis I/O.
+
+    Only the backend's save seam is replaced.  The configured formatter,
+    task registry, Receiver parameter parsing, middleware order, SmartRetry,
+    result model, and production Pickle serializer remain the shipped ones.
+    """
+    from app.core.taskiq_broker import broker, result_backend
+
+    _assert_callback_backend_is_the_configured_pickle_backend()
+    _hide_taskiq_receiver_diagnostics_from_pytest(request, caplog)
+
+    retries: list[tuple[str, float]] = []
+    saved: list[TaskiqResult[Any]] = []
+    lifecycle = _ReceiverCallbackLifecycleProbe()
+    lifecycle.set_broker(broker)
+    smart_retries = [
+        middleware
+        for middleware in broker.middlewares
+        if type(middleware) is SmartRetryMiddleware
+    ]
+    if len(smart_retries) != 1:
+        _raise_generic("configured callback broker did not expose one SmartRetry")
+    smart_retry = smart_retries[0]
+
+    async def _capture_retry(
+        kicker: object, retry_message: TaskiqMessage, delay: float
+    ) -> None:
+        del kicker
+        retries.append((retry_message.task_name, delay))
+
+    async def _capture_result(task_id: str, result: TaskiqResult[Any]) -> None:
+        del task_id
+        saved.append(result)
+
+    # Append the lifecycle probe after production middleware.  Forward
+    # ``pre_execute`` and reverse ``post_execute`` must both reach it.
+    monkeypatch.setattr(broker, "middlewares", [*broker.middlewares, lifecycle])
+    monkeypatch.setattr(smart_retry, "on_send", _capture_retry)
+    monkeypatch.setattr(result_backend, "set_result", _capture_result)
+
+    broker_message = broker.formatter.dumps(message)
+    wire = getattr(broker_message, "message", None)
+    if type(wire) is not bytes:
+        _raise_generic("configured TaskIQ formatter did not produce wire bytes")
+    receiver = Receiver(
+        broker=broker,
+        validate_params=True,
+        max_async_tasks=1,
+        run_startup=False,
+    )
+    outer: BaseException | None = None
+    try:
+        await receiver.callback(wire)
+    except BaseException as exception:
+        outer = exception
+    post_receiver_events = _capture_safe_receiver_post_event(events)
+    return _ReceiverCallbackCapture(
+        saved=saved,
+        retry_calls=retries,
+        lifecycle=lifecycle,
+        outer=outer,
+        post_receiver_events=post_receiver_events,
+    )
+
+
+def _assert_callback_lifecycle_saw_sanitized_w5_message(
+    capture: _ReceiverCallbackCapture,
+) -> None:
+    __tracebackhide__ = True
+    if tuple(capture.lifecycle.steps) != ("pre", "post"):
+        _raise_generic("Receiver callback did not run forward and reverse middleware")
+    if capture.lifecycle.pre_labels != {}:
+        _raise_generic("W5 callback labels reached pre-execute middleware")
+    if capture.lifecycle.pre_labels_types is not None:
+        _raise_generic("W5 callback label type metadata survived to middleware")
+
+
+def _assert_callback_result_is_safe(
+    capture: _ReceiverCallbackCapture,
+    *,
+    assert_return_value: Callable[[object], None],
+) -> None:
+    __tracebackhide__ = True
+    if capture.outer is not None:
+        _raise_generic(
+            "W5 Receiver callback escaped instead of returning a safe result"
+        )
+    if len(capture.saved) != 1:
+        _raise_generic("W5 Receiver callback did not save exactly one result")
+    result = capture.saved[0]
+    if result.is_err is not False or result.error is not None:
+        _raise_generic("W5 Receiver callback retained a TaskIQ error object")
+    if type(result.labels) is not dict or result.labels != {}:
+        _raise_generic("W5 Receiver callback retained incoming labels")
+    assert_return_value(result.return_value)
+
+
+def _assert_callback_result_surfaces_clean(
+    capture: _ReceiverCallbackCapture,
+    *,
+    log_sink: _RecordSink,
+    events: list[dict[str, Any]],
+) -> None:
+    """Scan each actual result representation and all fixture-bound telemetry."""
+    __tracebackhide__ = True
+    from app.core.taskiq_broker import result_backend
+
+    _assert_no_protected_text(capture.outer, where="Receiver callback outer exception")
+    for result in capture.saved:
+        try:
+            payload = model_dump(result)
+            raw = result_backend.serializer.dumpb(payload)
+            decoded = result_backend.serializer.loadb(raw)
+        except Exception:
+            _raise_generic("configured callback result could not be serialized safely")
+            return
+        _assert_no_protected_text(payload, where="callback TaskiqResult model")
+        _assert_no_protected_text(raw, where="callback Pickle bytes")
+        _assert_no_protected_text(decoded, where="callback Pickle decoded result")
+        _assert_no_protected_text(result.error, where="callback TaskiqResult error")
+        _assert_no_protected_text(result.labels, where="callback TaskiqResult labels")
+    _assert_log_records_clean(log_sink.records)
+    _assert_events_clean(events)
+    _assert_events_clean(capture.post_receiver_events)
+    _assert_test_sentry_breadcrumbs_clean()
+
+
+def _assert_callback_has_no_retry(capture: _ReceiverCallbackCapture) -> None:
+    __tracebackhide__ = True
+    if capture.retry_calls:
+        _raise_generic("W5 callback delegated retry authority to SmartRetry")
+
+
+def _receiver_debug_records_since(
+    log_sink: _RecordSink, before_count: int
+) -> list[logging.LogRecord]:
+    """Return actual Receiver DEBUG output from one formatter-bytes callback."""
+    __tracebackhide__ = True
+    records = [
+        record
+        for record in log_sink.records[before_count:]
+        if record.name.startswith("taskiq.receiver") and record.levelno == logging.DEBUG
+    ]
+    if not records:
+        _raise_generic("actual Receiver DEBUG capture was empty")
+    return records
+
+
+def _assert_receiver_debug_records_clean(records: list[logging.LogRecord]) -> None:
+    """The first Receiver logging opportunity may not retain W5 wire material."""
+    __tracebackhide__ = True
+    if not records:
+        _raise_generic("Receiver DEBUG privacy scanner had no records")
+    for record in records:
+        _assert_no_protected_text(
+            vars(record), where="W5 first Receiver DEBUG LogRecord"
+        )
+        _assert_no_protected_text(
+            record.getMessage(), where="W5 first Receiver DEBUG message"
+        )
+        _assert_no_wire_label_type_probe(
+            vars(record), where="W5 first Receiver DEBUG LogRecord"
+        )
+
+
+def _assert_no_wire_label_type_probe(value: object, *, where: str) -> None:
+    """A safe marker proves ``labels_types`` itself was removed, not merely hidden."""
+    __tracebackhide__ = True
+    if any(
+        _WIRE_LABEL_TYPE_PROBE in rendered for rendered in _walk_protected_text(value)
+    ):
+        _raise_generic(f"W5 wire label type metadata reached {where}")
+
+
+def _assert_no_receiver_error_logs(log_sink: _RecordSink) -> None:
+    __tracebackhide__ = True
+    if any(
+        record.name.startswith("taskiq.receiver") and record.levelno >= logging.ERROR
+        for record in log_sink.records
+    ):
+        _raise_generic("Receiver emitted an ERROR record for a W5 control signal")
 
 
 def test_closed_worker_status_vocabularies_match_the_independent_contract() -> None:
@@ -1533,6 +1843,796 @@ async def test_receiver_validation_warnings_do_not_reach_sentry_post_event(
         ),
         message="Receiver validation warning crossed the Sentry boundary",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_enabled", (False, True), ids=("gate-off", "gate-on"))
+@pytest.mark.parametrize(
+    ("endpoint", "case"),
+    (
+        ("job", "missing"),
+        ("job", "two-positional"),
+        ("job", "keyword-only"),
+        ("job", "duplicate"),
+        ("job", "secret-keyword"),
+        ("job", "extra-keyword"),
+        ("recovery", "one-positional"),
+        ("recovery", "secret-keyword"),
+        ("recovery", "args-and-keyword"),
+    ),
+    ids=(
+        "job-missing",
+        "job-two-positional",
+        "job-keyword-only",
+        "job-duplicate",
+        "job-secret-keyword",
+        "job-extra-keyword",
+        "recovery-one-positional",
+        "recovery-secret-keyword",
+        "recovery-args-and-keyword",
+    ),
+)
+async def test_receiver_callback_rejects_malformed_w5_envelopes_before_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    worker_enabled: bool,
+    endpoint: str,
+    case: str,
+) -> None:
+    """Only the documented W5 wire envelopes may enter either task body."""
+    __tracebackhide__ = True
+    from app.core import db
+    from app.core.config import settings
+    from app.services.order_proposals.callback_inbox import worker as worker_module
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    calls: list[str] = []
+    log_sink, events, envelope_item_types = production_sentry_sinks
+
+    def _session_tripwire(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls.append("session")
+        return object()
+
+    class _EngineTripwire:
+        async def connect(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            calls.append("engine")
+            raise AssertionError(
+                "malformed callback envelope opened database authority"
+            )
+
+    async def _process_tripwire(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls.append("process")
+        return {"status": "succeeded", "job_id": canonical}
+
+    async def _recover_tripwire(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls.append("recovery")
+        return _valid_recovery_report()
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        worker_enabled,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(worker_module, "AsyncSessionLocal", _session_tripwire)
+    monkeypatch.setattr(db, "engine", _EngineTripwire())
+    monkeypatch.setattr(task_module, "process_callback_job", _process_tripwire)
+    monkeypatch.setattr(task_module, "recover_callback_jobs", _recover_tripwire)
+
+    if endpoint == "job":
+        task = task_module.run_telegram_callback_job
+        arguments: dict[str, tuple[list[object], dict[str, object]]] = {
+            "missing": ([], {}),
+            "two-positional": ([canonical, _FAKE_SECRET], {}),
+            "keyword-only": ([], {"job_id": canonical}),
+            "duplicate": ([canonical], {"job_id": _FAKE_SECRET}),
+            "secret-keyword": ([], {_FAKE_SECRET: "safe"}),
+            "extra-keyword": ([canonical], {"extra": _FAKE_SECRET}),
+        }
+        expected_return = _assert_invalid_job_id_result
+    elif endpoint == "recovery":
+        task = task_module.recover_telegram_callback_jobs
+        arguments = {
+            "one-positional": ([_FAKE_SECRET], {}),
+            "secret-keyword": ([], {_FAKE_SECRET: "safe"}),
+            "args-and-keyword": ([_FAKE_SECRET], {_FAKE_SECRET: "safe"}),
+        }
+        expected_return = _assert_recovery_error
+    else:
+        _raise_generic("unknown W5 callback endpoint")
+        return
+    try:
+        args, kwargs = arguments[case]
+    except KeyError:
+        _raise_generic("unknown malformed W5 callback case")
+        return
+    message = TaskiqMessage(
+        task_id=str(uuid.uuid4()),
+        task_name=task.task_name,
+        labels=_hostile_receiver_labels(),
+        labels_types=_hostile_receiver_label_types(),
+        args=args,
+        kwargs=kwargs,
+    )
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=message,
+        events=events,
+    )
+
+    _assert_all_clean(
+        (
+            lambda: _assert_callback_result_is_safe(
+                capture, assert_return_value=expected_return
+            ),
+            lambda: _assert_callback_lifecycle_saw_sanitized_w5_message(capture),
+            lambda: _assert_callback_has_no_retry(capture),
+            lambda: _assert_callback_result_surfaces_clean(
+                capture, log_sink=log_sink, events=events
+            ),
+            lambda: _assert_production_sentry_controls(events, envelope_item_types),
+            lambda: (
+                _raise_generic("malformed W5 envelope reached worker or database")
+                if calls
+                else None
+            ),
+        ),
+        message="malformed W5 Receiver envelope crossed authority or privacy boundary",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_enabled", (False, True), ids=("gate-off", "gate-on"))
+@pytest.mark.parametrize("endpoint", ("job", "recovery"))
+async def test_receiver_callback_scrubs_w5_labels_before_results_or_retry_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    worker_enabled: bool,
+    endpoint: str,
+) -> None:
+    """Incoming W5 labels are never task/retry/result/telemetry authority."""
+    __tracebackhide__ = True
+    from app.core.config import settings
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    calls: list[str] = []
+    log_sink, events, envelope_item_types = production_sentry_sinks
+
+    async def _process(job_id: str) -> object:
+        calls.append("process")
+        return {"status": "succeeded", "job_id": job_id}
+
+    async def _recover() -> object:
+        calls.append("recovery")
+        return _valid_recovery_report()
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        worker_enabled,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(task_module, "process_callback_job", _process)
+    monkeypatch.setattr(task_module, "recover_callback_jobs", _recover)
+
+    if endpoint == "job":
+        task = task_module.run_telegram_callback_job
+        args: list[object] = [canonical]
+        kwargs: dict[str, object] = {}
+
+        def _assert_return(value: object) -> None:
+            _assert_job_result(
+                value,
+                status="succeeded" if worker_enabled else "disabled",
+                job_id=canonical,
+            )
+
+    elif endpoint == "recovery":
+        task = task_module.recover_telegram_callback_jobs
+        args = []
+        kwargs = {}
+
+        def _assert_return(value: object) -> None:
+            if worker_enabled:
+                _assert_valid_recovery_report(value)
+            else:
+                _assert_exact_keys(
+                    value, frozenset({"status"}), where="disabled recovery result"
+                )
+                assert type(value) is dict
+                _assert_exact_string(
+                    value["status"], "worker_disabled", where="disabled recovery"
+                )
+
+    else:
+        _raise_generic("unknown W5 label-scrub endpoint")
+        return
+    message = TaskiqMessage(
+        task_id=str(uuid.uuid4()),
+        task_name=task.task_name,
+        labels=_hostile_receiver_labels(),
+        labels_types=_hostile_receiver_label_types(),
+        args=args,
+        kwargs=kwargs,
+    )
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=message,
+        events=events,
+    )
+    expected_calls = 1 if worker_enabled else 0
+
+    _assert_all_clean(
+        (
+            lambda: _assert_callback_result_is_safe(
+                capture, assert_return_value=_assert_return
+            ),
+            lambda: _assert_callback_lifecycle_saw_sanitized_w5_message(capture),
+            lambda: _assert_callback_has_no_retry(capture),
+            lambda: _assert_callback_result_surfaces_clean(
+                capture, log_sink=log_sink, events=events
+            ),
+            lambda: _assert_production_sentry_controls(events, envelope_item_types),
+            lambda: (
+                _raise_generic("W5 callback gate did not control task body entry")
+                if len(calls) != expected_calls
+                else None
+            ),
+        ),
+        message="W5 Receiver labels retained retry or private authority",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire_case",
+    ("producer", "hostile-args", "hostile-keyword", "hostile-labels"),
+    ids=("producer", "hostile-args", "hostile-keyword", "hostile-labels"),
+)
+async def test_receiver_callback_w5_wire_is_safe_at_the_first_debug_and_sentry_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    wire_case: str,
+) -> None:
+    """Formatter normalization, not pre-execute mutation, owns first-log privacy."""
+    __tracebackhide__ = True
+    from app.core.config import settings
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    log_sink, events, envelope_item_types = production_sentry_sinks
+    records_before = len(log_sink.records)
+    events_before = len(events)
+    breadcrumbs_before = _snapshot_test_sentry_breadcrumbs()
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        False,
+        raising=False,
+    )
+    task = task_module.run_telegram_callback_job
+    if wire_case == "producer":
+        labels: dict[str, object] = {}
+        label_types: dict[str, int] | None = None
+        args: list[object] = [canonical]
+        kwargs: dict[str, object] = {}
+
+        def expected_return(value: object) -> None:
+            _assert_job_result(value, status="disabled", job_id=canonical)
+
+    elif wire_case == "hostile-args":
+        labels = _hostile_receiver_labels()
+        label_types = _hostile_receiver_label_types()
+        args = [_FAKE_SECRET]
+        kwargs = {}
+
+        def expected_return(value: object) -> None:
+            _assert_invalid_job_id_result(value)
+
+    elif wire_case == "hostile-keyword":
+        labels = _hostile_receiver_labels()
+        label_types = _hostile_receiver_label_types()
+        args = [canonical]
+        kwargs = {_FAKE_SECRET: _FAKE_SECRET}
+
+        def expected_return(value: object) -> None:
+            _assert_invalid_job_id_result(value)
+
+    elif wire_case == "hostile-labels":
+        labels = _hostile_receiver_labels()
+        label_types = _hostile_receiver_label_types()
+        args = [canonical]
+        kwargs = {}
+
+        def expected_return(value: object) -> None:
+            _assert_job_result(value, status="disabled", job_id=canonical)
+
+    else:
+        _raise_generic("unknown first-Receiver-surface wire case")
+        return
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=TaskiqMessage(
+            task_id=str(uuid.uuid4()),
+            task_name=task.task_name,
+            labels=labels,
+            labels_types=label_types,
+            args=args,
+            kwargs=kwargs,
+        ),
+        events=events,
+    )
+    receiver_debug = _receiver_debug_records_since(log_sink, records_before)
+    event_delta = events[events_before:]
+    breadcrumb_deltas = _test_sentry_breadcrumb_deltas(breadcrumbs_before)
+
+    # This must fail on the current Receiver because its formatter-loaded W5
+    # message reaches DEBUG before every ``pre_execute`` middleware.  It is
+    # deliberately independent of a future formatter's implementation shape.
+    _assert_receiver_debug_records_clean(receiver_debug)
+    if not event_delta:
+        _raise_generic("W5 callback did not produce a post-Receiver Sentry event")
+    _assert_events_clean(event_delta)
+    _assert_no_wire_label_type_probe(
+        event_delta, where="W5 first Receiver Sentry event"
+    )
+    for delta in breadcrumb_deltas:
+        _assert_no_protected_text(delta, where="W5 first Receiver breadcrumb")
+        _assert_no_wire_label_type_probe(delta, where="W5 first Receiver breadcrumb")
+    _assert_callback_result_is_safe(
+        capture,
+        assert_return_value=expected_return,
+    )
+    _assert_callback_lifecycle_saw_sanitized_w5_message(capture)
+    _assert_production_sentry_controls(events, envelope_item_types)
+
+
+@pytest.mark.asyncio
+async def test_receiver_callback_non_w5_debug_capture_proves_the_first_log_scanner_is_live(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+) -> None:
+    """A safe non-W5 callback confirms root/Receiver DEBUG capture is real."""
+    __tracebackhide__ = True
+    from taskiq.labels import LabelType
+
+    from app.core.taskiq_broker import broker
+
+    safe_marker = "r35-safe-non-w5-receiver-debug-control"
+    safe_labels = {"safe": safe_marker, "enabled": "true"}
+    safe_label_types = {
+        "safe": LabelType.STR.value,
+        "enabled": LabelType.BOOL.value,
+    }
+    expected_parsed_labels = {"safe": safe_marker, "enabled": True}
+    log_sink, events, envelope_item_types = production_sentry_sinks
+    records_before = len(log_sink.records)
+    monkeypatch.setattr(broker, "local_task_registry", dict(broker.local_task_registry))
+
+    @broker.task(task_name="r35.receiver.non_w5_debug_control")
+    async def _non_w5_debug_control() -> object:
+        return {"status": "safe"}
+
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=TaskiqMessage(
+            task_id=str(uuid.uuid4()),
+            task_name=_non_w5_debug_control.task_name,
+            labels=safe_labels,
+            labels_types=safe_label_types,
+            args=[],
+            kwargs={},
+        ),
+        events=events,
+    )
+    receiver_debug = _receiver_debug_records_since(log_sink, records_before)
+    if not any(safe_marker in record.getMessage() for record in receiver_debug):
+        _raise_generic("safe non-W5 marker was absent from actual Receiver DEBUG")
+    if capture.outer is not None or len(capture.saved) != 1:
+        _raise_generic("safe non-W5 callback did not reach its result boundary")
+    result = capture.saved[0]
+    if result.is_err is not False or result.error is not None:
+        _raise_generic("safe non-W5 callback returned a TaskIQ error")
+    if result.labels != expected_parsed_labels:
+        _raise_generic("W5 sanitizer altered non-W5 callback labels")
+    if capture.lifecycle.pre_labels != expected_parsed_labels:
+        _raise_generic("non-W5 callback did not preserve parsed label values")
+    if capture.lifecycle.pre_labels_types != safe_label_types:
+        _raise_generic("W5 sanitizer altered non-W5 callback label type metadata")
+    _assert_production_sentry_controls(events, envelope_item_types)
+
+
+def _receiver_callback_exception(
+    kind: str,
+) -> tuple[BaseException, tuple[object, ...]]:
+    """Build one adversarial exception without putting it in pytest IDs."""
+    if kind == "ordinary":
+        exception = _BoundaryRuntimeError(reject_render=False)
+        return exception, (exception,)
+    if kind == "exception-group":
+        member = _BoundaryRuntimeError(reject_render=False)
+        return ExceptionGroup("safe receiver exception group", [member]), (member,)
+    if kind == "custom-base":
+        exception = _ReceiverCallbackBaseException()
+        return exception, (exception,)
+    if kind == "base-exception-group":
+        member = _ReceiverCallbackBaseException()
+        return BaseExceptionGroup("safe receiver base group", [member]), (member,)
+    if kind == "cancelled-subclass":
+        argument = _Hostile()
+        return _ReceiverCancelledErrorSubclass(argument), (argument,)
+    if kind == "keyboard-subclass":
+        argument = _Hostile()
+        return _ReceiverKeyboardInterruptSubclass(argument), (argument,)
+    if kind == "system-exit-subclass":
+        argument = _Hostile()
+        return _ReceiverSystemExitSubclass(argument), (argument,)
+    _raise_generic("unknown Receiver callback exception case")
+    raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ("job", "recovery"))
+@pytest.mark.parametrize(
+    "control",
+    ("cancelled", "keyboard", "system-exit"),
+    ids=("cancelled", "keyboard-interrupt", "system-exit"),
+)
+async def test_receiver_callback_replaces_only_exact_controls_before_save_or_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    endpoint: str,
+    control: str,
+) -> None:
+    """Exact built-in controls leave only a new safe process-control signal."""
+    __tracebackhide__ = True
+    from app.core.config import settings
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    original_argument = _Hostile()
+    if control == "cancelled":
+        original: BaseException = asyncio.CancelledError(original_argument)
+        expected_type: type[BaseException] = asyncio.CancelledError
+        expected_args: tuple[object, ...] = ()
+    elif control == "keyboard":
+        original = KeyboardInterrupt(original_argument)
+        expected_type = KeyboardInterrupt
+        expected_args = ()
+    elif control == "system-exit":
+        original = SystemExit(original_argument)
+        expected_type = SystemExit
+        expected_args = (1,)
+    else:
+        _raise_generic("unknown exact control case")
+        return
+    log_sink, events, envelope_item_types = production_sentry_sinks
+
+    async def _explode(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise original
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        True,
+        raising=False,
+    )
+    if endpoint == "job":
+        task = task_module.run_telegram_callback_job
+        args: list[object] = [canonical]
+        kwargs: dict[str, object] = {}
+        monkeypatch.setattr(task_module, "process_callback_job", _explode)
+    elif endpoint == "recovery":
+        task = task_module.recover_telegram_callback_jobs
+        args = []
+        kwargs = {}
+        monkeypatch.setattr(task_module, "recover_callback_jobs", _explode)
+    else:
+        _raise_generic("unknown exact-control endpoint")
+        return
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=TaskiqMessage(
+            task_id=str(uuid.uuid4()),
+            task_name=task.task_name,
+            labels=_hostile_receiver_labels(),
+            labels_types=_hostile_receiver_label_types(),
+            args=args,
+            kwargs=kwargs,
+        ),
+        events=events,
+    )
+
+    def _assert_safe_control() -> None:
+        safe = capture.outer
+        if safe is None or type(safe) is not expected_type:
+            _raise_generic("Receiver callback did not raise the exact safe control")
+        if safe is original:
+            _raise_generic("Receiver callback re-raised the original control object")
+        if safe.args != expected_args:
+            _raise_generic("Receiver callback control used unsafe fixed arguments")
+        if safe.__cause__ is not None or safe.__context__ is not None:
+            _raise_generic("Receiver callback control retained an exception chain")
+        if capture.saved:
+            _raise_generic("Receiver callback saved an interrupted W5 result")
+
+    _assert_all_clean(
+        (
+            _assert_safe_control,
+            lambda: _assert_callback_lifecycle_saw_sanitized_w5_message(capture),
+            lambda: _assert_callback_has_no_retry(capture),
+            lambda: _assert_callback_result_surfaces_clean(
+                capture, log_sink=log_sink, events=events
+            ),
+            lambda: _assert_callback_value_unrendered(
+                original_argument, where="Receiver callback exact control argument"
+            ),
+            lambda: _assert_no_receiver_error_logs(log_sink),
+            lambda: _assert_production_sentry_controls(events, envelope_item_types),
+        ),
+        message="W5 Receiver control handling retained original exception authority",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ("job", "recovery"))
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "ordinary",
+        "exception-group",
+        "custom-base",
+        "base-exception-group",
+        "cancelled-subclass",
+        "keyboard-subclass",
+        "system-exit-subclass",
+    ),
+    ids=(
+        "ordinary",
+        "exception-group",
+        "custom-base",
+        "base-exception-group",
+        "cancelled-subclass",
+        "keyboard-subclass",
+        "system-exit-subclass",
+    ),
+)
+async def test_receiver_callback_collapses_noncontrol_failures_to_safe_endpoint_results(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+    endpoint: str,
+    kind: str,
+) -> None:
+    """Only exact built-ins control the worker; every other failure is data."""
+    __tracebackhide__ = True
+    from app.core.config import settings
+    from app.tasks import telegram_callback_inbox_tasks as task_module
+
+    canonical = "01234567-89ab-4def-8abc-def012345678"
+    original, tracked = _receiver_callback_exception(kind)
+    log_sink, events, envelope_item_types = production_sentry_sinks
+
+    async def _explode(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise original
+
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
+        True,
+        raising=False,
+    )
+    if endpoint == "job":
+        task = task_module.run_telegram_callback_job
+        args: list[object] = [canonical]
+        kwargs: dict[str, object] = {}
+
+        def expected_return(value: object) -> None:
+            _assert_job_result(value, status="error", job_id=canonical)
+
+        monkeypatch.setattr(task_module, "process_callback_job", _explode)
+    elif endpoint == "recovery":
+        task = task_module.recover_telegram_callback_jobs
+        args = []
+        kwargs = {}
+        expected_return = _assert_recovery_error
+        monkeypatch.setattr(task_module, "recover_callback_jobs", _explode)
+    else:
+        _raise_generic("unknown noncontrol endpoint")
+        return
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=TaskiqMessage(
+            task_id=str(uuid.uuid4()),
+            task_name=task.task_name,
+            labels=_hostile_receiver_labels(),
+            labels_types=_hostile_receiver_label_types(),
+            args=args,
+            kwargs=kwargs,
+        ),
+        events=events,
+    )
+
+    _assert_all_clean(
+        (
+            lambda: _assert_callback_result_is_safe(
+                capture, assert_return_value=expected_return
+            ),
+            lambda: _assert_callback_lifecycle_saw_sanitized_w5_message(capture),
+            lambda: _assert_callback_has_no_retry(capture),
+            lambda: _assert_callback_result_surfaces_clean(
+                capture, log_sink=log_sink, events=events
+            ),
+            lambda: _assert_production_sentry_controls(events, envelope_item_types),
+            *(
+                lambda exception=exception: _assert_callback_value_unrendered(
+                    exception, where="Receiver callback noncontrol exception"
+                )
+                for exception in tracked
+            ),
+        ),
+        message="W5 Receiver retained noncontrol exception or retry authority",
+    )
+
+
+@pytest.mark.asyncio
+async def test_receiver_callback_non_w5_retry_labels_still_arm_real_smart_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+) -> None:
+    """W5 label sanitization must not silently alter unrelated task behavior."""
+    __tracebackhide__ = True
+    from app.core.taskiq_broker import broker
+
+    log_sink, events, envelope_item_types = production_sentry_sinks
+    monkeypatch.setattr(broker, "local_task_registry", dict(broker.local_task_registry))
+
+    @broker.task(task_name="r35.receiver.non_w5_retry_control")
+    async def _non_w5_failure() -> object:
+        raise RuntimeError("safe non-W5 retry control")
+
+    labels = _hostile_receiver_labels()
+    label_types = _hostile_receiver_label_types()
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=TaskiqMessage(
+            task_id=str(uuid.uuid4()),
+            task_name=_non_w5_failure.task_name,
+            labels=labels,
+            labels_types=label_types,
+            args=[],
+            kwargs={},
+        ),
+        events=events,
+    )
+    if capture.outer is not None:
+        _raise_generic("non-W5 callback unexpectedly escaped its Receiver boundary")
+    if len(capture.retry_calls) != 1:
+        _raise_generic("non-W5 retry positive control did not arm SmartRetry once")
+    if capture.saved:
+        _raise_generic("non-W5 retry positive control unexpectedly saved a result")
+    if tuple(capture.lifecycle.steps) != ("pre", "post"):
+        _raise_generic("non-W5 callback did not execute real middleware lifecycle")
+    if capture.lifecycle.pre_labels != labels:
+        _raise_generic("W5 label sanitizer affected an unrelated task")
+    if capture.lifecycle.pre_labels_types != label_types:
+        _raise_generic("W5 sanitizer altered unrelated label type metadata")
+    _assert_production_sentry_controls(events, envelope_item_types)
+    # This test deliberately supplies a hostile non-W5 label.  It proves
+    # exact task-name scoping, so privacy scanners are intentionally not run.
+    if not log_sink.records:
+        _raise_generic("non-W5 retry positive control produced no callback logs")
+
+
+@pytest.mark.asyncio
+async def test_receiver_callback_strict_non_w5_signature_still_has_framework_leak_control(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    production_sentry_sinks: tuple[_RecordSink, list[dict[str, Any]], list[str]],
+) -> None:
+    """Prove the installed Receiver leaks strict-signature errors independently."""
+    __tracebackhide__ = True
+    from app.core.taskiq_broker import broker, result_backend
+
+    _log_sink, events, _envelope_item_types = production_sentry_sinks
+    monkeypatch.setattr(broker, "local_task_registry", dict(broker.local_task_registry))
+
+    @broker.task(task_name="r35.receiver.strict_non_w5_control")
+    async def _strict_non_w5(value: object) -> object:
+        del value
+        return {"status": "safe"}
+
+    capture = await _invoke_actual_receiver_callback(
+        monkeypatch=monkeypatch,
+        request=request,
+        caplog=caplog,
+        message=TaskiqMessage(
+            task_id=str(uuid.uuid4()),
+            task_name=_strict_non_w5.task_name,
+            labels={},
+            labels_types=None,
+            args=[],
+            kwargs={_FAKE_SECRET: "safe"},
+        ),
+        events=events,
+    )
+    if capture.outer is not None or len(capture.saved) != 1:
+        _raise_generic("strict non-W5 callback did not reach its result boundary")
+    result = capture.saved[0]
+    if result.is_err is not True or result.error is None:
+        _raise_generic("strict non-W5 callback did not retain its framework error")
+    try:
+        payload = model_dump(result)
+        raw = result_backend.serializer.dumpb(payload)
+    except Exception:
+        _raise_generic("strict non-W5 error did not reach configured Pickle")
+        return
+    with pytest.raises(AssertionError):
+        _assert_no_protected_text(
+            result.error, where="strict non-W5 framework error control"
+        )
+    with pytest.raises(AssertionError):
+        _assert_no_protected_text(raw, where="strict non-W5 framework Pickle control")
 
 
 @pytest.mark.asyncio
@@ -2477,59 +3577,6 @@ async def test_ordinary_recovery_exception_and_exception_group_collapse_to_error
     for exception in (ordinary,) if failure_kind == "ordinary" else (group, grouped):
         _assert_exception_unrendered(exception, where="recovery exception boundary")
     _assert_recovery_error(result)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("exception_type", "factory"),
-    (
-        (asyncio.CancelledError, asyncio.CancelledError),
-        (KeyboardInterrupt, KeyboardInterrupt),
-        (SystemExit, SystemExit),
-        (_CustomBaseException, _CustomBaseException),
-    ),
-    ids=("cancelled", "keyboard_interrupt", "system_exit", "custom_base"),
-)
-@pytest.mark.parametrize("endpoint", ("job", "recovery"))
-async def test_original_task_functions_preserve_every_non_exception_baseexception(
-    monkeypatch: pytest.MonkeyPatch,
-    exception_type: type[BaseException],
-    factory: Callable[[], BaseException],
-    endpoint: str,
-) -> None:
-    """The entry boundary catches ``Exception`` only, never cancellation/control flow."""
-    from app.core.config import settings
-    from app.tasks import telegram_callback_inbox_tasks as task_module
-
-    exception = factory()
-
-    async def _explode(*args: object, **kwargs: object) -> object:
-        raise exception
-
-    monkeypatch.setattr(
-        settings,
-        "ORDER_PROPOSALS_TELEGRAM_CALLBACK_WORKER_ENABLED",
-        True,
-        raising=False,
-    )
-    if endpoint == "job":
-        canonical = str(uuid.uuid4())
-        monkeypatch.setattr(task_module, "process_callback_job", _explode)
-        with pytest.raises(exception_type) as caught:
-            await task_module.run_telegram_callback_job.original_func(canonical)
-    else:
-        monkeypatch.setattr(
-            settings,
-            "ORDER_PROPOSALS_TELEGRAM_CALLBACK_RECOVERY_SCHEDULE_ENABLED",
-            True,
-            raising=False,
-        )
-        monkeypatch.setattr(task_module, "recover_callback_jobs", _explode)
-        with pytest.raises(exception_type) as caught:
-            await task_module.recover_telegram_callback_jobs.original_func()
-    if caught.value is not exception:
-        _raise_generic("entry boundary replaced a non-Exception control-flow object")
-    _assert_exception_unrendered(exception, where="entry BaseException boundary")
 
 
 @pytest.mark.asyncio

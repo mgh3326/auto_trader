@@ -374,18 +374,24 @@ def test_a_changed_binding_changes_the_stored_envelope_and_not_the_digest() -> N
 
 
 def test_only_a_job_uuid_ever_reaches_the_queue() -> None:
-    """The producer is UUID-only; the consumer receives an uncoerced raw value."""
+    """The producer is UUID-only; the consumer validates an untrusted envelope."""
     import inspect
 
     from app.tasks import telegram_callback_inbox_tasks as task_module
 
     signature = inspect.signature(task_module.run_telegram_callback_job.original_func)
-    assert list(signature.parameters) == ["job_id"]
     # The real producer payload is separately pinned to ``args=[uuid-string]``
-    # and ``kwargs={}`` in production-wiring coverage.  This consumer must not
-    # ask TaskIQ/Pydantic to coerce untrusted received values before the strict
-    # runtime boundary can reject them.
-    assert signature.parameters["job_id"].annotation in (object, "object")
+    # and ``kwargs={}`` in production-wiring coverage.  The consumer's
+    # variadic boundary does *not* widen that producer contract: it keeps
+    # TaskIQ/Pydantic from enforcing/coercing an attacker-controlled Python
+    # signature before W5's exact envelope validator can return a safe result.
+    parameters = tuple(signature.parameters.values())
+    assert len(parameters) == 2
+    positional, keyword = parameters
+    assert positional.kind is inspect.Parameter.VAR_POSITIONAL
+    assert keyword.kind is inspect.Parameter.VAR_KEYWORD
+    assert positional.annotation in (object, "object")
+    assert keyword.annotation in (object, "object")
 
 
 @pytest.mark.asyncio
