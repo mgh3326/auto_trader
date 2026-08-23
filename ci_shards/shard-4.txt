@@ -319,6 +319,7 @@ tests/test_kis_mock_signal_migration_additive.py
 tests/test_kis_request_error_retry_policy.py
 tests/test_kiwoom_auth_token_cache.py
 tests/test_kiwoom_chart_compare.py
+tests/test_kiwoom_g1_canonical_wiring.py
 tests/test_kiwoom_mock_us_config.py
 tests/test_kr_live_quote.py
 tests/test_kr_news_relevance_service.py
@@ -390,7 +391,9 @@ tests/test_screener_snapshot_tool.py
 tests/test_screening_consecutive_up_days.py
 tests/test_screening_crypto.py
 tests/test_screening_filter_extensions.py
+tests/test_sentry_diagnostics.py
 tests/test_sentry_init.py
+tests/test_sentry_profile_envelope_contract.py
 tests/test_services_dart.py
 tests/test_services_kis_logging.py
 tests/test_services_kis_market_data.py

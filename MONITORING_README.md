@@ -9,7 +9,7 @@
 - `SENTRY_DSN` 값이 있으면 환경(dev/staging/prod)과 무관하게 활성화
 - 수집 범위: 에러 + 트레이스 + 프로파일
 - 샘플링: `traces=1.0`, `profiles=1.0`
-- `send_default_pii=true` 유지, 민감키(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹
+- `send_default_pii=false` 기본(ROB-1305, 옵트인 필요), 민감키(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹
 - `logger.error`는 Sentry 이벤트로 전송
 
 ## 계측 대상 프로세스
@@ -27,7 +27,7 @@ SENTRY_DSN=
 SENTRY_ENVIRONMENT=
 SENTRY_TRACES_SAMPLE_RATE=1.0
 SENTRY_PROFILES_SAMPLE_RATE=1.0
-SENTRY_SEND_DEFAULT_PII=true
+SENTRY_SEND_DEFAULT_PII=false
 SENTRY_ENABLE_LOG_EVENTS=true
 ```
 

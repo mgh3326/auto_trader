@@ -207,42 +207,53 @@ HoldingProvider = Callable[
 ]
 
 
-def make_account_panel_holding_provider(home_service: Any) -> HoldingProvider:
+def _holding_attr(holding: Any, name: str) -> Any:
+    if isinstance(holding, dict):
+        return holding.get(name)
+    return getattr(holding, name, None)
+
+
+def make_snapshot_symbol_holding_provider(home_service: Any) -> HoldingProvider:
+    """ROB-1314 — per-symbol holding projection from the shared snapshot.
+
+    Replaces the account-panel fan-out: the stock detail page asks the home
+    service for exactly one (market, symbol) answer instead of composing the
+    whole portfolio view.
+    """
+
     async def _provider(
         user_id: int | str, market: NewsMarket, symbol: str, db: Any
     ) -> StockDetailHolding | None:
         _ = db
-        view = await home_service.build_account_panel_view(
-            user_id=int(user_id), include_paper=False, paper_sources=None
+        holding = await home_service.get_symbol_holding(
+            user_id=int(user_id), market=str(market), symbol=symbol
         )
-        target_market = {"kr": "KR", "us": "US", "crypto": "CRYPTO"}[market]
-        for holding in view.groupedHoldings:
-            if (
-                holding.market == target_market
-                and str(holding.symbol).upper() == symbol.upper()
-            ):
-                return StockDetailHolding(
-                    totalQuantity=holding.totalQuantity,
-                    tradeableQuantity=holding.tradeableQuantity,
-                    sellableQuantity=holding.sellableQuantity,
-                    pendingSellQuantity=holding.pendingSellQuantity,
-                    referenceQuantity=holding.referenceQuantity,
-                    averageCost=holding.averageCost,
-                    costBasis=holding.costBasis,
-                    valueNative=holding.valueNative,
-                    valueKrw=holding.valueKrw,
-                    pnlKrw=holding.pnlKrw,
-                    pnlRate=holding.pnlRate,
-                    includedSources=holding.includedSources,
-                    priceState=holding.priceState,
-                )
-        return None
+        if holding is None or isinstance(holding, StockDetailHolding):
+            return holding
+        total_quantity = _holding_attr(holding, "totalQuantity")
+        if total_quantity is None:
+            return None
+        return StockDetailHolding(
+            totalQuantity=float(total_quantity),
+            tradeableQuantity=_holding_attr(holding, "tradeableQuantity"),
+            sellableQuantity=_holding_attr(holding, "sellableQuantity"),
+            pendingSellQuantity=_holding_attr(holding, "pendingSellQuantity"),
+            referenceQuantity=_holding_attr(holding, "referenceQuantity"),
+            averageCost=_holding_attr(holding, "averageCost"),
+            costBasis=_holding_attr(holding, "costBasis"),
+            valueNative=_holding_attr(holding, "valueNative"),
+            valueKrw=_holding_attr(holding, "valueKrw"),
+            pnlKrw=_holding_attr(holding, "pnlKrw"),
+            pnlRate=_holding_attr(holding, "pnlRate"),
+            includedSources=_holding_attr(holding, "includedSources") or [],
+            priceState=_holding_attr(holding, "priceState"),
+        )
 
     return _provider
 
 
 __all__ = [
-    "make_account_panel_holding_provider",
+    "make_snapshot_symbol_holding_provider",
     "stock_detail_candle_provider",
     "stock_detail_decision_history_provider",
     "stock_detail_orderbook_provider",

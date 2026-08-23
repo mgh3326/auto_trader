@@ -74,6 +74,22 @@ verdict the shipped mode reaches.
    → `breakeven_band`. Ahead of the sign test on purpose: §40차 sends the band
    to a human *whatever the sign*, so a sell 0.5% above cost is still a human's
    call. The band is inclusive — exactly ±1% is inside it.
+
+   > 🔴 **§142차 (2026-08-23) — the inclusive edge is a producer problem, not a
+   > classifier problem.** Two sell tiers anchor at `average_cost × 1.01`
+   > (`sell.loss_guard_min_multiple`), which *is* this edge when
+   > `breakeven_band_pct = 1`. Whenever `average_cost × 1.01` already sits on the
+   > market tick grid the ceil snap is a no-op and the rung lands exactly on the
+   > boundary, so it is classified `breakeven_band` and can never be auto-approved
+   > (measured: avg 4,000,000 KRW → 4,040,000 → `eligible=False
+   > reason='breakeven_band'`). The repair moved the **rungs**:
+   > `decision_rules.sell.trim_preplace` now declares an effective anchor of
+   > `max(tick_ceil(raw anchor), first valid tick strictly above the band edge)`
+   > for `breakeven_extension_ladder` rung 1 and for the
+   > `sell.breakeven_reserve_trim` post-max anchor. **This comparison stayed
+   > inclusive on purpose** — changing `<=` to `<` here would silently re-classify
+   > every other consumer of the band and was explicitly out of scope. If you are
+   > adding a new sell producer, clear the edge on the producer side.
 3. **net P&L strictly positive.**
    `net = (limit − avg) × qty − max(limit, avg) × qty × round_trip_cost_bps / 10000`.
    `net > 0` → `take_profit`; `net == 0` → `expected_pnl_not_positive`. Exactly

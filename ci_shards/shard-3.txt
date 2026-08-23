@@ -378,6 +378,7 @@ tests/test_research_reports_ingest_job.py
 tests/test_research_run_decision_session_service.py
 tests/test_research_run_decision_session_service_new_candidates.py
 tests/test_research_run_refresh_settings.py
+tests/test_rob1314_market_ttl_cache.py
 tests/test_rob473_report_item_link_ledger.py
 tests/test_rob571_kr_display_name.py
 tests/test_rob653_place_order_hash_guard.py
@@ -396,6 +397,7 @@ tests/test_screening_common.py
 tests/test_screening_enrichment.py
 tests/test_screening_kr.py
 tests/test_screening_us.py
+tests/test_sentry_process_config_seam.py
 tests/test_services_kis_client.py
 tests/test_services_kis_market_data_unit.py
 tests/test_session_context_web_read.py

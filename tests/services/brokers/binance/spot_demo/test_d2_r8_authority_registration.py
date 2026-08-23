@@ -96,6 +96,7 @@ SECTION_132_MANIFEST_SHA256 = (
 
 #: Well before the artifact's expiry, so the "it clears" cases assert an
 #: authority state rather than a wall-clock accident.
+D2_R8_EXPIRY_ISO = "2026-08-22T14:59:59+00:00"
 BEFORE_EXPIRY = dt.datetime(2026, 8, 21, 13, 0, tzinfo=dt.UTC)
 AFTER_EXPIRY = dt.datetime(2026, 8, 23, 0, 0, tzinfo=dt.UTC)
 
@@ -659,14 +660,38 @@ def test_m8_a_missing_third_order_is_refused_too(
 # --------------------------------------------------------------------------
 
 
+# ROB-1316: the shipped r8 authority expired 2026-08-22T14:59:59Z by design, and
+# the expiry is deliberately evaluated against the real clock (a ``now_fn`` fixed
+# in the past must not revive a one-shot). So a test that needs a *live* dispatch
+# authority cannot pin the clock — it has to seal its own authority with a future
+# expiry. LIVE_EXPIRY is far-future on purpose: a near date would just re-arm the
+# same bomb this commit is defusing.
+LIVE_EXPIRY = "2099-12-31T23:59:59Z"
+
+
+def _live_authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Seal a copy of the shipped authority whose only change is a live expiry.
+
+    Registration is monkeypatched module state — the shipped ``Final[Mapping]``
+    is untouched, so this cannot authorize anything outside the test process.
+    """
+
+    payload = artifact_payload()
+    payload["expiry"] = LIVE_EXPIRY
+    return load_sealed_authority(write_authority(tmp_path, monkeypatch, payload))
+
+
 def _writer(
-    monkeypatch: pytest.MonkeyPatch, client: FakeExecutionClient
+    monkeypatch: pytest.MonkeyPatch,
+    client: FakeExecutionClient,
+    *,
+    authority=None,
 ) -> d2.D2RemediationSingleWriter:
     monkeypatch.setenv(D2_REMEDIATION_ENABLED_ENV, "true")
     lease, grant = make_lease()
     return d2.D2RemediationSingleWriter(
         execution_client=client,  # type: ignore[arg-type]
-        authority=load_sealed_authority(ARTIFACT),
+        authority=load_sealed_authority(ARTIFACT) if authority is None else authority,
         lease=lease,
         lease_grant=grant,
         ledger=FakeLedger(),
@@ -675,20 +700,31 @@ def _writer(
 
 @pytest.mark.asyncio
 async def test_the_dry_run_is_still_the_default_under_the_r8_authority(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """🔴 Authorizing dispatch did not make dispatch the default.
 
-    ``execute()`` with no argument mutates nothing, even now that the authority
-    is complete — which is the property most at risk from this cutover.
+    ``execute()`` with no argument mutates nothing *while dispatch is actually
+    authorized* — the property most at risk from this cutover. ROB-1316: the
+    shipped authority has since expired, and against an expired authority the
+    assertion is vacuous (nothing dispatches anyway), so this seals a live
+    authority to keep proving the risky case.
     """
 
     client = FakeExecutionClient()
-    report = await _writer(monkeypatch, client).execute()
+    writer = _writer(
+        monkeypatch, client, authority=_live_authority(tmp_path, monkeypatch)
+    )
+    assert writer.dispatch_block_reasons() == ()  # precondition: dispatch is armed
+    report = await writer.execute()
     assert isinstance(report, d2.D2DryRunReport)
     assert client.submit_calls == []
     assert report.broker_mutation_count == 0
     assert report.dispatch_block_reasons == ()
+    # ROB-1316: the armed-evidence assertion lives here now — it can only be made
+    # against a live authority, and the shipped one has lapsed.
+    assert report.as_evidence()["dispatch_authorized"] is True
 
 
 @pytest.mark.asyncio
@@ -733,10 +769,19 @@ async def test_the_dry_run_operations_are_the_three_contract_operations(
         tuple(op.operation_id for op in report.operations) == D2_ALLOWED_OPERATION_IDS
     )
     evidence = report.as_evidence()
-    assert evidence["dispatch_authorized"] is True
     assert evidence["broker_mutation_count"] == 0
     assert evidence["authority"]["payload_sha256"] == D2_R8_EXECUTION_AUTHORITY_SHA256
     assert evidence["pre_snapshot_hash"] == SECTION_132_PRE_SNAPSHOT_HASH
+    # ROB-1316: the shipped r8 authority lapsed at its sealed expiry, so evidence
+    # built from it reports dispatch as unauthorized and says why. The armed case
+    # is proven in ``test_the_dry_run_is_still_the_default_under_the_r8_authority``
+    # against a sealed live authority. Asserting the lapse here keeps this test
+    # bound to the real artifact instead of quietly re-arming it.
+    assert evidence["dispatch_authorized"] is False
+    assert any(
+        reason.startswith(f"authority expired at {D2_R8_EXPIRY_ISO}")
+        for reason in evidence["dispatch_block_reasons"]
+    )
 
 
 @pytest.mark.asyncio
@@ -783,9 +828,20 @@ async def test_a_backdated_clock_cannot_revive_the_expired_r8_authority(
     )
     # The expiry comparison uses the real clock, so this test says the same
     # thing before and after 2026-08-22: the seam is not wired to the gate.
+    # ROB-1316: compare the *decision*, not the rendered string — the reason text
+    # embeds ``now`` at microsecond precision, so two wall-clock reads a few
+    # hundred microseconds apart never compare equal once the authority expires.
     real_now = dt.datetime.now(dt.UTC)
     expected = load_sealed_authority(ARTIFACT).dispatch_block_reasons(now=real_now)
-    assert writer.dispatch_block_reasons() == expected
+    observed = writer.dispatch_block_reasons()
+    assert len(observed) == len(expected)
+    prefix = f"authority expired at {D2_R8_EXPIRY_ISO}"
+    if expected:
+        # Backdating now_fn to 2020 did not clear the real-clock expiry.
+        assert any(reason.startswith(prefix) for reason in observed)
+    assert [r.split(" (now ")[0] for r in observed] == [
+        r.split(" (now ")[0] for r in expected
+    ]
 
 
 # --------------------------------------------------------------------------

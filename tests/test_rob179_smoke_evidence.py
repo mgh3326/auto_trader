@@ -34,6 +34,11 @@ def _make_app():
                 meta=InvestHomeResponseMeta(warnings=[]),
             )
 
+        async def get_held_pairs(
+            self, *, user_id, include_paper=False, paper_sources=None
+        ):
+            return []
+
     app = FastAPI()
     app.include_router(invest_router)
     app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=1)

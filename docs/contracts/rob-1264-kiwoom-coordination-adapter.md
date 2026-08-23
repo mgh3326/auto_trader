@@ -155,7 +155,11 @@ After ACK the exact Kiwoom order number is persisted as J2B
 5. J3A grant still owned
 
 A live-character client behind a mock-looking caller fails before
-transport. `app/services/brokers/kiwoom/client.py` is not modified.
+transport. G1 (PR #1946) modifies `app/services/brokers/kiwoom/client.py`
+only to wire Redis through Settings and preserve isolated injected clients;
+J3C coordination remains unintroduced. The whole-file SHA-256 drift pin in
+`tests/services/mock_integration/test_kiwoom_coordination_adapter.py` is the
+review gate for subsequent transport changes (`7c68b03e5e99582071207ce7518891ec8d50d733a06cb356b48414f06bf15a93`).
 
 ---
 

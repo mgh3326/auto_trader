@@ -34,6 +34,11 @@ class _StubHomeService:
             meta=InvestHomeResponseMeta(warnings=[]),
         )
 
+    async def get_held_pairs(
+        self, *, user_id: int, include_paper: bool = False, paper_sources=None
+    ) -> list[tuple[str, str]]:
+        return []
+
 
 def _build_app() -> FastAPI:
     app = FastAPI()

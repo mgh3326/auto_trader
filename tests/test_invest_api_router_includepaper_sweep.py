@@ -105,6 +105,18 @@ async def test_default_call_does_not_request_paper(path, params):
             )
             return _empty_view()
 
+        async def get_held_pairs(
+            self, *, user_id, include_paper=False, paper_sources=None, **_
+        ):
+            received_calls.append(
+                {
+                    "method": "get_held_pairs",
+                    "include_paper": include_paper,
+                    "paper_sources": paper_sources,
+                }
+            )
+            return []
+
     class _DBStub:
         """Minimal async session stub that returns empty result rows."""
 

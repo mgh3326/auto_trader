@@ -228,6 +228,7 @@ tests/services/test_portfolio_data_collector.py
 tests/services/test_preopen_paper_approval_bridge.py
 tests/services/test_research_run_service_news_brief_safety.py
 tests/services/test_research_run_service_unit.py
+tests/services/test_rob1314_market_events_values_bulk_load.py
 tests/services/test_screener_analysis_enrichment.py
 tests/services/test_session_context_service.py
 tests/services/test_single_share_exit_snapshot_service.py
@@ -379,6 +380,7 @@ tests/test_research_run_decision_session_schemas.py
 tests/test_research_run_refresh_runner.py
 tests/test_research_run_refresh_tasks.py
 tests/test_retail_sentiment_tool.py
+tests/test_rob1314_badge_held_pairs.py
 tests/test_rob1880_socket_guard.py
 tests/test_rob473_report_item_link_schema.py
 tests/test_rob473_report_item_link_threading.py
@@ -393,6 +395,7 @@ tests/test_screenshot_holdings.py
 tests/test_screenshot_holdings_service_resolution.py
 tests/test_sell_pipeline_integration.py
 tests/test_sell_signal_service.py
+tests/test_sentry_pii_docs_default_off.py
 tests/test_services_forexfactory_calendar.py
 tests/test_services_krx.py
 tests/test_services_upbit.py

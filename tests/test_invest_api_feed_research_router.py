@@ -43,6 +43,16 @@ def _make_app(held=None, watch=None):
                 meta=InvestHomeResponseMeta(warnings=[]),
             )
 
+        async def get_held_pairs(
+            self, *, user_id: int, include_paper: bool = False, paper_sources=None
+        ) -> list[tuple[str, str]]:
+            pairs: list[tuple[str, str]] = []
+            for holding in build_grouped_holdings(self._holdings):
+                market = str(holding.market).lower()
+                if market in ("kr", "us", "crypto"):
+                    pairs.append((market, holding.symbol))
+            return pairs
+
     stub_holdings: list[Holding] = []
     if held:
         for mkt, sym in held:

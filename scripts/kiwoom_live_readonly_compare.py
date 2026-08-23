@@ -165,6 +165,20 @@ async def _timed(pacer: Pacer, side: str, label: str, coro_fn, interval=None):
         return None, exc
 
 
+def _build_isolated_mock_client(
+    *, client_factory: Any, constants: Any, creds: dict[str, str], redis_client: Any
+) -> Any:
+    """Build the mock chart leg with its caller-owned isolated Redis client."""
+
+    return client_factory(
+        base_url=constants.MOCK_BASE_URL,
+        app_key=creds["KIWOOM_MOCK_APP_KEY"],
+        app_secret=creds["KIWOOM_MOCK_APP_SECRET"],
+        account_no="",
+        redis_client=redis_client,
+    )
+
+
 async def run(args: argparse.Namespace) -> int:
     env_file = Path(args.env_file)
     creds = _load_scoped_env(env_file)
@@ -197,11 +211,14 @@ async def run(args: argparse.Namespace) -> int:
     if "prod" in os.environ.get("ENV_FILE", ""):
         raise SystemExit("refusing to run with a production ENV_FILE")
 
-    # OAuth tokens are cached in Redis. Point that at a throwaway instance so
-    # this read-only comparison never writes keys into the deployment's shared
-    # cache (which holds ~24k live OHLCV entries).
+    # OAuth tokens are cached in Redis. A confirmed comparison must name a
+    # throwaway instance; neither leg may write deployment shared-cache keys.
+    if args.confirm_live_read and not args.redis_url:
+        raise SystemExit("--redis-url is required with --confirm-live-read")
     if args.redis_url:
         os.environ["REDIS_URL"] = args.redis_url
+
+    import redis.asyncio as redis
 
     from app.services.brokers.kiwoom import constants
     from app.services.brokers.kiwoom.chart_compare import (
@@ -232,13 +249,14 @@ async def run(args: argparse.Namespace) -> int:
         return 0
 
     live = KiwoomLiveReadOnlyClient.from_app_settings()
+    isolated_redis = redis.from_url(args.redis_url, decode_responses=True)
     # Chart TRs ignore the account number; the scoped env has none, so an empty
     # string is passed rather than sourcing one from anywhere.
-    mock = KiwoomMockClient(
-        base_url=constants.MOCK_BASE_URL,
-        app_key=creds["KIWOOM_MOCK_APP_KEY"],
-        app_secret=creds["KIWOOM_MOCK_APP_SECRET"],
-        account_no="",
+    mock = _build_isolated_mock_client(
+        client_factory=KiwoomMockClient,
+        constants=constants,
+        creds=creds,
+        redis_client=isolated_redis,
     )
 
     def mock_chart(api_id: str, body: dict[str, Any]):
