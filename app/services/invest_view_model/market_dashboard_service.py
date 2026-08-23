@@ -344,7 +344,59 @@ def _overall_state(
 async def build_market_dashboard(
     provider: MarketDashboardProvider | None = None,
 ) -> MarketDashboardResponse:
-    provider = provider or DefaultMarketDashboardProvider()
+    """Compose the read-only market dashboard.
+
+    ROB-1314 — the production path (no injected provider) serves the composed
+    response from a short process-local TTL snapshot so /market no longer hits
+    the external index/fear-greed/kimchi providers on every request. Sections
+    declare staleAfterMinutes of 20+; a 60s snapshot stays well inside those
+    freshness windows and ``asOf`` keeps reporting the true fetch time.
+    Explicit provider injection (tools/tests) always builds fresh.
+    """
+    if provider is None:
+        cached = _market_dashboard_snapshot()
+        if cached is not None:
+            return cached
+        response = await _compose_market_dashboard(DefaultMarketDashboardProvider())
+        _store_market_dashboard_snapshot(response)
+        return response
+    return await _compose_market_dashboard(provider)
+
+
+_MARKET_DASHBOARD_TTL_SECONDS = 60.0
+_market_dashboard_cache: tuple[float, MarketDashboardResponse] | None = None
+
+
+def _monotonic() -> float:
+    import time
+
+    return time.monotonic()
+
+
+def _market_dashboard_snapshot() -> MarketDashboardResponse | None:
+    entry = _market_dashboard_cache
+    if entry is None:
+        return None
+    stored_at, response = entry
+    if _monotonic() - stored_at >= _MARKET_DASHBOARD_TTL_SECONDS:
+        return None
+    return response
+
+
+def _store_market_dashboard_snapshot(response: MarketDashboardResponse) -> None:
+    global _market_dashboard_cache
+    _market_dashboard_cache = (_monotonic(), response)
+
+
+def reset_market_dashboard_cache() -> None:
+    """Test/ops hook — drop the process-local TTL snapshot."""
+    global _market_dashboard_cache
+    _market_dashboard_cache = None
+
+
+async def _compose_market_dashboard(
+    provider: MarketDashboardProvider,
+) -> MarketDashboardResponse:
     as_of = _now()
     (
         (indices, index_warning),
@@ -371,5 +423,6 @@ async def build_market_dashboard(
         notes=[
             "Naver-style market/index dashboard using existing read-only providers.",
             "No broker/order/watch-order mutations or scheduled collectors are invoked.",
+            "Responses are served from a 60s process-local snapshot (ROB-1314).",
         ],
     )

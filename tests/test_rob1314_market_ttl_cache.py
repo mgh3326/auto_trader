@@ -87,7 +87,7 @@ async def test_market_route_serves_snapshot_within_ttl(
     monkeypatch.setattr(provider, "get_kimchi_premium", _kimchi)
 
     app = FastAPI()
-    app.include_router(invest_api_router)
+    app.include_router(invest_api.router)
     app.dependency_overrides[get_authenticated_user] = lambda: type(
         "U", (), {"id": 1}
     )()
