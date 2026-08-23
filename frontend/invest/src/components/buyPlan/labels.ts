@@ -29,6 +29,14 @@ export const APPROVAL_LANE_LABEL_GATE_OFF: Record<ApprovalLane, string> = {
   human_card: "카드(수동 승인)",
 };
 
+// verify-r2 SHOULD-2: an unreadable gate used to render identically to a gate
+// known to be ON — same accent colour, same "자동승인 가능" wording. Not knowing
+// is its own state and must look like one.
+export const APPROVAL_LANE_LABEL_GATE_UNKNOWN: Record<ApprovalLane, string> = {
+  auto_submit: "레인 판정 불가(게이트 상태 불명)",
+  human_card: "카드(수동 승인)",
+};
+
 export const APPROVAL_LANE_REASON_LABEL: Record<ApprovalLaneReason, string> = {
   within_tier_auto_submit_notional: "티어 자동제출 한도 이내 (cap 기준 분류일 뿐, 승인 확정 아님)",
   above_tier_auto_submit_notional: "티어 자동제출 한도 초과",

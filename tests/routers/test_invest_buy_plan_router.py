@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.schemas.invest_buy_plan import (
+    ApprovalCondition,
     ApprovalContext,
     BuyPlanFunding,
     BuyPlanResponse,
@@ -44,7 +45,16 @@ class _StubBuyPlanService:
                 master_gate_enabled=False,
                 master_gate_setting="ORDER_PROPOSALS_AUTO_APPROVE",
                 master_gate_source="settings.ORDER_PROPOSALS_AUTO_APPROVE",
-                unevaluated_conditions=["fresh preview 존재"],
+                unevaluated_conditions=[
+                    ApprovalCondition(
+                        code="preview_guard_failed", label="fresh preview 성공"
+                    )
+                ],
+                evaluated_conditions=[
+                    ApprovalCondition(
+                        code="per_order_cap_exceeded", label="건당 자동승인 상한"
+                    )
+                ],
                 notice="자동승인 마스터 게이트가 꺼져 있습니다.",
             ),
             market=market,  # type: ignore[arg-type]
@@ -71,7 +81,7 @@ class _StubBuyPlanService:
                         required_active_watches=Decimal("0"),
                         required_total=Decimal("120000"),
                         unattributed_same_currency=Decimal("0"),
-                        worst_case_required=Decimal("120000"),
+                        upper_bound_if_all_unattributed_lands_here=Decimal("120000"),
                         verdict="sufficient",
                         shortfall=Decimal("0"),
                     )

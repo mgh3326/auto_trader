@@ -19,6 +19,7 @@ import { dateTime, exact, money, pct, price, quantity } from "./format";
 import {
   APPROVAL_LANE_LABEL,
   APPROVAL_LANE_LABEL_GATE_OFF,
+  APPROVAL_LANE_LABEL_GATE_UNKNOWN,
   APPROVAL_LANE_REASON_LABEL,
   COMPARISON_LABEL,
   FUNDING_BROKER_LABEL,
@@ -80,9 +81,16 @@ function LaneBadge({
   reason: AveragingSampleRow["approval_lane_reason"];
   approval: ApprovalContext;
 }>) {
-  const gateOff = approval.master_gate_enabled === false;
-  const label = gateOff ? APPROVAL_LANE_LABEL_GATE_OFF[lane] : APPROVAL_LANE_LABEL[lane];
-  const tone = !gateOff && lane === "auto_submit" ? "accent" : "warn";
+  // Three states, not two: unknown must not borrow the ON styling
+  // (verify-r2 SHOULD-2).
+  const gate = approval.master_gate_enabled;
+  const label =
+    gate === false
+      ? APPROVAL_LANE_LABEL_GATE_OFF[lane]
+      : gate === true
+        ? APPROVAL_LANE_LABEL[lane]
+        : APPROVAL_LANE_LABEL_GATE_UNKNOWN[lane];
+  const tone = gate === true && lane === "auto_submit" ? "accent" : "warn";
   return (
     <span title={`${APPROVAL_LANE_REASON_LABEL[reason]} · ${approval.notice}`}>
       <Pill tone={tone} size="sm">
@@ -128,7 +136,9 @@ export function ApprovalNotice({
             }}
           >
             {approval.unevaluated_conditions.map((condition) => (
-              <li key={condition}>{condition}</li>
+              <li key={condition.code} title={condition.code}>
+                {condition.label}
+              </li>
             ))}
           </ul>
         </details>
@@ -178,9 +188,14 @@ function AveragingCard({
             <Pill tone="paper" size="sm">add 상한 밖 · #{row.market_rank}</Pill>
           </span>
         )}
-        <Pill tone={row.funding_broker === "unattributed" ? "warn" : "paper"} size="sm">
-          {FUNDING_BROKER_LABEL[row.funding_broker]}
-        </Pill>
+        <span title={row.funding_broker_reason ?? undefined}>
+          <Pill
+            tone={row.funding_broker === "unattributed" ? "warn" : "paper"}
+            size="sm"
+          >
+            {FUNDING_BROKER_LABEL[row.funding_broker]}
+          </Pill>
+        </span>
       </div>
 
       <div
@@ -506,7 +521,13 @@ export function ActiveWatchBlock({
                   reason={row.approval_lane_reason}
                   approval={approval}
                 />
-                <span title={row.account_mode ?? "max_action에 account_mode가 없습니다"}>
+                <span
+                  title={
+                    row.funding_broker_reason ??
+                    row.account_mode ??
+                    "max_action에 account_mode가 없습니다"
+                  }
+                >
                   <Pill
                     tone={row.funding_broker === "unattributed" ? "warn" : "paper"}
                     size="sm"

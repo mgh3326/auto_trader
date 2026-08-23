@@ -9,6 +9,7 @@ unreadable gate metric is reported.
 from __future__ import annotations
 
 import datetime as dt
+import textwrap
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -921,14 +922,25 @@ async def test_b1_requirement_without_an_account_holds_the_scope() -> None:
     upbit = _scope(plan, "upbit")
     assert upbit.required_total == 0
     assert upbit.unattributed_same_currency == Decimal("500000")
-    # 100,000 cannot cover the 500,000 that might land here → not "sufficient".
     assert upbit.verdict == "unknown"
+    # The money also gets a destination row of its own so it is not merely a
+    # footnote on somebody else's card.
+    destination = _scope(plan, "unattributed")
+    assert destination.required_active_watches == Decimal("500000")
+    assert destination.verdict == "unknown"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_b1_scope_stays_sufficient_when_cash_covers_the_worst_case() -> None:
-    """Unattributed money only suspends a verdict it could actually break."""
+async def test_b1_covering_the_unattributed_pool_is_not_sufficiency() -> None:
+    """verify-r2 B1 — this test used to pin the opposite, and was wrong.
+
+    The old rule read "if this account can cover the whole unattributed pool,
+    it is sufficient". That treats *this* scope absorbing the money as the
+    worst case, but the money may be destined for a different broker whose
+    account is empty. Covering it here proves nothing about the account that
+    will actually place the order, so the honest verdict is unknown.
+    """
 
     home = _home(
         groups=[],
@@ -942,8 +954,10 @@ async def test_b1_scope_stays_sufficient_when_cash_covers_the_worst_case() -> No
     )
 
     upbit = _scope(plan, "upbit")
-    assert upbit.worst_case_required == Decimal("500000")
-    assert upbit.verdict == "sufficient"
+    assert upbit.unattributed_same_currency == Decimal("500000")
+    assert upbit.upper_bound_if_all_unattributed_lands_here == Decimal("500000")
+    assert upbit.verdict == "unknown"
+    assert upbit.shortfall is None
 
 
 @pytest.mark.unit
@@ -1118,8 +1132,12 @@ async def test_b6_approval_context_publishes_the_master_gate() -> None:
     assert context.master_gate_enabled is False
     assert "꺼져" in context.notice
     # The conditions the board does not evaluate are named, not implied.
-    assert "fresh preview 존재" in context.unevaluated_conditions
-    assert len(context.unevaluated_conditions) >= 5
+    codes = {condition.code for condition in context.unevaluated_conditions}
+    assert "preview_guard_failed" in codes
+    assert "daily_cap_exceeded" in codes
+    assert len(context.unevaluated_conditions) >= 15
+    # The one gate it does evaluate is on the other side of the split.
+    assert [c.code for c in context.evaluated_conditions] == ["per_order_cap_exceeded"]
 
 
 @pytest.mark.unit
@@ -1138,3 +1156,269 @@ async def test_b6_master_gate_on_still_says_the_lane_is_cap_only(
 
     assert plan.approval_context.master_gate_enabled is True
     assert "cap 두 개만" in plan.approval_context.notice
+
+
+# ---------------------------------------------------------------------------
+# verify-r2 regressions.
+#
+# Round 1's broker scoping closed the attributed path but opened an
+# unattributed one: a "this account covers the whole pool" rule handed a green
+# verdict to whichever broker happened to be funded. Each case below replays a
+# round-2 disproof input verbatim.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_r2a_funded_broker_never_greenlights_an_unattributed_need() -> None:
+    """verify-r2 (a) — Upbit KRW=0, KIS KRW=1,000,000, watch 330,000, no account_mode.
+
+    The old rule printed ``kis: sufficient``. The operator reads a green card,
+    skips the Upbit deposit, and the watch fires against an empty account —
+    the round-1 B1 mistake reached through the attribution-failure path.
+    """
+
+    home = _home(
+        groups=[],
+        accounts=[
+            _account(account_id="upbit-1", source="upbit", krw=0),
+            _account(account_id="kis-1", source="kis", krw=1000000),
+        ],
+    )
+    watches = _StubWatches(
+        [_watch(symbol="KRW-XRP", max_action={"side": "buy", "notional": 330000})]
+    )
+    plan = await _service(home=_StubHome(home), watches=watches).build(
+        user_id=1, market="crypto", now=NOW
+    )
+
+    assert _scope(plan, "kis").verdict == "unknown"
+    assert _scope(plan, "upbit").verdict == "unknown"
+    # Nothing anywhere on the board reads green while this is unresolved.
+    assert all(scope.verdict != "sufficient" for scope in plan.funding.scopes)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_r2b_absent_broker_still_gets_a_destination_row() -> None:
+    """verify-r2 (b) — Upbit-only book, KRW 1,000,000, unattributed 600,000.
+
+    The old board showed only ``upbit`` and called it sufficient, so a need
+    bound for KIS or Toss had no account on screen to fund.
+    """
+
+    home = _home(
+        groups=[],
+        accounts=[_account(account_id="upbit-1", source="upbit", krw=1000000)],
+    )
+    watches = _StubWatches(
+        [_watch(symbol="KRW-XRP", max_action={"side": "buy", "notional": 600000})]
+    )
+    plan = await _service(home=_StubHome(home), watches=watches).build(
+        user_id=1, market="crypto", now=NOW
+    )
+
+    assert _scope(plan, "upbit").verdict == "unknown"
+    destination = _scope(plan, "unattributed")
+    assert destination.required_active_watches == Decimal("600000")
+    assert destination.available_cash is None
+    assert destination.verdict == "unknown"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_r2d_unattributed_usd_is_held_even_with_no_usd_account() -> None:
+    """verify-r2 (d) — unattributed USD 200 on a KRW-only book.
+
+    ``scope_keys`` used to come only from attributed requirements and cash
+    accounts, so no USD row existed and the USD need reached no verdict at
+    all. The KRW scope stayed green because its own currency had nothing
+    unattributed — which was true, and beside the point.
+    """
+
+    home = _home(
+        groups=[],
+        accounts=[_account(account_id="upbit-1", source="upbit", krw=1000000)],
+    )
+    watches = _StubWatches(
+        [
+            _watch(
+                symbol="AAPL",
+                market="us",
+                threshold="150",
+                max_action={"side": "buy", "notional": 200},
+            )
+        ]
+    )
+    plan = await _service(home=_StubHome(home), watches=watches).build(
+        user_id=1, market="all", now=NOW
+    )
+
+    usd = _scope(plan, "unattributed", "USD")
+    assert usd.required_active_watches == Decimal("200")
+    assert usd.verdict == "unknown"
+    # The KRW scope is genuinely unaffected — no KRW money is unresolved.
+    assert _scope(plan, "upbit").verdict == "sufficient"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_mode", ["upbit_live", "kiwoom_mock", "", "KIS_LIVE"])
+async def test_r2f_unmapped_account_mode_lands_unattributed_with_its_real_reason(
+    bad_mode: str,
+) -> None:
+    """verify-r2 (f) — values outside the closed map fall through this path.
+
+    Two things are pinned: the value does not silently attribute to some
+    broker, and the published reason names the offending value instead of
+    claiming ``account_mode`` was missing (verify-r2 SHOULD-3).
+    """
+
+    home = _home(
+        groups=[],
+        accounts=[
+            _account(account_id="upbit-1", source="upbit", krw=0),
+            _account(account_id="kis-1", source="kis", krw=1000000),
+        ],
+    )
+    watches = _StubWatches(
+        [
+            _watch(
+                symbol="KRW-XRP",
+                max_action={
+                    "side": "buy",
+                    "account_mode": bad_mode,
+                    "notional": 330000,
+                },
+            )
+        ]
+    )
+    plan = await _service(home=_StubHome(home), watches=watches).build(
+        user_id=1, market="crypto", now=NOW
+    )
+
+    row = plan.active_buy_watches[0]
+    assert row.funding_broker == "unattributed"
+    assert all(scope.verdict != "sufficient" for scope in plan.funding.scopes)
+
+    reason = plan.funding.unattributed[0].reason
+    if bad_mode.strip():
+        # The wrong value is quoted back rather than laundered into "missing".
+        assert bad_mode in reason
+        assert "지정하지 않았습니다" not in reason
+    else:
+        assert "account_mode" in reason
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_r2_unattributed_row_does_not_double_count_itself() -> None:
+    """The destination row holds the pool; it must not also be measured by it."""
+
+    home = _home(groups=[], accounts=[])
+    watches = _StubWatches(
+        [_watch(symbol="KRW-XRP", max_action={"side": "buy", "notional": 300000})]
+    )
+    plan = await _service(home=_StubHome(home), watches=watches).build(
+        user_id=1, market="crypto", now=NOW
+    )
+
+    destination = _scope(plan, "unattributed")
+    assert destination.required_total == Decimal("300000")
+    assert destination.unattributed_same_currency == Decimal("0")
+    assert destination.upper_bound_if_all_unattributed_lands_here == Decimal("300000")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_r2_fully_attributed_book_still_reaches_sufficient() -> None:
+    """The fix must not make every board permanently unknown."""
+
+    home = _home(
+        groups=[],
+        accounts=[_account(account_id="upbit-1", source="upbit", krw=900000)],
+    )
+    watches = _StubWatches(
+        [
+            _watch(
+                symbol="KRW-XRP",
+                max_action={
+                    "side": "buy",
+                    "account_mode": "upbit",
+                    "notional": 300000,
+                },
+            )
+        ]
+    )
+    plan = await _service(home=_StubHome(home), watches=watches).build(
+        user_id=1, market="crypto", now=NOW
+    )
+
+    upbit = _scope(plan, "upbit")
+    assert upbit.required_active_watches == Decimal("300000")
+    assert upbit.unattributed_same_currency == Decimal("0")
+    assert upbit.verdict == "sufficient"
+    assert plan.funding.unattributed == []
+    assert not any(scope.broker == "unattributed" for scope in plan.funding.scopes)
+
+
+@pytest.mark.unit
+def test_s1_unevaluated_conditions_cover_every_real_eligibility_gate() -> None:
+    """verify-r2 SHOULD-1 — the published list must not be a short list.
+
+    The reject reasons are string literals inside
+    ``evaluate_auto_approve_eligibility``; they are extracted from its AST here
+    so the board's split cannot drift away from the function it describes. A
+    seven-item list against eighteen real gates still reads as "these are the
+    only things we skipped".
+    """
+
+    import ast
+    import inspect
+
+    from app.services.invest_view_model.buy_plan.service import (
+        AUTO_APPROVE_EVALUATED_CONDITIONS,
+        AUTO_APPROVE_UNEVALUATED_CONDITIONS,
+    )
+    from app.services.order_proposals import auto_approve
+
+    source = inspect.getsource(auto_approve.evaluate_auto_approve_eligibility)
+    tree = ast.parse(textwrap.dedent(source))
+
+    reasons: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "reject"):
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            reasons.add(first.value)
+        elif isinstance(first, ast.Subscript) and isinstance(first.value, ast.Dict):
+            # reject({...}[verdict], ...) — the sell-classification branch.
+            for value in first.value.values:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    reasons.add(value.value)
+        elif isinstance(first, ast.IfExp):
+            # reject("a" if expanded else "b", ...)
+            for value in (first.body, first.orelse):
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    reasons.add(value.value)
+
+    # Sanity: the extractor must actually find gates, or this test proves nothing.
+    assert len(reasons) >= 15, sorted(reasons)
+
+    published = {code for code, _ in AUTO_APPROVE_UNEVALUATED_CONDITIONS} | {
+        code for code, _ in AUTO_APPROVE_EVALUATED_CONDITIONS
+    }
+    assert reasons == published, {
+        "missing_from_board": sorted(reasons - published),
+        "not_in_function": sorted(published - reasons),
+    }
+
+    # The one gate the board really does check is on the evaluated side.
+    assert {code for code, _ in AUTO_APPROVE_EVALUATED_CONDITIONS} == {
+        "per_order_cap_exceeded"
+    }

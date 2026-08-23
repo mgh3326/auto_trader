@@ -11,7 +11,7 @@ import * as buyPlanApi from "../api/buyPlan";
 import { BuyPlanRoute } from "../pages/BuyPlanRoute";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import { mockRightRail } from "../test/mockRightRail";
-import type { BuyPlanResponse } from "../types/buyPlan";
+import type { BuyPlanResponse, ScopeReconciliation } from "../types/buyPlan";
 
 function setWidth(w: number) {
   Object.defineProperty(window, "innerWidth", {
@@ -31,6 +31,44 @@ function wrap(ui: React.ReactElement) {
   );
 }
 
+const UPBIT_KRW_SCOPE: ScopeReconciliation = {
+  scope_key: "upbit:KRW",
+  broker: "upbit",
+  currency: "KRW",
+  account_ids: ["upbit-1"],
+  available_cash: "200000",
+  required_averaging_adds: "340000",
+  required_support_net: "0",
+  required_active_watches: "0",
+  required_total: "340000",
+  unattributed_same_currency: "0",
+  upper_bound_if_all_unattributed_lands_here: "340000",
+  requirements_complete: true,
+  incomplete_reasons: [],
+  verdict: "shortfall",
+  shortfall: "140000",
+  notes: ["이미 걸린 지정가는 브로커가 현금을 묶고 있어 합계에서 제외했습니다."],
+};
+
+const KIS_KRW_SCOPE: ScopeReconciliation = {
+  scope_key: "kis:KRW",
+  broker: "kis",
+  currency: "KRW",
+  account_ids: ["kis-1"],
+  available_cash: "5000000",
+  required_averaging_adds: "0",
+  required_support_net: "0",
+  required_active_watches: "650000",
+  required_total: "650000",
+  unattributed_same_currency: "0",
+  upper_bound_if_all_unattributed_lands_here: "650000",
+  requirements_complete: true,
+  incomplete_reasons: [],
+  verdict: "sufficient",
+  shortfall: "0",
+  notes: [],
+};
+
 const READY: BuyPlanResponse = {
   as_of: "2026-08-23T03:00:00Z",
   policy: { version: "2026-08-23.1", content_hash: "abcdef0123456789" },
@@ -40,7 +78,14 @@ const READY: BuyPlanResponse = {
     master_gate_enabled: false,
     master_gate_setting: "ORDER_PROPOSALS_AUTO_APPROVE",
     master_gate_source: "settings.ORDER_PROPOSALS_AUTO_APPROVE",
-    unevaluated_conditions: ["fresh preview 존재", "tag scan", "일일 누적 cap 잔여"],
+    unevaluated_conditions: [
+      { code: "preview_guard_failed", label: "fresh preview 성공" },
+      { code: "approval_required_tag", label: "승인 필요 태그 스캔" },
+      { code: "daily_cap_exceeded", label: "일일 누적 cap 잔여" },
+    ],
+    evaluated_conditions: [
+      { code: "per_order_cap_exceeded", label: "건당 자동승인 상한" },
+    ],
     notice: "자동승인 마스터 게이트가 꺼져 있습니다 — 전건이 수동 승인 카드로 갑니다.",
   },
   market: "all",
@@ -82,6 +127,7 @@ const READY: BuyPlanResponse = {
       market_rank: 1,
       within_policy_add_cap: true,
       funding_broker: "upbit",
+      funding_broker_reason: null,
       notes: [],
     },
   ],
@@ -148,6 +194,7 @@ const READY: BuyPlanResponse = {
       planned_notional: "650000",
       planned_notional_source: "max_action.quantity × 트리거 레벨",
       funding_broker: "kis",
+      funding_broker_reason: null,
       account_mode: "kis_live",
       approval_lane: "human_card",
       approval_lane_reason: "above_tier_auto_submit_notional",
@@ -203,44 +250,7 @@ const READY: BuyPlanResponse = {
         included_in_reserve: true,
       },
     ],
-    scopes: [
-      {
-        scope_key: "upbit:KRW",
-        broker: "upbit",
-        currency: "KRW",
-        account_ids: ["upbit-1"],
-        available_cash: "200000",
-        required_averaging_adds: "340000",
-        required_support_net: "0",
-        required_active_watches: "0",
-        required_total: "340000",
-        unattributed_same_currency: "0",
-        worst_case_required: "340000",
-        requirements_complete: true,
-        incomplete_reasons: [],
-        verdict: "shortfall",
-        shortfall: "140000",
-        notes: ["이미 걸린 지정가는 브로커가 현금을 묶고 있어 합계에서 제외했습니다."],
-      },
-      {
-        scope_key: "kis:KRW",
-        broker: "kis",
-        currency: "KRW",
-        account_ids: ["kis-1"],
-        available_cash: "5000000",
-        required_averaging_adds: "0",
-        required_support_net: "0",
-        required_active_watches: "650000",
-        required_total: "650000",
-        unattributed_same_currency: "0",
-        worst_case_required: "650000",
-        requirements_complete: true,
-        incomplete_reasons: [],
-        verdict: "sufficient",
-        shortfall: "0",
-        notes: [],
-      },
-    ],
+    scopes: [UPBIT_KRW_SCOPE, KIS_KRW_SCOPE],
     unattributed: [],
     source_warnings: [],
   },
@@ -359,6 +369,144 @@ describe("BuyPlanRoute", () => {
     expect(
       screen.getByText(/이 화면은 주문·제안·워치를 만들거나 승인하지 않습니다/),
     ).toBeTruthy();
+  });
+
+  it("never greenlights a funded broker while money is unattributed", async () => {
+    // verify-r2 B1 (a): KIS holding the cash does not make it the account the
+    // order will use. Green anywhere here sends the operator past the deposit.
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue({
+      ...READY,
+      funding: {
+        ...READY.funding,
+        scopes: [
+          {
+            ...KIS_KRW_SCOPE,
+            available_cash: "1000000",
+            required_averaging_adds: "0",
+            required_active_watches: "0",
+            required_total: "0",
+            unattributed_same_currency: "330000",
+            upper_bound_if_all_unattributed_lands_here: "330000",
+            verdict: "unknown",
+            shortfall: null,
+          },
+        ],
+        unattributed: [
+          {
+            kind: "active_watch",
+            label: "KRW-XRP 워치 900",
+            currency: "KRW",
+            amount: "330000",
+            reason: "워치 max_action이 실행 계좌(account_mode)를 지정하지 않았습니다.",
+          },
+        ],
+      },
+    });
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() =>
+      expect(screen.getByText("귀속 미확정 소요가 있어 대조를 보류했습니다")).toBeTruthy(),
+    );
+    expect(screen.queryByText("리저브 충분")).toBeNull();
+  });
+
+  it("gives unattributed money its own destination row", async () => {
+    // verify-r2 B1 (b)/(d): a need bound for a broker or currency with no cash
+    // account used to reach no verdict anywhere on the board.
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue({
+      ...READY,
+      funding: {
+        ...READY.funding,
+        scopes: [
+          {
+            scope_key: "unattributed:USD",
+            broker: "unattributed",
+            currency: "USD",
+            account_ids: [],
+            available_cash: null,
+            required_averaging_adds: "0",
+            required_support_net: "0",
+            required_active_watches: "200",
+            required_total: "200",
+            unattributed_same_currency: "0",
+            upper_bound_if_all_unattributed_lands_here: "200",
+            requirements_complete: false,
+            incomplete_reasons: ["이 행은 귀속 계좌를 확정하지 못한 소요액 모음입니다"],
+            verdict: "unknown",
+            shortfall: null,
+            notes: [],
+          },
+        ],
+      },
+    });
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() => expect(screen.getByText("목적지 미확정 · USD")).toBeTruthy());
+    expect(
+      screen.getByText("어느 계좌에서 나갈지 확정하지 못해 대조할 수 없습니다"),
+    ).toBeTruthy();
+    expect(screen.getAllByText("$200.00").length).toBeGreaterThan(0);
+  });
+
+  it("calls an incomplete shortfall a minimum", async () => {
+    // verify-r2 SHOULD-4: the deficit is proven but is a floor.
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue({
+      ...READY,
+      funding: {
+        ...READY.funding,
+        scopes: [
+          {
+            ...UPBIT_KRW_SCOPE,
+            requirements_complete: false,
+            incomplete_reasons: ["워치 조회 상태 degraded"],
+          },
+        ],
+      },
+    });
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() =>
+      expect(screen.getByText("최소 ₩140,000 입금 필요")).toBeTruthy(),
+    );
+    expect(
+      screen.getByText(/이 금액은 하한이며 실제로는 더 필요할 수 있습니다/),
+    ).toBeTruthy();
+  });
+
+  it("does not style an unreadable master gate like an enabled one", async () => {
+    // verify-r2 SHOULD-2: null used to render exactly like ON.
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue({
+      ...READY,
+      approval_context: {
+        ...READY.approval_context,
+        master_gate_enabled: null,
+        master_gate_source: "settings.ORDER_PROPOSALS_AUTO_APPROVE (읽기 실패)",
+        notice: "자동승인 마스터 게이트 상태를 읽지 못했습니다.",
+      },
+    });
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() =>
+      expect(screen.getByText("자동승인 게이트 상태 불명")).toBeTruthy(),
+    );
+    expect(
+      screen.getAllByText("레인 판정 불가(게이트 상태 불명)").length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("자동승인 가능(cap 기준)")).toBeNull();
+  });
+
+  it("lists every eligibility gate it did not evaluate", async () => {
+    // verify-r2 SHOULD-1: a short list still reads as a complete one.
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue(READY);
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/이 보드가 확인하지 않은 자동제출 조건 \(3\)/),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByTitle("preview_guard_failed")).toBeTruthy();
+    expect(screen.getByTitle("daily_cap_exceeded")).toBeTruthy();
   });
 
   it("surfaces a fetch failure instead of rendering an empty plan", async () => {

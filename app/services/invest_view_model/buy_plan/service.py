@@ -21,6 +21,7 @@ from typing import Any, Final
 
 from app.schemas.invest_buy_plan import (
     ActiveBuyWatchRow,
+    ApprovalCondition,
     ApprovalContext,
     AveragingSampleRow,
     AveragingTriggerRow,
@@ -100,17 +101,37 @@ _BROKER_BY_ACCOUNT_MODE: Final[dict[str, FundingBroker]] = {
 }
 UNATTRIBUTED: Final[FundingBroker] = "unattributed"
 
-# Conditions that gate a real auto-submission and that this read surface does
-# NOT evaluate. Published verbatim so the board never implies it checked them
-# (verify-r1 B6; source: order_proposals.auto_approve.evaluate_auto_approve_eligibility).
-AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[str, ...]] = (
-    "fresh preview 존재",
-    "limit-only (비-marketable) 주문",
-    "veto 가능한 계좌·시장",
-    "tag scan",
-    "thesis 요건",
-    "일일 누적 cap 잔여",
-    "distance / marketability 조건",
+# Every gate ``evaluate_auto_approve_eligibility`` can reject on, split by
+# whether this read surface actually evaluates it.
+#
+# The codes are that function's literal ``reject(...)`` reasons;
+# ``tests/.../test_service.py::test_s1_...`` extracts them from its source and
+# fails if this split stops covering the real set. verify-r2 SHOULD-1 found
+# the old seven-item list short by six gates — an incomplete list still reads
+# as "these are the only things we skipped", which is the same lie in a
+# smaller font.
+AUTO_APPROVE_EVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("per_order_cap_exceeded", "건당 자동승인 상한"),
+)
+AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("unknown_auto_approve_mode", "자동승인 모드 인식 가능 여부"),
+    ("action_not_supported", "지원되는 action (place/replace/cancel)"),
+    ("target_evidence_missing", "replace·cancel 대상 주문 증거"),
+    ("order_type_not_limit", "limit 주문 여부"),
+    ("loss_cut_intent", "손절 의도 아님"),
+    ("exit_intent_present", "청산 의도 아님"),
+    ("account_not_veto_capable", "veto 가능한 계좌·시장"),
+    ("approval_required_tag", "승인 필요 태그 스캔"),
+    ("thesis_required_for_veto_card", "veto 카드용 thesis 존재"),
+    ("preview_guard_failed", "fresh preview 성공"),
+    ("price_or_quantity_missing", "가격·수량 확보"),
+    ("daily_cap_exceeded", "일일 누적 cap 잔여"),
+    ("side_not_supported", "지원되는 매매구분"),
+    ("distance_below_minimum", "최소 이격 거리"),
+    ("marketable_not_resting", "비-marketable(대기형) 주문"),
+    ("breakeven_band", "매도 breakeven 밴드 밖"),
+    ("expected_pnl_not_positive", "매도 기대손익 > 0"),
+    ("sell_classification_unavailable", "매도 분류 가능"),
 )
 
 
@@ -457,7 +478,14 @@ def _approval_context() -> ApprovalContext:
         master_gate_enabled=enabled,
         master_gate_setting=setting,
         master_gate_source=source,
-        unevaluated_conditions=list(AUTO_APPROVE_UNEVALUATED_CONDITIONS),
+        unevaluated_conditions=[
+            ApprovalCondition(code=code, label=label)
+            for code, label in AUTO_APPROVE_UNEVALUATED_CONDITIONS
+        ],
+        evaluated_conditions=[
+            ApprovalCondition(code=code, label=label)
+            for code, label in AUTO_APPROVE_EVALUATED_CONDITIONS
+        ],
         notice=notice,
     )
 
@@ -648,6 +676,7 @@ def _build_averaging_rows(
                 market_rank=0,
                 within_policy_add_cap=False,
                 funding_broker=lot_broker or UNATTRIBUTED,
+                funding_broker_reason=lot_broker_reason,
                 notes=notes,
             )
         )
@@ -948,7 +977,7 @@ def _build_active_buy_watches(
         currency: BuyPlanCurrency = "USD" if alert.market == "us" else "KRW"
         notional, source = _planned_notional(alert)
         raw_mode = (alert.max_action or {}).get("account_mode")
-        broker, _ = _broker_from_account_mode(raw_mode)
+        broker, broker_reason = _broker_from_account_mode(raw_mode)
         lane, reason = approval_lane_for(
             notional=notional,
             tier_auto_submit_notional=_tier_auto_submit_notional(rule, currency),
@@ -981,6 +1010,7 @@ def _build_active_buy_watches(
                 planned_notional=notional,
                 planned_notional_source=source,
                 funding_broker=broker or UNATTRIBUTED,
+                funding_broker_reason=broker_reason,
                 account_mode=raw_mode if isinstance(raw_mode, str) else None,
                 approval_lane=lane,
                 approval_lane_reason=reason,
@@ -1113,8 +1143,12 @@ def _requirements(
                 broker=None
                 if row.funding_broker == UNATTRIBUTED
                 else row.funding_broker,
+                # The row carries the concrete reason (an unmapped source name,
+                # a split lot); collapsing it to one generic sentence hid real
+                # misconfiguration (verify-r2 SHOULD-3).
                 unattributed_reason=(
-                    "보유의 계좌 소스를 하나의 브로커로 확정하지 못했습니다."
+                    row.funding_broker_reason
+                    or "보유의 계좌 소스를 확정하지 못했습니다."
                     if row.funding_broker == UNATTRIBUTED
                     else None
                 ),
@@ -1141,7 +1175,8 @@ def _requirements(
                 if row.funding_broker == UNATTRIBUTED
                 else row.funding_broker,
                 unattributed_reason=(
-                    "워치 max_action이 실행 계좌(account_mode)를 지정하지 않았습니다."
+                    row.funding_broker_reason
+                    or "워치 max_action이 실행 계좌(account_mode)를 지정하지 않았습니다."
                     if row.funding_broker == UNATTRIBUTED
                     else None
                 ),
@@ -1207,10 +1242,14 @@ def _build_funding(
         if row.included_in_reserve:
             scope_keys.add((row.broker, row.currency))
     for req in requirements:
-        if req.broker is not None:
-            scope_keys.add((req.broker, req.currency))
+        # An unresolved requirement gets its own destination row rather than
+        # being folded into whichever broker happens to hold that currency.
+        # Without this, a currency with no cash account (unattributed USD on a
+        # KRW-only book) reached no verdict at all, and a broker with no row
+        # left the operator no account to fund (verify-r2 B1 (b)/(d)).
+        scope_keys.add((req.broker or UNATTRIBUTED, req.currency))
     if not scope_keys:
-        scope_keys.add(("unattributed", "KRW"))
+        scope_keys.add((UNATTRIBUTED, "KRW"))
 
     # Requirement-side incompleteness is symmetric with the cash-side hold that
     # already existed: an unknown requirement must never fold to zero
@@ -1238,7 +1277,9 @@ def _build_funding(
             "active_watch": Decimal(0),
         }
         for req in requirements:
-            if req.broker != broker or req.currency != currency or req.amount is None:
+            if (req.broker or UNATTRIBUTED) != broker or req.currency != currency:
+                continue
+            if req.amount is None:
                 continue
             by_kind[req.kind] += req.amount
         attributed_total = sum(by_kind.values(), Decimal(0))
@@ -1251,17 +1292,26 @@ def _build_funding(
             incomplete.append(
                 f"{currency} 소요액 중 금액을 확정하지 못한 항목이 있습니다."
             )
-        if broker == UNATTRIBUTED and not rows:
+        if broker == UNATTRIBUTED:
             incomplete.append(
-                "이 행은 귀속 계좌를 확정하지 못한 소요액 모음입니다 — 대조할 현금이 없습니다."
+                "이 행은 귀속 계좌를 확정하지 못한 소요액 모음입니다 — 어느 계좌에서 "
+                "나갈지 모르므로 대조할 현금이 없습니다."
             )
 
-        unattributed_amount = unattributed_by_currency[currency]
-        worst_case = attributed_total + unattributed_amount
+        # A real broker scope is measured against the unattributed pool; the
+        # unattributed destination row already *contains* that pool, so adding
+        # it again would double-count it.
+        unattributed_amount = (
+            Decimal(0) if broker == UNATTRIBUTED else unattributed_by_currency[currency]
+        )
+        unattributed_present = broker != UNATTRIBUTED and (
+            unattributed_amount > 0 or unattributed_unknown_amount[currency]
+        )
+        upper_bound = attributed_total + unattributed_amount
         verdict, shortfall = _scope_verdict(
             available=available,
             attributed=attributed_total,
-            worst_case=worst_case,
+            unattributed_present=unattributed_present,
             incomplete=bool(incomplete),
         )
 
@@ -1271,10 +1321,11 @@ def _build_funding(
             "물타기 합계는 정책의 시장별 add 상한 안에 드는 행만 더합니다.",
             "이미 걸린 지정가는 브로커가 현금을 묶고 있어 합계에서 제외했습니다.",
         ]
-        if unattributed_amount > 0 or unattributed_unknown_amount[currency]:
+        if unattributed_present:
             notes.append(
-                "귀속 계좌를 확정하지 못한 소요액이 있어, 이 계좌 현금이 그 전액까지 "
-                "덮지 못하면 판정을 보류합니다."
+                "귀속 계좌를 확정하지 못한 소요액이 있어 이 계좌 판정을 보류합니다 — "
+                "그 돈은 다른 브로커로 나갈 수 있으므로, 여기 현금이 그 금액을 덮는다는 "
+                "사실은 실제 실행 계좌에 대해 아무것도 증명하지 않습니다."
             )
         scopes.append(
             ScopeReconciliation(
@@ -1288,7 +1339,7 @@ def _build_funding(
                 required_active_watches=by_kind["active_watch"],
                 required_total=attributed_total,
                 unattributed_same_currency=unattributed_amount,
-                worst_case_required=worst_case,
+                upper_bound_if_all_unattributed_lands_here=upper_bound,
                 requirements_complete=not incomplete,
                 incomplete_reasons=sorted(set(incomplete)),
                 verdict=verdict,  # type: ignore[arg-type]
@@ -1330,14 +1381,22 @@ def _scope_verdict(
     *,
     available: Decimal | None,
     attributed: Decimal,
-    worst_case: Decimal,
+    unattributed_present: bool,
     incomplete: bool,
 ) -> tuple[str, Decimal | None]:
     """Decide one scope, refusing to round any unknown down to zero.
 
     A shortfall is still reported when the *known* requirement already exceeds
     the cash: that deficit is proven regardless of what else is missing, and
-    suppressing it would be its own kind of dishonesty.
+    suppressing it would be its own kind of dishonesty. It is a lower bound,
+    which the UI says out loud when the requirement side is incomplete.
+
+    ``sufficient`` requires that nothing about this scope is unresolved. In
+    particular an earlier version treated "this account could cover the whole
+    unattributed pool" as proof of sufficiency; that is false, because the
+    unattributed money may be destined for a *different* broker whose account
+    is empty — which is the very mistake the broker scoping was introduced to
+    prevent (verify-r2 B1 (a)).
     """
 
     if available is None:
@@ -1346,9 +1405,7 @@ def _scope_verdict(
         return "shortfall", attributed - available
     if incomplete:
         return "unknown", None
-    if worst_case > available:
-        # The attributed part fits but the unattributed part may not, and the
-        # board cannot say which account it lands on.
+    if unattributed_present:
         return "unknown", None
     return "sufficient", Decimal(0)
 

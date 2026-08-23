@@ -25,14 +25,25 @@ function verdictTone(row: ScopeReconciliation): "gain" | "warn" | "paper" {
 
 function verdictLine(row: ScopeReconciliation): { text: string; title?: string } {
   if (row.verdict === "shortfall") {
+    // With an incomplete requirement side the deficit is still proven, but it
+    // is a floor — more may be missing. Saying so is the difference between a
+    // number the operator can act on and one they can rely on (verify-r2
+    // SHOULD-4).
+    const prefix = row.requirements_complete ? "" : "최소 ";
     return {
-      text: `${money(row.shortfall, row.currency)} 입금 필요`,
+      text: `${prefix}${money(row.shortfall, row.currency)} 입금 필요`,
       title: exact(row.shortfall),
     };
   }
   if (row.verdict === "sufficient") return { text: "리저브 충분" };
+  if (row.broker === "unattributed") {
+    return { text: "어느 계좌에서 나갈지 확정하지 못해 대조할 수 없습니다" };
+  }
   if (row.available_cash === null) {
     return { text: "가용 현금을 확정하지 못해 대조를 보류했습니다" };
+  }
+  if (row.unattributed_same_currency !== "0") {
+    return { text: "귀속 미확정 소요가 있어 대조를 보류했습니다" };
   }
   return { text: "소요액을 확정하지 못해 대조를 보류했습니다" };
 }
@@ -78,7 +89,9 @@ function ScopeCard({ row }: Readonly<{ row: ScopeReconciliation }>) {
     <Card soft style={{ padding: 16, display: "grid", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <strong style={{ fontSize: 15 }}>
-          {FUNDING_BROKER_LABEL[row.broker]} · {row.currency}
+          {row.broker === "unattributed"
+            ? `목적지 미확정 · ${row.currency}`
+            : `${FUNDING_BROKER_LABEL[row.broker]} · ${row.currency}`}
         </strong>
         <Pill tone={verdictTone(row)} size="sm">
           {FUNDING_VERDICT_LABEL[row.verdict]}
@@ -90,6 +103,12 @@ function ScopeCard({ row }: Readonly<{ row: ScopeReconciliation }>) {
       <div style={{ fontSize: 18, fontWeight: 700 }} title={verdict.title}>
         {verdict.text}
       </div>
+      {row.verdict === "shortfall" && !row.requirements_complete && (
+        <p style={{ margin: 0, fontSize: 11, color: "var(--warn)" }}>
+          소요액 일부를 확인하지 못했습니다 — 이 금액은 하한이며 실제로는 더 필요할
+          수 있습니다.
+        </p>
+      )}
       <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
         <BreakdownRow
           label="가용 현금 (이 계좌)"
@@ -144,8 +163,9 @@ function UnattributedBlock({
         </strong>
       </div>
       <p style={{ margin: 0, fontSize: 11, color: "var(--fg-2)" }}>
-        합계에서 빼지 않았습니다. 같은 통화 계좌의 현금이 이 금액까지 덮지 못하면
-        그 계좌 판정을 보류합니다.
+        합계에서 빼지 않았습니다. 이 돈은 어느 브로커로도 갈 수 있으므로, 같은 통화의
+        모든 계좌 판정을 보류시키고 위에 별도의 &quot;목적지 미확정&quot; 행으로도
+        올립니다.
       </p>
       <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
         {rows.map((row) => (

@@ -56,6 +56,22 @@ class PolicyStamp(BaseModel):
     content_hash: str
 
 
+class ApprovalCondition(BaseModel):
+    """One auto-approval gate this board does not evaluate.
+
+    ``code`` is the literal ``reject(...)`` reason from
+    ``order_proposals.auto_approve.evaluate_auto_approve_eligibility``; a
+    contract test extracts those literals from the source and fails if this
+    list stops covering them. A partial list is its own lie — it reads as
+    "these are the only things we skipped".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    label: str
+
+
 class ApprovalContext(BaseModel):
     """What the board can and cannot say about the auto-approval lane.
 
@@ -72,7 +88,8 @@ class ApprovalContext(BaseModel):
     master_gate_enabled: bool | None
     master_gate_setting: str
     master_gate_source: str
-    unevaluated_conditions: list[str] = Field(default_factory=list)
+    unevaluated_conditions: list[ApprovalCondition] = Field(default_factory=list)
+    evaluated_conditions: list[ApprovalCondition] = Field(default_factory=list)
     notice: str
 
 
@@ -132,6 +149,7 @@ class AveragingTriggerRow(BuyPlanDecimalModel):
     market_rank: int
     within_policy_add_cap: bool
     funding_broker: FundingBroker
+    funding_broker_reason: str | None = None
     notes: list[str] = Field(default_factory=list)
 
     @field_serializer(
@@ -257,6 +275,10 @@ class ActiveBuyWatchRow(BuyPlanDecimalModel):
     # the watch's execution plan did not name one, so the amount cannot be
     # charged to any single account's reserve (verify-r1 B1).
     funding_broker: FundingBroker
+    # Why attribution failed, verbatim. Collapsing every failure into "no
+    # account_mode" hid genuinely wrong values like ``kiwoom_mock``
+    # (verify-r2 SHOULD-3).
+    funding_broker_reason: str | None = None
     account_mode: str | None = None
     approval_lane: ApprovalLane
     approval_lane_reason: ApprovalLaneReason
@@ -327,10 +349,16 @@ class ScopeReconciliation(BuyPlanDecimalModel):
     a currency-only total can read ``sufficient`` while the account that must
     place the order holds nothing (verify-r1 B1).
 
-    ``broker="unattributed"`` carries the requirements whose owning account
-    could not be resolved. They are never dropped from the board; instead they
-    hold every same-currency scope at ``unknown`` unless that scope's cash
-    covers its own requirements *plus* all of them.
+    ``broker="unattributed"`` is a real destination row carrying the
+    requirements whose owning account could not be resolved. It always exists
+    when such a requirement exists, including for a currency or broker that
+    has no cash account at all — otherwise an unresolved need could reach no
+    verdict anywhere on the board (verify-r2 B1 (b)/(d)).
+
+    A scope with same-currency unattributed money can never read
+    ``sufficient``: that money may land at a *different* broker, so this
+    account covering it proves nothing about the account that will actually
+    place the order (verify-r2 B1 (a)).
     """
 
     scope_key: str
@@ -343,7 +371,11 @@ class ScopeReconciliation(BuyPlanDecimalModel):
     required_active_watches: Decimal
     required_total: Decimal
     unattributed_same_currency: Decimal
-    worst_case_required: Decimal
+    # Deliberately NOT called a worst case. The true worst case is that the
+    # unattributed money lands on an account with no cash, which is a
+    # different scope entirely — this number only answers the conditional
+    # "if all of it landed here" (verify-r2 3-1(e)).
+    upper_bound_if_all_unattributed_lands_here: Decimal
     requirements_complete: bool = True
     incomplete_reasons: list[str] = Field(default_factory=list)
     verdict: FundingVerdict
@@ -357,7 +389,7 @@ class ScopeReconciliation(BuyPlanDecimalModel):
         "required_active_watches",
         "required_total",
         "unattributed_same_currency",
-        "worst_case_required",
+        "upper_bound_if_all_unattributed_lands_here",
         "shortfall",
     )
     def _ser(self, value: Decimal | None) -> str | None:

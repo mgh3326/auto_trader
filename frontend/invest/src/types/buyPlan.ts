@@ -27,11 +27,19 @@ export interface PolicyStamp {
   content_hash: string;
 }
 
+export interface ApprovalCondition {
+  /** The literal reject reason in evaluate_auto_approve_eligibility. */
+  code: string;
+  label: string;
+}
+
 export interface ApprovalContext {
+  /** `null` means the setting could not be read — not "off", and not "on". */
   master_gate_enabled: boolean | null;
   master_gate_setting: string;
   master_gate_source: string;
-  unevaluated_conditions: string[];
+  unevaluated_conditions: ApprovalCondition[];
+  evaluated_conditions: ApprovalCondition[];
   notice: string;
 }
 
@@ -70,6 +78,7 @@ export interface AveragingTriggerRow {
   market_rank: number;
   within_policy_add_cap: boolean;
   funding_broker: FundingBroker;
+  funding_broker_reason: string | null;
   notes: string[];
 }
 
@@ -137,6 +146,7 @@ export interface ActiveBuyWatchRow {
   planned_notional: string | null;
   planned_notional_source: string | null;
   funding_broker: FundingBroker;
+  funding_broker_reason: string | null;
   account_mode: string | null;
   approval_lane: ApprovalLane;
   approval_lane_reason: ApprovalLaneReason;
@@ -189,7 +199,8 @@ export interface ScopeReconciliation {
   required_active_watches: string;
   required_total: string;
   unattributed_same_currency: string;
-  worst_case_required: string;
+  /** NOT a worst case — the money may land at a broker with no row here. */
+  upper_bound_if_all_unattributed_lands_here: string;
   requirements_complete: boolean;
   incomplete_reasons: string[];
   verdict: FundingVerdict;
