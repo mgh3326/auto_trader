@@ -37,6 +37,41 @@ crypto 진단 실행에서만 도달할 수 있다. 철회 source는 여전히 �
 않는다. KR/US에는 도달 가능한 역사 builder가 없다.
 남는 역사 절은 스냅샷 소스 상호 비교 + 무작위 대조뿐이며, 아래 라벨을 붙인다.
 
+## 철회 가드의 CI 보호 범위 — 알려진 갭 (2026-08-24, 동결)
+
+철회(`WITHDRAWN_SOURCES`) 가드는 **동작한다.** 적대검증에서 실 CLI 파이프라인에 철회행
+120개를 심어도 커밋 산출물 5종에 0건이었고, 가드 지점 11개 + alias 방어 1개가 뮤턴트에
+assertion 으로 RED 다.
+
+**CI 가 보호하는 것**
+- 가드 로직 제거(집계·부트스트랩·보고 3층, 러너 builder 선택, opt-in 검증, 정본/메타데이터)
+- 러너에 철회 소스를 인라인으로 되살리는 회귀 — KR·US·crypto **3시장 모두**
+- alias 로 canonical source id 를 우회하는 경로
+
+🔴 **CI 가 보호하지 못하는 것 (이 갭은 알면서 남긴다)**
+철회된 source id 를 **실제 프로덕션 builder 를 경유해** 배선하거나, **행 발행 레이어에서
+재라벨**하는 형태의 회귀는 현재 테스트가 잡지 못한다.
+
+근인은 가드 로직이 아니라 **테스트 픽스처의 비현실성**이다 —
+`test_default_run_market_does_not_call_withdrawn_builder` 가 builder map 을
+프로덕션에 없는 단일 키(`{market}.consecutive_gainers`)로 치환하고, crypto 스냅샷을
+`rsi=40.0` 한 행만 준다. 그래서 실 builder 키를 경유하는 회귀는 스텁 map 에 그 키가 없어
+무음이고, 실 builder 를 직접 호출하는 회귀는 스텁 데이터가 필터(`rsi<=35` 등)에 걸려
+빈 pool 이 된다.
+
+적대검증자가 **프로덕션 `_CRYPTO_BUILDERS`(7개 실 builder) + 현실적 3행 스냅샷**으로
+실측한 결과, 이 형태의 회귀 4종은 **옵트인 없는 기본 실행에서 `crypto.tv_rsi45` 를 실제로
+산출**하는데 테스트는 침묵한다.
+
+**영향 범위**: 출력층 가드(집계·부트스트랩·보고)가 살아 있어 **커밋 산출물은 오염되지
+않는다.** 유출은 gitignored `picks.csv` 까지다.
+
+**닫으려면**: 위 테스트가 스텁 map 대신 **프로덕션 builder map** 을 쓰고, **실 builder 의
+필터를 통과해 실제로 행을 만드는 스냅샷**을 주면 된다. 이 수리는 하드캡 소진으로
+의도적으로 보류했다(라운드 4회 + 연장 1회).
+
+경위: `~/work/herdr-inbox/jobs/s140-screenerbt-prospective-20260823-2230/verify-4-result.md`
+
 1. **전부 연구정의** — 라이브 프리셋이 아니다.
 2. **단일 국면** — 표본기간 KR 등가중 −12.3%. 일반화 금지.
 3. **freeze provenance 없음** — spec·코드·artifact 가 단일 첫 커밋. 사후 증명 불가.
