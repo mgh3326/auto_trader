@@ -15,7 +15,11 @@ from app.schemas.trading_policy import (
     SupportReserveNetDecisionRule,
     TradingPolicyDocument,
 )
-from app.services.order_proposals.auto_approve import _VETO_CAPABLE_ACCOUNT_MARKETS
+from app.services.order_proposals.auto_approve import (
+    _VETO_CAPABLE_ACCOUNT_MARKETS,
+    AutoApproveLimits,
+    classify_sell_profit,
+)
 from app.services.trading_policy_service import load_trading_policy
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
@@ -35,6 +39,20 @@ _ROB1298_ADDITIVE_TIE_BREAK_KEYS = (
     "breakeven_extension_fallback_order",
     "breakeven_extension_exclusion_retained",
     "breakeven_extension_minimum_benefit",
+)
+
+# §142차 (2026-08-23) — the ONLY delta this bugfix makes to a pre-existing
+# tier: seven additive condition keys on sell.breakeven_reserve_trim that
+# declare the effective post-max anchor. No pre-existing key or value is
+# touched, which is what the closed-equivalence test below re-proves.
+_S142_RESERVE_TRIM_ADDITIVE_CONDITION_KEYS = (
+    "post_max_effective_anchor_operator",
+    "post_max_effective_anchor_operands",
+    "post_max_effective_anchor_band_policy_key",
+    "post_max_effective_anchor_reason",
+    "post_max_effective_anchor_band_comparison_unchanged",
+    "post_max_effective_anchor_since_policy_version",
+    "post_max_effective_anchor_retroactive",
 )
 
 _ROB1292_ALLOWED_POLICY_DELTAS = (
@@ -160,6 +178,62 @@ def _breakeven_reserve_trim_post_max_tick_snap(
     return (anchor / tick_size).to_integral_value(rounding=rounding) * tick_size
 
 
+def _breakeven_band_pct(policy_key: str) -> Decimal:
+    """Resolve the §40차 band from its declared dotted policy key."""
+
+    value = _raw()
+    for part in policy_key.split("."):
+        value = value[part]
+    return Decimal(str(value))
+
+
+def _first_valid_tick_strictly_above(market: str, value: Decimal) -> Decimal:
+    """Smallest price on the market grid that is > ``value`` (never ==)."""
+
+    tick = _market_tick(market, value)
+    snapped = (value / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+    if snapped <= value:
+        snapped += tick
+    # A band-boundary crossing must still land on the grid that governs the
+    # resulting price; every KRX/Upbit band boundary is a multiple of the
+    # coarser tick, so this holds -- assert it rather than assume it.
+    assert snapped % _market_tick(market, snapped) == 0, (market, value, snapped)
+    return snapped
+
+
+def _band_clearing_effective_anchor(
+    conditions,
+    *,
+    prefix: str,
+    market: str,
+    average_cost: Decimal,
+    tick_ceiled_raw_anchor: Decimal,
+    raw_operand: str,
+) -> Decimal:
+    """Test-only interpreter for the §142차 effective-anchor contract.
+
+    Nothing is invented here: the operator, the operand names, and the band
+    policy key are all read out of the YAML tier.
+    """
+
+    band_pct = _breakeven_band_pct(
+        str(conditions[f"{prefix}_band_policy_key"]),
+    )
+    band_edge = average_cost * (Decimal("1") + band_pct / Decimal("100"))
+    operands = {
+        raw_operand: tick_ceiled_raw_anchor,
+        "first_valid_tick_strictly_above_average_cost_"
+        "times_one_plus_breakeven_band": _first_valid_tick_strictly_above(
+            market, band_edge
+        ),
+    }
+    resolved = [operands[str(name)] for name in conditions[f"{prefix}_operands"]]
+    operator = conditions[f"{prefix}_operator"]
+    if operator == "max":
+        return max(resolved)
+    raise AssertionError(f"unsupported effective-anchor operator: {operator!r}")
+
+
 def _breakeven_reserve_trim_triggered(
     tier,
     *,
@@ -184,7 +258,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-22.1"
+    assert doc.version == "2026-08-23.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -545,6 +619,24 @@ def test_breakeven_reserve_trim_policy_contract_is_machine_readable():
             "consumer_estimated_fees_and_taxes_required_no_fee_or_tax_model_added_by_this_tier"
         ),
         "post_max_tick_snap_direction": "ceil",
+        # §142차 (2026-08-23) — break-even band edge repair.
+        "post_max_effective_anchor_operator": "max",
+        "post_max_effective_anchor_operands": [
+            "tick_ceil_post_max_anchor",
+            (
+                "first_valid_tick_strictly_above_average_cost_"
+                "times_one_plus_breakeven_band"
+            ),
+        ],
+        "post_max_effective_anchor_band_policy_key": (
+            "order_proposals.auto_approve.breakeven_band_pct"
+        ),
+        "post_max_effective_anchor_reason": (
+            "section_40_breakeven_band_comparison_is_inclusive"
+        ),
+        "post_max_effective_anchor_band_comparison_unchanged": True,
+        "post_max_effective_anchor_since_policy_version": "2026-08-23.1",
+        "post_max_effective_anchor_retroactive": False,
         "resting_limit_order": True,
         "time_in_force": "DAY",
         "regeneration": "daily_rep",
@@ -677,6 +769,23 @@ def test_sell_lane_machine_block_adds_breakeven_reserve_trim_without_tool_or_gat
                 "d7_compliant_lowest_price",
             ],
             "post_max_tick_snap_direction": "ceil",
+            # §142차 (2026-08-23) — the playbook's machine block carries the
+            # same effective anchor as the policy tier, or a session reading
+            # only the playbook would keep placing rungs on the band edge.
+            "post_max_effective_anchor": {
+                "operator": "max",
+                "operands": [
+                    "tick_ceil_post_max_anchor",
+                    (
+                        "first_valid_tick_strictly_above_average_cost_"
+                        "times_one_plus_breakeven_band"
+                    ),
+                ],
+                "band_policy_key": ("order_proposals.auto_approve.breakeven_band_pct"),
+                "band_comparison_unchanged": True,
+                "since_policy_version": "2026-08-23.1",
+                "retroactive": False,
+            },
         },
         "sizing": "existing_trim_rule",
         "time_in_force": "DAY",
@@ -1013,6 +1122,20 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     baseline_trim["tie_breaks"]["tier_priority"] = current_trim["tie_breaks"][
         "tier_priority"
     ]
+    # §142차 (2026-08-23) KEY_DIFF — the effective post-max anchor keys are new
+    # on sell.breakeven_reserve_trim and are now required by the schema, so the
+    # baseline copy is given the current values before parsing. Assert they are
+    # genuinely absent from the baseline first, then strip them from BOTH dumps
+    # below so the remaining comparison stays a closed equivalence.
+    baseline_reserve_trim = baseline_trim["tiers"][1]
+    current_reserve_trim = current_trim["tiers"][1]
+    assert baseline_reserve_trim["id"] == "sell.breakeven_reserve_trim"
+    assert current_reserve_trim["id"] == "sell.breakeven_reserve_trim"
+    for key in _S142_RESERVE_TRIM_ADDITIVE_CONDITION_KEYS:
+        assert key not in baseline_reserve_trim["conditions"]
+        baseline_reserve_trim["conditions"][key] = current_reserve_trim["conditions"][
+            key
+        ]
     # §136차 (2026-08-21) — A(k) 사이징/커버리지 델타. 현행 스키마 핀(k 0.20,
     # Literal[2], 신설 면제 키)이 baseline을 파싱할 수 있도록 사전 패치하되,
     # baseline 원값을 먼저 고정 확인한다.
@@ -1119,6 +1242,26 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
             .endswith("> watch_zone > breakeven_extension_ladder")
         )
         del trim["semantics"]
+    # §142차 (2026-08-23) — the reserve-trim tier gains exactly the seven
+    # enumerated additive condition keys and nothing else. Pin their values
+    # here (a silent re-point of the band key or a back-dated stamp fails) and
+    # strip them; every other key on that tier must still match the baseline.
+    for dump in (normalized_current_dump, baseline_dump):
+        s142_tier = dump["decision_rules"]["sell.trim_preplace"]["tiers"][1]
+        assert s142_tier["id"] == "sell.breakeven_reserve_trim"
+        conditions = s142_tier["conditions"]
+        assert conditions["post_max_effective_anchor_operator"] == "max"
+        assert conditions["post_max_effective_anchor_band_policy_key"] == (
+            "order_proposals.auto_approve.breakeven_band_pct"
+        )
+        assert (
+            conditions["post_max_effective_anchor_since_policy_version"]
+            == "2026-08-23.1"
+        )
+        assert conditions["post_max_effective_anchor_retroactive"] is False
+        for key in _S142_RESERVE_TRIM_ADDITIVE_CONDITION_KEYS:
+            del conditions[key]
+
     for key in _ROB1298_ADDITIVE_TIE_BREAK_KEYS:
         assert (
             key
@@ -1307,7 +1450,32 @@ def _breakeven_extension_rungs(
         raw = average_cost * Decimal(str(multiple))
         tick = _market_tick(market, raw)
         rungs.append((raw / tick).to_integral_value(rounding=rounding) * tick)
+
+    # §142차 — rung 1 only: clear the inclusive §40차 break-even band edge.
+    assert conditions["tier1_effective_anchor_scope"] == "lowest_rung_only"
+    rungs[0] = _band_clearing_effective_anchor(
+        conditions,
+        prefix="tier1_effective_anchor",
+        market=market,
+        average_cost=average_cost,
+        tick_ceiled_raw_anchor=rungs[0],
+        raw_operand="tick_ceil_average_cost_times_lowest_multiple",
+    )
     return rungs
+
+
+def _breakeven_extension_rung_one_before_s142(
+    tier,
+    *,
+    market: str,
+    average_cost: Decimal,
+) -> Decimal:
+    """The pre-§142차 rung 1: tick_ceil(average_cost × lowest multiple)."""
+
+    multiple = Decimal(str(tier.conditions["anchor_average_cost_multiples"][0]))
+    raw = average_cost * multiple
+    tick = _market_tick(market, raw)
+    return (raw / tick).to_integral_value(rounding=ROUND_CEILING) * tick
 
 
 def _ladder_matches(tier, *, market: str, fresh_named_resistance_count: int) -> bool:
@@ -1642,7 +1810,383 @@ def test_rob_1298_leaves_loss_guard_d7_and_auto_approve_gates_untouched():
     baseline_trim = baseline["decision_rules"]["sell.trim_preplace"]
     current_trim = current["decision_rules"]["sell.trim_preplace"]
     assert current_trim["tiers"][0] == baseline_trim["tiers"][0]
-    assert current_trim["tiers"][1] == baseline_trim["tiers"][1]
+    # §142차 adds the enumerated effective-anchor keys to the reserve-trim
+    # tier; strip exactly those and the tier is still byte-identical to the
+    # ROB-1289 baseline (no threshold, operand, or gate key moved).
+    reserve_trim = deepcopy(current_trim["tiers"][1])
+    for key in _S142_RESERVE_TRIM_ADDITIVE_CONDITION_KEYS:
+        del reserve_trim["conditions"][key]
+    assert reserve_trim == baseline_trim["tiers"][1]
+
+
+# ---------------------------------------------------------------------------
+# §142차 (2026-08-23) — break-even band edge repair (versioned bugfix)
+# ---------------------------------------------------------------------------
+
+# The three boundary cases: an average cost whose × 1.01 lands EXACTLY on the
+# market tick grid, so the ceil snap is a no-op and the rung sits on the
+# inclusive §40차 band edge. The crypto row is the verifier's measured case
+# (checkpoint #3 packet §4-1: avg 4,000,000 -> raw 4,040,000 -> ceil no-op).
+_S142_BOUNDARY_CASES = (
+    ("crypto", Decimal("4000000"), Decimal("4040000"), Decimal("4041000")),
+    ("kr", Decimal("50000"), Decimal("50500"), Decimal("50600")),
+    ("us", Decimal("100.00"), Decimal("101.00"), Decimal("101.01")),
+)
+
+
+def _expanded_limits(doc: TradingPolicyDocument) -> AutoApproveLimits:
+    """§40차 classifier inputs, read from the shipped policy (not literals)."""
+
+    auto_approve = _raw()["order_proposals"]["auto_approve"]
+    return AutoApproveLimits(
+        min_distance_pct=Decimal(str(auto_approve["min_distance_pct"])),
+        per_order_cap=Decimal("1000000000"),
+        daily_cap=Decimal("1000000000"),
+        policy_version=doc.version,
+        mode="expanded",
+        breakeven_band_pct=Decimal(str(auto_approve["breakeven_band_pct"])),
+        round_trip_cost_bps=Decimal("90"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("market", "average_cost", "pre_s142_rung_one", "expected_rung_one"),
+    _S142_BOUNDARY_CASES,
+    ids=[case[0] for case in _S142_BOUNDARY_CASES],
+)
+def test_s142_boundary_rung_one_is_lifted_off_the_inclusive_band_edge(
+    market, average_cost, pre_s142_rung_one, expected_rung_one
+):
+    """AC — the defect reproduces, and the repair moves rung 1 one tick up."""
+
+    tier = _breakeven_extension_ladder_tier()
+
+    # The defect: before §142차 the ceil snap is a no-op on these averages, so
+    # rung 1 IS the band edge.
+    assert (
+        _breakeven_extension_rung_one_before_s142(
+            tier, market=market, average_cost=average_cost
+        )
+        == pre_s142_rung_one
+    )
+    band_pct = _breakeven_band_pct("order_proposals.auto_approve.breakeven_band_pct")
+    assert pre_s142_rung_one == average_cost * (
+        Decimal("1") + band_pct / Decimal("100")
+    )
+
+    # The repair: the effective rung 1 is the first valid tick strictly above.
+    rungs = _breakeven_extension_rungs(tier, market=market, average_cost=average_cost)
+    assert rungs[0] == expected_rung_one
+    assert rungs[0] > pre_s142_rung_one
+    # Lifted by exactly one tick -- the repair buys the minimum it needs.
+    assert rungs[0] - pre_s142_rung_one == _market_tick(market, pre_s142_rung_one)
+    # Rungs 2 and 3 are untouched and the ladder stays strictly ascending.
+    assert rungs == sorted(set(rungs))
+    assert (
+        rungs[1]
+        == _breakeven_extension_rungs(tier, market=market, average_cost=average_cost)[1]
+    )
+
+
+@pytest.mark.parametrize(
+    ("market", "average_cost", "pre_s142_rung_one", "expected_rung_one"),
+    _S142_BOUNDARY_CASES,
+    ids=[case[0] for case in _S142_BOUNDARY_CASES],
+)
+def test_s142_boundary_rung_one_flips_breakeven_band_to_take_profit(
+    market, average_cost, pre_s142_rung_one, expected_rung_one
+):
+    """The whole point: rung 1 can now satisfy its own submission_contract.
+
+    Run against the real §40차 classifier, not a re-implementation.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    limits = _expanded_limits(doc)
+    preview = {"avg_buy_price": str(average_cost)}
+
+    before = classify_sell_profit(
+        limit_price=pre_s142_rung_one,
+        quantity=Decimal("100"),
+        preview=preview,
+        limits=limits,
+    )
+    assert before.verdict == "breakeven_band"
+
+    after = classify_sell_profit(
+        limit_price=expected_rung_one,
+        quantity=Decimal("100"),
+        preview=preview,
+        limits=limits,
+    )
+    assert after.verdict == "take_profit"
+
+
+def test_s142_leaves_the_inclusive_band_comparison_alone():
+    """🔴 The global ``<=`` is NOT changed -- only the rung moved.
+
+    A sell priced exactly on the band edge still classifies as breakeven_band
+    for every other consumer of the classifier. If this flips, the repair has
+    been widened past the §142차 authorization.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    limits = _expanded_limits(doc)
+    average_cost = Decimal("4000000")
+    band_edge = average_cost * (
+        Decimal("1") + limits.breakeven_band_pct / Decimal("100")
+    )
+
+    for probe in (band_edge, average_cost - (band_edge - average_cost)):
+        verdict = classify_sell_profit(
+            limit_price=probe,
+            quantity=Decimal("1"),
+            preview={"avg_buy_price": str(average_cost)},
+            limits=limits,
+        )
+        assert verdict.verdict == "breakeven_band"
+
+    source = (
+        Path(policy_schema.__file__).resolve().parents[2]
+        / "app"
+        / "services"
+        / "order_proposals"
+        / "auto_approve.py"
+    ).read_text(encoding="utf-8")
+    assert "if abs(distance_from_avg) <= band:" in source
+
+
+@pytest.mark.parametrize(
+    ("market", "average_cost", "expected"),
+    [
+        # §115차 AC1 (ETH) and the KR/US cases: raw × 1.01 is NOT on the grid,
+        # so the ceil already cleared the band and §142차 changes nothing.
+        ("crypto", Decimal("3168337"), Decimal("3201000")),
+        ("kr", Decimal("71300"), Decimal("72100")),
+        ("us", Decimal("187.42"), Decimal("189.30")),
+    ],
+    ids=["crypto_eth", "kr", "us"],
+)
+def test_s142_non_boundary_rung_one_is_unchanged(market, average_cost, expected):
+    tier = _breakeven_extension_ladder_tier()
+    before = _breakeven_extension_rung_one_before_s142(
+        tier, market=market, average_cost=average_cost
+    )
+    after = _breakeven_extension_rungs(tier, market=market, average_cost=average_cost)[
+        0
+    ]
+
+    assert before == after == expected
+    band_pct = _breakeven_band_pct("order_proposals.auto_approve.breakeven_band_pct")
+    assert after > average_cost * (Decimal("1") + band_pct / Decimal("100"))
+
+
+def test_s142_reserve_trim_post_max_anchor_has_the_same_conflict_and_repair():
+    """MEASURED, then repaired -- the §44차 tier shares the defect.
+
+    Its post-max anchor is max(average_cost × loss_guard, d7 lowest price). When
+    the guard operand wins, the anchor IS average_cost × 1.01, i.e. the band
+    edge, and the ceil snap is a no-op on a grid-aligned average.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    tier = _breakeven_reserve_trim_tier()
+    limits = _expanded_limits(doc)
+    average_cost = Decimal("4000000")
+    tick = _market_tick("crypto", average_cost * Decimal("1.01"))
+
+    # Guard operand wins the max (D7 price is below it).
+    anchor = _breakeven_reserve_trim_anchor(
+        tier,
+        average_cost=average_cost,
+        d7_compliant_lowest_price=Decimal("4010000"),
+    )
+    snapped = _breakeven_reserve_trim_post_max_tick_snap(
+        tier, anchor=anchor, tick_size=tick
+    )
+    assert snapped == Decimal("4040000")  # ceil is a no-op here
+    assert (
+        classify_sell_profit(
+            limit_price=snapped,
+            quantity=Decimal("1"),
+            preview={"avg_buy_price": str(average_cost)},
+            limits=limits,
+        ).verdict
+        == "breakeven_band"
+    )
+
+    effective = _band_clearing_effective_anchor(
+        tier.conditions,
+        prefix="post_max_effective_anchor",
+        market="crypto",
+        average_cost=average_cost,
+        tick_ceiled_raw_anchor=snapped,
+        raw_operand="tick_ceil_post_max_anchor",
+    )
+    assert effective == Decimal("4041000")
+    assert effective - snapped == tick
+    assert (
+        classify_sell_profit(
+            limit_price=effective,
+            quantity=Decimal("1"),
+            preview={"avg_buy_price": str(average_cost)},
+            limits=limits,
+        ).verdict
+        == "take_profit"
+    )
+
+
+def test_s142_reserve_trim_band_operand_is_inert_when_the_d7_floor_wins():
+    """No anchor is dragged upward when it already clears the band."""
+
+    tier = _breakeven_reserve_trim_tier()
+    average_cost = Decimal("4000000")
+    tick = Decimal("1000")
+
+    anchor = _breakeven_reserve_trim_anchor(
+        tier,
+        average_cost=average_cost,
+        d7_compliant_lowest_price=Decimal("4200000"),
+    )
+    snapped = _breakeven_reserve_trim_post_max_tick_snap(
+        tier, anchor=anchor, tick_size=tick
+    )
+    effective = _band_clearing_effective_anchor(
+        tier.conditions,
+        prefix="post_max_effective_anchor",
+        market="crypto",
+        average_cost=average_cost,
+        tick_ceiled_raw_anchor=snapped,
+        raw_operand="tick_ceil_post_max_anchor",
+    )
+
+    assert snapped == Decimal("4200000")
+    assert effective == snapped
+
+
+def test_s142_is_declared_versioned_and_not_retroactive():
+    """The bugfix is stamped, and it never re-anchors an older placement."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    assert doc.version == "2026-08-23.1"
+    assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
+    assert "NOT retroactive" in doc.source
+
+    ladder = _breakeven_extension_ladder_tier().conditions
+    reserve = _breakeven_reserve_trim_tier().conditions
+    assert ladder["tier1_effective_anchor_since_policy_version"] == "2026-08-23.1"
+    assert ladder["tier1_effective_anchor_retroactive"] is False
+    assert reserve["post_max_effective_anchor_since_policy_version"] == "2026-08-23.1"
+    assert reserve["post_max_effective_anchor_retroactive"] is False
+
+
+def test_s142_adds_no_tier_no_threshold_and_no_sizing_change():
+    """The permitted class is contradiction resolution -- nothing else."""
+
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current = _raw()
+
+    for key in (
+        "sell.loss_guard_min_multiple",
+        "sell.breakeven_near_pct",
+        "sell.trim_min_expected_net_realized_gain_krw",
+    ):
+        assert current["thresholds"][key] == baseline["thresholds"][key]
+    assert (
+        current["order_proposals"]["auto_approve"]["breakeven_band_pct"]
+        == baseline["order_proposals"]["auto_approve"]["breakeven_band_pct"]
+    )
+
+    current_trim = current["decision_rules"]["sell.trim_preplace"]
+    assert [tier["id"] for tier in current_trim["tiers"]] == [
+        "de_minimis_trim_watch",
+        "sell.breakeven_reserve_trim",
+        "single_share_full_exit_review",
+        "momentum_spike_profit_ladder",
+        "rsi_confirmed_resistance",
+        "ultra_near_resistance",
+        "watch_zone",
+        "breakeven_extension_ladder",
+    ]
+    for tier in current_trim["tiers"]:
+        if tier["id"] in ("sell.breakeven_reserve_trim", "breakeven_extension_ladder"):
+            assert tier["sizing"] == "existing_trim_rule"
+    assert current_trim["exclusions"] == ["no_resistance_reference", "composite_gates"]
+    # The ladder's own multiples are untouched: the repair moves the effective
+    # rung, not the declared multiple.
+    ladder = current_trim["tiers"][-1]["conditions"]
+    assert ladder["anchor_average_cost_multiples"] == [1.01, 1.05, 1.10]
+    assert ladder["anchor_lowest_rung_policy_key"] == "sell.loss_guard_min_multiple"
+
+
+def _s142_mutant(tier_index: int, key: str, value) -> dict:
+    raw = _raw()
+    raw["decision_rules"]["sell.trim_preplace"]["tiers"][tier_index]["conditions"][
+        key
+    ] = value
+    return raw
+
+
+def _s142_dropped(tier_index: int, key: str) -> dict:
+    raw = _raw()
+    del raw["decision_rules"]["sell.trim_preplace"]["tiers"][tier_index]["conditions"][
+        key
+    ]
+    return raw
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: _s142_dropped(-1, "tier1_effective_anchor_operands"),
+        lambda: _s142_mutant(-1, "tier1_effective_anchor_operator", "min"),
+        lambda: _s142_mutant(
+            -1,
+            "tier1_effective_anchor_operands",
+            ["tick_ceil_average_cost_times_lowest_multiple"],
+        ),
+        lambda: _s142_mutant(
+            -1, "tier1_effective_anchor_band_policy_key", "sell.breakeven_near_pct"
+        ),
+        lambda: _s142_mutant(-1, "tier1_effective_anchor_retroactive", True),
+        lambda: _s142_mutant(
+            -1, "tier1_effective_anchor_since_policy_version", "2026-08-22.1"
+        ),
+        lambda: _s142_mutant(
+            -1, "tier1_effective_anchor_band_comparison_unchanged", False
+        ),
+        lambda: _s142_mutant(-1, "tier1_effective_anchor_scope", "all_rungs"),
+        lambda: _s142_dropped(1, "post_max_effective_anchor_operator"),
+        lambda: _s142_mutant(1, "post_max_effective_anchor_operator", "min"),
+        lambda: _s142_mutant(
+            1,
+            "post_max_effective_anchor_operands",
+            [
+                "first_valid_tick_strictly_above_average_cost_"
+                "times_one_plus_breakeven_band",
+                "tick_ceil_post_max_anchor",
+            ],
+        ),
+        lambda: _s142_mutant(1, "post_max_effective_anchor_retroactive", True),
+    ],
+    ids=[
+        "ladder_operands_dropped",
+        "ladder_operator_min",
+        "ladder_band_operand_removed",
+        "ladder_band_key_repointed",
+        "ladder_claims_retroactive",
+        "ladder_backdated_stamp",
+        "ladder_claims_comparison_changed",
+        "ladder_scope_widened",
+        "reserve_operator_dropped",
+        "reserve_operator_min",
+        "reserve_operands_reordered",
+        "reserve_claims_retroactive",
+    ],
+)
+def test_s142_mutants_are_rejected(build):
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(build())
 
 
 # ---------------------------------------------------------------------------

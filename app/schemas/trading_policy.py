@@ -70,8 +70,87 @@ class PolicyDecisionRuleTier(BaseModel):
 
 
 BREAKEVEN_EXTENSION_LADDER_TIER_ID = "breakeven_extension_ladder"
+BREAKEVEN_RESERVE_TRIM_TIER_ID = "sell.breakeven_reserve_trim"
 NO_RESISTANCE_REFERENCE_EXCLUSION = "no_resistance_reference"
 _RESISTANCE_CONDITION_MARKER = "resistance_near_pct"
+
+# §142차 (2026-08-23) — break-even band edge repair, machine-pinned.
+#
+# Two sell anchors are defined as average_cost × sell.loss_guard_min_multiple
+# (1.01). That is EXACTLY the §40차 break-even band edge
+# (order_proposals.auto_approve.breakeven_band_pct = 1), and
+# ``classify_sell_profit`` compares that band INCLUSIVELY
+# (``abs(distance_from_avg) <= band``). Whenever average_cost × 1.01 already
+# sits on the market tick grid the ceil snap is a no-op, the rung sits on the
+# boundary, and it is classified ``breakeven_band`` instead of ``take_profit``
+# -- so the tier's own ``submission_contract`` can never be satisfied.
+#
+# The repair is local to the two anchors: their EFFECTIVE value is the max of
+# the tick-ceiled raw anchor and the first valid tick STRICTLY above the band
+# edge. The inclusive comparison in the classifier is deliberately NOT changed
+# -- other consumers of that comparison were not audited, and a global
+# ``<=`` -> ``<`` edit is out of scope (GPT Pro checkpoint #3, Q4).
+BREAKEVEN_BAND_POLICY_KEY = "order_proposals.auto_approve.breakeven_band_pct"
+_BAND_CLEARING_OPERAND = (
+    "first_valid_tick_strictly_above_average_cost_times_one_plus_breakeven_band"
+)
+_S142_ANCHOR_REASON = "section_40_breakeven_band_comparison_is_inclusive"
+_S142_ANCHOR_VERSION = "2026-08-23.1"
+
+
+def _validate_band_clearing_anchor(
+    conditions: dict[str, RuleConditionValue],
+    *,
+    tier_id: str,
+    prefix: str,
+    raw_operand: str,
+) -> None:
+    """Pin the §142차 effective-anchor contract on one tier.
+
+    Every invariant the operator forbade drifting is asserted, so a later edit
+    that silently drops the band-clearing operand, re-points the band key, or
+    back-dates the fix fails the build instead of shipping.
+    """
+
+    if conditions.get(f"{prefix}_operator") != "max":
+        raise ValueError(
+            f"{tier_id} requires {prefix}_operator: max -- the repair may only "
+            "raise the anchor, never lower it"
+        )
+    operands = conditions.get(f"{prefix}_operands")
+    if operands != [raw_operand, _BAND_CLEARING_OPERAND]:
+        raise ValueError(
+            f"{tier_id} requires {prefix}_operands "
+            f"{[raw_operand, _BAND_CLEARING_OPERAND]}"
+        )
+    if conditions.get(f"{prefix}_band_policy_key") != BREAKEVEN_BAND_POLICY_KEY:
+        raise ValueError(
+            f"{tier_id} must derive its band edge from {BREAKEVEN_BAND_POLICY_KEY}, "
+            "not a literal"
+        )
+    if conditions.get(f"{prefix}_reason") != _S142_ANCHOR_REASON:
+        raise ValueError(
+            f"{tier_id} must record {prefix}_reason: {_S142_ANCHOR_REASON}"
+        )
+    # The repair buys its way out of the boundary by moving the RUNG, not by
+    # loosening the classifier. If a later edit claims the comparison changed,
+    # this pin is the thing that has to be deleted first.
+    if conditions.get(f"{prefix}_band_comparison_unchanged") is not True:
+        raise ValueError(
+            f"{tier_id} must declare {prefix}_band_comparison_unchanged: true -- "
+            "the §40차 inclusive band comparison is not changed by this repair"
+        )
+    if conditions.get(f"{prefix}_since_policy_version") != _S142_ANCHOR_VERSION:
+        raise ValueError(
+            f"{tier_id} must stamp {prefix}_since_policy_version: "
+            f"{_S142_ANCHOR_VERSION}"
+        )
+    if conditions.get(f"{prefix}_retroactive") is not False:
+        raise ValueError(
+            f"{tier_id} must declare {prefix}_retroactive: false -- placements "
+            "made under an earlier policy version are not re-anchored"
+        )
+
 
 # §139차 (2026-08-22) — the two tiers added by §139차 are the first decision
 # rules that are not meaningful in every market: the index-ETF admission is a
@@ -546,6 +625,45 @@ class PolicyDecisionRule(BaseModel):
                 "(tick_snap_direction: ceil)"
             )
 
+        # §142차 — rung 1 sits exactly on the §40차 break-even band edge, which
+        # is compared inclusively; clear it by one tick and no more.
+        _validate_band_clearing_anchor(
+            conditions,
+            tier_id=BREAKEVEN_EXTENSION_LADDER_TIER_ID,
+            prefix="tier1_effective_anchor",
+            raw_operand="tick_ceil_average_cost_times_lowest_multiple",
+        )
+        # Scope pin: rungs 2 and 3 are far outside the band and must not be
+        # dragged into this repair.
+        if conditions.get("tier1_effective_anchor_scope") != "lowest_rung_only":
+            raise ValueError(
+                f"{BREAKEVEN_EXTENSION_LADDER_TIER_ID} must declare "
+                "tier1_effective_anchor_scope: lowest_rung_only"
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_breakeven_reserve_trim_clears_the_band_edge(
+        self,
+    ) -> PolicyDecisionRule:
+        """§142차 — the reserve-trim post-max anchor has the same conflict.
+
+        Its anchor is ``max(average_cost × loss_guard, d7_compliant_lowest_price)``
+        snapped up onto the tick grid. When the guard operand wins the max the
+        result is the break-even band edge itself, so the identical repair
+        applies. When the D7 operand wins, the band-clearing operand is inert.
+        """
+
+        tier = self._tier_by_id(BREAKEVEN_RESERVE_TRIM_TIER_ID)
+        if tier is None:
+            return self
+        _validate_band_clearing_anchor(
+            tier.conditions,
+            tier_id=BREAKEVEN_RESERVE_TRIM_TIER_ID,
+            prefix="post_max_effective_anchor",
+            raw_operand="tick_ceil_post_max_anchor",
+        )
         return self
 
 

@@ -13,9 +13,20 @@
 # one_share 절대상한 철폐, 지수 ETF 유니버스 동등 편입, crypto 보유
 # 메이저 지지선 사전 그물(한시·4주 채점). 세 개 모두 게이트를 낮추지
 # 않고, 세 번째는 배치 전에 폐지 조건을 문서에 고정해 둔다.
-version: "2026-08-22.1"
+# §142차 (2026-08-23): 정책 절 간 모순 1건 해소(versioned bugfix, 소급 적용
+# 금지). §115차 래더 1단 앵커(평단×1.01)와 §44차 reserve-trim post-max 앵커는
+# §40차 breakeven_band_pct=1% 의 **포함 비교**(|distance| <= band)와 경계에서
+# 충돌한다 — 평단×1.01 이 이미 틱 배수면 tick ceil 이 no-op 이라 매도 rung 이
+# 밴드 경계에 그대로 앉고, take_profit 이 breakeven_band 로 강등되어 §40차
+# 자동승인 레인에 영원히 진입하지 못한다(검증자 실측: avg 4,000,000 KRW →
+# raw 4,040,000 → ceil no-op → eligible=False reason='breakeven_band').
+# 수리는 국소적이다: 두 앵커의 실효값을 밴드 상단 위 첫 유효 틱까지만 밀어
+# 올린다. 🔴 classify_sell_profit 의 전역 포함 비교(<=)는 건드리지 않는다
+# (밴드 분류기의 다른 소비자 전수검토 없이 <= → < 변경 금지). 신규 티어·임계
+# 완화·수량 규칙 변경 0.
+version: "2026-08-23.1"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised."
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised. §142차 breakeven band boundary repair 2026-08-23 (GPT Pro checkpoint #3 Q4 permitted class 'policy-clause contradiction resolution'; versioned bugfix, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under): the §115차 breakeven_extension_ladder tier-1 anchor and the §44차 sell.breakeven_reserve_trim post-max anchor now resolve to max(tick_ceil(raw anchor), first valid tick STRICTLY above average_cost × (1 + order_proposals.auto_approve.breakeven_band_pct / 100)), because the §40차 break-even band comparison is inclusive (|distance| <= band) and a rung that lands exactly on avg × 1.01 was classified breakeven_band instead of take_profit whenever the tick ceil was a no-op. The §40차 classifier itself is unchanged — the inclusive comparison stays inclusive globally — and no threshold, cap, tier, sizing rule, or exclusion is added or relaxed."
 
 authority:
   scope: judgment_policy_only
@@ -627,7 +638,16 @@ decision_rules:
       breakeven_extension_ladder is the last-resort fallback for a holding with
       zero fresh named resistance: it is reached only after every named-
       resistance tier has failed to match, never instead of one, and it does not
-      remove or weaken the no_resistance_reference exclusion.
+      remove or weaken the no_resistance_reference exclusion. §142차 (2026-08-23)
+      resolves one contradiction between clauses: both breakeven_extension_ladder
+      rung 1 and the sell.breakeven_reserve_trim post-max anchor can land exactly
+      on the §40차 break-even band edge (average_cost × 1.01), and that band is
+      compared inclusively, so such a rung is downgraded to breakeven_band and
+      can never be auto-approved. Their EFFECTIVE anchors are therefore the max
+      of the tick-ceiled raw anchor and the first valid tick strictly above the
+      band edge. This is a versioned bugfix, is not applied retroactively, adds
+      no tier, relaxes no threshold, changes no sizing rule, and does not change
+      the inclusive band comparison for any other consumer.
     tiers:
       - id: de_minimis_trim_watch
         conditions:
@@ -653,6 +673,22 @@ decision_rules:
           d7_scope_semantics: one_share_net_realized_gain_not_total_trim
           d7_estimation_limit_semantics: consumer_estimated_fees_and_taxes_required_no_fee_or_tax_model_added_by_this_tier
           post_max_tick_snap_direction: ceil
+          # §142차 (2026-08-23) — versioned bugfix, not retroactive. The
+          # post-max anchor can resolve to average_cost × loss_guard (when the
+          # guard operand wins the max), which is exactly the §40차 break-even
+          # band edge; the band comparison is INCLUSIVE, so such a rung is
+          # classified breakeven_band and never reaches the auto-approve lane.
+          # The effective anchor is therefore pushed to the first valid tick
+          # strictly above the band edge — and no further.
+          post_max_effective_anchor_operator: max
+          post_max_effective_anchor_operands:
+            - tick_ceil_post_max_anchor
+            - first_valid_tick_strictly_above_average_cost_times_one_plus_breakeven_band
+          post_max_effective_anchor_band_policy_key: order_proposals.auto_approve.breakeven_band_pct
+          post_max_effective_anchor_reason: section_40_breakeven_band_comparison_is_inclusive
+          post_max_effective_anchor_band_comparison_unchanged: true
+          post_max_effective_anchor_since_policy_version: "2026-08-23.1"
+          post_max_effective_anchor_retroactive: false
           resting_limit_order: true
           time_in_force: DAY
           regeneration: daily_rep
@@ -735,6 +771,27 @@ decision_rules:
           rungs_max: 3
           tick_snap_direction: ceil
           tick_grid: market_native_sell_side_tick_grid
+          # §142차 (2026-08-23) — versioned bugfix, not retroactive. Rung 1 is
+          # average_cost × 1.01, which IS the §40차 break-even band edge
+          # (breakeven_band_pct = 1). classify_sell_profit compares inclusively
+          # (|distance| <= band), so whenever average_cost × 1.01 already sits
+          # on the tick grid the ceil snap is a no-op and rung 1 is downgraded
+          # from take_profit to breakeven_band — the §115차 net can never be
+          # auto-submitted. Measured: avg 4,000,000 KRW → raw 4,040,000 →
+          # ceil no-op → eligible=False reason='breakeven_band'.
+          # Rungs 2 and 3 (1.05 / 1.10) sit far outside the band and are
+          # untouched; this repair applies to rung 1 only and lifts it by at
+          # most one tick above the band edge.
+          tier1_effective_anchor_operator: max
+          tier1_effective_anchor_operands:
+            - tick_ceil_average_cost_times_lowest_multiple
+            - first_valid_tick_strictly_above_average_cost_times_one_plus_breakeven_band
+          tier1_effective_anchor_band_policy_key: order_proposals.auto_approve.breakeven_band_pct
+          tier1_effective_anchor_reason: section_40_breakeven_band_comparison_is_inclusive
+          tier1_effective_anchor_band_comparison_unchanged: true
+          tier1_effective_anchor_scope: lowest_rung_only
+          tier1_effective_anchor_since_policy_version: "2026-08-23.1"
+          tier1_effective_anchor_retroactive: false
           resting_limit_order: true
           time_in_force: DAY
           regeneration: daily_rep
