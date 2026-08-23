@@ -272,14 +272,13 @@ async def get_crypto_dashboard(
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> CryptoDashboardResponse:
     """Read-only crypto dashboard; never syncs or mutates broker/order state."""
-    home = await service.get_home(
+    held_pairs = await _held_pairs_for_badges(
+        service,
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_crypto_dashboard(
         db=db,
         user_id=user.id,
@@ -304,14 +303,13 @@ async def get_crypto_naver_reference(
     metadata only. It never syncs, submits orders, mutates watch/order-intent
     state, or writes production data.
     """
-    home = await service.get_home(
+    held_pairs = await _held_pairs_for_badges(
+        service,
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_naver_crypto_reference(
         db=db,
         symbol=symbol,
@@ -615,13 +613,36 @@ async def get_stock_detail_order_ledger(
     return StockDetailOrderLedgerResponse(count=len(items), items=items)
 
 
-def _held_pairs_from_home(home) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for h in home.groupedHoldings:
-        m = h.market.lower()
-        if m in ("kr", "us", "crypto"):
-            pairs.append((m, h.symbol))
-    return pairs
+async def _held_pairs_for_badges(
+    service: InvestHomeService,
+    *,
+    user_id: int,
+    include_paper: bool,
+    paper_sources: frozenset[str] | None,
+) -> list[tuple[str, str]]:
+    """ROB-1314 — held-symbol keys for relation badges only.
+
+    Badge-driven routes must not build the full home projection just to know
+    whether a symbol is held. They consume the ROB-1310 shared portfolio
+    snapshot (or the manual DB key reader); a cold/unavailable snapshot fails
+    closed with the same typed 503 contract as /calendar.
+    """
+    try:
+        return await service.get_held_pairs(
+            user_id=user_id,
+            include_paper=include_paper,
+            paper_sources=paper_sources,
+        )
+    except PortfolioSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": exc.error_code,
+                "source": "portfolio_snapshot",
+                "unavailable_reason": exc.reason,
+                "manual_pairs_available": bool(exc.manual_pairs),
+            },
+        ) from exc
 
 
 @router.get("/signals")
@@ -634,14 +655,13 @@ async def get_signals(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> SignalsResponse:
-    home = await service.get_home(
+    held_pairs = await _held_pairs_for_badges(
+        service,
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_signals(db=db, resolver=resolver, tab=tab, limit=limit)
 
 
@@ -707,14 +727,13 @@ async def get_feed_news(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> FeedNewsResponse:
-    home = await service.get_home(
+    held_pairs = await _held_pairs_for_badges(
+        service,
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_feed_news(
         db=db,
         resolver=resolver,
@@ -746,14 +765,13 @@ async def get_feed_research(
 ) -> FeedResearchResponse:
     if from_date and to_date and from_date > to_date:
         raise HTTPException(status_code=400, detail="fromDate must be <= toDate")
-    home = await service.get_home(
+    held_pairs = await _held_pairs_for_badges(
+        service,
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     try:
         return await build_feed_research(
             db=db,
@@ -794,14 +812,13 @@ async def get_screener_results_endpoint(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> ScreenerResultsResponse:
-    home = await service.get_home(
+    held_pairs = await _held_pairs_for_badges(
+        service,
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_screener_results(
         preset_id=preset,
         screening_service=screening_service,
