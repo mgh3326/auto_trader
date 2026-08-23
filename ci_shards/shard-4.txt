@@ -196,6 +196,7 @@ tests/services/scalping_reviews/test_serialize_benchmark.py
 tests/services/scalping_reviews/test_service.py
 tests/services/screener_evidence/test_builder.py
 tests/services/screener_evidence/test_scoring.py
+tests/services/screener_pick_log/test_recorder.py
 tests/services/test_alpaca_paper_coordinator_v3.py
 tests/services/test_alpaca_paper_final_review.py
 tests/services/test_alpaca_paper_ledger_execution_asset_class.py

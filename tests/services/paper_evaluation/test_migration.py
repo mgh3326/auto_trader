@@ -152,6 +152,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             for table in (
                 "telegram_callback_recovery_cursor",
                 "telegram_callback_inbox",
+                "screener_pick_log",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
             # ROB-1286's repricing claim table is later than this boundary and

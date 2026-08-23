@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from app.mcp_server.tooling.buy_candidate_fanout import (
     discover_buy_candidates_fanout_impl,
 )
+from app.services.screener_pick_log import maybe_record_fanout_picks
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -30,11 +31,15 @@ def register_buy_candidate_fanout_tools(mcp: FastMCP) -> None:
             "is recorded as undetermined observation only, never as eligibility. "
             "Returns observation-only funnel evidence, never a proposal or order. It "
             "does not query broker or account state, so budget remains deferred. Do not "
-            "use this output for PnL scoring or immediate threshold tuning."
+            "use this output for PnL scoring or immediate threshold tuning. The fan-out "
+            "itself performs no writes; when SCREENER_PICK_LOG_ENABLED an outer "
+            "fail-open observer records the returned picks for prospective scoring."
         ),
     )
     async def discover_buy_candidates_fanout() -> dict[str, Any]:
-        return await discover_buy_candidates_fanout_impl()
+        result = await discover_buy_candidates_fanout_impl()
+        await maybe_record_fanout_picks(result)
+        return result
 
 
 __all__ = ["BUY_CANDIDATE_FANOUT_TOOL_NAMES", "register_buy_candidate_fanout_tools"]

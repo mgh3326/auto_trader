@@ -82,7 +82,10 @@ from sqlalchemy import text
 # Base.metadata.create_all owns both test copies; neither has a mirrored ALTER in
 # _DDL_STATEMENTS, so this bump forces one rebuild of an already-v38 persistent
 # local test database.
-SCHEMA_BOOTSTRAP_VERSION = 39
+# v40: review.screener_pick_log (new ORM table via create_all) + append-only
+# trigger. Production applies alembic/versions/20260823_screener_pick_log.py
+# separately; tests never auto-run that migration.
+SCHEMA_BOOTSTRAP_VERSION = 40
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1749,6 +1752,21 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_external_cash_truncate_append_only "
     "BEFORE TRUNCATE ON review.external_cash_declarations "
     "FOR EACH STATEMENT EXECUTE FUNCTION review.reject_external_cash_mutation()",
+    # ---- §140 prospective: screener pick log append-only (table via create_all).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_screener_pick_log_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.screener_pick_log is append-only; % rejected',
+            TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_screener_pick_log_append_only "
+    "ON review.screener_pick_log",
+    "CREATE TRIGGER trg_screener_pick_log_append_only "
+    "BEFORE UPDATE OR DELETE ON review.screener_pick_log "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_screener_pick_log_mutation()",
 )
 
 

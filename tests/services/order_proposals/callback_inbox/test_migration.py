@@ -85,14 +85,14 @@ def test_the_migration_is_additive_and_touches_only_its_two_owned_tables() -> No
 def test_the_migration_chain_still_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
     heads = tuple(script.get_heads())
-    assert heads == (_REVISION,), heads
+    assert len(heads) == 1, heads
 
 
 @pytest.mark.unit
 def test_r32_edits_only_the_original_w5_create_table_migration() -> None:
-    """W5 is unmerged: its original revision, not a follow-on, owns R32 DDL."""
+    """R32 DDL stays on the original W5 create-table migration."""
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
-    assert tuple(script.get_heads()) == (_REVISION,)
+    assert len(tuple(script.get_heads())) == 1
 
     # A named R32/outcome-allowlist revision would be a forbidden follow-on.
     assert not tuple(
@@ -168,7 +168,11 @@ def test_r36_records_the_v39_persistent_schema_bootstrap() -> None:
     runbook = (_REPO / "docs/runbooks/telegram-callback-durable-inbox.md").read_text(
         encoding="utf-8"
     )
-    assert SCHEMA_BOOTSTRAP_VERSION == 39
+    bootstrap = (_REPO / "tests/_schema_bootstrap.py").read_text(encoding="utf-8")
+    # Later additive heads may bump the integer; v39 must remain in the record.
+    assert SCHEMA_BOOTSTRAP_VERSION >= 39
+    assert "v39 (W5 R36): review.telegram_callback_inbox" in bootstrap
+    assert "review.telegram_callback_recovery_cursor" in bootstrap
     assert (
         "The persistent pytest test-schema bootstrap is now v39 and covers both "
         "`review.telegram_callback_inbox` and `review.telegram_callback_recovery_cursor`."

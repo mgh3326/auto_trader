@@ -368,6 +368,15 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 
 **안전 경계**: TaskIQ 반복 스케줄 없음. 브로커/주문/감시 mutation 없음. DB write는 `InvestScreenerSnapshotsRepository.upsert`만 허용.
 
+### Screener pick log (prospective bakeoff)
+
+`discover_buy_candidates_fanout` itself still performs no writes. When
+`SCREENER_PICK_LOG_ENABLED=true` (default false), an outer observer in
+`buy_candidate_fanout_registration` records returned per-source picks to
+`review.screener_pick_log`. Fail-open. Prices are exact decimal text, never
+float. Additive migration only — operator runs `alembic upgrade head`.
+No scheduler. Not a policy/weight input.
+
 ### screen_stocks_snapshot / screen_stocks_enrich MCP 도구 분리 (ROB-1309)
 
 Sentry 실측(p50 38.11s / p95 54.73s, 호출당 ~214 HTTP call, 120s 예산 내 타임아웃 8건)에서
