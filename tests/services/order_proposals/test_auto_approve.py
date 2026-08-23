@@ -1296,9 +1296,12 @@ def test_policy_caps_match_the_operator_declared_limits():
     # per-order caps remain the maximum-loss boundary for one automation error.
     assert (kr.per_order_cap, kr.daily_cap) == (Decimal("2000000"), Decimal("5000000"))
     assert (us.per_order_cap, us.daily_cap) == (Decimal("1500"), Decimal("20000"))
+    # §145차 (2026-08-19 caps re-opened on the crypto lane 2026-08-23): the
+    # operator re-defined the one-automation-error boundary at 5M, with the
+    # daily cap kept proportional so the §71차 demotion cannot reappear.
     assert (crypto.per_order_cap, crypto.daily_cap) == (
-        Decimal("1000000"),
         Decimal("5000000"),
+        Decimal("10000000"),
     )
 
 
