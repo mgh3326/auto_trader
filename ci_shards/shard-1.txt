@@ -381,6 +381,7 @@ tests/test_rob1296_external_http_boundary.py
 tests/test_rob1296_live_only_socket_guard.py
 tests/test_rob1296_provider_boundaries.py
 tests/test_rob1310_portfolio_snapshot.py
+tests/test_rob1314_stock_detail_holding.py
 tests/test_rob179_smoke_evidence.py
 tests/test_rob314_deferred_call_sites.py
 tests/test_rob486_consensus_blast_radius.py
