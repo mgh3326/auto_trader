@@ -32,6 +32,7 @@ from research.screener_bakeoff.spec import (
     HORIZONS,
     RECENT_WINDOW_CALENDAR_DAYS,
     RECENT_WINDOW_SESSIONS,
+    REWORK_ID,
     SOURCES,
     SR_WINDOW_BARS,
     TOP_N,
@@ -181,7 +182,15 @@ def decision_grid(ctx: S.MarketContext, raw) -> list[dt.date]:
     return sorted(base & sessions)
 
 
-def run_market(ctx, grid, rsi_lookup, out_rows, gate_cache, universe_rows=None):
+def run_market(
+    ctx,
+    grid,
+    rsi_lookup,
+    out_rows,
+    gate_cache,
+    universe_rows=None,
+    wanted_sources: set[str] | None = None,
+):
     market = ctx.market
     if market == "kr":
         builders = dict(_KR_BUILDERS)
@@ -189,6 +198,8 @@ def run_market(ctx, grid, rsi_lookup, out_rows, gate_cache, universe_rows=None):
         builders = dict(_US_BUILDERS)
     else:
         builders = dict(_CRYPTO_BUILDERS)
+    if wanted_sources is not None:
+        builders = {sid: fn for sid, fn in builders.items() if sid in wanted_sources}
 
     variants = CRYPTO_GATE_VARIANTS if market == "crypto" else GATE_VARIANTS
     recent_cut = (
@@ -208,10 +219,18 @@ def run_market(ctx, grid, rsi_lookup, out_rows, gate_cache, universe_rows=None):
         pools: dict[str, list[str]] = {}
         for sid, fn in builders.items():
             pools[sid] = fn(ctx, day)
-        if market in ("kr", "us"):
-            pools[f"{market}.tv_rsi45"] = S.src_tv_rsi45(ctx, day, rsi_lookup)
-        pools[f"{market}.random"] = S.src_random(ctx, day, TOP_N)
-        benchmark_symbols = S.src_benchmark(ctx, day)
+        tv_sid = f"{market}.tv_rsi45"
+        if market in ("kr", "us") and (
+            wanted_sources is None or tv_sid in wanted_sources
+        ):
+            pools[tv_sid] = S.src_tv_rsi45(ctx, day, rsi_lookup)
+        rnd_sid = f"{market}.random"
+        if wanted_sources is None or rnd_sid in wanted_sources:
+            pools[rnd_sid] = S.src_random(ctx, day, TOP_N)
+        run_benchmark = (
+            wanted_sources is None or f"{market}.benchmark" in wanted_sources
+        )
+        benchmark_symbols = S.src_benchmark(ctx, day) if run_benchmark else []
 
         # ---- gate evidence for every pooled symbol ----------------------
         needed = {sym for pool in pools.values() for sym in pool}
@@ -267,6 +286,8 @@ def run_market(ctx, grid, rsi_lookup, out_rows, gate_cache, universe_rows=None):
                             }
                         )
         # ---- benchmark --------------------------------------------------
+        if not run_benchmark:
+            continue
         for h in HORIZONS:
             rets = []
             for sym in benchmark_symbols:
@@ -325,16 +346,37 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="research/screener_bakeoff/artifacts")
     ap.add_argument("--markets", default="kr,us,crypto")
+    ap.add_argument(
+        "--sources",
+        default="",
+        help="comma-separated source_ids to (re)run; empty = all",
+    )
+    ap.add_argument(
+        "--merge",
+        action="store_true",
+        help="replace matching source_id rows in existing picks.csv; leave other sources untouched",
+    )
     args = ap.parse_args()
     outdir = pathlib.Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
+    wanted_sources = (
+        {s.strip() for s in args.sources.split(",") if s.strip()}
+        if args.sources
+        else None
+    )
 
     kr, us, crypto, raw = build_contexts()
     wanted = set(args.markets.split(","))
 
     _log("precomputing RSI panels ...")
-    rsi_kr = _rsi_lookup(kr.prices) if "kr" in wanted else {}
-    rsi_us = _rsi_lookup(us.prices) if "us" in wanted else {}
+    need_kr_rsi = "kr" in wanted and (
+        wanted_sources is None or "kr.tv_rsi45" in wanted_sources
+    )
+    need_us_rsi = "us" in wanted and (
+        wanted_sources is None or "us.tv_rsi45" in wanted_sources
+    )
+    rsi_kr = _rsi_lookup(kr.prices) if need_kr_rsi else {}
+    rsi_us = _rsi_lookup(us.prices) if need_us_rsi else {}
     _log(f"  rsi kr={len(rsi_kr)} us={len(rsi_us)}")
 
     rows: list[dict] = []
@@ -347,19 +389,35 @@ def main() -> int:
         grid = decision_grid(ctx, raw)
         grids[ctx.market] = [d.isoformat() for d in grid]
         _log(f"{ctx.market}: {len(grid)} decision dates {grid[0]} .. {grid[-1]}")
-        run_market(ctx, grid, lookup, rows, gate_cache, universe_rows)
+        run_market(ctx, grid, lookup, rows, gate_cache, universe_rows, wanted_sources)
 
     df = pd.DataFrame(rows)
-    df.to_csv(outdir / "picks.csv", index=False)
-    pd.DataFrame(
-        universe_rows,
-        columns=["market", "decision_date", "horizon", "symbol", "ret", "status"],
-    ).to_csv(outdir / "universe_returns.csv", index=False)
+    picks_path = outdir / "picks.csv"
+    if args.merge and picks_path.exists() and not df.empty:
+        old = pd.read_csv(picks_path)
+        replaced = set(df["source_id"].unique())
+        keep = old[~old["source_id"].isin(replaced)]
+        df["decision_date"] = pd.to_datetime(df["decision_date"]).dt.strftime(
+            "%Y-%m-%d"
+        )
+        keep["decision_date"] = pd.to_datetime(keep["decision_date"]).dt.strftime(
+            "%Y-%m-%d"
+        )
+        df = pd.concat([keep, df], ignore_index=True)
+        _log(f"merged {sorted(replaced)} into existing picks ({len(keep)} rows kept)")
+    df.to_csv(picks_path, index=False)
+    if not args.merge:
+        pd.DataFrame(
+            universe_rows,
+            columns=["market", "decision_date", "horizon", "symbol", "ret", "status"],
+        ).to_csv(outdir / "universe_returns.csv", index=False)
     _log(f"wrote {len(df)} pick rows")
 
     meta = {
         "experiment_id": EXPERIMENT_ID,
+        "rework_id": REWORK_ID,
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
+        "rerun_sources": sorted(wanted_sources) if wanted_sources else "all",
         "grids": grids,
         "top_n": TOP_N,
         "horizons": list(HORIZONS),

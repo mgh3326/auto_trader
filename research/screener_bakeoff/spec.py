@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 EXPERIMENT_ID = "screener-bakeoff-v1-20260822"
+#: r2 rework of the same experiment (parity labels / source definitions).
+#: Not a new scoring contract — constants above stay frozen.
+REWORK_ID = "r2-20260823"
 
 # --------------------------------------------------------------------------
 # §1 Scoring contract
@@ -120,6 +123,9 @@ class SourceSpec:
     frozen_at_decision_time: bool
     #: Divergences from the production preset, stated up front.
     caveats: tuple[str, ...] = field(default_factory=tuple)
+    #: False when this source is a research definition that must not be
+    #: read as the live production preset (path-② label demotion).
+    live_comparable: bool = True
 
 
 _FROZEN_SNAP = "invest_screener_snapshots row, written by the production snapshot builder on the decision date"
@@ -196,7 +202,16 @@ SOURCES: tuple[SourceSpec, ...] = (
         "쌍끌이",
         _FROZEN_FLOW,
         True,
-        ("filter double_buy and change_rate>=0, rank change_rate desc",),
+        (
+            "ROB-431 day-over-day: foreign_net(today)>foreign_net(prior) AND "
+            "institution_net(today)>institution_net(prior); prior missing → fail-closed "
+            "(no level-only fallback). Rank change_rate desc, symbol asc. "
+            "change_rate comes from the decision-date invest_screener_snapshots row "
+            "(inner join; missing price row drops the name). "
+            "Remaining vs production: the KR common-stock name heuristic "
+            "(_is_kr_toss_common_stock) is NOT applied here — looser when names "
+            "would exclude ETF/ETN/preferred.",
+        ),
     ),
     SourceSpec(
         "kr.oversold_recovery",
@@ -205,7 +220,13 @@ SOURCES: tuple[SourceSpec, ...] = (
         "과매도 반등 (RSI<=30)",
         _FROZEN_KRFUND,
         True,
-        ("filter rsi14<=30, rank rsi14 asc",),
+        (
+            "filter rsi14<=30, rank rsi14 asc. "
+            "WARNING: 31.8% of picks have no kr_candles_1d bar (ETN/ELW mix); "
+            "D+5 is missing too so the sign of the missing cohort is unknowable. "
+            "Truncated-but-scored KR rows are directionally BETTER than the full "
+            "KR usable set — missing/truncation is not random.",
+        ),
     ),
     SourceSpec(
         "kr.cheap_value",
@@ -265,7 +286,9 @@ SOURCES: tuple[SourceSpec, ...] = (
         True,
         (
             "roe_ttm>=15, eps_yoy>=0.10 (1y proxy); the 3-year earnings-increase streak "
-            "condition is NOT reproducible from this table and is SKIPPED (looser than production)",
+            "condition is NOT reproducible from this table and is SKIPPED (looser than production). "
+            "WARNING: 30.0% of picks have no kr_candles_1d bar (three names with no "
+            "coverage); D+5 is missing too so the missing cohort's sign is unknowable.",
         ),
     ),
     SourceSpec(
@@ -305,13 +328,19 @@ SOURCES: tuple[SourceSpec, ...] = (
         "kr.tv_rsi45",
         "kr",
         "reconstructed",
-        "현행 주력 — RSI<=45 오름차순",
+        "현행 주력 — 라이브 fanout rsi-asc (RSI≤45는 공통 게이트)",
         _RECON,
         False,
         (
-            "RSI-14 recomputed from KRX daily bars <= decision date; liquidity floor applied; "
-            "rank rsi asc. The analyst-consensus leg of the live screen is NEUTRALISED "
-            "(no point-in-time consensus history exists in this DB)",
+            "Matches buy_candidate_fanout._read_live_source: sort_by=rsi asc, "
+            "max_rsi omitted, adv_krw_min omitted. Candidate generation does NOT "
+            "pre-filter RSI≤45 or apply the research liquidity floor; RSI≤45 is "
+            "the later common gate (GATE_RSI_MAX). "
+            "RSI-14 is Wilder-reconstructed from KRX daily bars <= decision date "
+            "(not live TradingView RSI). Universe = the decision-date "
+            "invest_screener_snapshots partition (the frozen names we had that "
+            "day), not a live tvscreener HTTP universe. "
+            "Analyst-consensus / upside leg NEUTRALISED.",
         ),
     ),
     SourceSpec(
@@ -394,10 +423,20 @@ SOURCES: tuple[SourceSpec, ...] = (
         "us.high_yield_value",
         "us",
         "snapshot_preset",
-        "고수익 가치주",
+        "고수익 가치주 (연구정의 — 라이브 Yahoo 프리셋 아님)",
         _FROZEN_USVAL,
         True,
-        ("roe>=15, PER 0-10, rank roe desc",),
+        (
+            "RESEARCH DEFINITION — NOT the live US preset. Live "
+            "load_high_yield_value_from_snapshots uses source=yahoo plus ROB-440 "
+            "quality guards (market_cap>=$100M, ROE<=300). This bakeoff ranks "
+            "market_valuation_snapshots source=tvscreener, roe>=15, 0<PER<=10, "
+            "no quality guard. Yahoo partitions have 0 rows on every US decision "
+            "date in this grid (2026-06-16..08-21; yahoo exists only 2026-06-05..06-09). "
+            "Historical live reconstruction is impossible. Do not read these "
+            "numbers as live-preset results.",
+        ),
+        False,
     ),
     SourceSpec(
         "us.undervalued_breakout",
@@ -424,7 +463,7 @@ SOURCES: tuple[SourceSpec, ...] = (
         "us.tv_rsi45",
         "us",
         "reconstructed",
-        "현행 주력 — RSI<=45 오름차순",
+        "현행 주력 — 라이브 fanout rsi-asc (RSI≤45는 공통 게이트)",
         _RECON,
         False,
         ("same reconstruction as kr.tv_rsi45 on US daily bars",),
@@ -509,12 +548,15 @@ SOURCES: tuple[SourceSpec, ...] = (
         "crypto.tv_rsi45",
         "crypto",
         "reconstructed",
-        "현행 주력 — RSI<=45 오름차순",
+        "현행 주력 — 라이브 fanout rsi-asc (RSI≤45는 공통 게이트)",
         _FROZEN_CRYPTO,
         True,
         (
-            "uses the frozen snapshot rsi column (tvscreener_upbit) rather than a bar "
-            "reconstruction, because crypto_candles_1d coverage is too sparse to recompute",
+            "sort_by=rsi asc with no max_rsi and no trade_amount floor, matching "
+            "buy_candidate_fanout._read_live_source. Uses the frozen snapshot rsi "
+            "column (tvscreener_upbit) rather than a bar reconstruction, because "
+            "crypto_candles_1d coverage is too sparse to recompute. RSI≤45 is the "
+            "later rsi45_only gate, not a candidate pre-filter.",
         ),
     ),
     SourceSpec(

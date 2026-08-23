@@ -126,11 +126,73 @@ def src_investor_flow_momentum(ctx: MarketContext, day: dt.date) -> list[str]:
 
 
 def src_double_buy(ctx: MarketContext, day: dt.date) -> list[str]:
+    """ROB-431 production rule: day-over-day net-buy increase, fail-closed.
+
+    Matches ``load_double_buy_from_snapshots``: both foreign_net and
+    institution_net must exceed the same (symbol, source) row on the most
+    recent prior flow partition. No prior partition → no qualifiers.
+    change_rate comes from the decision-date screener snapshot (inner join).
+    """
     df = ctx.flow.get(day)
     if df is None or df.empty:
         return []
-    m = df[(df["double_buy"] == True) & (df["change_rate"].fillna(-1) >= 0)]  # noqa: E712
-    return _head(m.sort_values("change_rate", ascending=False))
+
+    def _as_date(value) -> dt.date:
+        if isinstance(value, pd.Timestamp):
+            return value.date()
+        if isinstance(value, dt.datetime):
+            return value.date()
+        return value
+
+    day_d = _as_date(day)
+    prior_dates = sorted(
+        d for d in ctx.flow if _as_date(d) < day_d and not ctx.flow[d].empty
+    )
+    if not prior_dates:
+        return []
+    prior = ctx.flow[prior_dates[-1]]
+    if prior.empty:
+        return []
+    today = df.copy()
+    if "source" not in today.columns:
+        today["source"] = ""
+    if "source" not in prior.columns:
+        prior = prior.copy()
+        prior["source"] = ""
+    prior_net = prior[["symbol", "source", "foreign_net", "institution_net"]].rename(
+        columns={
+            "foreign_net": "foreign_net_prior",
+            "institution_net": "institution_net_prior",
+        }
+    )
+    merged = today.merge(prior_net, on=["symbol", "source"], how="inner")
+    if merged.empty:
+        return []
+    # NULL on either side → comparison is False → excluded (fail-closed).
+    increased = (merged["foreign_net"] > merged["foreign_net_prior"]) & (
+        merged["institution_net"] > merged["institution_net_prior"]
+    )
+    merged = merged[increased]
+    if merged.empty:
+        return []
+    price = ctx.screener.get(day)
+    if price is None or price.empty:
+        return []
+    price_cr = price[["symbol", "change_rate"]].drop_duplicates("symbol")
+    merged = merged.drop(columns=["change_rate"], errors="ignore").merge(
+        price_cr, on="symbol", how="inner"
+    )
+    merged = merged[merged["change_rate"].fillna(0) >= 0]
+    if merged.empty:
+        return []
+    sort_cols = ["change_rate", "symbol"]
+    ascending = [False, True]
+    if "source" in merged.columns:
+        sort_cols.append("source")
+        ascending.append(True)
+    merged = merged.sort_values(sort_cols, ascending=ascending)
+    merged = merged.drop_duplicates("symbol", keep="first")
+    return _head(merged)
 
 
 # ---------------------------------------------------------------------------
@@ -311,20 +373,26 @@ def src_us_steady_dividend(ctx: MarketContext, day: dt.date) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Reconstructed "현행 주력" RSI source
+# Reconstructed live fanout rsi-asc source (RSI≤45 is the later common gate)
 # ---------------------------------------------------------------------------
 
 
 def src_tv_rsi45(ctx: MarketContext, day: dt.date, rsi_lookup: dict) -> list[str]:
-    universe = _liquid(ctx, day)
-    if universe.empty:
+    """Live fanout rsi-asc source: no liquidity floor, no max_rsi pre-filter.
+
+    Matches ``buy_candidate_fanout._read_live_source`` request construction
+    (sort_by=rsi, sort_order=asc, max_rsi and adv_krw_min omitted). RSI≤45 is
+    applied later by the common gate, not here.
+    """
+    df = ctx.screener.get(day)
+    if df is None or df.empty:
         return []
     rows = []
-    for sym in universe["symbol"]:
+    for sym in df["symbol"]:
         rsi = rsi_lookup.get((sym, day))
-        if rsi is not None and rsi <= 45:
+        if rsi is not None:
             rows.append((sym, rsi))
-    rows.sort(key=lambda item: item[1])
+    rows.sort(key=lambda item: (item[1], item[0]))
     return [sym for sym, _ in rows[:GATE_POOL_DEPTH]]
 
 
@@ -394,15 +462,12 @@ def src_crypto_long_short_skew(ctx: MarketContext, day: dt.date) -> list[str]:
 
 
 def src_crypto_rsi45(ctx: MarketContext, day: dt.date) -> list[str]:
+    """Live fanout rsi-asc on the frozen crypto snapshot RSI column."""
     df = _crypto(ctx, day)
     if df.empty:
         return []
-    m = df[
-        df["rsi"].notna()
-        & (df["rsi"] <= 45)
-        & (df["trade_amount_24h"].fillna(0) >= CRYPTO_MIN_TRADE_AMOUNT_KRW)
-    ]
-    return _head(m.sort_values("rsi", ascending=True))
+    m = df[df["rsi"].notna()]
+    return _head(m.sort_values(["rsi", "symbol"], ascending=[True, True]))
 
 
 # ---------------------------------------------------------------------------

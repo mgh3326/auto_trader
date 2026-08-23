@@ -227,7 +227,7 @@ where market = 'us' and source = 'tvscreener' and snapshot_date >= $1
 """
 
 _FLOW_SQL = """
-select symbol, snapshot_date, foreign_net::float8 as foreign_net,
+select symbol, snapshot_date, source, foreign_net::float8 as foreign_net,
        institution_net::float8 as institution_net, double_buy,
        foreign_consecutive_buy_days, change_rate::float8 as change_rate,
        close::float8 as close, volume::float8 as volume

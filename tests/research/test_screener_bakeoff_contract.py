@@ -129,10 +129,20 @@ def test_rsi_matches_production():
     )
 
 
-def test_rsi_series_last_value_matches_scalar():
+def test_rsi_series_matches_production_prefix_calls():
+    """Each series index equals production ``_calculate_rsi`` on close[:i+1]."""
+    from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
+
     p = _panel()
     close = p.close["X"]
     series = ind.rsi_wilder_series(close)
+    for i in range(14, close.size):
+        expected = _calculate_rsi(pd.Series(close[: i + 1]))["14"]
+        if expected is None:
+            assert np.isnan(series[i])
+        else:
+            assert series[i] == pytest.approx(expected)
+    # last value also matches the scalar helper
     assert series[-1] == pytest.approx(ind.rsi_wilder(close))
 
 
@@ -183,7 +193,25 @@ def test_support_resistance_matches_production_quick_builder():
     ]
 
 
-def test_support_family_mapping_matches_the_policy_families():
+def test_support_family_mapping_matches_production_fanout_aliases():
+    """Pin research aliases to the live fanout ``_support_family`` helper."""
+    from app.mcp_server.tooling.buy_candidate_fanout import _support_family
+
+    samples = [
+        "fib_38.2",
+        "fib_50",
+        "bb_lower",
+        "volume_poc",
+        "volume_profile_va",
+        "bb_upper",
+        "bb_middle",
+    ]
+    production = {src: _support_family(src) for src in samples}
+    research = {}
+    for src in samples:
+        families = ind.source_families([src])
+        research[src] = next(iter(families)) if families else None
+    assert research == production
     assert ind.source_families(["fib_38.2", "bb_lower", "volume_poc"]) == {
         "fib",
         "bb_lower",
