@@ -151,7 +151,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-21.4"
+    assert doc.version == "2026-08-22.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1067,9 +1067,47 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
             "tie_breaks"
         ][key]
 
+    # §138차 / ROB-1315 §7-2 (2026-08-22) — breadth metric disambiguation.
+    # Exactly two deltas, both naming-only: the three optional input_field
+    # markers on the alt_breadth_24h condition, and the no_chasing criterion
+    # string that now spells out which metric "24h alt breadth" means. The
+    # operator, threshold, and unit are asserted identical on both sides, so
+    # a relaxation smuggled in under this allowance fails here.
+    breadth_base = baseline_dump["market_rules"]["crypto"]["recovery_gate"][
+        "conditions"
+    ][0]
+    breadth_cur = normalized_current_dump["market_rules"]["crypto"]["recovery_gate"][
+        "conditions"
+    ][0]
+    assert breadth_base["id"] == breadth_cur["id"] == "alt_breadth_24h"
+    for frozen in ("operator", "threshold", "unit", "sources", "metric", "semantics"):
+        assert breadth_base[frozen] == breadth_cur[frozen]
+    assert (breadth_base["operator"], breadth_base["threshold"]) == ("gt", 50)
+    for marker in ("input_field", "input_basis", "not_input_field"):
+        assert breadth_base[marker] is None
+        assert breadth_cur[marker] is not None
+        breadth_cur[marker] = None
+
+    no_chasing_base = baseline_dump["market_rules"]["crypto"]["no_chasing"]
+    no_chasing_cur = normalized_current_dump["market_rules"]["crypto"]["no_chasing"]
+    (base_breadth_criterion,) = [
+        c for c in no_chasing_base["criteria"] if "breadth" in c
+    ]
+    (cur_breadth_criterion,) = [c for c in no_chasing_cur["criteria"] if "breadth" in c]
+    assert "alts_beating_btc_pct" not in base_breadth_criterion
+    assert "alts_beating_btc_pct" in cur_breadth_criterion
+    # same threshold, same direction — only the metric name is added
+    for fragment in ("new alt candidates are ineligible", "below 50 percent"):
+        assert fragment in base_breadth_criterion
+        assert fragment in cur_breadth_criterion
+    no_chasing_cur["criteria"] = [
+        base_breadth_criterion if "breadth" in c else c
+        for c in no_chasing_cur["criteria"]
+    ]
+
     # Only the six explicitly enumerated cap deltas and the enumerated
-    # §115차 additions are accepted; every other pre-existing key/value,
-    # including the retained exclusions list, must still
+    # §115차 / §138차 additions are accepted; every other pre-existing
+    # key/value, including the retained exclusions list, must still
     # match the ROB-1289 baseline exactly.
     assert normalized_current_dump == baseline_dump
 
@@ -1578,3 +1616,43 @@ def test_rob_1298_leaves_loss_guard_d7_and_auto_approve_gates_untouched():
     current_trim = current["decision_rules"]["sell.trim_preplace"]
     assert current_trim["tiers"][0] == baseline_trim["tiers"][0]
     assert current_trim["tiers"][1] == baseline_trim["tiers"][1]
+
+
+def test_alt_breadth_gate_names_its_input_field_without_changing_the_verdict():
+    """ROB-1315 §7-2 — disambiguation only. Threshold and operator are frozen."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    gate = doc.market_rules["crypto"].recovery_gate
+    breadth = gate.conditions[0]
+
+    assert breadth.id == "alt_breadth_24h"
+    # unchanged verdict inputs
+    assert (breadth.operator, breadth.threshold, breadth.unit) == ("gt", 50, "percent")
+    assert breadth.sources == ["upbit_open_api_ticker_derived"]
+    # newly explicit: which of the two get_upbit_altseason numbers feeds it
+    assert breadth.input_field == "breadth.alts_beating_btc_pct"
+    assert breadth.input_basis == "btc_relative"
+    assert breadth.not_input_field == "breadth.alt_positive_24h_pct"
+
+
+def test_no_chasing_breadth_criterion_names_the_btc_relative_metric():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    criteria = doc.market_rules["crypto"].no_chasing.criteria
+    breadth_criteria = [c for c in criteria if "breadth" in c]
+
+    assert len(breadth_criteria) == 1
+    text = breadth_criteria[0]
+    assert "alts_beating_btc_pct" in text
+    assert "50 percent" in text
+    # the absolute metric must not be named as this criterion's input
+    assert "alt_positive_24h_pct" not in text
+
+
+def test_recovery_condition_disambiguation_fields_are_optional():
+    """Conditions without a multi-metric ambiguity stay untouched."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    gate = doc.market_rules["crypto"].recovery_gate
+
+    assert gate.conditions[1].input_field is None
+    assert all(context.input_field is None for context in gate.advisory_context)

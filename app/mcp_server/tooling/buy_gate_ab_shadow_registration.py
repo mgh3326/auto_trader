@@ -24,7 +24,21 @@ _TOOL_DESCRIPTION = (
     "calibration_exclude. forecast_save appends the corresponding eligibility "
     "decision; do not call it unless you intend a pure "
     "record. Do not use this output for PnL scoring, threshold tuning, or "
-    "policy change before the pre-registered 4-week collection completes."
+    "policy change before the pre-registered 4-week collection completes. "
+    "INPUT CONTRACT (exact keys; an unknown key is rejected, never ignored): "
+    "required symbol, market ('kr'|'us'), current_price; optional "
+    "support_strength ('weak'|'moderate'|'strong'), support_distance_pct, "
+    "rsi, honest_upside_pct, other_gate_bits (booleans keyed liquid_midcap / "
+    "concentration / overhang). Note rsi, NOT rsi_14; support_strength, NOT "
+    "nearest_support_strength — those two typos silently voided a whole US "
+    "collection day on 2026-08-21 (ROB-1315 §5-1). A rejection echoes "
+    "input_contract naming the correct key. An omitted optional field is "
+    "still a rejection: a gate cannot pass on absent evidence. "
+    "US LIMITATION: the overhang bit has no US data source in this repo "
+    "(get_disclosures is DART/KR-only), so a US caller that sets "
+    "overhang=false is asserting an unverified gate and B-only stays at zero. "
+    "See docs/superpowers/specs/2026-08-22-us-overhang-gate-design.md — do not "
+    "invent a pass."
 )
 
 

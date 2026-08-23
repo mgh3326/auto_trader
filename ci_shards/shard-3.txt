@@ -216,6 +216,7 @@ tests/services/test_paper_fills.py
 tests/services/test_portfolio_overview_currency.py
 tests/services/test_posture_shadow_service.py
 tests/services/test_research_run_service_safety.py
+tests/services/test_threshold_proximity.py
 tests/services/test_trade_journal_aggregates_scoreboard.py
 tests/services/test_trading_policy_service.py
 tests/services/test_tradingview_helpers.py

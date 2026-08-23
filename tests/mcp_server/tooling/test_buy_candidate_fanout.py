@@ -838,3 +838,256 @@ def test_runbook_states_observation_only_and_no_tuning() -> None:
     assert "actionable_count` is always zero" in normalized
     assert "freshness_data_state_missing" in normalized
     assert "bounded_unknown" in normalized
+
+
+# ---------------------------------------------------------------------------
+# ROB-1315 §7-3 — threshold proximity tagging (recording only)
+# ---------------------------------------------------------------------------
+
+
+def _gates() -> Any:
+    return fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+
+
+def _candidate() -> dict[str, Any]:
+    return {"matched_sources": ["rsi"], "symbol": "TEST", "market": "kr"}
+
+
+def test_near_miss_upside_is_tagged_but_still_rejected() -> None:
+    """RDDT-shaped: upside 39.9% against the 40% floor."""
+
+    # current_price 100, target 139.9 -> 39.9% upside, 0.1pp short
+    result = fanout._evaluate_funnel(_candidate(), _fresh_row(target=139.9), _gates())
+
+    upside = result["funnel"]["upside"]
+    assert upside["status"] == "fail"
+    assert upside["reason"] == "honest_upside_below_40pct"
+    assert result["regular_evidence_eligible"] is False
+    assert result["actionable"] is False
+
+    tag = upside["threshold_proximity"]
+    assert tag["gate"] == "buy.support_reserve_net.honest_upside_pct_min"
+    assert tag["threshold"] == 40
+    assert tag["observed"] == pytest.approx(39.9)
+    assert tag["miss"] == pytest.approx(0.1)
+    assert tag["within_band"] is True
+    assert tag["verdict_changed"] is False
+    assert result["threshold_proximity"] == [tag]
+
+
+def test_near_miss_rsi_is_tagged_but_still_rsi_only_fail() -> None:
+    """CIEN-shaped: RSI 45.03 against the 45 ceiling."""
+
+    result = fanout._evaluate_funnel(_candidate(), _fresh_row(rsi=45.03), _gates())
+
+    rsi_stage = result["funnel"]["rsi"]
+    assert rsi_stage["status"] == "rsi_only_fail"
+    assert rsi_stage["reason"] == "rsi_missing_or_above_regular_max"
+    assert result["regular_evidence_eligible"] is False
+
+    tag = rsi_stage["threshold_proximity"]
+    assert tag["gate"] == "screen.rsi_max"
+    assert tag["miss"] == pytest.approx(0.03)
+    assert tag["within_band"] is True
+
+
+def test_near_miss_support_distance_is_tagged_with_the_observed_distance() -> None:
+    # support at 91.5 -> 8.5% below current, 0.5pp past the 8% ceiling
+    result = fanout._evaluate_funnel(_candidate(), _fresh_row(support=91.5), _gates())
+
+    stage = result["funnel"]["support_source_count"]
+    assert stage["status"] == "fail"
+    assert stage["reason"] == "support_more_than_8pct_below_current"
+
+    tag = stage["threshold_proximity"]
+    assert tag["gate"] == "buy.support_reserve_net.support_within_current_pct_max"
+    assert tag["threshold"] == 8
+    assert tag["observed"] == pytest.approx(8.5)
+    assert tag["miss"] == pytest.approx(0.5)
+
+
+def test_wide_rejections_are_not_tagged() -> None:
+    """A candidate that missed by a mile carries no near-miss tag."""
+
+    wide_upside = fanout._evaluate_funnel(
+        _candidate(), _fresh_row(target=110), _gates()
+    )
+    assert wide_upside["funnel"]["upside"]["status"] == "fail"
+    assert "threshold_proximity" not in wide_upside["funnel"]["upside"]
+    assert wide_upside["threshold_proximity"] == []
+    assert wide_upside["negative_class_forecast_hint"] is None
+
+    wide_rsi = fanout._evaluate_funnel(_candidate(), _fresh_row(rsi=78), _gates())
+    assert "threshold_proximity" not in wide_rsi["funnel"]["rsi"]
+
+    wide_support = fanout._evaluate_funnel(
+        _candidate(), _fresh_row(support=70), _gates()
+    )
+    assert "threshold_proximity" not in wide_support["funnel"]["support_source_count"]
+
+
+def test_a_passing_candidate_carries_no_tag() -> None:
+    result = fanout._evaluate_funnel(_candidate(), _fresh_row(), _gates())
+
+    assert result["regular_evidence_eligible"] is True
+    assert result["threshold_proximity"] == []
+    assert result["negative_class_forecast_hint"] is None
+    assert "threshold_proximity" not in result["funnel"]["rsi"]
+    assert "threshold_proximity" not in result["funnel"]["upside"]
+
+
+@pytest.mark.parametrize(
+    "fresh_kwargs",
+    [
+        {},
+        {"rsi": 45.03},
+        {"rsi": 78},
+        {"target": 139.9},
+        {"target": 110},
+        {"support": 91.5},
+        {"support": 70},
+        {"rsi": 45.5, "target": 139.5},
+    ],
+    ids=[
+        "clean_pass",
+        "rsi_near_miss",
+        "rsi_wide_miss",
+        "upside_near_miss",
+        "upside_wide_miss",
+        "support_near_miss",
+        "support_wide_miss",
+        "two_near_misses",
+    ],
+)
+def test_tagging_changes_no_verdict_field(fresh_kwargs: dict[str, Any]) -> None:
+    """The AC: strip every ROB-1315 key and the funnel is byte-identical.
+
+    Recomputed against the pre-change contract — status/reason per stage plus
+    the three eligibility booleans — so a tag that silently promoted, demoted,
+    or reworded a verdict fails here.
+    """
+
+    result = fanout._evaluate_funnel(_candidate(), _fresh_row(**fresh_kwargs), _gates())
+
+    added_keys = {"threshold_proximity", "negative_class_forecast_hint"}
+    assert set(result) - added_keys == {
+        "funnel",
+        "freshness",
+        "regular_evidence_eligible",
+        "rsi_only_fail_candidate",
+        "observation_gate_path_complete",
+        "actionable",
+    }
+    for stage_name, stage in result["funnel"].items():
+        tag = stage.get("threshold_proximity")
+        if tag is None:
+            continue
+        # the tag is additive to the stage, and says so about itself
+        assert tag["verdict_changed"] is False
+        assert stage["status"] in {"fail", "rsi_only_fail"}, stage_name
+    assert result["actionable"] is False
+
+
+@pytest.mark.asyncio
+async def test_impl_aggregates_the_near_miss_cohort_without_filtering_it() -> None:
+    async def live_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        rows = [_source_row("NEAR.1")] if source.source == "rsi" else []
+        return {
+            "source": source.source,
+            "family": "live",
+            "kind": "live",
+            "rows": rows,
+            "metadata": {},
+        }
+
+    async def snapshot_reader(
+        family: str, presets: tuple[str, ...], market: str, top_n: int
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def fresh_revalidator(
+        symbols: list[str], market: str
+    ) -> dict[str, dict[str, Any]]:
+        return {symbol: _fresh_row(target=139.9) for symbol in symbols}
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=live_reader,
+        _snapshot_reader=snapshot_reader,
+        _fresh_revalidator=fresh_revalidator,
+    )
+
+    proximity = result["digest_observation"]["threshold_proximity"]
+    assert proximity["recording_only"] is True
+    assert proximity["gate_verdict_changed"] is False
+    assert proximity["band"] == fanout.THRESHOLD_PROXIMITY_BAND
+    assert proximity["candidate_count"] == 1
+    assert proximity["by_gate"] == {"buy.support_reserve_net.honest_upside_pct_min": 1}
+    entry = proximity["candidates"][0]
+    assert entry["symbol"] == "NEAR.1"
+    hint = entry["negative_class_forecast_hint"]
+    assert hint["decision_bucket_hint"] == "deferred_no_action"
+    assert hint["threshold_proximity"]["symbol"] == "NEAR.1"
+    assert hint["threshold_proximity"]["promote"] is False
+
+    # the near-miss candidate is still rejected everywhere it counts
+    assert result["digest_observation"]["regular_evidence_eligible_count"] == 0
+    assert result["digest_observation"]["actionable_count"] == 0
+    assert all(candidate["actionable"] is False for candidate in result["candidates"])
+
+
+@pytest.mark.parametrize(
+    "fresh_kwargs",
+    [
+        {},
+        {"rsi": 45.03},
+        {"rsi": 78},
+        {"target": 139.9},
+        {"target": 110},
+        {"support": 91.5},
+        {"support": 70},
+        {"rsi": 45.5, "target": 139.5},
+    ],
+    ids=[
+        "clean_pass",
+        "rsi_near_miss",
+        "rsi_wide_miss",
+        "upside_near_miss",
+        "upside_wide_miss",
+        "support_near_miss",
+        "support_wide_miss",
+        "two_near_misses",
+    ],
+)
+def test_funnel_is_identical_with_tagging_disabled(
+    monkeypatch: pytest.MonkeyPatch, fresh_kwargs: dict[str, Any]
+) -> None:
+    """A/B invariance: the verdict tree does not depend on the tagger at all.
+
+    Run each case twice — once normally, once with the tagger stubbed to
+    return nothing — and require the funnel to match once the additive keys
+    are stripped. This is the AC for "게이트 판정 불변".
+    """
+
+    def _stripped(funnel: dict[str, Any]) -> dict[str, Any]:
+        return {
+            stage: {k: v for k, v in evidence.items() if k != "threshold_proximity"}
+            for stage, evidence in funnel.items()
+        }
+
+    tagged = fanout._evaluate_funnel(_candidate(), _fresh_row(**fresh_kwargs), _gates())
+
+    monkeypatch.setattr(fanout, "threshold_near_miss", lambda **_kwargs: None)
+    untagged = fanout._evaluate_funnel(
+        _candidate(), _fresh_row(**fresh_kwargs), _gates()
+    )
+
+    assert _stripped(tagged["funnel"]) == _stripped(untagged["funnel"])
+    for verdict_field in (
+        "regular_evidence_eligible",
+        "rsi_only_fail_candidate",
+        "observation_gate_path_complete",
+        "actionable",
+    ):
+        assert tagged[verdict_field] == untagged[verdict_field]
+    assert untagged["threshold_proximity"] == []
+    assert untagged["negative_class_forecast_hint"] is None

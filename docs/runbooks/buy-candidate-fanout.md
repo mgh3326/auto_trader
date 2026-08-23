@@ -71,6 +71,75 @@ caps. The upside stage is fail-closed on ROB-486 window metadata
 broker evidence, a reached `budget` stage is always `deferred` and
 `actionable_count` is always zero.
 
+## Threshold proximity (near-miss) tagging — ROB-1315 §7-3
+
+Recording only. **No verdict moves.** A candidate rejected by a numeric gate is
+still rejected; the tag exists so the negative-class cohort can distinguish a
+reject at 45.03 against a 45 ceiling from one at 78.
+
+Motivating cases (2026-08-21 US session): CIEN RSI 45.03 vs 45 (subsequent MFE
++19.39%) and RDDT honest upside 39.93% vs 40% (MFE +20.09%). Both were graded
+"correctly rejected" alongside rejects that missed by tens of points, so the
+margin claim could not be tested.
+
+### Band
+
+`app/services/threshold_proximity.PROXIMITY_BAND = 1.0`, applied as **±1.0 in
+the gate's own unit** — RSI points for `screen.rsi_max`, percentage points for
+the two percent gates. That is the reading which admits both cited cases. The
+relative distance is recorded too (`miss_pct_of_threshold`), so a scorer can
+re-filter on the stricter "1% of the threshold" reading without re-deriving
+anything. The band is a module constant, not a parameter: widening it
+mid-collection would change which rejects are in the cohort.
+
+### Tagged gates
+
+| Gate | Metric | Threshold | Comparison |
+| --- | --- | --- | --- |
+| `screen.rsi_max` | `rsi_14` | 45 | `max` |
+| `buy.support_reserve_net.honest_upside_pct_min` | `honest_upside_pct` | 40 | `min` |
+| `buy.support_reserve_net.support_within_current_pct_max` | `support_distance_pct` | 8 | `max` |
+
+Non-numeric failures (missing consensus, stale window inputs, freshness,
+trading restriction, family count, strength tier) are **not** tagged: a gate
+that failed for lack of data is an absent measurement, not a marginal
+rejection. A missing observation is never invented into a tag.
+
+### Where it appears
+
+- per stage: `funnel.<stage>.threshold_proximity` (only on the failing stage)
+- per candidate: `candidates[].threshold_proximity` (list) and
+  `candidates[].negative_class_forecast_hint`
+- aggregate: `digest_observation.threshold_proximity` — `band`, `by_gate`,
+  `candidate_count`, `candidates`, `recording_only: true`,
+  `gate_verdict_changed: false`
+
+Because the funnel short-circuits, a candidate carries at most one tag per run:
+the first numeric gate it failed. That is intentional — the later gates were
+never evaluated, so there is no observation to tag.
+
+### How to record it
+
+This tool writes nothing. Merge the hint into the negative-class record the
+session already makes (ROB-1283):
+
+```python
+hint = candidate["negative_class_forecast_hint"]
+forecast_save(
+    created_by="kr-open-trade",
+    symbol=candidate["symbol"],
+    instrument_type="equity_kr",
+    forecast_target={**your_resolvable_target, **hint},
+    probability=0.30,
+    review_date="2026-09-19",
+    decision_bucket="deferred_no_action",   # hint["decision_bucket_hint"]
+)
+```
+
+Score this cohort separately after four weeks. Do not use an intermediate read
+of it to move a threshold — that is the same pre-registration rule ROB-1301
+runs under.
+
 ## Consensus-window scope and limits
 
 This is a window-membership gate, not a maximum-age guarantee. It fails only

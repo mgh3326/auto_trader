@@ -465,6 +465,14 @@ B만 통과하는 후보는 `evaluate_buy_gate_ab_shadow`가 돌려준
 이 블록은 **lane sequence가 아니다.** `lanes.buy` / `lanes.discovery` 의
 집행 순서는 그대로다. mock 계좌도 쓰지 않는다 (1계좌=1전략).
 
+🔴 §139차 ② 로 **더 엄격한 사전등록 1건이 별도 등록**됐다 —
+[`docs/preregistrations/2026-08-22-support-strength-two-source-equivalence.md`](../preregistrations/2026-08-22-support-strength-two-source-equivalence.md)
+(회고 §7-1). variant B 가 `moderate AND source_count>=2 AND 독립 계열` 이고
+crypto `winner_pullback_add` 까지 포함하며 승격 조건이 수치로 사전 확정돼 있다.
+**위 ROB-1301 실험과 다른 실험이며 코호트를 섞지 않는다.** 수집 시작 조건이
+아직 하나도 충족되지 않아 **수집 미개시** 상태이고, 지금 집행되는 것은 위
+ROB-1301 문언 그대로다.
+
 ```yaml
 # playbook-machine-readable: ROB-1301 buy-gate A/B shadow (observation only)
 # NOT a lane sequence — live buy/discovery lanes are unchanged.

@@ -19,6 +19,15 @@ from app.services.analyst_normalizer import (
     consensus_has_stale_window_inputs,
     stale_window_input_count,
 )
+from app.services.threshold_proximity import (
+    PROXIMITY_BAND as THRESHOLD_PROXIMITY_BAND,
+)
+from app.services.threshold_proximity import (
+    build_forecast_tag as build_threshold_proximity_forecast_tag,
+)
+from app.services.threshold_proximity import (
+    near_miss as threshold_near_miss,
+)
 from app.services.trading_policy_service import (
     load_trading_policy,
     policy_version_stamp,
@@ -288,6 +297,32 @@ def _support_evidence(
     return min(usable, key=lambda level: float(level["distance_pct"])), "pass"
 
 
+def _nearest_support_distance_pct(
+    supports: object, *, current_price: float
+) -> float | None:
+    """Distance to the closest support below the current price, or ``None``.
+
+    ROB-1315 §7-3 read-only helper: ``_support_evidence`` reports *why* the
+    support stage failed but not *by how much*.  This recomputes the observed
+    distance so a "support was 8.05% away against an 8% ceiling" reject can be
+    told apart from a 30% one.  It re-derives, never relaxes.
+    """
+
+    if not isinstance(supports, list) or current_price <= 0:
+        return None
+    distances: list[float] = []
+    for level in supports:
+        if not isinstance(level, Mapping):
+            continue
+        price = _as_float(level.get("price"))
+        if price is None or price <= 0 or price >= current_price:
+            continue
+        distances.append((current_price - price) / current_price * 100)
+    if not distances:
+        return None
+    return min(distances)
+
+
 def _trading_restriction_reason(fresh: Mapping[str, Any]) -> str | None:
     """Use only fresh-analysis restriction evidence; unknown never becomes pass."""
 
@@ -359,18 +394,32 @@ def _funnel_result(
     regular_rsi_pass: bool = False,
     rsi_only_fail: bool = False,
     observation_gate_path_complete: bool = False,
+    proximity: Sequence[Mapping[str, Any]] = (),
+    symbol: str = "",
+    market: str = "",
 ) -> dict[str, Any]:
     """Keep unproven freshness from becoming a regular or RSI-only pass."""
 
     proven_fresh = freshness.get("status") == "proven_fresh"
-    return {
+    tags = [dict(tag) for tag in proximity]
+    result = {
         "funnel": funnel,
         "freshness": dict(freshness),
         "regular_evidence_eligible": proven_fresh and regular_rsi_pass,
         "rsi_only_fail_candidate": proven_fresh and rsi_only_fail,
         "observation_gate_path_complete": observation_gate_path_complete,
         "actionable": False,
+        # ROB-1315 §7-3 — recording only. A tag here means the candidate
+        # failed a numeric gate by <= the band; the failure itself stands.
+        "threshold_proximity": tags,
     }
+    hint = (
+        build_threshold_proximity_forecast_tag(tags, market=market, symbol=symbol)
+        if tags
+        else None
+    )
+    result["negative_class_forecast_hint"] = hint
+    return result
 
 
 def _minimum_snapshot_date(market: str) -> dt.date:
@@ -460,6 +509,12 @@ def _evaluate_funnel(
     diagnose the population, but it can never produce an eligibility pass.
     """
 
+    symbol = str(candidate.get("symbol") or "")
+    market = str(candidate.get("market") or "")
+    # ROB-1315 §7-3 — near-miss evidence collected alongside the verdicts.
+    # Appending to this list can never flip a stage: every append happens on
+    # the failing branch, after that branch has already been chosen.
+    proximity: list[dict[str, Any]] = []
     funnel: dict[str, dict[str, Any]] = {
         "source": {
             "status": "pass",
@@ -479,7 +534,7 @@ def _evaluate_funnel(
         }
         for stage in _FUNNEL_STAGE_NAMES[2:]:
             funnel[stage] = _not_evaluated("base_eligibility_failed")
-        return _funnel_result(funnel, unavailable)
+        return _funnel_result(funnel, unavailable, symbol=symbol, market=market)
 
     freshness = _freshness_contract(fresh)
     current_price = _first_float(fresh, "current_price", "price", "currentPrice")
@@ -493,7 +548,9 @@ def _evaluate_funnel(
         }
         for stage in _FUNNEL_STAGE_NAMES[2:]:
             funnel[stage] = _not_evaluated("base_eligibility_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     if current_price is None or current_price <= 0:
         funnel["base_eligibility"] = {
             "status": "fail",
@@ -502,7 +559,9 @@ def _evaluate_funnel(
         }
         for stage in _FUNNEL_STAGE_NAMES[2:]:
             funnel[stage] = _not_evaluated("base_eligibility_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     if restriction_reason is not None:
         funnel["base_eligibility"] = {
             "status": "fail",
@@ -511,7 +570,9 @@ def _evaluate_funnel(
         }
         for stage in _FUNNEL_STAGE_NAMES[2:]:
             funnel[stage] = _not_evaluated("base_eligibility_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
 
     observation_only_due_to_freshness = freshness["status"] == "undetermined"
 
@@ -548,10 +609,27 @@ def _evaluate_funnel(
         fresh.get("supports"), current_price=current_price, gates=gates
     )
     if support is None:
-        funnel["support_source_count"] = observed_stage("fail", reason=support_reason)
+        support_stage: dict[str, Any] = {"reason": support_reason}
+        if support_reason == "support_more_than_8pct_below_current":
+            tag = threshold_near_miss(
+                gate="buy.support_reserve_net.support_within_current_pct_max",
+                metric="support_distance_pct",
+                observed=_nearest_support_distance_pct(
+                    fresh.get("supports"), current_price=current_price
+                ),
+                threshold=gates.support_within_current_pct_max,
+                comparison="max",
+                unit="percent",
+            )
+            if tag is not None:
+                proximity.append(tag)
+                support_stage["threshold_proximity"] = tag
+        funnel["support_source_count"] = observed_stage("fail", **support_stage)
         for stage in _FUNNEL_STAGE_NAMES[3:]:
             funnel[stage] = _not_evaluated("support_source_count_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     funnel["support_source_count"] = observed_stage("pass", **support)
 
     consensus = fresh.get("consensus")
@@ -569,7 +647,9 @@ def _evaluate_funnel(
         )
         for stage in _FUNNEL_STAGE_NAMES[4:]:
             funnel[stage] = _not_evaluated("upside_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     target_price = _first_float(
         consensus_data, "avg_target_price", "avgTargetPrice", "target_price"
     )
@@ -577,19 +657,34 @@ def _evaluate_funnel(
         funnel["upside"] = observed_stage("fail", reason="fresh_consensus_missing")
         for stage in _FUNNEL_STAGE_NAMES[4:]:
             funnel[stage] = _not_evaluated("upside_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     upside_pct = (target_price - current_price) / current_price * 100
     if upside_pct < gates.honest_upside_pct_min:
-        funnel["upside"] = observed_stage(
-            "fail",
-            reason="honest_upside_below_40pct",
-            current_price=current_price,
-            avg_target_price=target_price,
-            honest_upside_pct=round(upside_pct, 6),
+        upside_stage: dict[str, Any] = {
+            "reason": "honest_upside_below_40pct",
+            "current_price": current_price,
+            "avg_target_price": target_price,
+            "honest_upside_pct": round(upside_pct, 6),
+        }
+        tag = threshold_near_miss(
+            gate="buy.support_reserve_net.honest_upside_pct_min",
+            metric="honest_upside_pct",
+            observed=upside_pct,
+            threshold=gates.honest_upside_pct_min,
+            comparison="min",
+            unit="percent",
         )
+        if tag is not None:
+            proximity.append(tag)
+            upside_stage["threshold_proximity"] = tag
+        funnel["upside"] = observed_stage("fail", **upside_stage)
         for stage in _FUNNEL_STAGE_NAMES[4:]:
             funnel[stage] = _not_evaluated("upside_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     funnel["upside"] = observed_stage(
         "pass",
         current_price=current_price,
@@ -608,12 +703,23 @@ def _evaluate_funnel(
     else:
         # This is a classification only.  It cannot create a proposal, an order,
         # or an actionable candidate from this read-only surface.
-        funnel["rsi"] = observed_stage(
-            "rsi_only_fail",
-            reason="rsi_missing_or_above_regular_max",
-            rsi_14=rsi,
-            max_rsi=gates.rsi_max,
+        rsi_stage: dict[str, Any] = {
+            "reason": "rsi_missing_or_above_regular_max",
+            "rsi_14": rsi,
+            "max_rsi": gates.rsi_max,
+        }
+        tag = threshold_near_miss(
+            gate="screen.rsi_max",
+            metric="rsi_14",
+            observed=rsi,
+            threshold=gates.rsi_max,
+            comparison="max",
+            unit="rsi_points",
         )
+        if tag is not None:
+            proximity.append(tag)
+            rsi_stage["threshold_proximity"] = tag
+        funnel["rsi"] = observed_stage("rsi_only_fail", **rsi_stage)
 
     anchor, anchor_reason = _anchor_band(
         support_price=float(support["price"]),
@@ -623,7 +729,9 @@ def _evaluate_funnel(
     if anchor is None:
         funnel["anchor_band"] = observed_stage("fail", reason=anchor_reason)
         funnel["budget"] = _not_evaluated("anchor_band_failed")
-        return _funnel_result(funnel, freshness)
+        return _funnel_result(
+            funnel, freshness, proximity=proximity, symbol=symbol, market=market
+        )
     funnel["anchor_band"] = observed_stage("pass", **anchor)
     # Account/broker evidence is deliberately unavailable in this task.  Keep
     # the cap literals visible but never infer a budget pass.
@@ -641,6 +749,9 @@ def _evaluate_funnel(
         regular_rsi_pass=regular_rsi_pass,
         rsi_only_fail=not regular_rsi_pass,
         observation_gate_path_complete=True,
+        proximity=proximity,
+        symbol=symbol,
+        market=market,
     )
 
 
@@ -1015,6 +1126,8 @@ async def discover_buy_candidates_fanout_impl(
 
     regular_evidence_eligible_count = 0
     rsi_only_fail_candidate_count = 0
+    threshold_proximity_candidates: list[dict[str, Any]] = []
+    threshold_proximity_gate_counts: dict[str, int] = {}
     freshness_undetermined_count = 0
     freshness_undetermined_reasons: dict[str, int] = {}
     funnel_stage_counts = _empty_funnel_stage_counts()
@@ -1060,6 +1173,23 @@ async def discover_buy_candidates_fanout_impl(
             regular_evidence_eligible_count += 1
         if candidate["rsi_only_fail_candidate"]:
             rsi_only_fail_candidate_count += 1
+        # ROB-1315 §7-3 — the near-miss cohort is reported, never filtered on.
+        # These candidates stay rejected; they are only made findable.
+        for tag in candidate.get("threshold_proximity") or []:
+            gate_name = str(tag["gate"])
+            threshold_proximity_gate_counts[gate_name] = (
+                threshold_proximity_gate_counts.get(gate_name, 0) + 1
+            )
+        if candidate.get("negative_class_forecast_hint"):
+            threshold_proximity_candidates.append(
+                {
+                    "symbol": symbol,
+                    "gates": [tag["gate"] for tag in candidate["threshold_proximity"]],
+                    "negative_class_forecast_hint": candidate[
+                        "negative_class_forecast_hint"
+                    ],
+                }
+            )
         failure_reason = _first_failed_reason(candidate["funnel"])
         for source in candidate["matched_sources"]:
             stats = source_stats[source]
@@ -1113,6 +1243,21 @@ async def discover_buy_candidates_fanout_impl(
             "freshness_undetermined_reasons": freshness_undetermined_reasons,
             "regular_evidence_eligible_count": regular_evidence_eligible_count,
             "rsi_only_fail_candidate_count": rsi_only_fail_candidate_count,
+            "threshold_proximity": {
+                "band": THRESHOLD_PROXIMITY_BAND,
+                "band_semantics": "absolute_units_of_the_gate_metric",
+                "gate_verdict_changed": False,
+                "recording_only": True,
+                "candidate_count": len(threshold_proximity_candidates),
+                "by_gate": threshold_proximity_gate_counts,
+                "candidates": threshold_proximity_candidates,
+                "how_to_record": (
+                    "merge negative_class_forecast_hint.threshold_proximity into "
+                    "forecast_save(forecast_target=...) with "
+                    "decision_bucket='deferred_no_action' (ROB-1283). This tool "
+                    "does not write."
+                ),
+            },
             "actionable_count": 0,
             "final_eligible_counts": {
                 "regular_evidence": regular_evidence_eligible_count,
@@ -1126,6 +1271,7 @@ async def discover_buy_candidates_fanout_impl(
 
 __all__ = [
     "MAX_SNAPSHOT_PRESETS_PER_CALL",
+    "THRESHOLD_PROXIMITY_BAND",
     "SNAPSHOT_MAX_STALE_SESSIONS",
     "TOP_N_PER_SOURCE",
     "TOP_N_REVALIDATION",

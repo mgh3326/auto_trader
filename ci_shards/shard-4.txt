@@ -77,6 +77,7 @@ tests/scripts/test_list_recent_watch_events_cli.py
 tests/scripts/test_mock_session_mcp.py
 tests/scripts/test_native_bluegreen_lib.py
 tests/scripts/test_native_run_wrappers.py
+tests/scripts/test_policy_table_alt_breadth_naming.py
 tests/scripts/test_policy_table_halt_suspect.py
 tests/scripts/test_run_haproxy_wrapper.py
 tests/scripts/test_spot_smoke_report.py
@@ -123,6 +124,7 @@ tests/services/brokers/toss/test_config.py
 tests/services/brokers/toss/test_errors.py
 tests/services/brokers/toss/test_smoke_script.py
 tests/services/buy_gate_ab_shadow/test_evaluate.py
+tests/services/buy_gate_ab_shadow/test_preregistration_freeze.py
 tests/services/buy_gate_ab_shadow/test_spec_freeze.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_crypto_venue_resolution.py

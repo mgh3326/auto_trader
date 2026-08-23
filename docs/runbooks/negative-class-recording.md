@@ -91,6 +91,29 @@ test_negative_class_forecast_is_gradeable_like_any_other`가 기계 증명)
 ROB-1301 A/B 채점기가 필요로 하는 (코호트, 결과, 귀속)은 전부 이 한 테이블에서 나온다:
 `decision_bucket` × `session_label`/`created_by` × `outcome`/`brier_score`.
 
+### 임계근방 태깅 (ROB-1315 §7-3)
+
+`discover_buy_candidates_fanout`은 임계를 **1.0 단위 이내로** 놓친 기각 후보에
+`threshold_proximity` 태그(게이트명·임계·실측·미달폭)를 붙이고, 그대로 병합할 수 있는
+`negative_class_forecast_hint`를 함께 돌려준다. **게이트 판정은 바뀌지 않는다** —
+태그 붙은 후보도 여전히 기각이고, 도구는 여전히 아무것도 쓰지 않는다.
+
+```python
+hint = candidate["negative_class_forecast_hint"]
+forecast_save(
+    ...,
+    forecast_target={**resolvable_target, **hint},   # threshold_proximity 블록 포함
+    decision_bucket="deferred_no_action",
+)
+```
+
+이렇게 기록해두면 "기각이 옳았나"를 **마진 구간에서만** 따로 채점할 수 있다. 45.03/45로
+탈락한 건과 78/45로 탈락한 건이 같은 코호트에 섞여 있으면 그 질문에 답할 수 없다.
+밴드·태깅 게이트 목록·기록 절차는 `docs/runbooks/buy-candidate-fanout.md`
+"Threshold proximity" 절.
+
+🔴 4주 수집이 끝나기 전에 중간값으로 임계를 움직이지 않는다(ROB-1301과 동일한 사전등록 규칙).
+
 ---
 
 ## 3. 링크 (AC3)

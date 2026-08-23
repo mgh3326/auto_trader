@@ -573,12 +573,20 @@ def _register_fundamentals_tools_impl(
         name="get_upbit_altseason",
         description=(
             "Get an Upbit altseason snapshot: the UBAI/UBMI ratio (altcoin index "
-            "vs market index) and 24h breadth (fraction of KRW-quoted alts beating "
-            "BTC over 24h, derived from the official Upbit ticker). Higher ratio + "
-            "higher breadth lean altseason. Read-only public data. Note: breadth is "
-            "24h only (multi-period breadth is a separate follow-up). With constituents "
-            "enabled, breadth.constituents lists KRW alts beating BTC with 24h change, "
-            "vs-BTC relative strength, volume, and traded value."
+            "vs market index) plus TWO distinct 24h breadth metrics, reported "
+            "side by side and never interchangeable (ROB-1315): "
+            "breadth.alt_positive_24h_pct = ABSOLUTE breadth (share of KRW alts "
+            "whose 24h change is above zero); breadth.alts_beating_btc_pct = "
+            "BTC-RELATIVE breadth (share whose 24h change exceeds KRW-BTC's). "
+            "The trading_policy no_chasing breadth clause reads the BTC-relative "
+            "one, so in a BTC-led rally it can stay closed while absolute breadth "
+            "is high (2026-08-20: 78.09% absolute vs 17.38% relative, 60.71pp "
+            "apart). breadth.metric_semantics restates this in the payload. "
+            "Higher ratio + higher breadth lean altseason. Read-only public data. "
+            "Note: breadth is 24h only (multi-period breadth is a separate "
+            "follow-up). With constituents enabled, breadth.constituents lists "
+            "KRW alts beating BTC with 24h change, vs-BTC relative strength, "
+            "volume, and traded value."
         ),
     )
     async def get_upbit_altseason(

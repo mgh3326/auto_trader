@@ -562,6 +562,13 @@ class PolicyRecoveryCondition(BaseModel):
     threshold: int | float | None
     unit: str
     semantics: str
+    # ROB-1315 §7-2 — optional metric disambiguation. When a data source
+    # exposes more than one number under one colloquial metric name, these
+    # name the exact field the gate reads and the field it must never read.
+    # Documentation only: no threshold, operator, or verdict depends on them.
+    input_field: str | None = None
+    input_basis: str | None = None
+    not_input_field: str | None = None
 
 
 class PolicyRecoveryGate(BaseModel):

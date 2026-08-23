@@ -6,9 +6,15 @@ Read-only public market-data. Two data planes, deliberately split by robots poli
 - **Indices** come from ``datalab-static.upbit.com`` — an S3-hosted public data
   product with no robots restriction. We merge index/master (catalog) +
   index/recent (live value) + index/summary (yield/risk stats).
-- **24h breadth** (alts beating BTC) is derived from the **official** Open API
+- **24h breadth** is derived from the **official** Open API
   ``api.upbit.com/v1/ticker`` (``signed_change_rate`` is 24h only). We do NOT use
-  the robots-disallowed ``crix-api-cdn`` trends endpoints.
+  the robots-disallowed ``crix-api-cdn`` trends endpoints. Two breadth metrics
+  are reported side by side and must not be confused (ROB-1315 §7-2):
+  ``alt_positive_24h_pct`` (absolute: 24h change > 0) and
+  ``alts_beating_btc_pct`` (BTC-relative: 24h change > KRW-BTC's 24h change).
+  The ``no_chasing`` breadth clause in ``config/trading_policy.yaml`` reads the
+  **BTC-relative** one; the crypto policy table's ``market_context`` header
+  reports the **absolute** one. They diverged by 60.71pp on 2026-08-20.
 
 7/30/90d breadth is intentionally out of scope here (official ``/v1/ticker`` has no
 multi-period change rate); that is a separate follow-up over ``/v1/candles/days``.
@@ -276,13 +282,30 @@ async def _fetch_krw_breadth_24h(
         return None
 
     beating = sum(1 for rate in alt_rates if rate > btc_rate)
+    positive = sum(1 for rate in alt_rates if rate > 0)
     result: dict[str, Any] = {
         "window": "24h",
         "method": "open_api_ticker_24h_derived",
         "alts_total": len(alt_rates),
+        # ROB-1315 §7-2: the two breadth metrics are reported side by side
+        # because they can disagree by tens of points in a BTC-led rally
+        # (2026-08-20: 78.09% absolute vs 17.38% BTC-relative).  Neither
+        # replaces the other and neither changes a gate verdict here.
         "alts_beating_btc": beating,
         "alts_beating_btc_pct": round(beating / len(alt_rates), 4),
+        "alts_positive_24h": positive,
+        "alt_positive_24h_pct": round(positive / len(alt_rates), 4),
         "btc_change_24h": btc_rate,
+        "metric_semantics": {
+            "alt_positive_24h_pct": (
+                "absolute: share of KRW alts whose 24h change is above zero"
+            ),
+            "alts_beating_btc_pct": (
+                "BTC-relative: share of KRW alts whose 24h change exceeds "
+                "KRW-BTC's 24h change"
+            ),
+            "no_chasing_gate_input": "alts_beating_btc_pct",
+        },
     }
     if include_constituents:
         constituents = _build_altseason_constituents(
