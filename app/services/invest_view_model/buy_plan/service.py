@@ -761,7 +761,11 @@ async def _build_discovery_gates(*, policy: Any) -> list[DiscoveryGateRow]:
                 unit=condition.unit,
                 current_value=value,
                 state=state,  # type: ignore[arg-type]
-                source=reading.source if reading is not None else None,
+                # Provenance comes from the policy's own ``sources`` list, not
+                # from a constant duplicated in the reader — the policy file is
+                # what declares which upstreams this metric is allowed to come
+                # from, so it cannot drift out of sync with the gate.
+                source="+".join(condition.sources) if condition.sources else None,
                 note=reading.note
                 if reading is not None
                 else "이 지표를 읽는 소스가 배선돼 있지 않습니다.",
@@ -987,8 +991,9 @@ def _value_sources() -> list[ValueSource]:
         ),
         ValueSource(
             field="discovery_gates[].conditions[].current_value",
-            source="upbit_open_api_ticker (breadth) / binance futures data (long-short)",
-            note=f"캐시 {GATE_CACHE_TTL_SECONDS}초.",
+            source="market_rules.crypto.recovery_gate.conditions[].sources "
+            "(정책이 선언한 업스트림)",
+            note=f"캐시 {GATE_CACHE_TTL_SECONDS}초. 확인 불가 조건은 충족으로 세지 않습니다.",
         ),
         ValueSource(
             field="funding.accounts[].available_cash",

@@ -180,6 +180,16 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # to READ_ONLY_ADVISORY_TOOLS: a bare tool-name string in a Python
         # set literal, not a Binance HTTP/WS/signed reference.
         "app/mcp_server/tooling/route_request_lanes.py",
+        # §144차 — the /invest 매수 계획 board's discovery-gate metric reader.
+        # It resolves the two metrics named by
+        # ``market_rules.crypto.recovery_gate`` and reaches the long/short
+        # figures ONLY through the already-allow-listed
+        # ``fundamentals/_crypto.handle_get_long_short_ratio`` handler. No HTTP
+        # client, URL, websocket, signing, credential, or mutation code lives
+        # here; "Binance" appears in a docstring and one source-label string
+        # naming which upstream the reading came from. String reference only —
+        # same class as the other entries here.
+        "app/services/invest_view_model/buy_plan/gate_inputs.py",
     }
 )
 

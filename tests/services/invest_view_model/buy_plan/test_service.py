@@ -601,6 +601,10 @@ async def test_gate_opens_when_both_conditions_pass() -> None:
     assert gate.state == "open"
     assert gate.met_count == 2
     assert gate.unavailable_count == 0
+    # Provenance is the policy's declared upstream list, not a constant the
+    # reader could drift away from.
+    breadth = next(c for c in gate.conditions if c.metric == "upbit_alt_breadth_24h")
+    assert breadth.source == "upbit_open_api_ticker_derived"
 
 
 @pytest.mark.unit
