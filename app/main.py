@@ -35,6 +35,7 @@ from app.routers import (
     invest_api,
     invest_app_spa,
     invest_artifacts,
+    invest_buy_plan,
     invest_fills,
     invest_forecasts,
     invest_funding,
@@ -216,6 +217,7 @@ def create_app() -> FastAPI:
     app.include_router(invest_fills.router)
     app.include_router(invest_open_orders.router)
     app.include_router(invest_watches.router)
+    app.include_router(invest_buy_plan.router)
     app.include_router(invest_retrospectives.router)
     app.include_router(invest_forecasts.router)
     app.include_router(invest_funding.router)

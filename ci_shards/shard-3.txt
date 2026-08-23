@@ -59,6 +59,7 @@ tests/research/us_stage_b/test_verdict.py
 tests/research_contracts/test_dfc_2c_4h_v21.py
 tests/routers/test_alpaca_paper_ledger_router.py
 tests/routers/test_candidate_discovery.py
+tests/routers/test_invest_buy_plan_router.py
 tests/routers/test_invest_loss_cut_approvals.py
 tests/routers/test_investment_hermes_http_auth.py
 tests/routers/test_news_relevance_auth.py

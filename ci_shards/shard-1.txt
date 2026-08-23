@@ -142,6 +142,7 @@ tests/services/execution_outcomes/test_static_boundaries.py
 tests/services/invest_screener_snapshots/test_alerts.py
 tests/services/invest_screener_snapshots/test_freshness_dispatch.py
 tests/services/invest_screener_snapshots/test_freshness_us_session.py
+tests/services/invest_view_model/buy_plan/test_computation.py
 tests/services/invest_view_model/test_consecutive_gainers_public_loader.py
 tests/services/investment_reports/test_action_packet.py
 tests/services/investment_reports/test_bundle_news_citations.py

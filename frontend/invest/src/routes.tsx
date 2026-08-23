@@ -22,6 +22,8 @@
 // /invest/reports                 — Investment report list (ROB-265).
 // /invest/reports/:reportUuid     — Single investment report bundle.
 // /invest/stocks/:m/:sym    — Stock detail page.
+// /invest/buy-plan          — Read-only 매수 계획 (트리거 보드): 매수 트리거
+//                             행 + 계좌 현금 대비 소요액 대조 (§144차).
 // /invest/watches           — Watch-alert browsing, grouped by symbol
 //                             (ladder view). Mobile-first (INVEST-WATCH-UI
 //                             §57차 item ①).
@@ -53,6 +55,7 @@ import {
 } from "./pages/desktop/DesktopInvestmentReportsPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 import { WatchesRoute } from "./pages/WatchesRoute";
+import { BuyPlanRoute } from "./pages/BuyPlanRoute";
 import { OrderDetailRoute } from "./pages/OrderDetailRoute";
 import {
   LossCutApprovalRoute,
@@ -110,6 +113,7 @@ export const router = createBrowserRouter(
     { path: "/reports/:reportUuid", element: <InvestmentReportBundleRoute /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
     { path: "/watches", element: <WatchesRoute /> },
+    { path: "/buy-plan", element: <BuyPlanRoute /> },
     { path: "/orders/:broker/:market/:ledgerId", element: <OrderDetailRoute /> },
     {
       path: "/approvals/loss-cut/evidence/:symbol",
