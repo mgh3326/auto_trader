@@ -15,12 +15,11 @@ import datetime as dt
 import hashlib
 import json
 import logging
-import os
 import random
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import httpx
 import redis.asyncio as redis
@@ -32,8 +31,6 @@ _log = logging.getLogger(__name__)
 TOKEN_LOCK_TTL_SECONDS: Final[int] = 30
 TOKEN_WAIT_TIMEOUT_SECONDS: float = 5.0
 TOKEN_WAIT_POLL_SECONDS: float = 0.05
-
-_redis_client: redis.Redis | None = None
 
 _REDIS_MAX_CONNECTIONS_DEFAULT: Final[int] = 20
 _REDIS_SOCKET_TIMEOUT_DEFAULT: Final[float] = 5.0
@@ -51,34 +48,53 @@ class KiwoomTokenIssuanceUnavailable(RuntimeError):
 
 
 class KiwoomRedisConfigurationError(RuntimeError):
-    """Raised with env names only when scoped Redis configuration is invalid."""
+    """Raised with setting names only when scoped Redis configuration is invalid."""
 
 
-def _positive_number_env(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
+class _RedisSettings(Protocol):
+    redis_max_connections: int
+    redis_socket_timeout: float
+    redis_socket_connect_timeout: float
+
+    def get_redis_url(self) -> str: ...
+
+
+def _positive_number_setting(name: str, value: object, default: float) -> float:
+    if value is None:
         return default
     try:
-        value = float(raw)
-    except ValueError as exc:
-        raise KiwoomRedisConfigurationError(f"invalid numeric env: {name}") from exc
-    if value <= 0:
-        raise KiwoomRedisConfigurationError(f"non-positive numeric env: {name}")
-    return value
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise KiwoomRedisConfigurationError(f"invalid numeric setting: {name}") from exc
+    if numeric <= 0:
+        raise KiwoomRedisConfigurationError(f"non-positive numeric setting: {name}")
+    return numeric
 
 
-def _redis_client_from_env() -> redis.Redis:
-    redis_url = str(os.getenv("REDIS_URL", "")).strip()
+def redis_client_from_settings(settings_obj: _RedisSettings) -> redis.Redis:
+    """Build Kiwoom's mandatory Redis client from the canonical Settings path.
+
+    The OAuth cache is deliberately not optional: a missing or unreachable Redis
+    still prevents token resolution before a broker request is dispatched.
+    """
+
+    redis_url = str(settings_obj.get_redis_url() or "").strip()
     if not redis_url:
-        raise KiwoomRedisConfigurationError("missing required env: REDIS_URL")
-    max_connections = _positive_number_env(
-        "REDIS_MAX_CONNECTIONS", float(_REDIS_MAX_CONNECTIONS_DEFAULT)
+        raise KiwoomRedisConfigurationError("missing required setting: REDIS_URL")
+    max_connections = _positive_number_setting(
+        "REDIS_MAX_CONNECTIONS",
+        getattr(settings_obj, "redis_max_connections", None),
+        float(_REDIS_MAX_CONNECTIONS_DEFAULT),
     )
-    socket_timeout = _positive_number_env(
-        "REDIS_SOCKET_TIMEOUT", _REDIS_SOCKET_TIMEOUT_DEFAULT
+    socket_timeout = _positive_number_setting(
+        "REDIS_SOCKET_TIMEOUT",
+        getattr(settings_obj, "redis_socket_timeout", None),
+        _REDIS_SOCKET_TIMEOUT_DEFAULT,
     )
-    socket_connect_timeout = _positive_number_env(
-        "REDIS_SOCKET_CONNECT_TIMEOUT", _REDIS_SOCKET_CONNECT_TIMEOUT_DEFAULT
+    socket_connect_timeout = _positive_number_setting(
+        "REDIS_SOCKET_CONNECT_TIMEOUT",
+        getattr(settings_obj, "redis_socket_connect_timeout", None),
+        _REDIS_SOCKET_CONNECT_TIMEOUT_DEFAULT,
     )
     return redis.from_url(
         redis_url,
@@ -87,13 +103,6 @@ def _redis_client_from_env() -> redis.Redis:
         socket_connect_timeout=socket_connect_timeout,
         decode_responses=True,
     )
-
-
-async def _get_redis_client() -> redis.Redis:
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = _redis_client_from_env()
-    return _redis_client
 
 
 def _client_fingerprint(app_key: str) -> str:
@@ -114,6 +123,7 @@ class KiwoomAuthClient:
         transport: httpx.BaseTransport | None = None,
         timeout: float = constants.DEFAULT_TIMEOUT,
         redis_client: redis.Redis | None = None,
+        redis_settings: _RedisSettings | None = None,
     ) -> None:
         if str(base_url).rstrip("/") != constants.MOCK_BASE_URL:
             raise ValueError(
@@ -125,6 +135,7 @@ class KiwoomAuthClient:
         self._transport = transport
         self._timeout = timeout
         self._redis_client = redis_client
+        self._redis_settings = redis_settings
         namespace = f"kiwoom:oauth:{_client_fingerprint(app_key)}"
         self.token_key = f"{namespace}:access_token"
         self.lock_key = f"{namespace}:lock"
@@ -148,7 +159,12 @@ class KiwoomAuthClient:
     async def _get_redis(self) -> redis.Redis:
         if self._redis_client is not None:
             return self._redis_client
-        return await _get_redis_client()
+        if self._redis_settings is None:
+            raise KiwoomRedisConfigurationError(
+                "missing required Settings-backed Redis configuration"
+            )
+        self._redis_client = redis_client_from_settings(self._redis_settings)
+        return self._redis_client
 
     async def _get_cached_token(self) -> str | None:
         redis_client = await self._get_redis()

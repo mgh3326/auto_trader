@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from typing import Self
+from typing import Any, Self
 
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import (
@@ -58,6 +58,7 @@ class KiwoomMockUsClient(KiwoomMockClient):
         app_secret: str,
         account_no: str,
         timeout: float = constants.DEFAULT_TIMEOUT,
+        redis_settings: Any | None = None,
         rate_limit_clock: Callable[[], float] = time.monotonic,
         rate_limit_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -67,6 +68,7 @@ class KiwoomMockUsClient(KiwoomMockClient):
             app_secret=app_secret,
             account_no=account_no,
             timeout=timeout,
+            redis_settings=redis_settings,
         )
         self._tr_rate_limiter = _PerTrRateLimiter(
             clock=rate_limit_clock,
@@ -86,9 +88,32 @@ class KiwoomMockUsClient(KiwoomMockClient):
                 "Kiwoom US mock account is disabled or missing required "
                 "configuration: " + ", ".join(missing)
             )
+        _assert_distinct_kr_us_identities(settings)
         return cls(
             base_url=str(settings.kiwoom_mock_base_url).rstrip("/"),
             app_key=str(settings.kiwoom_mock_us_app_key),
             app_secret=str(settings.kiwoom_mock_us_app_secret),
             account_no=str(settings.kiwoom_mock_us_account_no),
+            redis_settings=settings,
+        )
+
+
+def _assert_distinct_kr_us_identities(settings_obj: Any) -> None:
+    """Reject a US factory wired to the KR app identity or account.
+
+    The checks intentionally use exact equality on canonical Settings values;
+    neither secret nor account value is included in the failure surface.
+    """
+
+    kr_app_key = str(getattr(settings_obj, "kiwoom_mock_app_key", "") or "").strip()
+    us_app_key = str(getattr(settings_obj, "kiwoom_mock_us_app_key", "") or "").strip()
+    kr_account = str(getattr(settings_obj, "kiwoom_mock_account_no", "") or "").strip()
+    us_account = str(
+        getattr(settings_obj, "kiwoom_mock_us_account_no", "") or ""
+    ).strip()
+    if (kr_app_key and kr_app_key == us_app_key) or (
+        kr_account and kr_account == us_account
+    ):
+        raise KiwoomConfigurationError(
+            "Kiwoom KR and US mock credential/account identities must be distinct"
         )

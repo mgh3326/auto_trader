@@ -7,8 +7,8 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import sys
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -66,7 +66,7 @@ class _FakeRedis:
 
 
 @pytest.mark.asyncio
-async def test_scoped_redis_env_does_not_import_global_settings(
+async def test_scoped_redis_uses_explicit_settings_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = _FakeRedis()
@@ -77,15 +77,15 @@ async def test_scoped_redis_env_does_not_import_global_settings(
         captured.update(kwargs)
         return fake
 
-    monkeypatch.setenv("REDIS_URL", "redis://scoped.invalid:6379/0")
-    monkeypatch.delenv("REDIS_MAX_CONNECTIONS", raising=False)
-    monkeypatch.delenv("REDIS_SOCKET_TIMEOUT", raising=False)
-    monkeypatch.delenv("REDIS_SOCKET_CONNECT_TIMEOUT", raising=False)
     monkeypatch.setattr(auth_module.redis, "from_url", from_url)
-    monkeypatch.setattr(auth_module, "_redis_client", None)
-    monkeypatch.delitem(sys.modules, "app.core.config", raising=False)
+    settings_obj = SimpleNamespace(
+        get_redis_url=lambda: "redis://scoped.invalid:6379/0",
+        redis_max_connections=20,
+        redis_socket_timeout=5.0,
+        redis_socket_connect_timeout=5.0,
+    )
 
-    client = await auth_module._get_redis_client()
+    client = auth_module.redis_client_from_settings(settings_obj)
 
     assert client is fake
     assert captured == {
@@ -95,14 +95,18 @@ async def test_scoped_redis_env_does_not_import_global_settings(
         "socket_connect_timeout": 5.0,
         "decode_responses": True,
     }
-    assert "app.core.config" not in sys.modules
 
 
-def test_scoped_redis_env_requires_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("REDIS_URL", raising=False)
+def test_scoped_redis_settings_requires_url() -> None:
+    settings_obj = SimpleNamespace(
+        get_redis_url=lambda: "",
+        redis_max_connections=20,
+        redis_socket_timeout=5.0,
+        redis_socket_connect_timeout=5.0,
+    )
 
     with pytest.raises(KiwoomRedisConfigurationError, match="REDIS_URL"):
-        auth_module._redis_client_from_env()
+        auth_module.redis_client_from_settings(settings_obj)
 
 
 @pytest.fixture
