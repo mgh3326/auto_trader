@@ -8,6 +8,16 @@ import pathlib
 import numpy as np
 import pandas as pd
 
+from research.screener_bakeoff.spec import is_withdrawn_source
+
+
+def _exclude_withdrawn(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep withdrawn historical comparators out of rendered tables."""
+
+    if "source_id" not in df.columns:
+        return df.copy()
+    return df.loc[~df["source_id"].map(is_withdrawn_source)].copy()
+
 
 def _fmt_pct(v):
     return "" if pd.isna(v) else f"{v * 100:+.2f}%"
@@ -25,6 +35,10 @@ def scorecard_table(
     gate: str,
     window: str = "all",
 ) -> str:
+    dl = _exclude_withdrawn(dl)
+    bs = _exclude_withdrawn(bs)
+    if dl.empty:
+        return "_(no rows)_\n"
     q = dl[
         (dl.market == market)
         & (dl.horizon == horizon)
@@ -79,6 +93,8 @@ def scorecard_table(
 
 
 def gate_matrix(dl: pd.DataFrame, sc: pd.DataFrame, market: str, horizon: int) -> str:
+    dl = _exclude_withdrawn(dl)
+    sc = _exclude_withdrawn(sc)
     q = dl[(dl.market == market) & (dl.horizon == horizon) & (dl.window == "all")]
     piv = q.pivot_table(index="source_id", columns="gate", values="median_excess")
     pool = sc[(sc.market == market) & (sc.horizon == horizon) & (sc.window == "all")]
@@ -116,6 +132,7 @@ def gate_matrix(dl: pd.DataFrame, sc: pd.DataFrame, market: str, horizon: int) -
 
 def coverage_bias_section(scored: pd.DataFrame) -> str:
     """S2: missing/truncation is not random — report the directional split."""
+    scored = _exclude_withdrawn(scored)
     df = scored[
         (~scored["source_id"].str.endswith(".benchmark")) & (scored["gate"] == "none")
     ].copy()

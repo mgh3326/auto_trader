@@ -36,6 +36,7 @@ from research.screener_bakeoff.spec import (
     SOURCES,
     SR_WINDOW_BARS,
     TOP_N,
+    WITHDRAWN_SOURCES,
 )
 
 SINCE = dt.date(2025, 6, 1)
@@ -78,7 +79,11 @@ _CRYPTO_BUILDERS = {
     "crypto.funding_overheated": S.src_crypto_funding_overheated,
     "crypto.oi_surge": S.src_crypto_oi_surge,
     "crypto.long_short_skew": S.src_crypto_long_short_skew,
-    "crypto.tv_rsi45": S.src_crypto_rsi45,
+}
+_WITHDRAWN_BUILDERS_BY_MARKET = {
+    "kr": S.src_tv_rsi45,
+    "us": S.src_tv_rsi45,
+    "crypto": S.src_crypto_rsi45,
 }
 
 
@@ -102,6 +107,46 @@ def _rsi_lookup(panel: P.PricePanel) -> dict:
             if not np.isnan(value):
                 out[(sym, days[i])] = float(value)
     return out
+
+
+def _builders_for_market(
+    market: str,
+    wanted_sources: set[str] | None,
+    *,
+    include_withdrawn_sources: bool = False,
+) -> dict:
+    if market == "kr":
+        builders = dict(_KR_BUILDERS)
+    elif market == "us":
+        builders = dict(_US_BUILDERS)
+    else:
+        builders = dict(_CRYPTO_BUILDERS)
+    if include_withdrawn_sources:
+        builders.update(
+            {
+                source_id: _WITHDRAWN_BUILDERS_BY_MARKET[market]
+                for source_id in WITHDRAWN_SOURCES
+                if source_id.startswith(f"{market}.")
+            }
+        )
+    if wanted_sources is not None:
+        builders = {
+            source_id: builder
+            for source_id, builder in builders.items()
+            if source_id in wanted_sources
+        }
+    return builders
+
+
+def _validate_requested_sources(
+    wanted_sources: set[str] | None, *, include_withdrawn_sources: bool
+) -> None:
+    requested_withdrawn = (wanted_sources or set()) & WITHDRAWN_SOURCES
+    if requested_withdrawn and not include_withdrawn_sources:
+        raise ValueError(
+            "withdrawn sources require --include-withdrawn-sources: "
+            + ", ".join(sorted(requested_withdrawn))
+        )
 
 
 def build_contexts():
@@ -190,16 +235,15 @@ def run_market(
     gate_cache,
     universe_rows=None,
     wanted_sources: set[str] | None = None,
+    *,
+    include_withdrawn_sources: bool = False,
 ):
     market = ctx.market
-    if market == "kr":
-        builders = dict(_KR_BUILDERS)
-    elif market == "us":
-        builders = dict(_US_BUILDERS)
-    else:
-        builders = dict(_CRYPTO_BUILDERS)
-    if wanted_sources is not None:
-        builders = {sid: fn for sid, fn in builders.items() if sid in wanted_sources}
+    builders = _builders_for_market(
+        market,
+        wanted_sources,
+        include_withdrawn_sources=include_withdrawn_sources,
+    )
 
     variants = CRYPTO_GATE_VARIANTS if market == "crypto" else GATE_VARIANTS
     recent_cut = (
@@ -219,11 +263,6 @@ def run_market(
         pools: dict[str, list[str]] = {}
         for sid, fn in builders.items():
             pools[sid] = fn(ctx, day)
-        tv_sid = f"{market}.tv_rsi45"
-        if market in ("kr", "us") and (
-            wanted_sources is None or tv_sid in wanted_sources
-        ):
-            pools[tv_sid] = S.src_tv_rsi45(ctx, day, rsi_lookup)
         rnd_sid = f"{market}.random"
         if wanted_sources is None or rnd_sid in wanted_sources:
             pools[rnd_sid] = S.src_random(ctx, day, TOP_N)
@@ -356,6 +395,11 @@ def main() -> int:
         action="store_true",
         help="replace matching source_id rows in existing picks.csv; leave other sources untouched",
     )
+    ap.add_argument(
+        "--include-withdrawn-sources",
+        action="store_true",
+        help="explicitly opt in to historical withdrawn builders for diagnostics",
+    )
     args = ap.parse_args()
     outdir = pathlib.Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -364,16 +408,22 @@ def main() -> int:
         if args.sources
         else None
     )
+    _validate_requested_sources(
+        wanted_sources,
+        include_withdrawn_sources=args.include_withdrawn_sources,
+    )
 
     kr, us, crypto, raw = build_contexts()
     wanted = set(args.markets.split(","))
 
     _log("precomputing RSI panels ...")
     need_kr_rsi = "kr" in wanted and (
-        wanted_sources is None or "kr.tv_rsi45" in wanted_sources
+        args.include_withdrawn_sources
+        and (wanted_sources is None or "kr.tv_rsi45" in wanted_sources)
     )
     need_us_rsi = "us" in wanted and (
-        wanted_sources is None or "us.tv_rsi45" in wanted_sources
+        args.include_withdrawn_sources
+        and (wanted_sources is None or "us.tv_rsi45" in wanted_sources)
     )
     rsi_kr = _rsi_lookup(kr.prices) if need_kr_rsi else {}
     rsi_us = _rsi_lookup(us.prices) if need_us_rsi else {}
@@ -389,7 +439,16 @@ def main() -> int:
         grid = decision_grid(ctx, raw)
         grids[ctx.market] = [d.isoformat() for d in grid]
         _log(f"{ctx.market}: {len(grid)} decision dates {grid[0]} .. {grid[-1]}")
-        run_market(ctx, grid, lookup, rows, gate_cache, universe_rows, wanted_sources)
+        run_market(
+            ctx,
+            grid,
+            lookup,
+            rows,
+            gate_cache,
+            universe_rows,
+            wanted_sources,
+            include_withdrawn_sources=args.include_withdrawn_sources,
+        )
 
     df = pd.DataFrame(rows)
     picks_path = outdir / "picks.csv"

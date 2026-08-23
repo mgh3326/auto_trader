@@ -14,6 +14,13 @@ import numpy as np
 import pandas as pd
 
 from research.screener_bakeoff.scoring import summarise
+from research.screener_bakeoff.spec import is_withdrawn_source
+
+
+def _exclude_withdrawn(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep withdrawn historical comparators out of every aggregate output."""
+
+    return df.loc[~df["source_id"].map(is_withdrawn_source)].copy()
 
 
 def _bench_map(df: pd.DataFrame) -> dict:
@@ -22,8 +29,8 @@ def _bench_map(df: pd.DataFrame) -> dict:
 
 
 def build(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = _exclude_withdrawn(df)
     bench = _bench_map(df)
-    df = df.copy()
     df["bench_ret"] = [
         bench.get((m, d, h))
         for m, d, h in zip(
@@ -120,6 +127,7 @@ def date_level(df: pd.DataFrame) -> pd.DataFrame:
     duplication; the second (overlapping windows) remains and is stated in the
     report — every t below is DESCRIPTIVE ONLY.
     """
+    df = _exclude_withdrawn(df)
     picks = df[~df["source_id"].str.endswith(".benchmark")]
     picks = picks[~picks["censored"].astype(bool)]
     daily = (

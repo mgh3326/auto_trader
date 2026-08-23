@@ -24,6 +24,18 @@ REWORK_ID = "r2-20260823"
 #: Scoring constants above stay frozen. Comparator for H1–H4 is now the
 #: logged live fanout pick, not reconstructed tv_rsi45.
 PROSPECTIVE_ID = "screener-source-weighting-v1"
+#: The single source of truth for the withdrawn reconstructed comparators.
+WITHDRAWN_SOURCES: frozenset[str] = frozenset(
+    {"kr.tv_rsi45", "us.tv_rsi45", "crypto.tv_rsi45"}
+)
+
+
+def is_withdrawn_source(source_id: str) -> bool:
+    """Return whether a source is barred from historical output paths."""
+
+    return source_id in WITHDRAWN_SOURCES
+
+
 LOGGING_START_RULE = (
     "first production insert into review.screener_pick_log after PR #1940 "
     "is merged AND SCREENER_PICK_LOG_ENABLED=true. No historical backfill. "
@@ -138,6 +150,12 @@ class SourceSpec:
     #: False when this source is a research definition that must not be
     #: read as the live production preset (path-② label demotion).
     live_comparable: bool = True
+
+    def __post_init__(self) -> None:
+        # Derive withdrawn-source metadata from the canonical registry rather
+        # than maintaining a second list in the individual source rows.
+        if self.source_id in WITHDRAWN_SOURCES:
+            object.__setattr__(self, "live_comparable", False)
 
 
 _FROZEN_SNAP = "invest_screener_snapshots row, written by the production snapshot builder on the decision date"
@@ -356,7 +374,6 @@ SOURCES: tuple[SourceSpec, ...] = (
             "RSI is Wilder not TradingView). Do not use as the current-main "
             "comparator. Prospective scoring uses logged live fanout picks.",
         ),
-        False,
     ),
     SourceSpec(
         "kr.random",
@@ -487,7 +504,6 @@ SOURCES: tuple[SourceSpec, ...] = (
             "LIVE COMPARISON WITHDRAWN. Same reconstruction gap as kr.tv_rsi45 "
             "(top-100 vs live top-10; snapshot universe vs live HTTP).",
         ),
-        False,
     ),
     SourceSpec(
         "us.random", "us", "control", "무작위 대조군", "seed-fixed draw", False, ()
@@ -576,7 +592,6 @@ SOURCES: tuple[SourceSpec, ...] = (
             "LIVE COMPARISON WITHDRAWN. Same reconstruction gap as kr.tv_rsi45 "
             "(top-100 vs live top-10). Snapshot rsi column, not live TradingView.",
         ),
-        False,
     ),
     SourceSpec(
         "crypto.random",

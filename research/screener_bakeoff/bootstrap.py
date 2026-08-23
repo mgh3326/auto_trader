@@ -22,7 +22,7 @@ import pathlib
 import numpy as np
 import pandas as pd
 
-from research.screener_bakeoff.spec import RANDOM_SEED, TOP_N
+from research.screener_bakeoff.spec import RANDOM_SEED, TOP_N, is_withdrawn_source
 
 B = 2000
 
@@ -48,6 +48,7 @@ def _circular_block_indices(
 def run(artifacts: pathlib.Path, draws: int = B) -> pd.DataFrame:
     uni = pd.read_csv(artifacts / "universe_returns.csv")
     picks = pd.read_csv(artifacts / "picks_scored.csv")
+    picks = picks.loc[~picks["source_id"].map(is_withdrawn_source)].copy()
     picks = picks[~picks["source_id"].str.endswith(".benchmark")]
     picks = picks[~picks["censored"].astype(bool)]
     uni["decision_date"] = _as_day(uni["decision_date"])
