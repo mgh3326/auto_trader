@@ -35,6 +35,7 @@ TOKEN_WAIT_POLL_SECONDS: float = 0.05
 _REDIS_MAX_CONNECTIONS_DEFAULT: Final[int] = 20
 _REDIS_SOCKET_TIMEOUT_DEFAULT: Final[float] = 5.0
 _REDIS_SOCKET_CONNECT_TIMEOUT_DEFAULT: Final[float] = 5.0
+_settings_redis_clients: dict[tuple[str, int, float, float], redis.Redis] = {}
 
 
 @dataclass(frozen=True)
@@ -96,13 +97,16 @@ def redis_client_from_settings(settings_obj: _RedisSettings) -> redis.Redis:
         getattr(settings_obj, "redis_socket_connect_timeout", None),
         _REDIS_SOCKET_CONNECT_TIMEOUT_DEFAULT,
     )
-    return redis.from_url(
-        redis_url,
-        max_connections=int(max_connections),
-        socket_timeout=socket_timeout,
-        socket_connect_timeout=socket_connect_timeout,
-        decode_responses=True,
-    )
+    key = (redis_url, int(max_connections), socket_timeout, socket_connect_timeout)
+    if key not in _settings_redis_clients:
+        _settings_redis_clients[key] = redis.from_url(
+            redis_url,
+            max_connections=int(max_connections),
+            socket_timeout=socket_timeout,
+            socket_connect_timeout=socket_connect_timeout,
+            decode_responses=True,
+        )
+    return _settings_redis_clients[key]
 
 
 def _client_fingerprint(app_key: str) -> str:

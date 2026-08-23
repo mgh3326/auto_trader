@@ -50,6 +50,7 @@ async def test_kr_and_us_factories_use_settings_redis_not_process_env(
 
     _configure_distinct_lanes(monkeypatch)
     monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(auth_module, "_settings_redis_clients", {})
     seen: list[tuple[str, dict[str, object]]] = []
 
     def from_url(url: str, **kwargs: object) -> _FakeRedis:
@@ -64,10 +65,7 @@ async def test_kr_and_us_factories_use_settings_redis_not_process_env(
     assert us_client._auth._redis_settings is cfg.settings
     await kr_client._auth._get_redis()
     await us_client._auth._get_redis()
-    assert [url for url, _kwargs in seen] == [
-        cfg.settings.get_redis_url(),
-        cfg.settings.get_redis_url(),
-    ]
+    assert [url for url, _kwargs in seen] == [cfg.settings.get_redis_url()]
 
 
 @pytest.mark.asyncio
@@ -151,6 +149,48 @@ def test_m3_cross_lane_identity_equality_is_rejected(
 
     with pytest.raises(KiwoomConfigurationError, match="identities must be distinct"):
         factory()
+
+
+@pytest.mark.parametrize("lane", ["kr", "us"])
+def test_cross_lane_secret_identity_equality_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, lane: str
+) -> None:
+    _configure_distinct_lanes(monkeypatch)
+    from app.core import config as cfg
+
+    if lane == "kr":
+        monkeypatch.setattr(cfg.settings, "kiwoom_mock_us_app_secret", "KR-APP-SECRET")
+        factory = KiwoomMockClient.from_app_settings
+    else:
+        monkeypatch.setattr(cfg.settings, "kiwoom_mock_app_secret", "US-APP-SECRET")
+        factory = KiwoomMockUsClient.from_app_settings
+
+    with pytest.raises(KiwoomConfigurationError, match="identities must be distinct"):
+        factory()
+
+
+def test_compare_mock_leg_receives_caller_owned_isolated_redis() -> None:
+    from scripts.kiwoom_live_readonly_compare import _build_isolated_mock_client
+
+    isolated_redis = object()
+    captured: dict[str, object] = {}
+
+    def factory(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    constants_obj = type(
+        "Constants", (), {"MOCK_BASE_URL": "https://mockapi.kiwoom.com"}
+    )
+    _build_isolated_mock_client(
+        client_factory=factory,
+        constants=constants_obj,
+        creds={"KIWOOM_MOCK_APP_KEY": "key", "KIWOOM_MOCK_APP_SECRET": "secret"},
+        redis_client=isolated_redis,
+    )
+
+    assert captured["redis_client"] is isolated_redis
+    assert "redis_settings" not in captured
 
 
 @pytest.mark.asyncio

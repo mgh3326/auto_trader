@@ -151,6 +151,7 @@ class KiwoomMockClient:
         app_secret: str,
         account_no: str,
         timeout: float = constants.DEFAULT_TIMEOUT,
+        redis_client: Any | None = None,
         redis_settings: Any | None = None,
     ) -> None:
         if str(base_url).rstrip("/") != constants.MOCK_BASE_URL:
@@ -170,6 +171,7 @@ class KiwoomMockClient:
             app_secret=app_secret,
             transport=None,
             timeout=timeout,
+            redis_client=redis_client,
             redis_settings=redis_settings,
         )
         self._token_override: str | None = None
@@ -184,7 +186,7 @@ class KiwoomMockClient:
                 "Kiwoom mock account is disabled or missing required configuration: "
                 + ", ".join(missing)
             )
-        _assert_distinct_kr_us_identities(settings)
+        assert_distinct_kr_us_identities(settings)
         return cls(
             base_url=str(settings.kiwoom_mock_base_url).rstrip("/"),
             app_key=str(settings.kiwoom_mock_app_key),
@@ -362,7 +364,7 @@ class KiwoomMockClient:
         return response
 
 
-def _assert_distinct_kr_us_identities(settings_obj: Any) -> None:
+def assert_distinct_kr_us_identities(settings_obj: Any) -> None:
     """Reject a KR factory wired to the US app identity or account.
 
     Exact equality is intentional: a matching configured identity is unsafe,
@@ -371,12 +373,20 @@ def _assert_distinct_kr_us_identities(settings_obj: Any) -> None:
 
     kr_app_key = str(getattr(settings_obj, "kiwoom_mock_app_key", "") or "").strip()
     us_app_key = str(getattr(settings_obj, "kiwoom_mock_us_app_key", "") or "").strip()
+    kr_app_secret = str(
+        getattr(settings_obj, "kiwoom_mock_app_secret", "") or ""
+    ).strip()
+    us_app_secret = str(
+        getattr(settings_obj, "kiwoom_mock_us_app_secret", "") or ""
+    ).strip()
     kr_account = str(getattr(settings_obj, "kiwoom_mock_account_no", "") or "").strip()
     us_account = str(
         getattr(settings_obj, "kiwoom_mock_us_account_no", "") or ""
     ).strip()
-    if (us_app_key and kr_app_key == us_app_key) or (
-        us_account and kr_account == us_account
+    if (
+        (us_app_key and kr_app_key == us_app_key)
+        or (us_app_secret and kr_app_secret == us_app_secret)
+        or (us_account and kr_account == us_account)
     ):
         raise KiwoomConfigurationError(
             "Kiwoom KR and US mock credential/account identities must be distinct"

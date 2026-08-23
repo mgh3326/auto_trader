@@ -180,10 +180,9 @@ exit 2 + `cancel_unconfirmed`, 그리고 실제로 취소 자체는 성공해 �
 ## 7. 실행
 
 ```bash
-# 자격증명은 배포 env 파일에서. REDIS_URL 은 OAuth 토큰 캐시용으로 프로세스
-# 환경에 필요하다(pydantic settings 가 아니라 os.environ 에서 읽는다).
+# 자격증명과 Redis 설정은 배포 env 파일에서 Settings가 읽는다. 별도 process
+# REDIS_URL export는 필요하지 않으며, 값은 출력하지 않는다.
 export ENV_FILE=/path/to/.env.prod.native
-export REDIS_URL="$(grep -m1 '^REDIS_URL=' "$ENV_FILE" | cut -d= -f2-)"
 
 # ① 읽기 전용 준비상태 프로브 (주문 없음)
 B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle --readiness
