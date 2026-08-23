@@ -127,8 +127,15 @@ def test_sell_requires_distance_and_previewed_loss_guard():
     ("group_overrides", "rung_overrides", "expected_reason"),
     [
         ({"order_type": "market"}, {}, "order_type_not_limit"),
-        ({"action": "replace"}, {}, "action_not_place"),
-        ({"action": "cancel"}, {}, "action_not_place"),
+        # §141차: `replace`/`cancel` are no longer categorically excluded, so
+        # the only action that still fails on the action itself is one outside
+        # the supported vocabulary -- and it fails closed, not open.
+        ({"action": "amend"}, {}, "action_not_supported"),
+        ({"action": None}, {}, None),  # NULL action means `place`
+        # A cancel/replace whose target evidence never made it onto the group
+        # cannot prove the order is this account's to touch.
+        ({"action": "replace"}, {}, "target_evidence_missing"),
+        ({"action": "cancel"}, {}, "target_evidence_missing"),
         ({"exit_intent": "loss_cut"}, {"side": "sell"}, "loss_cut_intent"),
         (
             {"exit_intent": "unknown_future_intent"},
@@ -151,6 +158,10 @@ def test_ineligible_orders_fail_closed(
         daily_notional=Decimal("0"),
     )
 
+    if expected_reason is None:
+        assert decision.eligible is True
+        assert decision.details["action"] == "place"
+        return
     assert decision.eligible is False
     assert decision.reason == expected_reason
 
@@ -899,6 +910,376 @@ def test_auto_veto_card_raises_when_thesis_is_missing():
             policy_version="fixture-policy",
             binding=binding,
         )
+
+
+# ---------------------------------------------------------------------------
+# §141차 — replace / cancel enter the auto-approve lane
+# ---------------------------------------------------------------------------
+
+
+def _target_group(action, *, target_id="broker-1", snapshot_id=..., **overrides):
+    """A cancel/replace group carrying the evidence the real path validates."""
+    if snapshot_id is ...:
+        snapshot_id = target_id
+    source_asof = overrides.pop("source_asof", ...)
+    if source_asof is ...:
+        source_asof = {
+            "target_order_snapshot": {
+                "broker_order_id": snapshot_id,
+                "symbol": "005930",
+                "side": "sell",
+                "order_type": "limit",
+                "limit_price": "102000",
+                "remaining_quantity": "1",
+                "status": "open",
+                "observed_at": "2026-08-23T02:00:00+00:00",
+            }
+        }
+    return _group(
+        action=action,
+        target_broker_order_id=target_id,
+        source_asof=source_asof,
+        **overrides,
+    )
+
+
+def test_s141_replace_runs_the_whole_place_gate_stack():
+    """A replace's new rung is priced by exactly the rules a `place` gets."""
+    resting = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert resting.eligible is True
+    assert resting.details["action"] == "replace"
+    # The replacement's own notional is what the caps meter.
+    assert resting.details["notional"] == "99500"
+    assert resting.details["daily_notional_after"] == "99500"
+
+
+def test_s141_replace_over_per_order_cap_still_goes_to_a_card():
+    """Requirement ② — the cap is not waived because the rung is a replacement."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        # 99500 * 3 = 298500 > per_order_cap 200000
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("3")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "per_order_cap_exceeded"
+
+
+def test_s141_replace_over_daily_cap_still_goes_to_a_card():
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("400501"),  # + 99500 = 500001 > daily_cap
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "daily_cap_exceeded"
+
+
+@pytest.mark.parametrize(
+    ("side", "limit_price", "preview"),
+    [
+        ("buy", Decimal("100001"), {"success": True, "current_price": "100000"}),
+        ("buy", Decimal("100000"), {"success": True, "current_price": "100000"}),
+        (
+            "sell",
+            Decimal("99999"),
+            {
+                "success": True,
+                "current_price": "100000",
+                "avg_buy_price": "98000",
+            },
+        ),
+    ],
+)
+def test_s141_marketable_replace_still_goes_to_a_card(side, limit_price, preview):
+    """Requirement ② — resting-only survives; a veto needs a live order."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(side=side, limit_price=limit_price, quantity=Decimal("1")),
+        preview=preview,
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "marketable_not_resting"
+
+
+def test_s141_replace_keeps_the_min_distance_floor_in_off_mode():
+    """`off` mode is ROB-871's rules; a replace inherits them, not expanded's."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_LIMITS,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "distance_below_minimum"
+
+
+def test_s141_replace_sell_must_still_prove_net_profit():
+    """Break-even band and round-trip cost apply to a replacement sell too."""
+    inside_band = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(side="sell", limit_price=Decimal("98500"), quantity=Decimal("1")),
+        preview={
+            "success": True,
+            "current_price": "98000",
+            "avg_buy_price": "98000",
+        },
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+    unprofitable = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(side="sell", limit_price=Decimal("99000"), quantity=Decimal("1")),
+        preview={
+            "success": True,
+            "current_price": "98000",
+            "avg_buy_price": "98000",
+        },
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert (inside_band.eligible, inside_band.reason) == (False, "breakeven_band")
+    assert (unprofitable.eligible, unprofitable.reason) == (
+        False,
+        "expected_pnl_not_positive",
+    )
+
+
+def test_s141_replace_still_needs_a_successful_fresh_preview():
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("1")),
+        preview={"success": False, "error": "guard"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "preview_guard_failed"
+
+
+def test_s141_cancel_is_auto_approved_and_consumes_no_daily_budget():
+    """Requirement ③ — self-owned target + clean tag scan is enough."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("cancel"),
+        rung=_rung(side="sell", limit_price=Decimal("102000"), quantity=Decimal("1")),
+        preview={},  # a cancel places no order, so there is nothing to preview
+        limits=_EXPANDED,
+        daily_notional=Decimal("450000"),
+    )
+
+    assert decision.eligible is True
+    assert decision.reason == "eligible"
+    assert decision.details["action"] == "cancel"
+    assert decision.details["notional"] == "0"
+    # Cancelling reduces exposure: the running daily total must not move.
+    assert decision.details["daily_notional_before"] == "450000"
+    assert decision.details["daily_notional_after"] == "450000"
+
+
+def test_s141_cancel_is_auto_approved_even_over_the_daily_cap():
+    """The amount gates have no subject — a cancel buys nothing."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("cancel"),
+        rung=_rung(side="sell", limit_price=Decimal("999999"), quantity=Decimal("99")),
+        preview={},
+        limits=_EXPANDED,
+        daily_notional=Decimal("500000"),  # already at daily_cap
+    )
+
+    assert decision.eligible is True
+    assert decision.details["daily_notional_after"] == "500000"
+
+
+def test_s141_cancel_of_someone_elses_order_is_rejected():
+    """Requirement ③ — a target this proposal cannot prove it owns fails closed.
+
+    The authoritative ownership proof is the broker read in
+    ``revalidation._validate_target_action`` (it looks the order id up in *this
+    account's* order history). This classifier refuses to clear a target action
+    whose evidence is absent or points somewhere other than the id being
+    cancelled, so a caller that skipped that read cannot auto-approve one.
+    """
+    foreign_snapshot = evaluate_auto_approve_eligibility(
+        group=_target_group("cancel", target_id="broker-1", snapshot_id="broker-999"),
+        rung=_rung(side="sell", limit_price=Decimal("102000"), quantity=Decimal("1")),
+        preview={},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+    no_snapshot = evaluate_auto_approve_eligibility(
+        group=_target_group("cancel", source_asof={}),
+        rung=_rung(side="sell", limit_price=Decimal("102000"), quantity=Decimal("1")),
+        preview={},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+    no_target_id = evaluate_auto_approve_eligibility(
+        group=_target_group("cancel", target_id="   "),
+        rung=_rung(side="sell", limit_price=Decimal("102000"), quantity=Decimal("1")),
+        preview={},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert foreign_snapshot.eligible is False
+    assert foreign_snapshot.reason == "target_evidence_missing"
+    assert foreign_snapshot.details["target_evidence"] == "snapshot_mismatch"
+    assert no_snapshot.reason == "target_evidence_missing"
+    assert no_snapshot.details["target_evidence"] == "snapshot_missing"
+    assert no_target_id.reason == "target_evidence_missing"
+    assert no_target_id.details["target_evidence"] == "order_id_missing"
+
+
+@pytest.mark.parametrize("action", ["cancel", "replace"])
+@pytest.mark.parametrize(
+    ("group_overrides", "expected_reason"),
+    [
+        ({"exit_intent": "loss_cut"}, "loss_cut_intent"),
+        ({"exit_intent": "defensive_trim"}, "exit_intent_present"),
+        ({"thesis": "policy_deviation applied"}, "approval_required_tag"),
+        ({"account_mode": "toss_live"}, "account_not_veto_capable"),
+        ({"thesis": "  "}, "thesis_required_for_veto_card"),
+    ],
+)
+def test_s141_unrelaxed_gates_still_reject_cancel_and_replace(
+    action, group_overrides, expected_reason
+):
+    """Requirement ④ — §141차 removed one exclusion, not the safety stack."""
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group(action, **group_overrides),
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == expected_reason
+
+
+def test_s141_cancel_ignores_order_type_but_replace_does_not():
+    """A cancel places no order, so it has no order type to constrain."""
+    cancel = evaluate_auto_approve_eligibility(
+        group=_target_group("cancel", order_type="market"),
+        rung=_rung(side="sell", limit_price=Decimal("102000"), quantity=Decimal("1")),
+        preview={},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+    replace = evaluate_auto_approve_eligibility(
+        group=_target_group("replace", order_type="market"),
+        rung=_rung(limit_price=Decimal("99500"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert cancel.eligible is True
+    assert (replace.eligible, replace.reason) == (False, "order_type_not_limit")
+
+
+def test_s141_unknown_action_still_fails_closed():
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("amend"),
+        rung=_rung(),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "action_not_supported"
+    assert decision.details["action"] == "unrecognized"
+
+
+def test_s141_cancel_card_has_no_veto_button():
+    """A cancel cannot be un-cancelled; offering an undo would be a lie."""
+    group = _target_group(
+        "cancel",
+        proposal_id=uuid.uuid4(),
+        symbol="005930",
+        side="sell",
+        thesis="ladder no longer valid",
+        valid_until=datetime(2026, 8, 23, 4, 0, tzinfo=UTC),
+    )
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce="fixture-nonce",
+        attempt_id=uuid.uuid4(),
+        card_kind=ApprovalCardKind.AUTO_VETO,
+        current_membership_revision=None,
+    )
+
+    text, keyboard = build_auto_approved_message(
+        group=group,
+        rungs=[
+            _rung(side="sell", quantity=Decimal("1"), limit_price=Decimal("102000"))
+        ],
+        nonce="fixture-nonce",
+        policy_version="fixture-policy",
+        binding=binding,
+    )
+
+    assert "자동 취소됨" in text
+    assert "대상 주문: `broker-1`" in text
+    buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert not any("callback_data" in button for button in buttons)
+    assert all(button["text"] != "취소" for button in buttons)
+
+
+def test_s141_replace_card_keeps_the_veto_button():
+    """The replacement rung IS live, so the veto still has a subject."""
+    group = _target_group(
+        "replace",
+        proposal_id=uuid.uuid4(),
+        symbol="005930",
+        side="sell",
+        thesis="reprice the ladder",
+        valid_until=datetime(2026, 8, 23, 4, 0, tzinfo=UTC),
+    )
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce="fixture-nonce",
+        attempt_id=uuid.uuid4(),
+        card_kind=ApprovalCardKind.AUTO_VETO,
+        current_membership_revision=None,
+    )
+
+    text, keyboard = build_auto_approved_message(
+        group=group,
+        rungs=[
+            _rung(side="sell", quantity=Decimal("1"), limit_price=Decimal("102000"))
+        ],
+        nonce="fixture-nonce",
+        policy_version="fixture-policy",
+        binding=binding,
+    )
+
+    assert "자동 정정 접수됨" in text
+    buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert any(
+        button["text"] == "취소" and "callback_data" in button for button in buttons
+    )
 
 
 def test_policy_caps_match_the_operator_declared_limits():

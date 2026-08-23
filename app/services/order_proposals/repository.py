@@ -228,6 +228,16 @@ class OrderProposalRepository:
                 approved_at >= start,
                 approved_at < end,
                 OrderProposal.source_asof.op("?")("auto_approved"),
+                # §141차: cancel proposals became auto-approvable, and their
+                # rungs carry the *target* order's quantity/limit price. Summing
+                # those would charge the daily cap for an action that reduces
+                # exposure and buys nothing -- and would do it twice for a
+                # cancel of an order this same cap already paid for. `place` and
+                # `replace` are still summed: a replace's rung IS the new
+                # resting order, which is exactly what the cap meters. NULL
+                # means `place` (the column is nullable), so the comparison has
+                # to be NULL-safe.
+                OrderProposal.action.is_distinct_from("cancel"),
             )
         )
         if broker_account_id is None:

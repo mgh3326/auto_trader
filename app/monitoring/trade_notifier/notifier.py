@@ -367,6 +367,7 @@ class TradeNotifier:
         prices: list[str],
         thesis_summary: str,
         policy_version: str,
+        action: str = "place",
     ) -> bool:
         """Send a Discord-only mirror of the Telegram auto-veto card.
 
@@ -386,6 +387,7 @@ class TradeNotifier:
                 prices=prices,
                 thesis_summary=thesis_summary,
                 policy_version=policy_version,
+                action=action,
             )
             return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception:
