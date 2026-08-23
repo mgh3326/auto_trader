@@ -402,6 +402,7 @@ tests/test_screening_compat.py
 tests/test_screening_entrypoint.py
 tests/test_screening_instrument_type.py
 tests/test_screening_tvscreener_support.py
+tests/test_sentry_profiling_canary.py
 tests/test_session_context_mcp.py
 tests/test_snapshot_kind_investor_flow.py
 tests/test_stock_detail_investor_flow_provider.py
