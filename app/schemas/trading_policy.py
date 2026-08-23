@@ -73,6 +73,30 @@ BREAKEVEN_EXTENSION_LADDER_TIER_ID = "breakeven_extension_ladder"
 NO_RESISTANCE_REFERENCE_EXCLUSION = "no_resistance_reference"
 _RESISTANCE_CONDITION_MARKER = "resistance_near_pct"
 
+# §139차 (2026-08-22) — the two tiers added by §139차 are the first decision
+# rules that are not meaningful in every market: the index-ETF admission is a
+# KR/US equity-universe rule, and held_majors_support_net is a crypto-only
+# LIVE tier. ``markets`` is the structural scope declaration that keeps a
+# crypto live tier from being quoted back to a KR or US buy session.
+INDEX_ETF_CANDIDATE_TIER_ID = "index_etf_candidate"
+HELD_MAJORS_SUPPORT_NET_TIER_ID = "held_majors_support_net"
+_NOT_APPLICABLE_GATE = "not_applicable_structurally_absent"
+_INDEX_ETF_REQUIRED_EXCLUSIONS = ("leveraged_etf", "inverse_etf")
+# §139차 B2 — the per-tier validators below key off the TIER id, so renaming a
+# tier silently skips every pin on it. Bind each §139차 rule KEY to the tier id
+# it must declare, checked at document level where the key is known.
+_S139_REQUIRED_TIER_IDS = {
+    "buy.index_etf_candidate": INDEX_ETF_CANDIDATE_TIER_ID,
+    "buy.held_majors_support_net": HELD_MAJORS_SUPPORT_NET_TIER_ID,
+}
+_HELD_MAJORS_REQUIRED_EXCLUSIONS = (
+    "new_coin_entry",
+    "unheld_symbol",
+    "losing_position_averaging_down",
+    "market_order",
+    "crash_day_new_batch",
+)
+
 
 class PolicyDecisionRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -82,6 +106,307 @@ class PolicyDecisionRule(BaseModel):
     tiers: list[PolicyDecisionRuleTier]
     tie_breaks: dict[str, str] = Field(default_factory=dict)
     exclusions: list[str] = Field(default_factory=list)
+    # None means "every market", which is what every pre-§139차 rule declares
+    # by omission; the field is additive and back-compatible.
+    markets: list[Market] | None = None
+
+    @model_validator(mode="after")
+    def validate_markets_scope_is_non_empty(self) -> PolicyDecisionRule:
+        """An empty ``markets`` list would silently hide the rule everywhere.
+
+        Omitting the key is the sanctioned way to say "all markets"; declaring
+        ``markets: []`` is almost certainly a truncation accident, so it fails
+        the build instead of quietly disabling a live tier.
+        """
+
+        if self.markets is not None and not self.markets:
+            raise ValueError(
+                "markets must be omitted (all markets) or list at least one market"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_index_etf_candidate_stays_an_equal_candidate(
+        self,
+    ) -> PolicyDecisionRule:
+        """§139차 ③ — the ETF is admitted as a competitor, not as a fallback.
+
+        The retrospective rejected the *allocation* form of this idea ("if N
+        rounds produce no candidate, park idle cash in an index ETF") on
+        measured grounds: KR 069500 +9.62% vs US VOO -0.51% in the same
+        window, i.e. the sign flips by market and picking the market after
+        the fact is hindsight. What the operator approved is the narrower
+        thing — universe admission on equal terms. Every way the narrow form
+        could drift back into the rejected one is asserted here.
+        """
+
+        tier = self._tier_by_id(INDEX_ETF_CANDIDATE_TIER_ID)
+        if tier is None:
+            return self
+        conditions = tier.conditions
+
+        # NOT A FALLBACK — none of the three allocation-shaped behaviours may
+        # be switched on.
+        for key in (
+            "slot_reserved_for_etf",
+            "promoted_when_candidate_set_empty",
+            "idle_cash_allocation_rule",
+            "etf_specific_sizing_multiplier",
+        ):
+            if conditions.get(key) is not False:
+                raise ValueError(
+                    f"{INDEX_ETF_CANDIDATE_TIER_ID} must declare {key}: false"
+                )
+        if conditions.get("ranked_against_equities_in_same_pool") is not True:
+            raise ValueError(
+                f"{INDEX_ETF_CANDIDATE_TIER_ID} must declare "
+                "ranked_against_equities_in_same_pool: true"
+            )
+
+        # NOT A WAIVER — the gates an ETF *can* satisfy stay on; the ones it
+        # structurally cannot are marked not-applicable, never "waived", so no
+        # equity can ever inherit the relaxation.
+        for key in (
+            "rsi_gate_applies",
+            "support_strength_gate_applies",
+            "support_distance_gate_applies",
+        ):
+            if conditions.get(key) is not True:
+                raise ValueError(f"{INDEX_ETF_CANDIDATE_TIER_ID} must keep {key}: true")
+        for key in ("honest_upside_gate", "analyst_gate"):
+            if conditions.get(key) != _NOT_APPLICABLE_GATE:
+                raise ValueError(
+                    f"{INDEX_ETF_CANDIDATE_TIER_ID} must declare {key}: "
+                    f"{_NOT_APPLICABLE_GATE}"
+                )
+
+        missing = [
+            name
+            for name in _INDEX_ETF_REQUIRED_EXCLUSIONS
+            if name not in self.exclusions
+        ]
+        if missing:
+            raise ValueError(
+                f"{INDEX_ETF_CANDIDATE_TIER_ID} must retain exclusions {missing}"
+            )
+        # Equity-universe rule; crypto has no index ETF to admit.
+        if self.markets != ["kr", "us"]:
+            raise ValueError(
+                f"{INDEX_ETF_CANDIDATE_TIER_ID} is scoped to markets [kr, us]"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_held_majors_support_net_stays_bounded_and_time_boxed(
+        self,
+    ) -> PolicyDecisionRule:
+        """§139차 ⑤ — the only LIVE tier here, so its bounds are machine-pinned.
+
+        This is a pre-registered hypothesis ("상승장이라면 지지선에 매수 걸면
+        돈 벌 거잖아") running against measured counter-evidence: ROB-1031's
+        60% post-touch breakdown rate with a negative D+20 median, and the
+        XRP -8.36% one-hour flush on 2026-08-22. A pre-registration is only
+        worth the name if its scope, its size, and its retirement condition
+        cannot be edited after the fact, so each is asserted here rather than
+        left to prose.
+        """
+
+        tier = self._tier_by_id(HELD_MAJORS_SUPPORT_NET_TIER_ID)
+        if tier is None:
+            return self
+        conditions = tier.conditions
+
+        # SCOPE — held, profitable, crypto. The new-coin discovery gate is
+        # explicitly untouched, which is only true while this cannot admit an
+        # unheld or losing symbol.
+        if conditions.get("holding_required") is not True:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must require holding_required: true"
+            )
+        if conditions.get("unrealized_pnl_pct_min_exclusive") != 0:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must require "
+                "unrealized_pnl_pct_min_exclusive: 0 (profitable holdings only)"
+            )
+        if conditions.get("new_coin_discovery_gate_unchanged") is not True:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must declare "
+                "new_coin_discovery_gate_unchanged: true"
+            )
+        if self.markets != ["crypto"]:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} is scoped to markets [crypto]"
+            )
+
+        # ANCHOR — moderate strength is the relaxation the operator approved;
+        # the >= 2 independent sources are what pays for it. Neither may drift.
+        if conditions.get("support_strength_min") != "moderate":
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} anchor strength must be moderate"
+            )
+        source_min = conditions.get("independent_support_source_count_min")
+        if not isinstance(source_min, int) or isinstance(source_min, bool):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} requires a numeric "
+                "independent_support_source_count_min"
+            )
+        if source_min < 2:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} requires at least 2 "
+                "independent support sources"
+            )
+        band = conditions.get("support_distance_from_current_pct_range")
+        if (
+            not isinstance(band, list)
+            or len(band) != 2
+            or any(
+                not isinstance(edge, int | float) or isinstance(edge, bool)
+                for edge in band
+            )
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} requires a two-number "
+                "support_distance_from_current_pct_range"
+            )
+        if band != [-12, -3]:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} band must be [-12, -3]"
+            )
+
+        # EXECUTION — resting limit only. A market order here would buy the
+        # flush instead of resting under it.
+        if conditions.get("order_type") != "limit":
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must be order_type: limit"
+            )
+        if conditions.get("resting_only") is not True:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must be resting_only: true"
+            )
+        if conditions.get("per_order_cap_raised") is not False:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must declare "
+                "per_order_cap_raised: false — it rides the existing cap"
+            )
+
+        # SIZE — per-coin and tier caps, and the per-(coin, level) once rule.
+        per_coin = conditions.get("max_notional_krw_per_coin")
+        per_tier = conditions.get("max_notional_krw_per_tier")
+        if per_coin != 300000:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} per-coin cap must be 300000 KRW"
+            )
+        if per_tier != 900000:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} tier cap must be 900000 KRW"
+            )
+        if (
+            conditions.get(
+                "max_placements_per_coin_per_support_level_per_policy_version"
+            )
+            != 1
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} allows one placement per "
+                "coin per support level per policy version"
+            )
+
+        # SCORING — a pre-registration with no scoring obligation is just an
+        # authorization, and the retirement bar must predate the batches.
+        if conditions.get("forecast_save_required") is not True:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must require forecast_save"
+            )
+        review_date = conditions.get("review_date")
+        if not isinstance(review_date, str):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} requires a review_date"
+            )
+        date.fromisoformat(review_date)
+        if conditions.get("retire_unless_filled_cohort_d20_median_pct_min") != 0:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} retirement bar requires a "
+                "filled-cohort D+20 median floor of 0"
+            )
+        if (
+            conditions.get(
+                "retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"
+            )
+            != -8
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} retirement bar requires a "
+                "filled-cohort D+20 lower-quartile floor of -8"
+            )
+
+        # ENFORCEMENT SURFACE (B1) — the tier is advisory like every other
+        # tier here. Saying so is the honest description, so it is pinned:
+        # a later edit claiming this tier is code-enforced, or claiming a
+        # machine "major" allowlist exists, fails the build instead of
+        # shipping a promise the repo cannot keep.
+        if conditions.get("enforcement_surface") != "advisory_session_contract":
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must declare "
+                "enforcement_surface: advisory_session_contract"
+            )
+        if (
+            conditions.get("code_enforced_boundary")
+            != "crypto_per_order_auto_approve_cap_then_card"
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must name the only "
+                "code-enforced boundary: crypto_per_order_auto_approve_cap_then_card"
+            )
+        if (
+            conditions.get("major_classification")
+            != "session_judgment_no_machine_allowlist"
+        ):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must declare "
+                "major_classification: session_judgment_no_machine_allowlist — "
+                "the tier carries no coin allowlist or classifier"
+            )
+
+        # CRASH REGIME — explicitly NOT the preplanned ladder's "keep".
+        if conditions.get("crash_day_new_batch_suspended") is not True:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must suspend new batches on "
+                "a crash day"
+            )
+        drawdown = conditions.get("crypto_crash_24h_drawdown_pct_max")
+        if not isinstance(drawdown, int | float) or isinstance(drawdown, bool):
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} requires a numeric "
+                "crypto_crash_24h_drawdown_pct_max"
+            )
+        # Pinned, not bounded: a MORE negative threshold is the loosening that
+        # matters (it keeps batching through a deeper crash), and a less
+        # negative one silently redefines "crash" for this tier only. §139차
+        # fixed the number at -10%, so drift in either direction fails.
+        if drawdown != -10:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} crash suspension triggers at a "
+                "-10% 24h drawdown"
+            )
+
+        missing = [
+            name
+            for name in _HELD_MAJORS_REQUIRED_EXCLUSIONS
+            if name not in self.exclusions
+        ]
+        if missing:
+            raise ValueError(
+                f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must retain exclusions {missing}"
+            )
+        return self
+
+    def _tier_by_id(self, tier_id: str) -> PolicyDecisionRuleTier | None:
+        matches = [tier for tier in self.tiers if tier.id == tier_id]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise ValueError(f"{tier_id} must be declared exactly once")
+        return matches[0]
 
     @model_validator(mode="after")
     def validate_breakeven_extension_ladder_stays_a_fallback(
@@ -835,3 +1160,24 @@ class TradingPolicyDocument(BaseModel):
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
     user_stances: list[UserStance]
+
+    @model_validator(mode="after")
+    def validate_s139_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
+        """A §139차 rule key must carry the tier id its validators key off.
+
+        Removing the rule entirely is a sanctioned retirement (§139차 ⓒ is
+        scored and retired on 2026-09-19); renaming its tier while keeping the
+        key is not — that keeps the policy surface and drops every guard.
+        """
+
+        for key, tier_id in _S139_REQUIRED_TIER_IDS.items():
+            rule = self.decision_rules.get(key)
+            if rule is None:
+                continue
+            tier_ids = [tier.id for tier in getattr(rule, "tiers", [])]
+            if not isinstance(rule, PolicyDecisionRule) or tier_id not in tier_ids:
+                raise ValueError(
+                    f"{key} must declare tier id {tier_id!r} so its §139차 "
+                    f"validators run; got {tier_ids}"
+                )
+        return self

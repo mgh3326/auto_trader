@@ -13,6 +13,7 @@ from typing import Any, Literal
 import yaml
 
 from app.schemas.trading_policy import (
+    PolicyDecisionRule,
     SingleShareExitDecisionRule,
     TradingPolicyDocument,
 )
@@ -177,7 +178,18 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             and market not in spec.scope.markets
         ):
             continue
-        decision_rules[key] = spec.model_dump(exclude={"lanes"})
+        # §139차 — a rule may declare the markets it is meaningful in. Omitting
+        # the key keeps the pre-§139차 behaviour (every market), so this only
+        # narrows the two rules that opt in: the crypto-only held-majors LIVE
+        # tier must never be quoted back to a KR or US buy session, and the
+        # index-ETF admission must never surface in a crypto one.
+        if (
+            isinstance(spec, PolicyDecisionRule)
+            and spec.markets is not None
+            and market not in spec.markets
+        ):
+            continue
+        decision_rules[key] = spec.model_dump(exclude={"lanes", "markets"})
     market_rules: dict[str, Any] = {}
     rules = doc.market_rules.get("crypto") if market == "crypto" else None
     if rules is not None:

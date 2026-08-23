@@ -46,6 +46,25 @@ _ROB1292_ALLOWED_POLICY_DELTAS = (
     ("order_proposals.auto_approve.daily_cap.crypto", 300000, 5000000),
 )
 
+# §139차 (2026-08-22) — value deltas outside the auto-approve block. Kept in a
+# separate tuple because _ROB1292_ALLOWED_POLICY_DELTAS is also consumed by a
+# test that strips the "order_proposals.auto_approve." prefix from every entry.
+# Key tuples, not dotted strings: policy threshold keys contain dots
+# ("buy.per_symbol_notional_usd_range"), so the dotted-path helpers used for
+# the auto-approve block cannot address them.
+_S139_ALLOWED_POLICY_DELTAS = (
+    (
+        (
+            "thresholds",
+            "buy.per_symbol_notional_usd_range",
+            "one_share_exception",
+            "absolute_ceiling_usd",
+        ),
+        700,
+        10000,
+    ),
+)
+
 
 def _raw() -> dict:
     return yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
@@ -56,6 +75,20 @@ def _policy_path_get(payload: dict, path: str):
     for key in path.split("."):
         value = value[key]
     return value
+
+
+def _policy_keys_get(payload: dict, keys: tuple[str, ...]):
+    value = payload
+    for key in keys:
+        value = value[key]
+    return value
+
+
+def _policy_keys_set(payload: dict, keys: tuple[str, ...], value) -> None:
+    target = payload
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
 
 
 def _policy_path_set(payload: dict, path: str, value) -> None:
@@ -151,7 +184,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-21.4"
+    assert doc.version == "2026-08-22.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1037,7 +1070,37 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     ]
     del current_dump["decision_rules"]["buy.new_entry_overflow"]
 
+    # §139차 (2026-08-22) — two additive decision rules and exactly one value
+    # delta outside them. Pin the load-bearing fields of both new rules here so
+    # a later silent rewrite (a waived gate, a raised cap, a dropped
+    # retirement bar) fails this closed-equivalence test rather than shipping.
+    assert "buy.index_etf_candidate" not in baseline_dump["decision_rules"]
+    etf = current_dump["decision_rules"]["buy.index_etf_candidate"]
+    assert etf["exclusions"] == ["leveraged_etf", "inverse_etf"]
+    assert etf["tiers"][0]["conditions"]["idle_cash_allocation_rule"] is False
+    assert etf["tiers"][0]["conditions"]["promoted_when_candidate_set_empty"] is False
+    del current_dump["decision_rules"]["buy.index_etf_candidate"]
+
+    assert "buy.held_majors_support_net" not in baseline_dump["decision_rules"]
+    net = current_dump["decision_rules"]["buy.held_majors_support_net"]
+    assert net["exclusions"] == [
+        "new_coin_entry",
+        "unheld_symbol",
+        "losing_position_averaging_down",
+        "market_order",
+        "crash_day_new_batch",
+    ]
+    net_conditions = net["tiers"][0]["conditions"]
+    assert net_conditions["max_notional_krw_per_coin"] == 300000
+    assert net_conditions["max_notional_krw_per_tier"] == 900000
+    assert net_conditions["review_date"] == "2026-09-19"
+    del current_dump["decision_rules"]["buy.held_majors_support_net"]
+
     normalized_current_dump = deepcopy(current_dump)
+    for keys, baseline_value, current_value in _S139_ALLOWED_POLICY_DELTAS:
+        assert _policy_keys_get(baseline_dump, keys) == baseline_value
+        assert _policy_keys_get(current_dump, keys) == current_value
+        _policy_keys_set(normalized_current_dump, keys, baseline_value)
     for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
         assert _policy_path_get(baseline_dump, path) == baseline_value
         assert _policy_path_get(current_dump, path) == current_value
@@ -1143,7 +1206,9 @@ def test_us_notional_usd_range_parses_with_one_share_exception():
     exception = us_range.one_share_exception
     assert exception is not None
     assert exception.enabled is True
-    assert exception.absolute_ceiling_usd == 700
+    # §139차 — the absolute ceiling is now a fat-finger guard only (BRK.A /
+    # NVR class), not a risk cap; cash and the per-order auto-approve cap are.
+    assert exception.absolute_ceiling_usd == 10000
     assert exception.max_deep_rungs == 1
 
 
@@ -1578,3 +1643,524 @@ def test_rob_1298_leaves_loss_guard_d7_and_auto_approve_gates_untouched():
     current_trim = current["decision_rules"]["sell.trim_preplace"]
     assert current_trim["tiers"][0] == baseline_trim["tiers"][0]
     assert current_trim["tiers"][1] == baseline_trim["tiers"][1]
+
+
+# ---------------------------------------------------------------------------
+# §139차 (2026-08-22) — buy-side retrospective decisions ⓐ/ⓑ/ⓒ
+# ---------------------------------------------------------------------------
+
+_ETF_TIER_ID = "index_etf_candidate"
+_HELD_MAJORS_TIER_ID = "held_majors_support_net"
+_ETF_RULE_KEY = "buy.index_etf_candidate"
+_HELD_MAJORS_RULE_KEY = "buy.held_majors_support_net"
+
+
+def _rule_mutant(rule_key: str, mutate) -> dict:
+    raw = _raw()
+    mutate(raw["decision_rules"][rule_key])
+    return raw
+
+
+def test_s139_one_share_ceiling_is_raised_but_the_gate_is_still_armed():
+    """ⓐ — the ceiling moves; the exception itself does not become unbounded.
+
+    The operator's boundary is cash plus the per-order auto-approve cap, so
+    the two keys that express that boundary must be unchanged by this edit.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    exception = doc.thresholds["buy.per_symbol_notional_usd_range"].one_share_exception
+
+    assert exception is not None
+    assert exception.enabled is True
+    assert exception.absolute_ceiling_usd == 10000
+    # Averaging-down exposure on an exception entry is NOT widened alongside it.
+    assert exception.max_deep_rungs == 1
+    # The real boundary: the USD per-order auto-approve cap is untouched, so a
+    # single share above it still routes to manual approval rather than auto.
+    assert doc.order_proposals.auto_approve.per_order_cap["us"] == 1500
+    # And the standard tranche band is unchanged — this is an exception path,
+    # not a new default size.
+    assert doc.thresholds["buy.per_symbol_notional_usd_range"].value == [150, 450]
+
+
+def test_s139_index_etf_candidate_parses_as_an_equal_candidate():
+    """ⓑ — admission to the universe, not an allocation rule."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    rule = doc.decision_rules[_ETF_RULE_KEY]
+
+    assert isinstance(rule, policy_schema.PolicyDecisionRule)
+    assert rule.lanes == ["buy", "discovery"]
+    assert rule.markets == ["kr", "us"]
+    assert [tier.id for tier in rule.tiers] == [_ETF_TIER_ID]
+    assert rule.exclusions == ["leveraged_etf", "inverse_etf"]
+
+    conditions = rule.tiers[0].conditions
+    # The rejected allocation form stays rejected.
+    assert conditions["idle_cash_allocation_rule"] is False
+    assert conditions["slot_reserved_for_etf"] is False
+    assert conditions["promoted_when_candidate_set_empty"] is False
+    assert conditions["etf_specific_sizing_multiplier"] is False
+    assert conditions["ranked_against_equities_in_same_pool"] is True
+    # Gates an ETF can satisfy stay on at the same thresholds.
+    assert conditions["rsi_gate_applies"] is True
+    assert conditions["support_strength_gate_applies"] is True
+    assert conditions["support_distance_gate_applies"] is True
+    # Gates it structurally cannot are not-applicable, never "waived".
+    assert conditions["honest_upside_gate"] == "not_applicable_structurally_absent"
+    assert conditions["analyst_gate"] == "not_applicable_structurally_absent"
+    assert "EQUAL candidate" in rule.semantics
+    assert "never an idle-cash fallback" in rule.semantics
+
+
+def test_s139_index_etf_is_scoped_out_of_the_crypto_lane():
+    from app.services.trading_policy_service import get_policy_for
+
+    assert _ETF_RULE_KEY in get_policy_for("kr", "buy")["decision_rules"]
+    assert _ETF_RULE_KEY in get_policy_for("us", "buy")["decision_rules"]
+    assert _ETF_RULE_KEY in get_policy_for("kr", "discovery")["decision_rules"]
+    assert _ETF_RULE_KEY not in get_policy_for("crypto", "buy")["decision_rules"]
+
+
+def test_s139_held_majors_support_net_parses_as_a_bounded_time_boxed_tier():
+    """ⓒ — the only LIVE tier here; every bound is asserted, not assumed."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    rule = doc.decision_rules[_HELD_MAJORS_RULE_KEY]
+
+    assert isinstance(rule, policy_schema.PolicyDecisionRule)
+    assert rule.lanes == ["buy"]
+    assert rule.markets == ["crypto"]
+    assert [tier.id for tier in rule.tiers] == [_HELD_MAJORS_TIER_ID]
+    assert rule.exclusions == [
+        "new_coin_entry",
+        "unheld_symbol",
+        "losing_position_averaging_down",
+        "market_order",
+        "crash_day_new_batch",
+    ]
+
+    conditions = rule.tiers[0].conditions
+    # Scope: held + profitable only, so new-coin discovery is untouched.
+    assert conditions["holding_required"] is True
+    assert conditions["unrealized_pnl_pct_min_exclusive"] == 0
+    assert conditions["new_coin_discovery_gate_unchanged"] is True
+    # Anchor: moderate is the relaxation, >= 2 independent sources pay for it.
+    assert conditions["support_strength_min"] == "moderate"
+    assert conditions["independent_support_source_count_min"] == 2
+    assert conditions["support_distance_from_current_pct_range"] == [-12, -3]
+    # Execution: resting limit through the existing cap, GTC per Upbit.
+    assert conditions["order_type"] == "limit"
+    assert conditions["resting_only"] is True
+    assert conditions["tif"] == "GTC"
+    assert conditions["auto_approve_path"] == "existing_per_order_cap"
+    assert conditions["per_order_cap_raised"] is False
+    # Size: per-coin cap fits three placements inside the tier cap, and every
+    # single order is far below the crypto per-order auto-approve cap.
+    assert conditions["max_notional_krw_per_coin"] == 300000
+    assert conditions["max_notional_krw_per_tier"] == 900000
+    assert (
+        conditions["max_placements_per_coin_per_support_level_per_policy_version"] == 1
+    )
+    assert (
+        conditions["max_notional_krw_per_coin"]
+        <= doc.order_proposals.auto_approve.per_order_cap["crypto"]
+    )
+    # Scoring: pre-registered, with the retirement bar fixed before the batches.
+    assert conditions["forecast_save_required"] is True
+    assert conditions["review_date"] == "2026-09-19"
+    assert conditions["retire_unless_filled_cohort_d20_median_pct_min"] == 0
+    assert (
+        conditions["retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"]
+        == -8
+    )
+    # Enforcement surface (B1): advisory, with the one real boundary named.
+    assert conditions["enforcement_surface"] == "advisory_session_contract"
+    assert (
+        conditions["code_enforced_boundary"]
+        == "crypto_per_order_auto_approve_cap_then_card"
+    )
+    assert conditions["major_classification"] == "session_judgment_no_machine_allowlist"
+    # Crash regime: explicitly NOT the preplanned ladder's "keep".
+    assert conditions["crash_day_new_batch_suspended"] is True
+    assert conditions["crypto_crash_24h_drawdown_pct_max"] == -10
+    ladder = doc.decision_rules["buy.preplanned_support_ladder"]
+    assert isinstance(ladder, PreplannedSupportLadderPolicy)
+    assert ladder.crash_day_behavior == "keep"
+
+
+def test_s139_held_majors_semantics_records_the_counter_evidence():
+    """A pre-registration that argues its counter-evidence away is not one."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    semantics = doc.decision_rules[_HELD_MAJORS_RULE_KEY].semantics
+
+    yaml_text = _CONFIG.read_text(encoding="utf-8")
+    start = yaml_text.index("# §139차 (2026-08-22) — crypto 보유 메이저")
+    end = yaml_text.index("  sell.trim_preplace:", start)
+    rule_block = yaml_text[start:end]
+
+    # The measured evidence that argues AGAINST this tier is carried with it.
+    assert "ROB-1031" in rule_block
+    assert "60%" in rule_block
+    assert "-8.36%" in rule_block
+    assert "XRP" in rule_block
+    # And the operator's own words, so the hypothesis is attributable.
+    # (the quote wraps across two comment lines in the YAML)
+    assert "상승장이라면" in rule_block
+    assert "지지선에 매수 걸면 돈 벌 거잖아" in rule_block
+
+    assert "2026-09-19" in semantics
+    assert "RETIRED" in semantics
+
+
+def test_s139_held_majors_semantics_does_not_overclaim_enforcement():
+    """B1 — "LIVE" must not read as "this repo enforces it".
+
+    Every tier in this file is advisory (``authority.scope:
+    judgment_policy_only``). The caps, the once-per-level rule, the crash
+    suspension, and the forecast obligation are a session contract carried by
+    the operator prompt; the only boundary code actually enforces on a
+    resulting order is the crypto per-order auto-approve cap.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    semantics = doc.decision_rules[_HELD_MAJORS_RULE_KEY].semantics
+
+    assert "ENFORCEMENT SURFACE" in semantics
+    assert "advisory" in semantics
+    assert "judgment_policy_only" in doc.authority.scope
+    assert "SESSION CONTRACT" in semantics
+    assert "not a machine" in semantics
+    assert '"LIVE" describes the funds, not an armed executor' in semantics
+    # The operator-side counterpart is named, so the contract has an owner.
+    assert "auto_trader-operator live/CLAUDE.md" in semantics
+    # "Major" is not claimed to be machine-checked, because it is not.
+    assert "no coin allowlist or classifier" in semantics
+    # And the named boundary is the one that is really enforced in code.
+    assert "1,000,000 KRW per-order cap" in semantics
+    assert doc.order_proposals.auto_approve.per_order_cap["crypto"] == 1000000
+
+
+def test_s139_held_majors_is_scoped_out_of_the_equity_lanes():
+    from app.services.trading_policy_service import get_policy_for
+
+    assert _HELD_MAJORS_RULE_KEY in get_policy_for("crypto", "buy")["decision_rules"]
+    assert _HELD_MAJORS_RULE_KEY not in get_policy_for("kr", "buy")["decision_rules"]
+    assert _HELD_MAJORS_RULE_KEY not in get_policy_for("us", "buy")["decision_rules"]
+
+
+def test_s139_markets_scope_is_stripped_from_the_consumer_view():
+    """``markets`` is scoping metadata, echoed no more than ``lanes`` is."""
+
+    from app.services.trading_policy_service import get_policy_for
+
+    for market, lane in (("kr", "buy"), ("us", "buy"), ("crypto", "buy")):
+        for rule in get_policy_for(market, lane)["decision_rules"].values():
+            assert "markets" not in rule
+            assert "lanes" not in rule
+
+
+def test_s139_pre_existing_rules_keep_the_all_markets_default():
+    doc = TradingPolicyDocument.model_validate(_raw())
+
+    for key in (
+        "buy.support_reserve_net",
+        "buy.preplanned_support_ladder",
+        "buy.winner_pullback_add",
+        "buy.new_entry_overflow",
+        "sell.trim_preplace",
+    ):
+        rule = doc.decision_rules[key]
+        assert getattr(rule, "markets", None) is None
+
+
+def test_s139_empty_markets_list_is_rejected():
+    """``markets: []`` would silently disable a live tier in every market."""
+
+    raw = _raw()
+    raw["decision_rules"][_HELD_MAJORS_RULE_KEY]["markets"] = []
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def _mutate_etf_becomes_idle_cash_allocation(rule) -> None:
+    rule["tiers"][0]["conditions"]["idle_cash_allocation_rule"] = True
+
+
+def _mutate_etf_reserves_a_slot(rule) -> None:
+    rule["tiers"][0]["conditions"]["slot_reserved_for_etf"] = True
+
+
+def _mutate_etf_promoted_when_empty(rule) -> None:
+    rule["tiers"][0]["conditions"]["promoted_when_candidate_set_empty"] = True
+
+
+def _mutate_etf_waives_rsi(rule) -> None:
+    rule["tiers"][0]["conditions"]["rsi_gate_applies"] = False
+
+
+def _mutate_etf_waives_support_strength(rule) -> None:
+    rule["tiers"][0]["conditions"]["support_strength_gate_applies"] = False
+
+
+def _mutate_etf_upside_gate_waived_not_inapplicable(rule) -> None:
+    rule["tiers"][0]["conditions"]["honest_upside_gate"] = "waived"
+
+
+def _mutate_etf_drops_leverage_exclusion(rule) -> None:
+    rule["exclusions"] = ["inverse_etf"]
+
+
+def _mutate_etf_special_sizing(rule) -> None:
+    rule["tiers"][0]["conditions"]["etf_specific_sizing_multiplier"] = True
+
+
+def _mutate_etf_leaks_into_crypto(rule) -> None:
+    rule["markets"] = ["kr", "us", "crypto"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _mutate_etf_becomes_idle_cash_allocation,
+        _mutate_etf_reserves_a_slot,
+        _mutate_etf_promoted_when_empty,
+        _mutate_etf_waives_rsi,
+        _mutate_etf_waives_support_strength,
+        _mutate_etf_upside_gate_waived_not_inapplicable,
+        _mutate_etf_drops_leverage_exclusion,
+        _mutate_etf_special_sizing,
+        _mutate_etf_leaks_into_crypto,
+    ],
+    ids=[
+        "becomes_idle_cash_allocation",
+        "reserves_a_slot",
+        "promoted_when_candidate_set_empty",
+        "waives_rsi_gate",
+        "waives_support_strength_gate",
+        "upside_gate_waived_instead_of_inapplicable",
+        "drops_leveraged_etf_exclusion",
+        "invents_etf_specific_sizing",
+        "leaks_into_the_crypto_lane",
+    ],
+)
+def test_s139_index_etf_candidate_mutants_are_rejected(mutate):
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(_rule_mutant(_ETF_RULE_KEY, mutate))
+
+
+def _mutate_net_admits_unheld(rule) -> None:
+    rule["tiers"][0]["conditions"]["holding_required"] = False
+
+
+def _mutate_net_admits_losing_lot(rule) -> None:
+    rule["tiers"][0]["conditions"]["unrealized_pnl_pct_min_exclusive"] = -5
+
+
+def _mutate_net_touches_new_coin_gate(rule) -> None:
+    rule["tiers"][0]["conditions"]["new_coin_discovery_gate_unchanged"] = False
+
+
+def _mutate_net_drops_support_strength_to_weak(rule) -> None:
+    rule["tiers"][0]["conditions"]["support_strength_min"] = "weak"
+
+
+def _mutate_net_drops_to_single_source(rule) -> None:
+    rule["tiers"][0]["conditions"]["independent_support_source_count_min"] = 1
+
+
+def _mutate_net_widens_band(rule) -> None:
+    rule["tiers"][0]["conditions"]["support_distance_from_current_pct_range"] = [-20, 0]
+
+
+def _mutate_net_allows_market_order(rule) -> None:
+    rule["tiers"][0]["conditions"]["order_type"] = "market"
+
+
+def _mutate_net_raises_per_coin_cap(rule) -> None:
+    rule["tiers"][0]["conditions"]["max_notional_krw_per_coin"] = 1000000
+
+
+def _mutate_net_raises_tier_cap(rule) -> None:
+    rule["tiers"][0]["conditions"]["max_notional_krw_per_tier"] = 3000000
+
+
+def _mutate_net_allows_repeat_placements(rule) -> None:
+    conditions = rule["tiers"][0]["conditions"]
+    conditions["max_placements_per_coin_per_support_level_per_policy_version"] = 5
+
+
+def _mutate_net_drops_forecast_obligation(rule) -> None:
+    rule["tiers"][0]["conditions"]["forecast_save_required"] = False
+
+
+def _mutate_net_softens_retirement_median(rule) -> None:
+    rule["tiers"][0]["conditions"][
+        "retire_unless_filled_cohort_d20_median_pct_min"
+    ] = -5
+
+
+def _mutate_net_softens_retirement_quartile(rule) -> None:
+    conditions = rule["tiers"][0]["conditions"]
+    conditions["retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"] = -30
+
+
+def _mutate_net_drops_review_date(rule) -> None:
+    del rule["tiers"][0]["conditions"]["review_date"]
+
+
+def _mutate_net_keeps_batching_through_a_crash(rule) -> None:
+    rule["tiers"][0]["conditions"]["crash_day_new_batch_suspended"] = False
+
+
+def _mutate_net_loosens_crash_trigger(rule) -> None:
+    rule["tiers"][0]["conditions"]["crypto_crash_24h_drawdown_pct_max"] = -30
+
+
+def _mutate_net_raises_the_per_order_cap(rule) -> None:
+    rule["tiers"][0]["conditions"]["per_order_cap_raised"] = True
+
+
+def _mutate_net_drops_new_coin_exclusion(rule) -> None:
+    rule["exclusions"] = [
+        name for name in rule["exclusions"] if name != "new_coin_entry"
+    ]
+
+
+def _mutate_net_leaks_into_equity_lanes(rule) -> None:
+    rule["markets"] = ["kr", "us", "crypto"]
+
+
+def _mutate_net_claims_code_enforcement(rule) -> None:
+    rule["tiers"][0]["conditions"]["enforcement_surface"] = "code_enforced"
+
+
+def _mutate_net_drops_the_enforcement_surface(rule) -> None:
+    del rule["tiers"][0]["conditions"]["enforcement_surface"]
+
+
+def _mutate_net_claims_a_major_allowlist(rule) -> None:
+    conditions = rule["tiers"][0]["conditions"]
+    conditions["major_classification"] = "machine_allowlist_btc_eth_link"
+
+
+def _mutate_net_renames_the_real_boundary(rule) -> None:
+    rule["tiers"][0]["conditions"]["code_enforced_boundary"] = "tier_total_900000_krw"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _mutate_net_admits_unheld,
+        _mutate_net_admits_losing_lot,
+        _mutate_net_touches_new_coin_gate,
+        _mutate_net_drops_support_strength_to_weak,
+        _mutate_net_drops_to_single_source,
+        _mutate_net_widens_band,
+        _mutate_net_allows_market_order,
+        _mutate_net_raises_per_coin_cap,
+        _mutate_net_raises_tier_cap,
+        _mutate_net_allows_repeat_placements,
+        _mutate_net_drops_forecast_obligation,
+        _mutate_net_softens_retirement_median,
+        _mutate_net_softens_retirement_quartile,
+        _mutate_net_drops_review_date,
+        _mutate_net_keeps_batching_through_a_crash,
+        _mutate_net_loosens_crash_trigger,
+        _mutate_net_raises_the_per_order_cap,
+        _mutate_net_drops_new_coin_exclusion,
+        _mutate_net_leaks_into_equity_lanes,
+        _mutate_net_claims_code_enforcement,
+        _mutate_net_drops_the_enforcement_surface,
+        _mutate_net_claims_a_major_allowlist,
+        _mutate_net_renames_the_real_boundary,
+    ],
+    ids=[
+        "admits_an_unheld_coin",
+        "admits_a_losing_lot",
+        "claims_the_new_coin_gate_changed",
+        "drops_support_strength_to_weak",
+        "drops_to_a_single_support_source",
+        "widens_the_anchor_band",
+        "allows_a_market_order",
+        "raises_the_per_coin_cap",
+        "raises_the_tier_cap",
+        "allows_repeat_placements",
+        "drops_the_forecast_obligation",
+        "softens_the_retirement_median",
+        "softens_the_retirement_quartile",
+        "drops_the_review_date",
+        "keeps_batching_through_a_crash",
+        "loosens_the_crash_trigger",
+        "raises_the_per_order_cap",
+        "drops_the_new_coin_exclusion",
+        "leaks_into_the_equity_lanes",
+        "claims_code_enforcement",
+        "drops_the_enforcement_surface",
+        "claims_a_machine_major_allowlist",
+        "renames_the_real_code_boundary",
+    ],
+)
+def test_s139_held_majors_support_net_mutants_are_rejected(mutate):
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(
+            _rule_mutant(_HELD_MAJORS_RULE_KEY, mutate)
+        )
+
+
+@pytest.mark.parametrize("rule_key", [_ETF_RULE_KEY, _HELD_MAJORS_RULE_KEY])
+def test_s139_renaming_a_tier_id_cannot_bypass_its_validators(rule_key):
+    """B2 — the per-tier pins key off the tier id; the key binds it.
+
+    Before this binding, renaming the tier while keeping the rule key made
+    every §139차 validator return early, so a policy surface still named
+    ``buy.held_majors_support_net`` could carry an unpinned tier.
+    """
+
+    raw = _raw()
+    rule = raw["decision_rules"][rule_key]
+    original_id = rule["tiers"][0]["id"]
+    rule["tiers"][0]["id"] = f"{original_id}_v2"
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s139_new_rules_reject_typo_keys():
+    for key in (_ETF_RULE_KEY, _HELD_MAJORS_RULE_KEY):
+        raw = _raw()
+        raw["decision_rules"][key]["bogus"] = True
+        with pytest.raises(ValidationError):
+            TradingPolicyDocument.model_validate(raw)
+
+
+def test_s139_leaves_the_crypto_and_kr_approval_caps_untouched():
+    """No cap is raised by §139차; the tier rides the existing approval lane."""
+
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current = _raw()
+
+    current_auto = deepcopy(current["order_proposals"]["auto_approve"])
+    baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
+    for path, baseline_value, _current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
+        suffix = path.removeprefix("order_proposals.auto_approve.")
+        _policy_path_set(current_auto, suffix, baseline_value)
+    assert current_auto == baseline_auto
+
+    # The new-coin discovery gates §139차 promises not to touch.
+    for key in (
+        "buy.deep_limit_pct_range",
+        "buy.per_symbol_notional_krw_range",
+        "sell.loss_guard_min_multiple",
+    ):
+        assert current["thresholds"][key] == baseline["thresholds"][key]
+    assert (
+        current["market_rules"]["crypto"]["no_chasing"]
+        == baseline["market_rules"]["crypto"]["no_chasing"]
+    )
+    assert (
+        current["market_rules"]["crypto"]["recovery_gate"]
+        == baseline["market_rules"]["crypto"]["recovery_gate"]
+    )
