@@ -123,19 +123,28 @@ class MarketEventsQueryService:
 
         rows = (await self.db.execute(stmt)).scalars().all()
 
+        # ROB-1314 — bulk-load event values in one query. The previous loop
+        # issued one SELECT per event row (SQL N+1) and dominated /invest
+        # calendar latency on dense ranges.
+        values_by_event_id: dict[int, list[MarketEventValue]] = {}
+        event_ids = [row.id for row in rows]
+        if event_ids:
+            values_stmt = (
+                select(MarketEventValue)
+                .where(MarketEventValue.event_id.in_(event_ids))
+                .order_by(MarketEventValue.id.asc())
+            )
+            value_rows = (
+                (await self.db.execute(values_stmt)).scalars().all()
+            )
+            for value_row in value_rows:
+                values_by_event_id.setdefault(value_row.event_id, []).append(
+                    value_row
+                )
+
         out: list[MarketEventResponse] = []
         for row in rows:
-            value_rows = (
-                (
-                    await self.db.execute(
-                        select(MarketEventValue).where(
-                            MarketEventValue.event_id == row.id
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            value_rows = values_by_event_id.get(row.id, [])
             out.append(
                 MarketEventResponse(
                     category=row.category,
