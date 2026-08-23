@@ -47,7 +47,7 @@ def _rate(value: Any) -> str:
 
 def _window_table(summary: dict[str, Any], window: str) -> list[str]:
     lines = [
-        f"| 코호트 | n(제출) | n(채점가능) | 중앙값 | 평균 | 승률 | MDD 중앙값 | p10 | p90 |",
+        "| 코호트 | n(제출) | n(채점가능) | 중앙값 | 평균 | 승률 | MDD 중앙값 | p10 | p90 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for key, label in COHORT_ROWS:
