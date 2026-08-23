@@ -1,7 +1,9 @@
-# Auto-approve eligibility expansion (§40차)
+# Auto-approve eligibility expansion (§40차, §141차)
 
 Extends ROB-871 resting-class auto-approval with the §40차 classification:
 **auto-submit, then veto**, for buys and for *proven* profit-take sells.
+§141차 additionally admits `replace` and `cancel` proposals to the same lane
+(§7) without relaxing any gate.
 
 Ships inert. `ORDER_PROPOSALS_AUTO_APPROVE_MODE` defaults to `off`, which is
 ROB-871 behaviour unchanged. Arming it is an operator decision and is not part
@@ -29,16 +31,23 @@ Two gates sit above it and neither moved:
 Structural gates, applied in both modes, in this order — the first that fires
 wins and the proposal goes to a human:
 
-1. `action != place` → `action_not_place`
-2. `order_type != limit` → `order_type_not_limit`
-3. `exit_intent == "loss_cut"` → **`loss_cut_intent`**
-4. any other `exit_intent` → `exit_intent_present`
-5. account/market not in `_VETO_CAPABLE_ACCOUNT_MARKETS` → `account_not_veto_capable`
-6. `policy_deviation` / `table_disagreement` tag → **`approval_required_tag`**
-7. preview did not succeed → `preview_guard_failed`
-8. missing/non-positive price or quantity → `price_or_quantity_missing`
-9. per-order cap → `per_order_cap_exceeded`
-10. daily cap → `daily_cap_exceeded`
+1. `action` outside `{place, replace, cancel}` → `action_not_supported`
+   (§141차; before it, every non-`place` action was rejected as
+   `action_not_place` — retired, see §7)
+2. `replace`/`cancel` with absent or self-inconsistent target evidence →
+   `target_evidence_missing` (§141차)
+3. `order_type != limit` → `order_type_not_limit` (**not applied to `cancel`**,
+   which places no order)
+4. `exit_intent == "loss_cut"` → **`loss_cut_intent`**
+5. any other `exit_intent` → `exit_intent_present`
+6. account/market not in `_VETO_CAPABLE_ACCOUNT_MARKETS` → `account_not_veto_capable`
+7. `policy_deviation` / `table_disagreement` tag → **`approval_required_tag`**
+8. *(`cancel` is decided here — see §7. Everything below prices an order, and a
+   cancel places none.)*
+9. preview did not succeed → `preview_guard_failed`
+10. missing/non-positive price or quantity → `price_or_quantity_missing`
+11. per-order cap → `per_order_cap_exceeded`
+12. daily cap → `daily_cap_exceeded`
 
 Then, per mode:
 
@@ -149,3 +158,81 @@ These generic gates do not arm Toss. The separately default-off
 `ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED` gate, terminal-evidence acceptance,
 and rollback sequence are operator-only and documented in
 `docs/runbooks/toss-auto-acceptance.md`.
+
+## 7. `replace` and `cancel` (§141차)
+
+Until §141차 the classifier rejected every non-`place` action outright
+(`action_not_place`), so a cancel or a replace always cost a Telegram tap no
+matter how ordinary it was. Measured friction with no matching safety
+contribution: the 08-20 ETH batch-cancel card and the 08-23 SOL dead-target
+replace card. **That one exclusion is gone. Nothing it stood in front of moved.**
+
+### `replace` — the whole `place` stack, unchanged
+
+A replacement rung *is* a new resting order, so it is classified as one and runs
+every gate in §2 plus the mode table: caps, `marketable_not_resting`,
+`min_distance_pct` in `off` mode, break-even band and round-trip-cost profit
+proof for sells. Nothing is skipped or loosened because the rung happens to
+replace something.
+
+One ordering change makes that possible: `revalidation._revalidate_replace_rung`
+used to call the eligibility gate *before* the dry-run preview with an empty
+`preview={}`, which was safe only because the classifier rejected
+`action_not_place` before it ever read `preview`. The gate now runs **after** the
+preview (still a `dry_run`, still strictly before the cancel leg) so it sees the
+`current_price` and `avg_buy_price` a `place` gets. Handing it `{}` would demote
+every replace to `preview_guard_failed` — the categorical exclusion by another
+name.
+
+### `cancel` — ownership + tag scan, no amount gates
+
+A cancel places no order, so the amount and marketability gates have no subject.
+It clears on gates 1–7 of §2 (notably: still blocked by `loss_cut`, by any
+`exit_intent`, by a non-veto-capable account/market, and by the tag scan) plus:
+
+* **Ownership.** The authoritative proof is `revalidation._validate_target_action`,
+  which reads the order id back out of *this account's* broker order history and
+  diffs it against the approved snapshot — it runs before the gate, and an order
+  this account cannot read never reaches `BROKER_CANCEL`. The classifier adds a
+  pure second check (`target_evidence_missing`) that the evidence exists and its
+  snapshot names the same order id.
+* **Zero budget.** A cancel reduces exposure and buys nothing, so it consumes no
+  daily cap: the decision reports `notional=0` and an unchanged
+  `daily_notional_after`, and `repository.auto_approved_notional_between` excludes
+  `action='cancel'` groups from the KST-day sum. Without that exclusion the cap
+  would be charged twice for the same order — once when it was placed, again when
+  it was pulled — because a cancel proposal's rung mirrors the *target* order's
+  price and quantity.
+
+### The cancel notification is a receipt, not a card
+
+An auto-approved cancel is published **without a veto button**, as
+`✅ 자동 취소됨`. A veto cancels the order the proposal just put on the book; a
+cancel proposal put none there, and the order it retired cannot be un-retired.
+A button that reports `🛑 취소됨` while doing nothing reads as a successful undo.
+
+This is also structural, not stylistic: cancelling the last rung drives the
+group to `lifecycle_state="terminal"`, and the approval-card machinery
+fail-closes on exactly that — `set_approval_nonce` raises
+`proposal_terminal:terminal`, and `finish_approval_dispatch` would flag a
+published card with no nonce as `approval_dispatch_snapshot_missing`. Those
+guards are right. The receipt therefore skips them entirely: no nonce, no
+binding, no `order_proposal_approval_dispatch_attempts` row, delivery outcome
+reported straight from the publication. The auto-approval decision itself is
+still durable — `record_auto_approval` stamps `source_asof.auto_approved`
+before any Telegram I/O, and a failed send still runs the compensation branch
+and records `record_auto_notification_failure`.
+
+`replace` keeps its veto button (`✅ 자동 정정 접수됨`): its replacement rung is
+live and is exactly what a veto is for.
+
+### What did not change
+
+* `loss_cut` two-stage approval, `approval_required_tag`, the nonce/idempotency
+  system, and the §40차 classification inputs.
+* The manual Telegram-click path (`eligibility_gate=None`) — unaffected in every
+  branch.
+* `action_not_place` remains in `auto_approve_audit._KNOWN_REASON_CODES` as a
+  **read-only legacy code**. It is never emitted again, but rows carrying it are
+  already durable in `source_asof`; dropping it would silently rewrite that
+  history to `invalid_reason_code`.

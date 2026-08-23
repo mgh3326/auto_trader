@@ -32,6 +32,26 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     it -- a limit exactly ON the market is marketable and is rejected. That is
     narrower than the §40차 literal, which is the permitted direction -- see
     docs/runbooks/order-proposal-auto-approve-expand.md §3.
+
+§141차 -- ``replace`` / ``cancel``
+    Until §141차 this classifier rejected every non-``place`` action outright
+    (``action_not_place``), so a cancel or a replace always cost the operator a
+    Telegram tap no matter how ordinary it was. That exclusion is gone; the
+    gates it stood in front of are not:
+
+    * ``replace`` is classified as what it actually is -- a brand-new resting
+      rung -- and runs the *entire* ``place`` stack: order type, exit intent,
+      veto-capable account/market, approval-required tags, fresh preview,
+      per-order and daily caps, ``marketable_not_resting``, and (for sells) the
+      break-even band + round-trip-cost profit proof. Nothing is skipped or
+      loosened because the rung happens to replace an existing order.
+    * ``cancel`` places no order, so the amount/marketability gates have no
+      subject. It is cleared on target-ownership evidence plus the same
+      loss-cut, account, tag and thesis gates, and consumes zero daily budget.
+
+    Both additionally require the cancel/replace target evidence to be present
+    and self-consistent (``target_evidence_missing``). An action outside
+    ``{place, replace, cancel}`` still fails closed (``action_not_supported``).
 """
 
 from __future__ import annotations
@@ -95,6 +115,15 @@ _TOSS_LIVE_VETO_ACCOUNT_MARKETS = frozenset(
         ("toss_live", "equity_us"),
     }
 )
+
+# §141차: cancel/replace are auto-approve candidates, not a categorically
+# excluded class. `place` and `replace` share the whole amount/marketability
+# gate stack (a replace *is* a new resting rung); `cancel` reduces exposure and
+# is gated on ownership evidence + the tag scan instead. Anything outside this
+# vocabulary is rejected -- widening it is a deliberate act, never a default.
+# Doubles as the audit vocabulary: an action not in here renders as
+# "unrecognized" rather than leaking a proposer-supplied string into the ledger.
+_SUPPORTED_ACTIONS = frozenset({"place", "replace", "cancel"})
 
 # §40차: a proposal carrying either tag is a human's call regardless of how it
 # prices. The tags have no column of their own, so the scan is deliberately
@@ -435,6 +464,33 @@ def find_approval_required_tag_matches(group: Any) -> list[dict[str, Any]]:
     return _tag_matches_from_scan(_scan_approval_required_tags(group))
 
 
+def _classify_target_evidence(group: Any) -> str | None:
+    """Return why a cancel/replace target is unusable, or ``None`` if it is.
+
+    Pure and deliberately narrow. The authoritative "is this order mine"
+    answer comes from ``revalidation._validate_target_action``, which reads the
+    order back from this account's own broker history and diffs it against the
+    approved snapshot -- both of those run before this classifier is consulted.
+    What this adds is that the classifier itself refuses to clear a target
+    action whose evidence is absent or internally inconsistent, so a future
+    caller that forgets the broker-side check cannot auto-approve a cancel or
+    replace pointed at an order this proposal never proved it owns.
+    """
+    target_id = getattr(group, "target_broker_order_id", None)
+    if not isinstance(target_id, str) or not target_id.strip():
+        return "order_id_missing"
+    source_asof = getattr(group, "source_asof", None)
+    if not isinstance(source_asof, Mapping):
+        return "snapshot_missing"
+    snapshot = source_asof.get("target_order_snapshot")
+    if not isinstance(snapshot, Mapping) or not snapshot:
+        return "snapshot_missing"
+    snapshot_id = snapshot.get("broker_order_id")
+    if not isinstance(snapshot_id, str) or snapshot_id.strip() != target_id.strip():
+        return "snapshot_mismatch"
+    return None
+
+
 @dataclass(frozen=True)
 class SellProfitVerdict:
     """Fee-netted profit-take classification for one sell rung (§40차 ②)."""
@@ -524,17 +580,34 @@ def evaluate_auto_approve_eligibility(
     base["mode"] = mode
 
     action = getattr(group, "action", None) or "place"
-    if action != "place":
+    if action not in _SUPPORTED_ACTIONS:
+        # §141차 removed the categorical `action_not_place` rejection, NOT the
+        # fail-closed default: an action this classifier has never been taught
+        # to gate is still a human's call.
         return reject(
-            "action_not_place",
-            action=_known_value(action, frozenset({"place", "replace", "cancel"})),
+            "action_not_supported",
+            action=_known_value(action, _SUPPORTED_ACTIONS),
         )
-    order_type = getattr(group, "order_type", None)
-    if order_type != "limit":
-        return reject(
-            "order_type_not_limit",
-            order_type=_known_value(order_type, frozenset({"limit", "market"})),
-        )
+    base["action"] = action
+    if action in ("replace", "cancel"):
+        # Ownership is proven at the broker by `_validate_target_action`, which
+        # fetches this order id from *this account's* order history and compares
+        # it to the approved snapshot before the gate runs. That check cannot
+        # live here (this module is pure), so the pure invariant asserted here
+        # is that the evidence the broker check consumes actually exists and is
+        # self-consistent -- a proposal that reached this classifier without it
+        # must never be auto-approved.
+        target_outcome = _classify_target_evidence(group)
+        if target_outcome is not None:
+            return reject("target_evidence_missing", target_evidence=target_outcome)
+    if action != "cancel":
+        # A cancel places no order, so it has no order type to constrain.
+        order_type = getattr(group, "order_type", None)
+        if order_type != "limit":
+            return reject(
+                "order_type_not_limit",
+                order_type=_known_value(order_type, frozenset({"limit", "market"})),
+            )
     exit_intent = getattr(group, "exit_intent", None)
     if exit_intent == "loss_cut":
         # §40차: a loss cut is always a human's call. Kept as its own reason so
@@ -570,6 +643,33 @@ def evaluate_auto_approve_eligibility(
             "approval_required_tag",
             tags=",".join(tags),
             tag_matches=_tag_matches_from_scan(tag_scan),
+        )
+    if action == "cancel":
+        # §141차 ③: a cancel only ever *reduces* exposure, so the amount gates
+        # (per-order cap, daily cap, min-distance, marketability, break-even
+        # band, round-trip cost) have nothing to price. Everything that can
+        # still reject a cancel has already run above: mode, supported action,
+        # target evidence, loss-cut/exit intent, veto-capable account/market,
+        # and the approval-required tag scan. The remaining requirement is the
+        # card's own renderability.
+        if auto_veto_thesis_summary(group) is None:
+            return reject("thesis_required_for_veto_card", thesis_present=False)
+        return AutoApproveDecision(
+            True,
+            "eligible",
+            {
+                **base,
+                # A cancel consumes no daily budget. Reporting the unchanged
+                # running total (rather than omitting the key) keeps the
+                # dispatch accumulator and the cap-observation projection on
+                # their existing contract while recording a truthful zero.
+                "notional": "0",
+                "daily_notional_before": _text(daily_notional),
+                "daily_notional_after": _text(daily_notional),
+                "per_order_cap": _text(limits.per_order_cap),
+                "daily_cap": _text(limits.daily_cap),
+                "loss_guard": "not_applicable",
+            },
         )
     if preview.get("success") is not True:
         return reject(
@@ -712,25 +812,54 @@ def build_auto_approved_message(
     *,
     group: Any,
     rungs: list[Any],
-    nonce: str,
+    nonce: str | None,
     policy_version: str,
     display_name: str | None = None,
-    binding: DispatchBinding,
+    binding: DispatchBinding | None,
 ) -> tuple[str, dict[str, Any]]:
-    """Render a compact post-submit summary with a single-use veto button."""
-    if binding.card_kind is not ApprovalCardKind.AUTO_VETO:
+    """Render a compact post-submit summary with a single-use veto button.
+
+    §141차: an auto-approved ``cancel`` gets the same card *without* the veto
+    button. A veto cancels the order this proposal just put on the book -- for
+    a cancel proposal there is no such order, and the target it retired cannot
+    be un-cancelled. Rendering the button anyway would offer an undo that does
+    nothing while reporting "🛑 취소됨", which reads as a successful undo. The
+    ``replace`` card keeps the button: its replacement rung is live and is
+    exactly what a veto is for.
+    """
+    action = getattr(group, "action", None) or "place"
+    vetoable = action != "cancel"
+    if vetoable:
+        if binding is None or binding.card_kind is not ApprovalCardKind.AUTO_VETO:
+            raise ValueError("auto-veto message requires an auto-veto binding")
+        if not nonce:
+            # A vetoable card without a nonce would render a button no callback
+            # can authorize. Fail loudly rather than publish a dead undo.
+            raise ValueError("auto-veto card requires a nonce")
+    elif binding is not None and binding.card_kind is not ApprovalCardKind.AUTO_VETO:
         raise ValueError("auto-veto message requires an auto-veto binding")
-    callback = build_callback_data(
-        action="vc",
-        proposal_id=group.proposal_id,
-        nonce=nonce,
-        binding=binding,
+    callback = (
+        build_callback_data(
+            action="vc",
+            proposal_id=group.proposal_id,
+            nonce=nonce,
+            binding=binding,
+        )
+        if vetoable
+        else None
     )
+    header = {
+        "cancel": "✅ *자동 취소됨*",
+        "replace": "✅ *자동 정정 접수됨*",
+    }.get(action, "✅ *자동 접수됨*")
     lines = [
-        "✅ *자동 접수됨*",
+        header,
         f"- 종목: {_format_symbol_label(group.symbol, display_name=display_name)}",
         f"- 방향: `{_escape_inline_code(group.side)}`",
     ]
+    target_id = getattr(group, "target_broker_order_id", None)
+    if action in ("cancel", "replace") and isinstance(target_id, str) and target_id:
+        lines.append(f"- 대상 주문: `{_escape_inline_code(target_id)}`")
     ordered_rungs = sorted(rungs, key=lambda item: item.rung_index)
     quantities = ", ".join(
         f"#{rung.rung_index + 1} {rung.quantity}" for rung in ordered_rungs
@@ -754,12 +883,12 @@ def build_auto_approved_message(
     detail_url = build_position_detail_url(group.symbol, group.market)
     if detail_url is not None:
         lines.append(f"- /invest 상세: {detail_url}")
-    keyboard = {"inline_keyboard": [[{"text": "취소", "callback_data": callback}]]}
+    rows: list[list[dict[str, Any]]] = []
+    if callback is not None:
+        rows.append([{"text": "취소", "callback_data": callback}])
     if detail_url is not None:
-        keyboard["inline_keyboard"].append(
-            [{"text": "🔎 /invest 상세", "url": detail_url}]
-        )
-    return "\n".join(lines), keyboard
+        rows.append([{"text": "🔎 /invest 상세", "url": detail_url}])
+    return "\n".join(lines), {"inline_keyboard": rows}
 
 
 __all__ = [

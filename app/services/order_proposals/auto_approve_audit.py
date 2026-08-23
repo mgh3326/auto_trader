@@ -69,6 +69,10 @@ _ENUM_INPUT_VALUES = {
     ),
     "side": frozenset({"buy", "sell", "unrecognized"}),
     "preview_success": frozenset({"false", "invalid"}),
+    # §141차 -- why a cancel/replace target was unusable to the classifier.
+    "target_evidence": frozenset(
+        {"order_id_missing", "snapshot_missing", "snapshot_mismatch"}
+    ),
 }
 _BOOLEAN_INPUT_KEYS = frozenset(
     {
@@ -82,7 +86,12 @@ _MISSING_INPUT_FIELDS = frozenset({"current_price", "limit_price", "quantity"})
 _KNOWN_REASON_CODES = frozenset(
     {
         "account_not_veto_capable",
+        # §141차 retired `action_not_place` from the classifier, but this
+        # allowlist also decodes rows already durable in `source_asof` from
+        # before that change. Dropping it would silently rewrite that history
+        # to `invalid_reason_code`, so it stays -- as a read-only legacy code.
         "action_not_place",
+        "action_not_supported",
         "approval_required_tag",
         "auto_veto_thesis_missing",
         "breakeven_band",
@@ -100,6 +109,7 @@ _KNOWN_REASON_CODES = frozenset(
         "price_or_quantity_missing",
         "sell_classification_unavailable",
         "side_not_supported",
+        "target_evidence_missing",
         "thesis_required_for_veto_card",
         "toss_auto_submission_frozen",
         "unknown_auto_approve_mode",

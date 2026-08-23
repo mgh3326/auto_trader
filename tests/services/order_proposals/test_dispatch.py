@@ -788,6 +788,8 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
             "prices": [str(limit_price)],
             "thesis_summary": "resting entry",
             "policy_version": loaded_policy_version,
+            # §141차: the Discord mirror title tracks the action.
+            "action": "place",
         }
     ]
 
@@ -1237,11 +1239,15 @@ async def test_dispatch_auto_approve_cancel_replace_never_mutates_before_gate(
     Auto-dispatch previously reached ``_cancel_and_confirm_target`` (a real
     broker cancel) for cancel/replace proposals without ever consulting the
     eligibility gate, because ``revalidate_and_submit`` only threaded
-    ``eligibility_gate`` into the ``place`` branch. The gate rejects every
-    cancel/replace with ``action_not_place`` (see
-    ``evaluate_auto_approve_eligibility``), so the fix must make auto-dispatch
-    fall back to the ordinary human-approval Telegram message for ALL three
-    veto-capable account/market pairs, same as it always has for ``place``.
+    ``eligibility_gate`` into the ``place`` branch.
+
+    §141차 note: the gate no longer rejects cancel/replace *categorically*, so
+    this fixture no longer relies on that. It pins the ordering invariant the
+    incident was actually about -- no broker mutation before the gate has had
+    its say -- using a proposal that fails a gate for an unrelated reason (no
+    thesis, so no renderable veto card). If a future change ever lets the
+    broker cancel run first, ``cancel_fn`` raises and this test goes red for
+    ALL three veto-capable account/market pairs.
 
     Deliberately exercises the REAL ``revalidate_and_submit`` (not a fake
     ``revalidate_fn`` that calls ``eligibility_gate`` by hand, as the other
@@ -1350,6 +1356,506 @@ async def test_dispatch_auto_approve_cancel_replace_never_mutates_before_gate(
     )
     assert rungs[0].state == "pending_approval"
     assert "auto_approved" not in (refreshed.source_asof or {})
+
+
+def _real_revalidate(**broker_fns):
+    """Drive the REAL ``revalidate_and_submit`` with dispatch's window contract.
+
+    ``dispatch_proposal`` threads ``window_evaluator``/``expected_policy_stamp``
+    /``now_fn`` into the revalidator only when ``revalidate_fn is
+    revalidate_and_submit`` -- an identity check no ``functools.partial`` can
+    satisfy. A test that fakes the broker edges must therefore supply that
+    contract itself; otherwise the first dispatch of a proposal dies at
+    ``approval_window_policy_stamp_missing`` (the stamp is only persisted by a
+    prior approval send) long before it reaches whatever is under test.
+    """
+
+    async def _run(*, service, proposal_id, now, eligibility_gate):
+        group, _rungs = await service.get_proposal(proposal_id)
+        stamp = (await allow_known_session(group, now=now)).policy_stamp
+        return await revalidate_and_submit(
+            service=service,
+            proposal_id=proposal_id,
+            now=now,
+            eligibility_gate=eligibility_gate,
+            window_evaluator=allow_known_session,
+            expected_policy_stamp=stamp,
+            now_fn=lambda: now,
+            **broker_fns,
+        )
+
+    return _run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_mode,market,symbol",
+    [
+        ("kis_live", "equity_kr", "005930"),
+        ("upbit", "crypto", "KRW-AVAX"),
+    ],
+)
+async def test_s141_auto_approved_cancel_executes_and_reports_as_cancelled(
+    monkeypatch, db_session, account_mode, market, symbol
+):
+    """§141차 ③ — an eligible cancel goes through without a Telegram tap.
+
+    Also pins the half of the change that is easy to miss: revalidation has
+    already cancelled at the broker by the time ``dispatch_proposal`` decides
+    whether the auto lane "completed". A cancel's terminal rung result is
+    ``cancelled``, not ``submitted_*``. If that is not recognised, the operator
+    gets an *approval card* asking them to authorise a cancel that already
+    happened.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE_MODE", "expanded")
+    chat_id = f"chat-s141-cancel-{account_mode}-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+
+    target_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-s141-cancel",
+        symbol=symbol,
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="1",
+        status="open",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol=symbol,
+        market=market,
+        account_mode=account_mode,
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        thesis="ladder invalidated, pull the resting sell",
+        broker_account_id=f"s141-cancel-{account_mode}-{uuid.uuid4()}",
+        action="cancel",
+        target_broker_order_id="broker-s141-cancel",
+        target_order_snapshot=target_snapshot.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("42000"), None)],
+    )
+    await db_session.commit()
+
+    cancel_calls: list[dict] = []
+    cancelled_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-s141-cancel",
+        symbol=symbol,
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="1",
+        status="cancelled",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+
+    async def fetch_fn(**kwargs):
+        return cancelled_snapshot if cancel_calls else target_snapshot
+
+    async def cancel_fn(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True}
+
+    async def place_fn(**kwargs):
+        raise AssertionError("a cancel proposal must never place an order")
+
+    notifier = _FakeNotifier(message_id=7710)
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=_real_revalidate(
+            fetch_target_fn=fetch_fn,
+            cancel_target_fn=cancel_fn,
+            place_order_fn=place_fn,
+        ),
+        cancel_target_fn=cancel_fn,
+        fetch_target_fn=fetch_fn,
+    )
+
+    assert result.ok is True
+    assert len(cancel_calls) == 1
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "cancelled"
+    assert "auto_approved" in (refreshed.source_asof or {})
+
+    assert len(notifier.sent_messages) == 1
+    text, keyboard, _chat = notifier.sent_messages[0]
+    assert "자동 취소됨" in text
+    assert "주문 제안 승인" not in text
+    # No undo button: the retired order cannot be un-cancelled.
+    buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert not any("callback_data" in button for button in buttons)
+
+
+@pytest.mark.asyncio
+async def test_s141_auto_approved_replace_cancels_then_places_the_new_rung(
+    monkeypatch, db_session
+):
+    """§141차 ② — a replace that clears the whole place stack auto-submits."""
+    from app.core.config import settings
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE_MODE", "expanded")
+    chat_id = f"chat-s141-replace-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+
+    target_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-s141-replace",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="1",
+        status="open",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        thesis="reprice the resting sell up one rung",
+        broker_account_id=f"s141-replace-{uuid.uuid4()}",
+        action="replace",
+        target_broker_order_id="broker-s141-replace",
+        target_order_snapshot=target_snapshot.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("43000"), None)],
+    )
+    await db_session.commit()
+
+    cancel_calls: list[dict] = []
+    submits: list[dict] = []
+    cancelled_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-s141-replace",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="1",
+        status="cancelled",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+
+    async def fetch_fn(**kwargs):
+        return cancelled_snapshot if cancel_calls else target_snapshot
+
+    async def cancel_fn(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True}
+
+    async def place_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "43000",
+                "quantity": "1",
+                # Resting sell, provably profitable after the KR round trip.
+                "current_price": "42000",
+                "avg_buy_price": "38000",
+            }
+        assert cancel_calls, "the original must be cancelled before the replacement"
+        submits.append(kwargs)
+        return {
+            "success": True,
+            "broker_order_id": "broker-s141-new",
+            "status": "resting",
+        }
+
+    notifier = _FakeNotifier(message_id=7711)
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=_real_revalidate(
+            fetch_target_fn=fetch_fn,
+            cancel_target_fn=cancel_fn,
+            place_order_fn=place_fn,
+        ),
+        cancel_target_fn=cancel_fn,
+        fetch_target_fn=fetch_fn,
+    )
+
+    assert result.ok is True
+    assert len(cancel_calls) == 1
+    assert len(submits) == 1
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state in {"acked", "resting"}
+    assert "auto_approved" in (refreshed.source_asof or {})
+
+    text, keyboard, _chat = notifier.sent_messages[0]
+    assert "자동 정정 접수됨" in text
+    buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert any(
+        button["text"] == "취소" and "callback_data" in button for button in buttons
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rung_quantity,rung_price,expected_reason",
+    [
+        # 100 * 43000 = 4,300,000 > KR per_order_cap 2,000,000
+        (Decimal("100"), Decimal("43000"), "per_order_cap_exceeded"),
+        # A sell priced below the market fills immediately -- nothing to veto.
+        (Decimal("1"), Decimal("41000"), "marketable_not_resting"),
+    ],
+)
+async def test_s141_replace_failing_a_place_gate_never_touches_the_broker(
+    monkeypatch, db_session, rung_quantity, rung_price, expected_reason
+):
+    """§141차 ② — every place gate still stands, and still stands *before* the
+    two-leg broker mutation. A carded replace must leave the original resting.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE_MODE", "expanded")
+    chat_id = f"chat-s141-gate-{expected_reason}-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+
+    target_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-s141-gate",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity=str(rung_quantity),
+        status="open",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        thesis="reprice the resting sell",
+        broker_account_id=f"s141-gate-{expected_reason}-{uuid.uuid4()}",
+        action="replace",
+        target_broker_order_id="broker-s141-gate",
+        target_order_snapshot=target_snapshot.to_payload(),
+        rungs=[RungInput(0, "sell", rung_quantity, rung_price, None)],
+    )
+    await db_session.commit()
+
+    async def fetch_fn(**kwargs):
+        return target_snapshot
+
+    async def cancel_fn(**kwargs):
+        raise AssertionError("a carded replace must leave the original resting")
+
+    async def place_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": str(rung_price),
+                "quantity": str(rung_quantity),
+                "current_price": "42000",
+                "avg_buy_price": "38000",
+            }
+        raise AssertionError("a carded replace must never submit")
+
+    notifier = _FakeNotifier(message_id=7712)
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=_real_revalidate(
+            fetch_target_fn=fetch_fn,
+            cancel_target_fn=cancel_fn,
+            place_order_fn=place_fn,
+        ),
+    )
+
+    assert result.ok is True
+    text, _keyboard, _chat = notifier.sent_messages[0]
+    assert "주문 제안 승인" in text
+    assert "자동" not in text.splitlines()[0]
+
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
+    assert "auto_approved" not in (refreshed.source_asof or {})
+    evidence = refreshed.source_asof["auto_approve_rejections"][-1]["rungs"][0]
+    assert evidence["reason_code"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_s141_cancel_of_an_order_this_account_cannot_read_is_not_auto_approved(
+    monkeypatch, db_session
+):
+    """§141차 ③ — ownership is proven by the broker read, not by the proposal.
+
+    ``fetch_target_order`` looks the id up in *this account's* order history and
+    raises when it is not there uniquely. That happens before the eligibility
+    gate, so a cancel aimed at an order this account cannot read never reaches
+    ``BROKER_CANCEL`` and never gets auto-approved.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals.errors import OrderProposalError
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE_MODE", "expanded")
+    chat_id = f"chat-s141-foreign-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+
+    target_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-not-ours",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="1",
+        status="open",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        thesis="pull a sell that is not on this account's book",
+        broker_account_id=f"s141-foreign-{uuid.uuid4()}",
+        action="cancel",
+        target_broker_order_id="broker-not-ours",
+        target_order_snapshot=target_snapshot.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("42000"), None)],
+    )
+    await db_session.commit()
+
+    async def fetch_fn(**kwargs):
+        raise OrderProposalError("target broker order not found uniquely")
+
+    async def cancel_fn(**kwargs):
+        raise AssertionError("never cancel an order this account cannot read")
+
+    async def place_fn(**kwargs):
+        raise AssertionError("a cancel proposal must never place an order")
+
+    notifier = _FakeNotifier(message_id=7713)
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=_real_revalidate(
+            fetch_target_fn=fetch_fn,
+            cancel_target_fn=cancel_fn,
+            place_order_fn=place_fn,
+        ),
+    )
+
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
+    assert "auto_approved" not in (refreshed.source_asof or {})
+    text, _keyboard, _chat = notifier.sent_messages[0]
+    assert "주문 제안 승인" in text
+
+
+@pytest.mark.asyncio
+async def test_s141_auto_approved_cancel_consumes_no_daily_budget(
+    monkeypatch, db_session
+):
+    """§141차 ④ — the daily cap meters exposure taken on, and a cancel takes none.
+
+    A cancel proposal's rung mirrors the *target* order's price and quantity, so
+    a naive sum over auto-approved rungs would charge the cap twice for the same
+    order: once when it was placed, again when it was pulled.
+    """
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    service = OrderProposalsService(db_session)
+    account = f"s141-budget-{uuid.uuid4()}"
+    now = datetime.now(UTC)
+    target_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-s141-budget",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="10",
+        status="open",
+        observed_at=now.isoformat(),
+    )
+    cancel_group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        thesis="pull the resting sell",
+        broker_account_id=account,
+        action="cancel",
+        target_broker_order_id="broker-s141-budget",
+        target_order_snapshot=target_snapshot.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("42000"), None)],
+    )
+    place_group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        thesis="ladder entry",
+        broker_account_id=account,
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("40000"), None)],
+    )
+    for group in (cancel_group, place_group):
+        await service.record_auto_approval(
+            group.proposal_id,
+            policy_version="test-policy",
+            policy_content_hash=None,
+            eligibility=[],
+            outcomes=["submitted_resting"],
+            now=now,
+            evaluated_at=now,
+        )
+    await db_session.commit()
+
+    refreshed, _rungs = await service.get_proposal(place_group.proposal_id)
+    consumed = await service.auto_approved_daily_notional(refreshed, now=now)
+
+    # Only the `place` group's 1 x 40,000 counts; the cancel's 10 x 42,000 does not.
+    assert consumed == Decimal("40000")
 
 
 @pytest.mark.asyncio

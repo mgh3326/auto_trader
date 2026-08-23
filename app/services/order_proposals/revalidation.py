@@ -988,12 +988,17 @@ async def _apply_eligibility_gate(
     ROB-972 round-1 finding: this used to run only from
     ``_revalidate_place_rung``, so ``dispatch_proposal``'s auto-approve path
     could reach a toss_live/kis_live/upbit cancel or replace's broker
-    mutation without ``evaluate_auto_approve_eligibility`` (which rejects
-    ``action_not_place`` first) ever being consulted -- a same-day resting
-    order could be auto-cancelled before the Telegram approval message was
-    even sent. ``_revalidate_cancel_rung``/``_revalidate_replace_rung`` now
-    call this too, with an empty ``preview`` (the ``action_not_place``
-    check short-circuits before ``preview`` is ever read).
+    mutation without ``evaluate_auto_approve_eligibility`` ever being
+    consulted -- a same-day resting order could be auto-cancelled before the
+    Telegram approval message was even sent.
+    ``_revalidate_cancel_rung``/``_revalidate_replace_rung`` call this too.
+
+    §141차: what those two callers pass as ``preview`` now differs, because the
+    classifier no longer short-circuits on ``action_not_place``. A replace
+    passes its real fresh preview (it is gated as a new resting rung and needs
+    ``current_price``/``avg_buy_price``); a cancel still passes ``{}`` because
+    it places no order and the classifier's cancel branch returns before it
+    reads ``preview``. Both still run strictly before any broker mutation.
     """
     if eligibility_gate is None:
         return None
@@ -1780,25 +1785,6 @@ async def _revalidate_replace_rung(
     if target_outcome is not None:
         return target_outcome
 
-    # ROB-972 round-1 finding: an auto-dispatch eligibility gate previously
-    # only ran for `place` rungs, so a toss_live/kis_live/upbit auto-dispatch
-    # could reach the cancel below without ever consulting
-    # `evaluate_auto_approve_eligibility` (which rejects `action_not_place`
-    # first, before it would even read `preview`). Applying the same gate
-    # here means the manual Telegram-click path (`eligibility_gate=None`) is
-    # unaffected, but auto-dispatch always falls back to human approval for
-    # cancel/replace, same as it always has for `place`.
-    gate_outcome = await _apply_eligibility_gate(
-        service=service,
-        group=group,
-        rung=rung,
-        preview={},
-        now=now,
-        eligibility_gate=eligibility_gate,
-    )
-    if gate_outcome is not None:
-        return gate_outcome
-
     window_outcome = await _pre_mutation_window_gate(
         service=service,
         group=group,
@@ -1820,6 +1806,31 @@ async def _revalidate_replace_rung(
     )
     if preview_outcome is not None:
         return preview_outcome
+
+    # ROB-972 round-1 finding: an auto-dispatch eligibility gate previously
+    # only ran for `place` rungs, so a toss_live/kis_live/upbit auto-dispatch
+    # could reach the cancel below without ever consulting
+    # `evaluate_auto_approve_eligibility`. It is still consulted here, and
+    # still before any broker mutation -- the preview above is a `dry_run`.
+    #
+    # §141차 moved this call from *before* the preview to *after* it. It used
+    # to be able to run with `preview={}` because the classifier rejected
+    # `action_not_place` before it ever read `preview`. Now that a replace is
+    # classified as the new resting rung it actually is, the classifier needs
+    # the same fresh preview a `place` gets -- `current_price` for the
+    # marketability test and `avg_buy_price` for the sell profit proof. Handing
+    # it an empty preview would demote every replace to `preview_guard_failed`,
+    # i.e. re-implement the categorical exclusion §141차 removed.
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview=preview,
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
 
     window_outcome = await _pre_mutation_window_gate(
         service=service,
@@ -2015,8 +2026,14 @@ async def _revalidate_cancel_rung(
     # ROB-972 round-1 finding: see the matching comment in
     # `_revalidate_replace_rung` -- without this, auto-dispatch could reach
     # `BROKER_CANCEL` below for a toss_live/kis_live/upbit cancel proposal
-    # without ever consulting the eligibility gate, which rejects
-    # `action_not_place` before it reads `preview`.
+    # without ever consulting the eligibility gate.
+    #
+    # §141차: the empty `preview` here is now load-bearing rather than
+    # incidental. A cancel places no order, so there is nothing to preview and
+    # no amount to price; the classifier's `cancel` branch returns before it
+    # reads `preview` and gates on target-ownership evidence + the tag scan
+    # instead. Do not "fix" this by threading a preview through -- a cancel has
+    # no order for `place_order_fn(dry_run=True)` to describe.
     gate_outcome = await _apply_eligibility_gate(
         service=service,
         group=group,

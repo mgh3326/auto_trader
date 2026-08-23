@@ -153,19 +153,27 @@ def format_auto_veto_card_mirror(
     prices: list[str],
     thesis_summary: str,
     policy_version: str,
+    action: str = "place",
 ) -> DiscordEmbed:
     """Render the Discord mirror of a post-submit cancellation card.
 
     The required fields deliberately remain separate rather than being packed
     into one order-detail string: an operator must be able to see symbol,
     quantity, price, and the decision thesis independently at a glance.
+
+    §141차: the title tracks ``action``. An auto-approved ``cancel`` has no
+    order left to pull, so mirroring it as "취소 가능" would advertise an undo
+    that does not exist on the Telegram card either.
     """
     if not thesis_summary.strip():
         raise ValueError("auto-veto mirror requires a thesis summary")
     if not quantities or not prices or len(quantities) != len(prices):
         raise ValueError("auto-veto mirror requires matched quantity and price")
     return {
-        "title": "✅ 자동 접수됨 — 취소 가능",
+        "title": {
+            "cancel": "✅ 자동 취소됨",
+            "replace": "✅ 자동 정정 접수됨 — 취소 가능",
+        }.get(action, "✅ 자동 접수됨 — 취소 가능"),
         "description": f"🕒 {format_datetime()}\n정책: {policy_version}",
         "color": COLORS["buy"],
         "fields": [

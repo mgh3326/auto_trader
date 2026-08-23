@@ -133,6 +133,27 @@ def _auto_approve_rejection_card_block_for_group(group: Any) -> str | None:
     return build_auto_approve_rejection_card_block(source_asof)
 
 
+# §141차: what "the auto lane completed the whole proposal" looks like depends
+# on the action. `place` and `replace` both end at a broker submit, so their
+# success is a submit outcome; an auto-approved `cancel` never submits anything
+# and ends at `cancelled`. Getting this wrong is not cosmetic -- revalidation
+# has already performed the broker mutation by the time this is read, so an
+# action whose terminal result is missing here would be executed and *then*
+# reported as "falling back to human approval", sending an approval card for
+# work that is already done. Every action in the classifier's supported set
+# must therefore appear here, and unknown actions deliberately map to the
+# empty set (never auto-complete) rather than to a permissive default.
+_AUTO_COMPLETED_RESULTS: dict[str, frozenset[str]] = {
+    "place": frozenset({"submitted_acked", "submitted_resting"}),
+    "replace": frozenset({"submitted_acked", "submitted_resting"}),
+    "cancel": frozenset({"cancelled"}),
+}
+
+
+def _auto_completed_results(action: str | None) -> frozenset[str]:
+    return _AUTO_COMPLETED_RESULTS.get(action or "place", frozenset())
+
+
 def _manual_fallback_decisions(
     *,
     rungs: list[Any],
@@ -261,6 +282,7 @@ async def _mirror_auto_veto_card(
                 prices=[_mirror_decimal_text(rung.limit_price) for rung in rungs],
                 thesis_summary=thesis_summary,
                 policy_version=policy_version,
+                action=getattr(group, "action", None) or "place",
             )
         )
     except Exception:  # noqa: BLE001 - an alert mirror cannot roll back a card
@@ -982,7 +1004,7 @@ async def dispatch_proposal(
                     now_fn=clock,
                 )
             outcomes: list[RungOutcome] = await revalidate_fn(**revalidate_kwargs)
-            submitted_results = {"submitted_acked", "submitted_resting"}
+            submitted_results = _auto_completed_results(group.action)
             auto_submitted = (
                 bool(outcomes)
                 and len(outcomes) == pending_count
@@ -999,16 +1021,40 @@ async def dispatch_proposal(
                     now=now,
                     evaluated_at=gate_now,
                 )
-                veto_nonce = _generate_nonce()
-                await service.set_approval_nonce(proposal_id, veto_nonce)
-                group, rungs = await service.get_proposal(proposal_id)
-                attempt_id = uuid.uuid4()
-                binding = _proposal_binding(
-                    group=group,
-                    nonce=veto_nonce,
-                    attempt_id=attempt_id,
-                    card_kind=ApprovalCardKind.AUTO_VETO,
-                )
+                # §141차: an auto-approved `cancel` is told, not offered.
+                #
+                # Everything below the `vetoable` branch is the *approval card*
+                # machinery: mint a single-use nonce, bind it to a published
+                # card, open a dispatch attempt that can later be superseded or
+                # tapped. A completed cancel has none of those needs -- there is
+                # no order left to pull, so the card carries no button -- and it
+                # cannot use that machinery even if we wanted to: cancelling the
+                # last rung drives the group to `lifecycle_state="terminal"`, and
+                # both `set_approval_nonce` (`proposal_terminal:terminal`) and
+                # `finish_approval_dispatch` (`approval_dispatch_snapshot_missing`
+                # -- a published card with no nonce is unauthorizable) fail closed
+                # on exactly that. Those guards are right; the receipt simply is
+                # not an approval card. So it publishes as a plain notification
+                # with no nonce, no binding and no attempt row, and its delivery
+                # outcome is reported from the publication itself. The auto-
+                # approval decision remains durable either way -- `record_auto_
+                # approval` above already stamped it.
+                vetoable = (group.action or "place") != "cancel"
+                veto_nonce: str | None = None
+                if vetoable:
+                    veto_nonce = _generate_nonce()
+                    await service.set_approval_nonce(proposal_id, veto_nonce)
+                    group, rungs = await service.get_proposal(proposal_id)
+                    attempt_id = uuid.uuid4()
+                    binding = _proposal_binding(
+                        group=group,
+                        nonce=veto_nonce,
+                        attempt_id=attempt_id,
+                        card_kind=ApprovalCardKind.AUTO_VETO,
+                    )
+                else:
+                    group, rungs = await service.get_proposal(proposal_id)
+                    binding = None
                 text, keyboard = build_auto_approved_message(
                     group=group,
                     rungs=rungs,
@@ -1023,14 +1069,15 @@ async def dispatch_proposal(
                     keyboard,
                     telegram_text_length(text),
                 )
-                await service.start_approval_dispatch(
-                    proposal_id,
-                    attempt_id=attempt_id,
-                    binding=binding,
-                    now=now,
-                    payload_chars=messages.payload_chars,
-                    context_message_count=0,
-                )
+                if binding is not None and attempt_id is not None:
+                    await service.start_approval_dispatch(
+                        proposal_id,
+                        attempt_id=attempt_id,
+                        binding=binding,
+                        now=now,
+                        payload_chars=messages.payload_chars,
+                        context_message_count=0,
+                    )
             else:
                 fallback_decisions.extend(
                     _unrecorded_revalidation_fallbacks(
@@ -1054,7 +1101,7 @@ async def dispatch_proposal(
         # Persist broker outcomes and the audit/nonce before Telegram I/O.
         await session.commit()
 
-    if not auto_submitted or messages is None or attempt_id is None:
+    if not auto_submitted or messages is None:
         return await send_proposal_for_approval(
             proposal_id,
             notifier=notifier,
@@ -1083,13 +1130,29 @@ async def dispatch_proposal(
         # Preserve the established auto-dispatch lock order: advisory lock
         # first, then proposal/attempt row locks inside finalization.
         await service.acquire_auto_dispatch_lock(proposal_id)
-        result = await service.finish_approval_dispatch(
-            proposal_id,
-            attempt_id=attempt_id,
-            publication=publication,
-            chat_id=chat_id,
-            now=now,
-        )
+        if attempt_id is not None:
+            result = await service.finish_approval_dispatch(
+                proposal_id,
+                attempt_id=attempt_id,
+                publication=publication,
+                chat_id=chat_id,
+                now=now,
+            )
+        else:
+            # §141차 receipt (see the `vetoable` branch above): no attempt row
+            # was opened, so there is no current-owner fence to resolve. Report
+            # the delivery outcome the publication itself observed. The states
+            # below still drive the same compensation/mirror branches.
+            result = TelegramDispatchResult.from_publication(
+                publication,
+                state=(
+                    ApprovalDispatchState.SENT_CURRENT
+                    if publication.card_published
+                    else ApprovalDispatchState.PARTIAL_FAILED
+                    if publication.partial
+                    else ApprovalDispatchState.FAILED
+                ),
+            )
         if result.state in {
             ApprovalDispatchState.FAILED,
             ApprovalDispatchState.PARTIAL_FAILED,
