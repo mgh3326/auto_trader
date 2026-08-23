@@ -214,15 +214,82 @@ def test_default_runner_does_not_build_withdrawn_sources():
 
 
 def test_default_run_market_does_not_call_withdrawn_builder(monkeypatch):
-    for name in ("_KR_BUILDERS", "_US_BUILDERS"):
-        monkeypatch.setattr(run_bakeoff, name, {})
+    def assert_no_withdrawn_source_ids(source_ids):
+        assert WITHDRAWN_SOURCES.isdisjoint(source_ids)
+        assert not {
+            source_id for source_id in source_ids if source_id.endswith(".tv_rsi45")
+        }
+
+    def live_builder(_ctx, _day):
+        return ["EVIDENCE"]
+
+    pools = {}
+    for name, market in (
+        ("_KR_BUILDERS", "kr"),
+        ("_US_BUILDERS", "us"),
+        ("_CRYPTO_BUILDERS", "crypto"),
+    ):
+        monkeypatch.setattr(
+            run_bakeoff,
+            name,
+            {f"{market}.consecutive_gainers": live_builder},
+        )
+        pools[market] = run_bakeoff._builders_for_market(market, None)
+        assert_no_withdrawn_source_ids(pools[market])
+
     monkeypatch.setattr(run_bakeoff.S, "src_random", lambda *_args: [])
     monkeypatch.setattr(run_bakeoff.S, "src_benchmark", lambda *_args: [])
+    monkeypatch.setattr(
+        run_bakeoff.S,
+        "evaluate_gate",
+        lambda *_args: run_bakeoff.S.GateEvidence(40.0, False, 0),
+    )
+    monkeypatch.setattr(
+        run_bakeoff.scoring,
+        "score",
+        lambda *_args: SimpleNamespace(
+            status="full",
+            entry=100.0,
+            ret=0.01,
+            mfe=0.01,
+            mae=0.0,
+            ret_hl_mfe=0.01,
+            ret_hl_mae=0.0,
+            bars_used=1,
+        ),
+    )
 
     day = dt.date(2026, 7, 1)
-    for market in ("kr", "us"):
-        ctx = SimpleNamespace(
-            market=market,
+    contexts = {
+        "kr": SimpleNamespace(
+            market="kr",
+            screener={day: pd.DataFrame({"symbol": ["KR"]})},
             prices=SimpleNamespace(calendar=np.array([day], dtype=object)),
-        )
-        run_bakeoff.run_market(ctx, [day], [], {}, wanted_sources=None)
+        ),
+        "us": SimpleNamespace(
+            market="us",
+            screener={day: pd.DataFrame({"symbol": ["US"]})},
+            prices=SimpleNamespace(calendar=np.array([day], dtype=object)),
+        ),
+        "crypto": SimpleNamespace(
+            market="crypto",
+            crypto={
+                day: pd.DataFrame(
+                    {
+                        "symbol": ["BTC"],
+                        "rsi": [40.0],
+                        "trade_amount_24h": [1_000_000_000.0],
+                    }
+                )
+            },
+            prices=SimpleNamespace(calendar=np.array([day], dtype=object)),
+        ),
+    }
+    out_rows = []
+    for _market, ctx in contexts.items():
+        before = len(out_rows)
+        run_bakeoff.run_market(ctx, [day], out_rows, {}, wanted_sources=None)
+        market_rows = out_rows[before:]
+        assert_no_withdrawn_source_ids({row["source_id"] for row in market_rows})
+
+    assert_no_withdrawn_source_ids({row["source_id"] for row in out_rows})
