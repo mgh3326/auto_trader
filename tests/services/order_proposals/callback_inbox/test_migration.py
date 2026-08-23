@@ -168,7 +168,11 @@ def test_r36_records_the_v39_persistent_schema_bootstrap() -> None:
     runbook = (_REPO / "docs/runbooks/telegram-callback-durable-inbox.md").read_text(
         encoding="utf-8"
     )
-    assert SCHEMA_BOOTSTRAP_VERSION == 39
+    bootstrap = (_REPO / "tests/_schema_bootstrap.py").read_text(encoding="utf-8")
+    # Later additive heads may bump the integer; v39 must remain in the record.
+    assert SCHEMA_BOOTSTRAP_VERSION >= 39
+    assert "v39 (W5 R36): review.telegram_callback_inbox" in bootstrap
+    assert "review.telegram_callback_recovery_cursor" in bootstrap
     assert (
         "The persistent pytest test-schema bootstrap is now v39 and covers both "
         "`review.telegram_callback_inbox` and `review.telegram_callback_recovery_cursor`."
