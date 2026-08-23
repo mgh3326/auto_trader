@@ -334,6 +334,19 @@ lanes:
           operator: max
           operands: [average_cost_times_loss_guard, d7_compliant_lowest_price]
           post_max_tick_snap_direction: ceil
+          # §142차 (2026-08-23) — average_cost × loss_guard IS the §40차
+          # break-even band edge, and that band is compared inclusively, so a
+          # rung landing on it is downgraded to breakeven_band. The effective
+          # anchor clears the edge by one tick; nothing else changes.
+          post_max_effective_anchor:
+            operator: max
+            operands:
+              - tick_ceil_post_max_anchor
+              - first_valid_tick_strictly_above_average_cost_times_one_plus_breakeven_band
+            band_policy_key: order_proposals.auto_approve.breakeven_band_pct
+            band_comparison_unchanged: true
+            since_policy_version: "2026-08-23.1"
+            retroactive: false
         sizing: existing_trim_rule
         time_in_force: DAY
         regeneration: daily_rep
