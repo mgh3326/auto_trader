@@ -1,110 +1,189 @@
 # screener_bakeoff — 스크리너 소스 베이크오프 (§140차)
 
-**read-only 연구.** 이 패키지는 SELECT 만 한다. 주문·워치·제안·정책 mutation 0,
-브로커 호출 0, 애플리케이션 테이블 쓰기 0. 산출물은 `artifacts/` 의 CSV/JSON/MD 뿐이다.
+**read-only 연구 + 관측 전용 픽 로깅.** 베이크오프 패키지는 SELECT 만 한다.
+주문·워치·제안·정책 mutation 0, 브로커 호출 0. 라이브 fanout 픽 로깅은
+`SCREENER_PICK_LOG_ENABLED`(기본 false) 뒤의 바깥 관측 레코더이며 fanout 모듈
+자체는 계속 no-write 다.
 
-**이 결과는 정책 사용 전 별도 검증 전제다.** 즉시 정책·가중치 변경 근거로 쓰지 말 것.
+**이 결과는 정책·가중치 변경 근거가 아니다.** 세 핵심 주장
+(가치/수익성 우세, 현행 `tv_rsi45` 중위권, 거래대금·등락상위·거래량급증·쌍끌이
+열위)은 r2 적대검증에서 **전부 OOS 근거 사용 불가**로 판정됐다.
 
 ---
 
-## §0 사전등록 동결 기록
+## §0 전환 사유 (r2 → 전향)
 
-`spec.py` 의 상수는 **채점 결과를 보기 전에** 고정했다. 결과를 본 뒤 상수를 바꾸면
-그것은 새 실험이며 `EXPERIMENT_ID` 가 바뀌어야 한다.
+이 베이크오프는 적대검증 **2라운드 연속 실패**했다. 두 번 다 같은 축 —
+**연구가 재구성한 소스 정의가 프로덕션과 다르다.**
 
-🔴 **사전등록 freeze 가 결과보다 먼저였다는 git 증거는 없다 (S5).**
+| 라운드 | 실패 |
+|---|---|
+| r1 | `tv_rsi45` · `us.high_yield_value` · `kr.double_buy` 3건 전부 |
+| r2 | `tv_rsi45` 여전히 틀림(라이브는 소스당 top-10, 연구는 top-100 게이트 후 top-10). r2 가 구조적 수리로 넣은 parity 테스트는 기대값을 **라이브 10이 아니라 100**으로 박았다. 구현과 같은 오독에서 파생된 테스트는 그 오독을 잡지 못한다. `us.high_yield_value` 강등 근거("yahoo=0 이라 재구성 불가")는 프로덕션 쿼리에 `source` 필터가 없어 **거짓**이었다. |
+
+비교 기준이던 `tv_rsi45`(현행 주력)가 가장 재현 불가능한 소스다
+(라이브 HTTP 유니버스 + TradingView RSI + 소스당 top-10).
+
+**운영자 결정 (2026-08-23): 역사를 재구성하지 않는다. 지금부터 라이브가
+실제로 고른 픽을 기록해 전향 채점한다.** 2~3개월이 걸려도 정직한 답이 늦은
+답보다 낫다. 이 실패를 숨기지 않는다 — 다음 사람이 같은 함정에 빠지지 않게.
+
+`tv_rsi45` **비교 라벨·표·문언·parity 테스트는 전면 철회**했다.
+남는 역사 절은 스냅샷 소스 상호 비교 + 무작위 대조뿐이며, 아래 라벨을 붙인다.
+
+1. **전부 연구정의** — 라이브 프리셋이 아니다.
+2. **단일 국면** — 표본기간 KR 등가중 −12.3%. 일반화 금지.
+3. **freeze provenance 없음** — spec·코드·artifact 가 단일 첫 커밋. 사후 증명 불가.
+4. `kr.double_buy` 는 **잔여 보통주 필터 차이 약 17.5%**.
+5. `top_gainers` 는 **라이브 change-rate asc(풀백) 분기와 다름** (연구는 desc).
+6. `us.high_yield_value` 는 **연구정의(tvscreener) — 라이브 parity 미검증**.
+   r2 의 "yahoo=0 이라 재구성 불가" 문장은 삭제했다. 재실행은 하지 않았다.
+7. **사용 제한**: 정책·가중치 근거 아님. 세 핵심 주장은 r2 에서 OOS 사용 불가.
+
+사전등록 freeze 가 결과보다 먼저였다는 git 증거는 없다 (S5).
 `spec.py` · runner · 첫 artifact 가 단일 첫 커밋
-(`de53f1622 research(screener-bakeoff)`)에 함께 들어왔다. 이 히스토리만으로
-H1–H4/상수가 artifact 보다 먼저 freeze 되었는지는 증명할 수 없고, 그 반대도
-증명할 수 없다. 사후 증명은 불가하다. **앞으로의 사전등록은 결과 커밋과 분리된
-선행 커밋으로만 한다.**
-
-동결 후 결과 열람 **전에** 이루어진 수정은 아래가 전부다 (초판):
-
-| id | 수정 | 사유 |
-|---|---|---|
-| A1 | 유동성 정의 = `daily_turnover` → `daily_volume × latest_close` | `invest_screener_snapshots.daily_turnover` 가 2026-07-21 이전 전 파티션에서 NULL. 두 값 모두 결정일에 박제된 컬럼이라 look-ahead 없음 |
-| A2 | RSI 재구성 시드 버그 수정 | `close.diff()` 의 선두 NaN 이 프로덕션에서 0.0 으로 치환되어 ewm 시드가 되는데, 초판이 그 0 을 버려 프로덕션과 값이 달랐다. `tests/research/test_screener_bakeoff_contract.py::test_rsi_matches_production` 로 고정 |
-| A3 | 무작위 대조군 시드를 `hash()` → `hashlib.sha256` | CPython 문자열 해시는 프로세스마다 랜덤이라 "시드 고정"이 거짓이었다. 지금은 재실행 시 `picks.csv` 가 바이트 동일 |
-
-r2 (2026-08-23, `REWORK_ID=r2-20260823`) — 적대검증 BLOCKER/SHOULD 수리.
-**새 가설·새 소스는 추가하지 않았다.** 소스별 경로:
-
-| 소스 | 경로 | 근거 |
-|---|---|---|
-| `kr.tv_rsi45` / `us.tv_rsi45` / `crypto.tv_rsi45` | ① parity 수리 후 해당 소스만 재실행 | 라이브 fanout 은 `sort_by=rsi asc` 이며 `max_rsi`·`adv_krw_min` 없음. 초판은 `_liquid()` + RSI≤45 를 후보 생성 필터로 써서 후보군이 달랐다 |
-| `kr.double_buy` | ① parity 수리 후 해당 소스만 재실행 | 라이브는 prior partition self-join (외국인·기관 순매수 각각 전일比 증가, prior 없으면 fail-closed). 초판은 cached `double_buy` boolean |
-| `us.high_yield_value` | ② 라벨 강등 (재실행 없음) | 라이브는 Yahoo + ROB-440 quality guard. bakeoff US 결정일 전 구간 yahoo 파티션 행 = 0 (yahoo 는 2026-06-05..06-09 만 존재). 히스토리 재구성 불가. **이 소스로는 라이브 비교 주장을 하지 않는다** |
+(`de53f1622 research(screener-bakeoff)`)에 함께 들어왔다.
 
 ---
 
-## §1 무엇을 비교했나
+## §0.1 전향 로깅 (이번 PR)
 
-| 계열 | 소스 | 입력 |
-|---|---|---|
-| snapshot preset (KR 17종) | 연속상승·거래량급증·등락률 상하위·거래대금·수급모멘텀·쌍끌이·과매도(RSI≤30)·가치/성장/배당 9종 | `invest_screener_snapshots`, `invest_kr_fundamentals_snapshots`, `investor_flow_snapshots` — **전부 결정일에 프로덕션 라이터가 박제한 행** |
-| snapshot preset (US 9종) | 연속상승·거래량급증·등락률 상하위·거래대금·가치 4종 | `invest_screener_snapshots`, `market_valuation_snapshots(us,tvscreener)` |
-| snapshot preset (crypto 8종) | 거래대금·과매도·모멘텀·펀딩 2종·OI·롱숏쏠림·RSI≤45 | `invest_crypto_screener_snapshots` |
-| reconstructed | **현행 주력** `tv_rsi45` = 라이브 fanout rsi-asc (유동성·RSI≤45 사전필터 없음; RSI≤45 는 이후 공통 게이트) | `kr/us_candles_1d` 의 **결정일 이하 봉만** (crypto 는 스냅샷 rsi 컬럼) |
-| control | 무작위 10종 (시드 고정) + 부트스트랩 null 2000회 | 동일 유동성 유니버스 |
-| benchmark | 유동성 유니버스 등가중 | 동일 |
+- 레코더: `app/services/screener_pick_log.py` — **fanout 바깥**.
+  MCP 등록 래퍼가 fanout 반환값을 기록한다. `buy_candidate_fanout.py` 는
+  계속 "performs no writes".
+- 게이트: `SCREENER_PICK_LOG_ENABLED` 기본 false. fail-open.
+- 저장: `review.screener_pick_log` (additive 마이그레이션 1개).
+  운영자가 별도로 `alembic upgrade head`. 이 레포는 자동 적용하지 않는다.
+- 스케줄러 등록 0. 채점기·집계기·대시보드는 범위 밖 (픽이 쌓인 뒤 별건).
+- 가격은 exact decimal **문자열**. float 컬럼 없음.
 
-각 소스는 결정일마다 상위 **N=10** 을 낸다(게이트 변형은 상위 100 풀을 게이트에 통과시킨 뒤 상위 10).
+로깅 시작일 = PR #1940 머지·배포 후 `SCREENER_PICK_LOG_ENABLED=true` 인 상태에서
+첫 생산 insert. 그 전 날짜는 in-sample 이 아니다. 백필 금지.
 
-## §2 채점
+---
+
+## §1 역사 표본에서 남긴 것 (연구정의, 재실행 없음)
+
+스냅샷 프리셋 + 무작위 대조만. `tv_rsi45` 행은 표에서 삭제했다.
+게이트 없음, 날짜 단위 중앙 초과수익. **모든 유의 주장은 지평을 붙인다.**
+block CI 가 0 을 가르면 "유의하게 나쁨/좋음"이라고 하지 않는다.
+
+### KR — 게이트 없음
+
+| 소스 | D+5 중앙초과 | D+5 block CI∋0 | D+20 중앙초과 | D+20 block CI∋0 |
+|---|---:|---|---:|---|
+| `high_yield_value` 연구정의 | +2.06% | no | +11.28% | no |
+| `cheap_value` 연구정의 | +1.86% | yes | +13.30% | no |
+| `growth_expectation_toss` 연구정의 | +1.92% | yes | +8.24% | no |
+| `random` | −0.41% | yes | +0.32% | yes |
+| `high_volume_surge` | −1.38% | yes | −4.87% | yes |
+| `double_buy` 연구정의 (필터차 17.5%) | −3.17% | no | −8.61% | no |
+| `top_gainers` 연구정의 (live asc 와 다름) | −3.40% | no | −10.24% | yes |
+| `trade_amount` 연구정의 | −4.56% | yes | −17.70% | no |
+
+지평을 붙인 말만 성립한다:
+
+- **D+5 에서** `double_buy`·`top_gainers` 는 무작위보다 유의하게 나빴다
+  (block CI 가 0 을 안 가름). `trade_amount`·`high_volume_surge` 의 D+5 는
+  block CI 가 0 을 가르므로 유의 열위로 부르지 않는다.
+- **D+20 에서** `double_buy`·`trade_amount` 는 무작위보다 유의하게 나빴다.
+  `top_gainers`·`high_volume_surge` 의 D+20 는 block CI 가 0 을 가르므로
+  유의 열위로 부르지 않는다.
+- **"쌍끌이·등락상위가 무작위보다 나쁨"을 지평 없이 쓰지 마라.**
+  `top_gainers` 는 D+5 에서만 성립하고 D+20 에서는 성립하지 않는다.
+  `trade_amount` 는 그 반대다.
+
+가치 3종의 D+20 중앙 초과는 이 단일 국면에서 크다. 그것이 다른 국면에서도
+유지되는지는 이 표본으로 말할 수 없다. OOS 근거로 쓰지 마라.
+
+### US / crypto
+
+`us.high_yield_value` D+20 +7.79%(block CI 가 0 을 안 가름) 는
+**연구정의(tvscreener) — 라이브 parity 미검증**. 라이브 Yahoo 프리셋이 아니다.
+`cheap_value` / `consecutive_gainers` 는 중앙과 평균의 부호가 반대다
+(마이크로캡). "좋다"로 읽으면 안 된다.
+
+crypto 스냅샷 소스 중 두 지평 모두 block CI 가 0 을 안 가르는 양(+)은
+`long_short_skew` 의 D+20 뿐이다 (D+5 는 block CI∋0). 라이브 비교가 아니다.
+
+표 전체(철회된 `tv_rsi45` 행 제외) = `artifacts/report_tables.md`.
+
+---
+
+## §2 채점 계약 (동결, 바꾸지 않음)
 
 * 진입가 = 결정일 종가(스냅샷 자신의 `latest_close`).
 * 성과 = D+5 / D+20 (KR·US 는 거래일, crypto 는 스냅샷 일자).
-* **초과수익 = 픽 수익 − 같은 날 같은 시장의 등가중 벤치마크 수익** (페어링). 표본 기간의
-  KR 시장이 크게 하락했기 때문에 절대수익은 소스 판별력이 아니라 시장 방향을 재는 값이다.
-  **판정은 초과수익으로만 한다.**
-* 집계는 **날짜 단위**로 먼저 접는다(같은 날 10픽은 독립 표본이 아니다).
+* **초과수익 = 픽 수익 − 같은 날 같은 시장의 등가중 벤치마크 수익**.
+* 집계는 **날짜 단위**로 먼저 접는다.
+* 판정 기준·최소 표본(D+20 유효 40일)·제외 규칙·실패 시 처리는
+  전향 실험에서도 **그대로**다. 임계를 느슨하게 만들지 않는다 (Q4 동결).
 
-## §3 look-ahead 통제
+---
 
-* 스냅샷 소스는 결정일 파티션 행만 읽는다. 그 행은 프로덕션이 그날 쓴 것이다.
-* 재구성 소스·게이트는 `PricePanel.window()` 로 **결정일 이하 봉만** 자른다.
-* `tests/research/test_screener_bakeoff_contract.py` 가 (a) 창이 결정일 다음 봉을 절대
-  포함하지 않음, (b) 미래 봉을 잘라내도 게이트 판정이 불변, (c) 채점이 진입봉을 MFE/MAE 에
-  넣지 않고 horizon 밖 봉에 반응하지 않음을 기계 검증한다.
-* 같은 파일이 RSI·볼린저·피보나치·클러스터링·지지강도를 **프로덕션 함수와 동일값**으로 고정한다
-  (`market_data_indicators`, `analysis_quick._build_support_resistance`).
-  RSI-series 는 매 인덱스를 프로덕션 `_calculate_rsi(close[:i+1])` 에 대조하고,
-  지지 계열 매핑은 라이브 fanout `_support_family` 실호출에 대조한다.
-* `tests/research/test_screener_bakeoff_parity.py` 가 연구 소스 정의 ↔ 프로덕션
-  정의를 기계 검증한다 (① 실함수 대조, ② 라이브-아님 라벨 계약).
+## §3 look-ahead 통제 (계산 유틸, 유지)
 
-## §4 알려진 한계 (보고서에 그대로 실린다)
+* 스냅샷 소스는 결정일 파티션 행만 읽는다.
+* 재구성 게이트는 `PricePanel.window()` 로 결정일 이하 봉만 자른다.
+* `tests/research/test_screener_bakeoff_contract.py` 가 창 경계·미래봉 불변·
+  프로덕션 지표 동일성(RSI·볼린저·피보나치·지지/저항)을 기계 검증한다.
+* 패널·지표·채점·부트스트랩은 전향 채점에 재사용될 자산으로 유지한다.
 
-1. **upside(≥40%) 게이트는 중화됐다.** 시점별 애널리스트 컨센서스 이력이 이 DB 에 없다.
-   따라서 모든 게이트 통과 수치는 **상한**이다.
-2. **창 중첩.** 결정일이 매일이라 D+20 표본은 이웃끼리 19일을 공유한다. t 통계는 **서술용**이며
-   유의성 판정은 부트스트랩 null 백분위로 한다(그것도 횡단면 선택만 통제, 시계열 중첩은 미통제).
-3. **표본 기간이 짧고 한 국면이다.** KR 47/32 결정일, US 42/27, crypto 71/56. 기간 대부분이
-   KR 대폭 하락 국면 — 가치·역발상 유리, 모멘텀 불리 쪽으로 편향될 수 있다.
-4. **생존편향.** 픽의 forward 봉이 끊기면 `truncated` 로 표시하고, 창 끝 검열(`censored`)과
-   실제 상폐/거래정지/커버리지 구멍을 분리해 센다. 헤드라인은 **미검열 행만** 쓴다.
-5. **소스별 커버리지 불균등 + 방향성 편향 (S2).** `kr.oversold_recovery` 는 픽의 31.8%,
-   `kr.stable_growth` 는 30.0% 가 `kr_candles_1d` 에 봉이 없어 채점 불능이다(전자는
-   ETN/ELW 계열 코드 혼입, 후자는 3개 고정 종목의 봉 부재). **이 결측은 D+5 도 함께
-   없어 부호를 판정할 수 없다.** 관측 가능한 D+20 절단은 무작위가 아니다: crypto 절단행은
-   전체보다 나쁘고, KR 절단행은 더 좋다(표 = `artifacts/report_tables.md` S2 절).
-6. **프로덕션 프리셋과의 문언 차이**는 `spec.py` 의 각 `SourceSpec.caveats` 에 적었다.
-   r2 에서 큰 정의 차이 3건을 명시했다: (a) `tv_rsi45` 는 라이브 fanout rsi-asc 로
-   수리(①) — 남은 차이는 Wilder 봉 재구성 vs 라이브 TradingView RSI, 그리고 스냅샷
-   유니버스 vs 라이브 HTTP 유니버스. (b) `us.high_yield_value` 는 **라이브 Yahoo 프리셋이
-   아니다**(②, `live_comparable=False`) — 그리드에 yahoo 파티션 0. (c) `kr.double_buy` 는
-   DoD self-join 으로 수리(①) — 남은 차이는 KR 보통주 이름 휴리스틱 미적용(느슨).
-   caveat 은 SourceSpec 단위이며 picks.csv 컬럼이 아니라 **종목별 기록이 아니다**.
-7. **부트스트랩 date-match (S3) + block (S4).** 초판 null 은 소스의 usable-date/censor
-   mask 와 날짜가 달랐다. 지금은 소스가 채점된 날짜에만 맞춰 평균한다. 창 중첩은
-   circular moving-block (block 길이 = 지평) 을 표에 병기한다. block source 95% CI 가
-   0 을 가르면 "유의하게 나쁨"을 같은 강도로 말하지 않는다.
-8. **raw picks 는 git 추적 대상이 아니다 (S6).** `artifacts/.gitignore` 가 `picks.csv` /
-   `picks_scored.csv` / `universe_returns.csv` 를 제외한다. 검증자가 현재 DB 로 재실행하면
-   crypto 절단 합계가 원 artifact 대비 약 10행 drift 할 수 있다 (DB 가 움직였기 때문 —
-   코드 분해의 오류가 아님). 집계 표(`scorecard*.csv`, `report_tables.md`)만 커밋한다.
-9. **사전등록 freeze 의 git 증거 없음 (S5).** 위 §0.
+---
+
+## §4 알려진 한계
+
+1. **표본이 한 국면이다.** KR 대폭 하락. 가치·역발상 유리, 모멘텀 불리 쪽으로
+   편향될 수 있다. 일반화 금지.
+2. **창 중첩.** D+20 결정일들이 19일을 공유. iid null 은 그만큼 낙관적.
+3. **upside 게이트 중화.** 게이트 통과 수치는 전부 상한.
+4. **커버리지.** `kr.oversold_recovery` 31.8%, `kr.stable_growth` 30.0% 가
+   채점 불능. 화려한 숫자는 나머지와 동급이 아니다. KR 절단행은 전체보다
+   **나쁘다** (−7.45pp, artifact S2).
+5. **문언 차이**는 `spec.py` `SourceSpec.caveats`.
+6. **investor_flow_momentum 은 판정 불가.** D+5 음 / D+20 양, 유효일 29/16.
+7. **freeze provenance 없음 (S5).**
+8. **block bootstrap.** iid null 0 이어도 block CI∋0 이면 같은 강도로
+   "유의 열위"라고 하지 않는다.
+9. **raw picks 는 git 추적 대상이 아니다 (S6).**
+
+---
+
+## §7 사전등록 — 전향 전용 (`screener-source-weighting-v1`)
+
+아래는 **다음 실험의 사전등록**이다. 역사 재구성 `tv_rsi45` 가 비교자가 아니다.
+비교자 = **로깅된 라이브 fanout 픽**. 새 가설을 추가하지 않았다. H1–H4 의
+비교자만 재정의한다. 판정 기준·최소 표본·제외 규칙·실패 시 처리는 원문 그대로.
+
+```
+실험 id: screener-source-weighting-v1
+비교자: 로깅된 라이브 fanout 픽 (review.screener_pick_log).
+        재구성 tv_rsi45 가 아니다.
+로깅 시작일: PR #1940 머지·배포 후 SCREENER_PICK_LOG_ENABLED=true 인
+             상태의 첫 생산 기록일. 백필 없음.
+가설 H1 (KR): 가치/수익성 3종 union 소스
+   = high_yield_value ∪ cheap_value ∪ growth_expectation_toss
+   (중복 심볼은 세 소스의 랭크 평균으로 정렬, 상위 10)
+   는 로깅된 라이브 fanout 픽 대비 D+20 날짜단위 중앙 초과수익이 크다.
+가설 H2 (US): high_yield_value 단독이 로깅된 라이브 fanout 픽 대비 D+20 우세하다.
+가설 H3 (crypto): long_short_skew 가 로깅된 라이브 fanout 픽 대비 D+20 우세하다.
+가설 H4 (게이트): B_moderate2 완화 시 H1 의 우세폭이 A_strong 대비 확대된다.
+
+사전 고정:
+  - 판정 기간 = 로깅 시작일 이후 신규 결정일만 (본 베이크오프 표본과 겹치지 않는 OOS)
+  - 최소 표본 = D+20 유효 결정일 40일. 그 전에는 중간값으로 판정하지 않는다.
+  - 판정 기준 = 날짜단위 중앙 초과수익 차 > 0 AND 날짜 승률 ≥ 60% AND
+                부트스트랩 null 백분위 ≥ 95, 세 조건 동시 충족.
+  - 제외 규칙(사전 고정): 봉 결측률 10% 초과 소스는 판정 대상에서 제외하고 그 사실을 보고.
+  - US 가치 프리셋에는 시총 하한 $300M 을 사전 부과한다(마이크로캡 왜곡 차단).
+  - 실패 시 처리: 기존 라이브 fanout 소스 구성 유지. 부분 성공 시 시장별로만 반영.
+금지: 이 실험 중 어떤 주문·워치·제안 경로에도 편입하지 않는다. 채점 전 정책 변경 0.
+      새 소스·새 시장·새 지평·새 가설 추가 0.
+```
+
+이 초안은 실행이 아니다. 전향 표본이 최소 기준을 채운 뒤에만 정책 논의로 넘긴다.
+
+---
 
 ## §5 재현
 
@@ -115,8 +194,7 @@ uv run python -m research.screener_bakeoff.aggregate
 uv run python -m research.screener_bakeoff.bootstrap
 uv run python -m research.screener_bakeoff.report
 uv run pytest tests/research/test_screener_bakeoff_contract.py tests/research/test_screener_bakeoff_parity.py
+uv run pytest tests/services/screener_pick_log/test_recorder.py
 ```
 
-산출: `artifacts/picks.csv`, `picks_scored.csv`, `scorecard.csv`,
-`scorecard_datelevel.csv`, `bootstrap_null.csv`, `universe_returns.csv`,
-`report_tables.md`, `run_meta.json`.
+역사 재실행은 이번 범위 밖이다. 하지 마라.

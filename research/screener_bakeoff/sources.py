@@ -373,16 +373,18 @@ def src_us_steady_dividend(ctx: MarketContext, day: dt.date) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Reconstructed live fanout rsi-asc source (RSI≤45 is the later common gate)
+# Research-definition RSI ranking (NOT a live fanout comparator)
 # ---------------------------------------------------------------------------
 
 
 def src_tv_rsi45(ctx: MarketContext, day: dt.date, rsi_lookup: dict) -> list[str]:
-    """Live fanout rsi-asc source: no liquidity floor, no max_rsi pre-filter.
+    """Research-definition RSI-asc ranking over the snapshot universe.
 
-    Matches ``buy_candidate_fanout._read_live_source`` request construction
-    (sort_by=rsi, sort_order=asc, max_rsi and adv_krw_min omitted). RSI≤45 is
-    applied later by the common gate, not here.
+    Live comparison was withdrawn after two adversarial rounds: this helper
+    returns up to GATE_POOL_DEPTH=100 names from the decision-date snapshot
+    partition, while live fanout requests top-10 per source from an HTTP
+    universe with TradingView RSI. Do not treat the output as live picks.
+    Kept as a scoring-utility for the historical snapshot bakeoff only.
     """
     df = ctx.screener.get(day)
     if df is None or df.empty:

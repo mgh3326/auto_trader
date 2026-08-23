@@ -2,8 +2,15 @@
 
 `discover_buy_candidates_fanout` is a KR-only, read-only discovery tool. It
 widens the screened population; it does not create a proposal, calculate an
-executable order, contact a broker or account, write a database row, or register
-a schedule.
+executable order, contact a broker or account, or register a schedule. The
+fan-out module itself performs no writes.
+
+When `SCREENER_PICK_LOG_ENABLED=true` (default false), an *outer* observer in
+`buy_candidate_fanout_registration` records the returned per-source picks to
+`review.screener_pick_log` for prospective scoring. Logging is fail-open and
+does not change the tool return. Apply the additive migration separately
+(`alembic upgrade head`); this repo never auto-applies it. Do not attach a
+scheduler to the gate.
 
 ## Sources and bounds
 

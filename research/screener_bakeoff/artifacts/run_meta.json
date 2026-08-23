@@ -3,10 +3,7 @@
   "rework_id": "r2-20260823",
   "generated_at": "2026-08-23T11:24:57.458458+00:00",
   "rerun_sources": [
-    "crypto.tv_rsi45",
-    "kr.double_buy",
-    "kr.tv_rsi45",
-    "us.tv_rsi45"
+    "kr.double_buy"
   ],
   "grids": {
     "kr": [
@@ -203,5 +200,7 @@
     "b_min_independent_families": 2,
     "upside_leg": "NEUTRALISED (no point-in-time consensus history)"
   },
-  "source_count": 42
+  "source_count": 42,
+  "tv_rsi45_comparison_withdrawn": true,
+  "tv_rsi45_withdrawal_reason": "live top-10 vs research top-100; parity test expected 100 not 10"
 }

@@ -1,16 +1,18 @@
 """Research source definition ↔ production definition parity.
 
-Path ① sources must produce the same ranked names as the production
-function/query on the same fixture. Path ② sources must be contracted as
-NOT the live preset — so a future production change cannot silently
-re-attach a live-comparison claim.
+Path ① remaining: ``kr.double_buy`` must match the production loader on the
+same fixture (real call). Path ②: ``us.high_yield_value`` is contracted as a
+research definition whose live parity was not verified.
+
+``tv_rsi45`` live-comparison parity tests were deleted. Two adversarial
+rounds showed the reconstruction is not live fanout; a test derived from the
+same misread cannot catch it. The comparator is now logged live picks.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import decimal
-from typing import Any
 
 import pandas as pd
 import pytest
@@ -20,7 +22,6 @@ import sqlalchemy as sa
 from research.screener_bakeoff.sources import (
     MarketContext,
     src_double_buy,
-    src_tv_rsi45,
     src_us_high_yield_value,
 )
 from research.screener_bakeoff.spec import SOURCES_BY_ID
@@ -30,92 +31,7 @@ _DB_SYMBOLS = ["931000", "931001", "931002", "931003"]
 
 
 # ---------------------------------------------------------------------------
-# ① tv_rsi45 — live fanout is rsi-asc with no max_rsi / no adv_krw_min
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_live_fanout_rsi_source_omits_max_rsi_and_adv(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.mcp_server.tooling import analysis_tool_handlers
-    from app.mcp_server.tooling import buy_candidate_fanout as fanout
-    from app.mcp_server.tooling.buy_candidate_fanout import TOP_N_PER_SOURCE
-
-    received: dict[str, Any] = {}
-
-    async def fake_screen_stocks_impl(**request: Any) -> dict[str, Any]:
-        received.update(request)
-        return {"results": [], "total_count": 0}
-
-    monkeypatch.setattr(
-        analysis_tool_handlers, "screen_stocks_impl", fake_screen_stocks_impl
-    )
-    rsi_source = next(s for s in fanout._LIVE_SOURCES if s.sort_by == "rsi")
-    await fanout._read_live_source(rsi_source, "kr", TOP_N_PER_SOURCE)
-    assert received["sort_by"] == "rsi"
-    assert received["sort_order"] == "asc"
-    assert "max_rsi" not in received
-    assert "adv_krw_min" not in received
-
-
-def test_tv_rsi45_ranking_matches_production_sort_without_prefilters():
-    from app.mcp_server.tooling.screening.common import (
-        _apply_basic_filters,
-        _sort_and_limit,
-    )
-
-    day = dt.date(2026, 7, 15)
-    # A is illiquid (turnover 1); B has RSI 80; both must survive candidate gen.
-    screener = pd.DataFrame(
-        {
-            "symbol": ["LIQ_LOW", "RSI_HIGH", "MID", "BEST"],
-            "daily_volume": [1.0, 1e7, 1e7, 1e7],
-            "latest_close": [1.0, 100.0, 100.0, 100.0],
-        }
-    )
-    rsi_lookup = {
-        ("LIQ_LOW", day): 12.0,
-        ("RSI_HIGH", day): 80.0,
-        ("MID", day): 30.0,
-        ("BEST", day): 8.0,
-    }
-    ctx = MarketContext("kr", screener={day: screener})
-    got = src_tv_rsi45(ctx, day, rsi_lookup)
-    stocks = [
-        {"symbol": sym, "rsi": rsi_lookup[(sym, day)]} for sym in screener["symbol"]
-    ]
-    filtered = _apply_basic_filters(
-        stocks,
-        min_market_cap=None,
-        max_per=None,
-        max_pbr=None,
-        min_dividend_yield=None,
-        max_rsi=None,
-        adv_krw_min=None,
-    )
-    expected = [r["symbol"] for r in _sort_and_limit(filtered, "rsi", "asc", 100)]
-    assert got == expected
-    assert got[0] == "BEST"
-    assert "LIQ_LOW" in got
-    assert "RSI_HIGH" in got
-    spec = SOURCES_BY_ID["kr.tv_rsi45"]
-    assert spec.live_comparable is True
-    cave = " ".join(spec.caveats)
-    assert "max_rsi omitted" in cave
-    assert "adv_krw_min omitted" in cave
-
-
-def test_us_tv_rsi45_is_the_same_live_fanout_contract():
-    spec = SOURCES_BY_ID["us.tv_rsi45"]
-    assert spec.live_comparable is True
-    assert "rsi-asc" in spec.label
-    cave = " ".join(spec.caveats)
-    assert "kr.tv_rsi45" in cave
-
-
-# ---------------------------------------------------------------------------
-# ② us.high_yield_value — NOT the live Yahoo + quality-guard preset
+# ② us.high_yield_value — research definition; live parity not verified
 # ---------------------------------------------------------------------------
 
 
@@ -128,10 +44,14 @@ def test_us_high_yield_value_is_research_definition_not_live_preset():
     spec = SOURCES_BY_ID["us.high_yield_value"]
     assert spec.live_comparable is False
     blob = (spec.label + " " + " ".join(spec.caveats)).lower()
-    assert "yahoo" in blob
     assert "tvscreener" in blob
-    assert "not the live" in blob
+    assert "parity" in blob
+    assert "미검증" in spec.label or "미검증" in " ".join(spec.caveats)
     assert "라이브" in spec.label
+    # The r2 "yahoo=0 ⇒ reconstruction impossible" claim was false.
+    assert "impossible" not in blob
+    assert "yahoo partition" not in blob
+    assert "yahoo=0" not in blob.replace(" ", "")
 
     day = dt.date(2026, 7, 15)
     # MICRO would be dropped by the live $100M / ROE-cap guards.
@@ -163,6 +83,15 @@ def test_us_high_yield_value_is_research_definition_not_live_preset():
     assert "MICRO" in got, "research definition must NOT apply the live cap floor"
     assert "ROEJUNK" in got, "research definition must NOT apply the live ROE cap"
     assert got[0] == "ROEJUNK"  # ranked by roe desc
+
+
+def test_tv_rsi45_is_not_a_live_comparator():
+    for source_id in ("kr.tv_rsi45", "us.tv_rsi45", "crypto.tv_rsi45"):
+        spec = SOURCES_BY_ID[source_id]
+        assert spec.live_comparable is False
+        blob = (spec.label + " " + " ".join(spec.caveats)).lower()
+        assert "철회" in spec.label or "withdrawn" in blob
+        assert "현행 주력" not in spec.label
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +372,9 @@ async def test_double_buy_research_matches_production_loader(_double_buy_parity_
     assert "931003" not in research
     spec = SOURCES_BY_ID["kr.double_buy"]
     assert spec.live_comparable is True
-    assert "fail-closed" in " ".join(spec.caveats)
+    cave = " ".join(spec.caveats)
+    assert "fail-closed" in cave
+    assert "17.5%" in cave
 
 
 def test_double_buy_fail_closed_without_prior_partition():

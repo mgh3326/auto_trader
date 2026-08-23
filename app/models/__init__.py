@@ -129,6 +129,7 @@ from .review import (
 )
 from .scalp_trade_analytics import ScalpTradeAnalytics
 from .scalping_reviews import ScalpingDailyReview, ScalpingReviewAction
+from .screener_pick_log import ScreenerPickLog
 from .sell_condition import SellCondition
 from .session_context import OperatorSessionContext
 from .strategy_learning_event import ResearchStrategyLearningEvent
@@ -241,6 +242,7 @@ __all__ = [
     "USSymbolUniverse",
     "UserSetting",
     "OperatorSessionContext",
+    "ScreenerPickLog",
     "SymbolSector",
     "SymbolTradeSettings",
     "SymbolNewsRelevance",

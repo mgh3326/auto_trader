@@ -785,10 +785,12 @@ def test_registration_is_read_only_and_observation_only() -> None:
     class _FakeMCP:
         def __init__(self) -> None:
             self.descriptions: dict[str, str] = {}
+            self.handlers: dict[str, Any] = {}
 
         def tool(self, *, name: str, description: str, **_: Any) -> Any:
             def decorate(function: Any) -> Any:
                 self.descriptions[name] = description
+                self.handlers[name] = function
                 return function
 
             return decorate
@@ -801,6 +803,47 @@ def test_registration_is_read_only_and_observation_only() -> None:
     assert "never a proposal or order" in description
     assert "threshold tuning" in description
     assert "undetermined" in description
+    assert "performs no writes" in description
+    assert "screener_pick_log_enabled" in description
+
+
+@pytest.mark.asyncio
+async def test_registration_records_outside_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import buy_candidate_fanout_registration as reg
+    from app.mcp_server.tooling.buy_candidate_fanout_registration import (
+        register_buy_candidate_fanout_tools,
+    )
+
+    payload = {"success": True, "market": "kr", "candidates": [{"symbol": "005930"}]}
+    recorded: list[dict[str, Any]] = []
+
+    async def fake_impl(**_: Any) -> dict[str, Any]:
+        return payload
+
+    async def fake_record(result: dict[str, Any], **_: Any) -> None:
+        recorded.append(result)
+
+    monkeypatch.setattr(reg, "discover_buy_candidates_fanout_impl", fake_impl)
+    monkeypatch.setattr(reg, "maybe_record_fanout_picks", fake_record)
+
+    class _FakeMCP:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def tool(self, *, name: str, description: str, **_: Any) -> Any:
+            def decorate(function: Any) -> Any:
+                self.handlers[name] = function
+                return function
+
+            return decorate
+
+    mcp = _FakeMCP()
+    register_buy_candidate_fanout_tools(mcp)  # type: ignore[arg-type]
+    returned = await mcp.handlers["discover_buy_candidates_fanout"]()
+    assert returned is payload
+    assert recorded == [payload]
 
 
 def test_no_broker_or_order_surface_imported_by_fanout_module() -> None:
@@ -821,8 +864,11 @@ def test_no_broker_or_order_surface_imported_by_fanout_module() -> None:
         "app.services.brokers",
         "app.mcp_server.tooling.orders",
         "app.mcp_server.tooling.portfolio",
+        "app.services.screener_pick_log",
+        "app.models.screener_pick_log",
     )
     assert all(not module.startswith(forbidden_prefixes) for module in imported_modules)
+    assert "screener_pick_log" not in text
 
 
 def test_runbook_states_observation_only_and_no_tuning() -> None:

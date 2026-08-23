@@ -1161,6 +1161,11 @@ class Settings(BaseSettings):
     RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED: bool = False
     RESEARCH_PIPELINE_DUAL_WRITE_ENABLED: bool = False
 
+    # Prospective screener pick log (screener bakeoff §140, PR #1940).
+    # Default-off observation of discover_buy_candidates_fanout returns.
+    # Fail-open. No scheduler. Operator enables after alembic upgrade head.
+    SCREENER_PICK_LOG_ENABLED: bool = False
+
     # Naver Remote-Debug Audit (ROB-323)
     remote_debug_audit_enabled: bool = False
 

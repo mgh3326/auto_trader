@@ -6,8 +6,8 @@ Two things must hold for the bakeoff report to mean anything:
    function of rows dated at or before the decision date.
 2. **Indicator fidelity.**  The reconstructed RSI / bollinger / fibonacci /
    clustering must match the production functions the live screener and the
-   live buy gate actually use, or the "현행 주력 대비" comparison is comparing
-   against something the system does not run.
+   live buy gate actually use. Live ``tv_rsi45`` comparison was withdrawn;
+   these helpers remain assets for prospective scoring.
 
 These tests are pure: no database, no network.
 """

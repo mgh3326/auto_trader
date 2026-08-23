@@ -1,11 +1,13 @@
 """ROB-§140차 screener source bakeoff — PRE-REGISTERED specification.
 
-Every constant in this module was fixed BEFORE any scoring output was
-inspected (see README.md §0 for the freeze record).  Nothing here may be
-tuned after looking at results; a changed constant means a NEW experiment id.
+Scoring constants in this module stay frozen. Live ``tv_rsi45`` comparison was
+withdrawn after two adversarial rounds failed on source-definition parity.
+The prospective comparator is logged live fanout picks
+(``screener-source-weighting-v1``), not reconstructed ``tv_rsi45``.
 
-Read-only research.  This package never writes to any application table,
-never touches a broker, and never emits an order/watch/proposal.
+Read-only research scoring.  This package never writes to any application
+table, never touches a broker, and never emits an order/watch/proposal.
+The observation log lives outside this package.
 """
 
 from __future__ import annotations
@@ -17,6 +19,16 @@ EXPERIMENT_ID = "screener-bakeoff-v1-20260822"
 #: r2 rework of the same experiment (parity labels / source definitions).
 #: Not a new scoring contract — constants above stay frozen.
 REWORK_ID = "r2-20260823"
+#: Prospective turn: live fanout reconstruction was abandoned after two
+#: adversarial rounds failed on the same axis (source definition ≠ production).
+#: Scoring constants above stay frozen. Comparator for H1–H4 is now the
+#: logged live fanout pick, not reconstructed tv_rsi45.
+PROSPECTIVE_ID = "screener-source-weighting-v1"
+LOGGING_START_RULE = (
+    "first production insert into review.screener_pick_log after PR #1940 "
+    "is merged AND SCREENER_PICK_LOG_ENABLED=true. No historical backfill. "
+    "Dates before that first row are not in-sample."
+)
 
 # --------------------------------------------------------------------------
 # §1 Scoring contract
@@ -163,10 +175,15 @@ SOURCES: tuple[SourceSpec, ...] = (
         "kr.top_gainers",
         "kr",
         "snapshot_preset",
-        "등락률 상위 (get_top_stocks류)",
+        "등락률 상위 (연구정의 — 라이브 fanout change_rate asc 와 다름)",
         _FROZEN_SNAP,
         True,
-        ("rank change_rate desc — the desc leg of the live fanout change_rate source",),
+        (
+            "RESEARCH DEFINITION. Ranks snapshot change_rate desc. Live fanout's "
+            "change_rate source is ASC (pullback). This is not the live pullback "
+            "leg. Do not read these numbers as live fanout change_rate results.",
+        ),
+        False,
     ),
     SourceSpec(
         "kr.top_losers",
@@ -209,8 +226,9 @@ SOURCES: tuple[SourceSpec, ...] = (
             "change_rate comes from the decision-date invest_screener_snapshots row "
             "(inner join; missing price row drops the name). "
             "Remaining vs production: the KR common-stock name heuristic "
-            "(_is_kr_toss_common_stock) is NOT applied here — looser when names "
-            "would exclude ETF/ETN/preferred.",
+            "(_is_kr_toss_common_stock) is NOT applied here. On the r2 picks, "
+            "that leftover filter would have dropped about 17.5% of gate=none "
+            "D+20 names. Direction survived; magnitude is a lower bound.",
         ),
     ),
     SourceSpec(
@@ -224,8 +242,8 @@ SOURCES: tuple[SourceSpec, ...] = (
             "filter rsi14<=30, rank rsi14 asc. "
             "WARNING: 31.8% of picks have no kr_candles_1d bar (ETN/ELW mix); "
             "D+5 is missing too so the sign of the missing cohort is unknowable. "
-            "Truncated-but-scored KR rows are directionally BETTER than the full "
-            "KR usable set — missing/truncation is not random.",
+            "Truncated-but-scored KR rows are directionally WORSE than the full "
+            "KR usable set (artifact S2: −7.45pp) — missing/truncation is not random.",
         ),
     ),
     SourceSpec(
@@ -328,20 +346,17 @@ SOURCES: tuple[SourceSpec, ...] = (
         "kr.tv_rsi45",
         "kr",
         "reconstructed",
-        "현행 주력 — 라이브 fanout rsi-asc (RSI≤45는 공통 게이트)",
+        "연구정의 (재구성 RSI 순위) — 라이브 비교 철회",
         _RECON,
         False,
         (
-            "Matches buy_candidate_fanout._read_live_source: sort_by=rsi asc, "
-            "max_rsi omitted, adv_krw_min omitted. Candidate generation does NOT "
-            "pre-filter RSI≤45 or apply the research liquidity floor; RSI≤45 is "
-            "the later common gate (GATE_RSI_MAX). "
-            "RSI-14 is Wilder-reconstructed from KRX daily bars <= decision date "
-            "(not live TradingView RSI). Universe = the decision-date "
-            "invest_screener_snapshots partition (the frozen names we had that "
-            "day), not a live tvscreener HTTP universe. "
-            "Analyst-consensus / upside leg NEUTRALISED.",
+            "LIVE COMPARISON WITHDRAWN. Two adversarial rounds showed this "
+            "reconstruction is not live fanout (research gated a top-100 pool; "
+            "live requests top-10 per source; universe is snapshot not live HTTP; "
+            "RSI is Wilder not TradingView). Do not use as the current-main "
+            "comparator. Prospective scoring uses logged live fanout picks.",
         ),
+        False,
     ),
     SourceSpec(
         "kr.random",
@@ -384,10 +399,14 @@ SOURCES: tuple[SourceSpec, ...] = (
         "us.top_gainers",
         "us",
         "snapshot_preset",
-        "등락률 상위",
+        "등락률 상위 (연구정의 — 라이브 fanout change_rate asc 와 다름)",
         _FROZEN_SNAP,
         True,
-        ("rank change_rate desc",),
+        (
+            "RESEARCH DEFINITION. Ranks snapshot change_rate desc. Live fanout "
+            "change_rate is ASC (pullback). Not the live pullback leg.",
+        ),
+        False,
     ),
     SourceSpec(
         "us.top_losers",
@@ -423,18 +442,16 @@ SOURCES: tuple[SourceSpec, ...] = (
         "us.high_yield_value",
         "us",
         "snapshot_preset",
-        "고수익 가치주 (연구정의 — 라이브 Yahoo 프리셋 아님)",
+        "고수익 가치주 (연구정의 tvscreener — 라이브 parity 미검증)",
         _FROZEN_USVAL,
         True,
         (
-            "RESEARCH DEFINITION — NOT the live US preset. Live "
-            "load_high_yield_value_from_snapshots uses source=yahoo plus ROB-440 "
-            "quality guards (market_cap>=$100M, ROE<=300). This bakeoff ranks "
-            "market_valuation_snapshots source=tvscreener, roe>=15, 0<PER<=10, "
-            "no quality guard. Yahoo partitions have 0 rows on every US decision "
-            "date in this grid (2026-06-16..08-21; yahoo exists only 2026-06-05..06-09). "
-            "Historical live reconstruction is impossible. Do not read these "
-            "numbers as live-preset results.",
+            "RESEARCH DEFINITION (tvscreener) — live parity NOT verified. "
+            "Ranks market_valuation_snapshots roe>=15, 0<PER<=10, no quality "
+            "guard. Production load_high_yield_value_from_snapshots does NOT "
+            "filter source='yahoo' (ROE/PER are vendor-agnostic). The r2 "
+            "yahoo-partition demotion is deleted; live loader parity was not "
+            "re-run. Do not read these numbers as live-preset results.",
         ),
         False,
     ),
@@ -463,10 +480,14 @@ SOURCES: tuple[SourceSpec, ...] = (
         "us.tv_rsi45",
         "us",
         "reconstructed",
-        "현행 주력 — 라이브 fanout rsi-asc (RSI≤45는 공통 게이트)",
+        "연구정의 (재구성 RSI 순위) — 라이브 비교 철회",
         _RECON,
         False,
-        ("same reconstruction as kr.tv_rsi45 on US daily bars",),
+        (
+            "LIVE COMPARISON WITHDRAWN. Same reconstruction gap as kr.tv_rsi45 "
+            "(top-100 vs live top-10; snapshot universe vs live HTTP).",
+        ),
+        False,
     ),
     SourceSpec(
         "us.random", "us", "control", "무작위 대조군", "seed-fixed draw", False, ()
@@ -548,16 +569,14 @@ SOURCES: tuple[SourceSpec, ...] = (
         "crypto.tv_rsi45",
         "crypto",
         "reconstructed",
-        "현행 주력 — 라이브 fanout rsi-asc (RSI≤45는 공통 게이트)",
+        "연구정의 (재구성 RSI 순위) — 라이브 비교 철회",
         _FROZEN_CRYPTO,
         True,
         (
-            "sort_by=rsi asc with no max_rsi and no trade_amount floor, matching "
-            "buy_candidate_fanout._read_live_source. Uses the frozen snapshot rsi "
-            "column (tvscreener_upbit) rather than a bar reconstruction, because "
-            "crypto_candles_1d coverage is too sparse to recompute. RSI≤45 is the "
-            "later rsi45_only gate, not a candidate pre-filter.",
+            "LIVE COMPARISON WITHDRAWN. Same reconstruction gap as kr.tv_rsi45 "
+            "(top-100 vs live top-10). Snapshot rsi column, not live TradingView.",
         ),
+        False,
     ),
     SourceSpec(
         "crypto.random",
