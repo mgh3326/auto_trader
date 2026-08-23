@@ -208,6 +208,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             for table in (
                 "telegram_callback_recovery_cursor",
                 "telegram_callback_inbox",
+                "screener_pick_log",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
             # Funding advisory is later than this reconstructed boundary. Drop

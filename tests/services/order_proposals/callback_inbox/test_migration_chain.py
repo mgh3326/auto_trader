@@ -11,8 +11,8 @@ So this module drives the actual ``alembic`` CLI, in a subprocess, against a
 scratch database created for this test and dropped afterwards:
 
     build the parent schema -> stamp 20260820_rob1290_reconcile
-      -> upgrade head   (must land on the W5 revision, table + constraints live)
-      -> downgrade 20260820_rob1290_reconcile   (table gone, version back)
+      -> upgrade head   (W5 tables + later additive tables live; stamp = current head)
+      -> downgrade 20260820_rob1290_reconcile   (W5 table gone, version back)
       -> upgrade head   (idempotent; constraints live again)
 
 R9 B19 asked for the parent to be reached by replaying the real chain from an
@@ -59,7 +59,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-W5_INBOX_REVISION = "20260821_w5_callback_inbox"
+HEAD_REVISION = "20260823_screener_pick_log"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -92,6 +92,7 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.telegram_callback_recovery_cursor",
     "review.telegram_callback_inbox",
+    "review.screener_pick_log",
 )
 
 
@@ -697,7 +698,7 @@ def test_alembic_reports_exactly_one_head() -> None:
     )
     heads = [line for line in output if line.strip()]
     assert len(heads) == 1, output
-    assert heads[0].startswith(W5_INBOX_REVISION), output
+    assert heads[0].startswith(HEAD_REVISION), output
 
 
 @pytest.mark.asyncio
@@ -760,7 +761,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         await _assert_outcome_constraint_matrix(scratch_database)
         await _assert_attempt_budget_matrix(scratch_database)
         await _assert_error_class_constraint_matrix(scratch_database)
-        assert await _stamped_revision(scratch_database) == W5_INBOX_REVISION
+        assert await _stamped_revision(scratch_database) == HEAD_REVISION
         objects = await _live_objects(scratch_database)
         live = {
             name

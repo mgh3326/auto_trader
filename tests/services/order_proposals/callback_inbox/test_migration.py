@@ -85,14 +85,14 @@ def test_the_migration_is_additive_and_touches_only_its_two_owned_tables() -> No
 def test_the_migration_chain_still_has_exactly_one_head() -> None:
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
     heads = tuple(script.get_heads())
-    assert heads == (_REVISION,), heads
+    assert len(heads) == 1, heads
 
 
 @pytest.mark.unit
 def test_r32_edits_only_the_original_w5_create_table_migration() -> None:
-    """W5 is unmerged: its original revision, not a follow-on, owns R32 DDL."""
+    """R32 DDL stays on the original W5 create-table migration."""
     script = ScriptDirectory.from_config(Config(str(_REPO / "alembic.ini")))
-    assert tuple(script.get_heads()) == (_REVISION,)
+    assert len(tuple(script.get_heads())) == 1
 
     # A named R32/outcome-allowlist revision would be a forbidden follow-on.
     assert not tuple(
