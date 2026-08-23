@@ -193,41 +193,37 @@ async def test_market_data_orderbook_provider_empty_book_returns_none(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_holding_provider_uses_account_panel_parity_without_paper():
+async def test_holding_provider_projects_requested_symbol_from_snapshot():
     from app.services.invest_view_model.stock_detail_providers import (
-        make_account_panel_holding_provider,
+        make_snapshot_symbol_holding_provider,
     )
 
     class FakeHomeService:
-        async def build_account_panel_view(
-            self, *, user_id: int, include_paper: bool = False, paper_sources=None
+        async def get_symbol_holding(
+            self, *, user_id: int, market: str, symbol: str, **_kwargs
         ):
             assert user_id == 7
-            assert include_paper is False
-            assert paper_sources is None
+            assert market == "kr"
+            assert symbol == "000270"
             return SimpleNamespace(
-                groupedHoldings=[
-                    SimpleNamespace(
-                        symbol="000270",
-                        market="KR",
-                        totalQuantity=3,
-                        tradeableQuantity=2,
-                        sellableQuantity=1,
-                        pendingSellQuantity=1,
-                        referenceQuantity=1,
-                        averageCost=80000,
-                        costBasis=240000,
-                        valueNative=255000,
-                        valueKrw=255000,
-                        pnlKrw=15000,
-                        pnlRate=0.0625,
-                        includedSources=["kis", "toss_manual"],
-                        priceState="live",
-                    )
-                ]
+                symbol="000270",
+                market="KR",
+                totalQuantity=3,
+                tradeableQuantity=2,
+                sellableQuantity=1,
+                pendingSellQuantity=1,
+                referenceQuantity=1,
+                averageCost=80000,
+                costBasis=240000,
+                valueNative=255000,
+                valueKrw=255000,
+                pnlKrw=15000,
+                pnlRate=0.0625,
+                includedSources=["kis", "toss_manual"],
+                priceState="live",
             )
 
-    provider = make_account_panel_holding_provider(FakeHomeService())
+    provider = make_snapshot_symbol_holding_provider(FakeHomeService())
 
     holding = await provider(7, "kr", "000270", object())
 
@@ -242,21 +238,16 @@ async def test_holding_provider_uses_account_panel_parity_without_paper():
 @pytest.mark.asyncio
 async def test_holding_provider_returns_none_when_symbol_not_held():
     from app.services.invest_view_model.stock_detail_providers import (
-        make_account_panel_holding_provider,
+        make_snapshot_symbol_holding_provider,
     )
 
     class FakeHomeService:
-        async def build_account_panel_view(
-            self, *, user_id: int, include_paper: bool = False, paper_sources=None
+        async def get_symbol_holding(
+            self, *, user_id: int, market: str, symbol: str, **_kwargs
         ):
-            return SimpleNamespace(
-                groupedHoldings=[
-                    SimpleNamespace(symbol="000660", market="KR"),
-                    SimpleNamespace(symbol="AAPL", market="US"),
-                ]
-            )
+            return None
 
-    provider = make_account_panel_holding_provider(FakeHomeService())
+    provider = make_snapshot_symbol_holding_provider(FakeHomeService())
 
     assert await provider(7, "kr", "000270", object()) is None
 

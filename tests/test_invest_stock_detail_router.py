@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_stock_detail_route_passes_account_panel_holding_provider(monkeypatch):
+async def test_stock_detail_route_passes_snapshot_symbol_holding_provider(monkeypatch):
     from app.routers import invest_api
     from app.schemas.invest_stock_detail import StockDetailResponse
 
@@ -31,32 +31,39 @@ async def test_stock_detail_route_passes_account_panel_holding_provider(monkeypa
         )
 
     class FakeHomeService:
-        async def build_account_panel_view(
-            self, *, user_id, include_paper=False, paper_sources=None
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def get_symbol_holding(
+            self, *, user_id, market, symbol, include_paper=False, paper_sources=None
         ):
-            assert include_paper is False
+            self.calls.append(
+                {
+                    "user_id": user_id,
+                    "market": market,
+                    "symbol": symbol,
+                    "include_paper": include_paper,
+                }
+            )
             return SimpleNamespace(
-                groupedHoldings=[
-                    SimpleNamespace(
-                        symbol="000270",
-                        market="KR",
-                        totalQuantity=4,
-                        tradeableQuantity=4,
-                        sellableQuantity=4,
-                        pendingSellQuantity=0,
-                        referenceQuantity=0,
-                        averageCost=70000,
-                        costBasis=280000,
-                        valueNative=300000,
-                        valueKrw=300000,
-                        pnlKrw=20000,
-                        pnlRate=0.0714,
-                        includedSources=["kis"],
-                        priceState="live",
-                    )
-                ]
+                symbol="000270",
+                market="KR",
+                totalQuantity=4,
+                tradeableQuantity=4,
+                sellableQuantity=4,
+                pendingSellQuantity=0,
+                referenceQuantity=0,
+                averageCost=70000,
+                costBasis=280000,
+                valueNative=300000,
+                valueKrw=300000,
+                pnlKrw=20000,
+                pnlRate=0.0714,
+                includedSources=["kis"],
+                priceState="live",
             )
 
+    service = FakeHomeService()
     monkeypatch.setattr(invest_api, "build_stock_detail", fake_build_stock_detail)
 
     response = await invest_api.get_stock_detail(
@@ -64,9 +71,17 @@ async def test_stock_detail_route_passes_account_panel_holding_provider(monkeypa
         symbol="000270",
         user=SimpleNamespace(id=7),
         db=SimpleNamespace(),
-        service=FakeHomeService(),
+        service=service,
     )
 
     assert response.holding is not None
     assert response.holding.totalQuantity == 4
     assert response.holding.includedSources == ["kis"]
+    assert service.calls == [
+        {
+            "user_id": 7,
+            "market": "kr",
+            "symbol": "000270",
+            "include_paper": False,
+        }
+    ]

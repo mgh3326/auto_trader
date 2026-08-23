@@ -38,6 +38,11 @@ class _StubHomeService:
             meta=InvestHomeResponseMeta(warnings=[]),
         )
 
+    async def get_held_pairs(
+        self, *, user_id: int, include_paper: bool = False, paper_sources=None
+    ) -> list[tuple[str, str]]:
+        return []
+
 
 class _StubScreening:
     def __init__(self, payload: dict[str, Any] | None = None) -> None:
