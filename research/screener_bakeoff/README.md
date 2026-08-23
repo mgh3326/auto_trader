@@ -31,8 +31,10 @@
 `tv_rsi45` **비교 라벨·표·문언·parity 테스트는 전면 철회**했다. 철회 정본은
 `spec.py`의 `WITHDRAWN_SOURCES`이며, 기본 runner는 해당 builder를 만들지 않고
 aggregate/date-level/bootstrap/report도 해당 source ID를 산출물에서 배제한다.
-역사 builder는 `--include-withdrawn-sources`를 명시한 진단 실행에서만 도달할 수
-있고, 철회 source는 여전히 보고 경로에 실리지 않는다.
+KR/US의 3-인자 역사 builder와 사문화된 RSI 배선은 삭제했다. 현재 남은 역사
+builder는 2-인자 `crypto.tv_rsi45`뿐이며, `--include-withdrawn-sources`를 명시한
+crypto 진단 실행에서만 도달할 수 있다. 철회 source는 여전히 보고 경로에 실리지
+않는다. KR/US에는 도달 가능한 역사 builder가 없다.
 남는 역사 절은 스냅샷 소스 상호 비교 + 무작위 대조뿐이며, 아래 라벨을 붙인다.
 
 1. **전부 연구정의** — 라이브 프리셋이 아니다.

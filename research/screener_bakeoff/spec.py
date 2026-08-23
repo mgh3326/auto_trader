@@ -25,9 +25,7 @@ REWORK_ID = "r2-20260823"
 #: logged live fanout pick, not reconstructed tv_rsi45.
 PROSPECTIVE_ID = "screener-source-weighting-v1"
 #: The single source of truth for the withdrawn reconstructed comparators.
-WITHDRAWN_SOURCES: frozenset[str] = frozenset(
-    {"kr.tv_rsi45", "us.tv_rsi45", "crypto.tv_rsi45"}
-)
+WITHDRAWN_SOURCES: frozenset[str] = frozenset({"crypto.tv_rsi45"})
 
 
 def is_withdrawn_source(source_id: str) -> bool:
@@ -165,8 +163,6 @@ _FROZEN_KRFUND = (
 _FROZEN_USVAL = "market_valuation_snapshots (market='us', source='tvscreener') row, written on the decision date"
 _FROZEN_FLOW = "investor_flow_snapshots row, written on the decision date"
 _FROZEN_CRYPTO = "invest_crypto_screener_snapshots row, written on the decision date"
-_RECON = "reconstructed from *_candles_1d bars with time <= decision date only"
-
 SOURCES: tuple[SourceSpec, ...] = (
     # ---------------- KR: production presets on frozen snapshot columns ----
     SourceSpec(
@@ -359,22 +355,6 @@ SOURCES: tuple[SourceSpec, ...] = (
             "dividend_yield>=1%, continuous_dividend_growth>=3, payout_ratio_ttm>=30, rank yield desc",
         ),
     ),
-    # ---------------- KR: reconstructions --------------------------------
-    SourceSpec(
-        "kr.tv_rsi45",
-        "kr",
-        "reconstructed",
-        "연구정의 (재구성 RSI 순위) — 라이브 비교 철회",
-        _RECON,
-        False,
-        (
-            "LIVE COMPARISON WITHDRAWN. Two adversarial rounds showed this "
-            "reconstruction is not live fanout (research gated a top-100 pool; "
-            "live requests top-10 per source; universe is snapshot not live HTTP; "
-            "RSI is Wilder not TradingView). Do not use as the current-main "
-            "comparator. Prospective scoring uses logged live fanout picks.",
-        ),
-    ),
     SourceSpec(
         "kr.random",
         "kr",
@@ -494,18 +474,6 @@ SOURCES: tuple[SourceSpec, ...] = (
         ),
     ),
     SourceSpec(
-        "us.tv_rsi45",
-        "us",
-        "reconstructed",
-        "연구정의 (재구성 RSI 순위) — 라이브 비교 철회",
-        _RECON,
-        False,
-        (
-            "LIVE COMPARISON WITHDRAWN. Same reconstruction gap as kr.tv_rsi45 "
-            "(top-100 vs live top-10; snapshot universe vs live HTTP).",
-        ),
-    ),
-    SourceSpec(
         "us.random", "us", "control", "무작위 대조군", "seed-fixed draw", False, ()
     ),
     SourceSpec(
@@ -589,8 +557,8 @@ SOURCES: tuple[SourceSpec, ...] = (
         _FROZEN_CRYPTO,
         True,
         (
-            "LIVE COMPARISON WITHDRAWN. Same reconstruction gap as kr.tv_rsi45 "
-            "(top-100 vs live top-10). Snapshot rsi column, not live TradingView.",
+            "LIVE COMPARISON WITHDRAWN. This historical reconstruction has the "
+            "top-100 vs live top-10 gap. Snapshot rsi column, not live TradingView.",
         ),
     ),
     SourceSpec(

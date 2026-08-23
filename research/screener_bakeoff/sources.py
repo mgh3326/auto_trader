@@ -373,32 +373,6 @@ def src_us_steady_dividend(ctx: MarketContext, day: dt.date) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Research-definition RSI ranking (NOT a live fanout comparator)
-# ---------------------------------------------------------------------------
-
-
-def src_tv_rsi45(ctx: MarketContext, day: dt.date, rsi_lookup: dict) -> list[str]:
-    """Research-definition RSI-asc ranking over the snapshot universe.
-
-    Live comparison was withdrawn after two adversarial rounds: this helper
-    returns up to GATE_POOL_DEPTH=100 names from the decision-date snapshot
-    partition, while live fanout requests top-10 per source from an HTTP
-    universe with TradingView RSI. Do not treat the output as live picks.
-    Kept as a scoring-utility for the historical snapshot bakeoff only.
-    """
-    df = ctx.screener.get(day)
-    if df is None or df.empty:
-        return []
-    rows = []
-    for sym in df["symbol"]:
-        rsi = rsi_lookup.get((sym, day))
-        if rsi is not None:
-            rows.append((sym, rsi))
-    rows.sort(key=lambda item: (item[1], item[0]))
-    return [sym for sym, _ in rows[:GATE_POOL_DEPTH]]
-
-
-# ---------------------------------------------------------------------------
 # Crypto sources (frozen snapshot columns)
 # ---------------------------------------------------------------------------
 

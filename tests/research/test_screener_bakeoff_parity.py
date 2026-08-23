@@ -85,13 +85,12 @@ def test_us_high_yield_value_is_research_definition_not_live_preset():
     assert got[0] == "ROEJUNK"  # ranked by roe desc
 
 
-def test_tv_rsi45_is_not_a_live_comparator():
-    for source_id in ("kr.tv_rsi45", "us.tv_rsi45", "crypto.tv_rsi45"):
-        spec = SOURCES_BY_ID[source_id]
-        assert spec.live_comparable is False
-        blob = (spec.label + " " + " ".join(spec.caveats)).lower()
-        assert "철회" in spec.label or "withdrawn" in blob
-        assert "현행 주력" not in spec.label
+def test_crypto_tv_rsi45_is_not_a_live_comparator():
+    spec = SOURCES_BY_ID["crypto.tv_rsi45"]
+    assert spec.live_comparable is False
+    blob = (spec.label + " " + " ".join(spec.caveats)).lower()
+    assert "철회" in spec.label or "withdrawn" in blob
+    assert "현행 주력" not in spec.label
 
 
 # ---------------------------------------------------------------------------

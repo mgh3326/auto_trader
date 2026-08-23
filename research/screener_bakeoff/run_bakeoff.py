@@ -18,7 +18,6 @@ import time
 import numpy as np
 import pandas as pd
 
-from research.screener_bakeoff import indicators as ind
 from research.screener_bakeoff import panel as P
 from research.screener_bakeoff import scoring
 from research.screener_bakeoff import sources as S
@@ -37,6 +36,7 @@ from research.screener_bakeoff.spec import (
     SR_WINDOW_BARS,
     TOP_N,
     WITHDRAWN_SOURCES,
+    is_withdrawn_source,
 )
 
 SINCE = dt.date(2025, 6, 1)
@@ -81,10 +81,22 @@ _CRYPTO_BUILDERS = {
     "crypto.long_short_skew": S.src_crypto_long_short_skew,
 }
 _WITHDRAWN_BUILDERS_BY_MARKET = {
-    "kr": S.src_tv_rsi45,
-    "us": S.src_tv_rsi45,
     "crypto": S.src_crypto_rsi45,
 }
+
+
+def _reject_withdrawn_builder_aliases(builders: dict) -> None:
+    withdrawn_builders = tuple(_WITHDRAWN_BUILDERS_BY_MARKET.values())
+    aliases = {
+        source_id
+        for source_id, builder in builders.items()
+        if builder in withdrawn_builders and source_id not in WITHDRAWN_SOURCES
+    }
+    if aliases:
+        raise ValueError(
+            "withdrawn builders must use their canonical source IDs: "
+            + ", ".join(sorted(aliases))
+        )
 
 
 def _log(msg: str) -> None:
@@ -96,17 +108,6 @@ def _group_by_date(df: pd.DataFrame) -> dict:
         return {}
     # NOT dict(groupby): pandas GroupBy is not a (key, value) iterable dict() accepts.
     return {d: g for d, g in df.groupby("snapshot_date")}  # noqa: C416
-
-
-def _rsi_lookup(panel: P.PricePanel) -> dict:
-    out: dict = {}
-    for sym, closes in panel.close.items():
-        series = ind.rsi_wilder_series(closes)
-        days = panel.dates[sym]
-        for i, value in enumerate(series):
-            if not np.isnan(value):
-                out[(sym, days[i])] = float(value)
-    return out
 
 
 def _builders_for_market(
@@ -135,6 +136,7 @@ def _builders_for_market(
             for source_id, builder in builders.items()
             if source_id in wanted_sources
         }
+    _reject_withdrawn_builder_aliases(builders)
     return builders
 
 
@@ -230,7 +232,6 @@ def decision_grid(ctx: S.MarketContext, raw) -> list[dt.date]:
 def run_market(
     ctx,
     grid,
-    rsi_lookup,
     out_rows,
     gate_cache,
     universe_rows=None,
@@ -398,7 +399,7 @@ def main() -> int:
     ap.add_argument(
         "--include-withdrawn-sources",
         action="store_true",
-        help="explicitly opt in to historical withdrawn builders for diagnostics",
+        help="explicitly opt in to the withdrawn crypto builder for diagnostics",
     )
     args = ap.parse_args()
     outdir = pathlib.Path(args.out)
@@ -416,24 +417,11 @@ def main() -> int:
     kr, us, crypto, raw = build_contexts()
     wanted = set(args.markets.split(","))
 
-    _log("precomputing RSI panels ...")
-    need_kr_rsi = "kr" in wanted and (
-        args.include_withdrawn_sources
-        and (wanted_sources is None or "kr.tv_rsi45" in wanted_sources)
-    )
-    need_us_rsi = "us" in wanted and (
-        args.include_withdrawn_sources
-        and (wanted_sources is None or "us.tv_rsi45" in wanted_sources)
-    )
-    rsi_kr = _rsi_lookup(kr.prices) if need_kr_rsi else {}
-    rsi_us = _rsi_lookup(us.prices) if need_us_rsi else {}
-    _log(f"  rsi kr={len(rsi_kr)} us={len(rsi_us)}")
-
     rows: list[dict] = []
     universe_rows: list[tuple] = []
     gate_cache: dict = {}
     grids = {}
-    for ctx, lookup in ((kr, rsi_kr), (us, rsi_us), (crypto, {})):
+    for ctx in (kr, us, crypto):
         if ctx.market not in wanted:
             continue
         grid = decision_grid(ctx, raw)
@@ -442,7 +430,6 @@ def main() -> int:
         run_market(
             ctx,
             grid,
-            lookup,
             rows,
             gate_cache,
             universe_rows,
@@ -487,7 +474,15 @@ def main() -> int:
             "b_min_independent_families": GATE_B_MIN_INDEPENDENT_FAMILIES,
             "upside_leg": "NEUTRALISED (no point-in-time consensus history)",
         },
-        "source_count": len(SOURCES),
+        "include_withdrawn_sources": args.include_withdrawn_sources,
+        "withdrawn_sources": sorted(WITHDRAWN_SOURCES),
+        "tv_rsi45_comparison_withdrawn": True,
+        "tv_rsi45_withdrawal_reason": (
+            "live top-10 vs research top-100; parity test expected 100 not 10"
+        ),
+        "source_count": sum(
+            not is_withdrawn_source(source.source_id) for source in SOURCES
+        ),
     }
     (outdir / "run_meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False)
