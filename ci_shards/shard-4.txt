@@ -319,6 +319,7 @@ tests/test_kis_mock_signal_migration_additive.py
 tests/test_kis_request_error_retry_policy.py
 tests/test_kiwoom_auth_token_cache.py
 tests/test_kiwoom_chart_compare.py
+tests/test_kiwoom_g1_canonical_wiring.py
 tests/test_kiwoom_mock_us_config.py
 tests/test_kr_live_quote.py
 tests/test_kr_news_relevance_service.py

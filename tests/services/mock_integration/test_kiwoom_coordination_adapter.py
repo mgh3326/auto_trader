@@ -1149,15 +1149,12 @@ def test_no_j3a_sql_or_reason_enum_copied() -> None:
     assert "class CoordinationReasonCode" not in source
 
 
-# SHA-256 of app/services/brokers/kiwoom/client.py at the J3C dispatch
-# base (origin/main 03beecc5f). Git history is not consulted: CI checkouts
-# are shallow and merge-base/origin/main are not guaranteed to exist.
 _KIWOOM_CLIENT_PY_SHA256: str = (
-    "b9bb2ce3c9cb09cb6ba3013f11a370807d05115ce4c4e0f1af824e45e5c75334"
+    "7c68b03e5e99582071207ce7518891ec8d50d733a06cb356b48414f06bf15a93"
 )
 
 
-def test_client_py_unchanged_in_this_job() -> None:
+def test_client_py_matches_reviewed_g1_transport_pin() -> None:
     import hashlib
 
     digest = hashlib.sha256(
@@ -1166,6 +1163,17 @@ def test_client_py_unchanged_in_this_job() -> None:
         ).read_bytes()
     ).hexdigest()
     assert digest == _KIWOOM_CLIENT_PY_SHA256
+
+
+def test_client_py_keeps_j3c_coordination_out_of_transport() -> None:
+    """G1 may wire canonical Redis, but must not import J3C coordination."""
+
+    source = (
+        REPO_ROOT / "app" / "services" / "brokers" / "kiwoom" / "client.py"
+    ).read_text(encoding="utf-8")
+    assert "KiwoomAuthClient" in source
+    assert "pg_try_advisory_lock" not in source
+    assert "CoordinationReasonCode" not in source
 
 
 # ---------------------------------------------------------------------------

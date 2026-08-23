@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from typing import Self
+from typing import Any, Self
 
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import (
     KiwoomConfigurationError,
     KiwoomMockClient,
+    assert_distinct_kr_us_identities,
 )
 
 
@@ -58,6 +59,8 @@ class KiwoomMockUsClient(KiwoomMockClient):
         app_secret: str,
         account_no: str,
         timeout: float = constants.DEFAULT_TIMEOUT,
+        redis_client: Any | None = None,
+        redis_settings: Any | None = None,
         rate_limit_clock: Callable[[], float] = time.monotonic,
         rate_limit_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -67,6 +70,8 @@ class KiwoomMockUsClient(KiwoomMockClient):
             app_secret=app_secret,
             account_no=account_no,
             timeout=timeout,
+            redis_client=redis_client,
+            redis_settings=redis_settings,
         )
         self._tr_rate_limiter = _PerTrRateLimiter(
             clock=rate_limit_clock,
@@ -86,9 +91,11 @@ class KiwoomMockUsClient(KiwoomMockClient):
                 "Kiwoom US mock account is disabled or missing required "
                 "configuration: " + ", ".join(missing)
             )
+        assert_distinct_kr_us_identities(settings)
         return cls(
             base_url=str(settings.kiwoom_mock_base_url).rstrip("/"),
             app_key=str(settings.kiwoom_mock_us_app_key),
             app_secret=str(settings.kiwoom_mock_us_app_secret),
             account_no=str(settings.kiwoom_mock_us_account_no),
+            redis_settings=settings,
         )
