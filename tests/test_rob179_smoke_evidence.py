@@ -34,7 +34,9 @@ def _make_app():
                 meta=InvestHomeResponseMeta(warnings=[]),
             )
 
-        async def get_held_pairs(self, *, user_id, include_paper=False, paper_sources=None):
+        async def get_held_pairs(
+            self, *, user_id, include_paper=False, paper_sources=None
+        ):
             return []
 
     app = FastAPI()
