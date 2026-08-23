@@ -74,6 +74,40 @@ def validate_owned_database_name(database_name: str) -> re.Match[str]:
     return match
 
 
+def validate_run_owned_database_url(database_url: str | URL) -> URL:
+    """Validate a PostgreSQL URL before a test opens any database connection.
+
+    This guard intentionally lives outside ``tests/conftest.py``.  A test
+    invoked with ``--noconftest`` must fail closed before a module-local
+    session/engine can connect to an operator-provided URL.
+    """
+
+    url = make_url(database_url) if isinstance(database_url, str) else database_url
+    if url.get_backend_name() != "postgresql":
+        raise RuntimeError("refusing a non-PostgreSQL test database URL")
+    if not url.database or not url.host or not url.username:
+        raise RuntimeError("refusing an incomplete test database URL")
+
+    validate_owned_database_name(url.database)
+    configured_name = os.environ.get(DATABASE_NAME_ENV)
+    if configured_name != url.database:
+        raise RuntimeError("refusing a URL not owned by this pytest run")
+
+    base_raw = os.environ.get(BASE_DATABASE_URL_ENV)
+    if not base_raw:
+        raise RuntimeError("refusing a test URL without an owned base URL")
+    base_url = make_url(base_raw)
+    if base_url.get_backend_name() != "postgresql":
+        raise RuntimeError("refusing a non-PostgreSQL pytest base URL")
+    if (url.host, url.port, url.username) != (
+        base_url.host,
+        base_url.port,
+        base_url.username,
+    ):
+        raise RuntimeError("refusing a test URL on an unowned PostgreSQL server")
+    return url
+
+
 def configure_test_database_environment() -> None:
     """Select a run-owned DB name without connecting to PostgreSQL.
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.paper_validation import PaperValidationStateTransition
 from app.models.research_backtest import ResearchStrategyExperiment
 from app.services.paper_validation.contracts import (
@@ -21,6 +21,7 @@ from app.services.paper_validation.service import (
     PaperValidationError,
     PaperValidationService,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.paper_validation.conftest import (
     HASH_FIELDS,
     FakeActorRoleProvider,
@@ -30,6 +31,8 @@ from tests.services.paper_validation.conftest import (
 )
 
 pytestmark = pytest.mark.integration
+
+validate_run_owned_database_url(engine.url)
 
 
 async def _persisted_identity() -> ValidationIdentity:

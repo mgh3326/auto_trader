@@ -9,10 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import engine
 from app.models.trading import InstrumentType
+from tests._run_owned_database import validate_run_owned_database_url
 
 SessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
+validate_run_owned_database_url(engine.url)
 
 
 async def _ensure_trade_profile_tables() -> None:

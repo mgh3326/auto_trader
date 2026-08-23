@@ -21,6 +21,9 @@ async def async_db_session():
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from tests._run_owned_database import validate_run_owned_database_url
+
+    db_url = validate_run_owned_database_url(db_url)
     engine = create_async_engine(db_url, echo=False)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:

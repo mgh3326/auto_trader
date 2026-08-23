@@ -16,7 +16,6 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import delete, func, select, text, update
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -36,6 +35,7 @@ from app.models.paper_evaluation import (
 from app.models.research_backtest import ResearchBacktestRun, ResearchStrategyExperiment
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
 from app.services.paper_evaluation.service import PaperEvaluationService, _request_hash
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.paper_evaluation.conftest import make_evaluation_config
 from tests.services.paper_evaluation.test_integration import make_evidence
 
@@ -147,7 +147,7 @@ def test_migration_defines_all_tables_and_key_constraints() -> None:
 
 @pytest.mark.asyncio
 async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
-    base_url = make_url(settings.DATABASE_URL)
+    base_url = validate_run_owned_database_url(settings.DATABASE_URL)
     if base_url.get_backend_name() != "postgresql":
         pytest.skip("ROB-850 migration acceptance requires PostgreSQL")
     database = f"rob850_migration_{uuid4().hex}"

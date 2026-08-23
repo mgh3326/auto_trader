@@ -27,10 +27,12 @@ pytestmark = pytest.mark.integration
 async def _clean_smoke_rows():
     """The smoke side-effect submit now persists a snapshot + a durable manual
     claim; keep the deterministic manual keys and smoke snapshots clean."""
-    from app.core.db import AsyncSessionLocal
+    from app.core.db import AsyncSessionLocal, engine
     from app.models.market_quote_snapshot import MarketQuoteSnapshot
     from app.models.review import AlpacaPaperOrderLedger
+    from tests._run_owned_database import validate_run_owned_database_url
 
+    validate_run_owned_database_url(engine.url)
     led = delete(AlpacaPaperOrderLedger).where(
         AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
         | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")

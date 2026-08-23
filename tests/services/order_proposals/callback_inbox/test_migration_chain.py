@@ -56,6 +56,7 @@ import pytest_asyncio
 from sqlalchemy.engine import make_url
 
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -107,7 +108,7 @@ async def scratch_database() -> AsyncIterator[str]:
 
     from app.models.base import Base
 
-    base = make_url(os.environ["DATABASE_URL"])
+    base = validate_run_owned_database_url(os.environ["DATABASE_URL"])
     name = _scratch_name()
     try:
         admin = await asyncpg.connect(**_admin_kwargs(base, database="postgres"))

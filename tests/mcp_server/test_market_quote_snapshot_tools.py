@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     market_quote_snapshot_ensure,
@@ -17,12 +17,14 @@ from app.mcp_server.tooling.market_quote_snapshot_tools import (
 from app.mcp_server.tooling.registry import register_all_tools
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from tests._mcp_tooling_support import DummyMCP
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.asyncio]
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_db(request: pytest.FixtureRequest):
+    validate_run_owned_database_url(engine.url)
     if request.node.get_closest_marker("unit") and not request.node.get_closest_marker(
         "integration"
     ):

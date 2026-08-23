@@ -28,12 +28,12 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import settings
 from tests._db_retry import run_with_deadlock_retry
+from tests._run_owned_database import validate_run_owned_database_url
 
 
 @asynccontextmanager
@@ -49,7 +49,7 @@ async def _throwaway_schema_db() -> AsyncIterator[AsyncEngine]:
     preserves exactly what these tests assert while making the module inert
     for every other worker. Pattern from paper_cohort/test_migration.py.
     """
-    base_url = make_url(settings.DATABASE_URL)
+    base_url = validate_run_owned_database_url(settings.DATABASE_URL)
     if base_url.get_backend_name() != "postgresql":
         pytest.skip("schema-barrier DDL tests require PostgreSQL")
     database = f"rob968_barrier_{uuid4().hex}"
