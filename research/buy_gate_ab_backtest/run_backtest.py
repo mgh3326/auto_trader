@@ -125,9 +125,7 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
         if len(group) < RSI_WINDOW_BARS + 1:
             continue
         dates = group["session_date"].to_numpy()
-        traded_value = (
-            group["value"].rolling(LIQUIDITY_LOOKBACK).median().to_numpy()
-        )
+        traded_value = group["value"].rolling(LIQUIDITY_LOOKBACK).median().to_numpy()
         for pos in range(RSI_WINDOW_BARS - 1, len(group)):
             if dates[pos] not in decision_sessions:
                 continue
@@ -150,9 +148,7 @@ def run_market(market: str, *, limit_dates: int | None = None) -> dict[str, Any]
                 failures[evidence.reason] += 1
                 continue
             annex = {
-                key: evidence.pop(key)
-                for key in list(evidence)
-                if key.startswith("_")
+                key: evidence.pop(key) for key in list(evidence) if key.startswith("_")
             }
             evaluation = evaluate_candidate(
                 CandidateEvidence.from_mapping(evidence),
@@ -266,9 +262,7 @@ def summarize(result: dict[str, Any]) -> dict[str, Any]:
             ]
             drawdowns = [
                 float(
-                    row["scores"][key]["primary"][
-                        "max_drawdown_from_entry_close_peak"
-                    ]
+                    row["scores"][key]["primary"]["max_drawdown_from_entry_close_peak"]
                 )
                 for row in scoreable
             ]

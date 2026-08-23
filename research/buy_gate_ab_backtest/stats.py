@@ -80,9 +80,7 @@ def _cluster_bootstrap(
     }
 
 
-def _block_indices(
-    n: int, rng: np.random.Generator, block: int
-) -> np.ndarray:
+def _block_indices(n: int, rng: np.random.Generator, block: int) -> np.ndarray:
     """Circular moving-block resample of date positions."""
     if n <= block:
         return rng.choice(np.arange(n), size=n, replace=True)
@@ -160,8 +158,7 @@ def annex(result: dict[str, Any]) -> dict[str, Any]:
         }
         out["windows"][window] = {
             "cohorts": {
-                cohort: _cluster_bootstrap(grouped[cohort], rng)
-                for cohort in grouped
+                cohort: _cluster_bootstrap(grouped[cohort], rng) for cohort in grouped
             },
             "b_only_minus_a_and_b": _paired_difference(
                 grouped["b_only"], grouped["a_and_b"], rng

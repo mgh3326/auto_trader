@@ -294,7 +294,11 @@ def _select_support(supports: list[Any], *, current_price: float) -> dict[str, A
     return min(below, key=lambda level: level["distance_pct"])
 
 
-_SUPPORT_FAMILY_ALIASES = (("fib_", "fib"), ("bb_lower", "bb_lower"), ("volume_", "volume_profile"))
+_SUPPORT_FAMILY_ALIASES = (
+    ("fib_", "fib"),
+    ("bb_lower", "bb_lower"),
+    ("volume_", "volume_profile"),
+)
 
 
 def _support_family(source: str) -> str | None:

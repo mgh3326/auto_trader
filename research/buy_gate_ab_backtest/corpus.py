@@ -57,14 +57,17 @@ def _finalize(
 
 def load_kr() -> MarketPanel:
     spec = ADDENDUM["corpora"]["kr"]
-    paths = sorted(glob.glob(os.path.join(spec["root"], "**", "*.parquet"), recursive=True))
+    paths = sorted(
+        glob.glob(os.path.join(spec["root"], "**", "*.parquet"), recursive=True)
+    )
     _assert_not_holdout(paths)
     if not paths:
         raise RuntimeError(f"kr corpus is empty at {spec['root']}")
     parts = []
     for path in paths:
         frame = pd.read_parquet(
-            path, columns=["session", "ticker", "open", "high", "low", "close", "volume"]
+            path,
+            columns=["session", "ticker", "open", "high", "low", "close", "volume"],
         )
         parts.append(frame)
     frame = pd.concat(parts, ignore_index=True)
@@ -84,7 +87,9 @@ def load_kr() -> MarketPanel:
 
 def load_us() -> MarketPanel:
     spec = ADDENDUM["corpora"]["us"]
-    paths = sorted(glob.glob(os.path.join(spec["root"], "**", "*.parquet"), recursive=True))
+    paths = sorted(
+        glob.glob(os.path.join(spec["root"], "**", "*.parquet"), recursive=True)
+    )
     _assert_not_holdout(paths)
     if not paths:
         raise RuntimeError(f"us corpus is empty at {spec['root']}")
@@ -132,8 +137,12 @@ def load_crypto(venue: str) -> MarketPanel:
         )
         parts.append(frame[frame["frequency"] == "1d"])
     frame = pd.concat(parts, ignore_index=True)
-    frame = frame.rename(columns={"open_time_utc": "session_date", "base_volume": "volume"})
-    frame["session_date"] = pd.to_datetime(frame["session_date"], utc=True).dt.tz_localize(None)
+    frame = frame.rename(
+        columns={"open_time_utc": "session_date", "base_volume": "volume"}
+    )
+    frame["session_date"] = pd.to_datetime(
+        frame["session_date"], utc=True
+    ).dt.tz_localize(None)
     frame["session_date"] = frame["session_date"].dt.normalize()
     frame = frame.drop_duplicates(subset=["symbol", "session_date"], keep="last")
     for column in ("open", "high", "low", "close", "volume"):

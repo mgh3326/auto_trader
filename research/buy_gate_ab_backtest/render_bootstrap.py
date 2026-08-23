@@ -36,7 +36,9 @@ def main() -> None:
     args = parser.parse_args()
     for window, label in (("5", "D+5"), ("20", "D+20")):
         print(f"**{label} — 같은 날짜만 짝지은 중앙값 차이 (95% CI)**\n")
-        print("| 시장 | 비교 | 공유 결정일 | n(좌) | n(우) | 점추정 | 95% CI | 좌측 우세 draw |")
+        print(
+            "| 시장 | 비교 | 공유 결정일 | n(좌) | n(우) | 점추정 | 95% CI | 좌측 우세 draw |"
+        )
         print("|---|---|---:|---:|---:|---:|---|---:|")
         for market in MARKETS:
             path = os.path.join(args.directory, f"{market}.bootstrap.json")

@@ -90,8 +90,10 @@ def render_market(result: dict[str, Any]) -> str:
         lines.append("")
         lines += _window_table(summary, window)
         lines.append("")
-    lines.append("대조군 기각 사유 분포(중복 계수): "
-                 f"`{summary['control_reject_reason_histogram']}`")
+    lines.append(
+        "대조군 기각 사유 분포(중복 계수): "
+        f"`{summary['control_reject_reason_histogram']}`"
+    )
     lines.append("")
     strengths = {
         key: summary["cohorts"][key]["support_strength_histogram"]

@@ -212,8 +212,12 @@ def test_unroutable_symbol_is_dropped_not_guessed() -> None:
     # a falling series keeps RSI under the shared gate, so the row reaches the
     # support/resistance call where the live router is consulted
     frame = _synthetic(300, seed=13, drift=-0.004)
-    result = build_evidence(symbol="KRW-BTC", market="us", bars=frame,
-        decision_date=frame["session_date"].iloc[-1].date())
+    result = build_evidence(
+        symbol="KRW-BTC",
+        market="us",
+        bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date(),
+    )
     assert getattr(result, "reason", None) == "symbol_not_resolvable_by_live_router"
 
 
@@ -226,8 +230,12 @@ def test_both_evidence_paths_share_one_entry_basis() -> None:
     """
     for seed, drift in ((21, 0.006), (22, -0.006)):
         frame = _synthetic(300, seed=seed, drift=drift)
-        evidence = build_evidence(symbol="AAPL", market="us", bars=frame,
-        decision_date=frame["session_date"].iloc[-1].date())
+        evidence = build_evidence(
+            symbol="AAPL",
+            market="us",
+            bars=frame,
+            decision_date=frame["session_date"].iloc[-1].date(),
+        )
         assert isinstance(evidence, dict)
         raw_close = float(frame["close"].iloc[-1])
         assert evidence["current_price"] == Decimal(str(round(raw_close, 2)))
@@ -248,15 +256,23 @@ def test_micro_priced_row_is_dropped_by_both_paths() -> None:
         for column in ("open", "high", "low", "close"):
             frame[column] = frame[column] * scale
         assert round(float(frame["close"].iloc[-1]), 2) == 0.0
-        result = build_evidence(symbol="KRW-BTT", market="crypto_upbit_krw", bars=frame,
-            decision_date=frame["session_date"].iloc[-1].date())
+        result = build_evidence(
+            symbol="KRW-BTT",
+            market="crypto_upbit_krw",
+            bars=frame,
+            decision_date=frame["session_date"].iloc[-1].date(),
+        )
         assert not isinstance(result, dict), "a zero-rounding row must not be gated"
 
 
 def test_evidence_requires_full_indicator_history() -> None:
     frame = _synthetic(RSI_WINDOW_BARS - 1, seed=3)
-    result = build_evidence(symbol="005930", market="kr", bars=frame,
-        decision_date=frame["session_date"].iloc[-1].date())
+    result = build_evidence(
+        symbol="005930",
+        market="kr",
+        bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date(),
+    )
     assert getattr(result, "reason", None) == "insufficient_history"
 
 
@@ -264,8 +280,12 @@ def test_evidence_requires_full_indicator_history() -> None:
 def test_neutralised_gates_are_identical_for_both_arms(market: str) -> None:
     frame = _synthetic(300, seed=11)
     symbol = "005930" if market == "kr" else "AAPL"
-    evidence = build_evidence(symbol=symbol, market=market, bars=frame,
-        decision_date=frame["session_date"].iloc[-1].date())
+    evidence = build_evidence(
+        symbol=symbol,
+        market=market,
+        bars=frame,
+        decision_date=frame["session_date"].iloc[-1].date(),
+    )
     assert isinstance(evidence, dict)
     assert evidence["honest_upside_pct"] == Decimal("40")
     assert set(evidence["other_gate_bits"].values()) == {True}

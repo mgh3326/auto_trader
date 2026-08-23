@@ -28,7 +28,11 @@ _CRYPTO_ROOT = "/Users/mgh3326/work/herdr-artifacts/crypto-corpus-v1/dataset"
 
 
 def _kr_bars(symbol: str) -> pd.DataFrame:
-    paths = sorted(glob.glob(os.path.join(_KR_ROOT, "**", f"ticker={symbol}.parquet"), recursive=True))
+    paths = sorted(
+        glob.glob(
+            os.path.join(_KR_ROOT, "**", f"ticker={symbol}.parquet"), recursive=True
+        )
+    )
     frame = pd.concat([pd.read_parquet(path) for path in paths], ignore_index=True)
     frame["d"] = pd.to_datetime(frame["session"])
     return frame
@@ -55,7 +59,9 @@ def _crypto_bars(symbol: str, venue: str) -> pd.DataFrame:
     frame = pd.concat([pd.read_parquet(path) for path in paths], ignore_index=True)
     frame = frame[frame["frequency"] == "1d"]
     frame["d"] = (
-        pd.to_datetime(frame["open_time_utc"], utc=True).dt.tz_localize(None).dt.normalize()
+        pd.to_datetime(frame["open_time_utc"], utc=True)
+        .dt.tz_localize(None)
+        .dt.normalize()
     )
     return frame
 
