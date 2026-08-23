@@ -627,6 +627,53 @@ class InvestHomeService:
             manual_pairs=sorted(set(manual_pairs)),
         )
 
+    async def get_symbol_holding(
+        self,
+        *,
+        user_id: int,
+        market: str,
+        symbol: str,
+        include_paper: bool = False,
+        paper_sources: frozenset[str] | None = None,
+    ) -> GroupedHolding | None:
+        """ROB-1314 — project one symbol's holding from the shared snapshot.
+
+        Read-path only seam for stock detail: instead of running every reader
+        through the account panel, answer the single (market, symbol) question
+        from the ROB-1310 composed snapshot. When no shared snapshot surface
+        exists the composition runs once (previous behavior) so a holding badge
+        is never fabricated nor silently dropped; a hung/invalid snapshot
+        surfaces as the typed availability error and callers mark the response
+        accordingly. Sellable quantities stay excluded from this projection —
+        order preflight keeps its fresh broker authority.
+        """
+        from app.services.portfolio_snapshot import HELD_KEY_MARKETS, held_key_symbol
+
+        normalized_market = str(market).lower()
+        if normalized_market not in HELD_KEY_MARKETS:
+            return None
+        wanted_key = held_key_symbol(normalized_market, symbol)
+
+        if self._snapshot_cache_usable(self._snapshot_cache):
+            home = await self._get_home_from_snapshot(
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
+        else:
+            home = await self._get_home_uncached(
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            )
+
+        for group in home.groupedHoldings:
+            if str(group.market).lower() != normalized_market:
+                continue
+            if held_key_symbol(normalized_market, str(group.symbol)) == wanted_key:
+                return group
+        return None
+
     async def get_home(
         self,
         *,

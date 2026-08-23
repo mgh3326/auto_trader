@@ -116,7 +116,7 @@ from app.services.invest_view_model.stock_detail_orders_service import (
     build_stock_detail_orders,
 )
 from app.services.invest_view_model.stock_detail_providers import (
-    make_account_panel_holding_provider,
+    make_snapshot_symbol_holding_provider,
     stock_detail_candle_provider,
 )
 from app.services.invest_view_model.stock_detail_recommendation_service import (
@@ -478,7 +478,7 @@ async def get_stock_detail(
             symbol=symbol,
             db=db,
             providers=StockDetailProviders(
-                holding=make_account_panel_holding_provider(service)
+                holding=make_snapshot_symbol_holding_provider(service)
             ),
         )
     except SymbolNotFound as exc:
