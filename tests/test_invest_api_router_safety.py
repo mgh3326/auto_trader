@@ -87,3 +87,28 @@ def test_market_parity_service_no_mutation_imports() -> None:
     v = _violations(loaded, FORBIDDEN_MUTATION_MODULES)
     if v:
         pytest.fail(f"Forbidden imports in market_parity_service: {v}")
+
+
+@pytest.mark.unit
+def test_buy_plan_router_no_mutation_imports() -> None:
+    """§144차 — the 매수 계획 board is a read surface.
+
+    Its service dependency is resolved lazily inside the dependency function
+    for the same reason invest_api's is: importing the router must not pull the
+    broker/order chain into the process.
+    """
+
+    root = Path(__file__).resolve().parent.parent
+    loaded = _loaded("app.routers.invest_buy_plan", root)
+    v = _violations(loaded, FORBIDDEN_MUTATION_MODULES + ROUTER_FORBIDDEN_DIRECT)
+    if v:
+        pytest.fail(f"Forbidden imports in invest_buy_plan: {v}")
+
+
+@pytest.mark.unit
+def test_buy_plan_service_no_mutation_imports() -> None:
+    root = Path(__file__).resolve().parent.parent
+    loaded = _loaded("app.services.invest_view_model.buy_plan.service", root)
+    v = _violations(loaded, FORBIDDEN_MUTATION_MODULES)
+    if v:
+        pytest.fail(f"Forbidden imports in buy_plan.service: {v}")

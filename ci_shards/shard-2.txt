@@ -129,6 +129,7 @@ tests/services/invalid_sample_eligibility/test_migration.py
 tests/services/invalid_sample_eligibility/test_pnl_eligibility_wiring.py
 tests/services/invalid_sample_eligibility/test_read_model.py
 tests/services/invest_screener_snapshots/test_freshness_kr_session.py
+tests/services/invest_view_model/buy_plan/test_service.py
 tests/services/investment_dimensions/test_fundamentals_evidence.py
 tests/services/investment_dimensions/test_news_evidence.py
 tests/services/investment_dimensions/test_sentiment_evidence.py
