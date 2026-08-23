@@ -58,10 +58,13 @@ _S142_RESERVE_TRIM_ADDITIVE_CONDITION_KEYS = (
 _ROB1292_ALLOWED_POLICY_DELTAS = (
     ("order_proposals.auto_approve.per_order_cap.kr", 400000, 2000000),
     ("order_proposals.auto_approve.per_order_cap.us", 800, 1500),
-    ("order_proposals.auto_approve.per_order_cap.crypto", 100000, 1000000),
+    # §145차 (2026-08-23): 1000000 -> 5000000 (operator cap re-definition).
+    ("order_proposals.auto_approve.per_order_cap.crypto", 100000, 5000000),
     ("order_proposals.auto_approve.daily_cap.kr", 400000, 5000000),
     ("order_proposals.auto_approve.daily_cap.us", 5000, 20000),
-    ("order_proposals.auto_approve.daily_cap.crypto", 300000, 5000000),
+    # §145차 (2026-08-23): 5000000 -> 10000000, kept proportional to the
+    # per-order cap so the §71차 demotion does not reappear on the crypto lane.
+    ("order_proposals.auto_approve.daily_cap.crypto", 300000, 10000000),
 )
 
 # §139차 (2026-08-22) — value deltas outside the auto-approve block. Kept in a
@@ -258,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-23.1"
+    assert doc.version == "2026-08-23.2"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -2068,7 +2071,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-23.1"
+    assert doc.version == "2026-08-23.2"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -2383,8 +2386,8 @@ def test_s139_held_majors_semantics_does_not_overclaim_enforcement():
     # "Major" is not claimed to be machine-checked, because it is not.
     assert "no coin allowlist or classifier" in semantics
     # And the named boundary is the one that is really enforced in code.
-    assert "1,000,000 KRW per-order cap" in semantics
-    assert doc.order_proposals.auto_approve.per_order_cap["crypto"] == 1000000
+    assert "5,000,000 KRW per-order cap" in semantics
+    assert doc.order_proposals.auto_approve.per_order_cap["crypto"] == 5000000
 
 
 def test_s139_held_majors_is_scoped_out_of_the_equity_lanes():

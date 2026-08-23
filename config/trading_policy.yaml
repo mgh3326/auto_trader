@@ -24,9 +24,9 @@
 # 올린다. 🔴 classify_sell_profit 의 전역 포함 비교(<=)는 건드리지 않는다
 # (밴드 분류기의 다른 소비자 전수검토 없이 <= → < 변경 금지). 신규 티어·임계
 # 완화·수량 규칙 변경 0.
-version: "2026-08-23.1"
+version: "2026-08-23.2"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised. §142차 breakeven band boundary repair 2026-08-23 (GPT Pro checkpoint #3 Q4 permitted class 'policy-clause contradiction resolution'; versioned bugfix, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under): the §115차 breakeven_extension_ladder tier-1 anchor and the §44차 sell.breakeven_reserve_trim post-max anchor now resolve to max(tick_ceil(raw anchor), first valid tick STRICTLY above average_cost × (1 + order_proposals.auto_approve.breakeven_band_pct / 100)), because the §40차 break-even band comparison is inclusive (|distance| <= band) and a rung that lands exactly on avg × 1.01 was classified breakeven_band instead of take_profit whenever the tick ceil was a no-op. The §40차 classifier itself is unchanged — the inclusive comparison stays inclusive globally — and no threshold, cap, tier, sizing rule, or exclusion is added or relaxed."
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised. §142차 breakeven band boundary repair 2026-08-23 (GPT Pro checkpoint #3 Q4 permitted class 'policy-clause contradiction resolution'; versioned bugfix, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under): the §115차 breakeven_extension_ladder tier-1 anchor and the §44차 sell.breakeven_reserve_trim post-max anchor now resolve to max(tick_ceil(raw anchor), first valid tick STRICTLY above average_cost × (1 + order_proposals.auto_approve.breakeven_band_pct / 100)), because the §40차 break-even band comparison is inclusive (|distance| <= band) and a rung that lands exactly on avg × 1.01 was classified breakeven_band instead of take_profit whenever the tick ceil was a no-op. The §40차 classifier itself is unchanged — the inclusive comparison stays inclusive globally — and no threshold, cap, tier, sizing rule, or exclusion is added or relaxed. §145차 crypto per-order auto-approve cap 1M -> 5M and daily cap 5M -> 10M 2026-08-23 (operator decision in claude-mock session: \"100만 초과도 자동이었으면 해\"): the averaging-down A_limit band the §136차 add lane produces runs past 1M (XRP ~2.93M at the -5% conversion point, measured 2026-08-23), so every such add was structurally carded. The §71차 lesson is kept by raising the daily cap in proportion (5M -> 10M) so the first auto-approved add does not demote the rest of the day to cards. Per §106차 the per-order cap remains the maximum-loss boundary of one automation error; the operator re-defined that boundary at 5M. The real ceiling stays the Upbit orderable cash (§144차 trigger reserve plus JIT deposit), and a short-of-cash proposal still emits deferred_with_condition plus a deposit alert before any order. min_distance, resting-only, tag scan, loss guard, and the no-partial-fill rule are unchanged, and no KR or US cap moves."
 
 authority:
   scope: judgment_policy_only
@@ -83,7 +83,17 @@ order_proposals:
       # auto-approve (25/25 sell proposals carded on 2026-08-13). 800 admits
       # one-share exits while still capping multi-share notional.
       us: 1500
-      crypto: 1000000
+      # §145차 (2026-08-23): 1000000 → 5000000. 운영자 결정 — "100만 초과도
+      # 자동이었으면 해". §136차 A(k) add 레인이 만드는 물타기 A_limit 구간이
+      # 100만을 넘어가서(2026-08-23 실측 −5% 전환점 기준 XRP ≈ 293만, SOL ≈
+      # 532만은 여전히 초과) 그 구간 전체가 구조적으로 카드로 강등됐다. §106차
+      # 원칙("per-order 캡 = 자동화 오류 1회의 최대 손실 경계")은 그대로 두고,
+      # 운영자가 그 경계를 500만으로 재정의한 것이다. 실질 상한은 여전히 업비트
+      # 가용 현금(§144차 트리거 리저브 ~270만 + JIT 입금)이며, 현금이 모자라면
+      # deferred_with_condition + 입금 알림이 주문보다 먼저 나간다.
+      # 불변: min_distance 3% · resting-only(marketable은 카드) · 태그 스캔 ·
+      # 손실가드 · 부분체결 금지. kr/us 캡은 건드리지 않는다.
+      crypto: 5000000
     daily_cap:
       kr: 5000000
       # §71차 (2026-08-14): 800 -> 5000. The §65차 same-value pairing was wrong
@@ -94,7 +104,12 @@ order_proposals:
       # 5000 covers an observed full trim session (~10% of book/day/account);
       # the $800 per-order cap and per-rung veto cards remain the guardrails.
       us: 20000
-      crypto: 5000000
+      # §145차 (2026-08-23): 5000000 → 10000000. per-order 상향에 비례해서
+      # 함께 올린다 — §71차 교훈(일일캡이 주문당캡에 붙어 있으면 첫 자동승인
+      # 1건이 캡을 대부분 소진하고 이후 주문이 전부 카드로 강등됨)이 crypto
+      # 레인에서 재현되지 않도록 하기 위한 것이며, 일일캡은 승인 레인을
+      # 좁히는 장치가 아니라는 §106차 규정을 따른다.
+      crypto: 10000000
     # AUTO-APPROVE-EXPAND (§40차) — inputs to the profit-take classification,
     # consumed only when ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded.
     #
@@ -538,7 +553,8 @@ decision_rules:
   # (authority.scope: judgment_policy_only — §115차/§127차/§129차와 같은 구조).
   # 아래 조건을 읽어 주문을 만들거나 막는 코드는 레포에 없다. 세션이 판단으로
   # 적용하고, 결과 주문에 걸리는 유일한 코드 경계는 서버측 자동승인 게이트다:
-  # crypto per-order 100만 KRW 초과는 자동승인 불가 → 카드(수동 승인)로 내려간다.
+  # crypto per-order 자동승인 캡 초과는 자동승인 불가 → 카드(수동 승인)로
+  # 내려간다(§139차 당시 100만, §145차 2026-08-23 이후 500만).
   # 그 아래의 30만/90만·(코인,지지레벨)당 1회·급락 중지·forecast 의무는 전부
   # 세션 계약이며 기계 가드가 아니다 — 무시하는 세션을 레포가 멈추지 못한다.
   # 그래서 대응 절이 운영자 레포(auto_trader-operator live/CLAUDE.md)에 있다.
@@ -556,9 +572,11 @@ decision_rules:
       an order. "LIVE" describes the funds, not an armed executor. The
       session applies the conditions as judgment, and the only code-enforced
       boundary on a resulting order is the server-side auto-approve gate — a
-      crypto order above the 1,000,000 KRW per-order cap cannot auto-approve
-      and falls back to a manual card. Everything below that line — the
-      300,000 KRW per-coin cap, the 900,000 KRW tier total, the
+      crypto order above the 5,000,000 KRW per-order cap cannot auto-approve
+      and falls back to a manual card (that cap read 1,000,000 KRW when this
+      tier was armed; §145차 2026-08-23 raised it, which widens the lane and
+      does not narrow this tier's own 300,000/900,000 KRW session caps).
+      Everything below that line — the 300,000 KRW per-coin cap, the 900,000 KRW tier total, the
       one-placement-per-(coin, support level) rule, the crash-day suspension,
       and the forecast obligation — is a SESSION CONTRACT, not a machine
       guard; the repo will not stop a session that ignores it, which is why
@@ -575,10 +593,10 @@ decision_rules:
       -12% and -3% of the current price. Sizing is capped at 300,000 KRW per
       coin and 900,000 KRW across the whole tier, at most one placement per
       (coin, support level) per policy version. Orders route through the
-      EXISTING auto-approve path — each is far below the 1,000,000 KRW crypto
-      per-order cap, so no new approval surface is created and no cap is
-      raised. Crypto orders rest GTC by Upbit convention; DAY is not used
-      here. Every placement records a forecast (touch / fill / D+20 outcome).
+      EXISTING auto-approve path — each is far below the crypto per-order cap
+      (1,000,000 KRW when §139차 armed this tier, 5,000,000 KRW since §145차),
+      so this tier creates no new approval surface and raised no cap itself.
+      Crypto orders rest GTC by Upbit convention; DAY is not used here. Every placement records a forecast (touch / fill / D+20 outcome).
       On 2026-09-19 the tier is RETIRED unless the FILLED cohort's D+20
       median is >= 0 AND its lower quartile is > -8%; those two numbers are
       fixed in advance and may not be reinterpreted at scoring time. During a
