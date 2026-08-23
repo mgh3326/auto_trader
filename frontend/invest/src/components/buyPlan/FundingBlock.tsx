@@ -1,87 +1,168 @@
 // 자금 대조 블록 — §144차 요구사항 ②.
 //
-// This is the block the operator actually acts on ("돈을 옮겨두지"), so the
-// verdict line comes first and the breakdown explains it underneath.
+// This is the block the operator acts on ("돈을 옮겨두지"), so it leads with
+// the verdict and explains it underneath.
+//
+// Rows are one per (broker, currency), never per currency alone: KIS KRW
+// cannot fill an Upbit order, and totalling them let an empty Upbit account
+// read as 리저브 충분 off KIS cash (verify-r1 B1). Requirements whose owning
+// account could not be resolved get their own block and suspend any verdict
+// they could break.
 import { Card, Pill } from "../../ds";
-import type { BuyPlanFunding, CurrencyReconciliation } from "../../types/buyPlan";
-import { money } from "./format";
-import { FUNDING_VERDICT_LABEL } from "./labels";
+import type {
+  BuyPlanFunding,
+  ScopeReconciliation,
+  UnattributedRequirement,
+} from "../../types/buyPlan";
+import { exact, money } from "./format";
+import { FUNDING_BROKER_LABEL, FUNDING_VERDICT_LABEL } from "./labels";
 
-function verdictTone(row: CurrencyReconciliation): "gain" | "warn" | "paper" {
+function verdictTone(row: ScopeReconciliation): "gain" | "warn" | "paper" {
   if (row.verdict === "sufficient") return "gain";
   if (row.verdict === "shortfall") return "warn";
   return "paper";
 }
 
-function verdictLine(row: CurrencyReconciliation): string {
+function verdictLine(row: ScopeReconciliation): { text: string; title?: string } {
   if (row.verdict === "shortfall") {
-    return `${money(row.shortfall, row.currency)} 입금 필요`;
+    return {
+      text: `${money(row.shortfall, row.currency)} 입금 필요`,
+      title: exact(row.shortfall),
+    };
   }
-  if (row.verdict === "sufficient") return "리저브 충분";
-  return "가용 현금을 확정하지 못해 대조를 보류했습니다";
+  if (row.verdict === "sufficient") return { text: "리저브 충분" };
+  if (row.available_cash === null) {
+    return { text: "가용 현금을 확정하지 못해 대조를 보류했습니다" };
+  }
+  return { text: "소요액을 확정하지 못해 대조를 보류했습니다" };
 }
 
 function BreakdownRow({
   label,
   value,
-}: Readonly<{ label: string; value: string }>) {
+  title,
+}: Readonly<{ label: string; value: string; title?: string }>) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
       <span style={{ color: "var(--fg-2)" }}>{label}</span>
-      <span style={{ fontVariantNumeric: "tabular-nums" }}>{value}</span>
+      <span style={{ fontVariantNumeric: "tabular-nums" }} title={title}>
+        {value}
+      </span>
     </div>
   );
 }
 
-function CurrencyCard({ row }: Readonly<{ row: CurrencyReconciliation }>) {
+function ReasonList({ reasons }: Readonly<{ reasons: string[] }>) {
+  if (reasons.length === 0) return null;
+  return (
+    <ul
+      style={{
+        margin: 0,
+        paddingLeft: 16,
+        fontSize: 11,
+        color: "var(--fg-2)",
+        display: "grid",
+        gap: 2,
+      }}
+    >
+      {reasons.map((reason) => (
+        <li key={reason}>{reason}</li>
+      ))}
+    </ul>
+  );
+}
+
+function ScopeCard({ row }: Readonly<{ row: ScopeReconciliation }>) {
+  const verdict = verdictLine(row);
   return (
     <Card soft style={{ padding: 16, display: "grid", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <strong style={{ fontSize: 15 }}>{row.currency}</strong>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 15 }}>
+          {FUNDING_BROKER_LABEL[row.broker]} · {row.currency}
+        </strong>
         <Pill tone={verdictTone(row)} size="sm">
           {FUNDING_VERDICT_LABEL[row.verdict]}
         </Pill>
+        {!row.requirements_complete && (
+          <Pill tone="warn" size="sm">소요액 불완전</Pill>
+        )}
       </div>
-      <div style={{ fontSize: 18, fontWeight: 700 }}>{verdictLine(row)}</div>
+      <div style={{ fontSize: 18, fontWeight: 700 }} title={verdict.title}>
+        {verdict.text}
+      </div>
       <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
         <BreakdownRow
-          label="가용 현금 (live 계좌)"
+          label="가용 현금 (이 계좌)"
           value={money(row.available_cash, row.currency)}
+          title={exact(row.available_cash)}
         />
         <BreakdownRow
-          label="트리거 소요 합계"
+          label="이 계좌 소요 합계"
           value={money(row.required_total, row.currency)}
+          title={exact(row.required_total)}
         />
         <div style={{ height: 1, background: "var(--border)", margin: "2px 0" }} />
         <BreakdownRow
           label="· 물타기 A(k)"
           value={money(row.required_averaging_adds, row.currency)}
+          title={exact(row.required_averaging_adds)}
         />
         <BreakdownRow
           label="· 지지 그물 (워치형)"
           value={money(row.required_support_net, row.currency)}
+          title={exact(row.required_support_net)}
         />
         <BreakdownRow
           label="· 그 밖의 활성 매수 워치"
           value={money(row.required_active_watches, row.currency)}
+          title={exact(row.required_active_watches)}
         />
+        {row.unattributed_same_currency !== "0" && (
+          <BreakdownRow
+            label="· 계좌 미확정 (최악의 경우 여기로)"
+            value={money(row.unattributed_same_currency, row.currency)}
+            title={exact(row.unattributed_same_currency)}
+          />
+        )}
       </div>
-      {row.notes.length > 0 && (
-        <ul
-          style={{
-            margin: 0,
-            paddingLeft: 16,
-            fontSize: 11,
-            color: "var(--fg-3, var(--fg-2))",
-            display: "grid",
-            gap: 2,
-          }}
-        >
-          {row.notes.map((note) => (
-            <li key={note}>{note}</li>
-          ))}
-        </ul>
-      )}
+      <ReasonList reasons={row.incomplete_reasons} />
+      <ReasonList reasons={row.notes} />
+    </Card>
+  );
+}
+
+function UnattributedBlock({
+  rows,
+}: Readonly<{ rows: UnattributedRequirement[] }>) {
+  if (rows.length === 0) return null;
+  return (
+    <Card style={{ padding: 16, display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Pill tone="warn" size="sm">계좌 미확정</Pill>
+        <strong style={{ fontSize: 13 }}>
+          어느 계좌에서 나갈 돈인지 확정하지 못한 소요액
+        </strong>
+      </div>
+      <p style={{ margin: 0, fontSize: 11, color: "var(--fg-2)" }}>
+        합계에서 빼지 않았습니다. 같은 통화 계좌의 현금이 이 금액까지 덮지 못하면
+        그 계좌 판정을 보류합니다.
+      </p>
+      <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
+        {rows.map((row) => (
+          <div
+            key={`${row.kind}:${row.label}`}
+            style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
+          >
+            <span title={row.reason}>{row.label}</span>
+            <span
+              style={{ fontVariantNumeric: "tabular-nums" }}
+              title={exact(row.amount)}
+            >
+              {money(row.amount, row.currency)}
+            </span>
+          </div>
+        ))}
+      </div>
     </Card>
   );
 }
@@ -91,17 +172,26 @@ export function FundingBlock({ funding }: Readonly<{ funding: BuyPlanFunding }>)
   return (
     <section style={{ display: "grid", gap: 12 }}>
       <h2 style={{ margin: 0, fontSize: 16 }}>자금 대조</h2>
+      {funding.source_warnings.length > 0 && (
+        <Card soft style={{ padding: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+            일부 소스가 불완전합니다 — 아래 숫자는 그만큼 덜 본 값입니다
+          </div>
+          <ReasonList reasons={funding.source_warnings} />
+        </Card>
+      )}
       <div
         style={{
           display: "grid",
           gap: 12,
-          gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
         }}
       >
-        {funding.currencies.map((row) => (
-          <CurrencyCard key={row.currency} row={row} />
+        {funding.scopes.map((row) => (
+          <ScopeCard key={row.scope_key} row={row} />
         ))}
       </div>
+      <UnattributedBlock rows={funding.unattributed} />
       {included.length > 0 && (
         <details>
           <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--fg-2)" }}>
@@ -121,7 +211,7 @@ export function FundingBlock({ funding }: Readonly<{ funding: BuyPlanFunding }>)
                 </span>
                 <span
                   style={{ fontVariantNumeric: "tabular-nums" }}
-                  title={account.available_cash ?? "확인 불가"}
+                  title={exact(account.available_cash) ?? "확인 불가"}
                 >
                   {money(account.available_cash, account.currency)}
                 </span>

@@ -10,6 +10,7 @@ import { PageSafetyNote } from "../PageSafetyNote";
 import { FundingBlock } from "./FundingBlock";
 import {
   ActiveWatchBlock,
+  ApprovalNotice,
   AveragingBlock,
   DiscoveryGateBlock,
   SupportNetBlock,
@@ -115,6 +116,8 @@ export function BuyPlanPageBody() {
           "여기 숫자는 정책 산식의 표시용 근사이며, 매수 판정의 정본은 회차입니다.",
           "이 화면은 주문·제안·워치를 만들거나 승인하지 않습니다.",
           "이미 걸린 지정가는 브로커가 현금을 이미 묶고 있어 '입금 필요액'에서 제외했습니다.",
+          "현금 대조는 계좌별입니다 — 다른 브로커의 같은 통화 잔고는 합산하지 않습니다.",
+          "레인 표시는 cap 기준 분류이며 승인 확정이 아닙니다.",
         ]}
       />
 
@@ -148,9 +151,16 @@ export function BuyPlanPageBody() {
           )}
 
           <FundingBlock funding={state.data.funding} />
-          <AveragingBlock rows={state.data.averaging_triggers} />
+          <ApprovalNotice approval={state.data.approval_context} />
+          <AveragingBlock
+            rows={state.data.averaging_triggers}
+            approval={state.data.approval_context}
+          />
           <SupportNetBlock tier={state.data.support_net} />
-          <ActiveWatchBlock rows={state.data.active_buy_watches} />
+          <ActiveWatchBlock
+            rows={state.data.active_buy_watches}
+            approval={state.data.approval_context}
+          />
           <DiscoveryGateBlock rows={state.data.discovery_gates} />
 
           <details>

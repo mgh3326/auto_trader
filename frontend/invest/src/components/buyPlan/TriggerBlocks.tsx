@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import { Card, Pill } from "../../ds";
 import type {
   ActiveBuyWatchRow,
+  ApprovalContext,
   AveragingSampleRow,
   AveragingTriggerRow,
   DiscoveryGateRow,
@@ -14,14 +15,17 @@ import type {
   SupportNetRow,
   SupportNetTier,
 } from "../../types/buyPlan";
-import { dateTime, money, pct, price, quantity } from "./format";
+import { dateTime, exact, money, pct, price, quantity } from "./format";
 import {
   APPROVAL_LANE_LABEL,
+  APPROVAL_LANE_LABEL_GATE_OFF,
   APPROVAL_LANE_REASON_LABEL,
   COMPARISON_LABEL,
+  FUNDING_BROKER_LABEL,
   GATE_CONDITION_STATE_LABEL,
   GATE_STATE_LABEL,
   PLACEMENT_FORM_LABEL,
+  SOURCE_STATE_LABEL,
 } from "./labels";
 
 function SectionHeading({
@@ -64,19 +68,72 @@ function SymbolLink({
   );
 }
 
+// verify-r1 B6: with the master gate off, a cap-passing notional still ends
+// up as a manual card, so the badge must not promise an automatic submission
+// the operator would sit waiting for.
 function LaneBadge({
   lane,
   reason,
+  approval,
 }: Readonly<{
   lane: AveragingSampleRow["approval_lane"];
   reason: AveragingSampleRow["approval_lane_reason"];
+  approval: ApprovalContext;
 }>) {
+  const gateOff = approval.master_gate_enabled === false;
+  const label = gateOff ? APPROVAL_LANE_LABEL_GATE_OFF[lane] : APPROVAL_LANE_LABEL[lane];
+  const tone = !gateOff && lane === "auto_submit" ? "accent" : "warn";
   return (
-    <span title={APPROVAL_LANE_REASON_LABEL[reason]}>
-      <Pill tone={lane === "auto_submit" ? "accent" : "warn"} size="sm">
-        {APPROVAL_LANE_LABEL[lane]}
+    <span title={`${APPROVAL_LANE_REASON_LABEL[reason]} · ${approval.notice}`}>
+      <Pill tone={tone} size="sm">
+        {label}
       </Pill>
     </span>
+  );
+}
+
+export function ApprovalNotice({
+  approval,
+}: Readonly<{ approval: ApprovalContext }>) {
+  return (
+    <Card soft style={{ padding: 12, display: "grid", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <Pill
+          tone={approval.master_gate_enabled === true ? "accent" : "warn"}
+          size="sm"
+        >
+          {approval.master_gate_enabled === true
+            ? "자동승인 마스터 게이트 ON"
+            : approval.master_gate_enabled === false
+              ? "자동승인 마스터 게이트 OFF"
+              : "자동승인 게이트 상태 불명"}
+        </Pill>
+        <code style={{ fontSize: 11, color: "var(--fg-2)" }}>
+          {approval.master_gate_source}
+        </code>
+      </div>
+      <p style={{ margin: 0, fontSize: 12 }}>{approval.notice}</p>
+      {approval.unevaluated_conditions.length > 0 && (
+        <details>
+          <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--fg-2)" }}>
+            이 보드가 확인하지 않은 자동제출 조건 (
+            {approval.unevaluated_conditions.length})
+          </summary>
+          <ul
+            style={{
+              margin: "6px 0 0",
+              paddingLeft: 16,
+              fontSize: 11,
+              color: "var(--fg-2)",
+            }}
+          >
+            {approval.unevaluated_conditions.map((condition) => (
+              <li key={condition}>{condition}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </Card>
   );
 }
 
@@ -98,7 +155,10 @@ function Field({
   );
 }
 
-function AveragingCard({ row }: Readonly<{ row: AveragingTriggerRow }>) {
+function AveragingCard({
+  row,
+  approval,
+}: Readonly<{ row: AveragingTriggerRow; approval: ApprovalContext }>) {
   return (
     <Card style={{ padding: 16, display: "grid", gap: 12 }}>
       <div
@@ -118,6 +178,9 @@ function AveragingCard({ row }: Readonly<{ row: AveragingTriggerRow }>) {
             <Pill tone="paper" size="sm">add 상한 밖 · #{row.market_rank}</Pill>
           </span>
         )}
+        <Pill tone={row.funding_broker === "unattributed" ? "warn" : "paper"} size="sm">
+          {FUNDING_BROKER_LABEL[row.funding_broker]}
+        </Pill>
       </div>
 
       <div
@@ -162,13 +225,14 @@ function AveragingCard({ row }: Readonly<{ row: AveragingTriggerRow }>) {
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <strong
                 style={{ fontVariantNumeric: "tabular-nums" }}
-                title={sample.additional_notional}
+                title={exact(sample.additional_notional)}
               >
                 {money(sample.additional_notional, row.currency)}
               </strong>
               <LaneBadge
                 lane={sample.approval_lane}
                 reason={sample.approval_lane_reason}
+                approval={approval}
               />
             </span>
           </div>
@@ -197,7 +261,8 @@ function AveragingCard({ row }: Readonly<{ row: AveragingTriggerRow }>) {
 
 export function AveragingBlock({
   rows,
-}: Readonly<{ rows: AveragingTriggerRow[] }>) {
+  approval,
+}: Readonly<{ rows: AveragingTriggerRow[]; approval: ApprovalContext }>) {
   return (
     <section style={{ display: "grid", gap: 12 }}>
       <SectionHeading
@@ -212,7 +277,11 @@ export function AveragingBlock({
       ) : (
         <div style={{ display: "grid", gap: 10 }}>
           {rows.map((row) => (
-            <AveragingCard key={`${row.market}:${row.symbol}`} row={row} />
+            <AveragingCard
+              key={`${row.market}:${row.symbol}`}
+              row={row}
+              approval={approval}
+            />
           ))}
         </div>
       )}
@@ -284,12 +353,12 @@ function SupportNetCard({ row }: Readonly<{ row: SupportNetRow }>) {
         <Field
           label="걸린 금액"
           value={money(row.placed_notional, row.currency)}
-          title={row.placed_notional}
+          title={exact(row.placed_notional) ?? "확인 불가"}
         />
         <Field
           label="남은 여력"
           value={money(row.remaining_headroom_notional, row.currency)}
-          title={row.remaining_headroom_notional}
+          title={exact(row.remaining_headroom_notional) ?? "확인 불가"}
         />
       </div>
       {row.placements.length > 0 ? (
@@ -300,8 +369,12 @@ function SupportNetCard({ row }: Readonly<{ row: SupportNetRow }>) {
             currency={row.currency}
           />
         ))}</div>
-      ) : (
+      ) : row.placements_state === "ok" ? (
         <span style={{ fontSize: 12, color: "var(--fg-2)" }}>걸린 그물 없음</span>
+      ) : (
+        <span style={{ fontSize: 12, color: "var(--warn)" }}>
+          걸린 그물을 확인하지 못했습니다 — 없다는 뜻이 아닙니다
+        </span>
       )}
     </Card>
   );
@@ -322,6 +395,26 @@ export function SupportNetBlock({ tier }: Readonly<{ tier: SupportNetTier }>) {
         </EmptyNote>
       ) : (
         <>
+          {tier.placements_state !== "ok" && (
+            <Card soft style={{ padding: 12, display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--warn)" }}>
+                걸린 주문·워치 조회 {SOURCE_STATE_LABEL[tier.placements_state]} — 걸린
+                금액과 남은 여력을 확정하지 못했습니다
+              </div>
+              <ul
+                style={{
+                  margin: 0,
+                  paddingLeft: 16,
+                  fontSize: 11,
+                  color: "var(--fg-2)",
+                }}
+              >
+                {tier.placements_incomplete_reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </Card>
+          )}
           <Card soft style={{ padding: 14, display: "flex", gap: 20, flexWrap: "wrap" }}>
             <Field
               label="티어 상한"
@@ -331,10 +424,15 @@ export function SupportNetBlock({ tier }: Readonly<{ tier: SupportNetTier }>) {
               label="코인당 상한"
               value={money(tier.per_symbol_cap_notional, tier.currency)}
             />
-            <Field label="걸린 합계" value={money(tier.placed_notional, tier.currency)} />
+            <Field
+              label="걸린 합계"
+              value={money(tier.placed_notional, tier.currency)}
+              title={exact(tier.placed_notional) ?? "확인 불가"}
+            />
             <Field
               label="티어 잔여"
               value={money(tier.remaining_notional, tier.currency)}
+              title={exact(tier.remaining_notional) ?? "확인 불가"}
             />
             {tier.distance_band_pct.length === 2 && (
               <Field
@@ -376,7 +474,8 @@ export function SupportNetBlock({ tier }: Readonly<{ tier: SupportNetTier }>) {
 
 export function ActiveWatchBlock({
   rows,
-}: Readonly<{ rows: ActiveBuyWatchRow[] }>) {
+  approval,
+}: Readonly<{ rows: ActiveBuyWatchRow[]; approval: ApprovalContext }>) {
   return (
     <section style={{ display: "grid", gap: 12 }}>
       <SectionHeading
@@ -402,7 +501,19 @@ export function ActiveWatchBlock({
                   symbol={row.symbol}
                   name={row.symbol_name}
                 />
-                <LaneBadge lane={row.approval_lane} reason={row.approval_lane_reason} />
+                <LaneBadge
+                  lane={row.approval_lane}
+                  reason={row.approval_lane_reason}
+                  approval={approval}
+                />
+                <span title={row.account_mode ?? "max_action에 account_mode가 없습니다"}>
+                  <Pill
+                    tone={row.funding_broker === "unattributed" ? "warn" : "paper"}
+                    size="sm"
+                  >
+                    {FUNDING_BROKER_LABEL[row.funding_broker]}
+                  </Pill>
+                </span>
                 {row.near_expiry && (
                   <Pill tone="warn" size="sm">만료 임박</Pill>
                 )}
@@ -417,14 +528,18 @@ export function ActiveWatchBlock({
                 <Field
                   label={`레벨 (${row.metric})`}
                   value={price(row.threshold, row.currency)}
-                  title={row.threshold}
+                  title={exact(row.threshold)}
                 />
                 <Field label="현재가" value={price(row.current_price, row.currency)} />
                 <Field label="레벨까지" value={pct(row.distance_to_threshold_pct)} />
                 <Field
                   label="예상 소요액"
                   value={money(row.planned_notional, row.currency)}
-                  title={row.planned_notional_source ?? "max_action에 금액이 없습니다"}
+                  title={
+                    exact(row.planned_notional)
+                      ? `${row.planned_notional} (${row.planned_notional_source})`
+                      : "max_action에 금액이 없습니다"
+                  }
                 />
                 <Field label="만료" value={dateTime(row.valid_until)} />
               </div>

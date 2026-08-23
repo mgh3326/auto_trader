@@ -36,6 +36,13 @@ const READY: BuyPlanResponse = {
   policy: { version: "2026-08-23.1", content_hash: "abcdef0123456789" },
   cache_ttl_seconds: 180,
   approximation_notice: "정책 산식의 표시용 근사입니다.",
+  approval_context: {
+    master_gate_enabled: false,
+    master_gate_setting: "ORDER_PROPOSALS_AUTO_APPROVE",
+    master_gate_source: "settings.ORDER_PROPOSALS_AUTO_APPROVE",
+    unevaluated_conditions: ["fresh preview 존재", "tag scan", "일일 누적 cap 잔여"],
+    notice: "자동승인 마스터 게이트가 꺼져 있습니다 — 전건이 수동 승인 카드로 갑니다.",
+  },
   market: "all",
   averaging_triggers: [
     {
@@ -74,6 +81,7 @@ const READY: BuyPlanResponse = {
       reserve_plan_notional: "340000",
       market_rank: 1,
       within_policy_add_cap: true,
+      funding_broker: "upbit",
       notes: [],
     },
   ],
@@ -114,8 +122,12 @@ const READY: BuyPlanResponse = {
         placed_notional: "110000",
         per_symbol_cap_notional: "300000",
         remaining_headroom_notional: "190000",
+        placements_state: "ok",
+        placements_incomplete_reasons: [],
       },
     ],
+    placements_state: "ok",
+    placements_incomplete_reasons: [],
     notes: [],
   },
   active_buy_watches: [
@@ -135,6 +147,8 @@ const READY: BuyPlanResponse = {
       near_expiry: false,
       planned_notional: "650000",
       planned_notional_source: "max_action.quantity × 트리거 레벨",
+      funding_broker: "kis",
+      account_mode: "kis_live",
       approval_lane: "human_card",
       approval_lane_reason: "above_tier_auto_submit_notional",
     },
@@ -182,36 +196,53 @@ const READY: BuyPlanResponse = {
         account_id: "upbit-1",
         display_name: "업비트",
         source: "upbit",
+        broker: "upbit",
         currency: "KRW",
         available_cash: "200000",
         available_cash_source: "cashBalances",
         included_in_reserve: true,
       },
     ],
-    currencies: [
+    scopes: [
       {
+        scope_key: "upbit:KRW",
+        broker: "upbit",
         currency: "KRW",
+        account_ids: ["upbit-1"],
         available_cash: "200000",
         required_averaging_adds: "340000",
         required_support_net: "0",
-        required_active_watches: "650000",
-        required_total: "990000",
+        required_active_watches: "0",
+        required_total: "340000",
+        unattributed_same_currency: "0",
+        worst_case_required: "340000",
+        requirements_complete: true,
+        incomplete_reasons: [],
         verdict: "shortfall",
-        shortfall: "790000",
+        shortfall: "140000",
         notes: ["이미 걸린 지정가는 브로커가 현금을 묶고 있어 합계에서 제외했습니다."],
       },
       {
-        currency: "USD",
-        available_cash: "1000",
+        scope_key: "kis:KRW",
+        broker: "kis",
+        currency: "KRW",
+        account_ids: ["kis-1"],
+        available_cash: "5000000",
         required_averaging_adds: "0",
         required_support_net: "0",
-        required_active_watches: "0",
-        required_total: "0",
+        required_active_watches: "650000",
+        required_total: "650000",
+        unattributed_same_currency: "0",
+        worst_case_required: "650000",
+        requirements_complete: true,
+        incomplete_reasons: [],
         verdict: "sufficient",
         shortfall: "0",
         notes: [],
       },
     ],
+    unattributed: [],
+    source_warnings: [],
   },
   value_sources: [
     { field: "averaging_triggers.*", source: "InvestHomeService + policy", note: null },
@@ -230,13 +261,54 @@ describe("BuyPlanRoute", () => {
     vi.restoreAllMocks();
   });
 
-  it("leads with the deposit amount when cash falls short", async () => {
+  it("leads with the deposit amount of the account that is actually short", async () => {
+    // verify-r1 B1: the shortfall belongs to the Upbit scope. A currency-only
+    // total would have netted it against the funded KIS account and shown
+    // 리저브 충분 for cash no Upbit order can spend.
     vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue(READY);
     render(wrap(<BuyPlanRoute />));
 
-    await waitFor(() => expect(screen.getByText("₩790,000 입금 필요")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("₩140,000 입금 필요")).toBeTruthy());
+    expect(screen.getByText("업비트 · KRW")).toBeTruthy();
+    expect(screen.getByText("한국투자증권 · KRW")).toBeTruthy();
     expect(screen.getAllByText("입금 필요").length).toBeGreaterThan(0);
     expect(screen.getAllByText("리저브 충분").length).toBeGreaterThan(0);
+  });
+
+  it("never renders one broker's cash inside another broker's verdict", async () => {
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue(READY);
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() => expect(screen.getByText("업비트 · KRW")).toBeTruthy());
+    // 5,200,000 would be the KRW-only aggregate of both accounts.
+    expect(screen.queryByText("₩5,200,000")).toBeNull();
+  });
+
+  it("shows an unattributed requirement instead of dropping it", async () => {
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue({
+      ...READY,
+      funding: {
+        ...READY.funding,
+        unattributed: [
+          {
+            kind: "active_watch",
+            label: "KRW-DOGE 워치 100",
+            currency: "KRW",
+            amount: "500000",
+            reason: "워치 max_action이 실행 계좌를 지정하지 않았습니다.",
+          },
+        ],
+      },
+    });
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("어느 계좌에서 나갈 돈인지 확정하지 못한 소요액"),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByText("KRW-DOGE 워치 100")).toBeTruthy();
+    expect(screen.getByText("₩500,000")).toBeTruthy();
   });
 
   it("shows the turn point and both sampled cash amounts", async () => {
@@ -248,9 +320,13 @@ describe("BuyPlanRoute", () => {
     expect(screen.getByText("₩1,000")).toBeTruthy();
     expect(screen.getAllByText("₩110,000").length).toBeGreaterThan(0);
     expect(screen.getAllByText("₩340,000").length).toBeGreaterThan(0);
-    // The lane split must be visible per sample, not summarised away.
-    expect(screen.getByText("자동승인")).toBeTruthy();
-    expect(screen.getAllByText("카드(수동 승인)").length).toBeGreaterThan(0);
+    // Both samples keep their own cap-classification reason even though the
+    // master gate collapses both badges to a card.
+    const reasons = screen
+      .getAllByTitle(/한도/)
+      .map((node) => node.getAttribute("title") ?? "");
+    expect(reasons.some((r) => r.includes("티어 자동제출 한도 이내"))).toBe(true);
+    expect(reasons.some((r) => r.includes("티어 자동제출 한도 초과"))).toBe(true);
   });
 
   it("marks a resting rung as 주문 상시형", async () => {

@@ -30,6 +30,13 @@ GateConditionState = Literal["met", "not_met", "unavailable"]
 # leaves the gate un-passable but also un-proven.
 GateState = Literal["open", "closed", "indeterminate"]
 FundingVerdict = Literal["sufficient", "shortfall", "unknown"]
+# A read model that told us it was incomplete. Kept as a first-class value so
+# a degraded upstream can never render as a confident zero (verify-r1 B3/B4).
+SourceState = Literal["ok", "degraded", "unavailable"]
+# Canonical broker identity for cash scoping (verify-r1 B1). Cash in one
+# broker cannot fund an order placed at another, so every reconciliation is
+# keyed by (broker, currency) and never by currency alone.
+FundingBroker = Literal["kis", "upbit", "toss", "unattributed"]
 
 
 def _decimal_str(value: Decimal | None) -> str | None:
@@ -47,6 +54,26 @@ class PolicyStamp(BaseModel):
 
     version: str
     content_hash: str
+
+
+class ApprovalContext(BaseModel):
+    """What the board can and cannot say about the auto-approval lane.
+
+    ``approval_lane`` on a row is a **cap-only** classification: it compares a
+    projected notional against the tier auto-submit ceiling and the per-order
+    auto-approve cap. Real dispatch additionally requires the master gate below
+    plus a set of conditions this read surface does not evaluate
+    (``unevaluated_conditions``). Publishing that gap is the whole point of
+    this object — "cap 이하 = 자동승인" is false (verify-r1 B6).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    master_gate_enabled: bool | None
+    master_gate_setting: str
+    master_gate_source: str
+    unevaluated_conditions: list[str] = Field(default_factory=list)
+    notice: str
 
 
 class ValueSource(BaseModel):
@@ -104,6 +131,7 @@ class AveragingTriggerRow(BuyPlanDecimalModel):
     # shown but excluded from the funding total.
     market_rank: int
     within_policy_add_cap: bool
+    funding_broker: FundingBroker
     notes: list[str] = Field(default_factory=list)
 
     @field_serializer(
@@ -154,9 +182,14 @@ class SupportNetRow(BuyPlanDecimalModel):
     eligible: bool
     ineligible_reason: str | None = None
     placements: list[SupportNetPlacement] = Field(default_factory=list)
-    placed_notional: Decimal
+    # ``None`` when a placement source was degraded/unavailable: an unknown
+    # amount is not zero, and a headroom computed from a partial order list
+    # would overstate what is still free to spend (verify-r1 B4).
+    placed_notional: Decimal | None = None
     per_symbol_cap_notional: Decimal
-    remaining_headroom_notional: Decimal
+    remaining_headroom_notional: Decimal | None = None
+    placements_state: SourceState = "ok"
+    placements_incomplete_reasons: list[str] = Field(default_factory=list)
 
     @field_serializer(
         "quantity",
@@ -179,8 +212,10 @@ class SupportNetTier(BuyPlanDecimalModel):
     currency: BuyPlanCurrency
     tier_cap_notional: Decimal | None = None
     per_symbol_cap_notional: Decimal | None = None
-    placed_notional: Decimal
+    placed_notional: Decimal | None = None
     remaining_notional: Decimal | None = None
+    placements_state: SourceState = "ok"
+    placements_incomplete_reasons: list[str] = Field(default_factory=list)
     distance_band_pct: list[Decimal] = Field(default_factory=list)
     review_date: str | None = None
     rows: list[SupportNetRow] = Field(default_factory=list)
@@ -218,6 +253,11 @@ class ActiveBuyWatchRow(BuyPlanDecimalModel):
     near_expiry: bool = False
     planned_notional: Decimal | None = None
     planned_notional_source: str | None = None
+    # Which broker account would have to hold this cash. ``unattributed`` means
+    # the watch's execution plan did not name one, so the amount cannot be
+    # charged to any single account's reserve (verify-r1 B1).
+    funding_broker: FundingBroker
+    account_mode: str | None = None
     approval_lane: ApprovalLane
     approval_lane_reason: ApprovalLaneReason
 
@@ -267,6 +307,9 @@ class CashAccountRow(BuyPlanDecimalModel):
     account_id: str
     display_name: str
     source: str
+    # Canonical broker this account belongs to; cash is only ever compared
+    # with requirements carrying the same broker (verify-r1 B1).
+    broker: FundingBroker
     currency: BuyPlanCurrency
     available_cash: Decimal | None = None
     available_cash_source: str
@@ -277,13 +320,32 @@ class CashAccountRow(BuyPlanDecimalModel):
         return _decimal_str(value)
 
 
-class CurrencyReconciliation(BuyPlanDecimalModel):
+class ScopeReconciliation(BuyPlanDecimalModel):
+    """Cash vs requirements for ONE (broker, currency) pair.
+
+    Scoping by broker is not cosmetic: KIS KRW cannot fill an Upbit order, so
+    a currency-only total can read ``sufficient`` while the account that must
+    place the order holds nothing (verify-r1 B1).
+
+    ``broker="unattributed"`` carries the requirements whose owning account
+    could not be resolved. They are never dropped from the board; instead they
+    hold every same-currency scope at ``unknown`` unless that scope's cash
+    covers its own requirements *plus* all of them.
+    """
+
+    scope_key: str
+    broker: FundingBroker
     currency: BuyPlanCurrency
+    account_ids: list[str] = Field(default_factory=list)
     available_cash: Decimal | None = None
     required_averaging_adds: Decimal
     required_support_net: Decimal
     required_active_watches: Decimal
     required_total: Decimal
+    unattributed_same_currency: Decimal
+    worst_case_required: Decimal
+    requirements_complete: bool = True
+    incomplete_reasons: list[str] = Field(default_factory=list)
     verdict: FundingVerdict
     shortfall: Decimal | None = None
     notes: list[str] = Field(default_factory=list)
@@ -294,8 +356,24 @@ class CurrencyReconciliation(BuyPlanDecimalModel):
         "required_support_net",
         "required_active_watches",
         "required_total",
+        "unattributed_same_currency",
+        "worst_case_required",
         "shortfall",
     )
+    def _ser(self, value: Decimal | None) -> str | None:
+        return _decimal_str(value)
+
+
+class UnattributedRequirement(BuyPlanDecimalModel):
+    """One requirement the board could not pin to a broker account."""
+
+    kind: Literal["averaging_add", "support_net", "active_watch"]
+    label: str
+    currency: BuyPlanCurrency
+    amount: Decimal | None = None
+    reason: str
+
+    @field_serializer("amount")
     def _ser(self, value: Decimal | None) -> str | None:
         return _decimal_str(value)
 
@@ -304,7 +382,9 @@ class BuyPlanFunding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     accounts: list[CashAccountRow] = Field(default_factory=list)
-    currencies: list[CurrencyReconciliation] = Field(default_factory=list)
+    scopes: list[ScopeReconciliation] = Field(default_factory=list)
+    unattributed: list[UnattributedRequirement] = Field(default_factory=list)
+    source_warnings: list[str] = Field(default_factory=list)
 
 
 class BuyPlanResponse(BaseModel):
@@ -314,6 +394,7 @@ class BuyPlanResponse(BaseModel):
     policy: PolicyStamp
     cache_ttl_seconds: int
     approximation_notice: str
+    approval_context: ApprovalContext
     market: Literal["all", "kr", "us", "crypto"]
     averaging_triggers: list[AveragingTriggerRow] = Field(default_factory=list)
     support_net: SupportNetTier

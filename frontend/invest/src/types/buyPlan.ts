@@ -17,10 +17,22 @@ export type PlacementForm = "resting_order" | "watch";
 export type GateConditionState = "met" | "not_met" | "unavailable";
 export type GateState = "open" | "closed" | "indeterminate";
 export type FundingVerdict = "sufficient" | "shortfall" | "unknown";
+export type SourceState = "ok" | "degraded" | "unavailable";
+/** Cash at one broker cannot fund an order placed at another (verify-r1 B1). */
+export type FundingBroker = "kis" | "upbit" | "toss" | "unattributed";
+export type RequirementKind = "averaging_add" | "support_net" | "active_watch";
 
 export interface PolicyStamp {
   version: string;
   content_hash: string;
+}
+
+export interface ApprovalContext {
+  master_gate_enabled: boolean | null;
+  master_gate_setting: string;
+  master_gate_source: string;
+  unevaluated_conditions: string[];
+  notice: string;
 }
 
 export interface ValueSource {
@@ -57,6 +69,7 @@ export interface AveragingTriggerRow {
   reserve_plan_notional: string;
   market_rank: number;
   within_policy_add_cap: boolean;
+  funding_broker: FundingBroker;
   notes: string[];
 }
 
@@ -83,9 +96,12 @@ export interface SupportNetRow {
   eligible: boolean;
   ineligible_reason: string | null;
   placements: SupportNetPlacement[];
-  placed_notional: string;
+  /** `null` when a placement source was degraded — unknown is not zero. */
+  placed_notional: string | null;
   per_symbol_cap_notional: string;
-  remaining_headroom_notional: string;
+  remaining_headroom_notional: string | null;
+  placements_state: SourceState;
+  placements_incomplete_reasons: string[];
 }
 
 export interface SupportNetTier {
@@ -94,8 +110,10 @@ export interface SupportNetTier {
   currency: BuyPlanCurrency;
   tier_cap_notional: string | null;
   per_symbol_cap_notional: string | null;
-  placed_notional: string;
+  placed_notional: string | null;
   remaining_notional: string | null;
+  placements_state: SourceState;
+  placements_incomplete_reasons: string[];
   distance_band_pct: string[];
   review_date: string | null;
   rows: SupportNetRow[];
@@ -118,6 +136,8 @@ export interface ActiveBuyWatchRow {
   near_expiry: boolean;
   planned_notional: string | null;
   planned_notional_source: string | null;
+  funding_broker: FundingBroker;
+  account_mode: string | null;
   approval_lane: ApprovalLane;
   approval_lane_reason: ApprovalLaneReason;
 }
@@ -151,27 +171,45 @@ export interface CashAccountRow {
   account_id: string;
   display_name: string;
   source: string;
+  broker: FundingBroker;
   currency: BuyPlanCurrency;
   available_cash: string | null;
   available_cash_source: string;
   included_in_reserve: boolean;
 }
 
-export interface CurrencyReconciliation {
+export interface ScopeReconciliation {
+  scope_key: string;
+  broker: FundingBroker;
   currency: BuyPlanCurrency;
+  account_ids: string[];
   available_cash: string | null;
   required_averaging_adds: string;
   required_support_net: string;
   required_active_watches: string;
   required_total: string;
+  unattributed_same_currency: string;
+  worst_case_required: string;
+  requirements_complete: boolean;
+  incomplete_reasons: string[];
   verdict: FundingVerdict;
   shortfall: string | null;
   notes: string[];
 }
 
+export interface UnattributedRequirement {
+  kind: RequirementKind;
+  label: string;
+  currency: BuyPlanCurrency;
+  amount: string | null;
+  reason: string;
+}
+
 export interface BuyPlanFunding {
   accounts: CashAccountRow[];
-  currencies: CurrencyReconciliation[];
+  scopes: ScopeReconciliation[];
+  unattributed: UnattributedRequirement[];
+  source_warnings: string[];
 }
 
 export interface BuyPlanResponse {
@@ -179,6 +217,7 @@ export interface BuyPlanResponse {
   policy: PolicyStamp;
   cache_ttl_seconds: number;
   approximation_notice: string;
+  approval_context: ApprovalContext;
   market: BuyPlanMarketFilter;
   averaging_triggers: AveragingTriggerRow[];
   support_net: SupportNetTier;

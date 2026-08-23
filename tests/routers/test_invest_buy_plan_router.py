@@ -16,10 +16,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.schemas.invest_buy_plan import (
+    ApprovalContext,
     BuyPlanFunding,
     BuyPlanResponse,
-    CurrencyReconciliation,
     PolicyStamp,
+    ScopeReconciliation,
     SupportNetTier,
 )
 
@@ -39,6 +40,13 @@ class _StubBuyPlanService:
             policy=PolicyStamp(version="2026-08-23.1", content_hash="abc123"),
             cache_ttl_seconds=180,
             approximation_notice="정책 산식의 표시용 근사입니다.",
+            approval_context=ApprovalContext(
+                master_gate_enabled=False,
+                master_gate_setting="ORDER_PROPOSALS_AUTO_APPROVE",
+                master_gate_source="settings.ORDER_PROPOSALS_AUTO_APPROVE",
+                unevaluated_conditions=["fresh preview 존재"],
+                notice="자동승인 마스터 게이트가 꺼져 있습니다.",
+            ),
             market=market,  # type: ignore[arg-type]
             averaging_triggers=[],
             support_net=SupportNetTier(
@@ -51,14 +59,19 @@ class _StubBuyPlanService:
             discovery_gates=[],
             funding=BuyPlanFunding(
                 accounts=[],
-                currencies=[
-                    CurrencyReconciliation(
+                scopes=[
+                    ScopeReconciliation(
+                        scope_key="upbit:KRW",
+                        broker="upbit",
                         currency="KRW",
+                        account_ids=["upbit-1"],
                         available_cash=Decimal("500000"),
                         required_averaging_adds=Decimal("120000"),
                         required_support_net=Decimal("0"),
                         required_active_watches=Decimal("0"),
                         required_total=Decimal("120000"),
+                        unattributed_same_currency=Decimal("0"),
+                        worst_case_required=Decimal("120000"),
                         verdict="sufficient",
                         shortfall=Decimal("0"),
                     )
@@ -143,7 +156,12 @@ def test_response_exposes_provenance_and_exact_decimal_strings() -> None:
     assert payload["policy"] == {"version": "2026-08-23.1", "content_hash": "abc123"}
     assert payload["cache_ttl_seconds"] == 180
     assert "근사" in payload["approximation_notice"]
-    krw = payload["funding"]["currencies"][0]
+    krw = payload["funding"]["scopes"][0]
     assert krw["available_cash"] == "500000"
     assert krw["required_total"] == "120000"
     assert krw["verdict"] == "sufficient"
+    # verify-r1 B1: the reconciliation names the account it applies to.
+    assert krw["broker"] == "upbit"
+    assert krw["account_ids"] == ["upbit-1"]
+    # verify-r1 B6: the approval gap ships with the response.
+    assert payload["approval_context"]["master_gate_enabled"] is False

@@ -21,6 +21,7 @@ from typing import Any, Final
 
 from app.schemas.invest_buy_plan import (
     ActiveBuyWatchRow,
+    ApprovalContext,
     AveragingSampleRow,
     AveragingTriggerRow,
     BuyPlanCurrency,
@@ -28,13 +29,16 @@ from app.schemas.invest_buy_plan import (
     BuyPlanMarket,
     BuyPlanResponse,
     CashAccountRow,
-    CurrencyReconciliation,
     DiscoveryGateCondition,
     DiscoveryGateRow,
+    FundingBroker,
     PolicyStamp,
+    ScopeReconciliation,
+    SourceState,
     SupportNetPlacement,
     SupportNetRow,
     SupportNetTier,
+    UnattributedRequirement,
     ValueSource,
 )
 from app.schemas.invest_home import Account, GroupedHolding, InvestHomeResponse
@@ -78,6 +82,66 @@ _MARKET_BY_GROUP: Final[dict[str, BuyPlanMarket]] = {
     "US": "us",
     "CRYPTO": "crypto",
 }
+
+# Cash held at one broker cannot fill an order placed at another, so every
+# requirement is resolved to a broker before it is compared with cash
+# (verify-r1 B1). Both maps are deliberately closed: an account source or an
+# account_mode that is not listed resolves to ``None`` and its requirement
+# becomes ``unattributed`` rather than being charged to an arbitrary scope.
+_BROKER_BY_ACCOUNT_SOURCE: Final[dict[str, FundingBroker]] = {
+    "kis": "kis",
+    "upbit": "upbit",
+    "toss_api": "toss",
+}
+_BROKER_BY_ACCOUNT_MODE: Final[dict[str, FundingBroker]] = {
+    "kis_live": "kis",
+    "upbit": "upbit",
+    "toss_live": "toss",
+}
+UNATTRIBUTED: Final[FundingBroker] = "unattributed"
+
+# Conditions that gate a real auto-submission and that this read surface does
+# NOT evaluate. Published verbatim so the board never implies it checked them
+# (verify-r1 B6; source: order_proposals.auto_approve.evaluate_auto_approve_eligibility).
+AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[str, ...]] = (
+    "fresh preview 존재",
+    "limit-only (비-marketable) 주문",
+    "veto 가능한 계좌·시장",
+    "tag scan",
+    "thesis 요건",
+    "일일 누적 cap 잔여",
+    "distance / marketability 조건",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceHealth:
+    """What one upstream read model said about its own completeness.
+
+    ``ok`` is only claimed when the upstream actively said so. An exception, a
+    ``data_state`` other than ``ok``, or any warning it emitted all downgrade
+    it — a degraded upstream must never be rendered as a confident zero
+    (verify-r1 B2/B3/B4).
+    """
+
+    state: SourceState = "ok"
+    reasons: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return self.state == "ok" and not self.reasons
+
+
+@dataclass(frozen=True, slots=True)
+class _Requirement:
+    """One projected cash need, with the account that would have to hold it."""
+
+    kind: str
+    label: str
+    currency: BuyPlanCurrency
+    amount: Decimal | None
+    broker: FundingBroker | None
+    unattributed_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,9 +225,9 @@ class BuyPlanService:
         policy = load_trading_policy()
         stamp = policy_version_stamp()
 
-        home = await self._safe_home(user_id=user_id, warnings=warnings)
-        watches = await self._safe_watches(warnings=warnings)
-        open_orders = await self._safe_open_orders(warnings=warnings)
+        home, home_health = await self._safe_home(user_id=user_id, warnings=warnings)
+        watches, watch_health = await self._safe_watches(warnings=warnings)
+        open_orders, order_health = await self._safe_open_orders(warnings=warnings)
 
         lots = _tradeable_lots(home, warnings=warnings)
         wanted = _wanted_markets(market)
@@ -176,6 +240,8 @@ class BuyPlanService:
             open_orders=open_orders,
             watches=watches,
             crypto_in_scope="crypto" in wanted,
+            order_health=order_health,
+            watch_health=watch_health,
         )
         buy_watches = _build_active_buy_watches(watches, policy=policy, wanted=wanted)
         gates = (
@@ -186,6 +252,9 @@ class BuyPlanService:
             averaging=averaging,
             support_net=support_net,
             buy_watches=buy_watches,
+            home_health=home_health,
+            watch_health=watch_health,
+            order_health=order_health,
             warnings=warnings,
         )
 
@@ -196,6 +265,7 @@ class BuyPlanService:
             ),
             cache_ttl_seconds=CACHE_TTL_SECONDS,
             approximation_notice=APPROXIMATION_NOTICE,
+            approval_context=_approval_context(),
             market=market if market in {"all", "kr", "us", "crypto"} else "all",
             averaging_triggers=averaging,
             support_net=support_net,
@@ -208,33 +278,188 @@ class BuyPlanService:
 
     async def _safe_home(
         self, *, user_id: int, warnings: list[str]
-    ) -> InvestHomeResponse | None:
+    ) -> tuple[InvestHomeResponse | None, _SourceHealth]:
         try:
-            return await self._home.get_home(user_id=user_id)
+            home = await self._home.get_home(user_id=user_id)
         except Exception as exc:  # noqa: BLE001 — one dead reader must not 500 the board
             logger.warning("buy_plan: holdings/cash unavailable: %s", exc)
-            warnings.append(f"보유·현금 조회 실패 — 자금 대조 불가: {exc}")
-            return None
+            reason = f"보유·현금 조회 실패 — 자금 대조 불가: {exc}"
+            warnings.append(reason)
+            return None, _SourceHealth(state="unavailable", reasons=(reason,))
 
-    async def _safe_watches(self, *, warnings: list[str]) -> WatchesResponse | None:
+        # A partial failure does NOT raise: InvestHomeService returns a normal
+        # response with the dead source's accounts simply absent and a warning
+        # in meta. Reading only the exception path let a missing KIS account
+        # silently shrink the cash total (verify-r1 B2).
+        reasons = tuple(
+            f"보유·현금 소스 누락({warning.source}): {warning.message}"
+            for warning in home.meta.warnings
+        )
+        for reason in reasons:
+            warnings.append(reason)
+        return home, _SourceHealth(
+            state="degraded" if reasons else "ok", reasons=reasons
+        )
+
+    async def _safe_watches(
+        self, *, warnings: list[str]
+    ) -> tuple[WatchesResponse | None, _SourceHealth]:
         try:
-            return await self._watches.list_watches(market="all", status="active")
+            watches = await self._watches.list_watches(market="all", status="active")
         except Exception as exc:  # noqa: BLE001
             logger.warning("buy_plan: watches unavailable: %s", exc)
-            warnings.append(f"워치 조회 실패 — 활성 매수 워치 누락: {exc}")
-            return None
+            reason = f"워치 조회 실패 — 활성 매수 워치 누락: {exc}"
+            warnings.append(reason)
+            return None, _SourceHealth(state="unavailable", reasons=(reason,))
+        return watches, _watches_health(watches, warnings=warnings)
 
     async def _safe_open_orders(
         self, *, warnings: list[str]
-    ) -> OpenOrdersResponse | None:
+    ) -> tuple[OpenOrdersResponse | None, _SourceHealth]:
         try:
-            return await self._open_orders.list_open_orders(market="all")
+            orders = await self._open_orders.list_open_orders(market="all")
         except Exception as exc:  # noqa: BLE001
             logger.warning("buy_plan: open orders unavailable: %s", exc)
-            warnings.append(
-                f"미체결 주문 조회 실패 — 그물에 이미 걸린 주문이 누락됐을 수 있습니다: {exc}"
+            reason = f"미체결 주문 조회 실패 — 그물에 이미 걸린 주문이 누락됐을 수 있습니다: {exc}"
+            warnings.append(reason)
+            return None, _SourceHealth(state="unavailable", reasons=(reason,))
+        return orders, _open_orders_health(orders, warnings=warnings)
+
+
+def _watches_health(watches: WatchesResponse, *, warnings: list[str]) -> _SourceHealth:
+    """Trust the watch panel's own completeness signal.
+
+    ``WatchPanelService`` reports partial reads two ways: a non-``ok``
+    ``data_state``, and per-alert build failures surfaced as warnings with the
+    offending items dropped from ``items``. Either way the requirement side of
+    the board is short by an unknown amount (verify-r1 B3).
+    """
+
+    reasons: list[str] = []
+    if watches.data_state != "ok":
+        reasons.append(
+            f"워치 조회 상태 {watches.data_state} — 누락된 워치가 있을 수 있습니다."
+        )
+    for warning in watches.warnings:
+        reasons.append(f"워치 경고: {warning}")
+    for reason in reasons:
+        warnings.append(reason)
+    state: SourceState = "ok"
+    if watches.data_state == "unavailable":
+        state = "unavailable"
+    elif reasons:
+        state = "degraded"
+    return _SourceHealth(state=state, reasons=tuple(reasons))
+
+
+def _open_orders_health(
+    orders: OpenOrdersResponse, *, warnings: list[str]
+) -> _SourceHealth:
+    """Trust the open-order reader's own completeness signal.
+
+    An empty ``items`` from a degraded collector means "we could not see the
+    resting orders", not "there are none" — and the support net publishes both
+    committed notional and remaining headroom off that list (verify-r1 B4).
+    """
+
+    reasons: list[str] = []
+    if orders.data_state != "ok":
+        reasons.append(
+            f"미체결 주문 조회 상태 {orders.data_state} — 이미 걸린 주문이 누락됐을 수 있습니다."
+        )
+    for source in orders.sources:
+        if source.status != "ok":
+            reasons.append(
+                f"미체결 주문 소스 {source.broker}/{source.market} 상태 {source.status}"
+                + (f": {source.message}" if source.message else "")
             )
-            return None
+    for warning in orders.warnings:
+        reasons.append(f"미체결 주문 경고: {warning}")
+    for reason in reasons:
+        warnings.append(reason)
+    state: SourceState = "ok"
+    if orders.data_state == "unavailable":
+        state = "unavailable"
+    elif reasons:
+        state = "degraded"
+    return _SourceHealth(state=state, reasons=tuple(reasons))
+
+
+def _broker_from_account_sources(
+    sources: list[str],
+) -> tuple[FundingBroker | None, str | None]:
+    """Resolve a holding's tradeable sources to exactly one broker.
+
+    A lot split across two brokers has no single account that must fund the
+    add, so it is left unattributed instead of being charged to whichever
+    source happened to sort first.
+    """
+
+    if not sources:
+        return None, "보유의 계좌 소스를 확인하지 못했습니다."
+    resolved = {_BROKER_BY_ACCOUNT_SOURCE.get(source) for source in sources}
+    if None in resolved:
+        unknown = sorted(
+            source for source in sources if source not in _BROKER_BY_ACCOUNT_SOURCE
+        )
+        return None, f"매핑되지 않은 계좌 소스: {', '.join(unknown)}"
+    if len(resolved) != 1:
+        return None, "여러 브로커에 걸친 보유 — 어느 계좌가 낼지 확정 불가"
+    return next(iter(resolved)), None
+
+
+def _broker_from_account_mode(mode: object) -> tuple[FundingBroker | None, str | None]:
+    if not isinstance(mode, str) or not mode.strip():
+        return None, "워치 max_action에 account_mode가 없습니다."
+    resolved = _BROKER_BY_ACCOUNT_MODE.get(mode.strip())
+    if resolved is None:
+        return None, f"매핑되지 않은 account_mode: {mode.strip()}"
+    return resolved, None
+
+
+def _approval_context() -> ApprovalContext:
+    """Publish how far the board's approval-lane classification actually goes.
+
+    ``approval_lane`` compares notionals with two caps. Real dispatch consults
+    ``settings.ORDER_PROPOSALS_AUTO_APPROVE`` first (default False) and then a
+    further eligibility evaluation this surface never runs. Both facts ship in
+    the response so the UI cannot present a cap check as an approval decision
+    (verify-r1 B6).
+    """
+
+    setting = "ORDER_PROPOSALS_AUTO_APPROVE"
+    try:
+        from app.core.config import settings
+
+        enabled: bool | None = bool(getattr(settings, setting))
+        source = f"settings.{setting}"
+    except Exception as exc:  # noqa: BLE001 — unknown gate must read as unknown
+        logger.warning("buy_plan: auto-approve master gate unreadable: %s", exc)
+        enabled = None
+        source = f"settings.{setting} (읽기 실패)"
+
+    if enabled is False:
+        notice = (
+            "자동승인 마스터 게이트가 꺼져 있습니다 — 조건과 무관하게 전건이 "
+            "수동 승인 카드로 갑니다. 아래 레인 표시는 cap 기준 분류일 뿐입니다."
+        )
+    elif enabled is True:
+        notice = (
+            "자동승인 마스터 게이트는 켜져 있지만, 이 보드는 cap 두 개만 확인합니다 — "
+            "실제 자동제출에는 아래 조건이 더 필요하며 여기서 평가하지 않았습니다."
+        )
+    else:
+        notice = (
+            "자동승인 마스터 게이트 상태를 읽지 못했습니다 — 레인 표시를 "
+            "승인 예정으로 읽지 마십시오."
+        )
+    return ApprovalContext(
+        master_gate_enabled=enabled,
+        master_gate_setting=setting,
+        master_gate_source=source,
+        unevaluated_conditions=list(AUTO_APPROVE_UNEVALUATED_CONDITIONS),
+        notice=notice,
+    )
 
 
 def _wanted_markets(market: MarketFilter) -> frozenset[BuyPlanMarket]:
@@ -379,7 +604,14 @@ def _build_averaging_rows(
         if not samples:
             continue
 
+        lot_broker, lot_broker_reason = _broker_from_account_sources(
+            lot.account_sources
+        )
         notes: list[str] = []
+        if lot_broker is None and lot_broker_reason:
+            notes.append(
+                f"이 소요액을 어느 계좌가 낼지 확정하지 못했습니다 — {lot_broker_reason}"
+            )
         if lot.price_state != "live":
             notes.append(
                 f"현재가 상태 {lot.price_state} — 전환점 거리는 그만큼 오래된 값입니다."
@@ -415,6 +647,7 @@ def _build_averaging_rows(
                 ),
                 market_rank=0,
                 within_policy_add_cap=False,
+                funding_broker=lot_broker or UNATTRIBUTED,
                 notes=notes,
             )
         )
@@ -462,6 +695,8 @@ def _build_support_net(
     open_orders: OpenOrdersResponse | None,
     watches: WatchesResponse | None,
     crypto_in_scope: bool,
+    order_health: _SourceHealth,
+    watch_health: _SourceHealth,
 ) -> SupportNetTier:
     rule, conditions = _held_majors_tier(policy)
     per_symbol_cap = _dec(conditions.get("max_notional_krw_per_coin"))
@@ -477,6 +712,19 @@ def _build_support_net(
 
     resting = _resting_buy_by_symbol(open_orders)
     watch_rungs = _buy_watch_by_symbol(watches)
+
+    # Committed notional is the sum of what the placement sources could see.
+    # If either source said it was incomplete, that sum is a floor, not a
+    # total — and the headroom derived from it would be an over-estimate of
+    # what is still free to spend, so both are published as unknown
+    # (verify-r1 B4).
+    placements_reasons = [*order_health.reasons, *watch_health.reasons]
+    placements_confident = order_health.complete and watch_health.complete
+    placements_state: SourceState = "ok"
+    if "unavailable" in {order_health.state, watch_health.state}:
+        placements_state = "unavailable"
+    elif not placements_confident:
+        placements_state = "degraded"
 
     rows: list[SupportNetRow] = []
     placed_total = Decimal(0)
@@ -515,15 +763,21 @@ def _build_support_net(
                     eligible=eligible,
                     ineligible_reason=reason,
                     placements=placements,
-                    placed_notional=placed,
+                    placed_notional=placed if placements_confident else None,
                     per_symbol_cap_notional=per_symbol_cap or Decimal(0),
-                    remaining_headroom_notional=headroom,
+                    remaining_headroom_notional=(
+                        headroom if placements_confident else None
+                    ),
+                    placements_state=placements_state,
+                    placements_incomplete_reasons=list(placements_reasons),
                 )
             )
 
     remaining = (
         max(tier_cap - placed_total, Decimal(0)) if tier_cap is not None else None
     )
+    if not placements_confident:
+        remaining = None
     if rule is not None:
         notes.append(
             "그물 대상 판정(‘메이저’)은 세션 판단이며 기계 allowlist가 없습니다 — "
@@ -533,18 +787,25 @@ def _build_support_net(
             "이미 걸린 지정가(주문 상시형)는 브로커가 현금을 이미 묶고 있으므로 "
             "추가 입금 대상이 아닙니다. 워치형만 신규 소요액으로 집계합니다."
         )
+    if not placements_confident and crypto_in_scope and rule is not None:
+        notes.append(
+            "미체결/워치 소스가 불완전해 걸린 금액과 남은 여력을 확정하지 못했습니다 — "
+            "표시된 여력을 쓸 수 있는 돈으로 읽지 마십시오."
+        )
     return SupportNetTier(
         policy_key=HELD_MAJORS_SUPPORT_NET_KEY,
         enabled=rule is not None and crypto_in_scope,
         currency="KRW",
         tier_cap_notional=tier_cap,
         per_symbol_cap_notional=per_symbol_cap,
-        placed_notional=placed_total,
+        placed_notional=placed_total if placements_confident else None,
         remaining_notional=remaining,
         distance_band_pct=band,
         review_date=str(review_date) if review_date is not None else None,
         rows=rows,
         notes=notes,
+        placements_state=placements_state,
+        placements_incomplete_reasons=list(placements_reasons),
     )
 
 
@@ -686,6 +947,8 @@ def _build_active_buy_watches(
             continue
         currency: BuyPlanCurrency = "USD" if alert.market == "us" else "KRW"
         notional, source = _planned_notional(alert)
+        raw_mode = (alert.max_action or {}).get("account_mode")
+        broker, _ = _broker_from_account_mode(raw_mode)
         lane, reason = approval_lane_for(
             notional=notional,
             tier_auto_submit_notional=_tier_auto_submit_notional(rule, currency),
@@ -717,6 +980,8 @@ def _build_active_buy_watches(
                 near_expiry=alert.near_expiry,
                 planned_notional=notional,
                 planned_notional_source=source,
+                funding_broker=broker or UNATTRIBUTED,
+                account_mode=raw_mode if isinstance(raw_mode, str) else None,
                 approval_lane=lane,
                 approval_lane_reason=reason,
             )
@@ -818,102 +1083,274 @@ def _compare(operator: str, value: Decimal, threshold: Decimal) -> bool:
     return False
 
 
+def _requirements(
+    *,
+    averaging: list[AveragingTriggerRow],
+    support_net: SupportNetTier,
+    buy_watches: list[ActiveBuyWatchRow],
+) -> list[_Requirement]:
+    """Flatten the board's three requirement families into attributed amounts.
+
+    A watch that is also a support-net rung appears here exactly once, keyed by
+    its alert id. The previous version subtracted one total from the other,
+    which happened to work but could not say *which* account either belonged
+    to; identity-based de-duplication does both jobs at once.
+    """
+
+    out: list[_Requirement] = []
+
+    for row in averaging:
+        if not row.within_policy_add_cap:
+            # Outside the policy's per-market add cap — shown on the board but
+            # not money to reserve for.
+            continue
+        out.append(
+            _Requirement(
+                kind="averaging_add",
+                label=f"{row.symbol} 물타기 A(k)",
+                currency=row.currency,
+                amount=row.reserve_plan_notional,
+                broker=None
+                if row.funding_broker == UNATTRIBUTED
+                else row.funding_broker,
+                unattributed_reason=(
+                    "보유의 계좌 소스를 하나의 브로커로 확정하지 못했습니다."
+                    if row.funding_broker == UNATTRIBUTED
+                    else None
+                ),
+            )
+        )
+
+    rung_alert_ids = {
+        placement.reference
+        for row in support_net.rows
+        if row.eligible
+        for placement in row.placements
+        if placement.form == "watch"
+    }
+
+    for row in buy_watches:
+        kind = "support_net" if row.alert_uuid in rung_alert_ids else "active_watch"
+        out.append(
+            _Requirement(
+                kind=kind,
+                label=f"{row.symbol} 워치 {format(row.threshold, 'f')}",
+                currency=row.currency,
+                amount=row.planned_notional,
+                broker=None
+                if row.funding_broker == UNATTRIBUTED
+                else row.funding_broker,
+                unattributed_reason=(
+                    "워치 max_action이 실행 계좌(account_mode)를 지정하지 않았습니다."
+                    if row.funding_broker == UNATTRIBUTED
+                    else None
+                ),
+            )
+        )
+    return out
+
+
 def _build_funding(
     home: InvestHomeResponse | None,
     *,
     averaging: list[AveragingTriggerRow],
     support_net: SupportNetTier,
     buy_watches: list[ActiveBuyWatchRow],
+    home_health: _SourceHealth,
+    watch_health: _SourceHealth,
+    order_health: _SourceHealth,
     warnings: list[str],
 ) -> BuyPlanFunding:
     accounts = _cash_accounts(home)
-    available: dict[str, Decimal | None] = {}
-    for currency in ("KRW", "USD"):
+    requirements = _requirements(
+        averaging=averaging, support_net=support_net, buy_watches=buy_watches
+    )
+
+    # Requirements whose owning account could not be resolved are published,
+    # never dropped. They then hold every same-currency scope at ``unknown``
+    # unless that scope's cash covers its own needs plus all of them.
+    unattributed = [
+        UnattributedRequirement(
+            kind=req.kind,  # type: ignore[arg-type]
+            label=req.label,
+            currency=req.currency,
+            amount=req.amount,
+            reason=req.unattributed_reason or "귀속 계좌 불명",
+        )
+        for req in requirements
+        if req.broker is None
+    ]
+    unattributed_by_currency: dict[str, Decimal] = {
+        "KRW": Decimal(0),
+        "USD": Decimal(0),
+    }
+    unattributed_unknown_amount: dict[str, bool] = {"KRW": False, "USD": False}
+    for req in requirements:
+        if req.broker is not None:
+            continue
+        if req.amount is None:
+            unattributed_unknown_amount[req.currency] = True
+            continue
+        unattributed_by_currency[req.currency] += req.amount
+
+    # A requirement whose amount could not be resolved is also an unknown, and
+    # it must not read as zero.
+    amount_unknown_by_scope: dict[tuple[str, str], list[str]] = {}
+    for req in requirements:
+        if req.amount is None and req.broker is not None:
+            amount_unknown_by_scope.setdefault((req.broker, req.currency), []).append(
+                f"{req.label}: 소요 금액을 확정하지 못했습니다."
+            )
+
+    scope_keys: set[tuple[FundingBroker, BuyPlanCurrency]] = set()
+    for row in accounts:
+        if row.included_in_reserve:
+            scope_keys.add((row.broker, row.currency))
+    for req in requirements:
+        if req.broker is not None:
+            scope_keys.add((req.broker, req.currency))
+    if not scope_keys:
+        scope_keys.add(("unattributed", "KRW"))
+
+    # Requirement-side incompleteness is symmetric with the cash-side hold that
+    # already existed: an unknown requirement must never fold to zero
+    # (verify-r1 B3/B4).
+    shared_incomplete: list[str] = [
+        *home_health.reasons,
+        *watch_health.reasons,
+        *order_health.reasons,
+    ]
+
+    scopes: list[ScopeReconciliation] = []
+    for broker, currency in sorted(scope_keys):
         rows = [
             row
             for row in accounts
-            if row.currency == currency and row.included_in_reserve
+            if row.included_in_reserve
+            and row.broker == broker
+            and row.currency == currency
         ]
-        known = [row.available_cash for row in rows if row.available_cash is not None]
-        if not rows:
-            available[currency] = None
-        elif len(known) != len(rows):
-            # A partially-known total would understate what is available and
-            # could send the operator to deposit money they already hold.
-            available[currency] = None
-            warnings.append(
-                f"{currency} 가용 현금이 일부 계좌에서 확인되지 않아 대조를 보류합니다."
-            )
-        else:
-            available[currency] = sum(known, Decimal(0))
+        available = _scope_available_cash(rows, warnings=warnings)
 
-    currencies: list[CurrencyReconciliation] = []
-    for currency in ("KRW", "USD"):
-        adds = sum(
-            (
-                row.reserve_plan_notional
-                for row in averaging
-                if row.currency == currency and row.within_policy_add_cap
-            ),
-            Decimal(0),
-        )
-        # Resting orders already hold broker cash; only the watch-form rungs
-        # of the support net are money that still has to be there.
-        net = (
-            sum(
-                (
-                    placement.notional or Decimal(0)
-                    for row in support_net.rows
-                    if row.currency == currency and row.eligible
-                    for placement in row.placements
-                    if placement.form == "watch"
-                ),
-                Decimal(0),
+        by_kind: dict[str, Decimal] = {
+            "averaging_add": Decimal(0),
+            "support_net": Decimal(0),
+            "active_watch": Decimal(0),
+        }
+        for req in requirements:
+            if req.broker != broker or req.currency != currency or req.amount is None:
+                continue
+            by_kind[req.kind] += req.amount
+        attributed_total = sum(by_kind.values(), Decimal(0))
+
+        incomplete = [
+            *shared_incomplete,
+            *amount_unknown_by_scope.get((broker, currency), []),
+        ]
+        if unattributed_unknown_amount[currency]:
+            incomplete.append(
+                f"{currency} 소요액 중 금액을 확정하지 못한 항목이 있습니다."
             )
-            if currency == "KRW"
-            else Decimal(0)
+        if broker == UNATTRIBUTED and not rows:
+            incomplete.append(
+                "이 행은 귀속 계좌를 확정하지 못한 소요액 모음입니다 — 대조할 현금이 없습니다."
+            )
+
+        unattributed_amount = unattributed_by_currency[currency]
+        worst_case = attributed_total + unattributed_amount
+        verdict, shortfall = _scope_verdict(
+            available=available,
+            attributed=attributed_total,
+            worst_case=worst_case,
+            incomplete=bool(incomplete),
         )
-        watch_total = sum(
-            (
-                row.planned_notional or Decimal(0)
-                for row in buy_watches
-                if row.currency == currency
-            ),
-            Decimal(0),
-        )
-        # A crypto support-net rung is also an active buy watch, so counting
-        # both would double-book the same KRW.
-        watch_total = max(watch_total - net, Decimal(0))
-        total = adds + net + watch_total
-        cash = available[currency]
-        if cash is None:
-            verdict = "unknown"
-            shortfall = None
-        elif cash >= total:
-            verdict = "sufficient"
-            shortfall = Decimal(0)
-        else:
-            verdict = "shortfall"
-            shortfall = total - cash
+
         notes = [
-            "물타기 합계는 정책의 시장별 add 상한(max_add_symbols_per_market) "
-            "안에 드는 행만 더합니다.",
+            "다른 브로커 계좌의 같은 통화 현금은 이 판정에 포함하지 않습니다 — "
+            "그 돈으로 이 계좌의 주문을 낼 수 없습니다.",
+            "물타기 합계는 정책의 시장별 add 상한 안에 드는 행만 더합니다.",
             "이미 걸린 지정가는 브로커가 현금을 묶고 있어 합계에서 제외했습니다.",
         ]
-        currencies.append(
-            CurrencyReconciliation(
-                currency=currency,  # type: ignore[arg-type]
-                available_cash=cash,
-                required_averaging_adds=adds,
-                required_support_net=net,
-                required_active_watches=watch_total,
-                required_total=total,
+        if unattributed_amount > 0 or unattributed_unknown_amount[currency]:
+            notes.append(
+                "귀속 계좌를 확정하지 못한 소요액이 있어, 이 계좌 현금이 그 전액까지 "
+                "덮지 못하면 판정을 보류합니다."
+            )
+        scopes.append(
+            ScopeReconciliation(
+                scope_key=f"{broker}:{currency}",
+                broker=broker,
+                currency=currency,
+                account_ids=[row.account_id for row in rows],
+                available_cash=available,
+                required_averaging_adds=by_kind["averaging_add"],
+                required_support_net=by_kind["support_net"],
+                required_active_watches=by_kind["active_watch"],
+                required_total=attributed_total,
+                unattributed_same_currency=unattributed_amount,
+                worst_case_required=worst_case,
+                requirements_complete=not incomplete,
+                incomplete_reasons=sorted(set(incomplete)),
                 verdict=verdict,  # type: ignore[arg-type]
                 shortfall=shortfall,
                 notes=notes,
             )
         )
-    return BuyPlanFunding(accounts=accounts, currencies=currencies)
+
+    return BuyPlanFunding(
+        accounts=accounts,
+        scopes=scopes,
+        unattributed=unattributed,
+        source_warnings=sorted(set(shared_incomplete)),
+    )
+
+
+def _scope_available_cash(
+    rows: list[CashAccountRow], *, warnings: list[str]
+) -> Decimal | None:
+    """Total the scope's cash, or ``None`` if any account in it is unreadable.
+
+    A partially-known total understates what is available and would send the
+    operator to deposit money they already hold, so it is withheld instead.
+    """
+
+    if not rows:
+        return None
+    known = [row.available_cash for row in rows if row.available_cash is not None]
+    if len(known) != len(rows):
+        warnings.append(
+            f"{rows[0].broker}/{rows[0].currency} 가용 현금이 일부 계좌에서 "
+            "확인되지 않아 대조를 보류합니다."
+        )
+        return None
+    return sum(known, Decimal(0))
+
+
+def _scope_verdict(
+    *,
+    available: Decimal | None,
+    attributed: Decimal,
+    worst_case: Decimal,
+    incomplete: bool,
+) -> tuple[str, Decimal | None]:
+    """Decide one scope, refusing to round any unknown down to zero.
+
+    A shortfall is still reported when the *known* requirement already exceeds
+    the cash: that deficit is proven regardless of what else is missing, and
+    suppressing it would be its own kind of dishonesty.
+    """
+
+    if available is None:
+        return "unknown", None
+    if attributed > available:
+        return "shortfall", attributed - available
+    if incomplete:
+        return "unknown", None
+    if worst_case > available:
+        # The attributed part fits but the unattributed part may not, and the
+        # board cannot say which account it lands on.
+        return "unknown", None
+    return "sufficient", Decimal(0)
 
 
 def _cash_accounts(home: InvestHomeResponse | None) -> list[CashAccountRow]:
@@ -939,6 +1376,9 @@ def _cash_accounts(home: InvestHomeResponse | None) -> list[CashAccountRow]:
                     account_id=account.accountId,
                     display_name=account.displayName,
                     source=account.source,
+                    broker=_BROKER_BY_ACCOUNT_SOURCE.get(
+                        str(account.source), UNATTRIBUTED
+                    ),
                     currency=currency,  # type: ignore[arg-type]
                     available_cash=cash,
                     available_cash_source=source or "unavailable",
@@ -999,6 +1439,19 @@ def _value_sources() -> list[ValueSource]:
             field="funding.accounts[].available_cash",
             source="InvestHomeService Account.buyingPower ?? Account.cashBalances",
             note="live 계좌만 리저브에 포함합니다.",
+        ),
+        ValueSource(
+            field="funding.scopes[]",
+            source="(브로커, 통화) 쌍 — 보유 account source / 워치 max_action.account_mode",
+            note="다른 브로커의 같은 통화 현금은 합산하지 않습니다. 귀속을 확정하지 "
+            "못한 소요액은 funding.unattributed 로 올라가며 같은 통화 판정을 보류시킵니다.",
+        ),
+        ValueSource(
+            field="approval_context.master_gate_enabled",
+            source="settings.ORDER_PROPOSALS_AUTO_APPROVE",
+            note="행의 approval_lane 은 cap 두 개만 본 분류입니다 — 실제 자동제출 "
+            "조건은 approval_context.unevaluated_conditions 에 나열돼 있고 "
+            "이 보드는 그것들을 평가하지 않습니다.",
         ),
         ValueSource(
             field="*.approval_lane",
