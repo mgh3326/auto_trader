@@ -10,8 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
 import fakeredis
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -120,9 +120,7 @@ async def test_stock_detail_holding_reads_only_target_symbol(
     body = response.json()
     assert body["holding"]["totalQuantity"] == 10.0
     assert body["holding"]["averageCost"] == 70000.0
-    assert service.symbol_calls == [
-        {"user_id": 7, "market": "kr", "symbol": "005930"}
-    ]
+    assert service.symbol_calls == [{"user_id": 7, "market": "kr", "symbol": "005930"}]
     assert service.get_home_calls == 0
     assert service.panel_calls == 0
 
@@ -134,10 +132,10 @@ async def test_get_symbol_holding_projects_from_shared_snapshot_without_readers(
 ) -> None:
     """Warm shared snapshot must answer the per-symbol lookup with zero reader fetches."""
     from app.services import invest_home_service as svc_mod
-    from app.services.invest_home_service import InvestHomeService
     from app.services.invest_home_readers import _SourceFetchResult
-    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+    from app.services.invest_home_service import InvestHomeService
     from app.services.portfolio_snapshot import portfolio_snapshot_scope
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
 
     calls = {"reader": 0}
 
@@ -194,9 +192,7 @@ async def test_get_symbol_holding_projects_from_shared_snapshot_without_readers(
             },
         },
     }
-    scope = portfolio_snapshot_scope(
-        user_id=7, include_paper=False, paper_sources=None
-    )
+    scope = portfolio_snapshot_scope(user_id=7, include_paper=False, paper_sources=None)
     await cache.put(scope, payload)
 
     monkeypatch.setattr(svc_mod, "_fetch_reader_result", None)  # readers unusable
@@ -209,9 +205,7 @@ async def test_get_symbol_holding_projects_from_shared_snapshot_without_readers(
     )
     monkeypatch.setattr(service, "_get_home_uncached", None)
 
-    holding = await service.get_symbol_holding(
-        user_id=7, market="kr", symbol="005930"
-    )
+    holding = await service.get_symbol_holding(user_id=7, market="kr", symbol="005930")
     assert holding is not None
     assert holding.totalQuantity == 10.0
     assert holding.averageCost == 70000.0

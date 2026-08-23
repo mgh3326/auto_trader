@@ -104,8 +104,8 @@ async def test_badge_routes_use_held_pairs_and_never_call_get_home(
     )
     from app.schemas.invest_feed_news import FeedNewsResponse
     from app.schemas.invest_feed_research import FeedResearchMeta, FeedResearchResponse
-    from app.schemas.invest_signals import SignalsResponse
     from app.schemas.invest_screener import ScreenerResultsResponse
+    from app.schemas.invest_signals import SignalsResponse
 
     service = _BadgeOnlyService()
 
