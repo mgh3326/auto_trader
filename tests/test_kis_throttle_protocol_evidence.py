@@ -7,10 +7,12 @@ throttle event must retain only the protocol allowlist projection.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from collections.abc import Callable
 from io import StringIO
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -18,7 +20,10 @@ import pytest
 
 from app.services.brokers.kis import base as kis_base
 from app.services.brokers.kis.base import BaseKISClient
-from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
+from app.services.brokers.kis.send_outcome import (
+    OrderSendOutcomeTracker,
+    emit_throttle_protocol_evidence,
+)
 
 _APP_KEY = "synthetic-app-key-should-not-leak"
 _APP_SECRET = "synthetic-app-secret-should-not-leak"
@@ -127,6 +132,52 @@ def _event_from(caplog: pytest.LogCaptureFixture) -> dict[str, object]:
     event = events[0]
     assert isinstance(event, dict)
     return event
+
+
+def _capture_stdout_summary(response: object) -> tuple[str, dict[str, object]]:
+    """Capture the production ``%(message)s`` form of one evidence event."""
+    tracker = OrderSendOutcomeTracker()
+    tracker.record_response_protocol(
+        response=response,
+        endpoint_url="https://gateway.example/order",
+        response_body=None,
+    )
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    evidence_logger = logging.getLogger("app.services.brokers.kis.send_outcome")
+    evidence_logger.addHandler(handler)
+    try:
+        emit_throttle_protocol_evidence(
+            order_surface="domestic",
+            provider_message_code="EGW00201",
+            outcome=tracker,
+        )
+    finally:
+        evidence_logger.removeHandler(handler)
+
+    message = stream.getvalue().removesuffix("\n")
+    prefix = "kis_throttle_protocol_evidence "
+    assert message.startswith(prefix)
+    summary = json.loads(message.removeprefix(prefix))
+    assert isinstance(summary, dict)
+    return message, summary
+
+
+def _summary_response(
+    *, server: str, via: str = "1.1 real", reason_phrase: bytes = b"Server Hangup"
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        status_code=500,
+        extensions={"http_version": b"HTTP/1.1", "reason_phrase": reason_phrase},
+        headers=SimpleNamespace(
+            items=lambda: [
+                ("server", server),
+                ("via", via),
+                ("authorization", _ACCESS_TOKEN),
+            ]
+        ),
+    )
 
 
 def _assert_safe_protocol_event(
@@ -296,6 +347,14 @@ class _RequestAccessForbidden:
             lambda: SimpleNamespace(status_code=500.0, extensions={}, headers={}),
             id="float-status",
         ),
+        pytest.param(
+            lambda: SimpleNamespace(
+                status_code=500,
+                extensions=MappingProxyType({}),
+                headers={},
+            ),
+            id="mapping-proxy-extensions",
+        ),
         pytest.param(lambda: None, id="none"),
         pytest.param(lambda: "not-a-response", id="string"),
         pytest.param(lambda: 42, id="integer"),
@@ -403,11 +462,15 @@ async def test_surviving_throttle_has_a_safe_stdout_summary(
 
     assert result["odno"] == "0030808418"
     stdout_summary = stream.getvalue()
-    assert (
-        "kis_throttle_protocol_evidence status_code=400 "
-        "status_line=HTTP/1.1 400 Internal Server Error "
-        "server=synthetic-edge via=1.1 synthetic-proxy"
-    ) in stdout_summary
+    stdout_line = stdout_summary.removesuffix("\n")
+    summary_prefix = "kis_throttle_protocol_evidence "
+    assert stdout_line.startswith(summary_prefix)
+    assert json.loads(stdout_line.removeprefix(summary_prefix)) == {
+        "status_code": 400,
+        "status_line": "HTTP/1.1 400 Internal Server Error",
+        "server": "synthetic-edge",
+        "via": "1.1 synthetic-proxy",
+    }
     for secret in (_APP_KEY, _APP_SECRET, _ACCESS_TOKEN, _ACCOUNT_NO):
         assert secret not in stdout_summary
     assert "authorization" not in stdout_summary
@@ -420,6 +483,7 @@ class _CaptureSettings:
     kis_app_secret = _APP_SECRET
     kis_access_token = _ACCESS_TOKEN
     api_rate_limit_retry_429_max = 0
+    api_rate_limit_retry_429_base_delay = 0.25
     kis_rate_limit_rate = 19
     kis_rate_limit_period = 1.0
     kis_mock_base_url = ""
@@ -505,6 +569,166 @@ async def test_http_boundary_records_protocol_before_all_parser_error_shapes(
         assert "body:gt_uid" not in protocol["correlation_ids"]
 
 
+class _StopAfter429(Exception):
+    pass
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_http_429_records_protocol_before_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CaptureClient()
+    limiter = MagicMock()
+    limiter.acquire = AsyncMock()
+    breaker = MagicMock()
+    breaker.before_request.return_value = 1
+    monkeypatch.setattr(client, "_get_limiter", AsyncMock(return_value=limiter))
+    monkeypatch.setattr(client, "_ensure_client", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        client,
+        "_execute_http_request",
+        AsyncMock(return_value=_throttle_response(status_code=429)),
+    )
+    monkeypatch.setattr(kis_base, "get_kis_circuit_breaker", lambda: breaker)
+
+    async def _stop_before_retry(_: float) -> None:
+        raise _StopAfter429
+
+    monkeypatch.setattr(kis_base.asyncio, "sleep", _stop_before_retry)
+    tracker = OrderSendOutcomeTracker()
+    with pytest.raises(_StopAfter429):
+        await client._request_with_rate_limit(
+            "POST",
+            "https://gateway.example:9443/uapi/domestic-stock/v1/trading/order-cash",
+            headers={"authorization": f"Bearer {_ACCESS_TOKEN}"},
+            json_body={"CANO": _ACCOUNT_NO},
+            retry_request_errors=False,
+            max_retries_override=0,
+            api_name="order_korea_stock",
+            send_outcome=tracker,
+        )
+
+    assert tracker.protocol_evidence is not None
+    assert tracker.protocol_evidence["status_code"] == 429
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status_code", "body_kind"),
+    [
+        pytest.param(500, "html", id="500-html"),
+        pytest.param(502, "html", id="502-html"),
+        pytest.param(504, "json", id="504-json"),
+        pytest.param(403, "json", id="403-json"),
+        pytest.param(500, "json", id="500-json"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_callsite_observation_failure_keeps_original_parser_outcome(
+    status_code: int,
+    body_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A future recorder failure cannot replace HTTP/parser control flow."""
+    client = _CaptureClient()
+    limiter = MagicMock()
+    limiter.acquire = AsyncMock()
+    breaker = MagicMock()
+    breaker.before_request.return_value = 1
+    monkeypatch.setattr(client, "_get_limiter", AsyncMock(return_value=limiter))
+    monkeypatch.setattr(client, "_ensure_client", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        client,
+        "_execute_http_request",
+        AsyncMock(
+            return_value=_throttle_response(
+                status_code=status_code, body_kind=body_kind
+            )
+        ),
+    )
+    monkeypatch.setattr(kis_base, "get_kis_circuit_breaker", lambda: breaker)
+    calls = 0
+
+    def _raise_from_recorder(self: OrderSendOutcomeTracker, **_: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("synthetic recorder failure")
+
+    monkeypatch.setattr(
+        OrderSendOutcomeTracker, "record_response_protocol", _raise_from_recorder
+    )
+    tracker = OrderSendOutcomeTracker()
+    request = client._request_with_rate_limit(
+        "POST",
+        "https://gateway.example:9443/uapi/domestic-stock/v1/trading/order-cash",
+        headers={"authorization": f"Bearer {_ACCESS_TOKEN}"},
+        json_body={"CANO": _ACCOUNT_NO},
+        retry_request_errors=False,
+        max_retries_override=0,
+        api_name="order_korea_stock",
+        send_outcome=tracker,
+    )
+    result: object | None = None
+    caught: BaseException | None = None
+    try:
+        result = await request
+    except BaseException as exc:
+        caught = exc
+
+    if status_code == 500 and body_kind == "json":
+        assert caught is None
+        assert isinstance(result, dict)
+        data = result
+        assert data["msg_cd"] == "EGW00201"
+        assert calls == 2
+    else:
+        assert isinstance(caught, httpx.HTTPStatusError)
+        assert calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("exception_type", [KeyboardInterrupt, asyncio.CancelledError])
+@pytest.mark.asyncio
+async def test_callsite_does_not_swallow_base_exception(
+    exception_type: type[BaseException],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CaptureClient()
+    limiter = MagicMock()
+    limiter.acquire = AsyncMock()
+    breaker = MagicMock()
+    breaker.before_request.return_value = 1
+    monkeypatch.setattr(client, "_get_limiter", AsyncMock(return_value=limiter))
+    monkeypatch.setattr(client, "_ensure_client", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        client,
+        "_execute_http_request",
+        AsyncMock(return_value=_throttle_response()),
+    )
+    monkeypatch.setattr(kis_base, "get_kis_circuit_breaker", lambda: breaker)
+
+    def _raise_base_exception(self: OrderSendOutcomeTracker, **_: object) -> None:
+        raise exception_type()
+
+    monkeypatch.setattr(
+        OrderSendOutcomeTracker,
+        "record_response_protocol",
+        _raise_base_exception,
+    )
+    with pytest.raises(exception_type):
+        await client._request_with_rate_limit(
+            "POST",
+            "https://gateway.example:9443/uapi/domestic-stock/v1/trading/order-cash",
+            headers={"authorization": f"Bearer {_ACCESS_TOKEN}"},
+            json_body={"CANO": _ACCOUNT_NO},
+            retry_request_errors=False,
+            max_retries_override=0,
+            api_name="order_korea_stock",
+            send_outcome=OrderSendOutcomeTracker(),
+        )
+
+
 @pytest.mark.unit
 def test_httpx_synthesized_defaults_are_not_marked_as_observed() -> None:
     """httpx defaults must not masquerade as wire status-line evidence."""
@@ -548,6 +772,79 @@ def test_wire_extensions_and_list_correlation_ids_are_observed() -> None:
 
 
 @pytest.mark.unit
+def test_non_ascii_reason_phrase_fails_closed_as_unobserved() -> None:
+    tracker = OrderSendOutcomeTracker()
+    tracker.record_response_protocol(
+        response=_throttle_response(
+            extensions={"http_version": b"HTTP/1.1", "reason_phrase": "한글".encode()}
+        ),
+        endpoint_url="https://gateway.example/order",
+        response_body=None,
+    )
+
+    assert tracker.protocol_evidence is not None
+    assert tracker.protocol_evidence["reason_phrase"] is None
+    assert tracker.protocol_evidence["reason_phrase_observed"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("label", "control", "escaped"),
+    [
+        pytest.param("vertical-tab", "\x0b", "\\u000b", id="vertical-tab"),
+        pytest.param("form-feed", "\x0c", "\\u000c", id="form-feed"),
+        pytest.param("next-line", "\x85", "\\u0085", id="next-line"),
+        pytest.param("line-separator", "\u2028", "\\u2028", id="line-separator"),
+        pytest.param(
+            "paragraph-separator", "\u2029", "\\u2029", id="paragraph-separator"
+        ),
+        pytest.param("ansi", "\x1b[2J\x1b[H", "\\u001b[2J\\u001b[H", id="ansi"),
+        pytest.param("tab", "\t", "\\u0009", id="tab"),
+    ],
+)
+def test_stdout_summary_has_only_printable_characters(
+    label: str, control: str, escaped: str
+) -> None:
+    del label
+    server = f"nginx{control}via=FORGED status_code=200"
+    line, summary = _capture_stdout_summary(_summary_response(server=server))
+
+    assert line.splitlines() == [line]
+    assert all(character.isprintable() for character in line)
+    assert control not in line
+    assert "=" not in line
+    assert set(summary) == {"status_code", "status_line", "server", "via"}
+    assert escaped in summary["server"]
+    assert summary["via"] == "1.1 real"
+    assert summary["status_code"] == 500
+
+
+@pytest.mark.unit
+def test_stdout_json_summary_prevents_server_and_reason_key_value_forgery() -> None:
+    forged_server = "nginx via=FORGED_VIA status_code=200 status_line=FORGED"
+    forged_reason = b"OK server=FORGED_SERVER via=FORGED_VIA status_code=200"
+    line, summary = _capture_stdout_summary(
+        _summary_response(
+            server=forged_server,
+            via="1.1 real",
+            reason_phrase=forged_reason,
+        )
+    )
+
+    assert "=" not in line
+    assert line.count('"status_code":') == 1
+    assert line.count('"status_line":') == 1
+    assert line.count('"server":') == 1
+    assert line.count('"via":') == 1
+    assert summary == {
+        "status_code": 500,
+        "status_line": "HTTP/1.1 500 " + forged_reason.decode(),
+        "server": forged_server,
+        "via": "1.1 real",
+    }
+
+
+@pytest.mark.unit
 def test_header_projection_is_exact_bounded_and_newline_safe() -> None:
     tracker = OrderSendOutcomeTracker()
     long_server = "server\r\n" + "x" * 600
@@ -572,10 +869,10 @@ def test_header_projection_is_exact_bounded_and_newline_safe() -> None:
     assert tracker.protocol_evidence is not None
     protocol = tracker.protocol_evidence
     assert set(protocol["response_headers"]) == {"server", "x-request-id"}
-    assert protocol["response_headers"]["server"].startswith("server\\r\\n")
+    assert protocol["response_headers"]["server"].startswith("server\\u000d\\u000a")
     assert len(protocol["response_headers"]["server"]) == 512
-    assert protocol["response_headers"]["x-request-id"] == "request\\nline"
-    assert protocol["correlation_ids"] == {"header:x-request-id": "request\\nline"}
+    assert protocol["response_headers"]["x-request-id"] == "request\\u000aline"
+    assert protocol["correlation_ids"] == {"header:x-request-id": "request\\u000aline"}
     serialized_protocol = repr(protocol)
     for secret in (_APP_KEY, _APP_SECRET, _ACCESS_TOKEN, _ACCOUNT_NO):
         assert secret not in serialized_protocol

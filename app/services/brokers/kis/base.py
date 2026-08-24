@@ -774,11 +774,15 @@ class BaseKISClient:
                     # raise for a proxy HTML error or a non-500 HTTP status.
                     # Parsed-body correlation IDs are added below only after
                     # parsing succeeds.
-                    send_outcome.record_response_protocol(
-                        response=response,
-                        endpoint_url=url,
-                        response_body=None,
-                    )
+                    try:
+                        send_outcome.record_response_protocol(
+                            response=response,
+                            endpoint_url=url,
+                            response_body=None,
+                        )
+                    except Exception:
+                        # Observation must not replace the parser/retry path.
+                        pass
 
                 if status_code == 429:
                     retry_after = _safe_parse_retry_after(
@@ -800,11 +804,15 @@ class BaseKISClient:
 
                 data, is_rate_limited = self._parse_kis_response(response, api_name)
                 if send_outcome is not None:
-                    send_outcome.record_response_protocol(
-                        response=response,
-                        endpoint_url=url,
-                        response_body=data,
-                    )
+                    try:
+                        send_outcome.record_response_protocol(
+                            response=response,
+                            endpoint_url=url,
+                            response_body=data,
+                        )
+                    except Exception:
+                        # Observation must not replace a successful response.
+                        pass
 
                 if is_rate_limited and attempt < max_retries:
                     wait_time = self._calculate_retry_delay(

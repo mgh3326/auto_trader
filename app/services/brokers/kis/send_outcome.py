@@ -6,6 +6,7 @@ retain their existing behavior and response contracts.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
@@ -92,11 +93,40 @@ def _safe_observed_status_code(response: object) -> int | None:
 
 
 def _safe_protocol_text(value: object) -> str | None:
-    """Bound a protocol field so it is safe in logs and Sentry rendering."""
+    """Bound protocol text to printable characters for logs and Sentry."""
     if not isinstance(value, str):
         return None
-    sanitized = value.replace("\r", "\\r").replace("\n", "\\n").strip()
+    sanitized = "".join(
+        character
+        if character.isprintable()
+        else (
+            f"\\u{ord(character):04x}"
+            if ord(character) <= 0xFFFF
+            else f"\\U{ord(character):08x}"
+        )
+        for character in value
+    ).strip()
     return sanitized[:_PROTOCOL_TEXT_MAX_LENGTH] or None
+
+
+def _safe_stdout_protocol_summary(protocol: dict[str, Any]) -> str:
+    """Render exactly four quoted evidence fields as one printable JSON value."""
+    response_headers = protocol.get("response_headers")
+    if type(response_headers) is not dict:
+        response_headers = {}
+    status_code = protocol.get("status_code")
+    summary = {
+        "status_code": status_code if type(status_code) is int else "unknown",
+        "status_line": _safe_protocol_text(protocol.get("status_line")) or "unknown",
+        "server": _safe_protocol_text(response_headers.get("server")) or "unknown",
+        "via": _safe_protocol_text(response_headers.get("via")) or "unknown",
+    }
+    # JSON quotes prevent a value's whitespace from becoming a new field. Escape
+    # equals signs in the rendered form as well, so a non-JSON key=value parser
+    # cannot mistake a value substring for a later evidence field.
+    return json.dumps(summary, ensure_ascii=True, separators=(",", ":")).replace(
+        "=", "\\u003d"
+    )
 
 
 def _safe_observed_response_extension(
@@ -307,20 +337,9 @@ def emit_throttle_protocol_evidence(
         return
     try:
         protocol = outcome.protocol_evidence
-        response_headers = protocol.get("response_headers")
-        if type(response_headers) is not dict:
-            response_headers = {}
-        status_code = protocol.get("status_code")
-        status_code_text = str(status_code) if type(status_code) is int else "unknown"
-        status_line = _safe_protocol_text(protocol.get("status_line")) or "unknown"
-        server = _safe_protocol_text(response_headers.get("server")) or "unknown"
-        via = _safe_protocol_text(response_headers.get("via")) or "unknown"
         logger.warning(
-            "kis_throttle_protocol_evidence status_code=%s status_line=%s server=%s via=%s",
-            status_code_text,
-            status_line,
-            server,
-            via,
+            "kis_throttle_protocol_evidence %s",
+            _safe_stdout_protocol_summary(protocol),
             extra={
                 "kis_throttle_protocol_evidence": {
                     "event": "kis_throttle_protocol_evidence",
