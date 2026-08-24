@@ -770,6 +770,15 @@ class BaseKISClient:
                 status_code = _safe_status_code(response)
                 if send_outcome is not None:
                     send_outcome.mark_http_response(status_code)
+                    # Preserve headers/status before the response parser can
+                    # raise for a proxy HTML error or a non-500 HTTP status.
+                    # Parsed-body correlation IDs are added below only after
+                    # parsing succeeds.
+                    send_outcome.record_response_protocol(
+                        response=response,
+                        endpoint_url=url,
+                        response_body=None,
+                    )
 
                 if status_code == 429:
                     retry_after = _safe_parse_retry_after(

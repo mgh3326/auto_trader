@@ -14,9 +14,10 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-# This is intentionally an allowlist, not a redact-after-the-fact filter.  KIS
-# order requests carry authentication headers, so no request headers and no
-# arbitrary response headers may reach the throttle evidence event.
+# This is intentionally an explicit allowlist, not a redact-after-the-fact
+# filter. KIS order requests carry authentication headers, so no request
+# headers and no arbitrary response headers may reach the throttle evidence
+# event.
 _RESPONSE_HEADER_ALLOWLIST: frozenset[str] = frozenset(
     {
         "server",
@@ -62,6 +63,7 @@ _CORRELATION_BODY_KEYS: frozenset[str] = frozenset(
         "kiscorrelationid",
     }
 )
+_PROTOCOL_TEXT_MAX_LENGTH = 512
 
 
 def _safe_endpoint(url: object) -> str | None:
@@ -74,13 +76,14 @@ def _safe_endpoint(url: object) -> str | None:
         if not host:
             return None
         port = parsed.port
-        host_with_port = f"{host}:{port}" if port is not None else host
+        display_host = f"[{host}]" if ":" in host else host
+        host_with_port = f"{display_host}:{port}" if port is not None else display_host
         return f"{host_with_port}{parsed.path or '/'}"
     except (TypeError, ValueError):
         return None
 
 
-def _safe_status_code(response: object) -> int | None:
+def _safe_observed_status_code(response: object) -> int | None:
     try:
         value = getattr(response, "status_code", None)
     except Exception:  # noqa: BLE001 - observation must never alter order flow
@@ -88,12 +91,29 @@ def _safe_status_code(response: object) -> int | None:
     return value if type(value) is int else None
 
 
-def _safe_response_text_attribute(response: object, name: str) -> str | None:
-    try:
-        value = getattr(response, name, None)
-    except Exception:  # noqa: BLE001 - response adapters can be malformed
+def _safe_protocol_text(value: object) -> str | None:
+    """Bound a protocol field so it is safe in logs and Sentry rendering."""
+    if not isinstance(value, str):
         return None
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    sanitized = value.replace("\r", "\\r").replace("\n", "\\n").strip()
+    return sanitized[:_PROTOCOL_TEXT_MAX_LENGTH] or None
+
+
+def _safe_observed_response_extension(
+    response: object, name: str
+) -> tuple[str | None, bool]:
+    """Read a wire extension directly, never httpx's synthesized properties."""
+    try:
+        extensions = getattr(response, "extensions", None)
+        if type(extensions) is not dict:
+            return None, False
+        raw_value = extensions.get(name)
+        if not isinstance(raw_value, bytes):
+            return None, False
+        value = _safe_protocol_text(raw_value.decode("ascii"))
+        return value, value is not None
+    except Exception:  # noqa: BLE001 - response adapters can be malformed
+        return None, False
 
 
 def _safe_response_header_projection(
@@ -115,9 +135,12 @@ def _safe_response_header_projection(
             name = raw_name.lower()
             if name not in _RESPONSE_HEADER_ALLOWLIST:
                 continue
-            allowed_headers[name] = raw_value
+            value = _safe_protocol_text(raw_value)
+            if value is None:
+                continue
+            allowed_headers[name] = value
             if name in _CORRELATION_HEADER_NAMES:
-                correlation_ids[f"header:{name}"] = raw_value
+                correlation_ids[f"header:{name}"] = value
     except Exception:  # noqa: BLE001 - a malformed header iterator is non-fatal
         pass
     return allowed_headers, correlation_ids
@@ -129,10 +152,19 @@ def _safe_body_correlation_ids(response_body: object) -> dict[str, str]:
         return {}
 
     correlation_ids: dict[str, str] = {}
-    pending: list[tuple[dict[object, object], int]] = [(response_body, 0)]
-    while pending and len(correlation_ids) < 16:
+    pending: list[tuple[dict[object, object] | list[object], int]] = [
+        (response_body, 0)
+    ]
+    visited = 0
+    while pending and len(correlation_ids) < 16 and visited < 64:
         current, depth = pending.pop()
+        visited += 1
         if depth > 3:
+            continue
+        if type(current) is list:
+            for value in current[:64]:
+                if type(value) in (dict, list):
+                    pending.append((value, depth + 1))
             continue
         for raw_name, value in current.items():
             if not isinstance(raw_name, str):
@@ -140,10 +172,14 @@ def _safe_body_correlation_ids(response_body: object) -> dict[str, str]:
             normalized_name = raw_name.lower().replace("_", "").replace("-", "")
             if normalized_name in _CORRELATION_BODY_KEYS:
                 if isinstance(value, str) and value:
-                    correlation_ids.setdefault(f"body:{raw_name.lower()}", value)
+                    safe_value = _safe_protocol_text(value)
+                    if safe_value is not None:
+                        correlation_ids.setdefault(
+                            f"body:{raw_name.lower()}", safe_value
+                        )
                 elif type(value) is int:
                     correlation_ids.setdefault(f"body:{raw_name.lower()}", str(value))
-            if type(value) is dict:
+            if type(value) in (dict, list):
                 pending.append((value, depth + 1))
     return correlation_ids
 
@@ -204,18 +240,24 @@ class OrderSendOutcomeTracker:
         response adapters must not change an order's execution path.
         """
         try:
-            status_code = _safe_status_code(response)
-            reason_phrase = _safe_response_text_attribute(response, "reason_phrase")
-            http_version = _safe_response_text_attribute(response, "http_version")
-            status_line_parts = [
-                part
-                for part in (
+            status_code = _safe_observed_status_code(response)
+            reason_phrase, reason_phrase_observed = _safe_observed_response_extension(
+                response, "reason_phrase"
+            )
+            http_version, http_version_observed = _safe_observed_response_extension(
+                response, "http_version"
+            )
+            status_line = None
+            if http_version_observed:
+                status_line_parts = [
                     http_version,
-                    str(status_code) if status_code else None,
+                    str(status_code) if status_code is not None else None,
                     reason_phrase,
+                ]
+                status_line = (
+                    " ".join(part for part in status_line_parts if part is not None)
+                    or None
                 )
-                if part
-            ]
             response_headers, correlation_ids = _safe_response_header_projection(
                 response
             )
@@ -223,7 +265,10 @@ class OrderSendOutcomeTracker:
             self.protocol_evidence = {
                 "status_code": status_code,
                 "reason_phrase": reason_phrase,
-                "status_line": " ".join(status_line_parts) or None,
+                "reason_phrase_observed": reason_phrase_observed,
+                "http_version": http_version,
+                "http_version_observed": http_version_observed,
+                "status_line": status_line,
                 "endpoint": _safe_endpoint(endpoint_url),
                 "response_headers": response_headers,
                 "correlation_ids": correlation_ids,
@@ -232,6 +277,9 @@ class OrderSendOutcomeTracker:
             self.protocol_evidence = {
                 "status_code": None,
                 "reason_phrase": None,
+                "reason_phrase_observed": False,
+                "http_version": None,
+                "http_version_observed": False,
                 "status_line": None,
                 "endpoint": None,
                 "response_headers": {},
@@ -258,8 +306,21 @@ def emit_throttle_protocol_evidence(
     if outcome.protocol_evidence is None:
         return
     try:
+        protocol = outcome.protocol_evidence
+        response_headers = protocol.get("response_headers")
+        if type(response_headers) is not dict:
+            response_headers = {}
+        status_code = protocol.get("status_code")
+        status_code_text = str(status_code) if type(status_code) is int else "unknown"
+        status_line = _safe_protocol_text(protocol.get("status_line")) or "unknown"
+        server = _safe_protocol_text(response_headers.get("server")) or "unknown"
+        via = _safe_protocol_text(response_headers.get("via")) or "unknown"
         logger.warning(
-            "kis_throttle_protocol_evidence",
+            "kis_throttle_protocol_evidence status_code=%s status_line=%s server=%s via=%s",
+            status_code_text,
+            status_line,
+            server,
+            via,
             extra={
                 "kis_throttle_protocol_evidence": {
                     "event": "kis_throttle_protocol_evidence",
