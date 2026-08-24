@@ -20,7 +20,6 @@ async def test_get_trading_policy_returns_thresholds_and_version():
         "buy.support_reserve_net",
         "buy.preplanned_support_ladder",
         "buy.winner_pullback_add",
-        "buy.new_entry_overflow",
         # §139차 — the index-ETF admission is a KR/US equity-universe rule.
         "buy.index_etf_candidate",
     }
@@ -219,7 +218,7 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-08-23.2"
+    assert out["version"] == "2026-08-24.1"
     assert out["content_hash"]
 
 

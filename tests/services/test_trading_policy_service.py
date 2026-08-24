@@ -26,7 +26,6 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
         "buy.support_reserve_net",
         "buy.preplanned_support_ladder",
         "buy.winner_pullback_add",
-        "buy.new_entry_overflow",
         # §139차 — KR/US only; the crypto held-majors tier must not appear here.
         "buy.index_etf_candidate",
     }
