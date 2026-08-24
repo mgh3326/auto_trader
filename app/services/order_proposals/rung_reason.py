@@ -26,8 +26,8 @@ _DUPLICATE_PENDING_INTENT_MARKERS: tuple[str, ...] = (
     "duplicate mock mirror intent",
     "conflicting order intent already reserved",
     "order intent already reserved",
-    "pending order intent",
 )
+_DUPLICATE_INTENT_NEGATION_WORDS: tuple[str, ...] = ("no", "not", "without")
 
 _BROKER_REJECTION_EXACT: tuple[str, ...] = (
     "broker rejected",
@@ -96,6 +96,20 @@ def _is_provider_throttle(reason: str) -> bool:
     return is_provider_throttle_reject(code, reason)
 
 
+def _has_unnegated_duplicate_intent_marker(reason: str) -> bool:
+    for marker in _DUPLICATE_PENDING_INTENT_MARKERS:
+        offset = 0
+        while (start := reason.find(marker, offset)) >= 0:
+            prefix = reason[:start].rstrip()
+            if not any(
+                prefix == negation or prefix.endswith(f" {negation}")
+                for negation in _DUPLICATE_INTENT_NEGATION_WORDS
+            ):
+                return True
+            offset = start + len(marker)
+    return False
+
+
 def classify_rung_void_reason(reason: object) -> str:
     """Classify known rung reason text without guessing at unknown text."""
     normalized = _normalized_reason(reason)
@@ -105,7 +119,7 @@ def classify_rung_void_reason(reason: object) -> str:
     if _is_provider_throttle(normalized):
         return RUNG_VOID_REASON_PROVIDER_THROTTLE
 
-    if any(marker in normalized for marker in _DUPLICATE_PENDING_INTENT_MARKERS):
+    if _has_unnegated_duplicate_intent_marker(normalized):
         return RUNG_VOID_REASON_DUPLICATE_PENDING_INTENT
 
     if (

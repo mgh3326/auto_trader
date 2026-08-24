@@ -46,11 +46,15 @@ def test_leaf_vocabulary_drives_model_check_and_validator() -> None:
     column = OrderProposalRung.__table__.columns["void_reason_group"]
     assert column.nullable is True
     check = next(
-        constraint
-        for constraint in OrderProposalRung.__table__.constraints
-        if getattr(constraint, "name", None)
-        == "ck_order_proposal_rungs_order_proposal_rungs_void_reason_group"
+        (
+            constraint
+            for constraint in OrderProposalRung.__table__.constraints
+            if getattr(constraint, "name", None)
+            == "ck_order_proposal_rungs_order_proposal_rungs_void_reason_group"
+        ),
+        None,
     )
+    assert check is not None, "rung void-reason CHECK constraint is missing"
     assert set(re.findall(r"'([^']+)'", str(check.sqltext))) == set(
         RUNG_VOID_REASON_GROUPS
     )
@@ -141,6 +145,8 @@ def test_throttle_group_delegates_to_existing_provider_predicate(monkeypatch) ->
         "duplicate order intnt",
         "new policy guard reason",
         "provider throttle-ish failure",
+        "no pending order intent found",
+        "there is no duplicate order intent here",
     ],
 )
 def test_near_miss_or_new_text_does_not_silently_join_a_known_group(

@@ -34,6 +34,7 @@ from app.models.paper_evaluation import (
     EvaluationVerdict,
 )
 from app.models.research_backtest import ResearchBacktestRun, ResearchStrategyExperiment
+from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
 from app.services.paper_evaluation.service import PaperEvaluationService, _request_hash
 from tests.services.paper_evaluation.conftest import make_evaluation_config
 from tests.services.paper_evaluation.test_integration import make_evidence
@@ -42,6 +43,50 @@ pytestmark = pytest.mark.integration
 
 REPO = Path(__file__).resolve().parents[3]
 MIGRATION = REPO / "alembic/versions/20260714_rob850_paper_evaluation.py"
+
+
+async def _assert_rung_reason_schema(engine) -> None:
+    async with engine.connect() as connection:
+        column = (
+            (
+                await connection.execute(
+                    text(
+                        "SELECT data_type, is_nullable "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = 'review' "
+                        "AND table_name = 'order_proposal_rungs' "
+                        "AND column_name = 'void_reason_group'"
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        assert column is not None
+        assert column["data_type"] == "text"
+        assert column["is_nullable"] == "YES"
+        check_definitions = (
+            (
+                await connection.execute(
+                    text(
+                        "SELECT pg_get_constraintdef(c.oid) "
+                        "FROM pg_constraint AS c "
+                        "WHERE c.conrelid = 'review.order_proposal_rungs'::regclass "
+                        "AND c.contype = 'c' "
+                        "AND pg_get_constraintdef(c.oid) "
+                        "ILIKE '%void_reason_group%'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(check_definitions) == 1
+        check_definition = check_definitions[0]
+        assert isinstance(check_definition, str)
+        assert all(
+            f"'{group}'" in check_definition for group in RUNG_VOID_REASON_GROUPS
+        )
 
 
 def _hash(value: str) -> str:
@@ -241,6 +286,8 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
         for command in commands:
             completed = await asyncio.to_thread(alembic, *command)
             assert completed.returncode == 0, completed.stdout + completed.stderr
+            if command == ("upgrade", "head"):
+                await _assert_rung_reason_schema(engine)
         current = await asyncio.to_thread(alembic, "current")
         assert current.returncode == 0, current.stdout + current.stderr
         config = Config(str(REPO / "alembic.ini"))
