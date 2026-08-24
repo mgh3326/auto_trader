@@ -89,6 +89,7 @@ tests/scripts/test_invest_reports_us_schedule_cli.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_native_haproxy_first_cutover.py
 tests/scripts/test_news_relevance_judge_smoke.py
+tests/scripts/test_nhplug_mock_smoke.py
 tests/scripts/test_policy_table_us.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py
 tests/scripts/test_r4_p0_manifest_cli.py
@@ -131,6 +132,7 @@ tests/services/brokers/binance/test_rate_limit_telemetry.py
 tests/services/brokers/binance/test_root_reservation_migration.py
 tests/services/brokers/binance/test_ws_client.py
 tests/services/brokers/kis/test_account_cash_timeout.py
+tests/services/brokers/nhplug/test_auth.py
 tests/services/brokers/paper/test_safety_guards.py
 tests/services/brokers/toss/test_no_mutation_surface.py
 tests/services/brokers/toss/test_rate_limiter.py

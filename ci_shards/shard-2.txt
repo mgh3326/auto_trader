@@ -109,6 +109,7 @@ tests/services/brokers/kis/test_circuit_breaker.py
 tests/services/brokers/kis/test_live_order_expiry.py
 tests/services/brokers/kis/test_live_order_expiry_session.py
 tests/services/brokers/kis/test_selector_raw_evidence.py
+tests/services/brokers/nhplug/test_client.py
 tests/services/brokers/paper/test_capabilities.py
 tests/services/brokers/paper/test_contracts.py
 tests/services/brokers/toss/test_candles.py
