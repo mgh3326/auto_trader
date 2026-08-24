@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_list
 
-revision: str = "20260824_rob_s257_rung_reason_group"
+revision: str = "20260824_s257_rung_reason"
 down_revision: str | Sequence[str] | None = "20260823_screener_pick_log"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

@@ -170,6 +170,15 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("ALTER TABLE review.trade_forecasts DROP COLUMN decision_bucket")
             )
+            # ROB-s257 E-2 is later than this reconstructed boundary. Current
+            # metadata already contains its nullable observation column, so
+            # drop it and let the migration add it back.
+            await connection.execute(
+                text(
+                    "ALTER TABLE review.order_proposal_rungs "
+                    "DROP COLUMN void_reason_group"
+                )
+            )
             # B1 loss-cut approval is later than this reconstructed boundary.
             # Remove its current-head tables and additive columns so the head
             # upgrade exercises the migration instead of colliding with
