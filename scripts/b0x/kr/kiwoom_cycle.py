@@ -2207,6 +2207,10 @@ def _resolve_coordination_owner(
             candidate,
             expected_lane_id=ordering_support.KIWOOM_CANONICAL_LANE_ID,
             expected_entry=expected_entry,
+            # Existing offline ordering integration fixtures deliberately use
+            # a send-capable adapter without the G1/G2 production provenance.
+            # The manual production entrypoint always supplies this pin.
+            _allow_legacy_unpinned=expected_entry is None,
         )
     except KiwoomCoordinationOwnerRejected as exc:
         base["identity_guard"] = {

@@ -9,8 +9,10 @@ grant-only owner canary; bounded send remains a later G3 change.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
+from weakref import WeakKeyDictionary
 
 from app.services.mock_integration.coordination import DurableSendClaimAdapter
 from app.services.mock_integration.lineage import MockLineageFactory
@@ -49,6 +51,32 @@ KIWOOM_COORDINATION_OWNER_ACCOUNT_MISMATCH: Final[str] = (
 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH: Final[str] = (
     "coordination_owner_contract_mismatch"
 )
+KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED: Final[str] = (
+    "coordination_owner_provenance_rejected"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _KiwoomCoordinationEntryProvenance:
+    """Evidence linking an adapter port to the registry row it was pinned from."""
+
+    canonical_entry: LaneRegistryEntry
+    pinned_entry: LaneRegistryEntry
+
+
+@dataclass(frozen=True, slots=True)
+class _KiwoomOwnerConstructionProof:
+    """Non-copyable-by-value proof of the approved adapter construction path."""
+
+    ports: KiwoomCoordinationPorts
+    provenance: _KiwoomCoordinationEntryProvenance
+    constructed_type: type[KiwoomCoordinationAdapter]
+    grant_only: bool
+
+
+_OWNER_CONSTRUCTION_PROOFS: WeakKeyDictionary[
+    KiwoomCoordinationAdapter, _KiwoomOwnerConstructionProof
+] = WeakKeyDictionary()
 
 
 class KiwoomCoordinationOwnerRejected(RuntimeError):
@@ -101,11 +129,79 @@ def resolve_kiwoom_lane_entry(lane_id: str = KIWOOM_KR_LANE_ID) -> LaneRegistryE
     return _assert_kiwoom_lane_entry(entry, expected_lane_id=lane_id)
 
 
+def _entry_provenance(entry: LaneRegistryEntry) -> _KiwoomCoordinationEntryProvenance:
+    return _KiwoomCoordinationEntryProvenance(
+        canonical_entry=get_lane_registry_entry(entry.lane_id),
+        pinned_entry=entry,
+    )
+
+
+def _register_approved_adapter(
+    ports: KiwoomCoordinationPorts, *, grant_only: bool
+) -> KiwoomCoordinationAdapter:
+    """Construct and register an adapter from a provenance-bearing port set."""
+
+    provenance = getattr(ports, "coordination_provenance", None)
+    if type(provenance) is not _KiwoomCoordinationEntryProvenance:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+            lane_id=getattr(getattr(ports, "entry", None), "lane_id", None),
+        )
+    if provenance.pinned_entry is not ports.entry:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+            lane_id=ports.entry.lane_id,
+        )
+    canonical_entry = get_lane_registry_entry(ports.entry.lane_id)
+    if provenance.canonical_entry is not canonical_entry:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+            lane_id=ports.entry.lane_id,
+        )
+
+    adapter = KiwoomCoordinationAdapter(ports, grant_only=grant_only)
+    _OWNER_CONSTRUCTION_PROOFS[adapter] = _KiwoomOwnerConstructionProof(
+        ports=ports,
+        provenance=provenance,
+        constructed_type=type(adapter),
+        grant_only=grant_only,
+    )
+    return adapter
+
+
+def _assert_owner_provenance(
+    owner: KiwoomCoordinationAdapter,
+    ports: KiwoomCoordinationPorts,
+    entry: LaneRegistryEntry,
+) -> _KiwoomOwnerConstructionProof:
+    """Require both registry provenance and the approved construction record."""
+
+    supplied = getattr(ports, "coordination_provenance", None)
+    canonical_entry = get_lane_registry_entry(entry.lane_id)
+    proof = _OWNER_CONSTRUCTION_PROOFS.get(owner)
+    if (
+        type(supplied) is not _KiwoomCoordinationEntryProvenance
+        or supplied.pinned_entry is not entry
+        or supplied.canonical_entry is not canonical_entry
+        or proof is None
+        or proof.ports is not ports
+        or proof.provenance is not supplied
+        or proof.constructed_type is not KiwoomCoordinationAdapter
+        or getattr(owner, "_class_assignment_tainted", False) is True
+    ):
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+            lane_id=entry.lane_id,
+        )
+    return proof
+
+
 def assert_kiwoom_coordination_owner(
     owner: object,
     *,
     expected_lane_id: str = KIWOOM_KR_LANE_ID,
     expected_entry: LaneRegistryEntry | None = None,
+    _allow_legacy_unpinned: bool = False,
 ) -> KiwoomCoordinationAdapter:
     """Validate the exact nominated adapter and its pinned account identity.
 
@@ -135,6 +231,31 @@ def assert_kiwoom_coordination_owner(
         if entry is not expected_entry:
             raise KiwoomCoordinationOwnerRejected(
                 KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH, lane_id=entry.lane_id
+            )
+
+    # The legacy escape is only for the pre-existing offline ordering fixture:
+    # it has no provenance field and is send-capable.  Any G1/G2 canary, or
+    # any adapter carrying the new provenance surface, stays on the strict
+    # path even if a caller forgot the entry pin.
+    strict_owner = (
+        not _allow_legacy_unpinned
+        or owner.grant_only is True
+        or getattr(ports, "coordination_provenance", None) is not None
+    )
+    if strict_owner:
+        proof = _assert_owner_provenance(owner, ports, entry)
+        if (
+            expected_entry is None
+            and proof.provenance.pinned_entry is not proof.provenance.canonical_entry
+        ):
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+                lane_id=entry.lane_id,
+            )
+        if owner.grant_only is not True or proof.grant_only is not True:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=entry.lane_id,
             )
     try:
         expected_physical_account_id = require_j2a_physical_account_id(entry)
@@ -193,7 +314,7 @@ def build_kiwoom_coordination_factory(
                 KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH,
                 lane_id=pinned_entry.lane_id,
             )
-        adapter = KiwoomCoordinationAdapter(ports)
+        adapter = _register_approved_adapter(ports, grant_only=True)
         return assert_kiwoom_coordination_owner(
             adapter,
             expected_lane_id=pinned_entry.lane_id,
@@ -230,8 +351,9 @@ def make_grant_only_kiwoom_coordination_adapter(
         registry=(pinned_entry,),
         lineage_factory=MockLineageFactory(),
         entry=pinned_entry,
+        coordination_provenance=_entry_provenance(pinned_entry),
     )
-    return KiwoomCoordinationAdapter(ports, grant_only=True)
+    return _register_approved_adapter(ports, grant_only=True)
 
 
 def production_kiwoom_coordination_factory(
@@ -257,6 +379,7 @@ __all__ = [
     "KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH",
     "KIWOOM_COORDINATION_OWNER_LANE_MISMATCH",
     "KIWOOM_COORDINATION_OWNER_PORTS_REJECTED",
+    "KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED",
     "KIWOOM_COORDINATION_OWNER_TYPE_REJECTED",
     "KIWOOM_KR_LANE_ID",
     "KIWOOM_LANE_IDS",

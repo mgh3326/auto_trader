@@ -148,11 +148,14 @@ async def _run(args: argparse.Namespace) -> int:
         return await _readiness(args)
 
     from scripts.b0x.kr.kiwoom_coordination import (
+        KIWOOM_KR_LANE_ID,
         production_kiwoom_coordination_factory,
+        resolve_kiwoom_lane_entry,
     )
     from scripts.b0x.kr.kiwoom_cycle import run_kiwoom_cycle
 
     now = dt.datetime.now(dt.UTC) if args.now is None else args.now
+    coordination_entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
     try:
         outcome = await run_kiwoom_cycle(
             now=now,
@@ -161,6 +164,7 @@ async def _run(args: argparse.Namespace) -> int:
             confirm=args.confirm,
             ordering=args.ordering,
             coordination_factory=production_kiwoom_coordination_factory(),
+            coordination_entry=coordination_entry,
         )
     except WriterLockUnavailable as exc:
         print(f"WRITER_LOCK_UNAVAILABLE — {exc}", file=sys.stderr)

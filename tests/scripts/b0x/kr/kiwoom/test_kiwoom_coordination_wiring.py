@@ -17,6 +17,7 @@ from scripts.b0x.kr.kiwoom_coordination import (
     KIWOOM_COORDINATION_OWNER_ACCOUNT_MISMATCH,
     KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
     KIWOOM_COORDINATION_OWNER_LANE_MISMATCH,
+    KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
     KIWOOM_COORDINATION_OWNER_TYPE_REJECTED,
     KIWOOM_KR_LANE_ID,
     KIWOOM_US_LANE_ID,
@@ -215,6 +216,71 @@ def test_identity_guard_rejects_account_fingerprint_mismatch_and_contract_mutati
     with pytest.raises(KiwoomCoordinationOwnerRejected) as contract_refusal:
         assert_kiwoom_coordination_owner(adapter, expected_entry=entry)
     assert contract_refusal.value.code == KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH
+
+
+def test_identity_guard_rejects_direct_adapter_without_factory_provenance() -> None:
+    entry = bound_kiwoom_entry()
+    direct = kiwoom_ordering.KiwoomCoordinationAdapter(
+        make_grant_only_kiwoom_coordination_adapter(entry).ports
+    )
+
+    with pytest.raises(KiwoomCoordinationOwnerRejected) as refusal:
+        assert_kiwoom_coordination_owner(direct, expected_entry=entry)
+    assert refusal.value.code == KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED
+
+
+def test_identity_guard_rejects_grant_only_flip() -> None:
+    entry = bound_kiwoom_entry()
+    adapter = make_grant_only_kiwoom_coordination_adapter(entry)
+    adapter._grant_only = False  # type: ignore[misc] — mutant
+
+    with pytest.raises(KiwoomCoordinationOwnerRejected) as refusal:
+        assert_kiwoom_coordination_owner(adapter, expected_entry=entry)
+    assert refusal.value.code == KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH
+
+
+def test_identity_guard_rejects_subclass_class_swap() -> None:
+    entry = bound_kiwoom_entry()
+    swapped = _AdapterSubclass(make_grant_only_kiwoom_coordination_adapter(entry).ports)
+    swapped.__class__ = kiwoom_ordering.KiwoomCoordinationAdapter
+
+    with pytest.raises(KiwoomCoordinationOwnerRejected) as refusal:
+        assert_kiwoom_coordination_owner(swapped, expected_entry=entry)
+    assert refusal.value.code == KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED
+
+
+def test_identity_guard_rejects_equal_but_distinct_entry_copy() -> None:
+    entry = bound_kiwoom_entry()
+    copied_entry = replace(entry)
+    copied_adapter = make_grant_only_kiwoom_coordination_adapter(copied_entry)
+
+    owner, record = kiwoom_cycle._resolve_coordination_owner(
+        coordination_factory=lambda: copied_adapter,
+        expected_entry=entry,
+    )
+    assert owner is None
+    assert record["identity_guard"] == {
+        "status": "rejected",
+        "code": "coordination_owner_entry_mismatch",
+        "owner_type": "KiwoomCoordinationAdapter",
+    }
+
+
+def test_unpinned_fabricated_entry_is_rejected_by_provenance() -> None:
+    entry = bound_kiwoom_entry()
+    fabricated = replace(entry, physical_account_id="ATTACKER-ACCOUNT-9999")
+    fabricated_adapter = make_grant_only_kiwoom_coordination_adapter(fabricated)
+
+    owner, record = kiwoom_cycle._resolve_coordination_owner(
+        coordination_factory=lambda: fabricated_adapter,
+        expected_entry=None,
+    )
+    assert owner is None
+    assert record["identity_guard"] == {
+        "status": "rejected",
+        "code": KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+        "owner_type": "KiwoomCoordinationAdapter",
+    }
 
 
 class _NoopLease:

@@ -671,6 +671,7 @@ class KiwoomCoordinationPorts:
     lineage_factory: MockLineageFactory
     entry: LaneRegistryEntry
     diagnostic_fingerprint: str | None = None
+    coordination_provenance: object | None = None
 
 
 class KiwoomCoordinationAdapter:
@@ -689,6 +690,7 @@ class KiwoomCoordinationAdapter:
     def __init__(
         self, ports: KiwoomCoordinationPorts, *, grant_only: bool = False
     ) -> None:
+        self._class_assignment_tainted = False
         self.ports = ports
         self.physical_account_id = require_j2a_physical_account_id(ports.entry)
         # G1/G2 may identify the exact owner without opening a send path.  A
@@ -700,6 +702,13 @@ class KiwoomCoordinationAdapter:
         self.ordered_events: list[str] = []
         self.jsonl_appends: list[dict[str, Any]] = []
         self.last_result: CoordinatedMutationResult | None = None
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Remember ``__class__`` swaps before the identity guard sees them."""
+
+        if name == "__class__" and "_class_assignment_tainted" in self.__dict__:
+            object.__setattr__(self, "_class_assignment_tainted", True)
+        object.__setattr__(self, name, value)
 
     @property
     def grant_only(self) -> bool:
