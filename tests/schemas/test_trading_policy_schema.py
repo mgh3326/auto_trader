@@ -261,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-24.1"
+    assert doc.version == "2026-08-24.2"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -321,7 +321,7 @@ def test_shipped_config_validates():
     assert "single_share_position" not in trim_rule.exclusions
 
 
-def test_support_reserve_net_literal_policy_blocks_are_frozen():
+def test_support_reserve_net_literal_policy_prefix_is_frozen():
     rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
         "buy.support_reserve_net"
     ]
@@ -368,6 +368,52 @@ def test_support_reserve_net_literal_policy_blocks_are_frozen():
     assert rule.cash_reservation.required_cash_primary == (
         "preview_estimated_value_plus_fee"
     )
+
+
+def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
+    doc = TradingPolicyDocument.model_validate(_raw())
+    rule = doc.decision_rules["buy.support_reserve_net"]
+    assert doc.version == "2026-08-24.2"
+    assert (
+        "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
+        in doc.source
+    )
+    assert "Q4 permitted class: policy-clause contradiction resolution" in doc.source
+    assert "threshold/value/enum changes 0" in doc.source
+    assert "application-scope clarification only" in doc.source
+
+    current = _raw()
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current_reserve = current["decision_rules"]["buy.support_reserve_net"]
+    baseline_reserve = baseline["decision_rules"]["buy.support_reserve_net"]
+
+    # The five load-bearing boundaries are byte-for-byte unchanged.
+    for key in (
+        "support_strength_min",
+        "independent_support_source_count_min",
+        "independent_support_source_families",
+        "support_within_current_pct_max",
+        "honest_upside_pct_min",
+    ):
+        assert current_reserve[key] == baseline_reserve[key]
+    assert (
+        current["thresholds"]["screen.support_within_pct"]
+        == baseline["thresholds"]["screen.support_within_pct"]
+    )
+    assert (
+        current["thresholds"]["screen.rsi_max"]
+        == baseline["thresholds"]["screen.rsi_max"]
+    )
+
+    discovery_semantics = current["thresholds"]["screen.support_within_pct"][
+        "semantics"
+    ]
+    assert discovery_semantics == "strong support must be within this distance"
+    reserve_semantics = current_reserve["semantics"]
+    assert "support_strength_min (moderate)" in reserve_semantics
+    assert "independent_support_source_count_min (2)" in reserve_semantics
+    assert "not discovery's strong support requirement" in reserve_semantics
+    assert "failure of any other gate" in reserve_semantics
     assert rule.cash_reservation.required_cash_fallback == "quantity_times_limit_price"
     assert rule.cash_reservation.broker_orderable_unavailable_or_error == "FAIL_CLOSED"
     assert rule.cash_reservation.cancel_proposal_cash_reservation == (
@@ -1162,6 +1208,25 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert current_dump["source"].startswith(baseline_dump["source"])
     assert "ROB-1298" in current_dump["source"]
     current_dump["source"] = baseline_dump["source"]
+
+    # §148차 (2026-08-24) — additive semantics-only clarification. The
+    # contradiction repair is allowed to extend the prose, but it may not
+    # change any threshold, value, or family enumeration. Normalize this one
+    # field to the baseline after pinning the exact boundary language so the
+    # closed-equivalence comparison remains exhaustive.
+    baseline_reserve_net = baseline_dump["decision_rules"]["buy.support_reserve_net"]
+    current_reserve_net = current_dump["decision_rules"]["buy.support_reserve_net"]
+    assert (
+        current_reserve_net["semantics"].startswith(baseline_reserve_net["semantics"])
+        is False
+    )
+    assert "own support_strength_min (moderate)" in current_reserve_net["semantics"]
+    assert (
+        "independent_support_source_count_min (2)" in current_reserve_net["semantics"]
+    )
+    assert "not discovery's strong support" in current_reserve_net["semantics"]
+    assert "failure of any other gate" in current_reserve_net["semantics"]
+    current_reserve_net["semantics"] = baseline_reserve_net["semantics"]
     del current_dump["decision_rules"]["buy.preplanned_support_ladder"]
     del current_dump["crash_day"]["actions"]["new_entry_hold_exception"]
     del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
@@ -2082,7 +2147,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-24.1"
+    assert doc.version == "2026-08-24.2"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -2855,7 +2920,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-24.1"
+    assert doc.version == "2026-08-24.2"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
