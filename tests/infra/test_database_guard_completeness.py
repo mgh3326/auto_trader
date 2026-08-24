@@ -6,9 +6,27 @@ when ``tests/conftest.py`` is absent. A new direct-DB test therefore has to
 add its guard in the same change, or this test fails before it can be merged.
 
 The AST check deliberately proves *coverage*, not statement ordering. The
-runtime guard itself is called before a connection is opened; ordering is
-verified by the no-conftest dynamic sweep because a source-level call-order
-check would be brittle around imports, fixtures, and helper dispatch.
+runtime guard itself is called before a connection is opened. Ordering is
+checked only by a manual no-conftest dynamic sweep outside this repository;
+there is no automated sweep in CI. That external procedure is the ordering
+oracle, while this test is only the static coverage check.
+
+Known intentional scanner blind spots (not repaired here): N2 package-relative
+imports (``from .rel_helper import ...``), N3 class ``staticmethod`` dispatch,
+N4 aliased ``create_async_engine`` imports (``as _mk``), N5 dynamic imports
+(``importlib.import_module("app.core.db")``), and N6 ``from tests import X as
+Y``. N6 is a real repository idiom, not a synthetic probe: it appears at
+``tests/conftest.py:19-20``, ``tests/test_call_duration_plugin.py:34``, and
+``tests/test_rob1296_external_http_boundary.py:25``. ``_module_info()`` only
+recognizes ``module.startswith("tests.")``, so the dotless ``from tests
+import ...`` form is skipped. These gaps are documented rather than chased by
+another static-pattern pass; dynamic-sweep automation is a separate backlog
+item.
+
+Guarantee strength: this provides accidental prevention plus static detection;
+it is not structural impossibility. The current tree has zero active exposure:
+there is no open hole today, but these are limits on how future regressions are
+detected.
 
 Contract boundary:
 
@@ -18,8 +36,8 @@ Contract boundary:
   a database URL that is not owned by the current run is rejected before
   connection.
 * Not guaranteed: a module with no direct database code that calls application
-  code (an MCP tool or service) which opens the session. The dynamic sweep
-  found 14 such modules; they are intentionally outside this direct-DB
+  code (an MCP tool or service) which opens the session. The manual dynamic
+  sweep found 14 such modules; they are intentionally outside this direct-DB
   completeness contract and are not hidden by this test.
 
 Follow-up candidate (not implemented here): a process-wide pytest plugin or
@@ -48,6 +66,13 @@ _NOCONFTEST_ALLOWLIST: dict[str, str] = {
         "all tests require the absent retrospective_action_control_lock fixture"
     ),
 }
+
+# This one app-owned factory import is an explicit survivor registration. The
+# app module is outside the test-module database index, and broadening the
+# pattern here would also classify unrelated pre-existing integration modules.
+_EXPLICIT_APP_DATABASE_SURVIVORS = frozenset(
+    {"tests/brokers/kis/mock_scalping_exec/test_reservation.py"}
+)
 
 
 class _ModuleInfo:
@@ -579,6 +604,9 @@ def _find_database_test_modules() -> dict[str, ast.Module]:
     database_qualnames = _build_database_index(all_infos)
     found: dict[str, ast.Module] = {}
     for relative, info in all_infos.items():
+        if relative in _EXPLICIT_APP_DATABASE_SURVIVORS:
+            found[relative] = info.tree
+            continue
         if not _module_can_survive_noconftest(
             info.tree, info=info, database_qualnames=database_qualnames
         ):
