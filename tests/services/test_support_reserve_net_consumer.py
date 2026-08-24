@@ -237,6 +237,75 @@ def test_candidate_zero_never_relaxes_signed_runtime_gates(
     assert _rejection_codes(plan)[candidate.normalized_symbol] == reason
 
 
+@pytest.mark.parametrize(
+    ("case_id", "candidate", "expected"),
+    [
+        # 1. The clarified effect: RSI_ONLY + moderate + two allowed families
+        # is eligible for this tier.
+        ("1_moderate_two_families", _new(), "selected"),
+        # 2. The independent-family count remains a hard lower bound.
+        (
+            "2_one_family",
+            replace(_new(), independent_support_families=("fib",)),
+            "independent_support_families_insufficient",
+        ),
+        # 3. Moderate is the tier floor; weak support is not eligible.
+        (
+            "3_weak_support",
+            replace(_new(), support_strength="weak"),
+            "support_strength_below_moderate",
+        ),
+        # 4. RSI is the only omitted regular gate; upside failure remains a
+        # rejection even when the support axis is otherwise complete.
+        (
+            "4_upside_failure",
+            replace(_new(), honest_upside_pct=Decimal("39.99")),
+            "honest_upside_below_minimum",
+        ),
+        # 5. The tier's own support-distance limit remains active.
+        (
+            "5_support_distance_over_8pct",
+            replace(
+                _new(),
+                support_price=Decimal("91"),
+                proposed_limit_price=Decimal("86.4"),
+            ),
+            "anchor_not_tick_floor_or_outside_band",
+        ),
+        # 6. RSI_ONLY is a prerequisite, not a synonym for all candidates.
+        (
+            "6_rsi_passes",
+            replace(_new(), regular_gate_failure="REGULAR_PASS"),
+            "regular_gate_failure_not_rsi_only",
+        ),
+        # 8. Two sources outside the closed family enumeration do not count.
+        (
+            "8_unlisted_families",
+            replace(_new(), independent_support_families=("fib", "rsi")),
+            "independent_support_families_insufficient",
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_a_k_support_reserve_net_eligibility_matrix(
+    case_id: str,
+    candidate: ReserveNetCandidate,
+    expected: str,
+) -> None:
+    """Pin the eight-case boundary; only case 1 gains eligibility."""
+
+    plan = _consumer().plan(_request(candidate))
+    if expected == "selected":
+        assert case_id == "1_moderate_two_families"
+        assert [item.normalized_symbol for item in plan.selected] == [
+            candidate.normalized_symbol
+        ]
+        assert plan.rejected == ()
+    else:
+        assert plan.selected == ()
+        assert _rejection_codes(plan)[candidate.normalized_symbol] == expected
+
+
 def test_armed_cap_cannot_exceed_fifty_percent() -> None:
     candidate = _new(required_cash="100000")
     plan = _consumer().plan(
