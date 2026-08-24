@@ -49,6 +49,9 @@ class OrderbookSnapshot:
     total_ask_qty: float
     total_bid_qty: float
     bid_ask_ratio: float | None
+    # Provider quote time when available, otherwise the transport receive time.
+    # Optional keeps pre-existing synthetic/research snapshots source-compatible.
+    as_of: dt.datetime | None = None
     expected_price: int | None = None
     expected_qty: int | None = None
     venue: str | None = None

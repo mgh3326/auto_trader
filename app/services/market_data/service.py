@@ -341,6 +341,71 @@ def _parse_upbit_orderbook_levels(
     return levels
 
 
+def _parse_orderbook_as_of(
+    output1: dict[str, Any],
+    output2: dict[str, Any] | None,
+    received_at: dt.datetime,
+) -> dt.datetime:
+    """Resolve an orderbook timestamp at the broker/transport boundary.
+
+    KIS FHKST01010200 exposes ``aspr_acpt_hour`` (quote acceptance time), but
+    not a date.  The transport receive date supplies only that missing date
+    component.  If the broker clock is absent or malformed, the timestamp is
+    the instant this response was received—not a later annotation time.
+    """
+    provider_time = (
+        output1.get("aspr_acpt_hour")
+        or output1.get("stck_cntg_hour")
+        or output1.get("stck_cntg_time")
+    )
+    provider_date = output1.get("stck_bsop_date")
+    if provider_date in (None, "") and output2 is not None:
+        provider_date = output2.get("stck_bsop_date")
+
+    parsed_time: dt.time | None = None
+    if isinstance(provider_time, dt.time):
+        parsed_time = provider_time
+    elif provider_time not in (None, ""):
+        try:
+            parsed_time = dt.datetime.strptime(
+                str(provider_time).strip(), "%H%M%S"
+            ).time()
+        except (TypeError, ValueError):
+            parsed_time = None
+
+    parsed_date: dt.date | None = None
+    if provider_date not in (None, ""):
+        try:
+            parsed_date = dt.datetime.strptime(
+                str(provider_date).strip(), "%Y%m%d"
+            ).date()
+        except (TypeError, ValueError):
+            parsed_date = None
+
+    if parsed_time is None:
+        return received_at
+    return dt.datetime.combine(
+        parsed_date or received_at.date(), parsed_time, tzinfo=KST
+    )
+
+
+def _parse_upbit_orderbook_as_of(
+    raw_timestamp: Any,
+    received_at: dt.datetime,
+) -> dt.datetime:
+    """Prefer Upbit's millisecond timestamp, with transport fallback."""
+    try:
+        timestamp = float(raw_timestamp)
+        if timestamp <= 0:
+            raise ValueError
+        # Upbit documents milliseconds; accepting seconds keeps old fixtures
+        # and equivalent broker payloads honest without using annotation time.
+        epoch_seconds = timestamp / 1000.0 if timestamp >= 10_000_000_000 else timestamp
+        return dt.datetime.fromtimestamp(epoch_seconds, tz=dt.UTC).astimezone(KST)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return received_at
+
+
 async def get_kr_volume_rank() -> list[dict[str, Any]]:
     try:
         kis = KISClient()
@@ -441,6 +506,7 @@ async def get_orderbook(
         resolved_symbol = _validate_crypto_orderbook_symbol(symbol)
         try:
             raw = await fetch_orderbook(resolved_symbol)
+            received_at = now_kst()
             if not raw:
                 raise SymbolNotFoundError(f"Symbol '{resolved_symbol}' not found")
 
@@ -465,6 +531,7 @@ async def get_orderbook(
                     if total_ask_qty > 0
                     else None
                 ),
+                as_of=_parse_upbit_orderbook_as_of(raw.get("timestamp"), received_at),
                 expected_price=None,
                 expected_qty=None,
             )
@@ -483,6 +550,7 @@ async def get_orderbook(
             code=resolved_symbol,
             market=venue_info.kis_market_code,
         )
+        received_at = now_kst()
         expected_price, expected_qty = _extract_expected_match_metadata(
             resolved_symbol,
             output2,
@@ -505,6 +573,7 @@ async def get_orderbook(
             bid_ask_ratio=(
                 round(total_bid_qty / total_ask_qty, 2) if total_ask_qty > 0 else None
             ),
+            as_of=_parse_orderbook_as_of(output1, output2, received_at),
             expected_price=expected_price,
             expected_qty=expected_qty,
             venue=venue_info.venue,

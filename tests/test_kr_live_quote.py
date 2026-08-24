@@ -6,12 +6,14 @@ These tests exercise the body directly with a faked `KISClient.inquire_price`.
 """
 
 import datetime
+from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
 
 from app.mcp_server.tooling import market_data_quotes
 from app.services.brokers.kis.domestic_market_data import DomesticMarketDataMixin
+from app.services.market_data.contracts import OrderbookLevel, OrderbookSnapshot
 
 
 def _make_kis(df=None, *, raises=False):
@@ -323,4 +325,179 @@ async def test_apply_nxt_quote_overlay_stamps_unavailable_freshness(monkeypatch)
     assert quote["price_freshness"] == "unavailable"
     assert quote["price_usable"] is False
     assert quote["is_stale_price"] is True
+    assert quote["price_unavailable_reason"] == "missing_price_asof"
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_uses_snapshot_as_of_for_freshness(monkeypatch):
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 54500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+            "price_as_of": "2026-08-24T08:01:35+09:00",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: datetime.datetime(2026, 8, 24, 8, 2, 0, tzinfo=market_data_quotes._KST),
+    )
+
+    quote = {"price": 54000.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "011170", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price_source"] == "nxt_mid"
+    assert quote["price_as_of"] == "2026-08-24T08:01:35+09:00"
+    assert quote["price_freshness"] == "fresh"
+    assert quote["price_usable"] is True
+
+
+def _nxt_snapshot_for_asof_tests(
+    *,
+    as_of: datetime.datetime | None,
+    expected_price: int | None = None,
+    asks: list[tuple[int, int]] | None = None,
+    bids: list[tuple[int, int]] | None = None,
+) -> OrderbookSnapshot:
+    return OrderbookSnapshot(
+        symbol="011170",
+        instrument_type="equity_kr",
+        source="kis",
+        asks=[OrderbookLevel(price=price, quantity=qty) for price, qty in (asks or [])],
+        bids=[OrderbookLevel(price=price, quantity=qty) for price, qty in (bids or [])],
+        total_ask_qty=100,
+        total_bid_qty=100,
+        bid_ask_ratio=1.0,
+        as_of=as_of,
+        expected_price=expected_price,
+        venue="nxt",
+        venue_label="NXT",
+        kis_market_code="NX",
+        is_empty_book=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected_price", "asks", "bids", "expected_source", "expected_value"),
+    [
+        pytest.param(
+            54500, [(54800, 10)], [(54200, 12)], "nxt_expected_price", 54500.0
+        ),
+        pytest.param(None, [(54800, 10)], [(54200, 12)], "nxt_mid", 54500.0),
+        pytest.param(None, [(54800, 10)], [], "nxt_best_ask", 54800.0),
+        pytest.param(None, [], [(54200, 12)], "nxt_best_bid", 54200.0),
+    ],
+)
+async def test_fetch_nxt_quote_overlay_propagates_as_of_to_all_price_branches(
+    monkeypatch,
+    expected_price,
+    asks,
+    bids,
+    expected_source,
+    expected_value,
+):
+    as_of = datetime.datetime(2026, 8, 24, 8, 1, 35, tzinfo=market_data_quotes._KST)
+    snapshot = _nxt_snapshot_for_asof_tests(
+        as_of=as_of,
+        expected_price=expected_price,
+        asks=asks,
+        bids=bids,
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(return_value=snapshot),
+    )
+
+    overlay = await market_data_quotes._fetch_nxt_quote_overlay(
+        "011170", session="nxt_premarket"
+    )
+
+    assert overlay is not None
+    assert overlay["price"] == expected_value
+    assert overlay["price_source"] == expected_source
+    assert overlay["price_as_of"] == "2026-08-24T08:01:35+09:00"
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_stale_snapshot_remains_fail_closed(monkeypatch):
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    stale_as_of = datetime.datetime(
+        2026, 8, 23, 8, 1, 35, tzinfo=market_data_quotes._KST
+    )
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(
+            return_value=_nxt_snapshot_for_asof_tests(
+                as_of=stale_as_of,
+                asks=[(54800, 10)],
+                bids=[(54200, 12)],
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: datetime.datetime(2026, 8, 24, 8, 2, 0, tzinfo=market_data_quotes._KST),
+    )
+
+    quote = {"price": 54000.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "011170", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price_source"] == "nxt_mid"
+    assert quote["is_stale_price"] is True
+    assert quote["price_freshness"] == "stale"
+    assert quote["price_usable"] is False
+    assert quote["price_unavailable_reason"] == "stale_price_asof"
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_missing_snapshot_as_of_remains_fail_closed(
+    monkeypatch,
+):
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(
+            return_value=_nxt_snapshot_for_asof_tests(
+                as_of=None,
+                asks=[(54800, 10)],
+                bids=[(54200, 12)],
+            )
+        ),
+    )
+
+    quote = {"price": 54000.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "011170", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price_source"] == "nxt_mid"
+    assert quote["price_as_of"] is None
+    assert quote["is_stale_price"] is True
+    assert quote["price_freshness"] == "unavailable"
+    assert quote["price_usable"] is False
     assert quote["price_unavailable_reason"] == "missing_price_asof"

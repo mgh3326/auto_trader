@@ -279,6 +279,14 @@ async def test_get_ohlcv_kr_intraday_uses_shared_reader(
 async def test_get_orderbook_parses_kr_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "now_kst",
+        lambda: dt.datetime(
+            2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
+    )
+
     class DummyKIS:
         async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             assert code == "005930"
@@ -293,6 +301,7 @@ async def test_get_orderbook_parses_kr_snapshot(
                     "bidp_rsqn1": "321",
                     "total_askp_rsqn": "1000",
                     "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "080135",
                 },
                 {"antc_cnpr": "70050", "antc_cnqn": "42"},
             )
@@ -310,6 +319,9 @@ async def test_get_orderbook_parses_kr_snapshot(
         total_ask_qty=1000,
         total_bid_qty=1500,
         bid_ask_ratio=1.5,
+        as_of=dt.datetime(
+            2026, 8, 24, 8, 1, 35, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
         expected_price=70050,
         expected_qty=42,
         venue="krx",
@@ -325,6 +337,43 @@ async def test_get_orderbook_parses_kr_snapshot(
     assert type(snapshot.asks[0].quantity) is int
     assert type(snapshot.total_ask_qty) is int
     assert type(snapshot.total_bid_qty) is int
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_uses_transport_receive_time_without_broker_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    response_events: list[str] = []
+
+    def receive_clock() -> dt.datetime:
+        assert response_events == ["response_parsed"]
+        return received_at
+
+    monkeypatch.setattr(market_data_service, "now_kst", receive_clock)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            response_events.append("response_parsed")
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of == received_at
 
 
 @pytest.mark.asyncio
@@ -591,7 +640,7 @@ async def test_get_orderbook_parses_crypto_snapshot(
         AsyncMock(
             return_value={
                 "market": "KRW-BTC",
-                "timestamp": 1730000000,
+                "timestamp": 1730000000000,
                 "total_ask_size": 3.75,
                 "total_bid_size": 7.5,
                 "orderbook_units": [
@@ -617,6 +666,9 @@ async def test_get_orderbook_parses_crypto_snapshot(
         total_ask_qty=3.75,
         total_bid_qty=7.5,
         bid_ask_ratio=2.0,
+        as_of=dt.datetime(
+            2024, 10, 27, 12, 33, 20, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
         expected_price=None,
         expected_qty=None,
     )

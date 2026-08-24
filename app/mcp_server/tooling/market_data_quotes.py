@@ -399,23 +399,23 @@ def _annotate_nxt_session_change(
 
 def _nxt_price_from_orderbook(
     snapshot: market_data_service.OrderbookSnapshot,
-) -> tuple[float | None, str | None]:
+) -> tuple[float | None, str | None, datetime.datetime | None]:
     if snapshot.is_empty_book:
-        return None, None
+        return None, None, None
 
     expected_price = _positive_price(snapshot.expected_price)
     if expected_price is not None:
-        return expected_price, "nxt_expected_price"
+        return expected_price, "nxt_expected_price", snapshot.as_of
 
     best_ask = _positive_price(snapshot.asks[0].price if snapshot.asks else None)
     best_bid = _positive_price(snapshot.bids[0].price if snapshot.bids else None)
     if best_ask is not None and best_bid is not None:
-        return (best_ask + best_bid) / 2.0, "nxt_mid"
+        return (best_ask + best_bid) / 2.0, "nxt_mid", snapshot.as_of
     if best_ask is not None:
-        return best_ask, "nxt_best_ask"
+        return best_ask, "nxt_best_ask", snapshot.as_of
     if best_bid is not None:
-        return best_bid, "nxt_best_bid"
-    return None, None
+        return best_bid, "nxt_best_bid", snapshot.as_of
+    return None, None, None
 
 
 async def _fetch_nxt_quote_overlay(
@@ -429,7 +429,7 @@ async def _fetch_nxt_quote_overlay(
         logger.warning("NXT quote overlay failed for %s: %s", symbol, exc)
         return None
 
-    price, price_source = _nxt_price_from_orderbook(snapshot)
+    price, price_source, as_of = _nxt_price_from_orderbook(snapshot)
     if price is None or price_source is None:
         return None
 
@@ -438,6 +438,7 @@ async def _fetch_nxt_quote_overlay(
         "session": session,
         "venue": snapshot.venue or "nxt",
         "price_source": price_source,
+        "price_as_of": as_of.isoformat() if as_of is not None else None,
     }
     if snapshot.venue_label is not None:
         overlay["venue_label"] = snapshot.venue_label
@@ -474,9 +475,7 @@ async def _apply_nxt_quote_overlay(
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
     _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
-    # ROB-1121: NXT orderbook overlay에는 provider 체결 timestamp가 없다.
-    # 벽시계를 as_of로 위장하지 않고 unavailable/fail-closed로 표현.
-    _annotate_kr_price_freshness(quote, None)
+    _annotate_kr_price_freshness(quote, quote.get("price_as_of"))
     return True
 
 
@@ -556,6 +555,8 @@ def _build_orderbook_payload(
         "bid_walls": bid_walls,
         "ask_walls": ask_walls,
     }
+    if snapshot.as_of is not None:
+        payload["as_of"] = snapshot.as_of.isoformat()
     if snapshot.venue is not None:
         payload["venue"] = snapshot.venue
     if snapshot.venue_label is not None:
