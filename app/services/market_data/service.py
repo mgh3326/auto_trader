@@ -345,13 +345,14 @@ def _parse_orderbook_as_of(
     output1: dict[str, Any],
     output2: dict[str, Any] | None,
     received_at: dt.datetime,
-) -> dt.datetime:
+) -> dt.datetime | None:
     """Resolve an orderbook timestamp at the broker/transport boundary.
 
     KIS FHKST01010200 exposes ``aspr_acpt_hour`` (quote acceptance time), but
-    not a date.  The transport receive date supplies only that missing date
-    component.  If the broker clock is absent or malformed, the timestamp is
-    the instant this response was received—not a later annotation time.
+    not a date.  Never synthesize a date from the transport clock (ROB-1121).
+    When a valid broker time has no broker date, the transport receive instant
+    is the honest complete timestamp.  Missing or malformed broker time stays
+    unavailable so freshness consumers fail closed.
     """
     provider_time = (
         output1.get("aspr_acpt_hour")
@@ -383,17 +384,17 @@ def _parse_orderbook_as_of(
             parsed_date = None
 
     if parsed_time is None:
+        return None
+    if parsed_date is None:
         return received_at
-    return dt.datetime.combine(
-        parsed_date or received_at.date(), parsed_time, tzinfo=KST
-    )
+    return dt.datetime.combine(parsed_date, parsed_time, tzinfo=KST)
 
 
 def _parse_upbit_orderbook_as_of(
     raw_timestamp: Any,
     received_at: dt.datetime,
-) -> dt.datetime:
-    """Prefer Upbit's millisecond timestamp, with transport fallback."""
+) -> dt.datetime | None:
+    """Parse Upbit's timestamp; missing provider time remains unavailable."""
     try:
         timestamp = float(raw_timestamp)
         if timestamp <= 0:
@@ -403,7 +404,7 @@ def _parse_upbit_orderbook_as_of(
         epoch_seconds = timestamp / 1000.0 if timestamp >= 10_000_000_000 else timestamp
         return dt.datetime.fromtimestamp(epoch_seconds, tz=dt.UTC).astimezone(KST)
     except (TypeError, ValueError, OverflowError, OSError):
-        return received_at
+        return None
 
 
 async def get_kr_volume_rank() -> list[dict[str, Any]]:

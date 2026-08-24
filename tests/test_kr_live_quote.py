@@ -13,6 +13,7 @@ import pytest
 
 from app.mcp_server.tooling import market_data_quotes
 from app.services.brokers.kis.domestic_market_data import DomesticMarketDataMixin
+from app.services.market_data import service as market_data_service
 from app.services.market_data.contracts import OrderbookLevel, OrderbookSnapshot
 
 
@@ -501,3 +502,208 @@ async def test_apply_nxt_quote_overlay_missing_snapshot_as_of_remains_fail_close
     assert quote["price_freshness"] == "unavailable"
     assert quote["price_usable"] is False
     assert quote["price_unavailable_reason"] == "missing_price_asof"
+
+
+NXT_ASOF_VERIFY_NOW = datetime.datetime(
+    2026, 8, 24, 8, 2, 0, tzinfo=market_data_quotes._KST
+)
+NXT_ASOF_VERIFY_BOOK = {
+    "askp1": "54800",
+    "askp_rsqn1": "10",
+    "bidp1": "54200",
+    "bidp_rsqn1": "12",
+    "total_askp_rsqn": "100",
+    "total_bidp_rsqn": "100",
+}
+
+
+async def _run_nxt_asof_verify_case(
+    monkeypatch,
+    output1: dict[str, object],
+    *,
+    received_at: datetime.datetime = NXT_ASOF_VERIFY_NOW,
+) -> dict[str, object]:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return output1, None
+
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+    monkeypatch.setattr(market_data_service, "KISClient", DummyKIS)
+    monkeypatch.setattr(market_data_quotes, "now_kst", lambda: NXT_ASOF_VERIFY_NOW)
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    quote = {"price": 54000.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "011170", quote, data_state="premarket_unavailable"
+    )
+    assert applied is True
+    return quote
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "case_id",
+        "output1",
+        "received_at",
+        "expected_as_of",
+        "expected_freshness",
+        "expected_usable",
+    ),
+    [
+        # The original A/B/C/D/F cases are retained with their post-fix
+        # expected decisions; A/F are transport-time evidence, not fabricated
+        # broker-date evidence.
+        pytest.param(
+            "A1",
+            {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "153000"},
+            NXT_ASOF_VERIFY_NOW,
+            "2026-08-24T08:02:00+09:00",
+            "fresh",
+            True,
+            id="A1-clock-only-transport-time",
+        ),
+        pytest.param(
+            "A2",
+            {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "080135"},
+            NXT_ASOF_VERIFY_NOW,
+            "2026-08-24T08:02:00+09:00",
+            "fresh",
+            True,
+            id="A2-clock-only-transport-time",
+        ),
+        pytest.param(
+            "A3",
+            {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "235959"},
+            NXT_ASOF_VERIFY_NOW,
+            "2026-08-24T08:02:00+09:00",
+            "fresh",
+            True,
+            id="A3-clock-only-no-future-synthesis",
+        ),
+        pytest.param(
+            "A4",
+            {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "000000"},
+            NXT_ASOF_VERIFY_NOW,
+            "2026-08-24T08:02:00+09:00",
+            "fresh",
+            True,
+            id="A4-clock-only-transport-time",
+        ),
+        pytest.param(
+            "B",
+            dict(NXT_ASOF_VERIFY_BOOK),
+            NXT_ASOF_VERIFY_NOW,
+            None,
+            "unavailable",
+            False,
+            id="B-no-broker-clock-missing",
+        ),
+        *[
+            pytest.param(
+                f"C-{junk!r}",
+                {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": junk},
+                NXT_ASOF_VERIFY_NOW,
+                None,
+                "unavailable",
+                False,
+                id=f"C-malformed-{junk!r}",
+            )
+            for junk in ["", "garbage", "99:99:99", None, "1", "9999999"]
+        ],
+        pytest.param(
+            "D",
+            {
+                **NXT_ASOF_VERIFY_BOOK,
+                "aspr_acpt_hour": "153000",
+                "stck_bsop_date": "20260823",
+            },
+            NXT_ASOF_VERIFY_NOW,
+            "2026-08-23T15:30:00+09:00",
+            "stale",
+            False,
+            id="D-provider-date-stale",
+        ),
+        pytest.param(
+            "F",
+            {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "235959"},
+            NXT_ASOF_VERIFY_NOW,
+            "2026-08-24T08:02:00+09:00",
+            "fresh",
+            True,
+            id="F-clock-only-does-not-create-future",
+        ),
+    ],
+)
+async def test_nxt_asof_adversarial_regression_cases(
+    monkeypatch,
+    case_id,
+    output1,
+    received_at,
+    expected_as_of,
+    expected_freshness,
+    expected_usable,
+):
+    """All 14 verifier cases have explicit post-fix expectations."""
+    quote = await _run_nxt_asof_verify_case(
+        monkeypatch, output1, received_at=received_at
+    )
+
+    assert quote["price_as_of"] == expected_as_of, case_id
+    assert quote["price_freshness"] == expected_freshness, case_id
+    assert quote["price_usable"] is expected_usable, case_id
+    if expected_usable:
+        assert "price_unavailable_reason" not in quote, case_id
+    else:
+        assert quote["price_unavailable_reason"] == (
+            "missing_price_asof" if expected_as_of is None else "stale_price_asof"
+        ), case_id
+
+
+@pytest.mark.asyncio
+async def test_nxt_asof_transport_receive_30_minutes_old_is_stale(monkeypatch):
+    received_at = NXT_ASOF_VERIFY_NOW - datetime.timedelta(minutes=30)
+    quote = await _run_nxt_asof_verify_case(
+        monkeypatch,
+        {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "073200"},
+        received_at=received_at,
+    )
+
+    assert quote["price_as_of"] == "2026-08-24T07:32:00+09:00"
+    assert quote["price_freshness"] == "stale"
+    assert quote["price_usable"] is False
+
+
+@pytest.mark.asyncio
+async def test_nxt_asof_provider_timestamp_in_future_is_stale(monkeypatch):
+    quote = await _run_nxt_asof_verify_case(
+        monkeypatch,
+        {
+            **NXT_ASOF_VERIFY_BOOK,
+            "aspr_acpt_hour": "080300",
+            "stck_bsop_date": "20260824",
+        },
+    )
+
+    assert quote["price_as_of"] == "2026-08-24T08:03:00+09:00"
+    assert quote["price_freshness"] == "stale"
+    assert quote["price_usable"] is False
+
+
+@pytest.mark.asyncio
+async def test_nxt_asof_previous_date_is_stale_even_within_five_minutes(monkeypatch):
+    quote = await _run_nxt_asof_verify_case(
+        monkeypatch,
+        {
+            **NXT_ASOF_VERIFY_BOOK,
+            "aspr_acpt_hour": "080135",
+            "stck_bsop_date": "20260823",
+        },
+    )
+
+    assert quote["price_as_of"] == "2026-08-23T08:01:35+09:00"
+    assert quote["price_freshness"] == "stale"
+    assert quote["price_usable"] is False

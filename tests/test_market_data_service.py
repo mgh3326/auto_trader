@@ -319,8 +319,10 @@ async def test_get_orderbook_parses_kr_snapshot(
         total_ask_qty=1000,
         total_bid_qty=1500,
         bid_ask_ratio=1.5,
+        # KIS supplied only a clock; the complete timestamp is the transport
+        # receive instant, never today's date combined with that clock.
         as_of=dt.datetime(
-            2026, 8, 24, 8, 1, 35, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
         ),
         expected_price=70050,
         expected_qty=42,
@@ -340,7 +342,7 @@ async def test_get_orderbook_parses_kr_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_get_orderbook_uses_transport_receive_time_without_broker_clock(
+async def test_get_orderbook_keeps_as_of_missing_without_broker_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     received_at = dt.datetime(
@@ -373,7 +375,73 @@ async def test_get_orderbook_uses_transport_receive_time_without_broker_clock(
 
     snapshot = await market_data_service.get_orderbook("005930", "kr")
 
+    assert snapshot.as_of is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_uses_transport_receive_time_for_broker_clock_without_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "080135",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
     assert snapshot.as_of == received_at
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_keeps_provider_date_when_broker_supplies_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "153000",
+                    "stck_bsop_date": "20260823",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of == dt.datetime(
+        2026, 8, 23, 15, 30, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
 
 
 @pytest.mark.asyncio
@@ -706,6 +774,38 @@ async def test_get_orderbook_crypto_returns_none_ratio_when_total_ask_is_zero(
     snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
 
     assert snapshot.bid_ask_ratio is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_timestamp", [None, "garbage", 0])
+async def test_get_orderbook_crypto_missing_or_malformed_as_of_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_timestamp,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(
+            return_value={
+                "market": "KRW-BTC",
+                "timestamp": raw_timestamp,
+                "total_ask_size": 1.0,
+                "total_bid_size": 1.0,
+                "orderbook_units": [
+                    {
+                        "ask_price": 140.1,
+                        "bid_price": 139.9,
+                        "ask_size": 1.0,
+                        "bid_size": 1.0,
+                    }
+                ],
+            }
+        ),
+    )
+
+    snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+    assert snapshot.as_of is None
 
 
 @pytest.mark.asyncio

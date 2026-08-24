@@ -319,6 +319,9 @@ _NXT_AFTER_OPEN = datetime.time(15, 30)
 _NXT_AFTER_CLOSE = datetime.time(20, 0)
 _KST = ZoneInfo("Asia/Seoul")
 
+# §148차 운영자 위임: NXT/Upbit orderbook as_of window is fixed at N=5분.
+ORDERBOOK_ASOF_MAX_AGE_S148_N5 = datetime.timedelta(minutes=5)
+
 
 def _current_kst_datetime(now: datetime.datetime | None = None) -> datetime.datetime:
     current = now or now_kst()
@@ -475,7 +478,11 @@ async def _apply_nxt_quote_overlay(
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
     _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
-    _annotate_kr_price_freshness(quote, quote.get("price_as_of"))
+    _annotate_orderbook_price_freshness(
+        quote,
+        quote.get("price_as_of"),
+        require_trading_date=True,
+    )
     return True
 
 
@@ -557,6 +564,12 @@ def _build_orderbook_payload(
     }
     if snapshot.as_of is not None:
         payload["as_of"] = snapshot.as_of.isoformat()
+    if snapshot.instrument_type == "crypto":
+        _annotate_orderbook_price_freshness(
+            payload,
+            snapshot.as_of,
+            require_trading_date=False,
+        )
     if snapshot.venue is not None:
         payload["venue"] = snapshot.venue
     if snapshot.venue_label is not None:
@@ -688,6 +701,49 @@ def _annotate_kr_price_freshness(
         parsed,
         trading_date=trading_date or now_kst().date(),
     )
+    quote["is_stale_price"] = stale
+    quote["price_freshness"] = "stale" if stale else "fresh"
+    quote["price_usable"] = not stale
+    if stale:
+        quote["price_unavailable_reason"] = "stale_price_asof"
+    else:
+        quote.pop("price_unavailable_reason", None)
+
+
+def _annotate_orderbook_price_freshness(
+    quote: dict[str, Any],
+    as_of: Any,
+    *,
+    trading_date: datetime.date | None = None,
+    require_trading_date: bool,
+    now: datetime.datetime | None = None,
+) -> None:
+    """Apply the orderbook-only N=5분 freshness gate.
+
+    The existing date predicate remains authoritative for NXT and is combined
+    with the bounded wall-clock predicate.  Upbit has no KST trading-date
+    gate, but uses the same age/future bound.  This helper is intentionally
+    separate so other ``compute_is_stale`` consumers keep their contract.
+    """
+    parsed = _parse_price_as_of(as_of)
+    quote["price_as_of"] = parsed.isoformat() if parsed is not None else None
+    if parsed is None:
+        quote.update(
+            {
+                "is_stale_price": True,
+                "price_freshness": "unavailable",
+                "price_usable": False,
+                "price_unavailable_reason": "missing_price_asof",
+            }
+        )
+        return
+
+    current = _current_kst_datetime(now)
+    date_stale = require_trading_date and compute_is_stale(
+        "price", parsed, trading_date=trading_date or current.date()
+    )
+    time_stale = parsed > current or current - parsed > ORDERBOOK_ASOF_MAX_AGE_S148_N5
+    stale = date_stale or time_stale
     quote["is_stale_price"] = stale
     quote["price_freshness"] = "stale" if stale else "fresh"
     quote["price_usable"] = not stale
