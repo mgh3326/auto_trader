@@ -232,6 +232,7 @@ tests/services/test_research_run_service_news_brief_safety.py
 tests/services/test_research_run_service_unit.py
 tests/services/test_rob1314_market_events_values_bulk_load.py
 tests/services/test_screener_analysis_enrichment.py
+tests/services/test_session_context_market_wide_scope.py
 tests/services/test_session_context_service.py
 tests/services/test_single_share_exit_snapshot_service.py
 tests/services/test_strategy_event_schema_validation.py

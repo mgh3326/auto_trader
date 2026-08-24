@@ -55,7 +55,19 @@ class SessionContextService:
         kst_date_from: date | None = None,
         entry_type: SessionContextEntryTypeLiteral | None = None,
         limit: int = 20,
+        include_market_wide: bool = False,
     ) -> list[OperatorSessionContext]:
+        """Return recent entries, newest first.
+
+        ``include_market_wide`` is an opt-in widening of the ``account_scope``
+        filter only. ``account_scope=NULL`` rows mean "market-wide operator
+        instruction" and are otherwise invisible to any caller that names a
+        concrete scope. Callers that must see them (the run-start operating
+        briefing) pass True; the HTTP router and the ``session_context_get_recent``
+        MCP tool keep the default False and their strict-equality semantics.
+        When ``account_scope`` is None no scope filter is applied at all, so
+        this flag has no effect on that call shape.
+        """
         capped_limit = max(1, min(int(limit), 100))
         stmt = sa.select(OperatorSessionContext).order_by(
             OperatorSessionContext.created_at.desc(),
@@ -64,7 +76,15 @@ class SessionContextService:
         if market is not None:
             stmt = stmt.where(OperatorSessionContext.market == market)
         if account_scope is not None:
-            stmt = stmt.where(OperatorSessionContext.account_scope == account_scope)
+            if include_market_wide:
+                stmt = stmt.where(
+                    sa.or_(
+                        OperatorSessionContext.account_scope == account_scope,
+                        OperatorSessionContext.account_scope.is_(None),
+                    )
+                )
+            else:
+                stmt = stmt.where(OperatorSessionContext.account_scope == account_scope)
         if kst_date_from is not None:
             stmt = stmt.where(OperatorSessionContext.kst_date >= kst_date_from)
         if entry_type is not None:
