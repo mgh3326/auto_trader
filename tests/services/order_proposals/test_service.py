@@ -2212,6 +2212,7 @@ async def test_sweep_local_stale_only_voids_evidence_absent(db_session):
     assert states == ["voided_local_stale", "pending_approval", "pending_approval"]
     _, swept_rungs = await service.get_proposal(groups[0].proposal_id)
     assert swept_rungs[0].void_reason == "no_broker_order"
+    assert swept_rungs[0].void_reason_group == "unclassified"
     assert swept_rungs[0].updated_at == now
 
 

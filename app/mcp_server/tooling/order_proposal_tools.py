@@ -62,6 +62,7 @@ from app.services.order_proposals.errors import (
     OrderProposalVoidNotAuthorized,
 )
 from app.services.order_proposals.redispatch import validate_proposal_redispatch
+from app.services.order_proposals.rung_reason import project_rung_void_reason_group
 from app.services.order_proposals.service import RungInput, check_action_capability
 from app.services.order_proposals.telegram_callback import _safe_edit_message
 
@@ -142,6 +143,7 @@ def _group_dict(g: Any) -> dict[str, Any]:
 
 
 def _rung_dict(r: Any) -> dict[str, Any]:
+    void_reason = getattr(r, "void_reason", None)
     return {
         "rung_index": r.rung_index,
         "side": r.side,
@@ -149,6 +151,11 @@ def _rung_dict(r: Any) -> dict[str, Any]:
         "limit_price": str(r.limit_price) if r.limit_price is not None else None,
         "notional": str(r.notional) if r.notional is not None else None,
         "state": r.state,
+        "void_reason": void_reason,
+        "void_reason_group": project_rung_void_reason_group(
+            void_reason=void_reason,
+            stored_group=getattr(r, "void_reason_group", None),
+        ),
         "broker_order_id": r.broker_order_id,
         "correlation_id": r.correlation_id,
     }
