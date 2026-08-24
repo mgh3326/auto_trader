@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.research_backtest import ResearchPromotionCandidate
 from app.schemas.research_backtest import (
     BacktestTrialRequest,
@@ -30,6 +30,9 @@ from research.nautilus_scalping.honest_offline_gate import (
 )
 from research.nautilus_scalping.trial_evidence import build_trial_evidence
 from research_contracts.evaluation_windows import ClosedWindow
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 
 class _NestedTransaction:

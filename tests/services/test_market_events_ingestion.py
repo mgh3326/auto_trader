@@ -10,7 +10,11 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from app.core.db import engine
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.market_events_test_helpers import market_events_test_lock
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest_asyncio.fixture(autouse=True)

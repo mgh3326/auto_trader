@@ -18,8 +18,10 @@ AUTO_TRADER_PYTEST_USE_SHARED_DB=1 uv run pytest ...
 
 `AUTO_TRADER_TEST_DATABASE_URL` may change connection details, but it must still
 target a PostgreSQL database named exactly `test_db`. A different/general
-database is rejected before pytest can use it. Shared mode never drops
-`test_db`.
+database is rejected before pytest can use it. When this override is used with
+shared mode, its host, port, and username become the explicitly selected test
+server identity; setting it to a production server is an operator error and
+is not a safety bypass. Shared mode never drops `test_db`.
 
 ## Interrupted-run cleanup
 

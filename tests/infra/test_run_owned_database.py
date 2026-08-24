@@ -85,6 +85,24 @@ def test_shared_database_requires_exact_opt_in(
         owned_db.configure_test_database_environment()
 
 
+def test_shared_database_rejects_same_name_on_a_different_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_database_env(monkeypatch)
+    monkeypatch.setenv(owned_db.SHARED_DATABASE_ENV, "1")
+    monkeypatch.setenv(
+        owned_db.TEST_DATABASE_URL_ENV,
+        "postgresql+asyncpg://test_user:test_pass@test-db.example:5432/test_db",
+    )
+
+    owned_db.configure_test_database_environment()
+
+    with pytest.raises(RuntimeError, match="unowned PostgreSQL server"):
+        owned_db.validate_run_owned_database_url(
+            "postgresql+asyncpg://test_user:test_pass@other-db.example:5432/test_db"
+        )
+
+
 @pytest.mark.parametrize("value", ["true", "yes", "2", "-1"])
 def test_shared_database_rejects_ambiguous_opt_in(
     monkeypatch: pytest.MonkeyPatch,
