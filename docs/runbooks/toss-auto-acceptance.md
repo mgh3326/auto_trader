@@ -120,14 +120,22 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
 
 ## 캡 유도와 활성화 한계
 
-`config/trading_policy.yaml`의 `order_proposals.auto_approve` 블록은 다음 값을 사용한다.
+🔴 아래 표는 TOSS-AUTO-FULL(§51) 당시의 **역사적 유도 기록**이며 현행값이 아니다.
+현행 캡은 `config/trading_policy.yaml`의 `order_proposals.auto_approve` 블록을 직접
+읽어라 — §106차 이후 캡은 슬롯 수에서 유도되지 않고 직접 설정되며, 그 뒤로도
+§133차(KR)·§145차(crypto) 등이 값을 옮겼다.
 
-| 시장 | 주문당 상한 | 일일 상한 | 유도 |
+🔴 **유도 자체가 소멸했다**: 이 표의 "× 동시 신규 최대 1종목" 절은 §127차(1→2종목)에서
+이미 낡았고, **§147차(2026-08-24)가 동시 신규 종목 수 제한을 철폐**하면서 완전히 무효가
+됐다. 동시 신규 진입 수의 상한은 이제 **주문가능 현금뿐**이다(`buy.new_entry_overflow`
+룰도 같은 결정으로 삭제됨). 캡은 슬롯 수와 무관하므로 이 철폐가 캡을 바꾸지 않는다.
+
+| 시장 | 주문당 상한(§51 당시) | 일일 상한(§51 당시) | 유도(무효) |
 | --- | ---: | ---: | --- |
-| KR | KRW 400,000 | KRW 400,000 | `thresholds.buy.per_symbol_notional_krw_range.value=[200000,400000]`의 상단 × `user_stances[0].implications[0]`의 `동시 신규 최대 1종목` |
-| US | USD 450 | USD 450 | `thresholds.buy.per_symbol_notional_usd_range.value=[150,450]`의 상단 × `user_stances[0].implications[0]`의 `동시 신규 최대 1종목` |
+| KR | KRW 400,000 | KRW 400,000 | `thresholds.buy.per_symbol_notional_krw_range.value=[200000,400000]`의 상단 × 당시 `동시 신규 최대 1종목` 스탠스 |
+| US | USD 450 | USD 450 | `thresholds.buy.per_symbol_notional_usd_range.value=[150,450]`의 상단 × 당시 `동시 신규 최대 1종목` 스탠스 |
 
-이는 정책 밴드의 상단과 일 신규 한도 1에서 기계적으로 나온 값이다. 다른 buy/sell tier를
+이는 정책 밴드의 상단과 당시의 일 신규 한도 1에서 기계적으로 나왔던 값이다. 다른 buy/sell tier를
 수정하거나 cap을 운영 중에 임의 조정하지 않는다. `loss_cut`, 예상 실현손익 `<= 0`, ±1%
 본전 경계, `policy_deviation`, `table_disagreement`, 분류 불가 항목은 계속 human approval
 전용이다.

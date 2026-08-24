@@ -261,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-23.2"
+    assert doc.version == "2026-08-24.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1177,24 +1177,35 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
         "market_order_momentum_add",
     ]
     del current_dump["decision_rules"]["buy.winner_pullback_add"]
+    # §147차 (2026-08-24) — the stance prose delta is now an ABOLITION, not a
+    # raise: the baseline's count limit is gone entirely and orderable cash is
+    # the only bound. Pin both the removal and the fact that the quality and
+    # diversification devices are still named in the same sentence, so a
+    # rewrite that quietly drops them fails here.
     assert "동시 신규 최대 1종목" in baseline_dump["user_stances"][0]["implications"][1]
-    assert (
-        "동시 신규 최대 2종목(§127차 2026-08-21 상향, 종전 1)"
-        in current_dump["user_stances"][0]["implications"][1]
-    )
+    current_stance = current_dump["user_stances"][0]["implications"][1]
+    assert "동시 신규 종목 수 제한 없음(§147차 2026-08-24 철폐" in current_stance
+    assert "상한은 주문가능 현금뿐" in current_stance
+    # the count limit is gone in BOTH of its historical forms
+    assert "동시 신규 최대 2종목" not in current_stance
+    assert "동시 신규 최대 1종목" not in current_stance
+    # ...and the non-count guards are still asserted by the same clause
+    assert "섹터 클러스터 집중도" in current_stance
+    assert "테마당 종목 수 캡" in current_stance
+    assert "notional 밴드" in current_stance
     current_dump["user_stances"][0]["implications"][1] = baseline_dump["user_stances"][
         0
     ]["implications"][1]
 
-    # §129차 (2026-08-21) — one additional additive delta: the cash-conditioned
-    # buy.new_entry_overflow rule. (The stance prose delta it rides on is the
-    # same implications[1] string already normalized by the §127차 block above,
-    # whose substring pin remains satisfied.)
+    # §129차 (2026-08-21) → §147차 (2026-08-24) — REVERSE-APPLIED. §129차 added
+    # buy.new_entry_overflow as an additive delta over the ROB-1289 baseline;
+    # §147차 deleted it, because its only reason to exist was to relieve the
+    # slot count that §147차 abolished. The baseline never had the rule and the
+    # current document no longer has it, so the two sides now agree here with
+    # nothing to strip. Pin the absence on BOTH sides so a silent
+    # re-introduction fails this closed-equivalence test rather than shipping.
     assert "buy.new_entry_overflow" not in baseline_dump["decision_rules"]
-    assert current_dump["decision_rules"]["buy.new_entry_overflow"]["exclusions"] == [
-        "budget_consumption_entry",
-    ]
-    del current_dump["decision_rules"]["buy.new_entry_overflow"]
+    assert "buy.new_entry_overflow" not in current_dump["decision_rules"]
 
     # §139차 (2026-08-22) — two additive decision rules and exactly one value
     # delta outside them. Pin the load-bearing fields of both new rules here so
@@ -2071,7 +2082,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-23.2"
+    assert doc.version == "2026-08-24.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -2416,7 +2427,6 @@ def test_s139_pre_existing_rules_keep_the_all_markets_default():
         "buy.support_reserve_net",
         "buy.preplanned_support_ladder",
         "buy.winner_pullback_add",
-        "buy.new_entry_overflow",
         "sell.trim_preplace",
     ):
         rule = doc.decision_rules[key]
@@ -2711,3 +2721,145 @@ def test_s139_leaves_the_crypto_and_kr_approval_caps_untouched():
         current["market_rules"]["crypto"]["recovery_gate"]
         == baseline["market_rules"]["crypto"]["recovery_gate"]
     )
+
+
+# ---------------------------------------------------------------------------
+# §147차 (2026-08-24) — concurrent-new-entry slot limit ABOLISHED.
+#
+# This change removes a COUNT limit and nothing else. The tests below are the
+# machine proof of that claim: they pin every quality and diversification
+# device the operator ledger declared invariant, so a future edit that rides
+# along on "§147차 removed a limit" and quietly relaxes a gate, widens a
+# notional band, or lifts a concentration cap fails here instead of shipping.
+# ---------------------------------------------------------------------------
+
+# The four buy gates named as invariant in the §147차 ledger entry, with the
+# values they held BEFORE the slot limit was abolished.
+_S147_INVARIANT_BUY_GATES = {
+    "screen.rsi_max": 45,  # RSI gate
+    "screen.support_within_pct": 8,  # 지지 gate
+    "screen.upside_min_pct": 40,  # upside gate
+    "buy.deep_limit_pct_range": [-12, -3],  # 딥밴드 gate
+}
+
+# Sizing and concentration devices declared invariant in the same entry.
+_S147_INVARIANT_SIZING_AND_CAPS = {
+    "buy.per_symbol_notional_krw_range": [200000, 400000],  # KR 20~40만
+    "buy.per_symbol_notional_usd_range": [150, 450],
+    "portfolio.sector_cluster_cap_pct": 10,  # 섹터 클러스터 10% 캡
+    "portfolio.max_symbols_per_theme": 2,  # 테마당 2종목 캡
+}
+
+
+def test_s147_buy_gates_are_unchanged():
+    """Abolishing a count limit must not touch a single buy gate."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    for key, expected in _S147_INVARIANT_BUY_GATES.items():
+        assert doc.thresholds[key].value == expected, key
+
+
+def test_s147_notional_bands_and_concentration_caps_are_unchanged():
+    """Per-symbol sizing and the sector/theme caps are the surviving bounds."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    for key, expected in _S147_INVARIANT_SIZING_AND_CAPS.items():
+        assert doc.thresholds[key].value == expected, key
+
+
+def test_s147_invariants_match_the_rob1289_baseline_exactly():
+    """The strongest form: none of the eight invariants ever moved at all.
+
+    The ROB-1289 baseline predates §127차, §129차 and §147차, so if every one
+    of these keys still equals its baseline value then the whole slot-limit
+    lineage — introduction, overflow, and abolition — provably never touched a
+    gate, a notional band, or a concentration cap.
+    """
+
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current = _raw()
+    for key in {**_S147_INVARIANT_BUY_GATES, **_S147_INVARIANT_SIZING_AND_CAPS}:
+        assert (
+            current["thresholds"][key]["value"] == baseline["thresholds"][key]["value"]
+        ), key
+
+    # The one and only non-``value`` difference on any of these keys is the
+    # §139차 US one-share ceiling, which is an APPROVED pre-existing delta and
+    # is already enumerated in _S139_ALLOWED_POLICY_DELTAS. It is pinned here
+    # rather than ignored, so §147차 cannot be used as cover to move it and so
+    # a NEW sibling-key drift on an invariant threshold still fails.
+    for key in {**_S147_INVARIANT_BUY_GATES, **_S147_INVARIANT_SIZING_AND_CAPS}:
+        cur = deepcopy(current["thresholds"][key])
+        base = deepcopy(baseline["thresholds"][key])
+        if key == "buy.per_symbol_notional_usd_range":
+            assert cur["one_share_exception"]["absolute_ceiling_usd"] == 10000
+            assert base["one_share_exception"]["absolute_ceiling_usd"] == 700
+            cur["one_share_exception"] = base["one_share_exception"]
+        assert cur == base, key
+
+
+def test_s147_new_entry_overflow_rule_is_deleted_from_the_document():
+    """§129차's rule is gone — its only purpose was to relieve the slot count."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    assert "buy.new_entry_overflow" not in doc.decision_rules
+    # and the tier id it carried is gone with it
+    for rule in doc.decision_rules.values():
+        for tier in getattr(rule, "tiers", None) or []:
+            assert getattr(tier, "id", None) != "new_entry_overflow"
+
+
+def test_s147_new_entry_overflow_is_absent_from_every_consumer_view():
+    """No market/lane view may still echo the deleted rule."""
+
+    from app.services.trading_policy_service import get_policy_for
+
+    for market in ("kr", "us", "crypto"):
+        for lane in ("buy", "sell"):
+            view = get_policy_for(market, lane)
+            assert "buy.new_entry_overflow" not in view["decision_rules"]
+
+
+def test_s147_no_code_consumes_the_deleted_rule():
+    """A policy key may only be deleted if nothing in the runtime reads it.
+
+    Deleting a rule while leaving a consumer behind would break the runtime,
+    so this pins the precondition that made the deletion safe.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    offenders = []
+    for pkg in ("app", "scripts"):
+        for path in (repo_root / pkg).rglob("*.py"):
+            if "new_entry_overflow" in path.read_text(encoding="utf-8"):
+                offenders.append(str(path.relative_to(repo_root)))
+    assert offenders == []
+
+
+def test_s147_stance_makes_cash_the_only_bound_and_keeps_the_other_guards():
+    """The stance prose states the abolition and still names the guards."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    stance = doc.user_stances[0].implications[1]
+    assert "동시 신규 종목 수 제한 없음(§147차 2026-08-24 철폐" in stance
+    assert "상한은 주문가능 현금뿐" in stance
+    # neither historical count survives anywhere in the stance block
+    for implication in doc.user_stances[0].implications:
+        assert "동시 신규 최대" not in implication
+    # the non-count guards are still asserted in the same clause
+    for fragment in ("notional 밴드", "섹터 클러스터 집중도", "테마당 종목 수 캡"):
+        assert fragment in stance, fragment
+
+
+def test_s147_source_records_the_abolition_and_the_q4_tension():
+    """Provenance is append-only and carries the ledger's honest Q4 record."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    assert doc.version == "2026-08-24.1"
+    assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
+    assert "bounded by ORDERABLE CASH ALONE" in doc.source
+    # the §129차 provenance is NOT rewritten out of history
+    assert "§129차 buy.new_entry_overflow" in doc.source
+    # the Q4 tension is recorded rather than glossed over
+    assert "no relaxation before scoring" in doc.source
+    assert "COUNT limit only" in doc.source
