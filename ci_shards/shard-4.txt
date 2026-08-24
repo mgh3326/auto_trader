@@ -115,6 +115,7 @@ tests/services/brokers/binance/test_broker_ack_scope_migration.py
 tests/services/brokers/binance/test_host_allowlist.py
 tests/services/brokers/binance/test_ingest.py
 tests/services/brokers/binance/test_transport_event_hooks.py
+tests/services/brokers/nhplug/test_static_guard.py
 tests/services/brokers/paper/test_adapter_registry.py
 tests/services/brokers/paper/test_application.py
 tests/services/brokers/paper/test_production_adapter_contract.py
