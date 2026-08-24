@@ -65,6 +65,24 @@ def test_shared_database_requires_exact_opt_in(
     assert owned_db.DATABASE_NAME_ENV not in owned_db.os.environ
     assert owned_db.os.environ["DATABASE_URL"].endswith("/test_db")
     assert owned_db.uses_shared_test_database() is True
+    assert (
+        owned_db.validate_run_owned_database_url(
+            owned_db.os.environ["DATABASE_URL"]
+        ).database
+        == "test_db"
+    )
+    with pytest.raises(RuntimeError, match="unsafe or unowned"):
+        owned_db.validate_run_owned_database_url(
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/production"
+        )
+
+    _clear_database_env(monkeypatch)
+    monkeypatch.setenv(
+        owned_db.TEST_DATABASE_URL_ENV,
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/auto_trader",
+    )
+    with pytest.raises(RuntimeError, match="dedicated test_db"):
+        owned_db.configure_test_database_environment()
 
 
 @pytest.mark.parametrize("value", ["true", "yes", "2", "-1"])
@@ -76,19 +94,6 @@ def test_shared_database_rejects_ambiguous_opt_in(
     monkeypatch.setenv(owned_db.SHARED_DATABASE_ENV, value)
 
     with pytest.raises(RuntimeError, match="must be exactly 0 or 1"):
-        owned_db.configure_test_database_environment()
-
-
-def test_general_database_url_is_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_database_env(monkeypatch)
-    monkeypatch.setenv(
-        owned_db.TEST_DATABASE_URL_ENV,
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/auto_trader",
-    )
-
-    with pytest.raises(RuntimeError, match="dedicated test_db"):
         owned_db.configure_test_database_environment()
 
 

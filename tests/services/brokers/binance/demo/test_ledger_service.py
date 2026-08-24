@@ -12,12 +12,16 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import engine
 from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.errors import (
     BinanceDemoInvalidProduct,
     BinanceDemoInvalidStateTransition,
 )
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest_asyncio.fixture

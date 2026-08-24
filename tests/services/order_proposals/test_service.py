@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import func, select
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.core.timezone import KST
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import OrderProposalsService
@@ -28,6 +28,9 @@ from app.services.order_proposals.errors import (
 )
 from app.services.order_proposals.service import ExpirySweepResult, RungInput
 from app.telegram_contract import TelegramMethodResult
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 
 def _successful_publication(message_id: int) -> ApprovalPublication:

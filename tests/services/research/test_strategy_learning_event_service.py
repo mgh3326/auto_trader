@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.db import engine
 from app.models.strategy_learning_event import ResearchStrategyLearningEvent
 from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.schemas.strategy_learning_event import StrategyLearningEventRequest
@@ -18,6 +19,9 @@ from app.services.research_canonical_hash import (
     canonical_ast_json,
     encode_canonical,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = pytest.mark.integration
 

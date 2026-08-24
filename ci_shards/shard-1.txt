@@ -16,6 +16,7 @@ tests/brokers/kis/test_vts_distributed_gate.py
 tests/ci/test_ci_required_workflow_contract.py
 tests/ci/test_file_shard_plan_workflow_entrypoint.py
 tests/core/test_exceptions.py
+tests/infra/test_database_guard_completeness.py
 tests/infra/test_run_owned_database.py
 tests/integration/services/daily_candles/test_full_cycle.py
 tests/integration/test_ingest_freqtrade_report.py

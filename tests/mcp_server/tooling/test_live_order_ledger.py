@@ -2,7 +2,12 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
+from app.core.db import engine
+from tests._run_owned_database import validate_run_owned_database_url
+
 pytestmark = pytest.mark.integration
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest.fixture(autouse=True)

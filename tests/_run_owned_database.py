@@ -88,6 +88,30 @@ def validate_run_owned_database_url(database_url: str | URL) -> URL:
     if not url.database or not url.host or not url.username:
         raise RuntimeError("refusing an incomplete test database URL")
 
+    if _shared_database_requested():
+        # The documented shared mode is a narrowly scoped exception to the
+        # run-owned name pattern.  The opt-in alone is not authority: the
+        # URL must still target the dedicated shared ``test_db`` database and
+        # the same PostgreSQL server identity as the validated test base URL.
+        if url.database != "test_db":
+            raise RuntimeError("refusing unsafe or unowned pytest database name")
+        base_raw = os.environ.get(BASE_DATABASE_URL_ENV)
+        base_url = make_url(base_raw) if base_raw else _validated_base_url()
+        if (
+            base_url.get_backend_name() != "postgresql"
+            or base_url.database != "test_db"
+            or not base_url.host
+            or not base_url.username
+        ):
+            raise RuntimeError("refusing an invalid shared pytest base URL")
+        if (url.host, url.port, url.username) != (
+            base_url.host,
+            base_url.port,
+            base_url.username,
+        ):
+            raise RuntimeError("refusing a test URL on an unowned PostgreSQL server")
+        return url
+
     validate_owned_database_name(url.database)
     configured_name = os.environ.get(DATABASE_NAME_ENV)
     if configured_name != url.database:

@@ -11,8 +11,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
+from app.core.db import engine
 from app.models.market_events import MarketEventIngestionPartition
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.market_events_test_helpers import market_events_test_lock
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest_asyncio.fixture(autouse=True)
