@@ -16,6 +16,7 @@ import httpx
 
 from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
 from app.services.brokers.nhplug.errors import (
+    NHPlugMockAccountRejected,
     NHPlugMockBrokerRejected,
     NHPlugMockConfigurationError,
     NHPlugMockDisabled,
@@ -115,15 +116,37 @@ class NHPlugMockClient:
         self._token_provider = token_provider
         self._transport = transport
         self._timeout = timeout
+        self._account_allowlist: MockAccountAllowlist | None = None
+
+    def bind_account_allowlist(self, account_allowlist: MockAccountAllowlist) -> None:
+        """Bind the broker-derived mock account boundary to this dispatcher.
+
+        Account-scoped dispatch is impossible until this one-time binding has
+        happened.  The allowlist is intentionally client state rather than a
+        caller-selected argument to a generic dispatch helper.
+        """
+
+        if not isinstance(account_allowlist, MockAccountAllowlist):
+            raise NHPlugMockConfigurationError(
+                "a broker-verified mock account allowlist is required"
+            )
+        account_allowlist.assert_allowed(account_allowlist.configured_account_no)
+        self._account_allowlist = account_allowlist
+
+    def _require_account_allowlist(self) -> MockAccountAllowlist:
+        allowlist = self._account_allowlist
+        if allowlist is None:
+            raise NHPlugMockConfigurationError(
+                "a broker-verified mock account allowlist is required for account-scoped reads"
+            )
+        return allowlist
 
     async def list_accounts(self) -> dict[str, Any]:
         """Read the documented account list used to establish the allowlist."""
 
         return await self._post_readonly(path=ACCOUNT_INFO_PATH, input_0={})
 
-    async def fetch_balance(
-        self, *, act_no: str, account_allowlist: MockAccountAllowlist
-    ) -> dict[str, Any]:
+    async def fetch_balance(self, *, act_no: str) -> dict[str, Any]:
         """Read domestic holdings after account verification at both guard points."""
 
         return await self._post_readonly(
@@ -135,7 +158,6 @@ class NHPlugMockClient:
                 "aet_bse": "2",
                 "qut_dit_cd": "UNT",
             },
-            account_allowlist=account_allowlist,
             act_no=act_no,
         )
 
@@ -144,8 +166,6 @@ class NHPlugMockClient:
         *,
         symbol: str,
         market: str,
-        account_allowlist: MockAccountAllowlist,
-        verified_act_no: str,
     ) -> dict[str, Any]:
         """Read one Korean equity quote after the same configured-account check."""
 
@@ -160,8 +180,6 @@ class NHPlugMockClient:
         return await self._post_readonly(
             path=QUOTE_PATH,
             input_0={"iem_cd": symbol, "market_cd": market},
-            account_allowlist=account_allowlist,
-            act_no=verified_act_no,
         )
 
     async def _post_readonly(
@@ -169,7 +187,6 @@ class NHPlugMockClient:
         *,
         path: str,
         input_0: dict[str, Any],
-        account_allowlist: MockAccountAllowlist | None = None,
         act_no: str | None = None,
     ) -> dict[str, Any]:
         """Guard before token I/O, then guard resolved request before send."""
@@ -180,12 +197,26 @@ class NHPlugMockClient:
             raise NHPlugMockEndpointError(
                 "NHPLUG data base endpoint changed after construction"
             )
-        if account_allowlist is not None:
-            if act_no is None:
+        account_allowlist: MockAccountAllowlist | None = None
+        verified_act_no: str | None = None
+        if path != ACCOUNT_INFO_PATH:
+            account_allowlist = self._require_account_allowlist()
+            verified_act_no = account_allowlist.configured_account_no
+            if path == BALANCE_PATH:
+                if not isinstance(act_no, str) or input_0.get("act_no") != act_no:
+                    raise NHPlugMockConfigurationError(
+                        "balance reads require the bound configured account"
+                    )
+                verified_act_no = act_no
+            elif act_no is not None:
                 raise NHPlugMockConfigurationError(
-                    "verified account is required for this read"
+                    "only balance reads may supply an account number"
                 )
-            account_allowlist.assert_allowed(act_no)
+            if verified_act_no != account_allowlist.configured_account_no:
+                raise NHPlugMockAccountRejected(
+                    "account-scoped reads may use only the configured mock account"
+                )
+            account_allowlist.assert_allowed(verified_act_no)
 
         token = await self._token_provider()
         if not isinstance(token, str) or not token.strip():
@@ -202,7 +233,9 @@ class NHPlugMockClient:
             base_url=self._base_url,
             transport=self._transport,
             timeout=self._timeout,
-            # Explicitly pinned: never let a 3xx escape this exact host boundary.
+            # HTTPX retains custom APP credential headers across cross-origin
+            # redirects, so this is an APP KEY/SECRET boundary as well as a
+            # host-boundary control.
             follow_redirects=False,
         ) as client:
             request = client.build_request(
@@ -210,8 +243,8 @@ class NHPlugMockClient:
             )
             _assert_resolved_mock_request(request)
             # Second independent account check immediately before the send site.
-            if account_allowlist is not None:
-                account_allowlist.assert_allowed(act_no or "")
+            if account_allowlist is not None and verified_act_no is not None:
+                account_allowlist.assert_allowed(verified_act_no)
             response = await client.send(request)
         response.raise_for_status()
         try:

@@ -141,6 +141,10 @@ def test_account_mode_verifies_type_then_reads_balance_without_leaking_values(
                 ],
             }
 
+        def bind_account_allowlist(self, allowlist: Any) -> None:
+            calls.append("bind")
+            assert allowlist.configured_account_no == SENTINEL_ACCOUNT
+
         async def fetch_balance(self, **kwargs: Any) -> dict[str, Any]:
             calls.append("balance")
             assert kwargs["act_no"] == SENTINEL_ACCOUNT
@@ -156,7 +160,7 @@ def test_account_mode_verifies_type_then_reads_balance_without_leaking_values(
     rendered = capsys.readouterr().out
     _assert_values_redacted(rendered)
     payload = json.loads(rendered)
-    assert calls == ["auth", "client", "accounts", "balance"]
+    assert calls == ["auth", "client", "accounts", "bind", "balance"]
     assert payload["account_verification"] == {
         "account_type_counts": {"01": 1, "03": 1},
         "verified_mock_account_count": 1,
@@ -188,6 +192,9 @@ def test_quote_rejection_is_a_clear_nonzero_result_not_fake_success(
                 "rsp_cd": "00000",
                 "Output_0": [{"acct_no": SENTINEL_ACCOUNT, "acct_type": "03"}],
             }
+
+        def bind_account_allowlist(self, _: Any) -> None:
+            pass
 
         async def fetch_quote(self, **_: Any) -> dict[str, Any]:
             raise NHPlugMockBrokerRejected(response_code="mock_quote_unavailable")

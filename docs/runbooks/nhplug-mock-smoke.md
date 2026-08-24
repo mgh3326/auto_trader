@@ -5,11 +5,11 @@
 ## 안전 경계
 
 - 데이터 클라이언트는 `https://moapi.nhplug.com:8443`만 허용한다. 다른 scheme·호스트·포트·경로는 거부한다.
-- 요청을 만든 뒤 `send` 직전에 `request.url.scheme`, `request.url.host`, `request.url.port`, path를 다시 확인한다. OAuth와 데이터 양쪽에서 `follow_redirects=False`를 명시한다. 3xx는 따라가지 않고 실패한다.
+- 요청을 만든 뒤 `send` 직전에 `request.url.scheme`, `request.url.host`, `request.url.port`, path를 다시 확인한다. OAuth와 데이터 양쪽에서 `follow_redirects=False`를 명시한다. 3xx는 따라가지 않고 실패한다. 이는 호스트 경계만이 아니라 APP KEY/SECRET 경계다. httpx는 cross-origin redirect에서 custom credential header를 자동 제거하지 않을 수 있으므로 redirect를 따르면 secret이 외부 host로 전달될 수 있다.
 - 데이터 allowlist는 `/n2/acctinfo`, 국내 잔고, 국내 현재가 세 path뿐이며, allowlist 검사는 토큰 해석과 소켓 생성 전에 실행된다.
-- 계좌목록에서 `acct_type=03`인 값만 allowlist에 넣는다. `01`·`02`는 거부 타입 상수이며, 동일 계좌번호가 상충하는 type으로 중복되면 전체 응답을 거부한다. `NHPLUG_MOCK_ACCOUNT_NO`도 반드시 broker 응답의 `03` allowlist에 있어야 한다.
+- 계좌목록에서 `acct_type=03`인 값만 allowlist에 넣는다. `01`·`02`는 거부 타입 상수이며, 동일 계좌번호가 상충하는 type으로 중복되면 전체 응답을 거부한다. `NHPLUG_MOCK_ACCOUNT_NO`도 반드시 broker 응답의 `03` allowlist에 있어야 한다. 검증된 allowlist는 dispatcher에 bind되며, balance/quote dispatch는 caller가 선택적으로 넘긴 allowlist 없이 이를 필수로 사용한다.
 - 잔고와 시세 요청은 시작 시와 `send` 직전 두 번 configured `act_no` allowlist를 확인한다. 시세 본문에는 계좌번호가 없지만, 같은 verified configured account를 두 번 확인해 이중 판별 상태를 유지한다.
-- 접근토큰은 벤더 제약상 운영 OAuth 호스트에서만 발급된다. 운영 호스트를 아는 코드는 `app/services/brokers/nhplug/auth.py` 하나이며, `POST /oauth2/token`, `POST /oauth2/revoke`만 allowlist한다. 데이터 클라이언트는 운영 호스트 상수나 import를 갖지 않는다.
+- 접근토큰은 벤더 제약상 운영 OAuth 호스트에서만 발급된다. 운영 호스트를 아는 코드는 `app/services/brokers/nhplug/auth.py` 하나이며, `POST /oauth2/token`, `POST /oauth2/revoke`만 allowlist한다. OAuth dispatch도 데이터 dispatch와 같은 `NHPLUG_MOCK_ENABLED` master gate 뒤에 있다. 데이터 클라이언트는 운영 호스트 상수나 import를 갖지 않는다.
 - 벤더 Python SDK는 의존하거나 import하지 않는다. 호스트는 env가 아닌 코드 상수이며, `NHPLUG_BASE_URL`과 `NHPLUG_AUTH_URL`은 읽지 않는다.
 
 ## 보장 강도와 제거 불가 위험
@@ -33,7 +33,7 @@ NHPLUG_MOCK_ACCOUNT_NO=...
 
 권장 파일명은 `.env.nhplug-mock.native`다. 이 파일에는 정확히 위 세 키만 있어야 하며 `DATABASE_URL`을 포함하면 안 된다. `NHPLUG_MOCK_ENABLED=true`은 파일이 아니라 실행 환경에서 별도로 명시한다. CLI는 파일명 또는 `ENV_FILE`에 `prod`가 있으면 거부하고, 누락·추가 키는 **이름만** 보고한다.
 
-`NHPLUG_MOCK_ENABLED`은 default-disabled다. 미설정 또는 truthy가 아닌 값에서는 모든 데이터 dispatch가 fail-closed 된다.
+`NHPLUG_MOCK_ENABLED`은 default-disabled다. 미설정 또는 truthy가 아닌 값에서는 모든 OAuth 및 데이터 dispatch가 fail-closed 된다.
 
 ## 실행
 

@@ -14,7 +14,10 @@ from app.services.brokers.nhplug.auth import (
     AUTH_TOKEN_PATH,
     NHPlugAuthClient,
 )
-from app.services.brokers.nhplug.errors import NHPlugMockEndpointError
+from app.services.brokers.nhplug.errors import (
+    NHPlugMockDisabled,
+    NHPlugMockEndpointError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -34,8 +37,44 @@ def _transport(
     return httpx.MockTransport(handler), seen
 
 
+@pytest.fixture
+def armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
+
+
 @pytest.mark.asyncio
-async def test_token_request_uses_only_pinned_oauth_host_port_and_path() -> None:
+@pytest.mark.parametrize("gate_value", (None, "false"))
+async def test_auth_dispatch_gate_blocks_unset_or_false_before_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    gate_value: str | None,
+) -> None:
+    """The production-host exception has the same dispatch-time master gate."""
+
+    if gate_value is None:
+        monkeypatch.delenv("NHPLUG_MOCK_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("NHPLUG_MOCK_ENABLED", gate_value)
+    transport, seen = _transport()
+    client = NHPlugAuthClient(
+        app_key="test-key",
+        app_secret="test-secret",
+        transport=transport,
+    )
+
+    error: Exception | None = None
+    try:
+        await client.get_access_token()
+    except Exception as exc:  # The assertion below fixes both type and dispatch count.
+        error = exc
+
+    assert seen == []
+    assert isinstance(error, NHPlugMockDisabled)
+
+
+@pytest.mark.asyncio
+async def test_token_request_uses_only_pinned_oauth_host_port_and_path(
+    armed: None,
+) -> None:
     transport, seen = _transport()
     client = NHPlugAuthClient(
         app_key="test-key",
@@ -56,7 +95,7 @@ async def test_token_request_uses_only_pinned_oauth_host_port_and_path() -> None
 
 
 @pytest.mark.asyncio
-async def test_auth_token_is_reused_without_a_second_dispatch() -> None:
+async def test_auth_token_is_reused_without_a_second_dispatch(armed: None) -> None:
     transport, seen = _transport()
     client = NHPlugAuthClient(
         app_key="test-key",
@@ -70,7 +109,9 @@ async def test_auth_token_is_reused_without_a_second_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_auth_revoke_is_the_second_and_only_other_allowed_path() -> None:
+async def test_auth_revoke_is_the_second_and_only_other_allowed_path(
+    armed: None,
+) -> None:
     transport, seen = _transport(payload={"rsp_cd": "00000"})
     client = NHPlugAuthClient(
         app_key="test-key",
@@ -86,7 +127,9 @@ async def test_auth_revoke_is_the_second_and_only_other_allowed_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_oauth_path_is_refused_before_any_transport_or_token_work() -> None:
+async def test_non_oauth_path_is_refused_before_any_transport_or_token_work(
+    armed: None,
+) -> None:
     transport, seen = _transport()
     client = NHPlugAuthClient(
         app_key="test-key",
@@ -119,7 +162,7 @@ def test_auth_constructor_rejects_every_non_exact_endpoint(base_url: str) -> Non
 
 
 @pytest.mark.asyncio
-async def test_auth_does_not_follow_redirects() -> None:
+async def test_auth_does_not_follow_redirects(armed: None) -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -144,6 +187,7 @@ async def test_auth_does_not_follow_redirects() -> None:
 
 @pytest.mark.asyncio
 async def test_auth_postbuild_http_scheme_tamper_is_rejected_before_send(
+    armed: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport, seen = _transport()

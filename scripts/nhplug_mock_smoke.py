@@ -194,16 +194,14 @@ async def run(args: argparse.Namespace) -> int:
             payload=account_payload,
             configured_account_no=credentials.account_no,
         )
+        client.bind_account_allowlist(allowlist)
         account_summary = {
             "verified_mock_account_count": allowlist.allowed_count,
             "account_type_counts": dict(allowlist.account_type_counts),
         }
 
         if args.mode == "account":
-            balance_payload = await client.fetch_balance(
-                act_no=credentials.account_no,
-                account_allowlist=allowlist,
-            )
+            balance_payload = await client.fetch_balance(act_no=credentials.account_no)
             _emit(
                 {
                     "mode": "account",
@@ -217,8 +215,6 @@ async def run(args: argparse.Namespace) -> int:
         quote_payload = await client.fetch_quote(
             symbol=args.symbol,
             market=args.market,
-            account_allowlist=allowlist,
-            verified_act_no=credentials.account_no,
         )
         _emit(
             {

@@ -20,6 +20,7 @@ from app.services.brokers.nhplug.client import (
 )
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
+    NHPlugMockConfigurationError,
     NHPlugMockDisabled,
     NHPlugMockEndpointError,
     NHPlugMockReadOnlyEndpointError,
@@ -76,7 +77,11 @@ def armed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_readonly_allowlist_is_exactly_the_three_stage_one_paths() -> None:
     assert ALLOWED_READONLY_PATHS == frozenset(
-        {ACCOUNT_INFO_PATH, BALANCE_PATH, QUOTE_PATH}
+        {
+            "/n2/acctinfo",
+            "/krstock/inquiry/v1/balance",
+            "/krstock/quote/v1/currentPrice",
+        }
     )
 
 
@@ -131,6 +136,30 @@ async def test_non_allowlisted_path_is_refused_before_token_or_transport(
 
 
 @pytest.mark.asyncio
+async def test_account_scoped_dispatch_requires_a_bound_allowlist_before_token_or_transport(
+    armed: None,
+) -> None:
+    """A direct dispatcher call cannot skip the broker-derived account boundary."""
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"rsp_cd": "00166", "Output_0": {}})
+
+    client, token_provider = _client(httpx.MockTransport(handler))
+    with pytest.raises(NHPlugMockConfigurationError, match="broker-verified"):
+        await client._post_readonly(
+            path=BALANCE_PATH,
+            input_0={"act_no": "LIVE-01-ACCOUNT"},
+            act_no="LIVE-01-ACCOUNT",
+        )
+
+    assert token_provider.calls == 0
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_mock_account_is_verified_then_balance_is_sent_to_only_mock_host(
     armed: None,
 ) -> None:
@@ -148,10 +177,8 @@ async def test_mock_account_is_verified_then_balance_is_sent_to_only_mock_host(
         payload=account_payload,
         configured_account_no="mock-account",
     )
-    result = await client.fetch_balance(
-        act_no="mock-account",
-        account_allowlist=allowlist,
-    )
+    client.bind_account_allowlist(allowlist)
+    result = await client.fetch_balance(act_no="mock-account")
 
     assert result["rsp_cd"] == "00166"
     assert [request.url.path for request in seen] == [ACCOUNT_INFO_PATH, BALANCE_PATH]
@@ -185,17 +212,8 @@ def test_live_account_type_is_rejected_even_on_the_valid_mock_host(
 @pytest.mark.asyncio
 async def test_account_recheck_immediately_before_send_blocks_a_changed_allowlist(
     armed: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _TwoStepAllowlist:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def assert_allowed(self, act_no: str) -> None:
-            assert act_no == "mock-account"
-            self.calls += 1
-            if self.calls == 2:
-                raise NHPlugMockAccountRejected("account changed after request build")
-
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -203,14 +221,27 @@ async def test_account_recheck_immediately_before_send_blocks_a_changed_allowlis
         return httpx.Response(200, json={"rsp_cd": "00166", "Output_0": {}})
 
     client, token_provider = _client(httpx.MockTransport(handler))
-    allowlist = _TwoStepAllowlist()
-    with pytest.raises(NHPlugMockAccountRejected):
-        await client.fetch_balance(
-            act_no="mock-account",
-            account_allowlist=allowlist,  # type: ignore[arg-type]
-        )
+    allowlist = _allowlist()
+    client.bind_account_allowlist(allowlist)
+    allowlist_calls = 0
 
-    assert allowlist.calls == 2
+    def assert_allowed_after_request_build(
+        self: MockAccountAllowlist, act_no: str
+    ) -> None:
+        nonlocal allowlist_calls
+        assert self is allowlist
+        assert act_no == "mock-account"
+        allowlist_calls += 1
+        if allowlist_calls == 2:
+            raise NHPlugMockAccountRejected("account changed after request build")
+
+    monkeypatch.setattr(
+        MockAccountAllowlist, "assert_allowed", assert_allowed_after_request_build
+    )
+    with pytest.raises(NHPlugMockAccountRejected):
+        await client.fetch_balance(act_no="mock-account")
+
+    assert allowlist_calls == 2
     assert token_provider.calls == 1
     assert calls == []
 
@@ -287,12 +318,10 @@ async def test_valid_mock_account_cannot_compensate_for_a_host_mismatch(
         httpx.AsyncClient, "build_request", build_production_host_request
     )
     client, token_provider = _client(httpx.MockTransport(handler))
+    client.bind_account_allowlist(_allowlist())
 
     with pytest.raises(NHPlugMockEndpointError):
-        await client.fetch_balance(
-            act_no="mock-account",
-            account_allowlist=_allowlist(),
-        )
+        await client.fetch_balance(act_no="mock-account")
 
     assert token_provider.calls == 1
     assert calls == []
@@ -343,11 +372,10 @@ async def test_quote_requires_the_same_verified_account_and_exact_symbol(
         return httpx.Response(200, json={"rsp_cd": "00000", "Output_0": {}})
 
     client, _ = _client(httpx.MockTransport(handler))
+    client.bind_account_allowlist(_allowlist())
     await client.fetch_quote(
         symbol="005930",
         market="KRX",
-        account_allowlist=_allowlist(),
-        verified_act_no="mock-account",
     )
 
     assert len(seen) == 1

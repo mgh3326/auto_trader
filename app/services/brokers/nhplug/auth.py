@@ -13,6 +13,7 @@ from typing import Any, Final
 
 import httpx
 
+from app.services.brokers.nhplug.client import _assert_mock_enabled
 from app.services.brokers.nhplug.errors import (
     NHPlugMockConfigurationError,
     NHPlugMockEndpointError,
@@ -150,12 +151,18 @@ class NHPlugAuthClient:
     async def _post_form(self, *, path: str, form: dict[str, str]) -> dict[str, Any]:
         """Check the path before client creation, then recheck just before send."""
 
+        # This is deliberately a dispatch-time gate: direct construction must
+        # never make the production OAuth exception reachable while mock reads
+        # are disabled.
+        _assert_mock_enabled()
         _assert_auth_path(path)
         async with httpx.AsyncClient(
             base_url=self._base_url,
             transport=self._transport,
             timeout=self._timeout,
-            # Explicitly pinned: a redirect is otherwise a host-boundary bypass.
+            # A 307/308 redirect could forward this credential-bearing form
+            # to another host, so this is an APP KEY/SECRET boundary as well
+            # as a host-boundary control.
             follow_redirects=False,
         ) as client:
             request = client.build_request(
