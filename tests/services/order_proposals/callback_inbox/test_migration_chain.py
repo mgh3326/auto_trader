@@ -59,7 +59,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260823_screener_pick_log"
+HEAD_REVISION = "20260824_s257_rung_reason"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -125,6 +125,15 @@ async def scratch_database() -> AsyncIterator[str]:
                 await connection.run_sync(Base.metadata.create_all)
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                # ROB-s257 E-2 is later than this reconstructed boundary.
+                # Current metadata already contains its nullable observation
+                # column, so drop it and let the migration add it back.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposal_rungs "
+                        "DROP COLUMN void_reason_group"
+                    )
+                )
         finally:
             await engine.dispose()
 
