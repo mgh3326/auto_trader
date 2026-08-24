@@ -790,6 +790,12 @@ class BaseKISClient:
                     continue
 
                 data, is_rate_limited = self._parse_kis_response(response, api_name)
+                if send_outcome is not None:
+                    send_outcome.record_response_protocol(
+                        response=response,
+                        endpoint_url=url,
+                        response_body=data,
+                    )
 
                 if is_rate_limited and attempt < max_retries:
                     wait_time = self._calculate_retry_delay(

@@ -17,7 +17,11 @@ from .order_throttle import (
     throttle_backoff_seconds,
 )
 from .pre_send import PreSendHook
-from .send_outcome import OrderSendDisposition, OrderSendOutcomeTracker
+from .send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+    emit_throttle_protocol_evidence,
+)
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -499,6 +503,11 @@ class DomesticOrderClient:
             # every ambiguous outcome: the NOT_CREATED check below excludes the
             # 5xx-with-body case, and timeouts never reach here at all.
             if is_provider_throttle_reject(msg_cd, msg1):
+                emit_throttle_protocol_evidence(
+                    order_surface="domestic",
+                    provider_message_code=msg_cd,
+                    outcome=outcome,
+                )
                 if outcome.disposition is not OrderSendDisposition.NOT_CREATED:
                     logging.error(
                         "국내주식 주문 초당한도 거절이나 결과 불확정(http=%s) - "

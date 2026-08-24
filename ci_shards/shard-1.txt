@@ -326,6 +326,7 @@ tests/test_kis_mock_us_cash_probe.py
 tests/test_kis_order_ops.py
 tests/test_kis_order_throttle_repost.py
 tests/test_kis_overseas_price_smoke.py
+tests/test_kis_throttle_protocol_evidence.py
 tests/test_kis_token_circuit_open_propagation.py
 tests/test_kis_trading_service_exception_handling.py
 tests/test_kis_vts_token_cache.py
