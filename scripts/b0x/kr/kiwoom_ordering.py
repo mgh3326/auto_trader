@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Protocol
 
 from app.schemas.execution_contracts import LaneStatus
@@ -261,21 +262,23 @@ KIWOOM_RELEASE_IF_MATCHES: Final[str] = (
     "or authoritative_absence_proven=True after pre-send NOT_CREATED)"
 )
 
-# C3-1..C3-6: one immutable-shaped lane contract assembled from the existing
+# C3-1..C3-6: one immutable lane contract assembled from the existing
 # Kiwoom constants.  Keep the values above as the single definitions; this
 # dict is the closed contract surface consumed by the cycle/canary tests.
-KIWOOM_LANE_RECOVERY_CONTRACT: Final[dict[str, str]] = {
-    # C3-1: exactly one owner. Not a list, not "TBD".
-    "recovery_owner": KIWOOM_RECOVERY_OWNER,
-    # C3-2: what rediscovers surviving durable claims after a restart.
-    "restart_trigger": KIWOOM_RESTART_TRIGGER,
-    # C3-3: the authoritative broker readback.
-    "readback_operation": KIWOOM_READBACK_OPERATION,
-    # C3-5: the exact release condition.
-    "release_if_matches": KIWOOM_RELEASE_IF_MATCHES,
-    # C3-6: what an operator sees when authoritative recovery is impossible.
-    "blocked_state": KIWOOM_LIFECYCLE_STATUS,
-}
+KIWOOM_LANE_RECOVERY_CONTRACT: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        # C3-1: exactly one owner. Not a list, not "TBD".
+        "recovery_owner": KIWOOM_RECOVERY_OWNER,
+        # C3-2: what rediscovers surviving durable claims after a restart.
+        "restart_trigger": KIWOOM_RESTART_TRIGGER,
+        # C3-3: the authoritative broker readback.
+        "readback_operation": KIWOOM_READBACK_OPERATION,
+        # C3-5: the exact release condition.
+        "release_if_matches": KIWOOM_RELEASE_IF_MATCHES,
+        # C3-6: what an operator sees when authoritative recovery is impossible.
+        "blocked_state": KIWOOM_LIFECYCLE_STATUS,
+    }
+)
 
 _KIWOOM_ALLOWED_HOST: Final[str] = "mockapi.kiwoom.com"
 
@@ -672,6 +675,7 @@ class KiwoomCoordinationPorts:
     entry: LaneRegistryEntry
     diagnostic_fingerprint: str | None = None
     coordination_provenance: object | None = None
+    legacy_offline: bool = False
 
 
 class KiwoomCoordinationAdapter:

@@ -16,6 +16,7 @@ from scripts.b0x.kr import kiwoom_cycle, kiwoom_ordering
 from scripts.b0x.kr.kiwoom_coordination import (
     KIWOOM_COORDINATION_OWNER_ACCOUNT_MISMATCH,
     KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+    KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
     KIWOOM_COORDINATION_OWNER_LANE_MISMATCH,
     KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
     KIWOOM_COORDINATION_OWNER_TYPE_REJECTED,
@@ -32,6 +33,7 @@ from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount
 from tests.scripts.b0x.kr.kiwoom.test_kiwoom_cycle import _write_table
 from tests.services.mock_integration.test_kiwoom_coordination_adapter import (
     bound_kiwoom_entry,
+    offline_coordination_factory,
 )
 
 pytestmark = pytest.mark.unit
@@ -84,6 +86,8 @@ def test_recovery_contract_is_a_pin_over_existing_constants() -> None:
         "release_if_matches": kiwoom_ordering.KIWOOM_RELEASE_IF_MATCHES,
         "blocked_state": kiwoom_ordering.KIWOOM_LIFECYCLE_STATUS,
     }
+    with pytest.raises(TypeError):
+        kiwoom_ordering.KIWOOM_LANE_RECOVERY_CONTRACT["recovery_owner"] = "mutant"  # type: ignore[index]
 
 
 def test_bound_factory_creates_the_adapter_from_the_exact_lane_entry() -> None:
@@ -278,9 +282,52 @@ def test_unpinned_fabricated_entry_is_rejected_by_provenance() -> None:
     assert owner is None
     assert record["identity_guard"] == {
         "status": "rejected",
-        "code": KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
-        "owner_type": "KiwoomCoordinationAdapter",
+        "code": KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+        "owner_type": None,
     }
+
+
+@pytest.mark.parametrize("fabricated", (False, True), ids=("N1", "N1c"))
+def test_send_capable_unpinned_owner_is_rejected_before_factory_use(
+    fabricated: bool,
+) -> None:
+    entry = bound_kiwoom_entry()
+    if fabricated:
+        entry = replace(entry, physical_account_id="ATTACKER-ACCOUNT-9999")
+    source_ports = make_grant_only_kiwoom_coordination_adapter(entry).ports
+    unproven_ports = replace(source_ports, coordination_provenance=None)
+    send_capable = kiwoom_ordering.KiwoomCoordinationAdapter(unproven_ports)
+    called = False
+
+    def factory() -> object:
+        nonlocal called
+        called = True
+        return send_capable
+
+    owner, record = kiwoom_cycle._resolve_coordination_owner(
+        coordination_factory=factory,
+        expected_entry=None,
+    )
+    assert owner is None
+    assert called is False
+    assert record["identity_guard"] == {
+        "status": "rejected",
+        "code": KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+        "owner_type": None,
+    }
+
+
+def test_legacy_offline_fixture_is_explicit_without_send_authorization() -> None:
+    entry = bound_kiwoom_entry()
+    adapter = offline_coordination_factory(entry=entry)
+    owner, record = kiwoom_cycle._resolve_coordination_owner(
+        coordination_factory=lambda: adapter,
+        expected_entry=entry,
+    )
+    assert owner is adapter
+    assert record["legacy_offline"] is True
+    assert record["authorizes_send"] is False
+    assert record["local_flock_authorizes_send"] is False
 
 
 class _NoopLease:
@@ -402,6 +449,7 @@ async def test_factory_creation_failure_is_explicit_and_zero_order(
         account=account,
         lease_factory=lambda *_: _NoopLease(),
         coordination_factory=fail_factory,
+        coordination_entry=bound_kiwoom_entry(),
         realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
             value=Decimal("0"), source="factory-failure-test"
         ),

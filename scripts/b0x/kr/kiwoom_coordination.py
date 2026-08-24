@@ -54,6 +54,9 @@ KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH: Final[str] = (
 KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED: Final[str] = (
     "coordination_owner_provenance_rejected"
 )
+KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED: Final[str] = (
+    "coordination_owner_entry_required"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +75,7 @@ class _KiwoomOwnerConstructionProof:
     provenance: _KiwoomCoordinationEntryProvenance
     constructed_type: type[KiwoomCoordinationAdapter]
     grant_only: bool
+    legacy_offline: bool
 
 
 _OWNER_CONSTRUCTION_PROOFS: WeakKeyDictionary[
@@ -165,6 +169,7 @@ def _register_approved_adapter(
         provenance=provenance,
         constructed_type=type(adapter),
         grant_only=grant_only,
+        legacy_offline=getattr(ports, "legacy_offline", False),
     )
     return adapter
 
@@ -201,7 +206,6 @@ def assert_kiwoom_coordination_owner(
     *,
     expected_lane_id: str = KIWOOM_KR_LANE_ID,
     expected_entry: LaneRegistryEntry | None = None,
-    _allow_legacy_unpinned: bool = False,
 ) -> KiwoomCoordinationAdapter:
     """Validate the exact nominated adapter and its pinned account identity.
 
@@ -233,30 +237,36 @@ def assert_kiwoom_coordination_owner(
                 KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH, lane_id=entry.lane_id
             )
 
-    # The legacy escape is only for the pre-existing offline ordering fixture:
-    # it has no provenance field and is send-capable.  Any G1/G2 canary, or
-    # any adapter carrying the new provenance surface, stays on the strict
-    # path even if a caller forgot the entry pin.
-    strict_owner = (
-        not _allow_legacy_unpinned
-        or owner.grant_only is True
-        or getattr(ports, "coordination_provenance", None) is not None
-    )
-    if strict_owner:
-        proof = _assert_owner_provenance(owner, ports, entry)
+    proof = _assert_owner_provenance(owner, ports, entry)
+    legacy_offline = getattr(ports, "legacy_offline", False)
+    if expected_entry is None and legacy_offline is True:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+            lane_id=entry.lane_id,
+        )
+    if (
+        expected_entry is None
+        and proof.provenance.pinned_entry is not proof.provenance.canonical_entry
+    ):
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
+            lane_id=entry.lane_id,
+        )
+    if legacy_offline is True:
         if (
-            expected_entry is None
-            and proof.provenance.pinned_entry is not proof.provenance.canonical_entry
+            proof.legacy_offline is not True
+            or owner.grant_only is not False
+            or proof.grant_only is not False
         ):
-            raise KiwoomCoordinationOwnerRejected(
-                KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED,
-                lane_id=entry.lane_id,
-            )
-        if owner.grant_only is not True or proof.grant_only is not True:
             raise KiwoomCoordinationOwnerRejected(
                 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
                 lane_id=entry.lane_id,
             )
+    elif owner.grant_only is not True or proof.grant_only is not True:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=entry.lane_id,
+        )
     try:
         expected_physical_account_id = require_j2a_physical_account_id(entry)
     except LaneGuardError as exc:
@@ -377,6 +387,7 @@ __all__ = [
     "KIWOOM_COORDINATION_OWNER_ACCOUNT_MISMATCH",
     "KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH",
     "KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH",
+    "KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED",
     "KIWOOM_COORDINATION_OWNER_LANE_MISMATCH",
     "KIWOOM_COORDINATION_OWNER_PORTS_REJECTED",
     "KIWOOM_COORDINATION_OWNER_PROVENANCE_REJECTED",

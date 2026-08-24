@@ -63,6 +63,7 @@ from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from scripts.b0x.kr import kiwoom_ordering as ordering_support
 from scripts.b0x.kr.kiwoom_coordination import (
+    KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
     KiwoomCoordinationOwnerRejected,
     assert_kiwoom_coordination_owner,
 )
@@ -2177,10 +2178,19 @@ def _resolve_coordination_owner(
         "recovery_owner": None,
         "authorizes_send": False,
         "local_flock_authorizes_send": False,
+        "legacy_offline": False,
         "recovery_contract": dict(ordering_support.KIWOOM_LANE_RECOVERY_CONTRACT),
         "identity_guard": {"status": "not_configured"},
     }
     if coordination_factory is None:
+        return None, base
+
+    if expected_entry is None:
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+            "owner_type": None,
+        }
         return None, base
 
     try:
@@ -2207,10 +2217,6 @@ def _resolve_coordination_owner(
             candidate,
             expected_lane_id=ordering_support.KIWOOM_CANONICAL_LANE_ID,
             expected_entry=expected_entry,
-            # Existing offline ordering integration fixtures deliberately use
-            # a send-capable adapter without the G1/G2 production provenance.
-            # The manual production entrypoint always supplies this pin.
-            _allow_legacy_unpinned=expected_entry is None,
         )
     except KiwoomCoordinationOwnerRejected as exc:
         base["identity_guard"] = {
@@ -2234,7 +2240,11 @@ def _resolve_coordination_owner(
             # G1/G2 records owner presence only.  A grant-only adapter never
             # opens send; a future non-canary adapter may expose this field to
             # the later bounded-send stage.
-            "authorizes_send": not owner.grant_only,
+            "authorizes_send": (
+                not owner.grant_only
+                and getattr(owner.ports, "legacy_offline", False) is not True
+            ),
+            "legacy_offline": getattr(owner.ports, "legacy_offline", False),
             "identity_guard": {
                 "status": "accepted",
                 "owner_type": type(owner).__name__,
