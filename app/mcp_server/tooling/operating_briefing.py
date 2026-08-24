@@ -230,10 +230,14 @@ async def _recent_session_context(
     limit: int,
 ) -> dict[str, Any]:
     service = SessionContextService(db)
+    # An operator instruction stored with account_scope=NULL is market-wide and
+    # must reach every account briefing for that market. Strict equality hid
+    # those rows from the run-start briefing entirely.
     rows = await service.get_recent(
         market=market,  # type: ignore[arg-type]
         account_scope=account_scope,  # type: ignore[arg-type]
         limit=max(1, min(int(limit), 100)),
+        include_market_wide=True,
     )
     return {
         "count": len(rows),
