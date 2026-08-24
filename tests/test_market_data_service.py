@@ -279,6 +279,14 @@ async def test_get_ohlcv_kr_intraday_uses_shared_reader(
 async def test_get_orderbook_parses_kr_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "now_kst",
+        lambda: dt.datetime(
+            2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
+    )
+
     class DummyKIS:
         async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             assert code == "005930"
@@ -293,6 +301,7 @@ async def test_get_orderbook_parses_kr_snapshot(
                     "bidp_rsqn1": "321",
                     "total_askp_rsqn": "1000",
                     "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "080135",
                 },
                 {"antc_cnpr": "70050", "antc_cnqn": "42"},
             )
@@ -310,6 +319,12 @@ async def test_get_orderbook_parses_kr_snapshot(
         total_ask_qty=1000,
         total_bid_qty=1500,
         bid_ask_ratio=1.5,
+        # KIS supplied only a clock; the complete timestamp is the transport
+        # receive instant, never today's date combined with that clock.
+        as_of=dt.datetime(
+            2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
+        price_as_of_source="transport",
         expected_price=70050,
         expected_qty=42,
         venue="krx",
@@ -325,6 +340,202 @@ async def test_get_orderbook_parses_kr_snapshot(
     assert type(snapshot.asks[0].quantity) is int
     assert type(snapshot.total_ask_qty) is int
     assert type(snapshot.total_bid_qty) is int
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_keeps_as_of_missing_without_broker_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    response_events: list[str] = []
+
+    def receive_clock() -> dt.datetime:
+        assert response_events == ["response_parsed"]
+        return received_at
+
+    monkeypatch.setattr(market_data_service, "now_kst", receive_clock)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            response_events.append("response_parsed")
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_uses_transport_receive_time_for_broker_clock_without_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "080135",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of == received_at
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_rejects_provider_clock_that_contradicts_receive_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "153000",
+                    "stck_bsop_date": "20260823",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of is None
+    assert snapshot.price_as_of_source is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_accepts_provider_date_when_clock_is_within_five_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "bidp1": "70000",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "080135",
+                    "stck_bsop_date": "20260823",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of == dt.datetime(
+        2026, 8, 23, 8, 1, 35, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    assert snapshot.price_as_of_source == "broker"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_accepts_midnight_wraparound_clock_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 25, 0, 1, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "bidp1": "70000",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "235900",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of == received_at
+    assert snapshot.price_as_of_source == "transport"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_rejects_malformed_provider_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_at = dt.datetime(
+        2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+    )
+    monkeypatch.setattr(market_data_service, "now_kst", lambda: received_at)
+
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70100",
+                    "bidp1": "70000",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                    "aspr_acpt_hour": "080135",
+                    "stck_bsop_date": "not-a-date",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.as_of is None
+    assert snapshot.price_as_of_source is None
 
 
 @pytest.mark.asyncio
@@ -591,7 +802,7 @@ async def test_get_orderbook_parses_crypto_snapshot(
         AsyncMock(
             return_value={
                 "market": "KRW-BTC",
-                "timestamp": 1730000000,
+                "timestamp": 1730000000000,
                 "total_ask_size": 3.75,
                 "total_bid_size": 7.5,
                 "orderbook_units": [
@@ -617,6 +828,10 @@ async def test_get_orderbook_parses_crypto_snapshot(
         total_ask_qty=3.75,
         total_bid_qty=7.5,
         bid_ask_ratio=2.0,
+        as_of=dt.datetime(
+            2024, 10, 27, 12, 33, 20, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
+        price_as_of_source="broker",
         expected_price=None,
         expected_qty=None,
     )
@@ -654,6 +869,38 @@ async def test_get_orderbook_crypto_returns_none_ratio_when_total_ask_is_zero(
     snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
 
     assert snapshot.bid_ask_ratio is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_timestamp", [None, "garbage", 0])
+async def test_get_orderbook_crypto_missing_or_malformed_as_of_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_timestamp,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(
+            return_value={
+                "market": "KRW-BTC",
+                "timestamp": raw_timestamp,
+                "total_ask_size": 1.0,
+                "total_bid_size": 1.0,
+                "orderbook_units": [
+                    {
+                        "ask_price": 140.1,
+                        "bid_price": 139.9,
+                        "ask_size": 1.0,
+                        "bid_size": 1.0,
+                    }
+                ],
+            }
+        ),
+    )
+
+    snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+    assert snapshot.as_of is None
 
 
 @pytest.mark.asyncio

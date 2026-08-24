@@ -35,6 +35,7 @@ from app.mcp_server.tooling.market_data_indicators import (
 )
 from app.mcp_server.tooling.market_data_quotes import (
     _annotate_kr_price_freshness,
+    _annotate_orderbook_price_freshness,
     _apply_nxt_quote_overlay,
     _fetch_kr_live_quote,
     _fetch_quote_crypto,
@@ -125,14 +126,21 @@ async def _resolve_kr_quote(
         # ROB-725: during NXT premarket/after-hours the KRX regular quote is the
         # prior close — overlay the live NXT price so current_price + S/R
         # distance_pct track the real market.
-        # ROB-1121: overlay 낸 NXT orderbook에는 provider 체결 timestamp가 없으므로
-        # overlay 적용 시 unavailable/fail-closed로 다시 태그한다.
-        # _apply_nxt_quote_overlay 낸부에서도 동일하게 처리하지만, caller 측에서
-        # 한 번 더 보장하면 커스텀 overlay mock 등에서 누락을 막는다.
+        # Re-apply the NXT orderbook-only date + N=5분 gate at this caller
+        # boundary so custom overlay seams cannot bypass its fail-closed result.
+        had_price_as_of = "price_as_of" in quote
+        previous_price_as_of = quote.pop("price_as_of", None)
         if await _apply_nxt_quote_overlay(
             symbol, quote, data_state=kr_market_data_state()
         ):
-            _annotate_kr_price_freshness(quote, None, trading_date=trading_date)
+            _annotate_orderbook_price_freshness(
+                quote,
+                quote.get("price_as_of"),
+                trading_date=trading_date,
+                require_trading_date=True,
+            )
+        elif had_price_as_of:
+            quote["price_as_of"] = previous_price_as_of
         return quote
 
     live = await _fetch_kr_live_quote(symbol)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from unittest.mock import AsyncMock
 
 import pytest
@@ -57,6 +58,7 @@ async def test_get_orderbook_returns_kr_payload(
         "spread_pct": 0.143,
         "expected_price": 70050,
         "expected_qty": 42,
+        "price_as_of_source": None,
         "bid_walls": [],
         "ask_walls": [],
     }
@@ -127,6 +129,12 @@ async def test_get_orderbook_returns_crypto_payload(
         "spread_pct": 5.0,
         "expected_price": None,
         "expected_qty": None,
+        "price_as_of_source": None,
+        "price_as_of": None,
+        "is_stale_price": True,
+        "price_freshness": "unavailable",
+        "price_usable": False,
+        "price_unavailable_reason": "missing_price_asof",
         "bid_walls": [{"price": 9.5, "size": 5.0, "value_krw": 48}],
         "ask_walls": [{"price": 11.0, "size": 5.0, "value_krw": 55}],
     }
@@ -134,6 +142,80 @@ async def test_get_orderbook_returns_crypto_payload(
     assert type(result["asks"][0]["quantity"]) is float
     assert type(result["total_ask_qty"]) is float
     assert type(result["spread"]) is float
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("as_of", "expected_freshness", "expected_usable"),
+    [
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 8, 1, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "fresh",
+            True,
+            id="upbit-within-five-minutes",
+        ),
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 7, 57, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "fresh",
+            True,
+            id="upbit-exactly-five-minutes-is-fresh",
+        ),
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 7, 56, 59, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "stale",
+            False,
+            id="upbit-over-five-minutes-is-stale",
+        ),
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 7, 32, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "stale",
+            False,
+            id="upbit-thirty-minutes-old",
+        ),
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 8, 3, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "stale",
+            False,
+            id="upbit-future",
+        ),
+    ],
+)
+async def test_get_orderbook_upbit_applies_bounded_asof_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    as_of: dt.datetime,
+    expected_freshness: str,
+    expected_usable: bool,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes,
+        "now_kst",
+        lambda: dt.datetime(
+            2026, 8, 24, 8, 2, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+        ),
+    )
+    snapshot = _make_snapshot(
+        symbol="KRW-BTC",
+        instrument_type="crypto",
+        source="upbit",
+        as_of=as_of,
+    )
+
+    payload = market_data_quotes._build_orderbook_payload(snapshot)
+
+    assert payload["price_freshness"] == expected_freshness
+    assert payload["price_usable"] is expected_usable
 
 
 @pytest.mark.asyncio
@@ -240,6 +322,7 @@ async def test_get_orderbook_preserves_null_expected_qty_in_payload(
         "spread_pct": 0.143,
         "expected_price": 70050,
         "expected_qty": None,
+        "price_as_of_source": None,
         "bid_walls": [],
         "ask_walls": [],
     }
