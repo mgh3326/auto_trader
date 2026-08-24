@@ -299,6 +299,23 @@ def test_annotate_kr_price_freshness_compares_kst_trading_date(
     assert quote["price_usable"] is (expected_freshness == "fresh")
 
 
+def test_annotate_orderbook_date_predicate_survives_at_midnight_boundary():
+    quote: dict[str, object] = {}
+    as_of = datetime.datetime(2026, 8, 24, 0, 1, 0, tzinfo=market_data_quotes._KST)
+    now = datetime.datetime(2026, 8, 24, 0, 2, 0, tzinfo=market_data_quotes._KST)
+
+    market_data_quotes._annotate_orderbook_price_freshness(
+        quote,
+        as_of,
+        trading_date=datetime.date(2026, 8, 23),
+        require_trading_date=True,
+        now=now,
+    )
+
+    assert quote["price_freshness"] == "stale"
+    assert quote["price_usable"] is False
+
+
 @pytest.mark.asyncio
 async def test_apply_nxt_quote_overlay_stamps_unavailable_freshness(monkeypatch):
     async def fake_session(data_state, *, now=None):
@@ -380,6 +397,7 @@ def _nxt_snapshot_for_asof_tests(
         total_bid_qty=100,
         bid_ask_ratio=1.0,
         as_of=as_of,
+        price_as_of_source="broker" if as_of is not None else None,
         expected_price=expected_price,
         venue="nxt",
         venue_label="NXT",
@@ -429,6 +447,7 @@ async def test_fetch_nxt_quote_overlay_propagates_as_of_to_all_price_branches(
     assert overlay["price"] == expected_value
     assert overlay["price_source"] == expected_source
     assert overlay["price_as_of"] == "2026-08-24T08:01:35+09:00"
+    assert overlay["price_as_of_source"] == "broker"
 
 
 @pytest.mark.asyncio
@@ -554,17 +573,16 @@ async def _run_nxt_asof_verify_case(
         "expected_usable",
     ),
     [
-        # The original A/B/C/D/F cases are retained with their post-fix
-        # expected decisions; A/F are transport-time evidence, not fabricated
-        # broker-date evidence.
+        # Clock-only values that contradict the receive clock now fail closed;
+        # only a clock within the shared N=5-minute bound may use transport time.
         pytest.param(
             "A1",
             {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "153000"},
             NXT_ASOF_VERIFY_NOW,
-            "2026-08-24T08:02:00+09:00",
-            "fresh",
-            True,
-            id="A1-clock-only-transport-time",
+            None,
+            "unavailable",
+            False,
+            id="A1-clock-only-contradiction",
         ),
         pytest.param(
             "A2",
@@ -579,19 +597,19 @@ async def _run_nxt_asof_verify_case(
             "A3",
             {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "235959"},
             NXT_ASOF_VERIFY_NOW,
-            "2026-08-24T08:02:00+09:00",
-            "fresh",
-            True,
-            id="A3-clock-only-no-future-synthesis",
+            None,
+            "unavailable",
+            False,
+            id="A3-clock-only-contradiction",
         ),
         pytest.param(
             "A4",
             {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "000000"},
             NXT_ASOF_VERIFY_NOW,
-            "2026-08-24T08:02:00+09:00",
-            "fresh",
-            True,
-            id="A4-clock-only-transport-time",
+            None,
+            "unavailable",
+            False,
+            id="A4-clock-only-contradiction",
         ),
         pytest.param(
             "B",
@@ -622,19 +640,19 @@ async def _run_nxt_asof_verify_case(
                 "stck_bsop_date": "20260823",
             },
             NXT_ASOF_VERIFY_NOW,
-            "2026-08-23T15:30:00+09:00",
-            "stale",
+            None,
+            "unavailable",
             False,
-            id="D-provider-date-stale",
+            id="D-provider-clock-contradiction",
         ),
         pytest.param(
             "F",
             {**NXT_ASOF_VERIFY_BOOK, "aspr_acpt_hour": "235959"},
             NXT_ASOF_VERIFY_NOW,
-            "2026-08-24T08:02:00+09:00",
-            "fresh",
-            True,
-            id="F-clock-only-does-not-create-future",
+            None,
+            "unavailable",
+            False,
+            id="F-clock-only-contradiction",
         ),
     ],
 )

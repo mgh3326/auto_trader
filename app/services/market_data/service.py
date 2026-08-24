@@ -32,6 +32,7 @@ from app.services.domain_errors import (
 from app.services.kr_hourly_candles_read_service import read_kr_intraday_candles
 from app.services.market_data.constants import (
     KR_INTRADAY_OHLCV_PERIODS,
+    ORDERBOOK_ASOF_MAX_AGE_S148_N5,
     US_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
@@ -341,18 +342,21 @@ def _parse_upbit_orderbook_levels(
     return levels
 
 
-def _parse_orderbook_as_of(
+def _parse_orderbook_as_of_details(
     output1: dict[str, Any],
     output2: dict[str, Any] | None,
     received_at: dt.datetime,
-) -> dt.datetime | None:
+) -> tuple[dt.datetime | None, str | None]:
     """Resolve an orderbook timestamp at the broker/transport boundary.
 
     KIS FHKST01010200 exposes ``aspr_acpt_hour`` (quote acceptance time), but
     not a date.  Never synthesize a date from the transport clock (ROB-1121).
     When a valid broker time has no broker date, the transport receive instant
-    is the honest complete timestamp.  Missing or malformed broker time stays
-    unavailable so freshness consumers fail closed.
+    is the honest complete timestamp only when the broker clock is within the
+    same N=5-minute bound used by the downstream freshness gate.  The comparison
+    is circular over 24 hours so a legitimate 23:59 → 00:01 boundary is accepted.
+    Missing, malformed, or contradictory broker time stays unavailable so
+    freshness consumers fail closed.
     """
     provider_time = (
         output1.get("aspr_acpt_hour")
@@ -375,7 +379,8 @@ def _parse_orderbook_as_of(
             parsed_time = None
 
     parsed_date: dt.date | None = None
-    if provider_date not in (None, ""):
+    provider_date_present = provider_date not in (None, "")
+    if provider_date_present:
         try:
             parsed_date = dt.datetime.strptime(
                 str(provider_date).strip(), "%Y%m%d"
@@ -384,15 +389,43 @@ def _parse_orderbook_as_of(
             parsed_date = None
 
     if parsed_time is None:
-        return None
+        return None, None
+    if provider_date_present and parsed_date is None:
+        return None, None
+
+    received_kst = (
+        received_at.replace(tzinfo=KST)
+        if received_at.tzinfo is None
+        else received_at.astimezone(KST)
+    )
+    provider_seconds = (
+        parsed_time.hour * 3600 + parsed_time.minute * 60 + parsed_time.second
+    )
+    received_seconds = (
+        received_kst.hour * 3600 + received_kst.minute * 60 + received_kst.second
+    )
+    clock_delta = abs(provider_seconds - received_seconds)
+    circular_delta = min(clock_delta, 24 * 60 * 60 - clock_delta)
+    if circular_delta > ORDERBOOK_ASOF_MAX_AGE_S148_N5.total_seconds():
+        return None, None
+
     if parsed_date is None:
-        return received_at
-    return dt.datetime.combine(parsed_date, parsed_time, tzinfo=KST)
+        return received_kst, "transport"
+    return dt.datetime.combine(parsed_date, parsed_time, tzinfo=KST), "broker"
+
+
+def _parse_orderbook_as_of(
+    output1: dict[str, Any],
+    output2: dict[str, Any] | None,
+    received_at: dt.datetime,
+) -> dt.datetime | None:
+    """Return the validated orderbook timestamp without its provenance tag."""
+    as_of, _ = _parse_orderbook_as_of_details(output1, output2, received_at)
+    return as_of
 
 
 def _parse_upbit_orderbook_as_of(
     raw_timestamp: Any,
-    received_at: dt.datetime,
 ) -> dt.datetime | None:
     """Parse Upbit's timestamp; missing provider time remains unavailable."""
     try:
@@ -507,12 +540,12 @@ async def get_orderbook(
         resolved_symbol = _validate_crypto_orderbook_symbol(symbol)
         try:
             raw = await fetch_orderbook(resolved_symbol)
-            received_at = now_kst()
             if not raw:
                 raise SymbolNotFoundError(f"Symbol '{resolved_symbol}' not found")
 
             total_ask_qty = _to_float(raw.get("total_ask_size"))
             total_bid_qty = _to_float(raw.get("total_bid_size"))
+            as_of = _parse_upbit_orderbook_as_of(raw.get("timestamp"))
             return OrderbookSnapshot(
                 symbol=resolved_symbol,
                 instrument_type="crypto",
@@ -532,7 +565,8 @@ async def get_orderbook(
                     if total_ask_qty > 0
                     else None
                 ),
-                as_of=_parse_upbit_orderbook_as_of(raw.get("timestamp"), received_at),
+                as_of=as_of,
+                price_as_of_source="broker" if as_of is not None else None,
                 expected_price=None,
                 expected_qty=None,
             )
@@ -563,6 +597,9 @@ async def get_orderbook(
         is_empty_book = not asks and not bids
         requires_final_recheck = is_empty_book
         empty_reason = "empty_kis_orderbook" if is_empty_book else None
+        as_of, as_of_source = _parse_orderbook_as_of_details(
+            output1, output2, received_at
+        )
         return OrderbookSnapshot(
             symbol=resolved_symbol,
             instrument_type="equity_kr",
@@ -574,7 +611,8 @@ async def get_orderbook(
             bid_ask_ratio=(
                 round(total_bid_qty / total_ask_qty, 2) if total_ask_qty > 0 else None
             ),
-            as_of=_parse_orderbook_as_of(output1, output2, received_at),
+            as_of=as_of,
+            price_as_of_source=as_of_source,
             expected_price=expected_price,
             expected_qty=expected_qty,
             venue=venue_info.venue,

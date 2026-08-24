@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(slots=True)
@@ -49,9 +50,13 @@ class OrderbookSnapshot:
     total_ask_qty: float
     total_bid_qty: float
     bid_ask_ratio: float | None
-    # Provider quote time when available, otherwise the transport receive time.
+    # Provider quote time or the transport receive time when the provider clock
+    # is close enough; contradictory/missing evidence remains unavailable.
     # Optional keeps pre-existing synthetic/research snapshots source-compatible.
     as_of: dt.datetime | None = None
+    # ``broker`` means the provider supplied the timestamp; ``transport`` means
+    # a valid broker clock was close enough to the receive clock but supplied no date.
+    price_as_of_source: Literal["broker", "transport"] | None = None
     expected_price: int | None = None
     expected_qty: int | None = None
     venue: str | None = None

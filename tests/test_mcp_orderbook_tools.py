@@ -58,6 +58,7 @@ async def test_get_orderbook_returns_kr_payload(
         "spread_pct": 0.143,
         "expected_price": 70050,
         "expected_qty": 42,
+        "price_as_of_source": None,
         "bid_walls": [],
         "ask_walls": [],
     }
@@ -128,6 +129,7 @@ async def test_get_orderbook_returns_crypto_payload(
         "spread_pct": 5.0,
         "expected_price": None,
         "expected_qty": None,
+        "price_as_of_source": None,
         "price_as_of": None,
         "is_stale_price": True,
         "price_freshness": "unavailable",
@@ -153,6 +155,22 @@ async def test_get_orderbook_returns_crypto_payload(
             "fresh",
             True,
             id="upbit-within-five-minutes",
+        ),
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 7, 57, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "fresh",
+            True,
+            id="upbit-exactly-five-minutes-is-fresh",
+        ),
+        pytest.param(
+            dt.datetime(
+                2026, 8, 24, 7, 56, 59, tzinfo=dt.timezone(dt.timedelta(hours=9))
+            ),
+            "stale",
+            False,
+            id="upbit-over-five-minutes-is-stale",
         ),
         pytest.param(
             dt.datetime(
@@ -304,6 +322,7 @@ async def test_get_orderbook_preserves_null_expected_qty_in_payload(
         "spread_pct": 0.143,
         "expected_price": 70050,
         "expected_qty": None,
+        "price_as_of_source": None,
         "bid_walls": [],
         "ask_walls": [],
     }

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import datetime as dt
+
+# §148차 운영 위임: orderbook as_of의 최대 나이는 N=5분이다.
+# 경계는 엄격하지 않다: 정확히 5:00은 fresh이고, 5:00을 초과한 순간부터 stale이다.
+ORDERBOOK_ASOF_MAX_AGE_S148_N5 = dt.timedelta(minutes=5)
+
 OHLCV_ALLOWED_PERIODS = (
     "day",
     "week",
@@ -101,6 +107,7 @@ __all__ = [
     "OHLCV_ALLOWED_PERIODS",
     "OHLCV_PERIOD_ERROR",
     "OHLCV_PERIOD_MARKETS",
+    "ORDERBOOK_ASOF_MAX_AGE_S148_N5",
     "US_OHLCV_PERIODS",
     "validate_ohlcv_period",
 ]

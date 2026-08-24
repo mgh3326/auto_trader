@@ -73,6 +73,7 @@ from app.services.market_data.constants import (
     CRYPTO_MINUTE_PUBLIC_ROW_KEYS,
     CRYPTO_MINUTE_REQUIRED_SOURCE_COLUMNS,
     KR_INTRADAY_OHLCV_PERIODS,
+    ORDERBOOK_ASOF_MAX_AGE_S148_N5,
     US_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
@@ -319,9 +320,6 @@ _NXT_AFTER_OPEN = datetime.time(15, 30)
 _NXT_AFTER_CLOSE = datetime.time(20, 0)
 _KST = ZoneInfo("Asia/Seoul")
 
-# §148차 운영자 위임: NXT/Upbit orderbook as_of window is fixed at N=5분.
-ORDERBOOK_ASOF_MAX_AGE_S148_N5 = datetime.timedelta(minutes=5)
-
 
 def _current_kst_datetime(now: datetime.datetime | None = None) -> datetime.datetime:
     current = now or now_kst()
@@ -442,6 +440,7 @@ async def _fetch_nxt_quote_overlay(
         "venue": snapshot.venue or "nxt",
         "price_source": price_source,
         "price_as_of": as_of.isoformat() if as_of is not None else None,
+        "price_as_of_source": snapshot.price_as_of_source,
     }
     if snapshot.venue_label is not None:
         overlay["venue_label"] = snapshot.venue_label
@@ -531,6 +530,14 @@ def _build_orderbook_walls(
 def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
+    """Build an orderbook response with deliberately asymmetric freshness fields.
+
+    Crypto orderbooks get the N=5-minute freshness gate here because Upbit has
+    no separate KR session/date predicate.  KR orderbooks expose ``as_of`` and
+    its provenance only; NXT quote consumers apply the stricter date + age gate
+    when they have the session context.  This keeps the generic KR orderbook
+    payload observational and preserves that intended division of responsibility.
+    """
     pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
     spread, spread_pct = _calculate_orderbook_spread(snapshot)
     bid_walls, ask_walls = _build_orderbook_walls(snapshot)
@@ -559,6 +566,7 @@ def _build_orderbook_payload(
         "spread_pct": spread_pct,
         "expected_price": snapshot.expected_price,
         "expected_qty": snapshot.expected_qty,
+        "price_as_of_source": snapshot.price_as_of_source,
         "bid_walls": bid_walls,
         "ask_walls": ask_walls,
     }
