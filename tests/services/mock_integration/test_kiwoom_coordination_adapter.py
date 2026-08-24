@@ -38,6 +38,10 @@ from app.services.mock_lane_registry import (
     PolicyBinding,
     assert_entry_execution_ready,
 )
+from scripts.b0x.kr.kiwoom_coordination import (
+    _entry_provenance,
+    _register_approved_adapter,
+)
 from scripts.b0x.kr.kiwoom_ordering import (
     ACCOUNT_SUMMARY_FINGERPRINT_IDENTITY_REJECTED,
     CALLER_DERIVED_IDENTITY_REJECTED,
@@ -407,8 +411,10 @@ def build_offline_adapter(
         lineage_factory=MockLineageFactory(),
         entry=bound,
         diagnostic_fingerprint=FINGERPRINT_REF,
+        coordination_provenance=_entry_provenance(bound),
+        legacy_offline=True,
     )
-    return KiwoomCoordinationAdapter(ports)
+    return _register_approved_adapter(ports, grant_only=False)
 
 
 def _scope_assert_owned_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -425,10 +431,12 @@ def _scope_assert_owned_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return observed
 
 
-def offline_coordination_factory() -> KiwoomCoordinationAdapter:
+def offline_coordination_factory(
+    *, entry: LaneRegistryEntry | None = None
+) -> KiwoomCoordinationAdapter:
     """Used by cycle tests so ORDERING submits go through J3A."""
 
-    return build_offline_adapter()
+    return build_offline_adapter(entry=entry)
 
 
 # ---------------------------------------------------------------------------

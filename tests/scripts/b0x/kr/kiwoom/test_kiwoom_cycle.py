@@ -27,6 +27,7 @@ from scripts.policy_table.core.schema import compute_policy_table_hash
 from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_table
 from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount, position, resting
 from tests.services.mock_integration.test_kiwoom_coordination_adapter import (
+    bound_kiwoom_entry,
     offline_coordination_factory,
 )
 
@@ -149,7 +150,11 @@ async def _run(
     **kwargs,
 ):  # noqa: ANN202
     if ordering and "coordination_factory" not in kwargs:
-        kwargs["coordination_factory"] = offline_coordination_factory
+        offline_entry = bound_kiwoom_entry()
+        kwargs["coordination_factory"] = lambda: offline_coordination_factory(
+            entry=offline_entry
+        )
+        kwargs["coordination_entry"] = offline_entry
         _attach_test_mock_client(account)
     elif kwargs.get("coordination_factory") is not None:
         _attach_test_mock_client(account)
