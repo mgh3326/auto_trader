@@ -55,11 +55,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.engine import make_url
 
+from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
+
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260823_screener_pick_log"
+HEAD_REVISION = "20260824_s257_rung_reason"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -125,6 +127,15 @@ async def scratch_database() -> AsyncIterator[str]:
                 await connection.run_sync(Base.metadata.create_all)
                 for table in _POST_PARENT_TABLES:
                     await connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                # ROB-s257 E-2 is later than this reconstructed boundary.
+                # Current metadata already contains its nullable observation
+                # column, so drop it and let the migration add it back.
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposal_rungs "
+                        "DROP COLUMN void_reason_group"
+                    )
+                )
         finally:
             await engine.dispose()
 
@@ -390,6 +401,42 @@ async def _other_parent_tables_exist(database_url: str) -> bool:
             ):
                 return False
         return True
+    finally:
+        await connection.close()
+
+
+async def _assert_rung_reason_schema(database_url: str) -> None:
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        column = await connection.fetchrow(
+            "SELECT data_type, is_nullable "
+            "FROM information_schema.columns "
+            "WHERE table_schema = 'review' "
+            "AND table_name = 'order_proposal_rungs' "
+            "AND column_name = 'void_reason_group'"
+        )
+        assert column is not None
+        assert column["data_type"] == "text"
+        assert column["is_nullable"] == "YES"
+        check_definitions = await connection.fetch(
+            "SELECT pg_get_constraintdef(c.oid) AS definition "
+            "FROM pg_constraint AS c "
+            "WHERE c.conrelid = 'review.order_proposal_rungs'::regclass "
+            "AND c.contype = 'c' "
+            "AND pg_get_constraintdef(c.oid) "
+            "ILIKE '%void_reason_group%'",
+        )
+        assert len(check_definitions) == 1
+        check_definition = check_definitions[0]["definition"]
+        assert isinstance(check_definition, str)
+        assert all(
+            f"'{group}'" in check_definition for group in RUNG_VOID_REASON_GROUPS
+        )
     finally:
         await connection.close()
 
@@ -750,6 +797,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     )
 
     async def _check_head_state() -> None:
+        await _assert_rung_reason_schema(scratch_database)
         assert await _table_exists(scratch_database) is True
         assert await _cursor_table_exists(scratch_database) is True
         assert await _cursor_row_count(scratch_database) == 0

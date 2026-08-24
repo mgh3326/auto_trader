@@ -65,6 +65,7 @@ from app.services.order_proposals.payload import (
     compute_proposal_payload_hash,
 )
 from app.services.order_proposals.repository import OrderProposalRepository
+from app.services.order_proposals.rung_reason import classify_rung_void_reason
 from app.services.order_proposals.target_order import (
     TargetOrderSnapshot,
     canonical_decimal,
@@ -1104,6 +1105,11 @@ class OrderProposalsService:
         **audit_fields: Any,
     ) -> OrderProposalRung:
         sm.assert_rung_transition(rung.state, new_state)
+        if "void_reason" in audit_fields:
+            reason = audit_fields["void_reason"]
+            audit_fields["void_reason_group"] = (
+                classify_rung_void_reason(reason) if reason is not None else None
+            )
         rung = await self._repo.update_rung(rung, state=new_state, **audit_fields)
         rungs = await self._repo.list_rungs(group.id)
         await self._repo.update_group(
@@ -1451,6 +1457,9 @@ class OrderProposalsService:
             }
             if target_state == "voided_local_stale":
                 audit_fields["void_reason"] = audit_reason
+                audit_fields["void_reason_group"] = classify_rung_void_reason(
+                    audit_reason
+                )
             voided_rungs.append(await self._repo.update_rung(rung, **audit_fields))
         await self._repo.update_group(
             group,

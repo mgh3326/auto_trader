@@ -15,6 +15,8 @@ from collections.abc import Iterable
 
 from sqlalchemy import text
 
+from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_list
+
 # Bump when adding an ORM table that has NO mirrored ALTER string below, so the
 # content hash changes and a persistent local DB re-bootstraps once. Adding a
 # mirrored ALTER already changes the hash automatically.
@@ -85,7 +87,8 @@ from sqlalchemy import text
 # v40: review.screener_pick_log (new ORM table via create_all) + append-only
 # trigger. Production applies alembic/versions/20260823_screener_pick_log.py
 # separately; tests never auto-run that migration.
-SCHEMA_BOOTSTRAP_VERSION = 40
+# v41 (ROB-s257 E-2): nullable rung void-reason group + closed CHECK.
+SCHEMA_BOOTSTRAP_VERSION = 41
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1063,6 +1066,16 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS exit_reason TEXT",
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS retrospective_id BIGINT",
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS approval_issue_id TEXT",
+    # ---- ROB-s257 E-2: rung void-reason observation group ----
+    "ALTER TABLE review.order_proposal_rungs "
+    "ADD COLUMN IF NOT EXISTS void_reason_group TEXT",
+    "ALTER TABLE review.order_proposal_rungs DROP CONSTRAINT IF EXISTS "
+    "ck_order_proposal_rungs_order_proposal_rungs_void_reason_group",
+    "ALTER TABLE review.order_proposal_rungs ADD CONSTRAINT "
+    "ck_order_proposal_rungs_order_proposal_rungs_void_reason_group "
+    "CHECK (void_reason_group IS NULL OR void_reason_group IN ("
+    + sql_in_list(RUNG_VOID_REASON_GROUPS)
+    + "))",
     # ---- ROB-832: replace/cancel proposal group columns ----
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS action TEXT",
     "ALTER TABLE review.order_proposals "
