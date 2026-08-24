@@ -308,6 +308,16 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 
 **동일성 실측(2026-08-03, 20종목 × 일봉 600 + 5분봉 900)**: 행 커버리지 40/40 동일, 비교 셀 252,000 중 불일치 36(99.9857%) — 🔴 **전부 형성 중인 최신 봉**(장중 2초 시차)이며 **최신 봉 제외 시 100.000000%**. 상폐 `051170` 은 live 에서 1행 반환. KIS 3자 대조에서 068270 은 2026-06-03 경계로 223건 어긋나지만 **live·mock 결과가 동일**하며 원인은 수정주가 역산 **반올림 규칙 차이**(약 0.004%) — 어느 쪽이 옳은지는 `UNDETERMINED`. 함의: **Kiwoom↔KIS 과거 수정주가 완전일치 대조는 실패하므로 허용오차 필요**
 
+### NHPLUG Mock Read-Only Foundation (Stage 1)
+
+`app/services/brokers/nhplug/` and `scripts/nhplug_mock_smoke.py` expose a bounded read-only foundation only: account discovery (`/n2/acctinfo`), KR balance, and KR current quote. There are **no** order methods, MCP order tools, ledgers, reconcile paths, or scheduler registrations.
+
+- **Data host × account-type double discriminator**: data requests use only `https://moapi.nhplug.com:8443`; the scheme, host, and port are checked again on the built request immediately before `send`. `/n2/acctinfo` establishes an allowlist containing only `acct_type="03"`; `01`/`02` are denied, and a number with conflicting returned types rejects the account response. `NHPLUG_MOCK_ACCOUNT_NO` is untrusted until it appears in that broker response, and account-scoped reads recheck it again immediately before send.
+- **Exceptional OAuth physical separation**: token issue/revoke must reach `https://api.nhplug.com:8443`, but only `nhplug/auth.py` may name that host and it allowlists exactly `POST /oauth2/token` and `POST /oauth2/revoke`. The data client does not import it and has no production-host constant. Both clients apply the master gate at dispatch and explicitly use `follow_redirects=False`; this also protects APP KEY/SECRET custom headers from cross-origin redirect forwarding.
+- **Default-disabled**: `NHPLUG_MOCK_ENABLED=true` is required at every OAuth and data dispatch; unset is fail-closed. The smoke CLI requires an operator-created `.env.nhplug-mock.native`-style file with exactly `NHPLUG_APP_KEY`, `NHPLUG_APP_SECRET`, and `NHPLUG_MOCK_ACCOUNT_NO`; it rejects `prod` file names/`ENV_FILE` and any extra key (including `DATABASE_URL`). It prints key names and safe response shape only, never values.
+- **No vendor fail-open configuration**: do not import the vendor `nhplug` SDK and never read `NHPLUG_BASE_URL` / `NHPLUG_AUTH_URL`. Host constants are local and static guards reject SDK imports, production-host literals outside auth, override-env strings (including constant concatenation), and known order endpoints/TRs.
+- **Guarantee strength**: this is **"accidental prevention + static detection," not structural impossibility**. The same APP KEY can access operating accounts, OAuth tokens are issued on the operating host, and `/n2/acctinfo` necessarily returns operating accounts alongside mock accounts. The `03` allowlist is our check, not a vendor-enforced isolation boundary. See `docs/runbooks/nhplug-mock-smoke.md`.
+
 ### 토스증권 Open API (ROB-529)
 
 토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
