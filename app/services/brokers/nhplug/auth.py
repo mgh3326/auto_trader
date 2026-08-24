@@ -13,12 +13,12 @@ from typing import Any, Final
 
 import httpx
 
-from app.services.brokers.nhplug.client import _assert_mock_enabled
 from app.services.brokers.nhplug.errors import (
     NHPlugMockConfigurationError,
     NHPlugMockEndpointError,
     NHPlugMockResponseError,
 )
+from app.services.brokers.nhplug.gating import _assert_mock_enabled
 
 # Keep the production hostname in this file only.  The data client has an exact
 # mock allowlist and deliberately does not import this module.

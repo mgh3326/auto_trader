@@ -7,7 +7,6 @@ read-only path allowlist checked before token resolution, and no mutation API.
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
@@ -19,11 +18,11 @@ from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
     NHPlugMockBrokerRejected,
     NHPlugMockConfigurationError,
-    NHPlugMockDisabled,
     NHPlugMockEndpointError,
     NHPlugMockReadOnlyEndpointError,
     NHPlugMockResponseError,
 )
+from app.services.brokers.nhplug.gating import _assert_mock_enabled
 
 MOCK_BASE_URL: Final[str] = "https://moapi.nhplug.com:8443"
 MOCK_HOST: Final[str] = "moapi.nhplug.com"
@@ -42,19 +41,6 @@ _SUCCESS_RESPONSE_CODES: Final[frozenset[str]] = frozenset(
 _KR_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(r"^\d{6}$")
 _ALLOWED_MARKETS: Final[frozenset[str]] = frozenset({"KRX"})
 TokenProvider = Callable[[], Awaitable[str]]
-
-
-def _mock_enabled() -> bool:
-    """The master gate defaults to false when unset."""
-
-    return os.getenv("NHPLUG_MOCK_ENABLED", "").strip().lower() == "true"
-
-
-def _assert_mock_enabled() -> None:
-    if not _mock_enabled():
-        raise NHPlugMockDisabled(
-            "NHPLUG mock read access is disabled; set NHPLUG_MOCK_ENABLED=true"
-        )
 
 
 def _assert_mock_base_url(base_url: str) -> str:

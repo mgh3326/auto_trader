@@ -8,16 +8,24 @@ import httpx
 import pytest
 
 from app.services.brokers.nhplug.auth import (
+    AUTH_ALLOWED_PATHS,
     AUTH_HOST,
     AUTH_PORT,
     AUTH_REVOKE_PATH,
     AUTH_TOKEN_PATH,
     NHPlugAuthClient,
 )
+from app.services.brokers.nhplug.auth import (
+    _assert_mock_enabled as auth_dispatch_gate,
+)
+from app.services.brokers.nhplug.client import (
+    _assert_mock_enabled as data_dispatch_gate,
+)
 from app.services.brokers.nhplug.errors import (
     NHPlugMockDisabled,
     NHPlugMockEndpointError,
 )
+from app.services.brokers.nhplug.gating import _assert_mock_enabled
 
 pytestmark = pytest.mark.unit
 
@@ -40,6 +48,19 @@ def _transport(
 @pytest.fixture
 def armed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
+
+
+def test_auth_allowlist_is_exactly_the_two_stage_one_oauth_paths() -> None:
+    """Pin OAuth constants to literals, not the constants' own definitions."""
+
+    assert AUTH_TOKEN_PATH == "/oauth2/token"
+    assert AUTH_REVOKE_PATH == "/oauth2/revoke"
+    assert AUTH_ALLOWED_PATHS == frozenset({"/oauth2/token", "/oauth2/revoke"})
+
+
+def test_auth_and_data_dispatch_share_the_neutral_gate() -> None:
+    assert auth_dispatch_gate is _assert_mock_enabled
+    assert data_dispatch_gate is _assert_mock_enabled
 
 
 @pytest.mark.asyncio

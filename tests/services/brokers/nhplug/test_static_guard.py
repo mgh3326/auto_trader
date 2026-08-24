@@ -17,7 +17,7 @@ RUNTIME_DIR = REPO_ROOT / "app" / "services" / "brokers" / "nhplug"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "nhplug_mock_smoke.py"
 
 _PRODUCTION_HOST_RE = re.compile(
-    r"(?<![\w.\-])api\.nhplug\.com(?![\w.\-])", re.IGNORECASE
+    r"(?<![\w.\-])api\.nhplug\.com\.?(?![\w\-])", re.IGNORECASE
 )
 _VENDOR_IMPORT = "nhplug"
 _FORBIDDEN_OVERRIDE_ENV = frozenset({"NHPLUG_BASE_URL", "NHPLUG_AUTH_URL"})
@@ -45,6 +45,7 @@ _FORBIDDEN_MUTATION_FRAGMENTS = (
     "trade",
 )
 _HTTPX_CLIENT_NAMES = frozenset({"AsyncClient", "Client"})
+_AUTH_OWNER_MODULE = "app.services.brokers.nhplug.auth"
 
 
 def _runtime_package_sources(package_dir: Path = RUNTIME_DIR) -> tuple[Path, ...]:
@@ -111,58 +112,163 @@ def _vendor_sdk_imports(tree: ast.AST) -> list[str]:
 
 
 def _imports_nhplug_auth(tree: ast.AST) -> list[str]:
-    """Find direct, absolute, and relative imports of the OAuth owner."""
+    """Find static and direct dynamic imports of the OAuth owner."""
 
     offenders: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             offenders.extend(
-                alias.name
-                for alias in node.names
-                if alias.name == "app.services.brokers.nhplug.auth"
+                alias.name for alias in node.names if alias.name == _AUTH_OWNER_MODULE
             )
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if module == "app.services.brokers.nhplug.auth" or (
-                node.level > 0 and module == "auth"
-            ):
+            if module == _AUTH_OWNER_MODULE or (node.level > 0 and module == "auth"):
                 offenders.append(module or ".auth")
             if any(alias.name == "auth" for alias in node.names) and (
                 module == "app.services.brokers.nhplug" or node.level > 0
             ):
                 offenders.append(f"{module or '.'}.auth")
+        elif isinstance(node, ast.Call) and node.args:
+            is_import_module = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "import_module"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "importlib"
+            ) or (isinstance(node.func, ast.Name) and node.func.id == "import_module")
+            is_builtin_import = (
+                isinstance(node.func, ast.Name) and node.func.id == "__import__"
+            )
+            target = _constant_string(node.args[0])
+            if (is_import_module or is_builtin_import) and target == _AUTH_OWNER_MODULE:
+                offenders.append(target)
     return offenders
 
 
-def _httpx_client_constructions(tree: ast.AST) -> list[ast.Call]:
-    """Find qualified and directly imported sync/async httpx client construction."""
+def _httpx_client_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Collect local names for the httpx module and its concrete clients."""
 
-    direct_import_names = {
+    module_names = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "httpx"
+    }
+    direct_client_names = {
         alias.asname or alias.name
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module == "httpx"
         for alias in node.names
         if alias.name in _HTTPX_CLIENT_NAMES
     }
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr in _HTTPX_CLIENT_NAMES
-            or isinstance(node.func, ast.Name)
-            and node.func.id in direct_import_names
-        )
+    return module_names, direct_client_names
+
+
+def _is_httpx_client_reference(
+    node: ast.AST,
+    *,
+    module_names: set[str],
+    client_names: set[str],
+) -> bool:
+    """Recognize static references to ``httpx.Client`` or ``AsyncClient``."""
+
+    if isinstance(node, ast.Name):
+        return node.id in client_names
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in module_names
+    ):
+        return node.attr in _HTTPX_CLIENT_NAMES
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in module_names
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value in _HTTPX_CLIENT_NAMES
+    ):
+        return True
+    return False
+
+
+def _assignment_target_names(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.Tuple | ast.List):
+        return {
+            name for element in node.elts for name in _assignment_target_names(element)
+        }
+    return set()
+
+
+def _httpx_client_aliases(
+    tree: ast.AST, *, module_names: set[str], direct_client_names: set[str]
+) -> set[str]:
+    """Follow simple static aliases so ``ClientFactory = httpx.Client`` cannot hide one."""
+
+    aliases = set(direct_client_names)
+    assignments = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Assign | ast.AnnAssign)
     ]
+    changed = True
+    while changed:
+        changed = False
+        for assignment in assignments:
+            value = assignment.value
+            if value is None or not _is_httpx_client_reference(
+                value, module_names=module_names, client_names=aliases
+            ):
+                continue
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else (assignment.target,)
+            )
+            for target in targets:
+                before = len(aliases)
+                aliases.update(_assignment_target_names(target))
+                changed = changed or len(aliases) != before
+    return aliases
 
 
-def _pins_follow_redirects_false(call: ast.Call) -> bool:
-    return any(
+def _httpx_client_constructions(tree: ast.AST) -> list[ast.Call | ast.ClassDef]:
+    """Find client construction, aliases, dynamic lookup, and subclass escapes."""
+
+    module_names, direct_client_names = _httpx_client_names(tree)
+    client_aliases = _httpx_client_aliases(
+        tree,
+        module_names=module_names,
+        direct_client_names=direct_client_names,
+    )
+    constructions: list[ast.Call | ast.ClassDef] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_httpx_client_reference(
+            node.func,
+            module_names=module_names,
+            client_names=client_aliases,
+        ):
+            constructions.append(node)
+        elif isinstance(node, ast.ClassDef) and any(
+            _is_httpx_client_reference(
+                base,
+                module_names=module_names,
+                client_names=client_aliases,
+            )
+            for base in node.bases
+        ):
+            constructions.append(node)
+    return constructions
+
+
+def _pins_follow_redirects_false(node: ast.Call | ast.ClassDef) -> bool:
+    return isinstance(node, ast.Call) and any(
         keyword.arg == "follow_redirects"
         and isinstance(keyword.value, ast.Constant)
         and keyword.value.value is False
-        for keyword in call.keywords
+        for keyword in node.keywords
     )
 
 
@@ -342,6 +448,16 @@ def test_auth_is_the_only_runtime_production_host_owner() -> None:
             "OAuth owner",
         ),
         (
+            "dynamic OAuth import",
+            'import importlib\nimportlib.import_module("app.services.brokers.nhplug.auth")\n',
+            "OAuth owner",
+        ),
+        (
+            "builtin dynamic OAuth import",
+            '__import__("app.services.brokers.nhplug.auth", fromlist=["auth"])\n',
+            "OAuth owner",
+        ),
+        (
             "unpinned HTTPX client",
             "from httpx import AsyncClient\nclient = AsyncClient()\n",
             "follow_redirects=False",
@@ -362,6 +478,49 @@ def test_new_package_file_mutant_fails_the_full_package_guard(
 
     with pytest.raises(AssertionError, match=match):
         _assert_entire_package_is_stage_one_safe(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("label", "source"),
+    (
+        (
+            "httpx subclass",
+            "import httpx\nclass Dispatcher(httpx.AsyncClient):\n    pass\n",
+        ),
+        (
+            "dynamic getattr constructor",
+            'import httpx\ngetattr(httpx, "AsyncClient")()\n',
+        ),
+        (
+            "assigned httpx client alias",
+            "import httpx\nClientFactory = httpx.AsyncClient\nClientFactory()\n",
+        ),
+        (
+            "dynamic sync client alias",
+            'import httpx\nClientFactory = getattr(httpx, "Client")\nClientFactory()\n',
+        ),
+        (
+            "aliased httpx client subclass",
+            "import httpx\nClientBase = httpx.AsyncClient\nclass Dispatcher(ClientBase):\n    pass\n",
+        ),
+    ),
+)
+def test_new_package_file_httpx_escape_mutants_fail_the_full_guard(
+    tmp_path: Path, label: str, source: str
+) -> None:
+    """All known construction notations require the redirect pin or fail closed."""
+
+    (tmp_path / "helpers.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="follow_redirects=False"):
+        _assert_entire_package_is_stage_one_safe(tmp_path)
+
+
+def test_trailing_dot_production_host_literal_is_rejected_outside_auth() -> None:
+    with pytest.raises(AssertionError, match="only auth.py"):
+        _assert_stage_one_source_safe(
+            'HOST = "https://api.nhplug.com.:8443"\n', filename="client.py"
+        )
 
 
 def test_nested_auth_named_file_cannot_claim_the_production_host_exception(
