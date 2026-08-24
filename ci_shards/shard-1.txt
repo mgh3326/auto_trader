@@ -180,6 +180,7 @@ tests/services/order_proposals/test_dispatch_security_invariants.py
 tests/services/order_proposals/test_no_repository_imports.py
 tests/services/order_proposals/test_revalidation.py
 tests/services/order_proposals/test_rob1284_resting_sweep.py
+tests/services/order_proposals/test_rung_reason_tier.py
 tests/services/order_proposals/test_state_machine.py
 tests/services/order_proposals/test_toss_auto_acceptance.py
 tests/services/order_proposals/test_void_authorization.py

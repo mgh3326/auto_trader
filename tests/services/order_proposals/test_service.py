@@ -1253,10 +1253,12 @@ async def test_void_unverified_with_absent_broker_evidence_records_audit(db_sess
     service, group = await _create_single_rung(db_session, account_mode="toss_live")
     now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
     await _drive_to_submitting(service, group.proposal_id)
+    # Seed a known group so this operator-void assertion protects the void-loop
+    # hook rather than passing with an already-unclassified stored value.
     await service.record_unverified(
         group.proposal_id,
         0,
-        reason="legacy_timeout",
+        reason="duplicate order intent",
         idempotency_key="tosprop-legacy-1",
         now=now - timedelta(minutes=6),
     )
@@ -1298,6 +1300,7 @@ async def test_void_unverified_with_absent_broker_evidence_records_audit(db_sess
         assert "combination_matches=0" in audit_reason
         assert "toss_live_order_ledger rows=0" in audit_reason
     assert rungs[0].void_reason == refreshed.void_reason
+    assert rungs[0].void_reason_group == "unclassified"
 
 
 @pytest.mark.asyncio
@@ -2212,6 +2215,7 @@ async def test_sweep_local_stale_only_voids_evidence_absent(db_session):
     assert states == ["voided_local_stale", "pending_approval", "pending_approval"]
     _, swept_rungs = await service.get_proposal(groups[0].proposal_id)
     assert swept_rungs[0].void_reason == "no_broker_order"
+    assert swept_rungs[0].void_reason_group == "unclassified"
     assert swept_rungs[0].updated_at == now
 
 

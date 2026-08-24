@@ -25,10 +25,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 from sqlalchemy.sql import func
 
 from app.models.base import Base
+from app.models.rung_reason_vocabulary import (
+    RUNG_VOID_REASON_GROUPS,
+    sql_in_list,
+    validate_rung_void_reason_group,
+)
 from app.services.order_proposals.state_machine import GROUP_STATES, RUNG_STATES
 
 _MARKETS = "'equity_kr','equity_us','crypto','forex','index'"
@@ -179,6 +184,12 @@ class OrderProposalRung(Base):
         CheckConstraint(
             f"state IN ({_RUNG_STATES_SQL})", name="order_proposal_rungs_state"
         ),
+        CheckConstraint(
+            "void_reason_group IS NULL OR void_reason_group IN ("
+            + sql_in_list(RUNG_VOID_REASON_GROUPS)
+            + ")",
+            name="order_proposal_rungs_void_reason_group",
+        ),
         Index("ix_order_proposal_rungs_proposal_pk", "proposal_pk"),
         Index("ix_order_proposal_rungs_broker_order_id", "broker_order_id"),
         Index("ix_order_proposal_rungs_correlation_id", "correlation_id"),
@@ -208,6 +219,7 @@ class OrderProposalRung(Base):
     validated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     filled_qty: Mapped[object | None] = mapped_column(Numeric(38, 12))
     void_reason: Mapped[str | None] = mapped_column(Text)
+    void_reason_group: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -217,6 +229,12 @@ class OrderProposalRung(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    @validates("void_reason_group")
+    def _validate_void_reason_group(self, _key: str, value: object) -> str | None:
+        if value is None:
+            return None
+        return validate_rung_void_reason_group(value)
 
 
 class OrderProposalApprovalDispatchAttempt(Base):
