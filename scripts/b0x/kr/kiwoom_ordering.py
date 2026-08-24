@@ -261,6 +261,22 @@ KIWOOM_RELEASE_IF_MATCHES: Final[str] = (
     "or authoritative_absence_proven=True after pre-send NOT_CREATED)"
 )
 
+# C3-1..C3-6: one immutable-shaped lane contract assembled from the existing
+# Kiwoom constants.  Keep the values above as the single definitions; this
+# dict is the closed contract surface consumed by the cycle/canary tests.
+KIWOOM_LANE_RECOVERY_CONTRACT: Final[dict[str, str]] = {
+    # C3-1: exactly one owner. Not a list, not "TBD".
+    "recovery_owner": KIWOOM_RECOVERY_OWNER,
+    # C3-2: what rediscovers surviving durable claims after a restart.
+    "restart_trigger": KIWOOM_RESTART_TRIGGER,
+    # C3-3: the authoritative broker readback.
+    "readback_operation": KIWOOM_READBACK_OPERATION,
+    # C3-5: the exact release condition.
+    "release_if_matches": KIWOOM_RELEASE_IF_MATCHES,
+    # C3-6: what an operator sees when authoritative recovery is impossible.
+    "blocked_state": KIWOOM_LIFECYCLE_STATUS,
+}
+
 _KIWOOM_ALLOWED_HOST: Final[str] = "mockapi.kiwoom.com"
 
 
@@ -670,14 +686,26 @@ class KiwoomCoordinationAdapter:
     release_if_matches_condition: Final[str] = KIWOOM_RELEASE_IF_MATCHES
     blocked_state: Final[str] = KIWOOM_LIFECYCLE_STATUS
 
-    def __init__(self, ports: KiwoomCoordinationPorts) -> None:
+    def __init__(
+        self, ports: KiwoomCoordinationPorts, *, grant_only: bool = False
+    ) -> None:
         self.ports = ports
         self.physical_account_id = require_j2a_physical_account_id(ports.entry)
+        # G1/G2 may identify the exact owner without opening a send path.  A
+        # grant-only adapter is an owner canary and must never be handed to the
+        # ORDERING mutation path; G3 owns any future send enablement.
+        self._grant_only = grant_only
         self.fence_rechecks: list[str] = []
         self.transport_calls: list[str] = []
         self.ordered_events: list[str] = []
         self.jsonl_appends: list[dict[str, Any]] = []
         self.last_result: CoordinatedMutationResult | None = None
+
+    @property
+    def grant_only(self) -> bool:
+        """Whether this instance is the G1/G2 no-send owner canary."""
+
+        return self._grant_only
 
     @property
     def policy_binding(self) -> Any:
@@ -953,6 +981,7 @@ __all__ = [
     "JSONL_ABSENCE_NOT_EMPTY_OWNERSHIP",
     "KIWOOM_CANONICAL_LANE_ID",
     "KIWOOM_LIFECYCLE_STATUS",
+    "KIWOOM_LANE_RECOVERY_CONTRACT",
     "LANE_EVIDENCE_KINDS",
     "KIWOOM_READBACK_OPERATION",
     "KIWOOM_RECOVERY_OWNER",

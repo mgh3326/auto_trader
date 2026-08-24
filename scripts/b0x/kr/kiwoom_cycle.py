@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.services.kis_mock_runner.session import is_krx_regular_session
+from app.services.mock_lane_registry import LaneRegistryEntry
 from scripts.b0x.broker_truth import (
     OwnPendingResubmitBlocked,
     PendingUnreadable,
@@ -61,6 +62,10 @@ from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from scripts.b0x.kr import kiwoom_ordering as ordering_support
+from scripts.b0x.kr.kiwoom_coordination import (
+    KiwoomCoordinationOwnerRejected,
+    assert_kiwoom_coordination_owner,
+)
 from scripts.b0x.labels import account_history_labels, header_labels
 from scripts.b0x.ledger import (
     DEFAULT_OBSERVATION_DIR,
@@ -2148,6 +2153,95 @@ def _stamp_contract_and_account_map(
         record["ordering_requirements"] = dict(ORDERING_REQUIREMENTS)
 
 
+def _coordination_error_code(error: BaseException) -> str:
+    """Return only a closed/report-safe coordination error code."""
+
+    code = getattr(error, "code", None)
+    if type(code) is str and code.strip():
+        return code
+    reason = getattr(error, "reason", None)
+    if type(reason) is str and reason.strip():
+        return reason
+    return type(error).__name__
+
+
+def _resolve_coordination_owner(
+    *,
+    coordination_factory: Callable[[], object] | None,
+    expected_entry: LaneRegistryEntry | None,
+) -> tuple[ordering_support.KiwoomCoordinationAdapter | None, dict[str, Any]]:
+    """Resolve and pin the nominated owner without silently downgrading it."""
+
+    base = {
+        "present": False,
+        "recovery_owner": None,
+        "authorizes_send": False,
+        "local_flock_authorizes_send": False,
+        "recovery_contract": dict(ordering_support.KIWOOM_LANE_RECOVERY_CONTRACT),
+        "identity_guard": {"status": "not_configured"},
+    }
+    if coordination_factory is None:
+        return None, base
+
+    try:
+        candidate = coordination_factory()
+    except Exception as exc:  # noqa: BLE001 — owner construction is fail-closed
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": _coordination_error_code(exc),
+            "owner_type": None,
+        }
+        base["factory_error_type"] = type(exc).__name__
+        return None, base
+
+    if candidate is None:
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": "coordination_factory_returned_none",
+            "owner_type": "NoneType",
+        }
+        return None, base
+
+    try:
+        owner = assert_kiwoom_coordination_owner(
+            candidate,
+            expected_lane_id=ordering_support.KIWOOM_CANONICAL_LANE_ID,
+            expected_entry=expected_entry,
+        )
+    except KiwoomCoordinationOwnerRejected as exc:
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": exc.code,
+            "owner_type": type(candidate).__name__,
+        }
+        return None, base
+    except Exception as exc:  # noqa: BLE001 — malformed owner is fail-closed
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": _coordination_error_code(exc),
+            "owner_type": type(candidate).__name__,
+        }
+        return None, base
+
+    base.update(
+        {
+            "present": True,
+            "recovery_owner": owner.recovery_owner,
+            # G1/G2 records owner presence only.  A grant-only adapter never
+            # opens send; a future non-canary adapter may expose this field to
+            # the later bounded-send stage.
+            "authorizes_send": not owner.grant_only,
+            "identity_guard": {
+                "status": "accepted",
+                "owner_type": type(owner).__name__,
+                "lane_id": owner.ports.entry.lane_id,
+                "account_identity_source": "LaneRegistryEntry.physical_account_id",
+            },
+        }
+    )
+    return owner, base
+
+
 async def run_kiwoom_cycle(
     *,
     now: dt.datetime,
@@ -2159,9 +2253,8 @@ async def run_kiwoom_cycle(
     journal: kiwoom_attr.OwnOrderJournal | None = None,
     lease_factory: Callable[[Path, str, str], ordering_support.WriterLease]
     | None = None,
-    coordination_factory: (
-        Callable[[], ordering_support.KiwoomCoordinationAdapter] | None
-    ) = None,
+    coordination_factory: (Callable[[], object] | None) = None,
+    coordination_entry: LaneRegistryEntry | None = None,
     realized_pnl_reader: Callable[..., kiwoom_attr.RealizedPnlInput] | None = None,
 ) -> KiwoomCycleOutcome:
     """One manual kiwoom_mock B0-X cycle.
@@ -2209,6 +2302,33 @@ async def run_kiwoom_cycle(
             if mode == ACCEPTANCE_MODE
             else "pending_ordering_preflight"
         )
+
+        coordination, coordination_record = _resolve_coordination_owner(
+            coordination_factory=coordination_factory,
+            expected_entry=coordination_entry,
+        )
+        record["coordination"] = coordination_record
+
+        # A configured owner factory is an explicit production dependency.  A
+        # missing/rejected owner, or a grant-only canary, must therefore stop
+        # every confirmed mutation mode before account/broker work.  Preview is
+        # still allowed to render the diagnostic record and planned derivation.
+        if (
+            confirm
+            and coordination_factory is not None
+            and (coordination is None or coordination.grant_only)
+        ):
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+                detail=(
+                    "coordination owner is absent or grant-only; "
+                    "G1 does not authorize send"
+                ),
+            )
 
         if ordering and not confirm:
             return _finish_zero_order(
@@ -2325,15 +2445,11 @@ async def run_kiwoom_cycle(
                 reason="writer_lease_unavailable",
                 detail=type(exc).__name__,
             )
-        coordination = None if coordination_factory is None else coordination_factory()
-        record["coordination"] = {
-            "present": coordination is not None,
-            "recovery_owner": (
-                None if coordination is None else coordination.recovery_owner
-            ),
-            "authorizes_send": coordination is not None,
-            "local_flock_authorizes_send": False,
-        }
+        mutation_coordination = (
+            None
+            if coordination is not None and coordination.grant_only
+            else coordination
+        )
         try:
             return await _run_ordering_cycle(
                 now=now,
@@ -2346,7 +2462,7 @@ async def run_kiwoom_cycle(
                 account=account,
                 journal=lane_journal,
                 lease=lease,
-                coordination=coordination,
+                coordination=mutation_coordination,
                 realized_pnl_reader=(
                     kiwoom_attr.realized_pnl_input_today
                     if realized_pnl_reader is None
