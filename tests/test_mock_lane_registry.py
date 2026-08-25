@@ -546,7 +546,7 @@ def test_bounded_canary_does_not_authorize_recurring() -> None:
     assert exc_info.value.code == "lane_recurring_not_authorized"
 
 
-def test_unknown_fingerprint_rows_are_safe_and_preserved() -> None:
+def test_fingerprint_rows_are_safe_and_preserved() -> None:
     binance_demo_physical_account_id = (
         "binance_demo:spot_plus_futures:credential_fingerprint="
         "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df:"
@@ -557,9 +557,23 @@ def test_unknown_fingerprint_rows_are_safe_and_preserved() -> None:
         "sha256:44a9a5b4059c176eb8300d23048cd396daa77d6400faa3be8bbaf7c465d6ee82;"
         "verify=sha256:03cfae4c8a9193ce0aa8ef4803d7e4ff3190eca1b6de777862b44d410a498e21"
     )
+    kiwoom_mock_physical_account_id = (
+        "kiwoom_mock:kr:credential_fingerprint="
+        "sha256:ad6ad5ebaa77aed5d8782b314f9713010dba72cafaf823e90c79a1ca128bebfb:"
+        "kr_kiwoom_mock_domain"
+    )
+    kiwoom_mock_fingerprint_evidence_ref = (
+        "kr-identity-binding-20260825-1010:impl="
+        "sha256:55973f8c33f1d3f14c4b9cc379e8bab8ca40a7ef7dd41b6f63aad335bb90fef4;"
+        "verify=NOT_AVAILABLE(verification_pending)"
+    )
     expected_identity_by_lane = {
         "kr.kis.mock": (None, None, "UNKNOWN"),
-        "kr.kiwoom.mock": (None, None, "UNKNOWN"),
+        "kr.kiwoom.mock": (
+            kiwoom_mock_physical_account_id,
+            kiwoom_mock_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
         "us.kis.mock": (None, None, "UNKNOWN"),
         "us.kiwoom.mock": (None, None, "UNKNOWN"),
         "us.alpaca.paper.default": (None, None, "UNKNOWN"),
@@ -646,6 +660,9 @@ def test_j2a_binance_demo_identity_amendment_is_verbatim_and_additive() -> None:
             if getattr(base, field.name) != getattr(effective, field.name)
         }
         if lane_id not in lane_ids:
+            if lane_id == "kr.kiwoom.mock":
+                assert changed_fields == binding_fields
+                continue
             assert changed_fields == set()
             continue
 
@@ -663,6 +680,64 @@ def test_j2a_binance_demo_identity_amendment_is_verbatim_and_additive() -> None:
         assert effective.activation_status is base.activation_status
         assert effective.writer is base.writer is False
         assert effective.auto_order_enabled is base.auto_order_enabled is False
+
+
+def test_j2a_kiwoom_mock_identity_amendment_is_verbatim_and_additive() -> None:
+    """The approved KR binding changes identity fields only and never enables execution."""
+
+    lane_id = "kr.kiwoom.mock"
+    physical_account_id = (
+        "kiwoom_mock:kr:credential_fingerprint="
+        "sha256:ad6ad5ebaa77aed5d8782b314f9713010dba72cafaf823e90c79a1ca128bebfb:"
+        "kr_kiwoom_mock_domain"
+    )
+    fingerprint_evidence_ref = (
+        "kr-identity-binding-20260825-1010:impl="
+        "sha256:55973f8c33f1d3f14c4b9cc379e8bab8ca40a7ef7dd41b6f63aad335bb90fef4;"
+        "verify=NOT_AVAILABLE(verification_pending)"
+    )
+    base_by_id = {
+        entry.lane_id: entry for entry in registry._BASE_CANONICAL_LANE_REGISTRY
+    }
+    effective_by_id = _by_id()
+    base = base_by_id[lane_id]
+    effective = effective_by_id[lane_id]
+    assert base.physical_account_id is None
+    assert base.identity_status == "UNKNOWN"
+    assert base.fingerprint_evidence_ref is None
+    assert base.writer is False
+    assert base.auto_order_enabled is False
+
+    binding_fields = {
+        "physical_account_id",
+        "identity_status",
+        "fingerprint_evidence_ref",
+        "missing_bindings",
+    }
+    changed_fields = {
+        field.name
+        for field in fields(registry.LaneRegistryEntry)
+        if getattr(base, field.name) != getattr(effective, field.name)
+    }
+    assert changed_fields == binding_fields
+    assert effective.physical_account_id == physical_account_id
+    assert effective.identity_status == "KNOWN"
+    assert effective.fingerprint_evidence_ref == fingerprint_evidence_ref
+    assert effective.missing_bindings == (
+        registry.MissingBinding.POLICY,
+        registry.MissingBinding.CAP,
+        registry.MissingBinding.OWNER,
+        registry.MissingBinding.CANARY,
+    )
+    assert effective.writer is False
+    assert effective.auto_order_enabled is False
+
+    us_kiwoom = effective_by_id["us.kiwoom.mock"]
+    us_kiwoom_base = base_by_id["us.kiwoom.mock"]
+    assert us_kiwoom == us_kiwoom_base
+    assert us_kiwoom.identity_status == "UNKNOWN"
+    assert us_kiwoom.physical_account_id is None
+    assert us_kiwoom.fingerprint_evidence_ref is None
 
 
 def test_binance_demo_identity_unblocks_only_j3a_scope_not_execution_grant() -> None:
@@ -726,6 +801,7 @@ def test_missing_bindings_keep_rows_blocked_or_disabled_with_reasons() -> None:
     for entry in registry.CANONICAL_LANE_REGISTRY:
         expected_missing = required_missing
         if entry.lane_id in {
+            "kr.kiwoom.mock",
             "crypto.binance.spot_demo.canonical",
             "crypto.binance.spot_demo.b0x_sidecar",
             "crypto.binance.futures_demo",

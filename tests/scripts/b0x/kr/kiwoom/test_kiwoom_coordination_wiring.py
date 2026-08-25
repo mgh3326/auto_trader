@@ -105,16 +105,38 @@ def test_bound_factory_creates_the_adapter_from_the_exact_lane_entry() -> None:
     assert adapter.physical_account_id == entry.physical_account_id
 
 
-def test_current_registry_keeps_kr_and_us_identity_fail_closed() -> None:
+def test_current_registry_binds_kr_identity_but_keeps_execution_fail_closed() -> None:
     kr = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
     us = resolve_kiwoom_lane_entry(KIWOOM_US_LANE_ID)
-    assert kr.physical_account_id is None
+    assert kr.physical_account_id == (
+        "kiwoom_mock:kr:credential_fingerprint="
+        "sha256:ad6ad5ebaa77aed5d8782b314f9713010dba72cafaf823e90c79a1ca128bebfb:"
+        "kr_kiwoom_mock_domain"
+    )
+    assert kr.identity_status == "KNOWN"
+    assert kr.writer is False
+    assert kr.auto_order_enabled is False
+    assert kr.activation_status.value == "BLOCKED"
     assert us.physical_account_id is None
+    assert us.identity_status == "UNKNOWN"
     assert us.lane_status is LaneStatus.NOT_READY
     with pytest.raises(LaneGuardError, match="physical_account_identity_unknown"):
-        production_kiwoom_coordination_factory(KIWOOM_KR_LANE_ID)()
-    with pytest.raises(LaneGuardError, match="physical_account_identity_unknown"):
         production_kiwoom_coordination_factory(KIWOOM_US_LANE_ID)()
+
+
+def test_production_kr_factory_is_grant_only_owner() -> None:
+    entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    owner, record = kiwoom_cycle._resolve_coordination_owner(
+        coordination_factory=production_kiwoom_coordination_factory(KIWOOM_KR_LANE_ID),
+        expected_entry=entry,
+    )
+
+    assert owner is not None
+    assert type(owner) is kiwoom_ordering.KiwoomCoordinationAdapter
+    assert owner.grant_only is True
+    assert record["present"] is True
+    assert record["authorizes_send"] is False
+    assert record["local_flock_authorizes_send"] is False
 
 
 class _RecoveryOwnerOnly:

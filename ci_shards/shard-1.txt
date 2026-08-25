@@ -133,6 +133,7 @@ tests/services/brokers/binance/test_rate_limit_telemetry.py
 tests/services/brokers/binance/test_root_reservation_migration.py
 tests/services/brokers/binance/test_ws_client.py
 tests/services/brokers/kis/test_account_cash_timeout.py
+tests/services/brokers/kiwoom/test_credential_identity.py
 tests/services/brokers/nhplug/test_auth.py
 tests/services/brokers/paper/test_safety_guards.py
 tests/services/brokers/toss/test_no_mutation_surface.py
