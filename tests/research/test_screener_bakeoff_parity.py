@@ -17,11 +17,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.db import engine
 from research.screener_bakeoff.sources import (
@@ -42,9 +44,25 @@ from tests._run_owned_database import validate_run_owned_database_url
 # fixture bound to a different, independently-constructed engine (e.g. a
 # hand-rolled local plugin) — that fixture's own bind is a distinct object
 # this import-time check never inspects. See the fixture-scoped check inside
-# ``_double_buy_parity_rows`` below, which validates whatever engine the
-# ``db_session`` it actually received is bound to, closing that gap.
+# ``_double_buy_parity_rows`` below for what that adds and does not add
+# (BL-4b rework round 2: "closing that gap" overclaimed — see that comment).
 validate_run_owned_database_url(engine.url)
+
+
+def _validate_session_bind_url(session) -> None:
+    """Resolve and validate whatever ``session.get_bind()`` (no args) reports.
+
+    SHOULD-1 (BL-4b rework round 2): ``get_bind()`` does not always return an
+    Engine. A session joined onto an external transaction (the SAVEPOINT
+    pattern in ``tests/_investment_reports_helpers.py``) returns a bare
+    ``Connection``, which has no ``.url`` of its own — only ``.engine.url``.
+    Without this fallback, that shape would fail closed with an opaque
+    ``AttributeError: 'Connection' object has no attribute 'url'`` instead
+    of the intended, diagnosable ``RuntimeError`` from the guard.
+    """
+    bind = session.get_bind()
+    validate_run_owned_database_url(getattr(bind, "url", None) or bind.engine.url)
+
 
 # Isolated from sibling loader suites (91xxxx / 92xxxx).
 _DB_SYMBOLS = ["931000", "931001", "931002", "931003"]
@@ -120,14 +138,28 @@ def test_crypto_tv_rsi45_is_not_a_live_comparator():
 
 @pytest_asyncio.fixture
 async def _double_buy_parity_rows(db_session, monkeypatch):
-    # BL-4b rework: the module-level check above only sees the process-wide
-    # ``app.core.db.engine`` — a caller supplying their OWN ``db_session``
-    # fixture bound to a different, independently-constructed engine (e.g. a
-    # hand-rolled local plugin under ``--noconftest``) never touches that
-    # object. Validate the ACTUAL bind this ``db_session`` resolved to,
-    # before any DELETE/add_all/commit below, so a substituted fixture
-    # cannot bypass the module-level guard.
-    validate_run_owned_database_url(db_session.get_bind().url)
+    # BL-4b rework (round 2 wording fix): the module-level check above only
+    # sees the process-wide ``app.core.db.engine`` — a caller supplying
+    # their OWN ``db_session`` fixture bound to a different,
+    # independently-constructed engine (e.g. a hand-rolled local plugin
+    # under ``--noconftest``) never touches that object. This validates the
+    # DEFAULT bind ``db_session.get_bind()`` reports, before any
+    # DELETE/add_all/commit below.
+    #
+    # Scope, precisely: this covers the realistic careless case of a
+    # substitute fixture handing back a plain ``AsyncSession``/``Connection``
+    # bound to one different, wrong engine — confirmed empirically to reject
+    # that with zero connection attempts (docs/rework reports for this PR).
+    # It does NOT cover, and cannot: per-mapper ``Session(binds={Model:
+    # other_engine})`` routing (a mapper-specific bind never surfaces
+    # through the no-argument ``get_bind()`` this line calls); a same-shaped
+    # URL whose ``connect_args`` silently redirects the actual TCP/socket
+    # target the driver dials; or a ``Session`` subclass that overrides
+    # ``get_bind()`` to lie about what it returns. Guarantee strength here
+    # is "accidental prevention + static detection" (the #1949/BL-4 house
+    # style), not structural impossibility — nothing at the Python level can
+    # make it that.
+    _validate_session_bind_url(db_session)
 
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
     from app.models.investor_flow_snapshot import InvestorFlowSnapshot
@@ -479,8 +511,10 @@ def test_write_fixture_fails_closed_under_noconftest_with_synthetic_prod_url() -
     on the process-wide ``app.core.db.engine``. It does NOT prove anything
     about a caller-substituted ``db_session`` bound to a different engine —
     see ``test_fixture_level_guard_blocks_a_locally_reachable_non_owned_engine``
-    below for that gap, which the fixture-level check (added in the same
-    rework) closes.
+    below for what the fixture-level check (added in the same rework) does
+    and does not additionally cover (round 2: it is not a complete close —
+    per-mapper ``binds={...}`` routing and ``connect_args`` DSN overrides
+    still bypass it; see that fixture's comment for the precise boundary).
 
     Mutant check: delete the module-level
     ``validate_run_owned_database_url(engine.url)`` call (or its import) at
@@ -550,25 +584,45 @@ def test_fixture_level_guard_blocks_a_locally_reachable_non_owned_engine(
     This reproduces that exact shape: a synthetic run-owned-SHAPED
     ``DATABASE_URL`` (so the module-level check on ``engine.url`` passes —
     this test is about the fixture-level gap, not re-proving the
-    module-level check) paired with a ``db_session`` plugin bound to a real,
-    locally-reachable PostgreSQL database that is NOT that run-owned target.
-    Requires a local PostgreSQL reachable at ``localhost:5432`` with
-    ``postgres``/``postgres`` credentials — the same server every other
-    PostgreSQL-backed test in this suite already depends on.
+    module-level check) paired with a ``db_session`` plugin bound to its OWN
+    ``create_async_engine(...)`` pointed at a database that is NOT that
+    run-owned target.
 
-    Mutant check: delete the fixture-level
-    ``validate_run_owned_database_url(db_session.get_bind().url)`` call
-    inside ``_double_buy_parity_rows`` — the subprocess then actually
-    reaches the evil engine and fails with ``UndefinedTableError`` from a
-    real ``DELETE`` instead of the expected guard message, so the
-    assertions below go RED instead of silently agreeing with the wrong
-    failure.
+    🔴 Correction (round 2 NIT-1): with the fixture-level guard PRESENT (the
+    normal, green path this test exercises), NO PostgreSQL server needs to
+    be reachable at all — ``create_async_engine()`` is lazy and the guard
+    rejects the URL before any query, so zero connection attempts are made.
+    A locally-reachable PostgreSQL at ``localhost:5432``/``postgres``:
+    ``postgres`` only matters for the MANUAL mutant reproduction described
+    below (and recorded in this PR's rework reports), where the guard is
+    temporarily removed by hand to show the ``DELETE`` actually lands
+    somewhere real — CI never runs that removed-guard state.
+
+    Mutant check: delete the fixture-level guard call inside
+    ``_double_buy_parity_rows`` (as of round 2: the
+    ``_validate_session_bind_url(db_session)`` call) — the subprocess then
+    actually reaches the evil engine and fails with ``UndefinedTableError``
+    from a real ``DELETE`` instead of the expected guard message, so the
+    assertions below go RED
+    instead of silently agreeing with the wrong failure. (This DOES require
+    a real reachable local PostgreSQL, since removing the guard is what
+    lets the query attempt actually happen.)
 
     🔴 This test is the ONLY regression guard for the fixture-level check.
     Neither ``tests/infra/test_database_guard_completeness.py`` nor
     ``test_write_fixture_fails_closed_under_noconftest_with_synthetic_prod_url``
     exercises a caller-substituted ``db_session`` — both leave this bypass
     invisible on their own.
+
+    Scope (round 2 BLOCKER-1 correction): the fixture-level check only
+    closes the realistic careless case reproduced here — a substitute
+    ``db_session`` bound to one different, wrong engine via the plain
+    ``AsyncSession(bind=...)``/``get_bind()`` path. It does NOT close, and
+    this test does not claim to close: per-mapper ``Session(binds={Model:
+    other_engine})`` routing, a same-shaped URL whose ``connect_args``
+    redirects the actual socket target, or a ``Session`` subclass
+    overriding ``get_bind()``. See the comment on the guard call inside
+    ``_double_buy_parity_rows`` for the full boundary.
     """
 
     plugin_dir = tmp_path
@@ -631,8 +685,75 @@ def test_fixture_level_guard_blocks_a_locally_reachable_non_owned_engine(
     combined = result.stdout + result.stderr
     assert result.returncode != 0
     assert _expected_rejection_message() in combined, combined
-    # The exact bypass this closes: without the fixture-level check, the
-    # evil session reaches the real, reachable local PostgreSQL server and
-    # issues a real DELETE there before failing on the missing table.
+    # The exact bypass this reproduces and rejects: without the fixture-level
+    # check, the evil session (a substitute AsyncSession bound to a
+    # different engine) reaches the real, reachable local PostgreSQL server
+    # and issues a real DELETE there before failing on the missing table.
     assert "UndefinedTableError" not in combined, combined
     assert "DELETE FROM investor_flow_snapshots" not in combined, combined
+
+
+@pytest.mark.asyncio
+async def test_bind_resolution_handles_a_connection_bound_session_without_attributeerror(
+    db_session,
+):
+    """BL-4b rework round 2 SHOULD-1: ``get_bind()`` is not always an Engine.
+
+    A session joined onto an external transaction — the exact SAVEPOINT-join
+    pattern already used by ``tests/_investment_reports_helpers.py::session``
+    — returns a bare ``Connection`` from ``get_bind()``, which has no
+    ``.url``. Before this fix, ``_double_buy_parity_rows`` would have died
+    with an opaque ``AttributeError: 'Connection' object has no attribute
+    'url'`` if this module's fixture chain ever changed shape that way,
+    instead of the intended, diagnosable ``RuntimeError``.
+
+    Two things are pinned here, both against the REAL run-owned engine (no
+    subprocess, no ``--noconftest`` needed — this is a same-process contract
+    test of ``_validate_session_bind_url`` itself):
+
+    1. Normal pass: a genuinely Connection-bound session (confirmed via
+       ``not hasattr(bind, "url")`` so this test cannot silently degrade
+       into exercising the Engine branch instead) against the real
+       run-owned test database passes without raising anything.
+    2. Fail-closed maintained: a Connection-SHAPED fake bind (same
+       attribute shape: no ``.url``, only ``.engine.url``) pointing at a
+       non-owned database still raises ``RuntimeError`` — the ``.engine.url``
+       fallback does not weaken rejection, it only fixes the diagnostic.
+
+    Mutant check: revert ``_validate_session_bind_url`` to the round-1 form
+    (``validate_run_owned_database_url(session.get_bind().url)``, no
+    ``getattr`` fallback) — assertion 1 below goes RED with
+    ``AttributeError: 'Connection' object has no attribute 'url'`` instead
+    of passing silently.
+    """
+
+    async with engine.connect() as connection:
+        factory = async_sessionmaker(bind=connection, expire_on_commit=False)
+        async with factory() as connection_bound_session:
+            bind = connection_bound_session.get_bind()
+            assert not hasattr(bind, "url"), (
+                "expected a bare Connection here (no .url) — this test's "
+                "premise depends on that shape; a plain Engine bind would "
+                "make assertion 1 pass for the wrong reason"
+            )
+            _validate_session_bind_url(connection_bound_session)  # must not raise
+
+    class _ConnectionShapedFakeBind:
+        """Mimics the attribute shape ``get_bind()`` returns for a
+        Connection: no ``.url``, only ``.engine.url``."""
+
+        def __init__(self, url: str) -> None:
+            self.engine = SimpleNamespace(url=url)
+
+    class _FakeConnectionBoundSession:
+        def __init__(self, bind) -> None:
+            self._bind = bind
+
+        def get_bind(self):
+            return self._bind
+
+    evil_bind = _ConnectionShapedFakeBind(
+        "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/postgres"
+    )
+    with pytest.raises(RuntimeError):
+        _validate_session_bind_url(_FakeConnectionBoundSession(evil_bind))
