@@ -147,18 +147,29 @@ async def _double_buy_parity_rows(db_session, monkeypatch):
     # DELETE/add_all/commit below.
     #
     # Scope, precisely: this covers the realistic careless case of a
-    # substitute fixture handing back a plain ``AsyncSession``/``Connection``
-    # bound to one different, wrong engine — confirmed empirically to reject
-    # that with zero connection attempts (docs/rework reports for this PR).
-    # It does NOT cover, and cannot: per-mapper ``Session(binds={Model:
-    # other_engine})`` routing (a mapper-specific bind never surfaces
-    # through the no-argument ``get_bind()`` this line calls); a same-shaped
-    # URL whose ``connect_args`` silently redirects the actual TCP/socket
-    # target the driver dials; or a ``Session`` subclass that overrides
-    # ``get_bind()`` to lie about what it returns. Guarantee strength here
-    # is "accidental prevention + static detection" (the #1949/BL-4 house
-    # style), not structural impossibility — nothing at the Python level can
-    # make it that.
+    # substitute fixture handing back a plain ``AsyncSession`` bound to one
+    # different, wrong ENGINE — confirmed empirically to reject that before
+    # any query, with zero connection attempts (docs/rework reports for this
+    # PR). That "zero connection attempts" result is specific to an
+    # Engine-bound substitute; it does not hold for a Connection-bound one
+    # (e.g. ``AsyncSession(bind=some_other_engine_connection)``) — obtaining
+    # a ``Connection`` in the first place already required connecting, so
+    # this check still rejects the write but only after that connection
+    # already happened (also confirmed empirically for this PR).
+    #
+    # This does NOT cover, and cannot — examples, not an exhaustive list:
+    # per-mapper ``Session(binds={Model: other_engine})`` routing (a
+    # mapper-specific bind never surfaces through the no-argument
+    # ``get_bind()`` this line calls); a same-shaped URL whose
+    # ``connect_args``, ``creator``, or ``async_creator`` silently redirects
+    # the actual TCP/socket target the driver dials (SQLAlchemy's own docs:
+    # "the parameters specified in the URL are not applied" when a
+    # creator callable is given); or a ``Session``/``Engine`` subclass, a
+    # duck-typed non-``Session`` object, or an overwritten
+    # ``engine.sync_engine.url`` that lies about what ``get_bind()``/``.url``
+    # returns. Guarantee strength here is "accidental prevention + static
+    # detection" (the #1949/BL-4 house style), not structural impossibility
+    # — nothing at the Python level can make it that.
     _validate_session_bind_url(db_session)
 
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
@@ -512,9 +523,11 @@ def test_write_fixture_fails_closed_under_noconftest_with_synthetic_prod_url() -
     about a caller-substituted ``db_session`` bound to a different engine —
     see ``test_fixture_level_guard_blocks_a_locally_reachable_non_owned_engine``
     below for what the fixture-level check (added in the same rework) does
-    and does not additionally cover (round 2: it is not a complete close —
-    per-mapper ``binds={...}`` routing and ``connect_args`` DSN overrides
-    still bypass it; see that fixture's comment for the precise boundary).
+    and does not additionally cover (round 2/3: it is not a complete close —
+    per-mapper ``binds={...}`` routing and a ``connect_args``/``creator``/
+    ``async_creator`` DSN override are examples, not an exhaustive list, of
+    what still bypasses it; see that fixture's comment for the precise
+    boundary).
 
     Mutant check: delete the module-level
     ``validate_run_owned_database_url(engine.url)`` call (or its import) at
@@ -614,15 +627,24 @@ def test_fixture_level_guard_blocks_a_locally_reachable_non_owned_engine(
     exercises a caller-substituted ``db_session`` — both leave this bypass
     invisible on their own.
 
-    Scope (round 2 BLOCKER-1 correction): the fixture-level check only
-    closes the realistic careless case reproduced here — a substitute
-    ``db_session`` bound to one different, wrong engine via the plain
-    ``AsyncSession(bind=...)``/``get_bind()`` path. It does NOT close, and
-    this test does not claim to close: per-mapper ``Session(binds={Model:
-    other_engine})`` routing, a same-shaped URL whose ``connect_args``
-    redirects the actual socket target, or a ``Session`` subclass
-    overriding ``get_bind()``. See the comment on the guard call inside
-    ``_double_buy_parity_rows`` for the full boundary.
+    Scope (round 2 BLOCKER-1 correction, round 3 precision pass): the
+    fixture-level check only closes the realistic careless case reproduced
+    here — a substitute ``db_session`` bound to one different, wrong ENGINE
+    via the plain ``AsyncSession(bind=...)``/``get_bind()`` path, rejected
+    before any query. That "zero connection attempts" property holds only
+    for this Engine-bound shape; a Connection-bound substitute has
+    necessarily already connected by the time a ``Connection`` object
+    exists to hand to ``AsyncSession(bind=...)``, so the write is still
+    rejected but not before that connection happened (see
+    ``test_bind_resolution_handles_a_connection_bound_session_without_attributeerror``,
+    which is about diagnosability of that shape, not about zero connections).
+    It does NOT close, and this test does not claim to close — examples,
+    not an exhaustive list: per-mapper ``Session(binds={Model:
+    other_engine})`` routing, a same-shaped URL whose ``connect_args``/
+    ``creator``/``async_creator`` redirects the actual socket target, or a
+    ``Session``/``Engine`` subclass or duck-typed object that lies about
+    what ``get_bind()``/``.url`` returns. See the comment on the guard call
+    inside ``_double_buy_parity_rows`` for the full boundary.
     """
 
     plugin_dir = tmp_path
