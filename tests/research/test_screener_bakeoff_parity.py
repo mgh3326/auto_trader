@@ -13,18 +13,34 @@ from __future__ import annotations
 
 import datetime as dt
 import decimal
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 
+from app.core.db import engine
 from research.screener_bakeoff.sources import (
     MarketContext,
     src_double_buy,
     src_us_high_yield_value,
 )
 from research.screener_bakeoff.spec import SOURCES_BY_ID
+from tests._run_owned_database import validate_run_owned_database_url
+
+# BL-4b: this module's ``_double_buy_parity_rows`` fixture DELETEs/writes
+# real rows. ``--noconftest`` skips tests/conftest.py entirely, so the normal
+# run-owned-database env setup and ``db_session`` fixture definition never
+# happen — but a caller could still supply their own ``db_session`` fixture
+# (e.g. a hand-rolled local plugin) pointed at a production DATABASE_URL.
+# Validate the process-wide engine URL at import time, before any fixture or
+# test body in this module can run, so the write path fails closed
+# independent of how ``db_session`` was constructed.
+validate_run_owned_database_url(engine.url)
 
 # Isolated from sibling loader suites (91xxxx / 92xxxx).
 _DB_SYMBOLS = ["931000", "931001", "931002", "931003"]
@@ -398,3 +414,58 @@ def test_double_buy_fail_closed_without_prior_partition():
     )
     ctx = MarketContext("kr", screener={day: screener}, flow={day: flow})
     assert src_double_buy(ctx, day) == []
+
+
+def test_write_fixture_fails_closed_under_noconftest_with_synthetic_prod_url() -> None:
+    """BL-4b: prove the module-level guard, not just its bare presence.
+
+    ``--noconftest`` skips ``tests/conftest.py`` entirely, so the run-owned
+    database env vars and the ``db_session`` fixture definition never exist.
+    A caller could still supply their own ``db_session`` (e.g. a hand-rolled
+    local plugin) bound to a real ``DATABASE_URL``. This spawns the real
+    interpreter against this real test file — not a synthetic probe — with a
+    synthetic non-owned ``prod-db.invalid`` URL and asserts the module-level
+    guard call rejects it BEFORE ``_double_buy_parity_rows`` (or any other
+    fixture in this module) can open a connection or issue a write.
+
+    Mutant check: delete the ``validate_run_owned_database_url(engine.url)``
+    call (or its import) at the top of this file — the subprocess still
+    exits non-zero (pytest can't resolve the missing ``db_session`` fixture
+    either way), but the specific guard message below never appears, so this
+    assertion goes RED instead of silently agreeing with the wrong failure.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    target = "tests/research/test_screener_bakeoff_parity.py::test_double_buy_research_matches_production_loader"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        # Synthetic, unreachable, non-owned target — never a real credential.
+        "DATABASE_URL": (
+            "postgresql+asyncpg://postgres:postgres@prod-db.invalid:5432/prod_db"
+        ),
+        "KIS_APP_KEY": "DUMMY_KIS_APP_KEY",
+        "KIS_APP_SECRET": "DUMMY_KIS_APP_SECRET",
+        "OPENDART_API_KEY": "DUMMY_OPENDART_API_KEY",
+        "UPBIT_ACCESS_KEY": "DUMMY_UPBIT_ACCESS_KEY",
+        "UPBIT_SECRET_KEY": "DUMMY_UPBIT_SECRET_KEY",
+        "SECRET_KEY": "Test_Secret_Key_12345_Test_Secret_Key_12345",
+        "ENVIRONMENT": "test",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--noconftest", target, "-q"],
+        capture_output=True,
+        env=env,
+        cwd=repo_root,
+        text=True,
+        timeout=60,
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "refusing unsafe or unowned pytest database name" in combined, combined
+    # Guard fires at import time — the fixture body's DELETE/add_all/commit
+    # must never even attempt to resolve the (nonexistent, in this bare
+    # --noconftest context) ``db_session`` fixture.
+    assert "fixture 'db_session' not found" not in combined, combined
