@@ -9,13 +9,17 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import engine
 from app.models.market_events import MarketEventIngestionPartition
 from app.services.market_events.freshness_service import (
     DEFAULT_STALE_THRESHOLD_HOURS,
     STALE_AFTER_HOURS,
     MarketEventsFreshnessService,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.market_events_test_helpers import market_events_test_lock
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest_asyncio.fixture(autouse=True)

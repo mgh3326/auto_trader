@@ -58,6 +58,7 @@ from app.services.order_send_intent_service import (
 from app.services.order_send_intent_service import (
     OrderSendIntentService,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -276,6 +277,9 @@ async def _reservation_row(correlation_id: str, side: str) -> tuple[int, str] | 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clear_reservations(monkeypatch: pytest.MonkeyPatch):
+    from app.core.db import engine
+
+    validate_run_owned_database_url(engine.url)
     test_scope = f"{PRODUCTION_KIS_MOCK_SCALPING_SCOPE}:{uuid4()}"
     monkeypatch.setattr(
         reservation_service,

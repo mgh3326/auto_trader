@@ -43,6 +43,7 @@ from app.services.brokers.binance.demo_scalping_exec.executor import (
     DemoScalpingExecutor,
 )
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
+from tests._run_owned_database import validate_run_owned_database_url
 
 _NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
 _HOST = "demo-api.binance.com"
@@ -197,6 +198,7 @@ async def _instrument(symbol: str) -> int:
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup():
+    validate_run_owned_database_url(shared_engine.url)
     yield
     await _clean("")
 

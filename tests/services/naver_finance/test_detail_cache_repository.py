@@ -6,12 +6,15 @@ from decimal import Decimal
 
 import pytest
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.naver_research_detail_cache import NaverResearchDetailCache
 from app.services.naver_finance.detail_cache import (
     NaverResearchDetailCacheRepository,
     _coerce_target_price,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest.mark.unit

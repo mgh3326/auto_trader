@@ -18,12 +18,12 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import settings
 from app.models.base import Base
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = pytest.mark.integration
 
@@ -107,7 +107,7 @@ def test_migration_is_purely_additive() -> None:
 
 @pytest.mark.asyncio
 async def test_isolated_upgrade_downgrade_upgrade() -> None:
-    base_url = make_url(settings.DATABASE_URL)
+    base_url = validate_run_owned_database_url(settings.DATABASE_URL)
     if base_url.get_backend_name() != "postgresql":
         pytest.skip("ROB-1036 migration acceptance requires PostgreSQL")
 

@@ -22,7 +22,11 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 
+from app.core.db import engine
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = pytest.mark.integration
 

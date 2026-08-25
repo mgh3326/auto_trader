@@ -35,9 +35,11 @@ pytestmark = pytest.mark.integration
 async def _clean_manual_ledger_rows():
     """Manual submits now route through the durable ledger claim; keep the
     server-derived manual keys (rob73-/rob74-crypto-) clean between tests."""
-    from app.core.db import AsyncSessionLocal
+    from app.core.db import AsyncSessionLocal, engine
     from app.models.market_quote_snapshot import MarketQuoteSnapshot
+    from tests._run_owned_database import validate_run_owned_database_url
 
+    validate_run_owned_database_url(engine.url)
     stmt = delete(AlpacaPaperOrderLedger).where(
         AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
         | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")

@@ -20,6 +20,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
+from app.core.db import engine
 from app.models.watch_event_repricing_claims import WatchEventRepricingClaim
 from app.services.watch_trigger_repricing.claims import (
     DEFAULT_LEASE,
@@ -32,6 +33,9 @@ from app.services.watch_trigger_repricing.lifecycle import (
     proposal_created,
     rejected,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = pytest.mark.integration
 

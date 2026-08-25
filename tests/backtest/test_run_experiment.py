@@ -15,10 +15,14 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select, text
 
+from app.core.db import engine
 from app.models.research_backtest import (
     ResearchBacktestRun,
     ResearchStrategyExperiment,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 
 def _load_runner():

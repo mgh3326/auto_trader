@@ -30,6 +30,9 @@ from app.services.trading_decision_service import (
     record_outcome_mark,
     record_user_response,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 SessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False

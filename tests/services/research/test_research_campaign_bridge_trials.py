@@ -54,6 +54,7 @@ from run_rob944_campaign import _summary_to_attempt_evidence
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.db import engine
 from app.models.research_backtest import ResearchBacktestRun
 from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.schemas.research_campaign_bridge import (
@@ -75,9 +76,12 @@ from app.services.research_campaign_bridge import (
 )
 from app.services.research_db_write_guard import ResearchWriteDisabled
 from research_contracts.canonical_hash import canonical_json
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.research._db_guard_test_policy import (
     current_research_test_db_policy,
 )
+
+validate_run_owned_database_url(engine.url)
 
 _POLICY = current_research_test_db_policy()
 

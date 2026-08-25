@@ -16,7 +16,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 
 from app.core.config import settings
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.mcp_server.tooling.alpaca_paper_orders import (
     alpaca_paper_cancel_order,
     alpaca_paper_submit_order,
@@ -24,6 +24,7 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     set_alpaca_paper_orders_service_factory,
 )
 from app.models.review import AlpacaPaperOrderLedger
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.test_alpaca_paper_orders_tools import FakeOrdersService
 
 pytestmark = [pytest.mark.asyncio]
@@ -31,6 +32,7 @@ pytestmark = [pytest.mark.asyncio]
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean():
+    validate_run_owned_database_url(engine.url)
     from app.models.market_quote_snapshot import MarketQuoteSnapshot
 
     stmt = delete(AlpacaPaperOrderLedger).where(

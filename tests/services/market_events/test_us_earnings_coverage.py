@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from app.core.db import engine
 from app.services.market_events.earnings_decision_time import (
     label_earnings_decision_time,
 )
@@ -20,7 +21,10 @@ from app.services.market_events.us_earnings_coverage import (
     MIN_WINDOW_COVERAGE,
     aggregate_coverage,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.market_events_test_helpers import market_events_test_lock
+
+validate_run_owned_database_url(engine.url)
 
 
 @pytest_asyncio.fixture(autouse=True)

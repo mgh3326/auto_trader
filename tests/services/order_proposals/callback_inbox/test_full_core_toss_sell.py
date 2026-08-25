@@ -52,11 +52,12 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.dispatch_contract import ApprovalCardKind
 from app.services.order_proposals.service import RungInput
+from tests._run_owned_database import validate_run_owned_database_url
 
 from .conftest import (
     CHAT_ID,
@@ -66,6 +67,8 @@ from .conftest import (
     make_update,
     proposal_callback_data,
 )
+
+validate_run_owned_database_url(engine.url)
 
 pytestmark = pytest.mark.integration
 

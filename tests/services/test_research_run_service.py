@@ -27,10 +27,12 @@ from app.services.research_run_service import (
     reconciliation_create_from_nxt,
     reconciliation_create_from_recon,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 
 SessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
+validate_run_owned_database_url(engine.url)
 
 
 async def _ensure_research_run_tables() -> None:

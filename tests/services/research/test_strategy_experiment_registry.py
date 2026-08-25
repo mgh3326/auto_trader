@@ -24,6 +24,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.db import engine
 from app.models.research_backtest import ResearchBacktestRun
 from app.schemas.research_backtest import (
     BacktestTrialRequest,
@@ -35,6 +36,9 @@ from app.services.research_canonical_hash import (
     compute_identity_hashes_from_ast,
     derive_experiment_id,
 )
+from tests._run_owned_database import validate_run_owned_database_url
+
+validate_run_owned_database_url(engine.url)
 
 
 def _identity(**overrides) -> StrategyExperimentIdentity:

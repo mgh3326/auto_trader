@@ -19,7 +19,7 @@ import pytest_asyncio
 from sqlalchemy import delete
 
 from app.core.config import settings
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.mcp_server.tooling import alpaca_paper_automated_orders as auto_mod
 from app.mcp_server.tooling.alpaca_paper_automated_orders import (
     alpaca_paper_automated_preview_order,
@@ -31,6 +31,7 @@ from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.models.review import AlpacaPaperOrderLedger
 from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import Order
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -78,6 +79,7 @@ async def broker(monkeypatch) -> CountingBroker:
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean():
+    validate_run_owned_database_url(engine.url)
     async with AsyncSessionLocal() as db:
         await db.execute(
             delete(AlpacaPaperOrderLedger).where(

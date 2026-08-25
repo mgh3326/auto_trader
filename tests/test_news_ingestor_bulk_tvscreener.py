@@ -38,6 +38,11 @@ def _unique_payload() -> dict:
 def news_schema_for_tvscreener_contract_tests():
     """Ensure ROB-46/ROB-161 news tables exist for full CI integration runs."""
 
+    from app.core.db import engine
+    from tests._run_owned_database import validate_run_owned_database_url
+
+    validate_run_owned_database_url(engine.url)
+
     async def _ensure_schema() -> None:
         from sqlalchemy import text
 

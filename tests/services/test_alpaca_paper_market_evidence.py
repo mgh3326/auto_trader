@@ -10,18 +10,20 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.services.alpaca_paper_market_evidence import (
     MarketEvidenceError,
     load_market_evidence,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.asyncio]
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean():
+    validate_run_owned_database_url(engine.url)
     stmt = delete(MarketQuoteSnapshot).where(MarketQuoteSnapshot.symbol == "AAPL")
     async with AsyncSessionLocal() as db:
         await db.execute(stmt)

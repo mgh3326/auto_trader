@@ -14,10 +14,14 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from app.core.db import engine
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.market_events_test_helpers import (
     clean_non_tradingview_market_events,
     market_events_test_lock,
 )
+
+validate_run_owned_database_url(engine.url)
 
 _SEED_COUNT = 6
 _QUERY_COUNT_CAP = 4

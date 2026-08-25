@@ -10,7 +10,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 from app.services.brokers.binance.demo_strategy_loop.kill_switch import (
@@ -20,11 +20,13 @@ from app.services.brokers.binance.demo_strategy_loop.kill_switch import (
     build_kill_switch_snapshot,
     evaluate_kill_switch,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 
 _RESIDUE_PREFIX = "rob-993-kswtest-%"
 
 
 async def _purge_residue() -> None:
+    validate_run_owned_database_url(engine.url)
     async with AsyncSessionLocal() as db:
         await db.execute(
             delete(BinanceDemoOrderLedger).where(
