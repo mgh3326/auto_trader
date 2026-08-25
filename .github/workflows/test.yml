@@ -684,7 +684,11 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v5
       with:
-        node-version: "20"
+        # @testing-library/jest-dom@7 declares engines.node >=22 (package.json's
+        # own engines field says >=20.19.0, but that devDependency is stricter);
+        # pin to 22 to match what was verified locally and avoid an EBADENGINE
+        # warning on every run.
+        node-version: "22"
         cache: npm
         cache-dependency-path: frontend/invest/package-lock.json
 
