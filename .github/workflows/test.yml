@@ -656,6 +656,44 @@ jobs:
         # keeps its 16-config/128-cell accounting boundary from disappearing
         # behind the repository's canonical tests/ discovery root.
 
+  # BL-2: frontend/invest was previously not exercised by CI at all -- no
+  # workflow, composite action, or reusable workflow ever invoked npm/vitest
+  # (confirmed by both a static .github/ audit and the actual job list of
+  # recent workflow runs). This job is intentionally non-required (not added
+  # to ci-required's --required flags or needs list, and not one of the six
+  # branch-protection check names) so wiring it up carries zero risk to the
+  # merge gate. `classify_changes.py` already reserves the job id "frontend"
+  # for this (ROB-1294 shadow lane vocabulary); this job claims that name but
+  # runs unconditionally rather than being gated by the (still-shadow)
+  # classifier output, so a red run is always a real signal, never a skip
+  # laundered into green.
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: frontend/invest
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: "20"
+        cache: npm
+        cache-dependency-path: frontend/invest/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run Vitest suite
+      run: npm test
+
   # ROB-1294 (R2B) — fixed-name aggregate over the currently required checks.
   #
   # 🔴 This PR does NOT make `ci-required` a required check and writes no
@@ -708,7 +746,7 @@ jobs:
 
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security, alpaca-track-fast-tests, alpaca-track-walkforward-tests]
+    needs: [lint, test, taskiq-smoke, security, alpaca-track-fast-tests, alpaca-track-walkforward-tests, frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification
