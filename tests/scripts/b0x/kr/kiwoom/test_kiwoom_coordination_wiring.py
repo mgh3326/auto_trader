@@ -124,6 +124,21 @@ def test_current_registry_binds_kr_identity_but_keeps_execution_fail_closed() ->
         production_kiwoom_coordination_factory(KIWOOM_US_LANE_ID)()
 
 
+def test_production_kr_factory_is_grant_only_owner() -> None:
+    entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    owner, record = kiwoom_cycle._resolve_coordination_owner(
+        coordination_factory=production_kiwoom_coordination_factory(KIWOOM_KR_LANE_ID),
+        expected_entry=entry,
+    )
+
+    assert owner is not None
+    assert type(owner) is kiwoom_ordering.KiwoomCoordinationAdapter
+    assert owner.grant_only is True
+    assert record["present"] is True
+    assert record["authorizes_send"] is False
+    assert record["local_flock_authorizes_send"] is False
+
+
 class _RecoveryOwnerOnly:
     recovery_owner = kiwoom_ordering.KIWOOM_RECOVERY_OWNER
 
