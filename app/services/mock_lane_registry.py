@@ -525,6 +525,17 @@ _BINANCE_DEMO_FINGERPRINT_EVIDENCE_REF: Final[str] = (
     "sha256:44a9a5b4059c176eb8300d23048cd396daa77d6400faa3be8bbaf7c465d6ee82;"
     "verify=sha256:03cfae4c8a9193ce0aa8ef4803d7e4ff3190eca1b6de777862b44d410a498e21"
 )
+_KIWOOM_MOCK_IDENTITY_LANE_IDS: Final[tuple[str, ...]] = ("kr.kiwoom.mock",)
+_KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID: Final[str] = (
+    "kiwoom_mock:kr:credential_fingerprint="
+    "sha256:ad6ad5ebaa77aed5d8782b314f9713010dba72cafaf823e90c79a1ca128bebfb:"
+    "kr_kiwoom_mock_domain"
+)
+_KIWOOM_MOCK_FINGERPRINT_EVIDENCE_REF: Final[str] = (
+    "kr-identity-binding-20260825-1010:impl="
+    "sha256:55973f8c33f1d3f14c4b9cc379e8bab8ca40a7ef7dd41b6f63aad335bb90fef4;"
+    "verify=NOT_AVAILABLE(verification_pending)"
+)
 
 
 def _apply_binance_demo_identity_amendment(
@@ -567,8 +578,52 @@ def _apply_binance_demo_identity_amendment(
     )
 
 
+def _apply_kiwoom_mock_identity_amendment(
+    entries: tuple[LaneRegistryEntry, ...],
+) -> tuple[LaneRegistryEntry, ...]:
+    """Apply the approved single-lane Kiwoom mock identity binding."""
+
+    if tuple(entry.lane_id for entry in entries) != CANONICAL_LANE_IDS:
+        raise RuntimeError("kiwoom_mock_identity_base_registry_mismatch")
+
+    base_by_id = {entry.lane_id: entry for entry in entries}
+    if set(_KIWOOM_MOCK_IDENTITY_LANE_IDS) - set(base_by_id):
+        raise RuntimeError("kiwoom_mock_identity_lane_missing")
+
+    for lane_id in _KIWOOM_MOCK_IDENTITY_LANE_IDS:
+        entry = base_by_id[lane_id]
+        if (
+            entry.physical_account_id is not None
+            or entry.identity_status != "UNKNOWN"
+            or entry.fingerprint_evidence_ref is not None
+            or MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT not in entry.missing_bindings
+            or entry.writer is not False
+            or entry.auto_order_enabled is not False
+        ):
+            raise RuntimeError("kiwoom_mock_identity_base_binding_mismatch")
+
+    return tuple(
+        replace(
+            entry,
+            physical_account_id=_KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID,
+            identity_status="KNOWN",
+            fingerprint_evidence_ref=_KIWOOM_MOCK_FINGERPRINT_EVIDENCE_REF,
+            missing_bindings=tuple(
+                binding
+                for binding in entry.missing_bindings
+                if binding is not MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT
+            ),
+        )
+        if entry.lane_id in _KIWOOM_MOCK_IDENTITY_LANE_IDS
+        else entry
+        for entry in entries
+    )
+
+
 CANONICAL_LANE_REGISTRY: Final[tuple[LaneRegistryEntry, ...]] = (
-    _apply_binance_demo_identity_amendment(_BASE_CANONICAL_LANE_REGISTRY)
+    _apply_kiwoom_mock_identity_amendment(
+        _apply_binance_demo_identity_amendment(_BASE_CANONICAL_LANE_REGISTRY)
+    )
 )
 
 _CANONICAL_BY_ID: Final[Mapping[str, LaneRegistryEntry]] = MappingProxyType(
