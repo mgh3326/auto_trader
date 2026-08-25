@@ -14,6 +14,9 @@ def test_credential_fingerprint_is_deterministic_opaque_and_key_specific() -> No
     fingerprint = kiwoom_mock_credential_fingerprint(app_key)
 
     assert fingerprint == kiwoom_mock_credential_fingerprint(app_key)
+    assert fingerprint == (
+        "sha256:16d02a2be4bea70e3e9b6ca3d3b07ce43a4a645e569d6e2675d2612cdb643e85"
+    )
     assert fingerprint != kiwoom_mock_credential_fingerprint(app_key + "-rotated")
     assert fingerprint.startswith("sha256:")
     assert app_key not in fingerprint
