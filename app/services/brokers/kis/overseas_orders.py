@@ -14,7 +14,11 @@ from .order_throttle import (
     throttle_backoff_seconds,
 )
 from .pre_send import PreSendHook
-from .send_outcome import OrderSendDisposition, OrderSendOutcomeTracker
+from .send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+    emit_throttle_protocol_evidence,
+)
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -281,6 +285,11 @@ class OverseasOrderClient:
             # not apply. Ambiguous outcomes (5xx-with-body, timeouts) still
             # fail closed via the NOT_CREATED check.
             if is_provider_throttle_reject(js.get("msg_cd"), js.get("msg1")):
+                emit_throttle_protocol_evidence(
+                    order_surface="overseas",
+                    provider_message_code=js.get("msg_cd"),
+                    outcome=outcome,
+                )
                 if outcome.disposition is not OrderSendDisposition.NOT_CREATED:
                     logging.error(
                         "해외주식 주문 초당한도 거절이나 결과 불확정(http=%s) - "
