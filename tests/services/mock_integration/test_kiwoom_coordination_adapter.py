@@ -31,6 +31,7 @@ from app.services.mock_integration.coordination import (
 )
 from app.services.mock_integration.lineage import MockLineageFactory
 from app.services.mock_lane_registry import (
+    _KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID,
     CANONICAL_LANE_REGISTRY,
     ActivationStatus,
     LaneGuardError,
@@ -1207,8 +1208,16 @@ def canonical_kiwoom_entry() -> LaneRegistryEntry:
     )
 
 
+def canonical_unknown_kiwoom_entry() -> LaneRegistryEntry:
+    """The untouched US Kiwoom row, which remains an UNKNOWN identity."""
+
+    return next(
+        entry for entry in CANONICAL_LANE_REGISTRY if entry.lane_id == "us.kiwoom.mock"
+    )
+
+
 def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
-    """The port refuses the signed row, and names activation as the reason."""
+    """The signed row remains blocked even after identity is known."""
 
     entry = canonical_kiwoom_entry()
     assert entry.activation_status is ActivationStatus.BLOCKED
@@ -1216,9 +1225,14 @@ def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
     assert entry.writer is False
     assert entry.auto is False
     assert entry.scheduler_owner is None
-    assert entry.physical_account_id is None
-    assert entry.identity_status == "UNKNOWN"
-    assert entry.fingerprint_evidence_ref is None
+    physical_account_id = entry.physical_account_id
+    assert physical_account_id == _KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID
+    assert physical_account_id.startswith(
+        "kiwoom_mock:kr:credential_fingerprint=sha256:"
+    )
+    assert physical_account_id.endswith(":kr_kiwoom_mock_domain")
+    assert entry.identity_status == "KNOWN"
+    assert entry.fingerprint_evidence_ref
     assert entry.missing_bindings
 
     with pytest.raises(LaneGuardError) as refusal:
@@ -1227,7 +1241,7 @@ def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
 
 
 def test_signed_kiwoom_lane_fails_every_execution_ready_clause() -> None:
-    """Not one stale flag — four independent bindings are absent.
+    """Identity is bound, but activation and remaining grants are absent.
 
     Recorded so nobody reads the single ``lane_activation_not_enabled`` string
     above as "flip one boolean and the grant flows".
@@ -1236,15 +1250,19 @@ def test_signed_kiwoom_lane_fails_every_execution_ready_clause() -> None:
     entry = canonical_kiwoom_entry()
     assert entry.activation_status is not ActivationStatus.ENABLED
     assert not (entry.writer and entry.auto)
-    assert entry.physical_account_id is None
-    assert entry.fingerprint_evidence_ref is None
+    assert entry.physical_account_id == _KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID
+    assert entry.identity_status == "KNOWN"
+    assert entry.fingerprint_evidence_ref
     assert entry.missing_bindings != ()
 
 
-def test_signed_kiwoom_lane_cannot_construct_the_coordination_adapter() -> None:
-    """Construction fails on J2A identity, before any port or socket exists."""
+def test_unknown_us_kiwoom_lane_cannot_construct_the_coordination_adapter() -> None:
+    """The untouched US UNKNOWN row still fails on J2A identity."""
 
-    entry = canonical_kiwoom_entry()
+    entry = canonical_unknown_kiwoom_entry()
+    assert entry.lane_id == "us.kiwoom.mock"
+    assert entry.physical_account_id is None
+    assert entry.identity_status == "UNKNOWN"
     account = FakeKiwoomAccount()
     ports = KiwoomCoordinationPorts(
         persistence=InMemoryLineagePersistence(),
@@ -1267,8 +1285,8 @@ def test_signed_kiwoom_lane_transport_gate_refuses_even_claiming_a_grant() -> No
     """``grant_owned=True`` is not a grant. The signed row still fails closed.
 
     The signed row raises ``KiwoomTransportGateRejected`` /
-    ``transport_gate_rejected`` (``physical_account_id is None`` ≠ the
-    caller id). ``LaneGuardError`` is not a path through
+    ``transport_gate_rejected`` because its canonical physical identity
+    differs from the caller id. ``LaneGuardError`` is not a path through
     ``assert_kiwoom_transport_ready`` on this row; that type is raised by
     ``require_j2a_physical_account_id`` during adapter construction and is
     pinned by ``test_signed_kiwoom_lane_cannot_construct_the_coordination_adapter``.
@@ -1314,6 +1332,9 @@ def test_execution_ready_identity_clause_fires_once_prior_clauses_pass() -> None
         activation_status=ActivationStatus.ENABLED,
         writer=True,
         auto_order_enabled=True,
+        physical_account_id=None,
+        identity_status="UNKNOWN",
+        fingerprint_evidence_ref=None,
     )
     assert entry.physical_account_id is None
     assert entry.identity_status == "UNKNOWN"
