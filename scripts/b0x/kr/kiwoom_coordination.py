@@ -371,9 +371,10 @@ def production_kiwoom_coordination_factory(
 ) -> Callable[[], KiwoomCoordinationAdapter]:
     """Return the manual production entrypoint's owner-only factory.
 
-    The canonical registry is consulted on every factory call.  With the
-    current inert registry this raises ``physical_account_identity_unknown``;
-    no local account summary is promoted into J2A identity.
+    The canonical registry is consulted on every factory call.  KR has an
+    evidence-backed identity but remains grant-only while activation and
+    writer gates are closed; US remains ``physical_account_identity_unknown``.
+    No local account summary is promoted into J2A identity.
     """
 
     def _factory() -> KiwoomCoordinationAdapter:
