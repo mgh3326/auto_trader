@@ -1289,7 +1289,7 @@ def test_signed_kiwoom_lane_transport_gate_refuses_even_claiming_a_grant() -> No
     differs from the caller id. ``LaneGuardError`` is not a path through
     ``assert_kiwoom_transport_ready`` on this row; that type is raised by
     ``require_j2a_physical_account_id`` during adapter construction and is
-    pinned by ``test_signed_kiwoom_lane_cannot_construct_the_coordination_adapter``.
+    pinned by ``test_unknown_us_kiwoom_lane_cannot_construct_the_coordination_adapter``.
     """
 
     account = FakeKiwoomAccount()
