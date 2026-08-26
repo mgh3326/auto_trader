@@ -93,35 +93,51 @@ def writer_lock(*, lane: str, root: Path) -> Iterator[Path]:
             release_reason = "scope_exception"
             raise
     finally:
+        unlock_error: BaseException | None = None
+        close_error: BaseException | None = None
+        observation_error: BaseException | None = None
         try:
             try:
                 fcntl.flock(handle, fcntl.LOCK_UN)
-            except BaseException:
+            except BaseException as exc:
                 release_reason = "unlock_exception"
-                raise
+                unlock_error = exc
         finally:
-            if acquired:
-                try:
-                    ObservationLedger(root=root, lane=lane).record_owner_release(
-                        monotonic_ts_ns=time.monotonic_ns(),
-                        release_reason=release_reason,
-                        lock_correlation={
-                            "claim_id": (
-                                f"{lane}:pid-{os.getpid()}:acquired-{claim_acquired_at}"
-                            ),
-                            "lane": lane,
-                            "lock_path": str(lock_path),
-                        },
-                    )
-                except Exception:
-                    # Observation is deliberately fail-open with respect to
-                    # the lock's existing release/close behavior.
-                    pass
             try:
                 os.close(handle)
-            except BaseException:
+            except BaseException as exc:
                 release_reason = "close_exception"
-                raise
+                close_error = exc
+
+        if acquired:
+            try:
+                ObservationLedger(root=root, lane=lane).record_owner_release(
+                    monotonic_ts_ns=time.monotonic_ns(),
+                    wall_clock_ts=dt.datetime.now(dt.UTC).isoformat(),
+                    release_reason=release_reason,
+                    lock_correlation={
+                        "claim_id": (
+                            f"{lane}:pid-{os.getpid()}:acquired-{claim_acquired_at}"
+                        ),
+                        "lane": lane,
+                        "lock_path": str(lock_path),
+                    },
+                )
+            except Exception:
+                # Observation is deliberately fail-open with respect to
+                # the lock's existing release/close behavior.
+                pass
+            except BaseException as exc:
+                # Preserve interruption semantics, but only after the fd has
+                # already been closed and any close failure has been captured.
+                observation_error = exc
+
+        if close_error is not None:
+            raise close_error
+        if unlock_error is not None:
+            raise unlock_error
+        if observation_error is not None:
+            raise observation_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +167,7 @@ class ObservationLedger:
         self,
         *,
         monotonic_ts_ns: int,
+        wall_clock_ts: str,
         release_reason: str,
         lock_correlation: dict[str, str],
     ) -> None:
@@ -163,6 +180,21 @@ class ObservationLedger:
 
         if not isinstance(monotonic_ts_ns, int) or isinstance(monotonic_ts_ns, bool):
             raise TypeError("owner release monotonic timestamp must be an int")
+        if type(wall_clock_ts) is not str or not wall_clock_ts.strip():
+            raise TypeError("owner release wall-clock timestamp must be a string")
+        try:
+            parsed_wall_clock_ts = dt.datetime.fromisoformat(wall_clock_ts)
+        except ValueError as exc:
+            raise ValueError(
+                "owner release wall-clock timestamp must be ISO-8601"
+            ) from exc
+        if (
+            parsed_wall_clock_ts.tzinfo is None
+            or parsed_wall_clock_ts.utcoffset() is None
+        ):
+            raise ValueError(
+                "owner release wall-clock timestamp must include a timezone"
+            )
         if release_reason not in OWNER_RELEASE_REASONS:
             raise ValueError("owner release reason is outside the closed vocabulary")
         required_correlation_keys = {"claim_id", "lane", "lock_path"}
@@ -174,6 +206,7 @@ class ObservationLedger:
             "event": OWNER_RELEASE_EVENT,
             "owner": WRITER_LOCK_RECOVERY_OWNER,
             "monotonic_ts_ns": monotonic_ts_ns,
+            "wall_clock_ts": wall_clock_ts,
             "release_reason": release_reason,
             "lock_correlation": dict(lock_correlation),
         }
