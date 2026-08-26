@@ -85,6 +85,16 @@ from app.services.trade_journal.trade_retrospective_service import (
 logger = logging.getLogger(__name__)
 
 _TOSS_AUTO_SUBMISSION_FREEZE_KEY = "toss_auto_submission_freeze"
+_TOSS_RESOLVED_MUTATION_SIBLING_STATUSES = frozenset(
+    {
+        "filled",
+        "cancelled",
+        "replaced",
+        "rejected",
+        "cancel_rejected",
+        "replace_rejected",
+    }
+)
 
 
 def _log_dispatch_outcome(result: TelegramDispatchResult, *, surface: str) -> None:
@@ -3096,9 +3106,11 @@ class OrderProposalsService:
         A fill initially writes an account-wide interlock before any rung or
         ledger projection can race it.  That interlock is released only when
         every positive-fill rung in the source group proves a normal full fill
-        against one exact, clean Toss ``place`` ledger row.  Missing data,
-        lookup errors, a partial fill, or any unexpected ledger state remain
-        frozen.  Human approval remains available.
+        against one exact, clean Toss ``place`` ledger row, including a clean
+        terminal reconciliation for any direct ``cancel``/``modify`` sibling.
+        Missing, mismatched, partial, or otherwise unresolved evidence in that
+        proposal/order lineage remains frozen.  This is not an assertion about
+        unrelated account-wide ledger rows.  Human approval remains available.
         """
         self._require_timezone_aware(now)
         if group.account_mode != "toss_live":
@@ -3277,9 +3289,13 @@ class OrderProposalsService:
         must map to exactly one Toss place row with matching symbol, market,
         side, limit price, order quantity, and filled quantity.  The ledger row
         must be locally and broker ``filled``, reconciled, and free of
-        manual-review or reconcile-error residue.  A better-or-equal average
-        fill is normal; a worse price is unexpected.  Every missing or
-        mismatched field returns ``False`` so the caller retains the interlock.
+        manual-review or reconcile-error residue.  Direct ``cancel``/``modify``
+        ledger siblings linked by that place row's ``original_order_id`` must
+        also be resolved without review/error residue.  This is deliberately an
+        exact proposal/order lineage check, not a claim that every account-wide
+        ledger state is understood.  A better-or-equal average fill is normal;
+        a worse price is unexpected.  Every missing or mismatched field returns
+        ``False`` so the caller retains the interlock.
         """
         ledger_market = self._toss_ledger_market(group.market)
         if (
@@ -3327,6 +3343,8 @@ class OrderProposalsService:
                 or row.last_reconcile_error is not None
             ):
                 return False
+            if await self._has_unresolved_toss_mutation_sibling(row):
+                return False
 
             ledger_quantity = self._positive_decimal(row.quantity)
             ledger_filled_qty = self._positive_decimal(row.filled_qty)
@@ -3344,6 +3362,40 @@ class OrderProposalsService:
             if group.side == "sell" and average_fill_price < limit_price:
                 return False
         return True
+
+    async def _has_unresolved_toss_mutation_sibling(
+        self, place_row: TossLiveOrderLedger
+    ) -> bool:
+        """Return whether a direct cancel/modify sibling still clouds a fill.
+
+        A Toss cancel or modify is recorded as a separate ledger row whose
+        ``original_order_id`` names the original place order.  It is not safe to
+        clear a same-session fill interlock while one of those direct siblings
+        is pending, anomalous, unreconciled, or retains manual-review/reconcile
+        error residue.  Rows with a clean terminal mutation status are resolved
+        siblings and do not independently hold the interlock.
+        """
+        place_order_id = self._non_empty_exact_string(place_row.broker_order_id)
+        if place_order_id is None:
+            return True
+        siblings = list(
+            (
+                await self._session.execute(
+                    select(TossLiveOrderLedger).where(
+                        TossLiveOrderLedger.original_order_id == place_order_id,
+                        TossLiveOrderLedger.operation_kind.in_(("cancel", "modify")),
+                    )
+                )
+            ).scalars()
+        )
+        return any(
+            sibling.status not in _TOSS_RESOLVED_MUTATION_SIBLING_STATUSES
+            or sibling.reconciled_at is None
+            or sibling.requires_manual_review is not False
+            or sibling.manual_review_reason is not None
+            or sibling.last_reconcile_error is not None
+            for sibling in siblings
+        )
 
     async def _matching_toss_place_ledger_rows(
         self, group: OrderProposal, rung: OrderProposalRung

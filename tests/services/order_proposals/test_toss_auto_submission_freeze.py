@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.service import RungInput
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
@@ -94,7 +95,7 @@ async def _record_clean_toss_place_ledger(
     *,
     identity: str,
     price: Decimal = Decimal("97000"),
-) -> None:
+) -> int:
     ledger_service = TossLiveOrderLedgerService(db_session)
     row = await ledger_service.record_send(
         operation_kind="place",
@@ -123,6 +124,43 @@ async def _record_clean_toss_place_ledger(
         broker_status="FILLED",
         filled_qty=Decimal("1"),
         avg_fill_price=Decimal("97000"),
+    )
+    return row.id
+
+
+async def _record_unresolved_toss_mutation_sibling(
+    db_session,
+    *,
+    identity: str,
+    operation_kind: str,
+) -> None:
+    """Record the D12c cancel/modify anomaly through the ledger service."""
+    ledger_service = TossLiveOrderLedgerService(db_session)
+    row = await ledger_service.record_send(
+        operation_kind=operation_kind,
+        market="kr",
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("1"),
+        price=Decimal("97000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id=f"{operation_kind}-client-{identity}",
+        broker_order_id=f"{operation_kind}-broker-{identity}",
+        original_order_id=f"broker-{identity}",
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        correlation_id=f"{operation_kind}-correlation-{identity}",
+    )
+    await ledger_service.mark_manual_review(
+        ledger_id=row.id,
+        reason="offline unresolved mutation sibling",
+        error={"code": "offline_unresolved_mutation_sibling"},
     )
 
 
@@ -155,6 +193,134 @@ async def test_normal_full_fill_with_clean_toss_reconciliation_releases_freeze(
     persisted = refreshed.source_asof["auto_approved"]["toss_auto_submission_freeze"]
     assert persisted["state"] == "resolved"
     assert persisted["resolution"]["reason"] == "normal_full_fill_reconciled"
+
+
+@pytest.mark.parametrize("operation_kind", ("cancel", "modify"))
+async def test_unresolved_linked_toss_mutation_sibling_keeps_freeze(
+    db_session, operation_kind: str
+) -> None:
+    """D12c: a clean place row cannot hide its anomalous linked mutation."""
+    identity = uuid.uuid4().hex
+    service, group, now = await _seed_auto_resting_toss(
+        db_session,
+        account_id=f"offline-{operation_kind}-sibling-{identity}",
+        identity=identity,
+    )
+    await _record_fill(
+        service,
+        db_session,
+        identity=identity,
+        filled_qty=Decimal("1"),
+        terminal_state="filled",
+        now=now,
+    )
+    await _record_clean_toss_place_ledger(db_session, identity=identity)
+    await _record_unresolved_toss_mutation_sibling(
+        db_session,
+        identity=identity,
+        operation_kind=operation_kind,
+    )
+
+    freeze = await service.active_toss_auto_submission_freeze(group, now=now)
+
+    assert freeze is not None
+    assert freeze["state"] == "frozen"
+
+
+async def test_clean_full_fill_missing_reconciled_at_stays_frozen(db_session) -> None:
+    """MUTATION-ANCHOR: s156-toss-freeze-reconciled-at."""
+    identity = uuid.uuid4().hex
+    service, group, now = await _seed_auto_resting_toss(
+        db_session,
+        account_id=f"offline-missing-reconciled-at-{identity}",
+        identity=identity,
+    )
+    await _record_fill(
+        service,
+        db_session,
+        identity=identity,
+        filled_qty=Decimal("1"),
+        terminal_state="filled",
+        now=now,
+    )
+    ledger_id = await _record_clean_toss_place_ledger(db_session, identity=identity)
+    row = await db_session.get(TossLiveOrderLedger, ledger_id)
+    assert row is not None
+    row.reconciled_at = None
+    await db_session.commit()
+
+    freeze = await service.active_toss_auto_submission_freeze(group, now=now)
+
+    assert freeze is not None, "MUTATION-ANCHOR: s156-toss-freeze-reconciled-at"
+    assert freeze["state"] == "frozen"
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    (
+        ("rung", "filled_qty", Decimal("2")),
+        ("ledger", "filled_qty", Decimal("2")),
+        ("ledger", "avg_fill_price", Decimal("97001")),
+        ("ledger", "requires_manual_review", True),
+        ("ledger", "last_reconcile_error", {"code": "offline_residue"}),
+        ("ledger", "broker_status", "PARTIALLY_FILLED"),
+        ("ledger", "side", "sell"),
+        ("ledger", "quantity", Decimal("2")),
+        ("ledger", "symbol", "000660"),
+        ("ledger", "market", "us"),
+        ("ledger", "avg_fill_price", Decimal("0")),
+        ("ledger", "status", "anomaly"),
+    ),
+    ids=(
+        "rung-filled-qty",
+        "ledger-filled-qty",
+        "worse-buy-fill-price",
+        "manual-review",
+        "reconcile-error",
+        "broker-partial",
+        "ledger-side",
+        "ledger-quantity",
+        "ledger-symbol",
+        "ledger-market",
+        "zero-average-fill",
+        "ledger-anomaly",
+    ),
+)
+async def test_toss_full_fill_conjunction_violations_stay_frozen(
+    db_session,
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    """The ④ release conjunction rejects each malformed rung/ledger fact."""
+    identity = uuid.uuid4().hex
+    service, group, now = await _seed_auto_resting_toss(
+        db_session,
+        account_id=f"offline-conjunction-{identity}",
+        identity=identity,
+    )
+    await _record_fill(
+        service,
+        db_session,
+        identity=identity,
+        filled_qty=Decimal("1"),
+        terminal_state="filled",
+        now=now,
+    )
+    ledger_id = await _record_clean_toss_place_ledger(db_session, identity=identity)
+    if target == "rung":
+        _group, rungs = await service.get_proposal(group.proposal_id)
+        setattr(rungs[0], field, value)
+    else:
+        row = await db_session.get(TossLiveOrderLedger, ledger_id)
+        assert row is not None
+        setattr(row, field, value)
+    await db_session.commit()
+
+    freeze = await service.active_toss_auto_submission_freeze(group, now=now)
+
+    assert freeze is not None
+    assert freeze["state"] == "frozen"
 
 
 @pytest.mark.asyncio

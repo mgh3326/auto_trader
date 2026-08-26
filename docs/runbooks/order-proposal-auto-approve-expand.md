@@ -70,6 +70,13 @@ when the proven-profit test below passes. `off` keeps ROB-871's non-strict
 boundary (a rung exactly `min_distance_pct` away stays eligible), so it never
 inherits the exception.
 
+For the one §156 marketable `take_profit` sell, both cap checks meter
+`max(limit_price, current_price) × quantity`: a limit below the fresh current
+price cannot make an immediately executable sell look smaller than it is. The
+cap observation persisted with the auto approval carries that same number, so
+later dispatches use it in their daily total. Resting sells, buys, and every
+`off`-mode rung retain the established `limit_price × quantity` basis.
+
 "Proven profit-take" (`classify_sell_profit`), evaluated in this order:
 
 1. **no cost basis, no verdict.** A missing, zero or unparseable
@@ -128,8 +135,10 @@ It therefore implies `limit_price > avg_buy_price`; the superficially looser
 `limit == avg`, the sell is in the inclusive band and remains manual. A sell
 just outside the band whose fee-netted P&L is zero or negative is also manual.
 `loss_cut`, every other exit intent, `policy_deviation`, account/market
-allowlists, per-order and daily caps, thesis/card rendering, and the existing
-loss-sell guard remain unchanged.
+allowlists, thesis/card rendering, and the existing loss-sell guard remain
+unchanged. Per-order and daily caps remain hard gates; the sole marketable
+profit-sell path evaluates their notional at `max(limit_price, current_price) ×
+quantity` as described above.
 
 The cost basis is not a caller/session field: `order_proposal_create` accepts
 no preview. On the approval click, `_revalidate_place_rung` calls the internal

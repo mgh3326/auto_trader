@@ -412,6 +412,117 @@ def test_s156_marketable_profit_sell_still_obeys_per_order_and_daily_caps():
     assert (daily.eligible, daily.reason) == (False, "daily_cap_exceeded")
 
 
+def test_s156_marketable_profit_sell_caps_use_execution_price(monkeypatch):
+    """C14: a deeply discounted marketable sell cannot understate either cap."""
+    from app.services.order_proposals import auto_approve as module
+
+    monkeypatch.setattr(module.settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True)
+    caps = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("2500000"),
+        policy_version="test-policy",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("200"),
+    )
+    group = {"account_mode": "toss_live", "market": "equity_kr"}
+
+    # C14 form: booked limit notional is only 1.9M, but a fresh 1,000 KRW
+    # market makes the executable amount 19M.  It must fail the 2M order cap.
+    per_order = _evaluate(
+        limits=caps,
+        group_overrides=group,
+        side="sell",
+        limit_price=Decimal("100"),
+        quantity=Decimal("19000"),
+        preview=_sell_preview(current_price="1000", avg_buy_price="1"),
+    )
+    assert (per_order.eligible, per_order.reason) == (
+        False,
+        "per_order_cap_exceeded",
+    )
+    assert per_order.details["notional"] == "19000000"
+
+    # Per-order cap can pass exactly while the same execution-price measure
+    # still trips the daily circuit breaker.  Booked 1M + 600k would pass;
+    # executable 2M + 600k must not.
+    daily = evaluate_auto_approve_eligibility(
+        group=_group(**group),
+        rung=_rung(side="sell", limit_price=Decimal("100"), quantity=Decimal("10000")),
+        preview=_sell_preview(current_price="200", avg_buy_price="1"),
+        limits=caps,
+        daily_notional=Decimal("600000"),
+    )
+    assert (daily.eligible, daily.reason) == (False, "daily_cap_exceeded")
+    assert daily.details["daily_notional_after"] == "2600000"
+
+    # A normal marketable take-profit at the exact execution-price boundary is
+    # still eligible; this is a cap-basis repair, not a sell-loss guard change.
+    normal = _evaluate(
+        limits=caps,
+        group_overrides=group,
+        side="sell",
+        limit_price=Decimal("199"),
+        quantity=Decimal("10000"),
+        preview=_sell_preview(current_price="200", avg_buy_price="1"),
+    )
+    assert (normal.eligible, normal.reason) == (True, "eligible")
+    assert normal.details["notional"] == "2000000"
+    assert normal.details["daily_notional_after"] == "2000000"
+
+
+def test_s156_execution_price_cap_basis_leaves_other_rungs_unchanged():
+    """Resting sells, buys, and `off` keep their booked-limit cap measure."""
+    expanded = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("5000000"),
+        policy_version="test-policy",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("200"),
+    )
+    off = replace(expanded, mode="off")
+    cases = (
+        (
+            _evaluate(
+                limits=expanded,
+                side="sell",
+                limit_price=Decimal("201"),
+                quantity=Decimal("9000"),
+                preview=_sell_preview(current_price="200", avg_buy_price="1"),
+            ),
+            "1809000",
+        ),
+        (
+            _evaluate(
+                limits=expanded,
+                side="buy",
+                limit_price=Decimal("199"),
+                quantity=Decimal("9000"),
+                preview={"success": True, "current_price": "200"},
+            ),
+            "1791000",
+        ),
+        (
+            _evaluate(
+                limits=off,
+                side="sell",
+                limit_price=Decimal("206"),
+                quantity=Decimal("9000"),
+                preview={"success": True, "current_price": "200"},
+            ),
+            "1854000",
+        ),
+    )
+
+    for decision, booked_notional in cases:
+        assert (decision.eligible, decision.reason) == (True, "eligible")
+        assert decision.details["notional"] == booked_notional
+        assert decision.details["daily_notional_after"] == booked_notional
+
+
 def test_off_mode_keeps_its_non_strict_distance_boundary():
     """ROB-871 boundary unchanged: exactly min_distance_pct away stays eligible."""
     buy = _evaluate(
@@ -1614,3 +1725,74 @@ async def test_daily_notional_uses_auto_approval_time_not_create_time(db_session
     total = await service.auto_approved_daily_notional(probe, now=now)
 
     assert total == Decimal("200000")
+
+
+@pytest.mark.asyncio
+async def test_daily_notional_reuses_durable_execution_price_cap_observation(
+    db_session,
+):
+    """A later dispatch must retain §156's execution-price daily charge."""
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    account_id = f"execution-cap-{uuid.uuid4()}"
+    limits = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("5000000"),
+        policy_version="2026-08-26.3",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("200"),
+        policy_content_hash="a" * 12,
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="sell",
+        order_type="limit",
+        proposer="execution-cap-fixture",
+        thesis="durable execution-price cap observation",
+        rungs=[RungInput(0, "sell", Decimal("10000"), Decimal("100"), None)],
+    )
+    decision = evaluate_auto_approve_eligibility(
+        group=group,
+        rung=(await service.get_proposal(group.proposal_id))[1][0],
+        preview=_sell_preview(current_price="200", avg_buy_price="1"),
+        limits=limits,
+        daily_notional=Decimal("0"),
+    )
+    assert (decision.eligible, decision.details["notional"]) == (True, "2000000")
+    await service.record_auto_approval(
+        group.proposal_id,
+        policy_version=limits.policy_version,
+        policy_content_hash=limits.policy_content_hash,
+        eligibility=[
+            {
+                "rung_index": 0,
+                "eligible": decision.eligible,
+                "reason": decision.reason,
+                **decision.details,
+            }
+        ],
+        outcomes=["submitted_resting"],
+        now=now,
+        evaluated_at=now,
+    )
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="execution-cap-probe",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_daily_notional(probe, now=now) == Decimal(
+        "2000000"
+    )

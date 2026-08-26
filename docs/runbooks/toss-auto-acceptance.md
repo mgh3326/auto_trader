@@ -119,6 +119,26 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
    합격이다. 원 주문이 `FILLED`가 되면 취소 성공으로 바꾸지 말고 실제 체결 수량으로
    수렴시켜 실패/재평가로 보고한다.
 
+### 같은 세션 동결 해제 조건 (감사 기준)
+
+`toss_auto_submission_freeze`가 사라져 같은 날 두 번째 자동주문이 가능해지는 것은 아래
+연언이 모두 참일 때뿐이다. 운영자는 이 조건을 **원 place order ID 기준으로** 확인한다.
+
+1. 해당 auto proposal의 모든 rung이 `state=filled`이고, 각각의 양수
+   `filled_qty == quantity`다.
+2. 각 rung의 broker/client/correlation identity가 정확히 하나의 Toss `place` ledger row에
+   대응하고, symbol·market·side·limit price·quantity·filled quantity가 모두 일치한다.
+3. 그 place row는 `status=filled`, `broker_status=FILLED`, `reconciled_at` 존재,
+   `requires_manual_review=false`, `manual_review_reason=null`,
+   `last_reconcile_error=null`이며, 매수는 평균 체결가가 limit 이하/매도는 limit 이상이다.
+4. 그 place row의 `broker_order_id`를 `original_order_id`로 직접 참조하는 `cancel` 또는
+   `modify` ledger sibling이 있다면, 모두 terminal·reconciled이고 review/error residue가
+   없어야 한다. pending/partial/anomaly, `reconciled_at=null`, manual review, 또는
+   reconcile error 하나라도 있으면 동결은 유지된다.
+
+누락·중복·불일치·조회 오류는 해제가 아니라 `frozen`이다. 이것이 충족되지 않은 상태에서
+새 자동 entry가 ordinary human-approval card로 내려가는 것은 정상적인 fail-closed 동작이다.
+
 ## 캡 유도와 활성화 한계
 
 🔴 아래 표는 TOSS-AUTO-FULL(§51) 당시의 **역사적 유도 기록**이며 현행값이 아니다.

@@ -35,6 +35,12 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     makes the veto post-hoc for that proven profit-take sell only; see
     docs/runbooks/order-proposal-auto-approve-expand.md §3.
 
+    The per-order and daily caps remain hard gates.  For that one marketable
+    profit-take sell, both caps use ``max(limit_price, current_price) ×
+    quantity`` so an executable price above the limit cannot understate the
+    amount that automation is allowed to submit.  Every other rung keeps the
+    established ``limit_price × quantity`` cap basis.
+
 §141차 -- ``replace`` / ``cancel``
     Until §141차 this classifier rejected every non-``place`` action outright
     (``action_not_place``), so a cancel or a replace always cost the operator a
@@ -698,8 +704,12 @@ def evaluate_auto_approve_eligibility(
     if missing_inputs:
         return reject("price_or_quantity_missing", missing_inputs=missing_inputs)
 
-    # Use the executable price × quantity, never proposer-supplied advisory
-    # notional, so a stale or understated metadata field cannot bypass caps.
+    # Start with the established booked limit price × quantity, never
+    # proposer-supplied advisory notional, so a stale or understated metadata
+    # field cannot bypass caps.  §156's one marketable profit-sell exception
+    # receives a stricter execution-price adjustment only after its objective
+    # profit proof below; keeping this preliminary check preserves the exact
+    # existing cap behavior for every other rung.
     notional = limit_price * quantity
     if notional > limits.per_order_cap:
         return reject(
@@ -791,6 +801,27 @@ def evaluate_auto_approve_eligibility(
                 # Observable in the durable eligibility projection: this is the
                 # sole §156 path on which a fill may precede the veto card.
                 profit_details["marketability"] = "marketable_profit_take"
+                # A marketable limit sell can execute at the current price, not
+                # necessarily its (possibly deeply discounted) limit.  The
+                # §106 per-order loss boundary and daily circuit breaker must
+                # meter that executable amount.  The preliminary limit-based
+                # check above intentionally remains in place for all rungs;
+                # this is an additional, stricter check only after the narrow
+                # §156 profit-take predicate has proved true.
+                notional = max(limit_price, current_price) * quantity
+                if notional > limits.per_order_cap:
+                    return reject(
+                        "per_order_cap_exceeded",
+                        notional=_text(notional),
+                        per_order_cap=_text(limits.per_order_cap),
+                    )
+                daily_after = daily_notional + notional
+                if daily_after > limits.daily_cap:
+                    return reject(
+                        "daily_cap_exceeded",
+                        daily_notional_after=_text(daily_after),
+                        daily_cap=_text(limits.daily_cap),
+                    )
 
     if auto_veto_thesis_summary(group) is None:
         # The post-submit card must name the decision reason.  This sits after

@@ -366,11 +366,11 @@ def test_sector_cap_excess_is_advisory_and_persisted_with_selected_candidate() -
         (replace(_new(), sector_cluster=None), "unknown_sector_ineligible"),
         (
             replace(_new(), post_fill_sector_increase=Decimal("-0.01")),
-            "sector_concentration_unavailable_or_cap_exceeded",
+            "sector_concentration_negative_data",
         ),
         (
             replace(_new(), post_fill_sector_concentration_pct=Decimal("-0.01")),
-            "sector_concentration_unavailable_or_cap_exceeded",
+            "sector_concentration_negative_data",
         ),
     ],
 )
@@ -423,7 +423,14 @@ async def test_sector_cap_advisory_is_persisted_through_the_service_seam(
 
     assert result.proposal_creation_status == "created_after_atomic_seam"
     assert len(result.proposals_created) == 1
-    group, _rungs = await service.get_proposal(result.proposals_created[0].proposal_id)
+    proposal_id = result.proposals_created[0].proposal_id
+    # The advisory must survive the proposal-creation write rather than merely
+    # exist in the consumer's in-memory plan.  Expiring the session forces the
+    # following fresh service read through the database.
+    await db_session.commit()
+    db_session.expire_all()
+    fresh_service = OrderProposalsService(db_session)
+    group, _rungs = await fresh_service.get_proposal(proposal_id)
     assert group.source_asof["sector_cluster_cap_advisories"] == [
         {
             "code": "sector_cluster_cap_exceeded",

@@ -29,6 +29,9 @@ from app.models.order_proposals import (
     OrderProposalLossCutScope,
     OrderProposalRung,
 )
+from app.services.order_proposals.auto_approve_audit import (
+    project_auto_approve_cap_observations,
+)
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
 from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
 from app.services.order_proposals.state_machine import (
@@ -209,14 +212,27 @@ class OrderProposalRepository:
         start: datetime,
         end: datetime,
     ) -> Decimal:
-        """Sum rungs belonging to auto-approved groups in a time window."""
-        notional = OrderProposalRung.quantity * OrderProposalRung.limit_price
+        """Sum durable cap measures for auto-approved rungs in a time window.
+
+        Most rungs are metered at their booked ``limit_price × quantity``.
+        §156 marketable profit-take sells are the deliberately narrower
+        exception: their durable cap observation records the stricter
+        ``max(limit_price, current_price) × quantity`` execution-price basis.
+        Read that vetted observation when present so a subsequent dispatch
+        cannot reopen the daily-cap gap; legacy/malformed/missing observations
+        retain the historical limit-price fallback.
+        """
         approved_at = cast(
             OrderProposal.source_asof["auto_approved"]["approved_at"].astext,
             TIMESTAMP(timezone=True),
         )
         stmt = (
-            select(func.coalesce(func.sum(notional), 0))
+            select(
+                OrderProposal.source_asof,
+                OrderProposalRung.rung_index,
+                OrderProposalRung.quantity,
+                OrderProposalRung.limit_price,
+            )
             .select_from(OrderProposal)
             .join(
                 OrderProposalRung,
@@ -244,8 +260,30 @@ class OrderProposalRepository:
             stmt = stmt.where(OrderProposal.broker_account_id.is_(None))
         else:
             stmt = stmt.where(OrderProposal.broker_account_id == broker_account_id)
-        value = (await self._session.execute(stmt)).scalar_one()
-        return Decimal(value)
+        total = Decimal("0")
+        for source_asof, rung_index, quantity, limit_price in (
+            await self._session.execute(stmt)
+        ).all():
+            # The schema accepts historical nullable numbers.  Preserve the
+            # previous SQL SUM semantics for such rows (NULL product contributes
+            # no value) rather than inventing a value during this read.
+            fallback = (
+                Decimal(quantity) * Decimal(limit_price)
+                if quantity is not None and limit_price is not None
+                else Decimal("0")
+            )
+            observations = project_auto_approve_cap_observations(source_asof)
+            observed_notionals = [
+                Decimal(observation["notional"])
+                for observation in observations
+                if observation["rung_index"] == rung_index
+            ]
+            # Stored observations are supplemental evidence, never permission
+            # to charge less than the booked amount.  The writer emits one per
+            # rung; taking the maximum also preserves the stronger measure if a
+            # legacy/manual repair left duplicates.
+            total += max([fallback, *observed_notionals])
+        return total
 
     async def list_groups_for_toss_auto_submission_freeze(
         self,

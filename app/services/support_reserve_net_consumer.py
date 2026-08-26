@@ -663,7 +663,7 @@ class SupportReserveNetConsumer:
             candidate.post_fill_sector_increase < 0
             or candidate.post_fill_sector_concentration_pct < 0
         ):
-            return "sector_concentration_unavailable_or_cap_exceeded"
+            return "sector_concentration_negative_data"
         if not " ".join(candidate.thesis.split()):
             return "thesis_required"
 
