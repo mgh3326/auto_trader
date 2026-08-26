@@ -167,7 +167,9 @@ describe("LossCutApprovalRoute", () => {
       ),
     );
     expect(
-      screen.getByText("승인 검증이 단일 사용으로 기록됐습니다. 주문 제출은 실행되지 않았습니다."),
+      await screen.findByText(
+        "승인 검증이 단일 사용으로 기록됐습니다. 주문 제출은 실행되지 않았습니다.",
+      ),
     ).toBeInTheDocument();
   });
 });
