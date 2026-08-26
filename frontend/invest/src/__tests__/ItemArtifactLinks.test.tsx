@@ -60,7 +60,7 @@ describe("ItemArtifactLinks", () => {
       ),
     );
     expect(screen.getByText(/이 판단이 인용한 분석/)).toBeInTheDocument();
-    expect(screen.getByText("SR map")).toBeInTheDocument();
+    expect(await screen.findByText("SR map")).toBeInTheDocument();
   });
 
   it("falls back to symbol fetch and labels '이 종목 최근' when no correlationIds", async () => {
