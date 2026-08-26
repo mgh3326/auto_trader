@@ -939,10 +939,11 @@ async def dispatch_proposal(
                 group, now=gate_now
             )
             if toss_freeze is not None:
-                # A verified Toss fill closes the same-session auto lane.  Do
-                # not even enter revalidation (which can reach a broker) here;
-                # the ordinary approval card is the intentional fail-closed
-                # continuation while the operator considers a cancel proposal.
+                # A partial, unexpected, or not-yet-cleanly-reconciled Toss
+                # fill closes the same-session auto lane.  Do not even enter
+                # revalidation (which can reach a broker) here; the ordinary
+                # approval card is the intentional fail-closed continuation
+                # while the operator considers a cancel proposal.
                 fallback_decisions.extend(
                     _manual_fallback_decisions(
                         rungs=initial_rungs,

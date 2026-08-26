@@ -149,7 +149,8 @@ the following invariants:
 
 1. same-symbol dedupe, including self-unfilled and active reserve-net checks;
 2. `max_active_orders_per_symbol`;
-3. the sector cap, `max_symbols_per_sector_cluster`.
+3. `max_symbols_per_sector_cluster`; projected sector-cap excess is retained as
+   an advisory, not used as an admission gate.
 
 This is fail-closed ambiguity detection, not convenience normalization. An
 assembler that cannot prove its exact representation must not call this create
@@ -210,9 +211,13 @@ registration.
   `A_limit(10%)` at the proposed limit, full lot-rounded funding, no partial
   fill, and at most one add symbol per market. US adds are disabled pending a
   thesis-review contract.
-- The caller must prove a non-negative post-fill sector increment and a
-  post-fill sector concentration no higher than the policy's 10% cap. A missing
-  sector or incomplete sector exposure is not treated as zero exposure.
+- The caller must prove a non-negative post-fill sector increment. A missing
+  sector or incomplete sector exposure is not treated as zero exposure. A
+  projected post-fill concentration above the policy's 10% value is selected
+  only if every other gate passes, and is returned in
+  `plan.sector_cluster_cap_advisories` and persisted under
+  `source_asof.sector_cluster_cap_advisories`; it is never silently dropped or
+  used as an admission block.
 - A KR new candidate requires net available cash of at least `400,000 KRW`; a
   lower amount yields zero KR new arms. The all-buy 90% and reserve-net armed
   50% cash caps remain fail-closed.

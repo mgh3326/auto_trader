@@ -1,7 +1,8 @@
 """Fresh re-validation + submit orchestration for order_proposals (ROB-816 PR-2).
 
 ``revalidate_and_submit`` is the click-time orchestrator: it re-runs the full
-guard chain (loss-sell, market-sell-loss, sector cap) via a fresh dry-run
+guard chain (loss-sell, market-sell-loss) plus the advisory sector-concentration
+signal via a fresh dry-run
 preview, mints a brand-new ``approval_hash`` (age ~0s — this is the
 server-internalized TTL that resolves the human-round-trip concern from
 ROB-815), compares the normalized wire price/qty against what the operator

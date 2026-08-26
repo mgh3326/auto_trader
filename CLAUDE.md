@@ -1033,7 +1033,7 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 - **스키마/로더**: `app/schemas/trading_policy.py`, `app/services/trading_policy_service.py`
 - **MCP 도구**: `get_trading_policy(market, lane)` — market×lane 임계값 + lane-scoped `decision_rules` + `{version, content_hash}` echo; 없는 키는 `success=false, error=unknown_key`
 - **버전 스탬핑 계약**: 판정 기록(evidence_snapshot·trade_retrospectives·forecast)은 `{version, content_hash}` 인용. `get_operating_briefing`가 run-start에 `policy_version` echo.
-- **강제 범위**: 섹터 클러스터 집중도 cap만 매수 프리뷰에서 코드 검사 (`sector_concentration` 필드, **fail-open** — 경고만, 차단 안 함). 나머지 임계값은 advisory.
+- **강제 범위**: 섹터 클러스터 집중도는 매수 프리뷰와 reserve-net consumer에서 계산한다. `order_validation`은 `sector_concentration` 필드로, reserve-net은 `plan.sector_cluster_cap_advisories` 및 생성 proposal의 `source_asof.sector_cluster_cap_advisories`로 **fail-open 경고·기록만** 남긴다. `portfolio.sector_cluster_cap_pct` 초과 자체는 차단 근거가 아니다. 단, 섹터 미상·음수 집중도 데이터·`max_symbols_per_sector_cluster` 등 별도 코드 가드는 그대로 fail-closed다. 나머지 임계값은 advisory.
 - **관할**: 판단 임계값/decision rule 전용. fail-closed 코드 가드(손실매도/ladder/RSI 스코어링)·`symbol_trade_settings`(라이브 사이징)·`trade_profile`(dead)와 분리. migration 0.
 
 ## 문제 해결
