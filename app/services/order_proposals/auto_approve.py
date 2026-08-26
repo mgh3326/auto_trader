@@ -21,8 +21,7 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
       * expected realized P&L <= 0 -- exactly zero is not "> 0",
       * the ±``breakeven_band_pct`` break-even band around avg cost, whatever
         the sign of the P&L,
-      * a ``policy_deviation`` / ``table_disagreement`` tag anywhere on the
-        proposal,
+      * a ``policy_deviation`` tag anywhere on the proposal,
       * anything that cannot be classified from the fresh preview.
 
     ``expanded`` drops ``min_distance_pct`` but NOT the requirement that the
@@ -125,13 +124,15 @@ _TOSS_LIVE_VETO_ACCOUNT_MARKETS = frozenset(
 # "unrecognized" rather than leaking a proposer-supplied string into the ledger.
 _SUPPORTED_ACTIONS = frozenset({"place", "replace", "cancel"})
 
-# §40차: a proposal carrying either tag is a human's call regardless of how it
-# prices. The tags have no column of their own, so the scan is deliberately
-# over-inclusive -- it walks every free-text and JSON field a proposer can
-# write to and matches the bare token anywhere inside. A false positive costs
-# one Telegram tap; a false negative auto-submits an order the operator wanted
-# to see.
-_APPROVAL_REQUIRED_TAGS = frozenset({"policy_deviation", "table_disagreement"})
+# §156차: only ``policy_deviation`` is an approval blocker. The scanner stays
+# deliberately over-inclusive -- it walks every free-text and JSON field a
+# proposer can write to and matches the bare token anywhere inside, including
+# JSON keys. That exact behavior continues to protect ``policy_deviation``;
+# changing it to value-only matching would be a further, unauthorized
+# relaxation. ``table_disagreement`` remains in the separate audit retention
+# vocabulary so existing and future session records keep their evidence, but
+# it is not an eligibility veto.
+_APPROVAL_REQUIRED_TAGS = frozenset({"policy_deviation"})
 _TAG_SCAN_FIELDS = (
     "rationale",
     "source_asof",

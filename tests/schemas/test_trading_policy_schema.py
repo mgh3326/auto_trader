@@ -261,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -321,6 +321,28 @@ def test_shipped_config_validates():
     assert "single_share_position" not in trim_rule.exclusions
 
 
+def test_s156_pins_policy_version_and_preserves_auto_approve_keyset():
+    """§156 changed code authorization, not any policy threshold or cap."""
+    current = _raw()
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current_auto = deepcopy(current["order_proposals"]["auto_approve"])
+    baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
+
+    assert current["version"] == "2026-08-26.1"
+    assert set(current_auto) == {
+        "min_distance_pct",
+        "per_order_cap",
+        "daily_cap",
+        "breakeven_band_pct",
+        "round_trip_cost_bps",
+    }
+    for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
+        assert _policy_path_get(current, path) == current_value
+        suffix = path.removeprefix("order_proposals.auto_approve.")
+        _policy_path_set(current_auto, suffix, baseline_value)
+    assert current_auto == baseline_auto
+
+
 def test_support_reserve_net_literal_policy_prefix_is_frozen():
     rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
         "buy.support_reserve_net"
@@ -373,7 +395,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.1"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -2147,7 +2169,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -2920,7 +2942,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.1"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history

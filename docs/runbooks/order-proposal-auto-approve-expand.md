@@ -1,9 +1,15 @@
-# Auto-approve eligibility expansion (§40차, §141차)
+# Auto-approve eligibility expansion (§40차, §141차, §156차)
 
 Extends ROB-871 resting-class auto-approval with the §40차 classification:
 **auto-submit, then veto**, for buys and for *proven* profit-take sells.
 §141차 additionally admits `replace` and `cancel` proposals to the same lane
 (§7) without relaxing any gate.
+
+§156차 removes `table_disagreement` from the approval-blocking tag set only.
+The tag remains safely auditable, including existing rejection evidence. The
+separately approved marketable profit-take exception is not wired yet: order
+proposals have no canonical, validated tier-evidence contract, so every
+marketable buy and sell remains manual until that missing contract is defined.
 
 Ships inert. `ORDER_PROPOSALS_AUTO_APPROVE_MODE` defaults to `off`, which is
 ROB-871 behaviour unchanged. Arming it is an operator decision and is not part
@@ -41,7 +47,7 @@ wins and the proposal goes to a human:
 4. `exit_intent == "loss_cut"` → **`loss_cut_intent`**
 5. any other `exit_intent` → `exit_intent_present`
 6. account/market not in `_VETO_CAPABLE_ACCOUNT_MARKETS` → `account_not_veto_capable`
-7. `policy_deviation` / `table_disagreement` tag → **`approval_required_tag`**
+7. `policy_deviation` tag → **`approval_required_tag`**
 8. *(`cancel` is decided here — see §7. Everything below prices an order, and a
    cancel places none.)*
 9. preview did not succeed → `preview_guard_failed`
@@ -95,17 +101,28 @@ verdict the shipped mode reaches.
    `net > 0` → `take_profit`; `net == 0` → `expected_pnl_not_positive`. Exactly
    zero is not "> 0".
 
+`table_disagreement` is retained by `auto_approve_audit.py` as an audit
+vocabulary, not an eligibility gate. This preserves existing and future session
+records without allowing the tag to silently disappear from the read model.
+
 ## 3. Deliberately narrower than the §40차 literal
 
 `expanded` drops `min_distance_pct` but still requires the rung to **rest** —
 a buy at or above the market, or a sell at or below it, can fill before the
 operator ever sees the card, which would make the veto button that §40차 safety
 invariant ① depends on a lie. "At" counts: a limit exactly on the market is
-rejected as `marketable_not_resting`. §40차 forbids being *broader* than its
-literal; this is narrower, which is the permitted direction. Relaxing it is an
-operator decision, not a code cleanup.
+rejected as `marketable_not_resting`.
 
-The tag gate (step 6) also applies in `off` mode. It can only reject, so it is
+§156차's marketable-sell authority is deliberately conditional: in addition to
+`classify_sell_profit(...)=take_profit` and the existing per-order cap, it
+requires canonical tier evidence. The present proposal contract has no such
+field or signed/validated provenance. `rung_index`, `strategy`, and arbitrary
+`rationale["tier"]` JSON are not substitutes. Consequently this implementation
+does **not** make the veto post-hoc for any sell: the strict resting comparison
+remains active for all marketable orders pending an explicit tier-evidence
+contract.
+
+The tag gate (step 7) also applies in `off` mode. It can only reject, so it is
 a tightening of ROB-871, not a widening.
 
 ## 4. Fee rate provenance

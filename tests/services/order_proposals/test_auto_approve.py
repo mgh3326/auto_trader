@@ -263,11 +263,44 @@ def test_expanded_marketable_orders_keep_the_veto_button_meaningful():
         side="sell",
         limit_price=Decimal("99999"),
         quantity=Decimal("1"),
-        preview=_sell_preview(),
+        preview=_sell_preview(avg_buy_price="90000"),
     )
 
     assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
     assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
+
+
+def test_s156_unbound_tier_metadata_cannot_unlock_marketable_sell():
+    """No canonical sell-tier contract exists, so free metadata is not clearance."""
+    decision = _evaluate(
+        group_overrides={
+            "rationale": {"tier": "profit_ladder"},
+            "strategy": "tier-1",
+        },
+        side="sell",
+        limit_price=Decimal("99999"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price="90000"),
+    )
+
+    assert (decision.eligible, decision.reason) == (False, "marketable_not_resting")
+
+
+def test_s156_off_mode_keeps_rob871_marketability_with_unbound_tier_metadata():
+    """Free tier-shaped metadata cannot change the shipped ``off`` mode."""
+    decision = _evaluate(
+        limits=_LIMITS,
+        group_overrides={
+            "rationale": {"tier": "profit_ladder"},
+            "strategy": "tier-1",
+        },
+        side="sell",
+        limit_price=Decimal("99999"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price="90000"),
+    )
+
+    assert (decision.eligible, decision.reason) == (False, "distance_below_minimum")
 
 
 def test_expanded_limit_exactly_on_the_market_is_marketable():
@@ -427,17 +460,21 @@ def test_expanded_breakeven_band_requires_approval(
 
 @pytest.mark.parametrize("mode_limits", [_LIMITS, _EXPANDED])
 @pytest.mark.parametrize(
-    "group_overrides",
+    ("case", "group_overrides"),
     [
-        {"rationale": {"tags": ["policy_deviation"]}},
-        {"rationale": {"decision": {"flags": ["table_disagreement"]}}},
-        {"exit_reason": "reviewed under Policy_Deviation waiver"},
-        {"source_asof": {"table_disagreement": True}},
-        {"lot_context": {"notes": ["table_disagreement"]}},
+        ("json_key", {"rationale": {"policy_deviation": True}}),
+        ("json_value", {"rationale": {"reason": "policy_deviation"}}),
+        ("list", {"rationale": {"tags": ["policy_deviation"]}}),
+        (
+            "nested",
+            {"rationale": {"context": {"decision": {"flags": ["policy_deviation"]}}}},
+        ),
     ],
 )
-def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_overrides):
-    """Mutant ⑤ — no pricing can buy a tagged proposal past the operator."""
+def test_policy_deviation_requires_approval_in_every_form_and_mode(
+    mode_limits, case, group_overrides
+):
+    """§156 mutant: key/value/list/nesting must all remain a human's call."""
     decision = _evaluate(
         limits=mode_limits,
         group_overrides=group_overrides,
@@ -448,6 +485,66 @@ def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_over
 
     assert decision.eligible is False
     assert decision.reason == "approval_required_tag"
+    assert find_approval_required_tags(_group(**group_overrides)) == (
+        "policy_deviation",
+    ), case
+
+
+@pytest.mark.parametrize("mode_limits", [_LIMITS, _EXPANDED])
+def test_table_disagreement_is_auditable_but_not_an_approval_blocker(mode_limits):
+    """§156: the reported JSON-key false positive no longer demotes a rung."""
+    group = _group(rationale={"table_disagreement": {"source": "operator comparison"}})
+
+    decision = evaluate_auto_approve_eligibility(
+        group=group,
+        rung=_rung(limit_price=Decimal("97000"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=mode_limits,
+        daily_notional=Decimal("0"),
+    )
+
+    assert find_approval_required_tags(group) == ()
+    assert (decision.eligible, decision.reason) == (True, "eligible")
+
+
+def test_table_disagreement_audit_projection_is_preserved_after_s156():
+    """The audit allowlist is retention, not an authorization vocabulary."""
+    source_asof = append_auto_approve_rejection_attempt(
+        {},
+        decisions=[
+            {
+                "rung_index": 0,
+                "eligible": False,
+                "reason": "approval_required_tag",
+                "policy_version": "2026-08-24.2",
+                "tags": "table_disagreement",
+                "tag_matches": [
+                    {
+                        "token": "table_disagreement",
+                        "field": "rationale",
+                        "path": "$[24]",
+                        "kind": "json_key",
+                        "char_start": 0,
+                    }
+                ],
+            }
+        ],
+        now=datetime(2026, 8, 26, 0, 0, tzinfo=UTC),
+    )
+
+    projected = project_auto_approve_rejections(source_asof)
+
+    inputs = projected[0]["rungs"][0]["inputs"]
+    assert inputs.get("tags") == ["table_disagreement"]
+    assert inputs.get("tag_matches") == [
+        {
+            "token": "table_disagreement",
+            "field": "rationale",
+            "path": "$[24]",
+            "kind": "json_key",
+            "char_start": 0,
+        }
+    ]
 
 
 def test_untagged_proposal_is_not_falsely_flagged():
@@ -707,10 +804,7 @@ def test_unserializable_metadata_is_treated_as_tagged():
         def __getattr__(self, name):
             raise RuntimeError("metadata unavailable")
 
-    assert find_approval_required_tags(_Hostile()) == (
-        "policy_deviation",
-        "table_disagreement",
-    )
+    assert find_approval_required_tags(_Hostile()) == ("policy_deviation",)
 
 
 @pytest.mark.parametrize(

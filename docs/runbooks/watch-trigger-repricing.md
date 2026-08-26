@@ -34,7 +34,7 @@
 | 4 | `(account_mode, market)` ∈ `_VETO_CAPABLE_ACCOUNT_MARKETS` | `auto_approve.py:_VETO_CAPABLE_ACCOUNT_MARKETS` |
 | 5 | 같은 세션 Toss 체결 freeze 없음 | `dispatch.py::active_toss_auto_submission_freeze` |
 | 6 | auto-veto 카드용 thesis 존재 | `auto_approve.py::auto_veto_thesis_summary` |
-| 7 | `policy_deviation` / `table_disagreement` 태그 없음 | `auto_approve.py::_APPROVAL_REQUIRED_TAGS` |
+| 7 | `policy_deviation` 태그 없음 (`table_disagreement`는 감사 기록만) | `auto_approve.py::_APPROVAL_REQUIRED_TAGS` |
 | 8 | rung 이 non-marketable (매도는 시장가보다 엄격히 위) | `auto_approve.py` 모듈 docstring |
 | 9 | 매도는 왕복비용 차감 후 실현손익 > 0, ±`breakeven_band_pct` 밴드 밖 | `auto_approve.py` |
 | 10 | `loss_cut` 등 exit_intent 아님 | `auto_approve.py` |

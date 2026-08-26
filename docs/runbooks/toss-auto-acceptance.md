@@ -51,8 +51,9 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
    `toss_auto_submission_freeze`가 없는지 확인한다. 있으면 자동 acceptance를 시작하지 말고
    기존 주문을 terminal/reconcile까지 처리한다. acceptance 주문은 반드시 사유(thesis)를
    포함하며, 현재가보다 충분히 아래인 매수 또는 위인 매도 limit으로 둔다. 시장가·시장성
-   가격·손절(`loss_cut`)·본전 경계·`policy_deviation`/`table_disagreement` 태그는 사용하지
-   않는다.
+   가격·손절(`loss_cut`)·본전 경계·`policy_deviation` 태그는 사용하지 않는다.
+   `table_disagreement`는 감사 기록으로 남을 수 있으나 자동승인 차단 태그는 아니며,
+   acceptance fixture는 혼동을 피하기 위해 어느 태그도 사용하지 않는다.
 
 5. Discord mbp-server notification route의 해당 KR/US webhook을 확인한다. 이 구현은 새
    webhook client를 만들지 않고 `app/monitoring/trade_notifier/`의 market-routed
@@ -137,8 +138,8 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
 
 이는 정책 밴드의 상단과 당시의 일 신규 한도 1에서 기계적으로 나왔던 값이다. 다른 buy/sell tier를
 수정하거나 cap을 운영 중에 임의 조정하지 않는다. `loss_cut`, 예상 실현손익 `<= 0`, ±1%
-본전 경계, `policy_deviation`, `table_disagreement`, 분류 불가 항목은 계속 human approval
-전용이다.
+본전 경계, `policy_deviation`, 분류 불가 항목은 계속 human approval 전용이다.
+`table_disagreement`는 감사/기록 표면에 보존되지만 이 분류의 차단 사유는 아니다.
 
 ## 원복
 
