@@ -149,7 +149,7 @@ test("today highlight and default selected date is today (in-range)", async () =
 test("month grid shows count derived from clusters and events", async () => {
   render(wrap(<DesktopCalendarPage />));
   const clusterCell = await screen.findByTestId("month-grid-cell-2026-05-13");
-  expect(within(clusterCell).getByText("327")).toBeInTheDocument();
+  expect(await within(clusterCell).findByText("327")).toBeInTheDocument();
 });
 
 test("renders the monthly timeline with one section per in-month day", async () => {

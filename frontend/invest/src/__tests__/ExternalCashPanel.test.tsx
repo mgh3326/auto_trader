@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -132,15 +132,15 @@ describe("ExternalCashPanel self-service", () => {
     await user.type(screen.getByRole("textbox", { name: "금액 (KRW)" }), "1500000");
     await user.click(screen.getByRole("button", { name: "선언 저장 · 돈 이동 아님" }));
 
-    expect(declareMock).toHaveBeenCalledWith(
+    await waitFor(() => expect(declareMock).toHaveBeenCalledWith(
       expect.objectContaining({
         amount: "1500000",
         as_of: "2026-08-20T07:30:00Z",
         expected_head_declaration_id: "head-zero",
         location_key: "parking_primary",
       }),
-    );
-    expect(onSaved).toHaveBeenCalled();
+    ));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
   });
 
   it("shows the new head after a 409 stale submit", async () => {
@@ -156,7 +156,7 @@ describe("ExternalCashPanel self-service", () => {
 
     await user.click(screen.getByRole("button", { name: "선언 저장 · 돈 이동 아님" }));
 
-    expect(screen.getByTestId("external-cash-conflict")).toHaveTextContent("다른 곳에서 선언이 갱신되었습니다");
+    expect(await screen.findByTestId("external-cash-conflict")).toHaveTextContent("다른 곳에서 선언이 갱신되었습니다");
     expect(screen.getByTestId("external-cash-conflict-head")).toHaveTextContent("640,000");
   });
 

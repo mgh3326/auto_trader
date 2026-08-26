@@ -146,6 +146,7 @@ describe("LossCutApprovalRoute", () => {
       screen.queryByRole("button", { name: "2단계 · 손절 승인 검증 확정" }),
     ).toBeNull();
 
+    await waitFor(() => expect(first).toBeEnabled());
     await user.click(first);
     await waitFor(() =>
       expect(approvalApi.beginLossCutApproval).toHaveBeenCalledWith(PROPOSAL_ID),

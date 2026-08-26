@@ -190,7 +190,7 @@ test("renders crypto dashboard cards and read-only capability states", async () 
 
   expect(await screen.findByTestId("crypto-dashboard")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "크립토 대시보드" })).toBeInTheDocument();
-  expect(screen.getAllByText("비트코인").length).toBeGreaterThan(0);
+  expect((await screen.findAllByText("비트코인")).length).toBeGreaterThan(0);
   expect(screen.getByText("101,000,000원")).toBeInTheDocument();
   expect(screen.getByText("보유")).toBeInTheDocument();
   expect(screen.getByText("미체결")).toBeInTheDocument();
