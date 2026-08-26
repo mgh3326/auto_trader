@@ -323,6 +323,91 @@ async def test_toss_full_fill_conjunction_violations_stay_frozen(
     assert freeze["state"] == "frozen"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("session_date", "not-a-date"),
+        ("state", "cleared"),
+    ),
+    ids=("malformed-session-date", "unknown-state"),
+)
+async def test_malformed_toss_freeze_control_evidence_fails_closed(
+    db_session,
+    field: str,
+    value: str,
+) -> None:
+    """D14/D20: malformed durable control evidence cannot release the lane."""
+    identity = uuid.uuid4().hex
+    service, group, now = await _seed_auto_resting_toss(
+        db_session,
+        account_id=f"offline-malformed-freeze-{identity}",
+        identity=identity,
+    )
+    await _record_fill(
+        service,
+        db_session,
+        identity=identity,
+        filled_qty=Decimal("1"),
+        terminal_state="filled",
+        now=now,
+    )
+    await _record_clean_toss_place_ledger(db_session, identity=identity)
+    frozen_group, _rungs = await service.get_proposal(group.proposal_id)
+    source_asof = dict(frozen_group.source_asof or {})
+    auto = dict(source_asof["auto_approved"])
+    freeze_record = dict(auto["toss_auto_submission_freeze"])
+    freeze_record[field] = value
+    auto["toss_auto_submission_freeze"] = freeze_record
+    source_asof["auto_approved"] = auto
+    await service._repo.update_group(frozen_group, source_asof=source_asof)
+    await db_session.commit()
+
+    freeze = await service.active_toss_auto_submission_freeze(group, now=now)
+
+    assert freeze == {
+        "state": "frozen",
+        "reason": "toss_reconciliation_lookup_unavailable",
+        "session_date": "2026-08-26",
+        "market": "equity_kr",
+    }
+
+
+async def test_resolved_toss_freeze_reopens_when_ledger_evidence_turns_unsafe(
+    db_session,
+) -> None:
+    """D13: a later anomalous ledger record re-closes a prior release."""
+    identity = uuid.uuid4().hex
+    service, group, now = await _seed_auto_resting_toss(
+        db_session,
+        account_id=f"offline-reopen-freeze-{identity}",
+        identity=identity,
+    )
+    await _record_fill(
+        service,
+        db_session,
+        identity=identity,
+        filled_qty=Decimal("1"),
+        terminal_state="filled",
+        now=now,
+    )
+    ledger_id = await _record_clean_toss_place_ledger(db_session, identity=identity)
+
+    assert await service.active_toss_auto_submission_freeze(group, now=now) is None
+    row = await db_session.get(TossLiveOrderLedger, ledger_id)
+    assert row is not None
+    row.status = "anomaly"
+    await db_session.commit()
+
+    freeze = await service.active_toss_auto_submission_freeze(group, now=now)
+
+    assert freeze is not None
+    assert freeze["state"] == "frozen"
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    persisted = refreshed.source_asof["auto_approved"]["toss_auto_submission_freeze"]
+    assert persisted["state"] == "frozen"
+    assert persisted["reopened_at"] == now.isoformat()
+
+
 @pytest.mark.asyncio
 async def test_unresolved_partial_toss_fill_remains_account_wide_frozen(
     db_session,
