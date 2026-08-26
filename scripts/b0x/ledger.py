@@ -22,6 +22,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,6 +37,22 @@ DEFAULT_OBSERVATION_DIR: Final[Path] = Path.home() / "work" / "herdr-artifacts" 
 
 CYCLE_LOG_NAME = "cycles.jsonl"
 NOTICE_LOG_NAME = "operator-notices.jsonl"
+OWNER_RELEASE_LOG_NAME = "owner-releases.jsonl"
+
+# This is an observation owner, not a send-authority owner.  In particular,
+# the record emitted below is never read by a gate or a broker adapter.
+WRITER_LOCK_RECOVERY_OWNER: Final[str] = "scripts.b0x.ledger.writer_lock"
+OWNER_RELEASE_EVENT: Final[str] = "owner_release"
+OWNER_RELEASE_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "scope_exit",
+        "scope_exception",
+        "setup_exception",
+        "unlock_exception",
+        "close_exception",
+    }
+)
+MAX_OWNER_RELEASE_RECORD_BYTES: Final[int] = 2048
 
 
 class WriterLockUnavailable(RuntimeError):
@@ -50,6 +67,9 @@ def writer_lock(*, lane: str, root: Path) -> Iterator[Path]:
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / f".{lane}.writer.lock"
     handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    release_reason = "scope_exit"
+    claim_acquired_at = 0
     try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -59,14 +79,49 @@ def writer_lock(*, lane: str, root: Path) -> Iterator[Path]:
                 f"({lock_path}) — B0-X allows exactly one writer per account "
                 "(contract §2-3). Refusing to derive."
             ) from exc
-        os.ftruncate(handle, 0)
-        os.write(handle, f"pid={os.getpid()}\n".encode())
-        yield lock_path
+        acquired = True
+        claim_acquired_at = time.monotonic_ns()
+        try:
+            os.ftruncate(handle, 0)
+            os.write(handle, f"pid={os.getpid()}\n".encode())
+        except BaseException:
+            release_reason = "setup_exception"
+            raise
+        try:
+            yield lock_path
+        except BaseException:
+            release_reason = "scope_exception"
+            raise
     finally:
         try:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            except BaseException:
+                release_reason = "unlock_exception"
+                raise
         finally:
-            os.close(handle)
+            if acquired:
+                try:
+                    ObservationLedger(root=root, lane=lane).record_owner_release(
+                        monotonic_ts_ns=time.monotonic_ns(),
+                        release_reason=release_reason,
+                        lock_correlation={
+                            "claim_id": (
+                                f"{lane}:pid-{os.getpid()}:acquired-{claim_acquired_at}"
+                            ),
+                            "lane": lane,
+                            "lock_path": str(lock_path),
+                        },
+                    )
+                except Exception:
+                    # Observation is deliberately fail-open with respect to
+                    # the lock's existing release/close behavior.
+                    pass
+            try:
+                os.close(handle)
+            except BaseException:
+                release_reason = "close_exception"
+                raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +146,41 @@ class ObservationLedger:
 
     def record_cycle(self, record: dict[str, Any]) -> None:
         self._append(CYCLE_LOG_NAME, record)
+
+    def record_owner_release(
+        self,
+        *,
+        monotonic_ts_ns: int,
+        release_reason: str,
+        lock_correlation: dict[str, str],
+    ) -> None:
+        """Append one bounded terminal owner-release observation.
+
+        This is intentionally write-only evidence.  The fixed fields and
+        closed reason vocabulary prevent an unbounded diagnostic payload, and
+        the append-only JSONL shape follows the existing cycle/event journals.
+        """
+
+        if not isinstance(monotonic_ts_ns, int) or isinstance(monotonic_ts_ns, bool):
+            raise TypeError("owner release monotonic timestamp must be an int")
+        if release_reason not in OWNER_RELEASE_REASONS:
+            raise ValueError("owner release reason is outside the closed vocabulary")
+        required_correlation_keys = {"claim_id", "lane", "lock_path"}
+        if set(lock_correlation) != required_correlation_keys or not all(
+            isinstance(value, str) and value for value in lock_correlation.values()
+        ):
+            raise ValueError("owner release lock correlation is not canonical")
+        record = {
+            "event": OWNER_RELEASE_EVENT,
+            "owner": WRITER_LOCK_RECOVERY_OWNER,
+            "monotonic_ts_ns": monotonic_ts_ns,
+            "release_reason": release_reason,
+            "lock_correlation": dict(lock_correlation),
+        }
+        line = json.dumps(record, sort_keys=True, ensure_ascii=False)
+        if len(line.encode("utf-8")) > MAX_OWNER_RELEASE_RECORD_BYTES:
+            raise ValueError("owner release observation exceeds its bounded size")
+        self._append(OWNER_RELEASE_LOG_NAME, record)
 
     def record_notice(self, *, at: dt.datetime, text: str, **extra: Any) -> None:
         self._append(NOTICE_LOG_NAME, {"at": at.isoformat(), "notice": text, **extra})
@@ -138,6 +228,11 @@ __all__ = [
     "DEFAULT_OBSERVATION_DIR",
     "CYCLE_LOG_NAME",
     "NOTICE_LOG_NAME",
+    "OWNER_RELEASE_LOG_NAME",
+    "WRITER_LOCK_RECOVERY_OWNER",
+    "OWNER_RELEASE_EVENT",
+    "OWNER_RELEASE_REASONS",
+    "MAX_OWNER_RELEASE_RECORD_BYTES",
     "WriterLockUnavailable",
     "writer_lock",
     "ObservationLedger",
