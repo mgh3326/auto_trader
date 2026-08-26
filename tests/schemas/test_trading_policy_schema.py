@@ -329,6 +329,7 @@ def test_s156_pins_policy_version_and_preserves_auto_approve_keyset():
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
     assert current["version"] == "2026-08-26.1"
+    assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert set(current_auto) == {
         "min_distance_pct",
         "per_order_cap",

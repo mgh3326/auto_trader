@@ -102,8 +102,10 @@ verdict the shipped mode reaches.
    zero is not "> 0".
 
 `table_disagreement` is retained by `auto_approve_audit.py` as an audit
-vocabulary, not an eligibility gate. This preserves existing and future session
-records without allowing the tag to silently disappear from the read model.
+vocabulary, not an eligibility gate. This preserves historical rows and
+externally supplied stored audit rows without claiming the classifier creates
+new `table_disagreement` matches or silently dropping existing evidence from
+the read model.
 
 ## 3. Deliberately narrower than the §40차 literal
 
@@ -111,7 +113,9 @@ records without allowing the tag to silently disappear from the read model.
 a buy at or above the market, or a sell at or below it, can fill before the
 operator ever sees the card, which would make the veto button that §40차 safety
 invariant ① depends on a lie. "At" counts: a limit exactly on the market is
-rejected as `marketable_not_resting`.
+rejected as `marketable_not_resting`. §40차 forbids being broader than its
+literal; this is narrower, which is the permitted direction. Relaxing it is an
+operator decision, not a code cleanup.
 
 §156차's marketable-sell authority is deliberately conditional: in addition to
 `classify_sell_profit(...)=take_profit` and the existing per-order cap, it

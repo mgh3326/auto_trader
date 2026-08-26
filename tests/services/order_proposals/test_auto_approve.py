@@ -469,12 +469,15 @@ def test_expanded_breakeven_band_requires_approval(
             "nested",
             {"rationale": {"context": {"decision": {"flags": ["policy_deviation"]}}}},
         ),
+        ("mixed_case", {"exit_reason": "reviewed under Policy_Deviation waiver"}),
+        ("source_asof", {"source_asof": {"policy_deviation": True}}),
+        ("other_field", {"lot_context": {"notes": ["policy_deviation"]}}),
     ],
 )
 def test_policy_deviation_requires_approval_in_every_form_and_mode(
     mode_limits, case, group_overrides
 ):
-    """§156 mutant: key/value/list/nesting must all remain a human's call."""
+    """§156 mutant: shape, case-folding, and metadata fields stay blocked."""
     decision = _evaluate(
         limits=mode_limits,
         group_overrides=group_overrides,
