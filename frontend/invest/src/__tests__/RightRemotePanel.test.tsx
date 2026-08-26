@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, beforeEach, test, expect } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -416,6 +416,9 @@ test("paper 선택 후 전체 클릭 시 includePaper=false 로 cleanup", async 
   await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
   await user.click(screen.getByRole("button", { name: "KIS 모의" }));
   await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    await fetchSpy.mock.results[1]?.value;
+  });
 
   await user.click(screen.getByRole("button", { name: "전체" }));
 
