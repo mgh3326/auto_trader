@@ -674,6 +674,8 @@ def test_expanded_breakeven_band_requires_approval(
         ("mixed_case", {"exit_reason": "reviewed under Policy_Deviation waiver"}),
         ("source_asof", {"source_asof": {"policy_deviation": True}}),
         ("other_field", {"lot_context": {"notes": ["policy_deviation"]}}),
+        ("strategy_field", {"strategy": "policy_deviation"}),
+        ("void_reason_field", {"void_reason": "policy_deviation"}),
     ],
 )
 def test_policy_deviation_requires_approval_in_every_form_and_mode(

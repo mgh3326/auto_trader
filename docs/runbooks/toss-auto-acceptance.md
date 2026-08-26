@@ -141,25 +141,39 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
 
 ## 캡 유도와 활성화 한계
 
-🔴 아래 표는 TOSS-AUTO-FULL(§51) 당시의 **역사적 유도 기록**이며 현행값이 아니다.
-현행 캡은 `config/trading_policy.yaml`의 `order_proposals.auto_approve` 블록을 직접
-읽어라 — §106차 이후 캡은 슬롯 수에서 유도되지 않고 직접 설정되며, 그 뒤로도
-§133차(KR)·§145차(crypto) 등이 값을 옮겼다.
+🔴 **이 절에 캡 수치를 하드코드하지 않는다.** TOSS-AUTO-FULL(§51) 당시 이 문서는
+`KR/US 캡 = 정책 밴드 상단 × 동시 신규 최대 1종목`이라는 표를 실었지만, 그 유도는
+§106차(직접 설정으로 전환)와 §127차/§147차(슬롯 개념 자체가 철폐)를 거치며 무효가
+됐고, 남은 표의 수치도 §133차(KR 1,000,000→2,000,000)·§145차(crypto 1,000,000→
+5,000,000, 일일 5,000,000→10,000,000)로 실제 값이 계속 움직여 반복적으로 drift를
+냈다(BL-7). **수치 중복 자체가 drift의 원인**이므로, 표를 갱신하는 대신 정본 참조로
+대체한다 — 앞으로 정책이 또 바뀌어도 이 문서는 낡지 않는다.
 
-🔴 **유도 자체가 소멸했다**: 이 표의 "× 동시 신규 최대 1종목" 절은 §127차(1→2종목)에서
-이미 낡았고, **§147차(2026-08-24)가 동시 신규 종목 수 제한을 철폐**하면서 완전히 무효가
-됐다. 동시 신규 진입 수의 상한은 이제 **주문가능 현금뿐**이다(`buy.new_entry_overflow`
-룰도 같은 결정으로 삭제됨). 캡은 슬롯 수와 무관하므로 이 철폐가 캡을 바꾸지 않는다.
+현행 캡은 아래 정본에서만 읽는다. 이 문서에는 절대 그 값을 복사해 오지 않는다.
 
-| 시장 | 주문당 상한(§51 당시) | 일일 상한(§51 당시) | 유도(무효) |
-| --- | ---: | ---: | --- |
-| KR | KRW 400,000 | KRW 400,000 | `thresholds.buy.per_symbol_notional_krw_range.value=[200000,400000]`의 상단 × 당시 `동시 신규 최대 1종목` 스탠스 |
-| US | USD 450 | USD 450 | `thresholds.buy.per_symbol_notional_usd_range.value=[150,450]`의 상단 × 당시 `동시 신규 최대 1종목` 스탠스 |
+- 파일: `config/trading_policy.yaml` → `order_proposals.auto_approve.per_order_cap`
+  / `order_proposals.auto_approve.daily_cap` (마켓 키: `kr`/`us`/`crypto`, 통화는
+  KR·crypto는 KRW, US는 USD)
+- MCP 도구: `get_trading_policy(market=<kr|us|crypto>, lane="sell")` — 응답에
+  `{version, content_hash}`가 echo되므로 참조 시점을 함께 기록한다
+- acceptance 실행 전 반드시 이 정본을 다시 읽어 그 세션의 실제 캡을 acceptance
+  기록(§ Acceptance A/B 로그)에 값과 정책 버전으로 함께 남긴다. 이 표를 인용하지 않는다.
 
-이는 정책 밴드의 상단과 당시의 일 신규 한도 1에서 기계적으로 나왔던 값이다. 다른 buy/sell tier를
-수정하거나 cap을 운영 중에 임의 조정하지 않는다. `loss_cut`, 예상 실현손익 `<= 0`, ±1%
-본전 경계, `policy_deviation`, 분류 불가 항목은 계속 human approval 전용이다.
-`table_disagreement`는 감사/기록 표면에 보존되지만 이 분류의 차단 사유는 아니다.
+🔴 **§156차(2026-08-26) 캡 산정 기준 변경**: expanded 모드의 marketable
+`take_profit` 매도 1종만 캡을 `max(limit_price, current_price) × quantity`
+(집행가 기준)로 측정한다. resting 매도·매수·`off` 모드는 기존대로
+`limit_price × quantity` 기준을 유지한다(상세: `docs/runbooks/order-proposal-auto-approve-expand.md`
+"§156 marketable take_profit" 절). acceptance 세션에서 marketable 매도가
+관측되면 이 기준으로 캡 소진량을 대조한다.
+
+동시 신규 진입 수의 상한은 §147차(2026-08-24) 이후 슬롯 개수가 아니라 **주문가능
+현금뿐**이다(`buy.new_entry_overflow` 룰도 같은 결정으로 삭제됨). 캡은 이와 무관하게
+독립적으로 정책 파일에서 직접 설정된다.
+
+다른 buy/sell tier를 수정하거나 cap을 운영 중에 임의 조정하지 않는다. `loss_cut`,
+예상 실현손익 `<= 0`, ±1% 본전 경계, `policy_deviation`, 분류 불가 항목은 계속 human
+approval 전용이다. `table_disagreement`는 감사/기록 표면에 보존되지만 이 분류의
+차단 사유는 아니다.
 
 ## 원복
 

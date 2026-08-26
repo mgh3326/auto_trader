@@ -571,9 +571,16 @@ The approval settings live in `app/core/config.py`:
 
 ### Resting-class automatic submission (ROB-871)
 
-The checked-in policy seed is 3% minimum distance. Per-order/daily settlement-
-currency caps are KR `200,000/500,000 KRW`, US `150/400 USD`, and crypto
-`100,000/300,000 KRW`. The env gate remains the master switch.
+The checked-in policy seed is 3% minimum distance (`order_proposals.auto_approve.min_distance_pct`,
+unchanged since ROB-871). 🔴 Per-order/daily settlement-currency caps are **not**
+reproduced here — they have moved repeatedly since this section was written
+(§65차/§133차 KR, §65차/§145차 US, §145차 crypto; see
+`docs/runbooks/toss-auto-acceptance.md` "캡 유도와 활성화 한계" for the drift
+history) and any number copied into this table goes stale again the next time
+a cap moves. Read the live values from `config/trading_policy.yaml` →
+`order_proposals.auto_approve.per_order_cap` / `.daily_cap` (keys `kr`/`us`/`crypto`)
+or via `get_trading_policy(market=..., lane="sell")`. The env gate remains the
+master switch.
 
 Eligibility is evaluated from the fresh dry-run preview immediately before
 submit: buy limit at or below `current × (1-distance)`, or sell limit at or
