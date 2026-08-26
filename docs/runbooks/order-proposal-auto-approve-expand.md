@@ -6,10 +6,12 @@ Extends ROB-871 resting-class auto-approval with the §40차 classification:
 (§7) without relaxing any gate.
 
 §156차 removes `table_disagreement` from the approval-blocking tag set only.
-The tag remains safely auditable, including existing rejection evidence. The
-separately approved marketable profit-take exception is not wired yet: order
-proposals have no canonical, validated tier-evidence contract, so every
-marketable buy and sell remains manual until that missing contract is defined.
+The tag remains safely auditable, including existing rejection evidence. Its
+final scope addendum also permits one narrow marketable exception: an
+`expanded`-mode **limit sell** whose fresh broker preview is classified
+`classify_sell_profit(...)=take_profit`. This is an objective, fee-netted
+predicate — not a self-described tier. Every marketable buy, loss sell,
+break-even-band sell, and unclassifiable sell remains manual.
 
 Ships inert. `ORDER_PROPOSALS_AUTO_APPROVE_MODE` defaults to `off`, which is
 ROB-871 behaviour unchanged. Arming it is an operator decision and is not part
@@ -60,12 +62,13 @@ Then, per mode:
 | | `off` | `expanded` |
 | --- | --- | --- |
 | buy | limit ≤ market × (1 − `min_distance_pct`) | limit **<** market |
-| sell | limit ≥ market × (1 + `min_distance_pct`) | limit **>** market **and** proven profit-take |
+| sell | limit ≥ market × (1 + `min_distance_pct`) | proven profit-take; it may be marketable only under §156's narrow exception |
 
-The `expanded` comparison is strict on purpose: a limit priced exactly *on* the
-market is marketable. `off` keeps ROB-871's non-strict boundary (a rung exactly
-`min_distance_pct` away stays eligible), so the strictness cannot change any
-verdict the shipped mode reaches.
+In `expanded`, a buy priced exactly *on* the market is marketable and rejected.
+A sell exactly on or below the market is also marketable, but may proceed only
+when the proven-profit test below passes. `off` keeps ROB-871's non-strict
+boundary (a rung exactly `min_distance_pct` away stays eligible), so it never
+inherits the exception.
 
 "Proven profit-take" (`classify_sell_profit`), evaluated in this order:
 
@@ -107,24 +110,39 @@ externally supplied stored audit rows without claiming the classifier creates
 new `table_disagreement` matches or silently dropping existing evidence from
 the read model.
 
-## 3. Deliberately narrower than the §40차 literal
+## 3. §156's deliberate marketable profit-sell exception
 
-`expanded` drops `min_distance_pct` but still requires the rung to **rest** —
-a buy at or above the market, or a sell at or below it, can fill before the
-operator ever sees the card, which would make the veto button that §40차 safety
-invariant ① depends on a lie. "At" counts: a limit exactly on the market is
-rejected as `marketable_not_resting`. §40차 forbids being broader than its
-literal; this is narrower, which is the permitted direction. Relaxing it is an
-operator decision, not a code cleanup.
+A marketable order can fill before the operator sees the veto card. The default
+therefore remains conservative: all marketable buys are `marketable_not_resting`.
+The operator explicitly accepted the post-hoc-veto trade-off for one case only:
+a `limit` sell in `expanded` mode whose fresh preview proves
+`classify_sell_profit(...)=take_profit`. That classifier requires all of:
 
-§156차's marketable-sell authority is deliberately conditional: in addition to
-`classify_sell_profit(...)=take_profit` and the existing per-order cap, it
-requires canonical tier evidence. The present proposal contract has no such
-field or signed/validated provenance. `rung_index`, `strategy`, and arbitrary
-`rationale["tier"]` JSON are not substitutes. Consequently this implementation
-does **not** make the veto post-hoc for any sell: the strict resting comparison
-remains active for all marketable orders pending an explicit tier-evidence
-contract.
+1. an available, positive `avg_buy_price`;
+2. a limit outside the inclusive ±`breakeven_band_pct` band; and
+3. strictly positive P&L after the conservative full round-trip cost charge
+   (using a more pessimistic preview `realized_pnl` when present).
+
+It therefore implies `limit_price > avg_buy_price`; the superficially looser
+`limit_price >= avg_buy_price` comparison is not independently wired. At
+`limit == avg`, the sell is in the inclusive band and remains manual. A sell
+just outside the band whose fee-netted P&L is zero or negative is also manual.
+`loss_cut`, every other exit intent, `policy_deviation`, account/market
+allowlists, per-order and daily caps, thesis/card rendering, and the existing
+loss-sell guard remain unchanged.
+
+The cost basis is not a caller/session field: `order_proposal_create` accepts
+no preview. On the approval click, `_revalidate_place_rung` calls the internal
+`_default_place_order_fn(dry_run=True)` and passes that fresh response straight
+to the classifier. KIS maps its just-read broker holdings `pchs_avg_pric`,
+Upbit maps its just-read account `avg_buy_price`, and Toss maps the just-read
+`holdings().average_purchase_price`. Missing or malformed cost basis yields
+`sell_classification_unavailable`; it never clears the exception.
+
+This deliberately makes the veto post-hoc for an objective, proven-profit
+marketable sell only. It is an operator decision, not a general relaxation of
+the veto invariant; do not extend it to buys, market orders, tier-shaped JSON,
+or any non-`take_profit` verdict.
 
 The tag gate (step 7) also applies in `off` mode. It can only reject, so it is
 a tightening of ROB-871, not a widening.
@@ -204,13 +222,13 @@ matter how ordinary it was. Measured friction with no matching safety
 contribution: the 08-20 ETH batch-cancel card and the 08-23 SOL dead-target
 replace card. **That one exclusion is gone. Nothing it stood in front of moved.**
 
-### `replace` — the whole `place` stack, unchanged
+### `replace` — the whole `place` stack, including §156's narrow exception
 
-A replacement rung *is* a new resting order, so it is classified as one and runs
-every gate in §2 plus the mode table: caps, `marketable_not_resting`,
-`min_distance_pct` in `off` mode, break-even band and round-trip-cost profit
-proof for sells. Nothing is skipped or loosened because the rung happens to
-replace something.
+A replacement rung *is* a new order, so it runs every gate in §2 plus the mode
+table: caps, `min_distance_pct` in `off` mode, break-even band, and
+round-trip-cost profit proof for sells. Its only marketable release is the same
+§156 `take_profit` exception; nothing is skipped or loosened because the rung
+happens to replace something.
 
 One ordering change makes that possible: `revalidation._revalidate_replace_rung`
 used to call the eligibility gate *before* the dry-run preview with an empty

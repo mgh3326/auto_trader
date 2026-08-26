@@ -88,7 +88,9 @@ See the full design in
   `order_proposal_create` first commits the intended order. With
   `ORDER_PROPOSALS_AUTO_APPROVE=false` (default), creation does not submit.
   When the independent ROB-871 gate is enabled, post-create dispatch may call
-  the same fresh revalidation path for a policy-qualified resting order.
+  the same fresh revalidation path for a policy-qualified order. The only
+  marketable exception is §156's fresh, fee-netted `take_profit` limit sell;
+  every marketable buy and every non-profit/unclassifiable sell remains carded.
 - **No public submit tool.** There is deliberately no
   `order_proposal_approve` / `order_proposal_submit` MCP tool in either PR.
   A proposal reaches a broker only through the Telegram approve flow or the

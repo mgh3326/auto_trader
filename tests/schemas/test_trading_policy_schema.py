@@ -261,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-26.2"
+    assert doc.version == "2026-08-26.3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -322,15 +322,20 @@ def test_shipped_config_validates():
 
 
 def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
-    """§156 ④⑤ changes no auto-approve key or default-mode setting."""
+    """§156 ②④⑤ changes no auto-approve key or default-mode setting."""
     current = _raw()
     baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-08-26.2"
+    assert current["version"] == "2026-08-26.3"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
+    assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
+    assert (
+        "earlier pending-canonical-tier-evidence wording is superseded"
+        in current["source"]
+    )
     assert (
         "deliberately relaxed from a reserve-net admission backstop"
         in current["source"]
@@ -424,7 +429,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-08-26.2"
+    assert doc.version == "2026-08-26.3"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -2227,7 +2232,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-26.2"
+    assert doc.version == "2026-08-26.3"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3007,7 +3012,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-26.2"
+    assert doc.version == "2026-08-26.3"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history

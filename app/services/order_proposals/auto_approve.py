@@ -24,12 +24,15 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
       * a ``policy_deviation`` tag anywhere on the proposal,
       * anything that cannot be classified from the fresh preview.
 
-    ``expanded`` drops ``min_distance_pct`` but NOT the requirement that the
-    rung actually rest: a marketable order can fill before the operator sees
-    the card, which would make the veto button (§40차 safety invariant ①) a
-    lie. A buy must price strictly below the market and a sell strictly above
-    it -- a limit exactly ON the market is marketable and is rejected. That is
-    narrower than the §40차 literal, which is the permitted direction -- see
+    ``expanded`` drops ``min_distance_pct`` but normally still requires the
+    rung to rest: a marketable order can fill before the operator sees the
+    card, which would make the veto button (§40차 safety invariant ①) a lie.
+    §156차's operator-approved exception is deliberately narrower than a
+    general marketable-order release: only a *limit sell* whose fresh broker
+    preview proves ``classify_sell_profit(...)=take_profit`` may be
+    marketable. A buy must still price strictly below the market, and every
+    loss, break-even-band, or unclassifiable sell still goes to a human. This
+    makes the veto post-hoc for that proven profit-take sell only; see
     docs/runbooks/order-proposal-auto-approve-expand.md §3.
 
 §141차 -- ``replace`` / ``cancel``
@@ -38,12 +41,13 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     Telegram tap no matter how ordinary it was. That exclusion is gone; the
     gates it stood in front of are not:
 
-    * ``replace`` is classified as what it actually is -- a brand-new resting
+    * ``replace`` is classified as what it actually is -- a brand-new limit
       rung -- and runs the *entire* ``place`` stack: order type, exit intent,
       veto-capable account/market, approval-required tags, fresh preview,
-      per-order and daily caps, ``marketable_not_resting``, and (for sells) the
-      break-even band + round-trip-cost profit proof. Nothing is skipped or
-      loosened because the rung happens to replace an existing order.
+      per-order and daily caps, marketability, and (for sells) the break-even
+      band + round-trip-cost profit proof. §156's sole marketable exception is
+      the same proven-profit limit sell; nothing else is skipped or loosened
+      because the rung happens to replace an existing order.
     * ``cancel`` places no order, so the amount/marketability gates have no
       subject. It is cleared on target-ownership evidence plus the same
       loss-cut, account, tag and thesis gates, and consumes zero daily budget.
@@ -117,9 +121,10 @@ _TOSS_LIVE_VETO_ACCOUNT_MARKETS = frozenset(
 
 # §141차: cancel/replace are auto-approve candidates, not a categorically
 # excluded class. `place` and `replace` share the whole amount/marketability
-# gate stack (a replace *is* a new resting rung); `cancel` reduces exposure and
-# is gated on ownership evidence + the tag scan instead. Anything outside this
-# vocabulary is rejected -- widening it is a deliberate act, never a default.
+# gate stack (a replace *is* a new limit rung, with only §156's proven-profit
+# marketable-sell exception); `cancel` reduces exposure and is gated on
+# ownership evidence + the tag scan instead. Anything outside this vocabulary
+# is rejected -- widening it is a deliberate act, never a default.
 # Doubles as the audit vocabulary: an action not in here renders as
 # "unrecognized" rather than leaking a proposer-supplied string into the ledger.
 _SUPPORTED_ACTIONS = frozenset({"place", "replace", "cancel"})
@@ -717,12 +722,13 @@ def evaluate_auto_approve_eligibility(
             side=_known_value(side, frozenset({"buy", "sell"})),
         )
 
-    # `expanded` drops the min_distance_pct floor but still requires the rung
-    # to rest: a buy at or above the market (a sell at or below it) can fill
-    # before the operator ever sees the veto card. Hence the strict comparison
-    # in `expanded` -- a limit exactly ON the market is marketable. `off` keeps
-    # ROB-871's non-strict boundary (a rung exactly `min_distance_pct` away is
-    # eligible), so this cannot change any verdict the shipped mode reaches.
+    # `expanded` drops the min_distance_pct floor. A buy at or above the market
+    # can fill before the operator sees the veto card, so it remains rejected.
+    # A sell at or below it is equally marketable, but §156차 permits that one
+    # risk only after the fresh broker preview proves a fee-netted take-profit.
+    # That sell can fill before the veto card is visible; do not generalize this
+    # exception to buys or to any other sell classification. `off` keeps
+    # ROB-871's non-strict distance boundary, so it cannot inherit this release.
     expanded = mode == "expanded"
     min_fraction = (
         Decimal("0") if expanded else limits.min_distance_pct / Decimal("100")
@@ -745,9 +751,10 @@ def evaluate_auto_approve_eligibility(
     else:
         threshold = current_price * (Decimal("1") + min_fraction)
         distance_pct = (limit_price - current_price) / current_price * Decimal("100")
-        if (limit_price <= threshold) if expanded else (limit_price < threshold):
+        marketable_profit_sell = expanded and limit_price <= threshold
+        if not expanded and limit_price < threshold:
             return reject(
-                "marketable_not_resting" if expanded else "distance_below_minimum",
+                "distance_below_minimum",
                 current_price=_text(current_price),
                 limit_price=_text(limit_price),
                 quantity=_text(quantity),
@@ -780,6 +787,10 @@ def evaluate_auto_approve_eligibility(
                     **verdict.details,
                 )
             loss_guard = "net_profit_proven"
+            if marketable_profit_sell:
+                # Observable in the durable eligibility projection: this is the
+                # sole §156 path on which a fill may precede the veto card.
+                profit_details["marketability"] = "marketable_profit_take"
 
     if auto_veto_thesis_summary(group) is None:
         # The post-submit card must name the decision reason.  This sits after

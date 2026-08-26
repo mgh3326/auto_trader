@@ -1817,11 +1817,13 @@ async def _revalidate_replace_rung(
     # §141차 moved this call from *before* the preview to *after* it. It used
     # to be able to run with `preview={}` because the classifier rejected
     # `action_not_place` before it ever read `preview`. Now that a replace is
-    # classified as the new resting rung it actually is, the classifier needs
-    # the same fresh preview a `place` gets -- `current_price` for the
-    # marketability test and `avg_buy_price` for the sell profit proof. Handing
-    # it an empty preview would demote every replace to `preview_guard_failed`,
-    # i.e. re-implement the categorical exclusion §141차 removed.
+    # classified as the new limit rung it actually is, the classifier needs the
+    # same fresh preview a `place` gets -- `current_price` for marketability
+    # and `avg_buy_price` for the sell profit proof. That is also the evidence
+    # §156 requires before its narrow marketable take-profit-sell exception can
+    # apply. Handing it an empty preview would demote every replace to
+    # `preview_guard_failed`, i.e. re-implement the categorical exclusion
+    # §141차 removed.
     gate_outcome = await _apply_eligibility_gate(
         service=service,
         group=group,
