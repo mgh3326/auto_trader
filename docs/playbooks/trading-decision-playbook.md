@@ -66,9 +66,10 @@ All tool names below are registered in the **DEFAULT** MCP profile.
   KRX tick rounding, DAY order expiry at `order.day_expiry_kst` → re-place next
   day, and no two-sided (buy+sell) resting orders on the same Toss symbol.
 - **Portfolio policy:** add-not-cut (average down instead of stop-loss),
-  over-concentration cap of `portfolio.sector_cluster_cap_pct` per sector cluster
-  (financials, shipbuilding/defense, bio, semis-memory), and
-  `portfolio.max_symbols_per_theme` symbol per theme.
+  projected sector concentration at `portfolio.sector_cluster_cap_pct`
+  (financials, shipbuilding/defense, bio, semis-memory) is an advisory that
+  must be surfaced and recorded, never an admission block or hold reason; and
+  `portfolio.max_symbols_per_theme` symbol per theme remains separate.
 
 ### Session bootstrap (run first, every session)
 
@@ -539,7 +540,7 @@ these values are the seed, not a second source of truth.
 > **Authority (ROB-646, landed):** `config/trading_policy.yaml` is now the
 > single authoritative source of these values; this block is the historical
 > seed. The policy governs **judgment thresholds, decision rules, and the
-> sector-cluster concentration cap only** — NOT the fail-closed code guards (loss guard,
+> sector-cluster concentration advisory only** — NOT the fail-closed code guards (loss guard,
 > ladder near-market, RSI scoring bands), NOT `symbol_trade_settings` (live
 > sizing), and it does not revive `trade_profile` (dead since ROB-488). Lane
 > `sell` = "profit_taking" (same lane, human alias). Read it via
@@ -563,7 +564,8 @@ policy_keys:
     lanes: [buy, sell]
     captured: 10
     unit: percent
-    semantics: over-concentration cap per sector cluster (~9-10%)
+    semantics: projected concentration warning per sector cluster (~9-10%); advisory only
+      — surface and record it, never use it as an admission block or hold reason
   portfolio.max_symbols_per_theme:
     lanes: [buy, discovery]
     captured: 1

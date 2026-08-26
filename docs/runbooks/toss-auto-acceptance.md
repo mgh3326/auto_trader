@@ -51,8 +51,9 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
    `toss_auto_submission_freeze`가 없는지 확인한다. 있으면 자동 acceptance를 시작하지 말고
    기존 주문을 terminal/reconcile까지 처리한다. acceptance 주문은 반드시 사유(thesis)를
    포함하며, 현재가보다 충분히 아래인 매수 또는 위인 매도 limit으로 둔다. 시장가·시장성
-   가격·손절(`loss_cut`)·본전 경계·`policy_deviation`/`table_disagreement` 태그는 사용하지
-   않는다.
+   가격·손절(`loss_cut`)·본전 경계·`policy_deviation` 태그는 사용하지 않는다.
+   `table_disagreement`는 감사 기록으로 남을 수 있으나 자동승인 차단 태그는 아니며,
+   acceptance fixture는 혼동을 피하기 위해 어느 태그도 사용하지 않는다.
 
 5. Discord mbp-server notification route의 해당 KR/US webhook을 확인한다. 이 구현은 새
    webhook client를 만들지 않고 `app/monitoring/trade_notifier/`의 market-routed
@@ -118,6 +119,26 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
    합격이다. 원 주문이 `FILLED`가 되면 취소 성공으로 바꾸지 말고 실제 체결 수량으로
    수렴시켜 실패/재평가로 보고한다.
 
+### 같은 세션 동결 해제 조건 (감사 기준)
+
+`toss_auto_submission_freeze`가 사라져 같은 날 두 번째 자동주문이 가능해지는 것은 아래
+연언이 모두 참일 때뿐이다. 운영자는 이 조건을 **원 place order ID 기준으로** 확인한다.
+
+1. 해당 auto proposal의 모든 rung이 `state=filled`이고, 각각의 양수
+   `filled_qty == quantity`다.
+2. 각 rung의 broker/client/correlation identity가 정확히 하나의 Toss `place` ledger row에
+   대응하고, symbol·market·side·limit price·quantity·filled quantity가 모두 일치한다.
+3. 그 place row는 `status=filled`, `broker_status=FILLED`, `reconciled_at` 존재,
+   `requires_manual_review=false`, `manual_review_reason=null`,
+   `last_reconcile_error=null`이며, 매수는 평균 체결가가 limit 이하/매도는 limit 이상이다.
+4. 그 place row의 `broker_order_id`를 `original_order_id`로 직접 참조하는 `cancel` 또는
+   `modify` ledger sibling이 있다면, 모두 terminal·reconciled이고 review/error residue가
+   없어야 한다. pending/partial/anomaly, `reconciled_at=null`, manual review, 또는
+   reconcile error 하나라도 있으면 동결은 유지된다.
+
+누락·중복·불일치·조회 오류는 해제가 아니라 `frozen`이다. 이것이 충족되지 않은 상태에서
+새 자동 entry가 ordinary human-approval card로 내려가는 것은 정상적인 fail-closed 동작이다.
+
 ## 캡 유도와 활성화 한계
 
 🔴 아래 표는 TOSS-AUTO-FULL(§51) 당시의 **역사적 유도 기록**이며 현행값이 아니다.
@@ -137,8 +158,8 @@ message ID, reconcile 원문을 보존하고 `NEEDS_VERIFY`로 올린다.
 
 이는 정책 밴드의 상단과 당시의 일 신규 한도 1에서 기계적으로 나왔던 값이다. 다른 buy/sell tier를
 수정하거나 cap을 운영 중에 임의 조정하지 않는다. `loss_cut`, 예상 실현손익 `<= 0`, ±1%
-본전 경계, `policy_deviation`, `table_disagreement`, 분류 불가 항목은 계속 human approval
-전용이다.
+본전 경계, `policy_deviation`, 분류 불가 항목은 계속 human approval 전용이다.
+`table_disagreement`는 감사/기록 표면에 보존되지만 이 분류의 차단 사유는 아니다.
 
 ## 원복
 

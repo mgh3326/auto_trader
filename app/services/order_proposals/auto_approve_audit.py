@@ -21,6 +21,11 @@ _MAX_ATTEMPTS = 8
 _MAX_RUNGS_PER_ATTEMPT = 16
 _MAX_TAG_MATCHES_PER_RUNG = 12
 _MAX_CAP_OBSERVATIONS = 16
+# This is an audit retention vocabulary, intentionally not the classifier's
+# approval-blocking set. §156차 removed ``table_disagreement`` from eligibility
+# only; retaining it here preserves safe projections of historical rows and
+# externally supplied stored audit rows rather than silently dropping evidence.
+# The classifier no longer creates fresh ``table_disagreement`` matches.
 _ALLOWED_TAGS = frozenset({"policy_deviation", "table_disagreement"})
 _ALLOWED_TAG_FIELDS = frozenset(
     {

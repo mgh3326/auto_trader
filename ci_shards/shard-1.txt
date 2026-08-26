@@ -185,6 +185,7 @@ tests/services/order_proposals/test_rob1284_resting_sweep.py
 tests/services/order_proposals/test_rung_reason_tier.py
 tests/services/order_proposals/test_state_machine.py
 tests/services/order_proposals/test_toss_auto_acceptance.py
+tests/services/order_proposals/test_toss_auto_submission_freeze.py
 tests/services/order_proposals/test_void_authorization.py
 tests/services/paper_cohort/test_ast_safety.py
 tests/services/paper_cohort/test_models.py

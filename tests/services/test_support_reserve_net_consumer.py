@@ -17,6 +17,7 @@ from app.services.support_reserve_net_consumer import (
     ReserveNetAttribution,
     ReserveNetCandidate,
     ReserveNetRequest,
+    SectorExposure,
     SelfUnfilledOrder,
     SupportReserveNetConsumer,
 )
@@ -324,17 +325,121 @@ def test_all_pending_buy_hard_cap_remains_ninety_percent() -> None:
     assert _rejection_codes(plan)["NEW"] == "all_pending_buy_hard_cap_exceeded"
 
 
-def test_sector_cap_is_fail_closed_when_post_fill_concentration_exceeds_ten_percent() -> (
-    None
-):
+def test_sector_cap_excess_is_advisory_and_persisted_with_selected_candidate() -> None:
+    """MUTATION-ANCHOR: s156-sector-cap-advisory-surface."""
     candidate = replace(_new(), post_fill_sector_concentration_pct=Decimal("10.01"))
+    consumer = _consumer()
+    plan = consumer.plan(_request(candidate))
+
+    assert [proposal.normalized_symbol for proposal in plan.selected] == ["NEW"]
+    assert plan.rejected == ()
+    assert len(plan.sector_cluster_cap_advisories) == 1
+    advisory = plan.sector_cluster_cap_advisories[0]
+    assert advisory.normalized_symbol == "NEW"
+    assert advisory.code == "sector_cluster_cap_exceeded"
+    assert advisory.sector_cluster == "software"
+    assert advisory.post_fill_sector_concentration_pct == Decimal("10.01")
+    assert advisory.sector_cluster_cap_pct == Decimal("10")
+    assert advisory.post_fill_sector_increase == Decimal("0.01")
+
+    create_kwargs = consumer._proposal_create_kwargs(plan.selected[0])
+    assert create_kwargs["source_asof"]["sector_cluster_cap_advisories"] == [
+        {
+            "code": "sector_cluster_cap_exceeded",
+            "sector_cluster": "software",
+            "post_fill_sector_concentration_pct": "10.01",
+            "sector_cluster_cap_pct": "10",
+            "post_fill_sector_increase": "0.01",
+        }
+    ]
+    normal_plan = consumer.plan(_request(_new("NORMAL")))
+    normal_create_kwargs = consumer._proposal_create_kwargs(normal_plan.selected[0])
+    assert set(normal_create_kwargs["source_asof"]) == {
+        "policy_version",
+        "policy_content_hash",
+    }
+
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [
+        (replace(_new(), sector_cluster=None), "unknown_sector_ineligible"),
+        (
+            replace(_new(), post_fill_sector_increase=Decimal("-0.01")),
+            "sector_concentration_negative_data",
+        ),
+        (
+            replace(_new(), post_fill_sector_concentration_pct=Decimal("-0.01")),
+            "sector_concentration_negative_data",
+        ),
+    ],
+)
+def test_unknown_sector_and_negative_sector_data_remain_hard_gates(
+    candidate: ReserveNetCandidate,
+    expected: str,
+) -> None:
     plan = _consumer().plan(_request(candidate))
 
     assert plan.selected == ()
-    assert (
-        _rejection_codes(plan)["NEW"]
-        == "sector_concentration_unavailable_or_cap_exceeded"
+    assert _rejection_codes(plan)[candidate.normalized_symbol] == expected
+
+
+def test_max_symbols_per_sector_cluster_remains_a_hard_gate() -> None:
+    candidate = _new()
+    request = replace(
+        _request(candidate),
+        sector_exposures=(
+            SectorExposure(
+                normalized_symbol="EXISTING",
+                market="equity_kr",
+                beneficial_owner_id="owner-1",
+                sector_cluster="software",
+            ),
+        ),
     )
+
+    plan = _consumer().plan(request)
+
+    assert plan.selected == ()
+    assert _rejection_codes(plan)[candidate.normalized_symbol] == (
+        "max_symbols_per_sector_cluster"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sector_cap_advisory_is_persisted_through_the_service_seam(
+    db_session,
+) -> None:
+    candidate = replace(
+        _new(f"ADVISORY-{uuid.uuid4().hex.upper()}"),
+        post_fill_sector_concentration_pct=Decimal("10.01"),
+    )
+    service = OrderProposalsService(db_session)
+
+    result = await _consumer().consume(
+        _request(candidate),
+        proposal_creator=service,
+    )
+
+    assert result.proposal_creation_status == "created_after_atomic_seam"
+    assert len(result.proposals_created) == 1
+    proposal_id = result.proposals_created[0].proposal_id
+    # The advisory must survive the proposal-creation write rather than merely
+    # exist in the consumer's in-memory plan.  Expiring the session forces the
+    # following fresh service read through the database.
+    await db_session.commit()
+    db_session.expire_all()
+    fresh_service = OrderProposalsService(db_session)
+    group, _rungs = await fresh_service.get_proposal(proposal_id)
+    assert group.source_asof["sector_cluster_cap_advisories"] == [
+        {
+            "code": "sector_cluster_cap_exceeded",
+            "sector_cluster": "software",
+            "post_fill_sector_concentration_pct": "10.01",
+            "sector_cluster_cap_pct": "10",
+            "post_fill_sector_increase": "0.01",
+        }
+    ]
 
 
 def test_kr_new_requires_available_cash_at_or_above_four_hundred_thousand() -> None:

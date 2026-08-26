@@ -429,6 +429,38 @@ async def test_stale_cash_and_missing_seam_both_fail_closed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sector_cap_excess_is_returned_as_advisory_in_mcp_plan() -> None:
+    """The response remains observable even when the candidate is selected."""
+    payload = _request()
+    payload["candidates"][0]["post_fill_sector_concentration_pct"] = "10.01"
+    session = _FakeSession()
+
+    class IncompleteService:
+        pass
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        session_factory=lambda: session,
+        service_factory=lambda _: IncompleteService(),
+    )
+
+    assert result["success"] is True
+    assert result["plan"]["selected"][0]["normalized_symbol"] == "WIRE-A"
+    assert result["plan"]["sector_cluster_cap_advisories"] == [
+        {
+            "normalized_symbol": "WIRE-A",
+            "intent": "new",
+            "sector_cluster": "software",
+            "post_fill_sector_concentration_pct": "10.01",
+            "sector_cluster_cap_pct": "10",
+            "post_fill_sector_increase": "0.01",
+            "code": "sector_cluster_cap_exceeded",
+        }
+    ]
+    assert session.rollback_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_submissions_frozen_creates_zero_without_seam_use() -> None:
     payload = _request()
     payload["submissions_frozen"] = True

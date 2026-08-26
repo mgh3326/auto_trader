@@ -253,7 +253,8 @@ def test_off_mode_rejects_what_expanded_would_allow():
         assert expanded.eligible is True
 
 
-def test_expanded_marketable_orders_keep_the_veto_button_meaningful():
+def test_s156_marketable_take_profit_sell_is_the_only_post_hoc_veto_exception():
+    """A marketable limit sell may pass only after fee-netted profit proof."""
     buy = _evaluate(
         limit_price=Decimal("100001"),
         quantity=Decimal("1"),
@@ -261,13 +262,85 @@ def test_expanded_marketable_orders_keep_the_veto_button_meaningful():
     )
     sell = _evaluate(
         side="sell",
-        limit_price=Decimal("99999"),
+        limit_price=Decimal("100000"),
         quantity=Decimal("1"),
-        preview=_sell_preview(),
+        preview=_sell_preview(avg_buy_price="90000"),
     )
 
     assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
-    assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
+    assert (sell.eligible, sell.reason) == (True, "eligible")
+    assert sell.details["marketability"] == "marketable_profit_take"
+    assert sell.details["loss_guard"] == "net_profit_proven"
+
+
+def test_s156_marketable_profit_sell_does_not_use_tier_metadata():
+    """The objective profit predicate, not self-described tier metadata, clears it."""
+    common = {
+        "side": "sell",
+        "limit_price": Decimal("100000"),
+        "quantity": Decimal("1"),
+        "preview": _sell_preview(avg_buy_price="90000"),
+    }
+    plain = _evaluate(**common)
+    decorated = _evaluate(
+        group_overrides={"rationale": {"tier": "profit_ladder"}, "strategy": "tier-1"},
+        **common,
+    )
+
+    assert (plain.eligible, plain.reason) == (True, "eligible")
+    assert (decorated.eligible, decorated.reason) == (True, "eligible")
+    assert decorated.details["marketability"] == "marketable_profit_take"
+
+
+def test_s156_marketable_buy_and_nonprofit_sells_remain_manual():
+    """MUTATION-ANCHOR: s156-marketable-profit-gate."""
+    buy = _evaluate(
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    loss = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price="110000"),
+    )
+    breakeven = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price="100000"),
+    )
+    unclassifiable = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price=None),
+    )
+
+    assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
+    assert (loss.eligible, loss.reason) == (
+        False,
+        "expected_pnl_not_positive",
+    ), "MUTATION-ANCHOR: s156-marketable-profit-gate"
+    assert (breakeven.eligible, breakeven.reason) == (False, "breakeven_band")
+    assert (unclassifiable.eligible, unclassifiable.reason) == (
+        False,
+        "sell_classification_unavailable",
+    ), "MUTATION-ANCHOR: s156-marketable-profit-gate"
+
+
+def test_s156_off_mode_keeps_rob871_marketability_even_for_proven_profit():
+    """The objective exception is subordinate to the default-off expanded mode."""
+    decision = _evaluate(
+        limits=_LIMITS,
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price="90000"),
+    )
+
+    assert (decision.eligible, decision.reason) == (False, "distance_below_minimum")
 
 
 def test_expanded_limit_exactly_on_the_market_is_marketable():
@@ -285,7 +358,169 @@ def test_expanded_limit_exactly_on_the_market_is_marketable():
     )
 
     assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
-    assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
+    # Here gross P&L exactly equals the full round-trip charge, so the
+    # marketable sell cannot use §156's net-profit exception.
+    assert (sell.eligible, sell.reason) == (False, "expected_pnl_not_positive")
+
+
+def test_s156_limit_equal_to_avg_buy_price_is_rejected_as_breakeven_band():
+    """The textual `limit >= avg` predicate does not waive fee/band safety."""
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(current_price="100000", avg_buy_price="100000"),
+    )
+
+    assert (decision.eligible, decision.reason) == (False, "breakeven_band")
+
+
+def test_s156_marketable_sell_just_outside_band_with_nonpositive_net_is_rejected():
+    """MUTATION-ANCHOR: s156-marketable-profit-gate."""
+    # 101001 is just outside the inclusive +1% band around 100000, but the
+    # 200bp round-trip charge is larger than the 1001 gross gain.
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("101001"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(current_price="101001", avg_buy_price="100000"),
+    )
+
+    assert decision.details["net_pnl"] == "-1019.02"
+    assert (decision.eligible, decision.reason) == (
+        False,
+        "expected_pnl_not_positive",
+    ), "MUTATION-ANCHOR: s156-marketable-profit-gate"
+
+
+def test_s156_marketable_profit_sell_still_obeys_per_order_and_daily_caps():
+    per_order = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("3"),
+        preview=_sell_preview(avg_buy_price="90000"),
+    )
+    daily = evaluate_auto_approve_eligibility(
+        group=_group(),
+        rung=_rung(side="sell", limit_price=Decimal("100000"), quantity=Decimal("1")),
+        preview=_sell_preview(avg_buy_price="90000"),
+        limits=_EXPANDED,
+        daily_notional=Decimal("400001"),
+    )
+
+    assert (per_order.eligible, per_order.reason) == (False, "per_order_cap_exceeded")
+    assert (daily.eligible, daily.reason) == (False, "daily_cap_exceeded")
+
+
+def test_s156_marketable_profit_sell_caps_use_execution_price(monkeypatch):
+    """C14: a deeply discounted marketable sell cannot understate either cap."""
+    from app.services.order_proposals import auto_approve as module
+
+    monkeypatch.setattr(module.settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True)
+    caps = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("2500000"),
+        policy_version="test-policy",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("200"),
+    )
+    group = {"account_mode": "toss_live", "market": "equity_kr"}
+
+    # C14 form: booked limit notional is only 1.9M, but a fresh 1,000 KRW
+    # market makes the executable amount 19M.  It must fail the 2M order cap.
+    per_order = _evaluate(
+        limits=caps,
+        group_overrides=group,
+        side="sell",
+        limit_price=Decimal("100"),
+        quantity=Decimal("19000"),
+        preview=_sell_preview(current_price="1000", avg_buy_price="1"),
+    )
+    assert (per_order.eligible, per_order.reason) == (
+        False,
+        "per_order_cap_exceeded",
+    )
+    assert per_order.details["notional"] == "19000000"
+
+    # Per-order cap can pass exactly while the same execution-price measure
+    # still trips the daily circuit breaker.  Booked 1M + 600k would pass;
+    # executable 2M + 600k must not.
+    daily = evaluate_auto_approve_eligibility(
+        group=_group(**group),
+        rung=_rung(side="sell", limit_price=Decimal("100"), quantity=Decimal("10000")),
+        preview=_sell_preview(current_price="200", avg_buy_price="1"),
+        limits=caps,
+        daily_notional=Decimal("600000"),
+    )
+    assert (daily.eligible, daily.reason) == (False, "daily_cap_exceeded")
+    assert daily.details["daily_notional_after"] == "2600000"
+
+    # A normal marketable take-profit at the exact execution-price boundary is
+    # still eligible; this is a cap-basis repair, not a sell-loss guard change.
+    normal = _evaluate(
+        limits=caps,
+        group_overrides=group,
+        side="sell",
+        limit_price=Decimal("199"),
+        quantity=Decimal("10000"),
+        preview=_sell_preview(current_price="200", avg_buy_price="1"),
+    )
+    assert (normal.eligible, normal.reason) == (True, "eligible")
+    assert normal.details["notional"] == "2000000"
+    assert normal.details["daily_notional_after"] == "2000000"
+
+
+def test_s156_execution_price_cap_basis_leaves_other_rungs_unchanged():
+    """Resting sells, buys, and `off` keep their booked-limit cap measure."""
+    expanded = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("5000000"),
+        policy_version="test-policy",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("200"),
+    )
+    off = replace(expanded, mode="off")
+    cases = (
+        (
+            _evaluate(
+                limits=expanded,
+                side="sell",
+                limit_price=Decimal("201"),
+                quantity=Decimal("9000"),
+                preview=_sell_preview(current_price="200", avg_buy_price="1"),
+            ),
+            "1809000",
+        ),
+        (
+            _evaluate(
+                limits=expanded,
+                side="buy",
+                limit_price=Decimal("199"),
+                quantity=Decimal("9000"),
+                preview={"success": True, "current_price": "200"},
+            ),
+            "1791000",
+        ),
+        (
+            _evaluate(
+                limits=off,
+                side="sell",
+                limit_price=Decimal("206"),
+                quantity=Decimal("9000"),
+                preview={"success": True, "current_price": "200"},
+            ),
+            "1854000",
+        ),
+    )
+
+    for decision, booked_notional in cases:
+        assert (decision.eligible, decision.reason) == (True, "eligible")
+        assert decision.details["notional"] == booked_notional
+        assert decision.details["daily_notional_after"] == booked_notional
 
 
 def test_off_mode_keeps_its_non_strict_distance_boundary():
@@ -427,17 +662,24 @@ def test_expanded_breakeven_band_requires_approval(
 
 @pytest.mark.parametrize("mode_limits", [_LIMITS, _EXPANDED])
 @pytest.mark.parametrize(
-    "group_overrides",
+    ("case", "group_overrides"),
     [
-        {"rationale": {"tags": ["policy_deviation"]}},
-        {"rationale": {"decision": {"flags": ["table_disagreement"]}}},
-        {"exit_reason": "reviewed under Policy_Deviation waiver"},
-        {"source_asof": {"table_disagreement": True}},
-        {"lot_context": {"notes": ["table_disagreement"]}},
+        ("json_key", {"rationale": {"policy_deviation": True}}),
+        ("json_value", {"rationale": {"reason": "policy_deviation"}}),
+        ("list", {"rationale": {"tags": ["policy_deviation"]}}),
+        (
+            "nested",
+            {"rationale": {"context": {"decision": {"flags": ["policy_deviation"]}}}},
+        ),
+        ("mixed_case", {"exit_reason": "reviewed under Policy_Deviation waiver"}),
+        ("source_asof", {"source_asof": {"policy_deviation": True}}),
+        ("other_field", {"lot_context": {"notes": ["policy_deviation"]}}),
     ],
 )
-def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_overrides):
-    """Mutant ⑤ — no pricing can buy a tagged proposal past the operator."""
+def test_policy_deviation_requires_approval_in_every_form_and_mode(
+    mode_limits, case, group_overrides
+):
+    """§156 mutant: shape, case-folding, and metadata fields stay blocked."""
     decision = _evaluate(
         limits=mode_limits,
         group_overrides=group_overrides,
@@ -448,6 +690,66 @@ def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_over
 
     assert decision.eligible is False
     assert decision.reason == "approval_required_tag"
+    assert find_approval_required_tags(_group(**group_overrides)) == (
+        "policy_deviation",
+    ), case
+
+
+@pytest.mark.parametrize("mode_limits", [_LIMITS, _EXPANDED])
+def test_table_disagreement_is_auditable_but_not_an_approval_blocker(mode_limits):
+    """§156: the reported JSON-key false positive no longer demotes a rung."""
+    group = _group(rationale={"table_disagreement": {"source": "operator comparison"}})
+
+    decision = evaluate_auto_approve_eligibility(
+        group=group,
+        rung=_rung(limit_price=Decimal("97000"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=mode_limits,
+        daily_notional=Decimal("0"),
+    )
+
+    assert find_approval_required_tags(group) == ()
+    assert (decision.eligible, decision.reason) == (True, "eligible")
+
+
+def test_table_disagreement_audit_projection_is_preserved_after_s156():
+    """The audit allowlist is retention, not an authorization vocabulary."""
+    source_asof = append_auto_approve_rejection_attempt(
+        {},
+        decisions=[
+            {
+                "rung_index": 0,
+                "eligible": False,
+                "reason": "approval_required_tag",
+                "policy_version": "2026-08-24.2",
+                "tags": "table_disagreement",
+                "tag_matches": [
+                    {
+                        "token": "table_disagreement",
+                        "field": "rationale",
+                        "path": "$[24]",
+                        "kind": "json_key",
+                        "char_start": 0,
+                    }
+                ],
+            }
+        ],
+        now=datetime(2026, 8, 26, 0, 0, tzinfo=UTC),
+    )
+
+    projected = project_auto_approve_rejections(source_asof)
+
+    inputs = projected[0]["rungs"][0]["inputs"]
+    assert inputs.get("tags") == ["table_disagreement"]
+    assert inputs.get("tag_matches") == [
+        {
+            "token": "table_disagreement",
+            "field": "rationale",
+            "path": "$[24]",
+            "kind": "json_key",
+            "char_start": 0,
+        }
+    ]
 
 
 def test_untagged_proposal_is_not_falsely_flagged():
@@ -707,10 +1009,7 @@ def test_unserializable_metadata_is_treated_as_tagged():
         def __getattr__(self, name):
             raise RuntimeError("metadata unavailable")
 
-    assert find_approval_required_tags(_Hostile()) == (
-        "policy_deviation",
-        "table_disagreement",
-    )
+    assert find_approval_required_tags(_Hostile()) == ("policy_deviation",)
 
 
 @pytest.mark.parametrize(
@@ -989,10 +1288,20 @@ def test_s141_replace_over_daily_cap_still_goes_to_a_card():
 
 
 @pytest.mark.parametrize(
-    ("side", "limit_price", "preview"),
+    ("side", "limit_price", "preview", "expected_reason"),
     [
-        ("buy", Decimal("100001"), {"success": True, "current_price": "100000"}),
-        ("buy", Decimal("100000"), {"success": True, "current_price": "100000"}),
+        (
+            "buy",
+            Decimal("100001"),
+            {"success": True, "current_price": "100000"},
+            "marketable_not_resting",
+        ),
+        (
+            "buy",
+            Decimal("100000"),
+            {"success": True, "current_price": "100000"},
+            "marketable_not_resting",
+        ),
         (
             "sell",
             Decimal("99999"),
@@ -1001,11 +1310,14 @@ def test_s141_replace_over_daily_cap_still_goes_to_a_card():
                 "current_price": "100000",
                 "avg_buy_price": "98000",
             },
+            "expected_pnl_not_positive",
         ),
     ],
 )
-def test_s141_marketable_replace_still_goes_to_a_card(side, limit_price, preview):
-    """Requirement ② — resting-only survives; a veto needs a live order."""
+def test_s141_marketable_replace_buy_and_nonprofit_sell_still_go_to_a_card(
+    side, limit_price, preview, expected_reason
+):
+    """§156 does not release a replace without the same objective profit proof."""
     decision = evaluate_auto_approve_eligibility(
         group=_target_group("replace"),
         rung=_rung(side=side, limit_price=limit_price, quantity=Decimal("1")),
@@ -1015,7 +1327,24 @@ def test_s141_marketable_replace_still_goes_to_a_card(side, limit_price, preview
     )
 
     assert decision.eligible is False
-    assert decision.reason == "marketable_not_resting"
+    assert decision.reason == expected_reason
+
+
+def test_s156_marketable_take_profit_replace_uses_the_same_narrow_exception():
+    decision = evaluate_auto_approve_eligibility(
+        group=_target_group("replace"),
+        rung=_rung(side="sell", limit_price=Decimal("100000"), quantity=Decimal("1")),
+        preview={
+            "success": True,
+            "current_price": "100000",
+            "avg_buy_price": "90000",
+        },
+        limits=_EXPANDED,
+        daily_notional=Decimal("0"),
+    )
+
+    assert (decision.eligible, decision.reason) == (True, "eligible")
+    assert decision.details["marketability"] == "marketable_profit_take"
 
 
 def test_s141_replace_keeps_the_min_distance_floor_in_off_mode():
@@ -1396,3 +1725,74 @@ async def test_daily_notional_uses_auto_approval_time_not_create_time(db_session
     total = await service.auto_approved_daily_notional(probe, now=now)
 
     assert total == Decimal("200000")
+
+
+@pytest.mark.asyncio
+async def test_daily_notional_reuses_durable_execution_price_cap_observation(
+    db_session,
+):
+    """A later dispatch must retain §156's execution-price daily charge."""
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    account_id = f"execution-cap-{uuid.uuid4()}"
+    limits = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("5000000"),
+        policy_version="2026-08-26.3",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("200"),
+        policy_content_hash="a" * 12,
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="sell",
+        order_type="limit",
+        proposer="execution-cap-fixture",
+        thesis="durable execution-price cap observation",
+        rungs=[RungInput(0, "sell", Decimal("10000"), Decimal("100"), None)],
+    )
+    decision = evaluate_auto_approve_eligibility(
+        group=group,
+        rung=(await service.get_proposal(group.proposal_id))[1][0],
+        preview=_sell_preview(current_price="200", avg_buy_price="1"),
+        limits=limits,
+        daily_notional=Decimal("0"),
+    )
+    assert (decision.eligible, decision.details["notional"]) == (True, "2000000")
+    await service.record_auto_approval(
+        group.proposal_id,
+        policy_version=limits.policy_version,
+        policy_content_hash=limits.policy_content_hash,
+        eligibility=[
+            {
+                "rung_index": 0,
+                "eligible": decision.eligible,
+                "reason": decision.reason,
+                **decision.details,
+            }
+        ],
+        outcomes=["submitted_resting"],
+        now=now,
+        evaluated_at=now,
+    )
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="execution-cap-probe",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_daily_notional(probe, now=now) == Decimal(
+        "2000000"
+    )

@@ -147,7 +147,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "KRX tick rounding",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
-        "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
+        "sector concentration advisory: surface and record portfolio.sector_cluster_cap_pct; never use it as a buy admission block",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
         "generic order-intent step: order_proposal_create with Telegram human "
         "approval; conditional support_reserve_net_consume is non-sequenced "
@@ -164,14 +164,14 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "KRX tick rounding",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
-        "preserve core lot; trim over-concentrated sectors first (portfolio.sector_cluster_cap_pct)",
+        "preserve core lot; portfolio.sector_cluster_cap_pct is an advisory concentration signal, not a sell block",
         "order intent: order_proposal_create only; Telegram human approval required",
         "sell from the holding account selected in the proposal",
         "same-symbol buy pending -> separate cancel proposal and confirmed broker evidence before the sell proposal",
         "accepted/resting is not a fill; broker evidence reconcile is required",
     ],
     "discovery": [
-        "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
+        "sector concentration advisory: record portfolio.sector_cluster_cap_pct; never treat it as a discovery admission block",
         "portfolio.max_symbols_per_theme per theme",
         "rights-issue / overhang filter before ranking",
         "per-symbol sizing: buy.per_symbol_notional_krw_range",

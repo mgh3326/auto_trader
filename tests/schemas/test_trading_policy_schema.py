@@ -261,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -321,6 +321,62 @@ def test_shipped_config_validates():
     assert "single_share_position" not in trim_rule.exclusions
 
 
+def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
+    """§156 ②④⑤ changes no auto-approve key or default-mode setting."""
+    current = _raw()
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current_auto = deepcopy(current["order_proposals"]["auto_approve"])
+    baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
+
+    assert current["version"] == "2026-08-26.3"
+    assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
+    assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
+    assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
+    assert (
+        "earlier pending-canonical-tier-evidence wording is superseded"
+        in current["source"]
+    )
+    assert (
+        "deliberately relaxed from a reserve-net admission backstop"
+        in current["source"]
+    )
+    assert set(current_auto) == {
+        "min_distance_pct",
+        "per_order_cap",
+        "daily_cap",
+        "breakeven_band_pct",
+        "round_trip_cost_bps",
+    }
+    for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
+        assert _policy_path_get(current, path) == current_value
+        suffix = path.removeprefix("order_proposals.auto_approve.")
+        _policy_path_set(current_auto, suffix, baseline_value)
+    assert current_auto == baseline_auto
+
+
+def test_s156_scope_addendum_preserves_cap_keys_and_separate_hard_gates():
+    """The cap value survives while only its reserve-net admission role changes."""
+    current = _raw()
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current_cap = current["thresholds"]["portfolio.sector_cluster_cap_pct"]
+    baseline_cap = baseline["thresholds"]["portfolio.sector_cluster_cap_pct"]
+    current_reserve = current["decision_rules"]["buy.support_reserve_net"]
+    baseline_reserve = baseline["decision_rules"]["buy.support_reserve_net"]
+
+    assert set(current_cap) == set(baseline_cap)
+    assert current_cap["lanes"] == baseline_cap["lanes"]
+    assert current_cap["value"] == baseline_cap["value"] == 10
+    assert "advisory only" in current_cap["semantics"]
+    for key in ("unknown_sector", "max_symbols_per_sector_cluster"):
+        assert current_reserve[key] == baseline_reserve[key]
+    current_theme = current["thresholds"]["portfolio.max_symbols_per_theme"]
+    baseline_theme = baseline["thresholds"]["portfolio.max_symbols_per_theme"]
+    assert set(current_theme) == set(baseline_theme)
+    for key in ("lanes", "value", "unit"):
+        assert current_theme[key] == baseline_theme[key]
+    assert "sector concentration is surfaced" in current_theme["semantics"]
+
+
 def test_support_reserve_net_literal_policy_prefix_is_frozen():
     rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
         "buy.support_reserve_net"
@@ -373,7 +429,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.3"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1308,6 +1364,35 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
         assert _policy_path_get(current_dump, path) == current_value
         _policy_path_set(normalized_current_dump, path, baseline_value)
 
+    # §156차 scope addendum ④⑤ — the sector cap's value and keyset remain
+    # stable, but its reserve-net admission role is explicitly relaxed to an
+    # emitted/persisted advisory.  Normalize only those three truthful prose
+    # deltas after pinning them, so the surrounding closed comparison still
+    # catches every unrelated policy drift.
+    current_authority = normalized_current_dump["authority"]
+    baseline_authority = baseline_dump["authority"]
+    assert (
+        "observation-only sector-cluster concentration signal"
+        in (current_authority["governs"])
+    )
+    current_authority["governs"] = baseline_authority["governs"]
+    current_sector_cap = normalized_current_dump["thresholds"][
+        "portfolio.sector_cluster_cap_pct"
+    ]
+    baseline_sector_cap = baseline_dump["thresholds"][
+        "portfolio.sector_cluster_cap_pct"
+    ]
+    assert current_sector_cap["value"] == baseline_sector_cap["value"] == 10
+    assert "advisory only" in current_sector_cap["semantics"]
+    current_sector_cap["semantics"] = baseline_sector_cap["semantics"]
+    current_theme_cap = normalized_current_dump["thresholds"][
+        "portfolio.max_symbols_per_theme"
+    ]
+    baseline_theme_cap = baseline_dump["thresholds"]["portfolio.max_symbols_per_theme"]
+    assert current_theme_cap["value"] == baseline_theme_cap["value"] == 2
+    assert "sector concentration is surfaced" in current_theme_cap["semantics"]
+    current_theme_cap["semantics"] = baseline_theme_cap["semantics"]
+
     # ROB-1298 — the appended tier, the three additive tie_break notes, the
     # tier_priority string, and the rule semantics prose are the only
     # sell.trim_preplace deltas; strip exactly those and nothing else.
@@ -2147,7 +2232,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.3"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -2807,7 +2892,9 @@ _S147_INVARIANT_BUY_GATES = {
     "buy.deep_limit_pct_range": [-12, -3],  # 딥밴드 gate
 }
 
-# Sizing and concentration devices declared invariant in the same entry.
+# Sizing and concentration values declared invariant in the same entry.  §156
+# later changes only the sector cap's reserve-net admission role, not its key
+# or numeric value.
 _S147_INVARIANT_SIZING_AND_CAPS = {
     "buy.per_symbol_notional_krw_range": [200000, 400000],  # KR 20~40만
     "buy.per_symbol_notional_usd_range": [150, 450],
@@ -2824,8 +2911,8 @@ def test_s147_buy_gates_are_unchanged():
         assert doc.thresholds[key].value == expected, key
 
 
-def test_s147_notional_bands_and_concentration_caps_are_unchanged():
-    """Per-symbol sizing and the sector/theme caps are the surviving bounds."""
+def test_s147_notional_bands_and_concentration_values_are_unchanged():
+    """The values survive even though §156 makes the sector cap advisory."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
     for key, expected in _S147_INVARIANT_SIZING_AND_CAPS.items():
@@ -2848,11 +2935,10 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             current["thresholds"][key]["value"] == baseline["thresholds"][key]["value"]
         ), key
 
-    # The one and only non-``value`` difference on any of these keys is the
-    # §139차 US one-share ceiling, which is an APPROVED pre-existing delta and
-    # is already enumerated in _S139_ALLOWED_POLICY_DELTAS. It is pinned here
-    # rather than ignored, so §147차 cannot be used as cover to move it and so
-    # a NEW sibling-key drift on an invariant threshold still fails.
+    # The only non-``value`` differences are the §139차 US one-share ceiling
+    # and §156's explicitly recorded sector-cap semantics.  Both are pinned
+    # rather than ignored, so §147차 cannot be used as cover for a new sibling
+    # key drift.
     for key in {**_S147_INVARIANT_BUY_GATES, **_S147_INVARIANT_SIZING_AND_CAPS}:
         cur = deepcopy(current["thresholds"][key])
         base = deepcopy(baseline["thresholds"][key])
@@ -2860,6 +2946,12 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             assert cur["one_share_exception"]["absolute_ceiling_usd"] == 10000
             assert base["one_share_exception"]["absolute_ceiling_usd"] == 700
             cur["one_share_exception"] = base["one_share_exception"]
+        if key == "portfolio.sector_cluster_cap_pct":
+            assert "advisory only" in cur["semantics"]
+            cur["semantics"] = base["semantics"]
+        if key == "portfolio.max_symbols_per_theme":
+            assert "sector concentration is surfaced" in cur["semantics"]
+            cur["semantics"] = base["semantics"]
         assert cur == base, key
 
 
@@ -2920,7 +3012,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-24.2"
+    assert doc.version == "2026-08-26.3"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
@@ -2928,3 +3020,4 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     # the Q4 tension is recorded rather than glossed over
     assert "no relaxation before scoring" in doc.source
     assert "COUNT limit only" in doc.source
+    assert "directly reverses the §147 assertion" in doc.source

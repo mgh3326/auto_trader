@@ -13,7 +13,7 @@ import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -85,6 +85,16 @@ from app.services.trade_journal.trade_retrospective_service import (
 logger = logging.getLogger(__name__)
 
 _TOSS_AUTO_SUBMISSION_FREEZE_KEY = "toss_auto_submission_freeze"
+_TOSS_RESOLVED_MUTATION_SIBLING_STATUSES = frozenset(
+    {
+        "filled",
+        "cancelled",
+        "replaced",
+        "rejected",
+        "cancel_rejected",
+        "replace_rejected",
+    }
+)
 
 
 def _log_dispatch_outcome(result: TelegramDispatchResult, *, surface: str) -> None:
@@ -3093,36 +3103,390 @@ class OrderProposalsService:
     ) -> dict[str, Any] | None:
         """Return a current-session fill freeze for this Toss account/market.
 
-        Any confirmed Toss fill blocks further automatic submission across the
-        account until the next KST session.  This is intentionally broader
-        than the separate KRW/USD cap lanes: an unresolved partial fill and
-        its cancellation proposal are an account-level operational event.
-        Human approval remains available.
+        A fill initially writes an account-wide interlock before any rung or
+        ledger projection can race it.  That interlock is released only when
+        every positive-fill rung in the source group proves a normal full fill
+        against one exact, clean Toss ``place`` ledger row, including a clean
+        terminal reconciliation for any direct ``cancel``/``modify`` sibling.
+        Missing, mismatched, partial, or otherwise unresolved evidence in that
+        proposal/order lineage remains frozen.  This is not an assertion about
+        unrelated account-wide ledger rows.  Human approval remains available.
         """
         self._require_timezone_aware(now)
         if group.account_mode != "toss_live":
             return None
-        await self._repo.acquire_auto_approve_lock(
-            self._toss_auto_freeze_lock_key(group, now=now)
-        )
         session_date = now.astimezone(KST).date().isoformat()
-        candidates = await self._repo.list_groups_for_toss_auto_submission_freeze(
-            broker_account_id=group.broker_account_id,
-        )
-        for candidate in candidates:
-            auto = (candidate.source_asof or {}).get("auto_approved")
-            freeze = (
-                auto.get(_TOSS_AUTO_SUBMISSION_FREEZE_KEY)
-                if isinstance(auto, dict)
-                else None
+        try:
+            await self._repo.acquire_auto_approve_lock(
+                self._toss_auto_freeze_lock_key(group, now=now)
             )
-            if (
-                isinstance(freeze, dict)
-                and freeze.get("state") == "frozen"
-                and freeze.get("session_date") == session_date
-            ):
-                return dict(freeze)
+            candidates = await self._repo.list_groups_for_toss_auto_submission_freeze(
+                broker_account_id=group.broker_account_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "order_proposals.toss_auto_submission_freeze.lookup_failed",
+                extra={"error_type": type(exc).__name__},
+            )
+            return self._toss_auto_submission_freeze_unavailable(
+                session_date=session_date,
+                market=group.market,
+            )
+
+        for candidate in candidates:
+            source_asof = candidate.source_asof
+            if not isinstance(source_asof, dict):
+                return self._toss_auto_submission_freeze_unavailable(
+                    session_date=session_date,
+                    market=group.market,
+                )
+            auto = source_asof.get("auto_approved")
+            if not isinstance(auto, dict):
+                return self._toss_auto_submission_freeze_unavailable(
+                    session_date=session_date,
+                    market=group.market,
+                )
+            freeze = auto.get(_TOSS_AUTO_SUBMISSION_FREEZE_KEY)
+            if freeze is None:
+                continue
+            if not isinstance(freeze, dict):
+                return self._toss_auto_submission_freeze_unavailable(
+                    session_date=session_date,
+                    market=group.market,
+                )
+
+            current_session = self._toss_freeze_is_current_session(
+                freeze, session_date=session_date
+            )
+            if current_session is None:
+                return self._toss_auto_submission_freeze_unavailable(
+                    session_date=session_date,
+                    market=group.market,
+                )
+            if not current_session:
+                continue
+            if freeze.get("state") not in {"frozen", "resolved"}:
+                return self._toss_auto_submission_freeze_unavailable(
+                    session_date=session_date,
+                    market=group.market,
+                )
+
+            try:
+                normal_full_fill = await self._is_normal_toss_full_fill_reconciled(
+                    candidate
+                )
+            except Exception as exc:
+                logger.warning(
+                    "order_proposals.toss_auto_submission_freeze.reconcile_lookup_failed",
+                    extra={
+                        "proposal_id": str(candidate.proposal_id),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return self._toss_auto_submission_freeze_unavailable(
+                    session_date=session_date,
+                    market=group.market,
+                )
+
+            if normal_full_fill:
+                if freeze.get("state") == "frozen":
+                    try:
+                        await self._resolve_toss_auto_submission_freeze(
+                            candidate,
+                            freeze=freeze,
+                            now=now,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "order_proposals.toss_auto_submission_freeze.resolve_failed",
+                            extra={
+                                "proposal_id": str(candidate.proposal_id),
+                                "error_type": type(exc).__name__,
+                            },
+                        )
+                        return self._toss_auto_submission_freeze_unavailable(
+                            session_date=session_date,
+                            market=group.market,
+                        )
+                continue
+
+            if freeze.get("state") == "resolved":
+                try:
+                    freeze = await self._reopen_toss_auto_submission_freeze(
+                        candidate,
+                        freeze=freeze,
+                        now=now,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "order_proposals.toss_auto_submission_freeze.reopen_failed",
+                        extra={
+                            "proposal_id": str(candidate.proposal_id),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    return self._toss_auto_submission_freeze_unavailable(
+                        session_date=session_date,
+                        market=group.market,
+                    )
+            return dict(freeze)
         return None
+
+    @staticmethod
+    def _toss_auto_submission_freeze_unavailable(
+        *, session_date: str, market: str
+    ) -> dict[str, Any]:
+        """Return the fail-closed synthetic interlock without leaking errors."""
+        return {
+            "state": "frozen",
+            "reason": "toss_reconciliation_lookup_unavailable",
+            "session_date": session_date,
+            "market": market,
+        }
+
+    @staticmethod
+    def _toss_freeze_is_current_session(
+        freeze: dict[str, Any], *, session_date: str
+    ) -> bool | None:
+        """Return ``None`` for malformed session evidence (fail closed)."""
+        recorded_session = freeze.get("session_date")
+        if not isinstance(recorded_session, str):
+            return None
+        try:
+            date.fromisoformat(recorded_session)
+        except ValueError:
+            return None
+        return recorded_session == session_date
+
+    @staticmethod
+    def _toss_ledger_market(market: str) -> str | None:
+        return {"equity_kr": "kr", "equity_us": "us"}.get(market)
+
+    @staticmethod
+    def _non_empty_exact_string(value: object | None) -> str | None:
+        if not isinstance(value, str) or not value or value != value.strip():
+            return None
+        return value
+
+    @staticmethod
+    def _positive_decimal(value: object | None) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            parsed = Decimal(str(value))
+        except (ArithmeticError, TypeError, ValueError):
+            return None
+        if not parsed.is_finite() or parsed <= 0:
+            return None
+        return parsed
+
+    async def _is_normal_toss_full_fill_reconciled(self, group: OrderProposal) -> bool:
+        """Prove a normal full fill from exact rung and Toss-ledger fields.
+
+        Every rung in the source group must be ``filled`` with a positive
+        ``filled_qty == quantity``; an unfilled sibling is unresolved order
+        evidence, not a normal full fill.  Each exact broker/client identity
+        must map to exactly one Toss place row with matching symbol, market,
+        side, limit price, order quantity, and filled quantity.  The ledger row
+        must be locally and broker ``filled``, reconciled, and free of
+        manual-review or reconcile-error residue.  Direct ``cancel``/``modify``
+        ledger siblings linked by that place row's ``original_order_id`` must
+        also be resolved without review/error residue.  This is deliberately an
+        exact proposal/order lineage check, not a claim that every account-wide
+        ledger state is understood.  A better-or-equal average fill is normal;
+        a worse price is unexpected.  Every missing or mismatched field returns
+        ``False`` so the caller retains the interlock.
+        """
+        ledger_market = self._toss_ledger_market(group.market)
+        if (
+            ledger_market is None
+            or group.action not in {None, "place"}
+            or group.order_type != "limit"
+            or group.side not in {"buy", "sell"}
+        ):
+            return False
+
+        rungs = await self._repo.list_rungs(group.id)
+        if not rungs:
+            return False
+
+        for rung in rungs:
+            expected_quantity = self._positive_decimal(rung.quantity)
+            filled_qty = self._positive_decimal(rung.filled_qty)
+            limit_price = self._positive_decimal(rung.limit_price)
+            if (
+                expected_quantity is None
+                or filled_qty is None
+                or limit_price is None
+                or filled_qty != expected_quantity
+                or rung.state != "filled"
+                or rung.side != group.side
+            ):
+                return False
+
+            rows = await self._matching_toss_place_ledger_rows(group, rung)
+            if len(rows) != 1:
+                return False
+            row = rows[0]
+            if (
+                row.account_mode != "toss_live"
+                or row.operation_kind != "place"
+                or row.market != ledger_market
+                or row.symbol != group.symbol
+                or row.side != rung.side
+                or row.order_type != group.order_type
+                or row.status != "filled"
+                or row.broker_status != "FILLED"
+                or row.reconciled_at is None
+                or row.requires_manual_review is not False
+                or row.manual_review_reason is not None
+                or row.last_reconcile_error is not None
+            ):
+                return False
+            if await self._has_unresolved_toss_mutation_sibling(row):
+                return False
+
+            ledger_quantity = self._positive_decimal(row.quantity)
+            ledger_filled_qty = self._positive_decimal(row.filled_qty)
+            ledger_price = self._positive_decimal(row.price)
+            average_fill_price = self._positive_decimal(row.avg_fill_price)
+            if (
+                ledger_quantity != expected_quantity
+                or ledger_filled_qty != expected_quantity
+                or ledger_price != limit_price
+                or average_fill_price is None
+            ):
+                return False
+            if group.side == "buy" and average_fill_price > limit_price:
+                return False
+            if group.side == "sell" and average_fill_price < limit_price:
+                return False
+        return True
+
+    async def _has_unresolved_toss_mutation_sibling(
+        self, place_row: TossLiveOrderLedger
+    ) -> bool:
+        """Return whether a direct cancel/modify sibling still clouds a fill.
+
+        A Toss cancel or modify is recorded as a separate ledger row whose
+        ``original_order_id`` names the original place order.  It is not safe to
+        clear a same-session fill interlock while one of those direct siblings
+        is pending, anomalous, unreconciled, or retains manual-review/reconcile
+        error residue.  Rows with a clean terminal mutation status are resolved
+        siblings and do not independently hold the interlock.
+        """
+        place_order_id = self._non_empty_exact_string(place_row.broker_order_id)
+        if place_order_id is None:
+            return True
+        siblings = list(
+            (
+                await self._session.execute(
+                    select(TossLiveOrderLedger).where(
+                        TossLiveOrderLedger.original_order_id == place_order_id,
+                        TossLiveOrderLedger.operation_kind.in_(("cancel", "modify")),
+                    )
+                )
+            ).scalars()
+        )
+        return any(
+            sibling.status not in _TOSS_RESOLVED_MUTATION_SIBLING_STATUSES
+            or sibling.reconciled_at is None
+            or sibling.requires_manual_review is not False
+            or sibling.manual_review_reason is not None
+            or sibling.last_reconcile_error is not None
+            for sibling in siblings
+        )
+
+    async def _matching_toss_place_ledger_rows(
+        self, group: OrderProposal, rung: OrderProposalRung
+    ) -> list[TossLiveOrderLedger]:
+        """Find the one exact Toss place row for a filled proposal rung.
+
+        The broker and client order identifiers are both mandatory.  A present
+        correlation id is an additional exact constraint, never a fallback.
+        This prevents a content-hash sibling or a partial identity record from
+        clearing the account-wide interlock.
+        """
+        ledger_market = self._toss_ledger_market(group.market)
+        broker_order_id = self._non_empty_exact_string(rung.broker_order_id)
+        client_order_id = self._non_empty_exact_string(rung.idempotency_key)
+        correlation_id = self._non_empty_exact_string(rung.correlation_id)
+        if ledger_market is None or broker_order_id is None or client_order_id is None:
+            return []
+
+        identity_matches = [
+            TossLiveOrderLedger.broker_order_id == broker_order_id,
+            TossLiveOrderLedger.client_order_id == client_order_id,
+        ]
+        if correlation_id is not None:
+            identity_matches.append(
+                TossLiveOrderLedger.correlation_id == correlation_id
+            )
+        rows = list(
+            (
+                await self._session.execute(
+                    select(TossLiveOrderLedger).where(
+                        TossLiveOrderLedger.account_mode == "toss_live",
+                        TossLiveOrderLedger.operation_kind == "place",
+                        TossLiveOrderLedger.market == ledger_market,
+                        TossLiveOrderLedger.symbol == group.symbol,
+                        or_(*identity_matches),
+                    )
+                )
+            ).scalars()
+        )
+        return [
+            row
+            for row in rows
+            if row.broker_order_id == broker_order_id
+            and row.client_order_id == client_order_id
+            and (correlation_id is None or row.correlation_id == correlation_id)
+        ]
+
+    async def _resolve_toss_auto_submission_freeze(
+        self,
+        group: OrderProposal,
+        *,
+        freeze: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """Record the only safe same-session release: full, clean reconciliation."""
+        source_asof = dict(group.source_asof or {})
+        auto = source_asof.get("auto_approved")
+        if not isinstance(auto, dict):
+            raise OrderProposalError("toss_auto_submission_freeze_source_unavailable")
+        updated_freeze = dict(freeze)
+        updated_freeze["state"] = "resolved"
+        updated_freeze["resolution"] = {
+            "reason": "normal_full_fill_reconciled",
+            "resolved_at": now.isoformat(),
+        }
+        auto = dict(auto)
+        auto[_TOSS_AUTO_SUBMISSION_FREEZE_KEY] = updated_freeze
+        source_asof["auto_approved"] = auto
+        await self._repo.update_group(group, source_asof=source_asof)
+
+    async def _reopen_toss_auto_submission_freeze(
+        self,
+        group: OrderProposal,
+        *,
+        freeze: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Re-close a stale release if later ledger evidence becomes unsafe."""
+        source_asof = dict(group.source_asof or {})
+        auto = source_asof.get("auto_approved")
+        if not isinstance(auto, dict):
+            raise OrderProposalError("toss_auto_submission_freeze_source_unavailable")
+        updated_freeze = dict(freeze)
+        updated_freeze["state"] = "frozen"
+        updated_freeze["reason"] = "broker_fill_evidence"
+        updated_freeze["reopened_at"] = now.isoformat()
+        auto = dict(auto)
+        auto[_TOSS_AUTO_SUBMISSION_FREEZE_KEY] = updated_freeze
+        source_asof["auto_approved"] = auto
+        await self._repo.update_group(group, source_asof=source_asof)
+        return updated_freeze
 
     async def _freeze_toss_auto_submission_on_fill(
         self,
@@ -3131,7 +3495,7 @@ class OrderProposalsService:
         filled_qty: Decimal | None,
         now: datetime,
     ) -> None:
-        """Durably stop same-session Toss auto entries after verified fill proof."""
+        """Write the immediate fail-closed interlock after verified fill proof."""
         if group.account_mode != "toss_live" or filled_qty is None or filled_qty <= 0:
             return
         source_asof = dict(group.source_asof or {})

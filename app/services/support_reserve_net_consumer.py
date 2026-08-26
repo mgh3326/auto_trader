@@ -235,6 +235,19 @@ class CandidateRejection:
 
 
 @dataclass(frozen=True, slots=True)
+class SectorClusterCapAdvisory:
+    """A retained projected-concentration warning for a selected candidate."""
+
+    normalized_symbol: str
+    intent: CandidateIntent
+    sector_cluster: str
+    post_fill_sector_concentration_pct: Decimal
+    sector_cluster_cap_pct: Decimal
+    post_fill_sector_increase: Decimal
+    code: Literal["sector_cluster_cap_exceeded"] = "sector_cluster_cap_exceeded"
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedReserveNetProposal:
     """A selected payload that may be persisted only through the public seam."""
 
@@ -254,6 +267,7 @@ class PreparedReserveNetProposal:
     approval_route: str
     policy_version: str
     policy_content_hash: str
+    sector_cluster_cap_advisories: tuple[SectorClusterCapAdvisory, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +276,7 @@ class ReserveNetPlan:
 
     selected: tuple[PreparedReserveNetProposal, ...]
     rejected: tuple[CandidateRejection, ...]
+    sector_cluster_cap_advisories: tuple[SectorClusterCapAdvisory, ...] = ()
     atomicity_stance: str = ATOMICITY_STANCE
     proposal_creation_permitted: bool = False
     proposal_creation_block_code: str | None = ATOMICITY_BLOCK_CODE
@@ -363,6 +378,7 @@ class SupportReserveNetConsumer:
                 eligible_add.append(candidate)
 
         selected: list[PreparedReserveNetProposal] = []
+        sector_cluster_cap_advisories: list[SectorClusterCapAdvisory] = []
         selected_add_markets: set[tuple[str, str]] = set()
         selected_required_cash: defaultdict[tuple[str, str, str], Decimal] = (
             defaultdict(Decimal)
@@ -384,6 +400,7 @@ class SupportReserveNetConsumer:
                 continue
             prepared = self._prepare(candidate)
             selected.append(prepared)
+            sector_cluster_cap_advisories.extend(prepared.sector_cluster_cap_advisories)
             self._claim(
                 candidate, counted_symbols, sector_symbols, selected_required_cash
             )
@@ -407,12 +424,17 @@ class SupportReserveNetConsumer:
                 continue
             prepared = self._prepare(candidate)
             selected.append(prepared)
+            sector_cluster_cap_advisories.extend(prepared.sector_cluster_cap_advisories)
             selected_add_markets.add(market_key)
             self._claim(
                 candidate, counted_symbols, sector_symbols, selected_required_cash
             )
 
-        return ReserveNetPlan(selected=tuple(selected), rejected=tuple(rejections))
+        return ReserveNetPlan(
+            selected=tuple(selected),
+            rejected=tuple(rejections),
+            sector_cluster_cap_advisories=tuple(sector_cluster_cap_advisories),
+        )
 
     async def consume(
         self,
@@ -513,6 +535,25 @@ class SupportReserveNetConsumer:
         proposal: PreparedReserveNetProposal,
     ) -> dict[str, Any]:
         """Build the buy-only, place-only payload accepted by the seam."""
+        source_asof: dict[str, Any] = {
+            "policy_version": proposal.policy_version,
+            "policy_content_hash": proposal.policy_content_hash,
+        }
+        if proposal.sector_cluster_cap_advisories:
+            source_asof["sector_cluster_cap_advisories"] = [
+                {
+                    "code": advisory.code,
+                    "sector_cluster": advisory.sector_cluster,
+                    "post_fill_sector_concentration_pct": str(
+                        advisory.post_fill_sector_concentration_pct
+                    ),
+                    "sector_cluster_cap_pct": str(advisory.sector_cluster_cap_pct),
+                    "post_fill_sector_increase": str(
+                        advisory.post_fill_sector_increase
+                    ),
+                }
+                for advisory in proposal.sector_cluster_cap_advisories
+            ]
 
         return {
             "symbol": proposal.normalized_symbol,
@@ -544,10 +585,7 @@ class SupportReserveNetConsumer:
                 "beneficial_owner_id": proposal.beneficial_owner_id,
                 "approval_route": proposal.approval_route,
             },
-            "source_asof": {
-                "policy_version": proposal.policy_version,
-                "policy_content_hash": proposal.policy_content_hash,
-            },
+            "source_asof": source_asof,
         }
 
     def _assert_signed_policy_contract(self) -> None:
@@ -624,9 +662,8 @@ class SupportReserveNetConsumer:
         if (
             candidate.post_fill_sector_increase < 0
             or candidate.post_fill_sector_concentration_pct < 0
-            or candidate.post_fill_sector_concentration_pct > self._sector_cap_pct
         ):
-            return "sector_concentration_unavailable_or_cap_exceeded"
+            return "sector_concentration_negative_data"
         if not " ".join(candidate.thesis.split()):
             return "thesis_required"
 
@@ -820,6 +857,35 @@ class SupportReserveNetConsumer:
             approval_route=approval_route,
             policy_version=self._policy_version,
             policy_content_hash=self._policy_content_hash,
+            sector_cluster_cap_advisories=(
+                (advisory,)
+                if (advisory := self._sector_cluster_cap_advisory(candidate))
+                is not None
+                else ()
+            ),
+        )
+
+    def _sector_cluster_cap_advisory(
+        self, candidate: ReserveNetCandidate
+    ) -> SectorClusterCapAdvisory | None:
+        """Keep cap excess observable without using it as an admission gate."""
+        if candidate.post_fill_sector_concentration_pct <= self._sector_cap_pct:
+            return None
+        sector_cluster = (candidate.sector_cluster or "").strip()
+        if not sector_cluster:
+            # ``_candidate_gate`` rejects this before selection.  Keep this
+            # defensive guard so a future call-site cannot turn unknown sector
+            # data into a misleading advisory.
+            return None
+        return SectorClusterCapAdvisory(
+            normalized_symbol=candidate.normalized_symbol,
+            intent=candidate.intent,
+            sector_cluster=sector_cluster,
+            post_fill_sector_concentration_pct=(
+                candidate.post_fill_sector_concentration_pct
+            ),
+            sector_cluster_cap_pct=self._sector_cap_pct,
+            post_fill_sector_increase=candidate.post_fill_sector_increase,
         )
 
     def _anchor_is_valid(self, candidate: ReserveNetCandidate) -> bool:

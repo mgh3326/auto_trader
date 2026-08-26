@@ -218,7 +218,7 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-08-24.2"
+    assert out["version"] == "2026-08-26.3"
     assert out["content_hash"]
 
 

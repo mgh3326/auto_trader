@@ -1499,10 +1499,10 @@ async def test_s141_auto_approved_cancel_executes_and_reports_as_cancelled(
 
 
 @pytest.mark.asyncio
-async def test_s141_auto_approved_replace_cancels_then_places_the_new_rung(
+async def test_s156_marketable_take_profit_replace_cancels_then_places_the_new_rung(
     monkeypatch, db_session
 ):
-    """§141차 ② — a replace that clears the whole place stack auto-submits."""
+    """§156 — the objective marketable profit exception survives revalidation."""
     from app.core.config import settings
     from app.services.order_proposals.target_order import TargetOrderSnapshot
 
@@ -1567,8 +1567,9 @@ async def test_s141_auto_approved_replace_cancels_then_places_the_new_rung(
                 "approval_hash": "fresh",
                 "price": "43000",
                 "quantity": "1",
-                # Resting sell, provably profitable after the KR round trip.
-                "current_price": "42000",
+                # Marketable sell, but §156 permits it only because this fresh
+                # broker preview proves profit after the KR round trip.
+                "current_price": "43000",
                 "avg_buy_price": "38000",
             }
         assert cancel_calls, "the original must be cancelled before the replacement"
@@ -1602,6 +1603,10 @@ async def test_s141_auto_approved_replace_cancels_then_places_the_new_rung(
     )
     assert rungs[0].state in {"acked", "resting"}
     assert "auto_approved" in (refreshed.source_asof or {})
+    assert (
+        refreshed.source_asof["auto_approved"]["eligibility"][0]["marketability"]
+        == "marketable_profit_take"
+    )
 
     text, keyboard, _chat = notifier.sent_messages[0]
     assert "자동 정정 접수됨" in text
@@ -1613,16 +1618,18 @@ async def test_s141_auto_approved_replace_cancels_then_places_the_new_rung(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "rung_quantity,rung_price,expected_reason",
+    "rung_quantity,rung_price,avg_buy_price,expected_reason",
     [
         # 100 * 43000 = 4,300,000 > KR per_order_cap 2,000,000
-        (Decimal("100"), Decimal("43000"), "per_order_cap_exceeded"),
-        # A sell priced below the market fills immediately -- nothing to veto.
-        (Decimal("1"), Decimal("41000"), "marketable_not_resting"),
+        (Decimal("100"), Decimal("43000"), "38000", "per_order_cap_exceeded"),
+        # §156 permits a marketable sell only when it is a fee-netted profit.
+        # Equal cost basis is inside the inclusive break-even band, so this
+        # remains carded before either leg of the replace can touch a broker.
+        (Decimal("1"), Decimal("41000"), "41000", "breakeven_band"),
     ],
 )
 async def test_s141_replace_failing_a_place_gate_never_touches_the_broker(
-    monkeypatch, db_session, rung_quantity, rung_price, expected_reason
+    monkeypatch, db_session, rung_quantity, rung_price, avg_buy_price, expected_reason
 ):
     """§141차 ② — every place gate still stands, and still stands *before* the
     two-leg broker mutation. A carded replace must leave the original resting.
@@ -1678,7 +1685,7 @@ async def test_s141_replace_failing_a_place_gate_never_touches_the_broker(
                 "price": str(rung_price),
                 "quantity": str(rung_quantity),
                 "current_price": "42000",
-                "avg_buy_price": "38000",
+                "avg_buy_price": avg_buy_price,
             }
         raise AssertionError("a carded replace must never submit")
 
