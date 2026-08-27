@@ -119,7 +119,7 @@ KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
         "reconcile 보존 + ORDERING DAY lifecycle/readback/lease."
     ),
 }
-KR_ACCOUNT_MAP_COMMIT: Final[str] = "a43e36e9bc50d7a93bba009bea96172e10dc4de8"
+KR_ACCOUNT_MAP_COMMIT: Final[str] = "cbd8f86ba96b4235984e139a9e82e4a7620b5bf8"
 KR_ACCOUNT_MAP_VALUES: Final[dict[str, str]] = {
     "account_lanes.kiwoom_mock": "KR-B1",
     "b0x_adapter_orders_20260808.surfaces": "∋ kiwoom_mock (§39차 한시, KRX RTH only)",
