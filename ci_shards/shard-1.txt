@@ -73,6 +73,7 @@ tests/schemas/test_investment_symbol_reports_schema.py
 tests/schemas/test_pagination.py
 tests/schemas/test_research_campaign_bridge_diagnostic_evidence.py
 tests/schemas/test_session_context_schemas.py
+tests/scripts/b0x/kr/test_account_map_commit_pin.py
 tests/scripts/b0x/kr/test_cycle.py
 tests/scripts/b0x/kr/test_ledger_pending_source.py
 tests/scripts/b0x/kr/test_submission_ast_guard.py
