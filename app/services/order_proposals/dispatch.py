@@ -972,9 +972,9 @@ async def dispatch_proposal(
             limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
-            # §163차 — the parking allowlist trades the per-order cap for a
-            # cumulative exposure cap, so that exposure has to be read from the
-            # broker before the classifier can grant the exemption. This
+            # §163차 — a parking rung is bounded twice: the per-order cap
+            # (RAISED for parking, never removed) and, behind it, a cumulative
+            # parking exposure cap. The cumulative one needs this reading. It
             # returns ``unavailable("not_requested")`` for every non-parking
             # group without touching the network, and any failure to read it
             # rejects the auto-approval rather than clearing the rung.
@@ -989,7 +989,7 @@ async def dispatch_proposal(
                 account_mode=group.account_mode,
                 market=group.market,
                 # getattr, not attribute access: an absent symbol must degrade
-                # to "no parking exemption", never to an exception inside the
+                # to "not a parking rung", never to an exception inside the
                 # auto-approve gate.
                 symbol=getattr(group, "symbol", None),
                 durable_notional_fn=lambda: service.auto_approved_parking_notional(

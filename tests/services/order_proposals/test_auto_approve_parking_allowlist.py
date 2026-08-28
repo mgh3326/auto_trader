@@ -1,10 +1,12 @@
 """§163차 — cash-parking ticker allowlist (SGOV/BIL).
 
-The §163차 exemption removes the per-order cap, which §106차 defined as the
-maximum loss boundary of one automation error. These tests hold the
-replacement boundary in place: the allowlist is closed and unwidenable at
-runtime, membership is exact-element (never substring or case-folded), the
-cumulative USD 10,000 cap is enforced from broker-origin exposure, every way
+§163차 RAISES the per-order cap for two tickers rather than removing it, so
+§106차's "maximum loss of one automation error" boundary keeps its shape, and
+adds a second cumulative boundary behind it. These tests hold both in place:
+the per-order check still runs at the raised value (and at USD 1,500 for
+everything else), the allowlist is closed and unwidenable at runtime,
+membership is exact-element (never substring or case-folded), the cumulative
+USD 10,000 cap is enforced from broker-origin plus durable exposure, every way
 of failing to read that exposure rejects, and everything §163차 did NOT
 authorize is proven unchanged.
 """
@@ -29,6 +31,7 @@ from app.services.order_proposals.parking_allowlist import (
     PARKING_ALLOWLIST_ACCOUNT_MARKETS,
     PARKING_ALLOWLIST_SYMBOLS,
     PARKING_CUMULATIVE_CAP_USD,
+    PARKING_PER_ORDER_CAP_USD,
     ParkingExposure,
     canonical_eligibility_symbol,
     canonical_exposure_symbol,
@@ -120,6 +123,9 @@ async def _no_pending() -> Decimal:
 def test_allowlist_constants_are_exactly_the_authorized_scope():
     assert PARKING_ALLOWLIST_SYMBOLS == frozenset({"SGOV", "BIL"})
     assert PARKING_ALLOWLIST_ACCOUNT_MARKETS == frozenset({("kis_live", "equity_us")})
+    # Two separate boundaries, two separate constants: changing one must never
+    # silently move the other.
+    assert PARKING_PER_ORDER_CAP_USD == Decimal("10000")
     assert PARKING_CUMULATIVE_CAP_USD == Decimal("10000")
 
 
@@ -292,7 +298,7 @@ def test_allowlist_is_scoped_to_kis_live_equity_us(account_mode, market):
 
 
 def test_kr_proposal_named_sgov_keeps_the_ordinary_gates():
-    """A KR-market SGOV gets no exemption: cap and marketability both apply."""
+    """A KR-market SGOV gets no parking treatment: USD 1,500 cap applies."""
     decision = _decide(
         group=_group(market="equity_kr", account_mode="kis_live"),
         exposure=_flat(),
@@ -307,20 +313,95 @@ def test_kr_proposal_named_sgov_keeps_the_ordinary_gates():
 # --------------------------------------------------------------------------
 
 
-def test_allowlisted_marketable_buy_over_the_per_order_cap_is_eligible():
-    """Both §163차 releases at once: marketable buy + per-order cap exemption."""
+def test_allowlisted_marketable_buy_over_the_ordinary_cap_is_eligible():
+    """Both §163차 changes at once: marketable buy + RAISED per-order cap."""
     decision = _decide(exposure=_flat())
 
     assert decision.eligible is True
     assert decision.reason == "eligible"
     assert decision.details["parking_allowlist"] == "SGOV"
-    assert decision.details["per_order_cap_basis"] == "exempt_parking"
+    assert decision.details["per_order_cap_basis"] == "parking_raised"
     assert decision.details["marketability"] == "parking_allowlist_marketable"
-    # USD 2,000 is above the USD 1,500 per-order cap and is admitted anyway.
+    # USD 2,000 is above the ordinary USD 1,500 cap; the effective cap for a
+    # parking rung is the raised USD 10,000, and it is reported as such.
     assert decision.details["notional"] == "2000"
+    assert decision.details["per_order_cap"] == "10000"
     assert decision.details["parking_exposure_before"] == "0"
     assert decision.details["parking_exposure_after"] == "2000"
     assert decision.details["parking_cap"] == "10000"
+
+
+def test_single_parking_order_over_the_raised_cap_is_rejected():
+    """🔴 재작업 2 — the per-order cap is RAISED, not removed.
+
+    This is the whole point of choosing a raise over an exemption: one
+    automation error on a parking ticker stays bounded at USD 10,000 per
+    order. Under an exemption this order would have been unbounded.
+    """
+    decision = _decide(
+        # 100.0001 x 100 = 10,000.01 — one cent over the raised cap.
+        rung=_rung(limit_price=Decimal("100.0001"), quantity=Decimal("100")),
+        preview={"success": True, "current_price": "100.0001"},
+        exposure=_flat(),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "per_order_cap_exceeded"
+    assert decision.details["notional"] == "10000.01"
+    assert decision.details["per_order_cap"] == "10000"
+    # Still recorded as a parking rung — it was capped, not un-recognized.
+    assert decision.details["parking_allowlist"] == "SGOV"
+    assert decision.details["per_order_cap_basis"] == "parking_raised"
+
+
+def test_single_parking_order_exactly_at_the_raised_cap_is_eligible():
+    decision = _decide(
+        rung=_rung(limit_price=Decimal("100"), quantity=Decimal("100")),
+        exposure=_flat(),
+    )
+
+    assert decision.eligible is True
+    assert decision.details["notional"] == "10000"
+
+
+def test_parking_sell_over_the_raised_cap_is_also_rejected():
+    """The raise applies to both sides; so does the check."""
+    decision = _decide(
+        rung=_rung(
+            side="sell", limit_price=Decimal("100.0001"), quantity=Decimal("100")
+        ),
+        preview={
+            "success": True,
+            "current_price": "100.0001",
+            "avg_buy_price": "99",
+        },
+        exposure=_flat(),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "per_order_cap_exceeded"
+    assert decision.details["per_order_cap"] == "10000"
+
+
+def test_non_allowlisted_us_ticker_keeps_the_ordinary_1500_cap():
+    """🔴 The raise is scoped to the allowlist and nothing else moved."""
+    over = _decide(
+        group=_group(symbol="SPY"),
+        rung=_rung(limit_price=Decimal("90"), quantity=Decimal("17")),  # 1,530
+        exposure=_flat(),
+    )
+    under = _decide(
+        group=_group(symbol="SPY"),
+        rung=_rung(limit_price=Decimal("90"), quantity=Decimal("16")),  # 1,440
+        exposure=_flat(),
+    )
+
+    assert over.eligible is False
+    assert over.reason == "per_order_cap_exceeded"
+    assert over.details["per_order_cap"] == "1500"
+    assert "parking_allowlist" not in over.details
+    assert under.eligible is True
+    assert under.details["per_order_cap"] == "1500"
 
 
 def test_non_allowlisted_marketable_buy_is_still_rejected():
@@ -547,7 +628,7 @@ def test_parking_sell_still_needs_the_fee_netted_profit_proof():
     assert decision.reason == "breakeven_band"
 
 
-def test_parking_sell_that_proves_profit_is_exempt_from_the_per_order_cap():
+def test_parking_sell_that_proves_profit_uses_the_raised_per_order_cap():
     decision = _decide(
         rung=_rung(side="sell"),
         preview={
@@ -559,10 +640,11 @@ def test_parking_sell_that_proves_profit_is_exempt_from_the_per_order_cap():
     )
 
     assert decision.eligible is True
-    assert decision.details["per_order_cap_basis"] == "exempt_parking"
+    assert decision.details["per_order_cap_basis"] == "parking_raised"
     assert decision.details["loss_guard"] == "net_profit_proven"
-    # USD 2,000 over the USD 1,500 per-order cap, admitted by the exemption.
+    # USD 2,000 is over the ordinary USD 1,500 cap and under the raised one.
     assert decision.details["notional"] == "2000"
+    assert decision.details["per_order_cap"] == "10000"
 
 
 def test_non_parking_sell_over_the_per_order_cap_is_still_rejected():
@@ -918,7 +1000,7 @@ async def test_durable_failure_reaches_the_classifier_as_a_rejection():
 
 
 def test_durable_side_counts_parking_buys_approved_under_ordinary_gates():
-    """A small resting SGOV buy never used the exemption but is real exposure.
+    """A small resting SGOV buy never needed the raised cap but is real exposure.
 
     The durable filter is the lenient exposure predicate, not the strict
     eligibility one, so a `sgov`-spelled proposal that was auto-approved under

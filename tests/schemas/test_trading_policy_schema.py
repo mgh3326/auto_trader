@@ -366,6 +366,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     from app.services.order_proposals.parking_allowlist import (
         PARKING_ALLOWLIST_SYMBOLS,
         PARKING_CUMULATIVE_CAP_USD,
+        PARKING_PER_ORDER_CAP_USD,
     )
 
     current = _raw()
@@ -376,7 +377,14 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     assert current["version"] == "2026-08-28.1"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
-    assert "the daily cap is explicitly NOT exempt" in current["source"]
+    assert "the daily cap is unchanged and still applied" in current["source"]
+    # 🔴 The record must say RAISED, not exempted — otherwise the document
+    # claims a weaker boundary than the code enforces.
+    assert "RAISED, NOT EXEMPTED" in current["source"]
+    assert (
+        "the per-order cap for every non-allowlisted US ticker remains USD 1,500"
+        in current["source"]
+    )
 
     # Keyset identical to §156차 — no parking key anywhere in the block.
     assert set(current_auto) == {
@@ -399,9 +407,12 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
 
     # The authorized scope lives in code, and the document agrees with it.
     assert PARKING_ALLOWLIST_SYMBOLS == frozenset({"SGOV", "BIL"})
+    assert PARKING_PER_ORDER_CAP_USD == 10000
     assert PARKING_CUMULATIVE_CAP_USD == 10000
     assert "SGOV and BIL on kis_live/equity_us" in current["source"]
     assert "USD 10,000 parking-exposure cap" in current["source"]
+    # The ordinary US per-order cap is untouched by §163차.
+    assert current["order_proposals"]["auto_approve"]["per_order_cap"]["us"] == 1500
 
 
 def test_s156_scope_addendum_preserves_cap_keys_and_separate_hard_gates():

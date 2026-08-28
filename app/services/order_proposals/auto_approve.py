@@ -64,15 +64,24 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
 
 §163차 -- the cash-parking allowlist
     Two ultra-short US Treasury ETFs (``SGOV``, ``BIL``) on ``kis_live`` /
-    ``equity_us`` are exempt from exactly two gates: the marketability rule
-    (this is the only marketable-*buy* release that exists) and the per-order
-    cap. §106차's "maximum loss of one automation error" boundary is not
-    deleted for them, it is replaced -- by ``PARKING_CUMULATIVE_CAP_USD``
-    measured against the account's cumulative parking exposure -- the broker
-    balance PLUS the durable same-day record of already-auto-approved parking
-    buys, because the balance alone cannot see an accepted-but-unfilled order.
-    Checked on every parking buy, failing closed whenever either half of that
-    exposure cannot be read.
+    ``equity_us`` get two changes, and exactly two:
+
+    1. the marketability rule is released on the buy side (the only
+       marketable-*buy* release that exists anywhere), and
+    2. 🔴 the per-order cap is **RAISED, not removed**. §106차's "maximum loss
+       of one automation error" boundary keeps its shape: the per-order check
+       still runs on every parking rung, against ``PARKING_PER_ORDER_CAP_USD``
+       rather than the ordinary US ``per_order_cap``. One automation error on
+       a parking ticker stays bounded at USD 10,000 per order.
+
+    A second boundary sits behind that one: ``PARKING_CUMULATIVE_CAP_USD``,
+    measured on every parking buy against the account's cumulative parking
+    exposure -- the broker balance PLUS the durable same-day record of
+    already-auto-approved parking buys, because the balance alone cannot see
+    an accepted-but-unfilled order. It fails closed whenever either half
+    cannot be read. It is the second line, never the only one: its measurement
+    has known residual gaps (runbook §8.7), and the per-order cap above is
+    what keeps each of them bounded per order.
 
     Nothing else moves. The daily cap, loss-cut/exit intent, the
     ``policy_deviation`` tag scan, the veto-capable account/market allowlist,
@@ -109,6 +118,7 @@ from app.services.order_proposals.dispatch_contract import (
 )
 from app.services.order_proposals.parking_allowlist import (
     PARKING_CUMULATIVE_CAP_USD,
+    PARKING_PER_ORDER_CAP_USD,
     ParkingExposure,
     canonical_eligibility_symbol,
     is_parking_allowlisted,
@@ -610,7 +620,7 @@ def evaluate_auto_approve_eligibility(
     account: broker-held market value plus the durable same-day record of
     already-auto-approved parking buys (see ``parking_exposure``). It defaults
     to ``None``, which is the fail-closed value: a caller that does not supply
-    it cannot obtain the parking exemption, and every non-parking rung is
+    it cannot obtain the parking treatment, and every non-parking rung is
     unaffected either way.
     """
 
@@ -757,57 +767,65 @@ def evaluate_auto_approve_eligibility(
     # existing cap behavior for every other rung.
     notional = limit_price * quantity
     parking_details: dict[str, str] = {}
+    # §163차 -- the per-order cap is RAISED for a parking ticker, never removed.
+    # §106차's "maximum loss of one automation error" keeps its shape: the check
+    # below still runs on every rung, parking included, so a single parking
+    # order is bounded at PARKING_PER_ORDER_CAP_USD. That first line is what
+    # keeps the residual gaps in the cumulative measurement survivable.
+    per_order_cap = limits.per_order_cap
     if parking:
-        # §163차 -- the per-order cap is EXEMPT here, and that is the whole
-        # point of the exemption, so the replacement boundary is computed
-        # first and fails closed. Meter the *executable* amount
-        # (max(limit, current) x quantity), never the possibly-discounted
-        # limit: a parking buy is allowed to be marketable, so the limit price
-        # is no longer an upper bound on what it can spend. For a resting rung
-        # this is identical to or larger than the limit basis, never smaller.
+        # Meter the *executable* amount (max(limit, current) x quantity), never
+        # the possibly-discounted limit: a parking buy is allowed to be
+        # marketable, so the limit price is no longer an upper bound on what it
+        # can spend. For a resting rung this is identical to or larger than the
+        # limit basis, never smaller.
         notional = max(limit_price, current_price) * quantity
+        per_order_cap = PARKING_PER_ORDER_CAP_USD
         parking_details = {
             "parking_allowlist": canonical_eligibility_symbol(
                 getattr(group, "symbol", None)
             )
             or "",
-            "per_order_cap_basis": "exempt_parking",
+            "per_order_cap_basis": "parking_raised",
         }
-        if getattr(rung, "side", None) == "buy":
-            # Only a buy adds parking exposure; a sell reduces it.
-            if parking_exposure is None or not parking_exposure.available:
-                return reject(
-                    "parking_exposure_unavailable",
-                    parking_exposure_reason=(
-                        "not_supplied"
-                        if parking_exposure is None
-                        else str(parking_exposure.unavailable_reason)
-                    ),
-                    **parking_details,
-                )
-            observed = parking_exposure.exposure
-            if observed is None or not observed.is_finite() or observed < 0:
-                return reject(
-                    "parking_exposure_unavailable",
-                    parking_exposure_reason="invalid_exposure",
-                    **parking_details,
-                )
-            parking_after = observed + notional
-            parking_details.update(
-                parking_exposure_before=_text(observed),
-                parking_exposure_after=_text(parking_after),
-                parking_cap=_text(PARKING_CUMULATIVE_CAP_USD),
-            )
-            if parking_after > PARKING_CUMULATIVE_CAP_USD:
-                return reject("parking_cap_exceeded", **parking_details)
-    elif notional > limits.per_order_cap:
+    if notional > per_order_cap:
         return reject(
             "per_order_cap_exceeded",
             notional=_text(notional),
-            per_order_cap=_text(limits.per_order_cap),
+            per_order_cap=_text(per_order_cap),
+            **parking_details,
         )
-    # §163차 exempts the per-order cap ONLY. The daily circuit breaker applies
-    # to a parking rung exactly as it does to every other rung.
+    if parking and getattr(rung, "side", None) == "buy":
+        # SECOND line, behind the per-order cap above: cumulative parking
+        # exposure. Only a buy adds exposure; a sell reduces it.
+        if parking_exposure is None or not parking_exposure.available:
+            return reject(
+                "parking_exposure_unavailable",
+                parking_exposure_reason=(
+                    "not_supplied"
+                    if parking_exposure is None
+                    else str(parking_exposure.unavailable_reason)
+                ),
+                **parking_details,
+            )
+        observed = parking_exposure.exposure
+        if observed is None or not observed.is_finite() or observed < 0:
+            return reject(
+                "parking_exposure_unavailable",
+                parking_exposure_reason="invalid_exposure",
+                **parking_details,
+            )
+        parking_after = observed + notional
+        parking_details.update(
+            parking_exposure_before=_text(observed),
+            parking_exposure_after=_text(parking_after),
+            parking_cap=_text(PARKING_CUMULATIVE_CAP_USD),
+        )
+        if parking_after > PARKING_CUMULATIVE_CAP_USD:
+            return reject("parking_cap_exceeded", **parking_details)
+    # §163차 changes the per-order cap's VALUE for parking and nothing else
+    # about it. The daily circuit breaker applies to a parking rung exactly as
+    # it does to every other rung.
     daily_after = daily_notional + notional
     if daily_after > limits.daily_cap:
         return reject(
@@ -913,15 +931,16 @@ def evaluate_auto_approve_eligibility(
                 # this is an additional, stricter check only after the narrow
                 # §156 profit-take predicate has proved true.
                 notional = max(limit_price, current_price) * quantity
-                if not parking and notional > limits.per_order_cap:
-                    # §163차 exempts the per-order cap for a parking rung; the
-                    # cap block above already metered this exact executable
-                    # basis for it. The daily cap below is NOT exempt and runs
-                    # for parking and non-parking rungs alike.
+                if notional > per_order_cap:
+                    # `per_order_cap` is the effective cap: the ordinary one,
+                    # or §163차's raised parking value. The check runs for
+                    # parking and non-parking rungs alike -- §163차 changed
+                    # this cap's value, it did not remove it.
                     return reject(
                         "per_order_cap_exceeded",
                         notional=_text(notional),
-                        per_order_cap=_text(limits.per_order_cap),
+                        per_order_cap=_text(per_order_cap),
+                        **parking_details,
                     )
                 daily_after = daily_notional + notional
                 if daily_after > limits.daily_cap:
@@ -951,7 +970,7 @@ def evaluate_auto_approve_eligibility(
             "notional": _text(notional),
             "daily_notional_before": _text(daily_notional),
             "daily_notional_after": _text(daily_after),
-            "per_order_cap": _text(limits.per_order_cap),
+            "per_order_cap": _text(per_order_cap),
             "daily_cap": _text(limits.daily_cap),
             "loss_guard": loss_guard,
             **profit_details,

@@ -8,13 +8,21 @@ back from the broker, two §40차/§156차 gates are lifted:
 1. **marketability** -- a parking buy may price at the market instead of
    resting below it (§156차 ② kept "매수 marketable 은 수동 유지"; §163차 makes
    these two tickers its only exception), and
-2. **the per-order cap** -- §106차 defined ``per_order_cap`` as *the maximum
-   loss boundary of one automation error*. §163차 does not delete that
-   boundary; it **replaces** it for parking with a cumulative one:
-   ``PARKING_CUMULATIVE_CAP_USD``, on the buy side, measured against the
-   broker balance **plus** the durable same-day record of already-auto-approved
-   parking buys (``parking_exposure``) -- the balance alone cannot see an
-   accepted-but-unfilled order and would re-meter the next proposal from zero.
+2. **the per-order cap value** -- 🔴 this is a **raise, not an exemption**.
+   §106차 defined ``per_order_cap`` as *the maximum loss boundary of one
+   automation error*, and that boundary keeps its shape here: the per-order
+   check still runs on every parking rung, against
+   ``PARKING_PER_ORDER_CAP_USD`` instead of the ordinary US
+   ``per_order_cap``. One automation error on a parking ticker therefore stays
+   bounded at USD 10,000 per order, which is what makes the residual gaps in
+   the cumulative measurement (see ``parking_exposure``) survivable.
+
+   A **second** boundary sits behind it: ``PARKING_CUMULATIVE_CAP_USD``, on
+   the buy side, measured against the broker balance **plus** the durable
+   same-day record of already-auto-approved parking buys -- the balance alone
+   cannot see an accepted-but-unfilled order and would re-meter the next
+   proposal from zero. The cumulative cap is the second line, never the only
+   one.
 
 Nothing else is lifted. The daily cap, the loss-cut and exit-intent gates, the
 ``policy_deviation`` tag scan, the veto-capable account/market allowlist, the
@@ -59,7 +67,7 @@ PARKING_ALLOWLIST_SYMBOLS: frozenset[str] = frozenset({"BIL", "SGOV"})
 
 # SGOV and BIL are US-listed ETFs, so the allowlist is market-scoped: the same
 # four characters arriving on a KR or crypto proposal are NOT parking tickers
-# and get no exemption.
+# and get no parking treatment.
 #
 # It is also account-scoped, and that is the stricter of the two decisions.
 # The cumulative cap is only meaningful if this repo can read the *same
@@ -69,15 +77,28 @@ PARKING_ALLOWLIST_SYMBOLS: frozenset[str] = frozenset({"BIL", "SGOV"})
 # (behind ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED) but its parking exposure
 # would have to come from a different broker surface; measuring a KIS balance
 # to authorize a Toss order would be a wrong-account cap, which is worse than
-# no exemption. Toss parking orders therefore keep the ordinary gates.
+# no parking treatment. Toss parking orders therefore keep the ordinary gates.
 PARKING_ALLOWLIST_ACCOUNT_MARKETS: frozenset[tuple[str, str]] = frozenset(
     {("kis_live", "equity_us")}
 )
 
-# §163차 operator decision: USD 10,000 of cumulative parking exposure. Same
-# currency as ``order_proposals.auto_approve.per_order_cap.us`` / ``daily_cap.us``
-# (USD) and as KIS's ``ovrs_stck_evlu_amt`` on a ``currency_code="USD"``
-# overseas balance, so no FX conversion enters this comparison.
+# 🔴 TWO boundaries, deliberately separate constants so that changing one can
+# never silently move the other. Both are USD -- the same currency as
+# ``order_proposals.auto_approve.per_order_cap.us`` / ``daily_cap.us`` and as
+# KIS's ``ovrs_stck_evlu_amt`` on a ``currency_code="USD"`` overseas balance --
+# so no FX conversion enters either comparison.
+#
+# FIRST line: the per-order cap, RAISED for parking, never removed. The
+# §106차 "maximum loss of one automation error" boundary keeps its shape; only
+# its value changes for these two tickers. A single parking order above this
+# is rejected exactly as any other over-cap order is.
+PARKING_PER_ORDER_CAP_USD: Decimal = Decimal("10000")
+
+# SECOND line: cumulative parking exposure across orders, buy side. This is a
+# backstop behind the per-order cap, not a substitute for it -- its
+# measurement has known residual gaps (BL-37 account labelling, BL-38
+# pre-submit reservation, BL-39 cross-day window; see the runbook §8.7), and
+# the per-order cap above is what keeps each of those bounded per order.
 PARKING_CUMULATIVE_CAP_USD: Decimal = Decimal("10000")
 
 # Closed reason vocabulary. A parking rejection renders one of these and never
@@ -115,7 +136,7 @@ def canonical_eligibility_symbol(value: Any) -> str | None:
     The strictness is deliberate and is safe in one direction only, which is
     why it is used only here. A rejected spelling (``"sgov"``, ``" SGOV "``)
     does not become "some other instrument is allowlisted" -- it becomes "this
-    proposal gets no exemption", so it falls back to the ordinary §40차/§156차
+    proposal gets no parking treatment", so it falls back to the ordinary
     gates and, at worst, costs the operator a Telegram tap.
 
     The ASCII gate is not decoration. ``str.upper()`` maps several non-ASCII
@@ -227,6 +248,7 @@ __all__ = [
     "PARKING_ALLOWLIST_ACCOUNT_MARKETS",
     "PARKING_ALLOWLIST_SYMBOLS",
     "PARKING_CUMULATIVE_CAP_USD",
+    "PARKING_PER_ORDER_CAP_USD",
     "PARKING_EXPOSURE_UNAVAILABLE_REASONS",
     "ParkingExposure",
     "canonical_eligibility_symbol",

@@ -1,9 +1,15 @@
 """Broker-observed + durable cumulative parking exposure (§163차).
 
-The §163차 per-order cap exemption is only as safe as the number that replaces
-it. This module produces that number and nothing else: the USD cumulative
-parking exposure on the one account the allowlist admits (``kis_live`` /
-``equity_us``).
+§163차 bounds a parking rung twice: the per-order cap, RAISED for parking but
+never removed (``PARKING_PER_ORDER_CAP_USD``), and behind it a cumulative
+parking exposure cap. This module produces the number the *second* boundary
+compares against, and nothing else: the USD cumulative parking exposure on the
+one account the allowlist admits (``kis_live`` / ``equity_us``).
+
+🔴 This is the second line, not the only one. Its measurement has known
+residual gaps (runbook §8.7 — BL-37 account labelling, BL-38 pre-submit
+reservation, BL-39 cross-day window), and what keeps every one of them bounded
+is the per-order cap that still runs above it.
 
 Two halves, and both are required
 ---------------------------------
@@ -39,7 +45,7 @@ Provenance -- and why it cannot be injected
 Nothing a proposal, MCP session or preview can write reaches this figure. The
 proposal contributes exactly one input to the whole §163차 path -- the symbol --
 and that same symbol is what the order is submitted against, so claiming
-``SGOV`` to obtain the exemption submits a real ``SGOV`` order. There is no
+``SGOV`` to obtain the parking treatment submits a real ``SGOV`` order. There is no
 proposer-supplied notional, position, valuation or exposure field anywhere in
 this computation. The durable half reads the same vetted per-rung cap measure
 the daily circuit breaker reads (booked ``limit_price × quantity``, or the
@@ -178,7 +184,7 @@ async def load_parking_exposure(
 
     Returns ``unavailable("not_requested")`` when the group is not an
     allowlisted parking order, so a caller that asks unconditionally still
-    cannot obtain an exemption for a non-parking symbol.
+    cannot obtain parking treatment for a non-parking symbol.
     """
     if not is_parking_allowlisted(
         symbol=symbol, account_mode=account_mode, market=market
