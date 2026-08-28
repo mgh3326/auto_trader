@@ -1,0 +1,4 @@
+schema_version = "kiwoom-bounded-send-seal-registry.v1"
+# A future operator-approved PR must add a full [[registered_seals]] row with
+# lane_id, physical_account_id, expires_at, and seal_digest. This release has 0.
+registered_seals = []
