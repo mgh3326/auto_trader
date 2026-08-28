@@ -404,6 +404,17 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
     orderable = _orderable_by_account_currency(input.capital_snapshot)
     unavailable_sources = _unavailable_orderable_sources(input.capital_snapshot)
     candidates = _candidate_accounts(input.market)
+    cash_unavailable_reasons = {
+        account: (
+            unavailable_sources.get(account)
+            or (
+                "orderable_value_unavailable"
+                if any(value is None for value in orderable.get(account, {}).values())
+                else None
+            )
+        )
+        for account in candidates
+    }
     cost_comparison = {
         account: _cost_row(
             account_id=account,
@@ -411,16 +422,7 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
             notional_krw=notional_krw,
             notional_usd=float(notional_usd) if notional_usd is not None else None,
             cash=orderable.get(account, {}),
-            cash_unavailable_reason=(
-                unavailable_sources.get(account)
-                or (
-                    "orderable_value_unavailable"
-                    if any(
-                        value is None for value in orderable.get(account, {}).values()
-                    )
-                    else None
-                )
-            ),
+            cash_unavailable_reason=cash_unavailable_reasons[account],
             usd_krw=input.usd_krw,
             profiles=profiles,
         )
@@ -445,7 +447,7 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
     data_quality.extend(
         f"orderable_cash_unavailable:{account}"
         for account in candidates
-        if account in unavailable_sources
+        if cash_unavailable_reasons[account] is not None
     )
 
     if not eligible:

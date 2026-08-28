@@ -15,6 +15,10 @@ from typing import Final
 KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH: Final = (
     "kis_overseas_usd_balance_orderable_mismatch"
 )
+# The public USD formatter has two fractional digits.  A balance below this
+# boundary renders as "$0.00 USD", so it cannot establish that a positive
+# orderable amount is deployable cash.
+KIS_OVERSEAS_USD_DISPLAY_ZERO_THRESHOLD: Final = 0.005
 
 
 class KISOverseasUsdCashUnavailable(RuntimeError):
@@ -40,16 +44,20 @@ def overseas_usd_cash_unavailable_reason(
 
     ``frcr_dncl_amt1`` and ``frcr_gnrl_ord_psbl_amt`` are independently
     reported KIS values, not aliases.  A positive orderable value does not
-    establish usable cash when the reported cash balance is non-positive.
-    A missing, malformed, or non-finite value cannot establish deployable
-    cash either, so it is surfaced through the same unavailable path.
+    establish usable cash when the reported cash balance renders as zero at
+    the public two-decimal USD precision.  A missing, malformed, or
+    non-finite value cannot establish deployable cash either, so it is
+    surfaced through the same unavailable path.
     """
 
     parsed_balance = _finite_float(balance)
     parsed_orderable = _finite_float(orderable)
     if parsed_balance is None or parsed_orderable is None:
         return KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH
-    if parsed_balance <= 0.0 and parsed_orderable > 0.0:
+    if (
+        parsed_balance < KIS_OVERSEAS_USD_DISPLAY_ZERO_THRESHOLD
+        and parsed_orderable > 0.0
+    ):
         return KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH
     return None
 

@@ -318,7 +318,7 @@ async def get_cash_balance_impl(
                     # 미체결 매수를 추가 차감하지 않는다 (KR 과 동일 double-count 방지).
                     # TTTC2101R reports these as different fields.  Do not
                     # promote a positive general-orderable amount to usable
-                    # cash when the reported balance is explicitly zero.
+                    # cash when the reported balance would display as zero.
                     unavailable_reason = overseas_usd_cash_unavailable_reason(
                         balance=balance,
                         orderable=raw_orderable,

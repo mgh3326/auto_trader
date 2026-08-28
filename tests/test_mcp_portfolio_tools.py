@@ -624,11 +624,13 @@ async def test_get_cash_balance_kis_overseas_mismatch_is_explicitly_unavailable(
     result = await tools["get_cash_balance"](account="kis_overseas")
 
     account = result["accounts"][0]
-    assert account["balance"] is None
-    assert account["orderable"] is None
+    assert account.get("availability") == "unavailable", (
+        "KISUSD_MISMATCH_MUTANT_ANCHOR: zero-display USD cash was rendered usable"
+    )
+    assert account.get("balance") is None
+    assert account.get("orderable") is None
     assert account["reported_balance"] == pytest.approx(0.0)
     assert account["reported_orderable"] == pytest.approx(1282.75)
-    assert account["availability"] == "unavailable"
     assert (
         account["unavailable_reason"] == "kis_overseas_usd_balance_orderable_mismatch"
     )
@@ -680,9 +682,11 @@ async def test_get_cash_balance_kis_overseas_invalid_cash_shape_is_unavailable(
     result = await tools["get_cash_balance"](account="kis_overseas")
 
     account = result["accounts"][0]
-    assert account["availability"] == "unavailable"
-    assert account["balance"] is None
-    assert account["orderable"] is None
+    assert account.get("availability") == "unavailable", (
+        "KISUSD_NONFINITE_MUTANT_ANCHOR: invalid USD cash was rendered usable"
+    )
+    assert account.get("balance") is None
+    assert account.get("orderable") is None
 
 
 @pytest.mark.asyncio
@@ -690,8 +694,10 @@ async def test_get_cash_balance_kis_overseas_invalid_cash_shape_is_unavailable(
     ("balance", "orderable"),
     [
         ("1000", "800"),
-        ("1000", "0"),
+        ("100", "0"),
         ("0", "0"),
+        ("-50", "0"),
+        ("0.005", "1360.24"),
     ],
 )
 async def test_get_cash_balance_kis_overseas_known_cash_shapes_remain_available(
@@ -721,6 +727,39 @@ async def test_get_cash_balance_kis_overseas_known_cash_shapes_remain_available(
     assert account.get("availability") != "unavailable"
     assert account["balance"] == pytest.approx(float(balance))
     assert account["orderable"] == pytest.approx(float(orderable))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("balance", ["0.000000001", "0.000001", "0.004999"])
+async def test_get_cash_balance_kis_overseas_display_zero_dust_is_unavailable(
+    monkeypatch,
+    balance,
+):
+    """Positive orderable cash cannot bypass the two-decimal zero display."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": balance,
+                    "frcr_gnrl_ord_psbl_amt": "1360.24",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    account = result["accounts"][0]
+    assert account.get("availability") == "unavailable", (
+        "KISUSD_DUST_THRESHOLD_MUTANT_ANCHOR: display-zero USD cash was rendered usable"
+    )
+    assert account.get("balance") is None
+    assert account.get("orderable") is None
+    assert account.get("formatted") != "$0.00 USD"
 
 
 @pytest.mark.asyncio

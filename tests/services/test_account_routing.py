@@ -470,6 +470,42 @@ def test_unavailable_kis_usd_cash_is_not_relabelled_as_insufficient():
     assert "orderable_cash_unavailable:kis_overseas" in result["data_quality"]
 
 
+@pytest.mark.parametrize("unreadable_orderable", [None, float("nan")])
+def test_unreadable_kis_usd_orderable_is_not_relabelled_as_insufficient(
+    unreadable_orderable,
+):
+    capital = _cash(kis_overseas=0, toss_usd=500)
+    kis_usd = next(
+        row
+        for row in capital["accounts"]
+        if row["account"] == "kis_overseas" and row["currency"] == "USD"
+    )
+    kis_usd["orderable"] = unreadable_orderable
+
+    result = suggest_account_from_snapshot(
+        AccountRoutingInput(
+            symbol="AAPL",
+            market="us",
+            side="buy",
+            quantity=1,
+            price=100,
+            usd_krw=1500,
+            account_costs=DEFAULT_ACCOUNT_COSTS,
+            capital_snapshot=capital,
+            holdings_snapshot=_holdings([]),
+        )
+    )
+
+    kis = result["cost_comparison"]["kis_overseas"]
+    assert kis["ineligible_reason"] == "orderable_cash_unavailable", (
+        "KISUSD_ROUTING_VALUE_MUTANT_ANCHOR: unreadable USD orderable was "
+        "relabelled as insufficient"
+    )
+    assert kis["orderable_unavailable_reason"] == "orderable_value_unavailable"
+    assert kis["orderable_usd"] is None
+    assert "orderable_cash_unavailable:kis_overseas" in result["data_quality"]
+
+
 def test_zero_kis_usd_orderable_remains_insufficient_not_unavailable():
     result = suggest_account_from_snapshot(
         AccountRoutingInput(
