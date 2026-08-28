@@ -57,6 +57,7 @@ tests/routers/test_investment_snapshots_router.py
 tests/routers/test_investment_stage_runs.py
 tests/routers/test_news_relevance_ingest.py
 tests/routers/test_strategy_events_router.py
+tests/scripts/b0x/kr/kiwoom/test_kiwoom_bounded_send.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_cli.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_coordination_wiring.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_envelope_session_and_semantics.py

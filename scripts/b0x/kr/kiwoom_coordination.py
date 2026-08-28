@@ -1,13 +1,16 @@
 """Production owner wiring for the Kiwoom coordination adapter.
 
 This module only resolves a signed lane entry and constructs the already
-implemented lane adapter.  It does not create a scheduler, open a broker
-client, or authorize a mutation.  The default production factory returns a
-grant-only owner canary; bounded send remains a later G3 change.
+implemented lane adapter.  It does not create a scheduler or open a broker
+client.  The default production factory remains a grant-only owner canary. A
+separate bounded-send factory can construct one non-grant owner only after an
+expiring, registered seal has been durably consumed; its production registry
+ships empty.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -20,6 +23,14 @@ from app.services.mock_lane_registry import (
     LaneGuardError,
     LaneRegistryEntry,
     get_lane_registry_entry,
+)
+from scripts.b0x.kr.kiwoom_bounded_send import (
+    BoundedSendSeal,
+    KiwoomBoundedSendSealRejected,
+    assert_bounded_send_seal_registered_and_current,
+    assert_consumed_bounded_send_seal_current,
+    consume_registered_bounded_send_seal,
+    snapshot_bounded_send_seal,
 )
 from scripts.b0x.kr.kiwoom_ordering import (
     InMemoryDispatchEvidence,
@@ -76,11 +87,18 @@ class _KiwoomOwnerConstructionProof:
     constructed_type: type[KiwoomCoordinationAdapter]
     grant_only: bool
     legacy_offline: bool
+    bounded_send_seal: BoundedSendSeal | None
+    bounded_send_seal_digest: str | None
 
 
 _OWNER_CONSTRUCTION_PROOFS: WeakKeyDictionary[
     KiwoomCoordinationAdapter, _KiwoomOwnerConstructionProof
 ] = WeakKeyDictionary()
+_BOUNDED_SEND_OWNER_ASSERTIONS: WeakKeyDictionary[KiwoomCoordinationAdapter, bool] = (
+    WeakKeyDictionary()
+)
+_BOUNDED_SEND_OWNER_ASSERTION_LOCK = threading.Lock()
+_BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS: set[str] = set()
 
 
 class KiwoomCoordinationOwnerRejected(RuntimeError):
@@ -141,9 +159,30 @@ def _entry_provenance(entry: LaneRegistryEntry) -> _KiwoomCoordinationEntryProve
 
 
 def _register_approved_adapter(
-    ports: KiwoomCoordinationPorts, *, grant_only: bool
+    ports: KiwoomCoordinationPorts,
+    *,
+    grant_only: bool,
+    bounded_send_seal: BoundedSendSeal | None = None,
 ) -> KiwoomCoordinationAdapter:
     """Construct and register an adapter from a provenance-bearing port set."""
+
+    legacy_offline = getattr(ports, "legacy_offline", False)
+    if type(grant_only) is not bool:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=getattr(getattr(ports, "entry", None), "lane_id", None),
+        )
+    if grant_only is True:
+        bounded_send_shape_valid = bounded_send_seal is None
+    elif legacy_offline is True:
+        bounded_send_shape_valid = bounded_send_seal is None
+    else:
+        bounded_send_shape_valid = type(bounded_send_seal) is BoundedSendSeal
+    if not bounded_send_shape_valid:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=getattr(getattr(ports, "entry", None), "lane_id", None),
+        )
 
     provenance = getattr(ports, "coordination_provenance", None)
     if type(provenance) is not _KiwoomCoordinationEntryProvenance:
@@ -163,14 +202,40 @@ def _register_approved_adapter(
             lane_id=ports.entry.lane_id,
         )
 
+    if bounded_send_seal is not None:
+        try:
+            assert_consumed_bounded_send_seal_current(bounded_send_seal)
+        except KiwoomBoundedSendSealRejected as exc:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=ports.entry.lane_id,
+            ) from exc
+        with _BOUNDED_SEND_OWNER_ASSERTION_LOCK:
+            if bounded_send_seal.seal_digest in _BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS:
+                raise KiwoomCoordinationOwnerRejected(
+                    KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                    lane_id=ports.entry.lane_id,
+                )
+            _BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS.add(bounded_send_seal.seal_digest)
+
     adapter = KiwoomCoordinationAdapter(ports, grant_only=grant_only)
+    adapter._bounded_send_seal_digest = (  # type: ignore[attr-defined]
+        None if bounded_send_seal is None else bounded_send_seal.seal_digest
+    )
     _OWNER_CONSTRUCTION_PROOFS[adapter] = _KiwoomOwnerConstructionProof(
         ports=ports,
         provenance=provenance,
         constructed_type=type(adapter),
         grant_only=grant_only,
-        legacy_offline=getattr(ports, "legacy_offline", False),
+        legacy_offline=legacy_offline,
+        bounded_send_seal=bounded_send_seal,
+        bounded_send_seal_digest=(
+            None if bounded_send_seal is None else bounded_send_seal.seal_digest
+        ),
     )
+    if bounded_send_seal is not None:
+        with _BOUNDED_SEND_OWNER_ASSERTION_LOCK:
+            _BOUNDED_SEND_OWNER_ASSERTIONS[adapter] = False
     return adapter
 
 
@@ -199,6 +264,45 @@ def _assert_owner_provenance(
             lane_id=entry.lane_id,
         )
     return proof
+
+
+def _assert_bounded_send_owner_proof(
+    owner: KiwoomCoordinationAdapter,
+    proof: _KiwoomOwnerConstructionProof,
+    entry: LaneRegistryEntry,
+) -> None:
+    """Accept one non-legacy owner assertion for one consumed sealed digest."""
+
+    seal = proof.bounded_send_seal
+    if (
+        owner.grant_only is not False
+        or proof.grant_only is not False
+        or proof.legacy_offline is not False
+        or type(seal) is not BoundedSendSeal
+        or type(proof.bounded_send_seal_digest) is not str
+        or proof.bounded_send_seal_digest != seal.seal_digest
+        or getattr(owner, "_bounded_send_seal_digest", None) != seal.seal_digest
+        or seal.lane_id != entry.lane_id
+        or seal.physical_account_id != entry.physical_account_id
+    ):
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=entry.lane_id,
+        )
+    try:
+        assert_consumed_bounded_send_seal_current(seal)
+    except KiwoomBoundedSendSealRejected as exc:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=entry.lane_id,
+        ) from exc
+    with _BOUNDED_SEND_OWNER_ASSERTION_LOCK:
+        if _BOUNDED_SEND_OWNER_ASSERTIONS.get(owner) is not False:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=entry.lane_id,
+            )
+        _BOUNDED_SEND_OWNER_ASSERTIONS[owner] = True
 
 
 def assert_kiwoom_coordination_owner(
@@ -262,6 +366,8 @@ def assert_kiwoom_coordination_owner(
                 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
                 lane_id=entry.lane_id,
             )
+    elif owner.grant_only is False or proof.grant_only is False:
+        _assert_bounded_send_owner_proof(owner, proof, entry)
     elif owner.grant_only is not True or proof.grant_only is not True:
         raise KiwoomCoordinationOwnerRejected(
             KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
@@ -295,6 +401,78 @@ def assert_kiwoom_coordination_owner(
             lane_id=entry.lane_id,
         )
     return owner
+
+
+def build_bounded_send_kiwoom_coordination_factory(
+    *,
+    seal: object,
+    ports_factory: Callable[[LaneRegistryEntry], KiwoomCoordinationPorts],
+) -> Callable[[], KiwoomCoordinationAdapter]:
+    """Build the sole registered-seal path to a non-grant KR owner.
+
+    The caller's mutable dict is copied and frozen here. Registration, account
+    identity, and the real-time expiry are checked again on factory invocation;
+    the durable marker is committed before ``grant_only=False`` construction.
+    """
+
+    sealed = snapshot_bounded_send_seal(seal)
+    if sealed.lane_id != KIWOOM_KR_LANE_ID:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_LANE_MISMATCH,
+            lane_id=sealed.lane_id,
+        )
+
+    def _factory() -> KiwoomCoordinationAdapter:
+        entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+        try:
+            physical_account_id = require_j2a_physical_account_id(entry)
+        except LaneGuardError as exc:
+            raise KiwoomCoordinationOwnerRejected(
+                exc.code, lane_id=entry.lane_id
+            ) from exc
+        if sealed.physical_account_id != physical_account_id:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_ACCOUNT_MISMATCH,
+                lane_id=entry.lane_id,
+            )
+        try:
+            assert_bounded_send_seal_registered_and_current(sealed)
+        except KiwoomBoundedSendSealRejected as exc:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=entry.lane_id,
+            ) from exc
+
+        ports = ports_factory(entry)
+        if type(ports) is not KiwoomCoordinationPorts:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_PORTS_REJECTED,
+                lane_id=entry.lane_id,
+            )
+        if ports.entry is not entry:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH,
+                lane_id=entry.lane_id,
+            )
+        if getattr(ports, "legacy_offline", False) is True:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=entry.lane_id,
+            )
+        try:
+            consume_registered_bounded_send_seal(sealed)
+        except KiwoomBoundedSendSealRejected as exc:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=entry.lane_id,
+            ) from exc
+        return _register_approved_adapter(
+            ports,
+            grant_only=False,
+            bounded_send_seal=sealed,
+        )
+
+    return _factory
 
 
 def build_kiwoom_coordination_factory(
@@ -398,6 +576,7 @@ __all__ = [
     "KIWOOM_US_LANE_ID",
     "KiwoomCoordinationOwnerRejected",
     "assert_kiwoom_coordination_owner",
+    "build_bounded_send_kiwoom_coordination_factory",
     "build_kiwoom_coordination_factory",
     "make_grant_only_kiwoom_coordination_adapter",
     "production_kiwoom_coordination_factory",
