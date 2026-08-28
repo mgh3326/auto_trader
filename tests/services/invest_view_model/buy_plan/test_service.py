@@ -460,6 +460,38 @@ async def test_partially_unknown_cash_holds_the_verdict_instead_of_understating(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_kis_usd_mismatch_warning_keeps_usd_scope_unknown() -> None:
+    """KIS KRW cash must not make an explicitly unavailable USD read disappear."""
+    home = _home(
+        groups=[],
+        accounts=[_account(account_id="kis-1", source="kis", krw=500000, usd=None)],
+        meta_warnings=[
+            InvestHomeWarning(
+                source="kis",
+                message=(
+                    "USD 예수금/주문가능 금액 모순("
+                    "kis_overseas_usd_balance_orderable_mismatch)"
+                ),
+            )
+        ],
+    )
+
+    plan = await _service(home=_StubHome(home)).build(user_id=1, market="all", now=NOW)
+
+    usd = _scope(plan, "kis", "USD")
+    assert usd.available_cash is None
+    assert usd.verdict == "unknown"
+    assert usd.account_ids == ["kis-1"]
+    assert any(
+        row.account_id == "kis-1"
+        and row.currency == "USD"
+        and row.available_cash is None
+        for row in plan.funding.accounts
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_one_unreadable_account_holds_its_own_scope() -> None:
     """Two accounts at the same broker, one silent → that scope goes unknown.
 

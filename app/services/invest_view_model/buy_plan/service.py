@@ -45,6 +45,9 @@ from app.schemas.invest_buy_plan import (
 from app.schemas.invest_home import Account, GroupedHolding, InvestHomeResponse
 from app.schemas.invest_watches import WatchAlertRow, WatchesResponse
 from app.schemas.open_orders import OpenOrdersResponse
+from app.services.brokers.kis.overseas_cash import (
+    KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH,
+)
 from app.services.invest_view_model.buy_plan.computation import (
     APPROXIMATION_NOTICE,
     approval_lane_for,
@@ -1413,6 +1416,16 @@ def _scope_verdict(
 def _cash_accounts(home: InvestHomeResponse | None) -> list[CashAccountRow]:
     if home is None:
         return []
+
+    # A KIS account normally omits USD when it only reports KRW, but the
+    # overseas-cash reader emits this stable warning when USD was queried and
+    # found internally inconsistent.  Preserve that distinction so the buy
+    # plan does not silently treat an unavailable USD balance as absent.
+    kis_usd_unavailable = any(
+        warning.source == "kis"
+        and KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH in warning.message
+        for warning in home.meta.warnings
+    )
     rows: list[CashAccountRow] = []
     for account in home.accounts:
         included = account.accountKind in _RESERVE_ACCOUNT_KINDS
@@ -1421,12 +1434,23 @@ def _cash_accounts(home: InvestHomeResponse | None) -> list[CashAccountRow]:
         }
         reported_any = any(cash is not None for cash, _ in resolved.values())
         for currency, (cash, source) in resolved.items():
+            explicitly_unavailable = (
+                currency == "USD" and account.source == "kis" and kis_usd_unavailable
+            )
+            if explicitly_unavailable:
+                cash, source = None, None
             # A KRW-only account legitimately has no USD line, so a missing
             # currency on an account that reported *something* is just absence.
+            # An explicit KIS USD mismatch is not absence and must keep an
+            # unknown funding scope visible.
             # A live account that reported nothing at all is a failed read —
             # it is published as unknown so the reserve verdict goes unknown
             # rather than quietly totalling the accounts that did answer.
-            if cash is None and (not included or reported_any):
+            if (
+                cash is None
+                and (not included or reported_any)
+                and not explicitly_unavailable
+            ):
                 continue
             rows.append(
                 CashAccountRow(

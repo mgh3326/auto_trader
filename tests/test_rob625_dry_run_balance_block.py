@@ -115,6 +115,46 @@ async def test_check_balance_sufficient_passes(monkeypatch):
     assert error is None
 
 
+@pytest.mark.asyncio
+async def test_check_balance_blocks_kis_usd_cash_orderable_mismatch(monkeypatch):
+    """A live US buy must fail closed before any order path sees reported orderable."""
+
+    async def unavailable_cash(account=None, *, is_mock=False):
+        assert account == "kis_overseas"
+        assert is_mock is False
+        return {
+            "accounts": [
+                {
+                    "account": "kis_overseas",
+                    "currency": "USD",
+                    "balance": None,
+                    "orderable": None,
+                    "availability": "unavailable",
+                    "unavailable_reason": "kis_overseas_usd_balance_orderable_mismatch",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(order_validation, "get_cash_balance_impl", unavailable_cash)
+
+    warning, error = await _check_balance_and_warn(
+        market_type="equity_us",
+        normalized_symbol="SGOV",
+        side="buy",
+        order_amount=2400.0,
+        dry_run=False,
+        order_error_fn=_order_error,
+        is_mock=False,
+    )
+
+    assert warning is None
+    assert error is not None
+    assert error["orderable_cash_unavailable"] is True
+    assert error["unavailable_reason"] == "kis_overseas_usd_balance_orderable_mismatch"
+    assert "refusing to submit" in error["error"]
+    assert "insufficient_balance" not in error
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 — KIS field breakdown in the insufficient-balance error
 # ---------------------------------------------------------------------------
