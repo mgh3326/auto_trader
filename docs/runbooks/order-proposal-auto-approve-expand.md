@@ -18,8 +18,11 @@ break-even-band sell, and unclassifiable sell remains manual.
 per-order cap is *exempted* rather than applied, and it is the only marketable
 **buy** release that exists anywhere. The §106차 boundary is replaced, not
 deleted: a cumulative **USD 10,000** parking exposure cap, measured from the
-broker's own balance, is checked on every parking buy and fails closed. Full
-scope, and the equally important list of what it does not touch, in §8.
+broker's balance **plus the same-day durable record of already-auto-approved
+parking buys**, is checked on every parking buy and fails closed. Both halves
+are load-bearing — the balance alone cannot see an accepted-but-unfilled
+order, and a balance-only cap re-meters the next proposal from zero. Full
+scope, what it does not touch, and its real limits are in §8.
 
 Ships inert. `ORDER_PROPOSALS_AUTO_APPROVE_MODE` defaults to `off`, which is
 ROB-871 behaviour unchanged. Arming it is an operator decision and is not part
@@ -326,16 +329,25 @@ and only costs a Telegram tap on money that is being parked, not invested.
 | account mode × market | `kis_live` × `equity_us` **only** |
 | mode | `expanded` only. `off` never reaches the branch. |
 | gates lifted | marketability (buy side) **and** the per-order cap |
-| replacement boundary | cumulative parking exposure ≤ **USD 10,000**, buy side |
+| replacement boundary | cumulative parking exposure ≤ **USD 10,000**, buy side, where exposure = broker balance **+** same-day auto-approved parking buys (see §8.3) |
 
 Neither constant is a settings key, an environment variable, or a
 `config/trading_policy.yaml` entry — §163차 adds **no** policy key, which
 `tests/schemas/test_trading_policy_schema.py` re-proves against the frozen
 auto-approve keyset. There is no setter and no loader. Widening the allowlist
-or raising the cap is an operator PR editing that one module, and a runtime
-session cannot do either. `test_allowlist_module_reads_no_settings_env_db_or_policy`
-asserts the module's whole import surface (stdlib + `app.core.symbol`) and that
-its code references no settings, environment, file or policy identifier.
+or raising the cap is an operator PR editing that one module.
+
+🔴 **Guard strength, stated honestly: accidental prevention + static detection,
+not structural impossibility** (the BL-4 / NHPLUG framing).
+`test_allowlist_module_reads_no_settings_env_db_or_policy` asserts the module's
+import surface (stdlib + `app.core.symbol`) and rejects direct references to
+settings, `os`/`getenv`/`environ`, `open`, the policy loader and the DB session
+factory, and it catches the plain `importlib` / `getattr` spellings. It does
+**not** defeat a determined obfuscation — a string-assembled `__import__`
+passes it — and it is deliberately not hardened further, because enumerating
+spellings is a losing game. What it buys is that re-introducing configurability
+*the obvious way* turns red in CI. The real boundary is that this file is
+operator-PR-only, like the policy document.
 
 ### 8.2 Why `kis_live` / `equity_us` only
 
@@ -349,20 +361,46 @@ wrong-account cap, which is worse than no exemption. Toss parking orders keep
 the ordinary gates. A KR- or crypto-market proposal carrying the same four
 characters is not a parking ticker and gets nothing.
 
-### 8.3 The measurement, and why a session cannot forge it
+### 8.3 The measurement — two halves, both load-bearing
 
-`app/services/order_proposals/parking_exposure.py` sums `ovrs_stck_evlu_amt`
-over the allowlisted rows of one fresh KIS overseas balance
-(`currency_code="USD"`, so no FX conversion enters the comparison — the US
-per-order and daily caps are USD too). That is the same client and balance
-surface `order_validation._get_holdings_for_order` already uses for the
-avg-cost loss guard: no new credential, host or account.
+`app/services/order_proposals/parking_exposure.py` produces the exposure
+figure. It is **not** the broker balance alone.
 
-A proposal contributes exactly **one** input to the whole §163차 path — the
-symbol — and that same symbol is what the order is submitted against, so
-claiming `SGOV` to obtain the exemption submits a real `SGOV` order. There is
-no proposer-supplied notional, position, valuation or exposure field anywhere
-in the computation.
+**Half 1 — broker balance.** Sums `ovrs_stck_evlu_amt` over the allowlisted
+rows of one fresh KIS overseas balance (`currency_code="USD"`, so no FX
+conversion enters the comparison — the US per-order and daily caps are USD
+too). Same client and balance surface `order_validation._get_holdings_for_order`
+already uses for the avg-cost loss guard: no new credential, host or account.
+A row that *declares* a currency other than USD fails closed.
+
+**🔴 Half 2 — same-day auto-approved parking buys.**
+`KISAccount._filter_nonzero_holdings` keeps only rows with
+`ovrs_cblc_qty > 0`, so an order that was auto-approved and **sent but has not
+filled** has no balance row at all. Measured from the balance alone, two
+separate USD 10,000 SGOV proposals both see zero exposure and both clear —
+USD 20,000 against a USD 10,000 cap. `OrderProposalsService
+.auto_approved_parking_notional` closes that window, reusing the KST-day
+window, advisory lock and row filter of the already-vetted
+`auto_approved_daily_notional`. It counts parking **buys** only (a sell reduces
+exposure) and uses the lenient exposure normalizer, so a parking buy
+auto-approved under the *ordinary* gates — a small resting SGOV rung that never
+touched the exemption — still counts, because it creates the same real
+exposure.
+
+**Double counting is deliberate.** Once a parking buy fills it is in the
+balance *and* still inside the same-day durable window, so it counts twice
+until the KST day rolls over. De-duplicating would mean matching fills back to
+the orders that produced them, and an error in *that* matching restores the
+under-count this exists to prevent. Over-counting only tightens the cap (it can
+refuse an auto-approval that would have been allowed — a Telegram tap).
+Under-counting submits money that was never authorized.
+
+**Why a session cannot forge it.** A proposal contributes exactly **one** input
+to the whole §163차 path — the symbol — and that same symbol is what the order
+is submitted against, so claiming `SGOV` to obtain the exemption submits a real
+`SGOV` order. There is no proposer-supplied notional, position, valuation or
+exposure field anywhere in the computation; the durable half reads the same
+vetted per-rung cap measure the daily circuit breaker reads.
 
 Metering uses `max(limit_price, current_price) × quantity`, never the possibly
 discounted limit: a parking buy is *allowed* to be marketable, so the limit
@@ -382,6 +420,10 @@ Every one of these rejects the auto-approval and produces a human card:
 | an allowlisted row has no evaluation amount | `… / evaluation_amount_missing` |
 | the amount is unparseable or non-finite | `… / evaluation_amount_invalid` |
 | the amount is negative | `… / evaluation_amount_negative` |
+| a row declares a currency that is not USD | `… / currency_not_usd` |
+| no durable reader was supplied (balance-only is the broken measure) | `… / durable_reader_missing` |
+| the durable read raised or timed out | `… / durable_read_failed` |
+| the durable read returned a missing/unparseable/negative value | `… / durable_notional_invalid` |
 | projected exposure > USD 10,000 | `parking_cap_exceeded` |
 
 `parking_exposure` defaults to `None` on the classifier, and `None` is the
@@ -435,14 +477,25 @@ Proven unchanged by test, for parking rungs as for every other:
 
 ### 8.7 Known limits — read these before trusting the cap
 
-* 🔴 **An allowlisted position the broker does not return is counted as zero.**
-  "Not held" and "not in this response" are indistinguishable, and it is the
-  one direction in which the measurement can *understate* exposure. What bounds
-  it is the daily cap, which §163차 does not exempt.
-* 🔴 **The exposure read and the submit are not atomic.** The balance is read
-  once per dispatch, before revalidation; a fill landing between the read and
-  the submit is not reflected. Same TOCTOU shape as the daily-notional
-  accumulator that ships today.
+* 🔴 **The durable half is scoped to the current KST day.** A parking buy
+  auto-approved on an *earlier* day that is still unfilled and still absent
+  from the balance is not counted. US day orders do not survive the session
+  (ROB-671), which is what makes the same-day window the right one — but it is
+  a window, not a proof. This is the sharpest remaining edge of the cap.
+* 🔴 **An allowlisted position the broker does not return, and that is not in
+  today's durable record, is counted as zero.** "Not held" and "not in this
+  response" are indistinguishable. The durable half removes the large, routine
+  case of this (an accepted-but-unfilled order placed today); what remains is
+  the cross-day case above and any genuine broker omission.
+* 🔴 **The measurement and the submit are not atomic.** Both halves are read
+  once per dispatch, before revalidation; a fill or a concurrent dispatch on
+  another process landing between the read and the submit is not reflected.
+  The durable read takes the same per-account/day advisory lock as the daily
+  circuit breaker, which serializes concurrent dispatches for the same account
+  inside a transaction, but it is the same TOCTOU shape as the daily-notional
+  accumulator that ships today — not a distributed guarantee.
+* **Double counting until the KST day rolls over** is deliberate and tightens
+  the cap; see §8.3 for why that direction was chosen.
 * 🔴 **A parking buy can fill before the veto card is visible.** That is what
   "marketable" means and it is the accepted cost of the release. §40차 safety
   invariant ① (the veto button is honest) holds only post-hoc for this path,
@@ -452,3 +505,12 @@ Proven unchanged by test, for parking rungs as for every other:
   current price …`) and the rung fails `preview_guard_failed`. In practice the
   §163차 buy release therefore admits the at-market case (`limit == current`),
   not an above-market chase.
+* 🔴 **The USD row-currency guard is a guard, not a verified fact.** The
+  request pins `TR_CRCY_CD=USD`; if a row *declares* a different currency the
+  sum fails closed. Whether KIS actually emits a per-row currency key on an
+  overseas balance is **unverified here** — this repo holds no captured sample
+  proving it either way — so the guard is deliberately inert when no row
+  declares one, rather than failing closed on normal traffic.
+* Parking **sells** are also per-order-cap exempt; the cumulative cap is
+  buy-side per the operator decision (a sell reduces exposure), so a parking
+  sell is bounded by the unchanged daily cap.

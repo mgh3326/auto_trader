@@ -107,6 +107,11 @@ def _flat() -> ParkingExposure:
     return ParkingExposure.observed(Decimal("0"))
 
 
+async def _no_pending() -> Decimal:
+    """No same-day auto-approved parking buys yet."""
+    return Decimal("0")
+
+
 # --------------------------------------------------------------------------
 # 1. the allowlist is closed and cannot be widened at runtime
 # --------------------------------------------------------------------------
@@ -127,10 +132,15 @@ def test_allowlist_containers_are_immutable_frozensets():
 
 
 def test_allowlist_module_reads_no_settings_env_db_or_policy():
-    """A runtime session widens the allowlist only if something feeds it.
+    """The allowlist is not fed by anything configurable, as written.
 
-    Nothing does: the module's entire import surface is stdlib plus the pure
-    symbol helper, and it contains no environment or settings access at all.
+    🔴 Scope of this guard, stated honestly: **accidental prevention + static
+    detection, not structural impossibility.** It asserts the module's import
+    surface and rejects the obvious spellings of settings/env/file/DB access,
+    so re-introducing configurability the ordinary way turns red in CI. A
+    determined obfuscation (a string-assembled ``__import__``) defeats it, and
+    enumerating spellings is a losing game, so this is deliberately not
+    hardened further. The real boundary is that this file is operator-PR-only.
     """
     source = Path(inspect.getfile(parking_allowlist)).read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -150,7 +160,8 @@ def test_allowlist_module_reads_no_settings_env_db_or_policy():
     }
 
     # Identifiers, not prose: the docstring is allowed to say "settings", the
-    # code is not allowed to read them.
+    # code is not allowed to read them. See the docstring above for what this
+    # does and does not prove.
     referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }
@@ -619,6 +630,10 @@ def test_empty_balance_is_zero_exposure():
         (["SGOV"], "row_not_a_mapping"),
         ([{"ovrs_stck_evlu_amt": "10"}], "symbol_unreadable"),
         ([{"ovrs_pdno": 1234, "ovrs_stck_evlu_amt": "10"}], "symbol_unreadable"),
+        # Unreadable != "not parking": a row we cannot normalize fails closed
+        # rather than being silently skipped and understating exposure.
+        ([{"ovrs_pdno": "\u0405GOV", "ovrs_stck_evlu_amt": "10"}], "symbol_unreadable"),
+        ([{"ovrs_pdno": "   ", "ovrs_stck_evlu_amt": "10"}], "symbol_unreadable"),
         ([{"ovrs_pdno": "SGOV"}], "evaluation_amount_missing"),
         (
             [{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": None}],
@@ -668,6 +683,7 @@ async def test_load_exposure_makes_no_broker_call_for_a_non_parking_group():
         market="equity_us",
         symbol="SPY",
         fetch_us_holdings=_fetch,
+        durable_notional_fn=_no_pending,
     )
 
     assert called is False
@@ -685,6 +701,7 @@ async def test_load_exposure_fails_closed_when_the_broker_read_raises():
         market="equity_us",
         symbol="SGOV",
         fetch_us_holdings=_fetch,
+        durable_notional_fn=_no_pending,
     )
 
     assert exposure.available is False
@@ -701,6 +718,7 @@ async def test_load_exposure_reads_the_broker_balance_for_a_parking_group():
         market="equity_us",
         symbol="SGOV",
         fetch_us_holdings=_fetch,
+        durable_notional_fn=_no_pending,
     )
 
     assert exposure.available is True
@@ -710,3 +728,265 @@ async def test_load_exposure_reads_the_broker_balance_for_a_parking_group():
 def test_exposure_side_rejects_non_ascii_lookalike_rows():
     assert canonical_exposure_symbol("ſGOV") is None
     assert canonical_exposure_symbol("ЅGOV") is None
+
+
+# --------------------------------------------------------------------------
+# 8. §163차 재작업 1 — the durable half of the measurement
+#
+# The balance alone is NOT a cumulative boundary: KIS drops zero-quantity rows
+# (``KISAccount._filter_nonzero_holdings``), so an accepted-but-unfilled
+# parking buy is invisible to it and the next dispatch re-meters from zero.
+# --------------------------------------------------------------------------
+
+
+def test_kis_balance_reader_drops_zero_quantity_rows():
+    """The premise of the whole durable half, asserted against real code.
+
+    If this ever stops being true the durable reader is merely redundant, not
+    load-bearing — but while it IS true, a balance-only cap is broken.
+    """
+    from app.services.brokers.kis.account import AccountClient
+
+    rows = [
+        {"ovrs_pdno": "SGOV", "ovrs_cblc_qty": "0"},  # submitted, not filled
+        {"ovrs_pdno": "BIL", "ovrs_cblc_qty": "5"},
+    ]
+
+    kept = AccountClient._filter_nonzero_holdings(
+        AccountClient.__new__(AccountClient), rows, is_overseas=True
+    )
+
+    assert [row["ovrs_pdno"] for row in kept] == ["BIL"]
+
+
+@pytest.mark.asyncio
+async def test_pending_approved_buys_are_added_to_held_exposure():
+    async def _fetch():
+        return [{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "3000"}]
+
+    async def _pending():
+        return Decimal("2500")
+
+    exposure = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_fetch,
+        durable_notional_fn=_pending,
+    )
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("5500")
+
+
+@pytest.mark.asyncio
+async def test_unfilled_second_proposal_is_refused_by_the_durable_half():
+    """🔴 The verifier's reproduction, as a standing regression.
+
+    Two separate single-rung USD 10,000 SGOV proposals on the same account.
+    The first is auto-approved and submitted but has not filled, so it leaves
+    NO balance row. Measured from the balance alone the second one sees zero
+    exposure and clears — USD 20,000 of automation against a USD 10,000 cap.
+    With the durable half it is refused.
+    """
+
+    async def _flat_balance():
+        return []  # nothing filled yet -> no rows at all
+
+    # First proposal: nothing approved yet today.
+    first = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_flat_balance,
+        durable_notional_fn=_no_pending,
+    )
+    first_decision = _decide(
+        rung=_rung(limit_price=Decimal("100"), quantity=Decimal("100")),
+        exposure=first,
+    )
+    assert first_decision.eligible is True
+    assert first_decision.details["parking_exposure_after"] == "10000"
+
+    # Second proposal, same account, same day. The first is submitted but
+    # unfilled, so the balance is still empty; the durable record is not.
+    async def _pending_10k():
+        return Decimal("10000")
+
+    second = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_flat_balance,
+        durable_notional_fn=_pending_10k,
+    )
+    second_decision = _decide(
+        rung=_rung(limit_price=Decimal("100"), quantity=Decimal("100")),
+        exposure=second,
+    )
+
+    assert second.exposure == Decimal("10000")
+    assert second_decision.eligible is False
+    assert second_decision.reason == "parking_cap_exceeded"
+    assert second_decision.details["parking_exposure_before"] == "10000"
+    assert second_decision.details["parking_exposure_after"] == "20000"
+
+
+@pytest.mark.asyncio
+async def test_durable_reader_is_mandatory_for_a_parking_group():
+    """Balance-only is the broken measure — its absence must not degrade to it."""
+
+    async def _fetch():  # pragma: no cover - must never run
+        raise AssertionError("balance must not be read without a durable reader")
+
+    exposure = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_fetch,
+    )
+
+    assert exposure.available is False
+    assert exposure.unavailable_reason == "durable_reader_missing"
+
+
+@pytest.mark.asyncio
+async def test_durable_read_failure_fails_closed():
+    async def _fetch():
+        return []
+
+    async def _raises():
+        raise TimeoutError("db timeout")
+
+    exposure = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_fetch,
+        durable_notional_fn=_raises,
+    )
+
+    assert exposure.available is False
+    assert exposure.unavailable_reason == "durable_read_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value", [None, "n/a", Decimal("-1"), Decimal("NaN"), object()]
+)
+async def test_unusable_durable_value_fails_closed(value):
+    async def _fetch():
+        return []
+
+    async def _pending():
+        return value
+
+    exposure = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_fetch,
+        durable_notional_fn=_pending,
+    )
+
+    assert exposure.available is False
+    assert exposure.unavailable_reason == "durable_notional_invalid"
+
+
+@pytest.mark.asyncio
+async def test_durable_failure_reaches_the_classifier_as_a_rejection():
+    """End to end: an unreadable durable half produces a human card."""
+
+    async def _fetch():
+        return []
+
+    async def _raises():
+        raise RuntimeError("boom")
+
+    exposure = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_fetch,
+        durable_notional_fn=_raises,
+    )
+    decision = _decide(exposure=exposure)
+
+    assert decision.eligible is False
+    assert decision.reason == "parking_exposure_unavailable"
+    assert decision.details["parking_exposure_reason"] == "durable_read_failed"
+
+
+def test_durable_side_counts_parking_buys_approved_under_ordinary_gates():
+    """A small resting SGOV buy never used the exemption but is real exposure.
+
+    The durable filter is the lenient exposure predicate, not the strict
+    eligibility one, so a `sgov`-spelled proposal that was auto-approved under
+    the ordinary caps still counts against the parking cap.
+    """
+    from app.services.order_proposals.parking_allowlist import (
+        is_parking_exposure_symbol,
+    )
+
+    assert is_parking_exposure_symbol(" sgov ") is True
+    assert is_parking_exposure_symbol("BIL") is True
+    assert is_parking_exposure_symbol("SGOVX") is False
+    assert is_parking_exposure_symbol("SPY") is False
+    # ...while the *eligibility* side stays strict on the same input.
+    assert canonical_eligibility_symbol(" sgov ") is None
+
+
+# --------------------------------------------------------------------------
+# 9. SHOULD-1 — currency
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["tr_crcy_cd", "crcy_cd", "currency_code", "curr_cd"])
+def test_non_usd_row_fails_closed(field):
+    """The caps are USD; summing a KRW amount into them would be a category error."""
+    exposure = sum_parking_exposure(
+        [{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "1", field: "KRW"}]
+    )
+
+    assert exposure.available is False
+    assert exposure.unavailable_reason == "currency_not_usd"
+
+
+def test_non_string_declared_currency_fails_closed():
+    exposure = sum_parking_exposure(
+        [{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "1", "crcy_cd": 840}]
+    )
+
+    assert exposure.available is False
+    assert exposure.unavailable_reason == "currency_not_usd"
+
+
+@pytest.mark.parametrize("declared", ["USD", " usd ", "Usd"])
+def test_declared_usd_row_is_summed(declared):
+    exposure = sum_parking_exposure(
+        [{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "7", "tr_crcy_cd": declared}]
+    )
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("7")
+
+
+def test_row_declaring_no_currency_is_summed():
+    """The request pins TR_CRCY_CD=USD; an absent optional field is not an anomaly."""
+    exposure = sum_parking_exposure([{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "7"}])
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("7")
+
+
+def test_non_usd_currency_on_a_non_parking_row_is_ignored():
+    """A KRW row for some other symbol is none of this cap's business."""
+    exposure = sum_parking_exposure(
+        [
+            {"ovrs_pdno": "SPY", "ovrs_stck_evlu_amt": "999", "crcy_cd": "KRW"},
+            {"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "5"},
+        ]
+    )
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("5")

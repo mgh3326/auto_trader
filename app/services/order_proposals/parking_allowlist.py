@@ -11,8 +11,10 @@ back from the broker, two §40차/§156차 gates are lifted:
 2. **the per-order cap** -- §106차 defined ``per_order_cap`` as *the maximum
    loss boundary of one automation error*. §163차 does not delete that
    boundary; it **replaces** it for parking with a cumulative one:
-   ``PARKING_CUMULATIVE_CAP_USD``, measured against broker-reported parking
-   exposure, on the buy side.
+   ``PARKING_CUMULATIVE_CAP_USD``, on the buy side, measured against the
+   broker balance **plus** the durable same-day record of already-auto-approved
+   parking buys (``parking_exposure``) -- the balance alone cannot see an
+   accepted-but-unfilled order and would re-meter the next proposal from zero.
 
 Nothing else is lifted. The daily cap, the loss-cut and exit-intent gates, the
 ``policy_deviation`` tag scan, the veto-capable account/market allowlist, the
@@ -20,12 +22,23 @@ Toss auto-submission freeze, the sell-side break-even band and round-trip-cost
 profit proof, and the mandatory veto thesis all apply to a parking rung exactly
 as they apply to every other rung. ``off`` mode is untouched entirely.
 
-This module is deliberately pure -- stdlib plus ``app.core.symbol`` -- and
-reads no settings, environment variable, database, policy document or broker.
-Every constant below is a module-level ``frozenset``/``Decimal`` literal: there
-is no setter, no loader, and no configuration key, so a runtime session cannot
-widen the allowlist or raise the cap. Changing either is an operator PR that
-edits this file.
+This module is deliberately pure -- stdlib plus ``app.core.symbol`` -- and as
+written reads no settings, environment variable, database, policy document or
+broker. Every constant below is a module-level ``frozenset``/``Decimal``
+literal: there is no setter, no loader, and no configuration key, so a runtime
+session cannot widen the allowlist or raise the cap. Changing either is an
+operator PR that edits this file.
+
+🔴 **Guarantee strength: accidental prevention + static detection, not
+structural impossibility** (the BL-4 / NHPLUG framing). The accompanying AST
+test asserts the import surface and rejects direct references to ``settings``,
+``os``/``getenv``/``environ``, ``open``, the policy loader and the DB session
+factory, and it catches the plain ``importlib``/``getattr`` spellings. It does
+**not** defeat a determined obfuscation -- string-assembled ``__import__``
+defeats it, and enumerating spellings is a losing game. What the guard actually
+buys is that re-introducing configurability *the obvious way* turns red in CI.
+The real boundary is that this file is operator-PR-only, like the policy
+document.
 
 Two deliberately asymmetric symbol rules live here, and the asymmetry is the
 safety property -- see ``canonical_eligibility_symbol`` (strict; over-strictness
@@ -79,6 +92,14 @@ PARKING_EXPOSURE_UNAVAILABLE_REASONS: frozenset[str] = frozenset(
         "evaluation_amount_missing",
         "evaluation_amount_invalid",
         "evaluation_amount_negative",
+        "currency_not_usd",
+        # §163차 재작업 1 — the durable half. Its absence or unreadability is
+        # not a degraded measurement, it is a broken cap: without it an
+        # accepted-but-unfilled parking buy is invisible and the next proposal
+        # re-meters from zero.
+        "durable_reader_missing",
+        "durable_read_failed",
+        "durable_notional_invalid",
     }
 )
 
@@ -140,6 +161,19 @@ def canonical_exposure_symbol(value: Any) -> str | None:
     return to_db_symbol(stripped.upper())
 
 
+def is_parking_exposure_symbol(value: Any) -> bool:
+    """Lenient membership for anything that CONTRIBUTES to measured exposure.
+
+    Used by both halves of the §163차 measurement -- broker balance rows and
+    the durable record of already-auto-approved parking buys -- so the two
+    cannot disagree about what counts. Biased toward inclusion for the reason
+    given on ``canonical_exposure_symbol``: counting one thing too many can
+    only reject a buy, counting one too few lets a buy through.
+    """
+    canonical = canonical_exposure_symbol(value)
+    return canonical is not None and canonical in PARKING_ALLOWLIST_SYMBOLS
+
+
 def is_parking_allowlisted(*, symbol: Any, account_mode: Any, market: Any) -> bool:
     """Exact-element membership. Never a prefix, suffix or substring test.
 
@@ -198,4 +232,5 @@ __all__ = [
     "canonical_eligibility_symbol",
     "canonical_exposure_symbol",
     "is_parking_allowlisted",
+    "is_parking_exposure_symbol",
 ]

@@ -68,8 +68,11 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     (this is the only marketable-*buy* release that exists) and the per-order
     cap. §106차's "maximum loss of one automation error" boundary is not
     deleted for them, it is replaced -- by ``PARKING_CUMULATIVE_CAP_USD``
-    measured against the broker's own reported parking exposure, checked on
-    every parking buy and failing closed whenever that exposure cannot be read.
+    measured against the account's cumulative parking exposure -- the broker
+    balance PLUS the durable same-day record of already-auto-approved parking
+    buys, because the balance alone cannot see an accepted-but-unfilled order.
+    Checked on every parking buy, failing closed whenever either half of that
+    exposure cannot be read.
 
     Nothing else moves. The daily cap, loss-cut/exit intent, the
     ``policy_deviation`` tag scan, the veto-capable account/market allowlist,
@@ -603,10 +606,12 @@ def evaluate_auto_approve_eligibility(
 ) -> AutoApproveDecision:
     """Classify a rung using the fresh submit-time preview, failing closed.
 
-    ``parking_exposure`` is the §163차 broker-observed cumulative market value
-    of the parking allowlist on this account. It defaults to ``None``, which is
-    the fail-closed value: a caller that does not supply it cannot obtain the
-    parking exemption, and every non-parking rung is unaffected either way.
+    ``parking_exposure`` is the §163차 cumulative parking exposure on this
+    account: broker-held market value plus the durable same-day record of
+    already-auto-approved parking buys (see ``parking_exposure``). It defaults
+    to ``None``, which is the fail-closed value: a caller that does not supply
+    it cannot obtain the parking exemption, and every non-parking rung is
+    unaffected either way.
     """
 
     base = {"policy_version": limits.policy_version}

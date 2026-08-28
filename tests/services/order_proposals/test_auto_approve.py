@@ -1730,6 +1730,113 @@ async def test_daily_notional_uses_auto_approval_time_not_create_time(db_session
 
 
 @pytest.mark.asyncio
+async def test_parking_notional_counts_only_same_day_parking_buys(db_session):
+    """§163차 재작업 1 — the durable half of the cumulative parking cap.
+
+    The balance cannot see an accepted-but-unfilled parking buy (KIS drops
+    zero-quantity rows), so this durable sum is what stops a second proposal
+    from re-metering the same money from zero. It must count parking BUYS on
+    this account and market today, and nothing else.
+    """
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    account_id = f"parking-{uuid.uuid4()}"
+
+    async def _approved(*, symbol, side, price, approved_at=None, market="equity_us"):
+        await service.create_proposal(
+            symbol=symbol,
+            market=market,
+            account_mode="kis_live",
+            broker_account_id=account_id,
+            side=side,
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, side, Decimal("10"), price, None)],
+            source_asof={
+                "auto_approved": {
+                    "policy_version": "test-policy",
+                    "approved_at": (approved_at or now).isoformat(),
+                    "eligibility": [],
+                    "outcomes": ["submitted_resting"],
+                }
+            },
+        )
+
+    await _approved(symbol="SGOV", side="buy", price=Decimal("100"))  # 1000 ✓
+    # Lenient exposure matching: approved under the ordinary gates, spelled
+    # loosely, but it is real parking exposure all the same.
+    await _approved(symbol=" sgov ", side="buy", price=Decimal("50"))  # 500 ✓
+    await _approved(symbol="BIL", side="buy", price=Decimal("20"))  # 200 ✓
+    await _approved(symbol="SGOV", side="sell", price=Decimal("999"))  # sell ✗
+    await _approved(symbol="SGOVX", side="buy", price=Decimal("999"))  # other ✗
+    await _approved(symbol="SPY", side="buy", price=Decimal("999"))  # other ✗
+    await _approved(
+        symbol="SGOV",
+        side="buy",
+        price=Decimal("999"),
+        approved_at=now - timedelta(days=1),
+    )  # yesterday ✗
+    await _approved(
+        symbol="SGOV", side="buy", price=Decimal("999"), market="equity_kr"
+    )  # other market ✗
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_parking_notional(probe, now=now) == Decimal(
+        "1700"
+    )
+
+
+@pytest.mark.asyncio
+async def test_parking_notional_is_scoped_to_the_same_broker_account(db_session):
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    other_account = f"parking-other-{uuid.uuid4()}"
+    await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        broker_account_id=other_account,
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("100"), None)],
+        source_asof={
+            "auto_approved": {
+                "policy_version": "test-policy",
+                "approved_at": now.isoformat(),
+                "eligibility": [],
+                "outcomes": ["submitted_resting"],
+            }
+        },
+    )
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        broker_account_id=f"parking-mine-{uuid.uuid4()}",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_parking_notional(probe, now=now) == Decimal("0")
+
+
+@pytest.mark.asyncio
 async def test_daily_notional_reuses_durable_execution_price_cap_observation(
     db_session,
 ):

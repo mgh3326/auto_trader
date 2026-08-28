@@ -60,6 +60,9 @@ from app.services.order_proposals.errors import (
     OrderProposalUnsupportedTargetAction,
     OrderProposalVoidNotAuthorized,
 )
+from app.services.order_proposals.parking_allowlist import (
+    is_parking_exposure_symbol,
+)
 from app.services.order_proposals.payload import (
     ProposalRungSpec,
     compute_proposal_payload_hash,
@@ -3541,6 +3544,37 @@ class OrderProposalsService:
             broker_account_id=group.broker_account_id,
             start=start,
             end=end,
+        )
+
+    async def auto_approved_parking_notional(
+        self, group: OrderProposal, *, now: datetime
+    ) -> Decimal:
+        """§163차 — this account's KST-day auto-approved parking BUY notional.
+
+        The §163차 cumulative cap replaces the per-order cap, so it must not be
+        measurable from the broker balance alone: an accepted-but-unfilled
+        parking buy has no balance row (``ovrs_cblc_qty > 0`` filter), so a
+        balance-only cap re-meters the next proposal from zero. This is the
+        durable half, and it deliberately reuses the exact window, lock key and
+        row filter of ``auto_approved_daily_notional`` -- the already-vetted
+        precedent for "what has automation committed to today".
+        """
+        self._require_timezone_aware(now)
+        local = now.astimezone(KST)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        account_key = group.broker_account_id or "default"
+        await self._repo.acquire_auto_approve_lock(
+            f"order_proposals:auto_approve:{group.account_mode}:{group.market}:"
+            f"{account_key}:{start.date()}"
+        )
+        return await self._repo.auto_approved_parking_notional_between(
+            account_mode=group.account_mode,
+            market=group.market,
+            broker_account_id=group.broker_account_id,
+            start=start,
+            end=end,
+            is_parking_symbol=is_parking_exposure_symbol,
         )
 
     async def acquire_auto_dispatch_lock(self, proposal_id: uuid.UUID) -> None:

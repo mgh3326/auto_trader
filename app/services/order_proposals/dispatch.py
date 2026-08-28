@@ -978,6 +978,13 @@ async def dispatch_proposal(
             # returns ``unavailable("not_requested")`` for every non-parking
             # group without touching the network, and any failure to read it
             # rejects the auto-approval rather than clearing the rung.
+            #
+            # 🔴 Two halves, both required. The broker balance cannot see an
+            # accepted-but-unfilled order (KIS drops zero-quantity rows), so a
+            # balance-only cap would re-meter the NEXT proposal from zero and
+            # approve the same amount twice. The durable reader supplies the
+            # same-day auto-approved parking buys that the balance is blind to.
+            parking_group = group
             parking_exposure = await load_parking_exposure(
                 account_mode=group.account_mode,
                 market=group.market,
@@ -985,6 +992,9 @@ async def dispatch_proposal(
                 # to "no parking exemption", never to an exception inside the
                 # auto-approve gate.
                 symbol=getattr(group, "symbol", None),
+                durable_notional_fn=lambda: service.auto_approved_parking_notional(
+                    parking_group, now=now
+                ),
             )
 
             async def eligibility_gate(**kwargs: Any) -> Any:
