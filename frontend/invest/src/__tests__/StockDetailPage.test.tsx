@@ -289,7 +289,7 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   renderPage();
 
   expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: /Invesco NASDAQ 100 ETF/ })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: /Invesco NASDAQ 100 ETF/ })).toBeInTheDocument();
   expect(screen.getByText("QQQM · US · NASDAQ")).toBeInTheDocument();
   expect(screen.getByText("$211.34")).toBeInTheDocument();
   expect(screen.getByText("+1.06%")).toBeInTheDocument();

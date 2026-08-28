@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { vi, test, expect, beforeEach } from "vitest";
 import { AccountPanelProvider, useAccountPanelContext } from "../desktop/AccountPanelProvider";
 import * as panelApi from "../api/accountPanel";
@@ -78,6 +79,7 @@ test("reload() is a no-op when not yet loaded", async () => {
 });
 
 test("reload() re-fetches with last params after load", async () => {
+  const user = userEvent.setup();
   const spy = vi
     .spyOn(panelApi, "fetchAccountPanel")
     .mockResolvedValue(MOCK_RESP);
@@ -95,13 +97,19 @@ test("reload() re-fetches with last params after load", async () => {
       <Controls />
     </AccountPanelProvider>,
   );
-  screen.getByText("load-kis-mock").click();
+  await user.click(screen.getByText("load-kis-mock"));
   await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    await spy.mock.results[0]!.value;
+  });
   expect(spy).toHaveBeenLastCalledWith(
     expect.objectContaining({ includePaper: true, paperSources: ["kis_mock"] }),
   );
-  screen.getByText("reload").click();
+  await user.click(screen.getByText("reload"));
   await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    await spy.mock.results[1]!.value;
+  });
   expect(spy).toHaveBeenLastCalledWith(
     expect.objectContaining({ includePaper: true, paperSources: ["kis_mock"] }),
   );
