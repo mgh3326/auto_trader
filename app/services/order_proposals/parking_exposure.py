@@ -65,10 +65,22 @@ Known residual (documented, not silently absorbed)
 --------------------------------------------------
 See docs/runbooks/order-proposal-auto-approve-expand.md §8.7. The load-bearing
 one: the durable half is scoped to the **current KST day**, matching the daily
-circuit breaker. A parking buy auto-approved on an earlier day that is still
-unfilled and still absent from the balance is not counted. US day orders do not
-survive the session (ROB-671), which is what makes the same-day window the
-right one here -- but it is a window, not a proof.
+circuit breaker. A parking buy auto-approved before that boundary and still
+unfilled and still absent from the balance is not counted.
+
+🔴 That boundary does NOT align with the US trading session, and an earlier
+version of this comment justified it with ROB-671 ("US day orders do not
+survive the session"). That justification is **withdrawn**: it does not
+describe what this window does. KST midnight is 15:00 UTC, while XNYS regular
+hours are 13:30-20:00 UTC (EDT) / 14:30-21:00 UTC (EST) -- so **KST midnight
+falls in the middle of the US session**, and a parking buy auto-approved at
+23:00 KST is excluded from this sum an hour later at 00:01 KST while the same
+XNYS session is still open and the order is still live.
+
+This is a deliberate choice to reuse the daily circuit breaker's already-vetted
+window, not a property the market calendar gives us. It is BL-39 (backlog, not
+fixed here). What contains it is the per-order cap, which bounds one automation
+error at ``PARKING_PER_ORDER_CAP_USD`` per order regardless.
 """
 
 from __future__ import annotations

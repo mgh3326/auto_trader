@@ -310,7 +310,7 @@ class OrderProposalRepository:
         applied in Python with the same lenient normalizer the broker rows use,
         so SQL-side and Python-side symbol normalization cannot drift, and so a
         parking buy that was auto-approved under the *ordinary* gates (a small
-        resting SGOV rung never touched the exemption) still counts -- it
+        resting SGOV rung that never needed the raised cap) still counts -- it
         creates exactly the same real exposure.
         """
         total = Decimal("0")

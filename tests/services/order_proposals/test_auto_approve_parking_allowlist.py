@@ -334,9 +334,9 @@ def test_allowlisted_marketable_buy_over_the_ordinary_cap_is_eligible():
 def test_single_parking_order_over_the_raised_cap_is_rejected():
     """🔴 재작업 2 — the per-order cap is RAISED, not removed.
 
-    This is the whole point of choosing a raise over an exemption: one
+    This is the whole point of choosing a raise over a removal: one
     automation error on a parking ticker stays bounded at USD 10,000 per
-    order. Under an exemption this order would have been unbounded.
+    order. Had the check been skipped, this order would have been unbounded.
     """
     decision = _decide(
         # 100.0001 x 100 = 10,000.01 — one cent over the raised cap.
@@ -613,7 +613,8 @@ def test_failed_preview_still_blocks_a_parking_rung():
 
 
 def test_parking_sell_still_needs_the_fee_netted_profit_proof():
-    """§163차 lifts marketability and the per-order cap, not the profit proof."""
+    """§163차 releases marketability and RAISES the per-order cap; the profit
+    proof is untouched, and the per-order check itself still runs."""
     decision = _decide(
         rung=_rung(side="sell"),
         preview={

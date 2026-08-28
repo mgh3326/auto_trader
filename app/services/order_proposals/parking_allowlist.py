@@ -3,12 +3,14 @@
 The operator authorized exactly two ultra-short US Treasury ETFs -- ``SGOV``
 and ``BIL`` -- as *cash parking* instruments. For those two tickers only, and
 only on the one account/market pair whose parking exposure this repo can read
-back from the broker, two §40차/§156차 gates are lifted:
+back from the broker, two §40차/§156차 gates change -- and 🔴 exactly one of
+them stops applying. The other keeps applying at a different value:
 
 1. **marketability** -- a parking buy may price at the market instead of
    resting below it (§156차 ② kept "매수 marketable 은 수동 유지"; §163차 makes
    these two tickers its only exception), and
-2. **the per-order cap value** -- 🔴 this is a **raise, not an exemption**.
+2. **the per-order cap value** -- 🔴 this is a **raise, not a removal**. The
+   check is never skipped for a parking rung.
    §106차 defined ``per_order_cap`` as *the maximum loss boundary of one
    automation error*, and that boundary keeps its shape here: the per-order
    check still runs on every parking rung, against
@@ -24,7 +26,8 @@ back from the broker, two §40차/§156차 gates are lifted:
    proposal from zero. The cumulative cap is the second line, never the only
    one.
 
-Nothing else is lifted. The daily cap, the loss-cut and exit-intent gates, the
+Nothing else changes, and the per-order cap above has not stopped applying --
+only its value moved. The daily cap, the loss-cut and exit-intent gates, the
 ``policy_deviation`` tag scan, the veto-capable account/market allowlist, the
 Toss auto-submission freeze, the sell-side break-even band and round-trip-cost
 profit proof, and the mandatory veto thesis all apply to a parking rung exactly
@@ -70,10 +73,18 @@ PARKING_ALLOWLIST_SYMBOLS: frozenset[str] = frozenset({"BIL", "SGOV"})
 # and get no parking treatment.
 #
 # It is also account-scoped, and that is the stricter of the two decisions.
-# The cumulative cap is only meaningful if this repo can read the *same
-# account's* parking exposure back from the broker. ``kis_live`` is the one
-# equity_us account mode for which it can (``fetch_my_us_stocks`` ->
-# ``ovrs_stck_evlu_amt``). ``toss_live`` equity_us is veto-capable in principle
+# The cumulative cap is only meaningful if parking exposure can be read back at
+# all, and ``kis_live`` is the one equity_us account mode for which it can
+# (``fetch_my_us_stocks`` -> ``ovrs_stck_evlu_amt``).
+#
+# 🔴 That is an account *label*, not a proven account identity. The scoping
+# comes from the proposal's ``account_mode``/``market``/``broker_account_id``
+# labels and from whatever credentials ``KISClient()`` resolves; nothing here
+# proves the balance read and the account the order reaches are the same
+# physical account. That gap is BL-37 (backlog, not fixed here), and what
+# contains it is the per-order cap above, which bounds one automation error at
+# ``PARKING_PER_ORDER_CAP_USD`` per order regardless of labelling. Do not read
+# this comment as a stronger guarantee than runbook §8.2 states. ``toss_live`` equity_us is veto-capable in principle
 # (behind ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED) but its parking exposure
 # would have to come from a different broker surface; measuring a KIS balance
 # to authorize a Toss order would be a wrong-account cap, which is worse than

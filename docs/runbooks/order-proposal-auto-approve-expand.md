@@ -528,11 +528,25 @@ Three of them are tracked as backlog and are deliberately **not** fixed here:
 
 BL-38 is not new to parking — the daily circuit breaker has the same shape.
 
-* 🔴 **BL-39 — the durable half is scoped to the current KST day.** A parking buy
-  auto-approved on an *earlier* day that is still unfilled and still absent
-  from the balance is not counted. US day orders do not survive the session
-  (ROB-671), which is what makes the same-day window the right one — but it is
-  a window, not a proof. This is the sharpest remaining edge of the cap.
+* 🔴 **BL-39 — the durable half is scoped to the current KST day, and that
+  boundary cuts through the US session.** A parking buy auto-approved before
+  the KST-day boundary that is still unfilled and still absent from the balance
+  is not counted.
+
+  An earlier version of this runbook justified the window with ROB-671 ("US day
+  orders do not survive the session"). 🔴 **That justification is withdrawn —
+  it does not describe what this window does.** KST midnight is 15:00 UTC,
+  while XNYS regular hours are 13:30–20:00 UTC (EDT) / 14:30–21:00 UTC (EST),
+  so KST midnight falls *in the middle of* the US session. Measured: a durable
+  USD 10,000 row recorded at 23:00 KST reads back as exactly 0 from
+  `auto_approved_parking_notional()` at 00:01 KST, while the same XNYS session
+  is still open (`allowed_now == True` at both instants) and the order is still
+  live.
+
+  The window is a deliberate reuse of the daily circuit breaker's already-vetted
+  KST-day scoping, **not** something the market calendar guarantees. This is
+  the sharpest remaining edge of the cumulative cap, and it is bounded per
+  order by §8.1.
 * 🔴 **An allowlisted position the broker does not return, and that is not in
   today's durable record, is counted as zero.** "Not held" and "not in this
   response" are indistinguishable. The durable half removes the large, routine
