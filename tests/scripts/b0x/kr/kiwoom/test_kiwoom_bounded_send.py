@@ -135,6 +135,7 @@ def test_durable_consumption_marker_blocks_reuse_after_process_state_reset(
     assert first["authorizes_send"] is True
 
     bounded_send._PROCESS_CONSUMED_SEAL_DIGESTS.clear()
+    kiwoom_coordination._BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS.clear()
     reused, second = _resolve(_factory(seal))
     assert reused is None
     assert second["authorizes_send"] is False
@@ -171,11 +172,12 @@ def test_factory_snapshots_seal_before_expiry_mutation(
 
     registry_path, _ = isolated_seal_runtime
     original = _seal(expires_at=dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1))
-    _write_registry(registry_path, [original.copy()])
+    future = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    _write_registry(registry_path, [original.copy(), future.copy()])
     factory = _factory(original)
 
     original.clear()
-    original.update(_seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5)))
+    original.update(future)
 
     owner, record = _resolve(factory)
     assert owner is None
