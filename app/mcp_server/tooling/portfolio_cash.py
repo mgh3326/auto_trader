@@ -27,6 +27,9 @@ from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
+from app.services.brokers.kis.overseas_cash import (
+    overseas_usd_cash_unavailable_reason,
+)
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
@@ -313,21 +316,55 @@ async def get_cash_balance_impl(
                     raw_orderable = extract_usd_orderable_from_row(usd_margin)
                     # ROB-596: 해외 주문가능금액(frcr_gnrl_ord_psbl_amt)도 이미 net 이므로
                     # 미체결 매수를 추가 차감하지 않는다 (KR 과 동일 double-count 방지).
-                    orderable = raw_orderable
-
-                    accounts.append(
-                        {
-                            "account": "kis_overseas",
-                            "account_name": "기본 계좌",
-                            "broker": "kis",
-                            "currency": "USD",
-                            "balance": balance,
-                            "orderable": orderable,
-                            "exchange_rate": None,
-                            "formatted": f"${balance:.2f} USD",
-                        }
+                    # TTTC2101R reports these as different fields.  Do not
+                    # promote a positive general-orderable amount to usable
+                    # cash when the reported balance would display as zero.
+                    unavailable_reason = overseas_usd_cash_unavailable_reason(
+                        balance=balance,
+                        orderable=raw_orderable,
                     )
-                    total_usd += balance
+                    if unavailable_reason is not None:
+                        accounts.append(
+                            {
+                                "account": "kis_overseas",
+                                "account_name": "기본 계좌",
+                                "broker": "kis",
+                                "currency": "USD",
+                                "balance": None,
+                                "orderable": None,
+                                "reported_balance": balance,
+                                "reported_orderable": raw_orderable,
+                                "balance_field": "frcr_dncl_amt1/frcr_dncl_amt_2",
+                                "orderable_field": "frcr_gnrl_ord_psbl_amt",
+                                "availability": "unavailable",
+                                "unavailable_reason": unavailable_reason,
+                                "exchange_rate": None,
+                                "formatted": "USD unavailable (KIS balance/orderable mismatch)",
+                            }
+                        )
+                        errors.append(
+                            {
+                                "source": "kis",
+                                "market": "us",
+                                "error": unavailable_reason,
+                                "degraded": True,
+                            }
+                        )
+                        unavailable_sources["kis_overseas"] = unavailable_reason
+                    else:
+                        accounts.append(
+                            {
+                                "account": "kis_overseas",
+                                "account_name": "기본 계좌",
+                                "broker": "kis",
+                                "currency": "USD",
+                                "balance": balance,
+                                "orderable": raw_orderable,
+                                "exchange_rate": None,
+                                "formatted": f"${balance:.2f} USD",
+                            }
+                        )
+                        total_usd += balance
                 except Exception as exc:
                     if strict_mode:
                         raise RuntimeError(
@@ -408,6 +445,20 @@ async def get_available_capital_impl(
     for acc in accounts:
         processed_acc = dict(acc)
         currency = acc.get("currency", "KRW")
+
+        # The KIS row declares exchange-rate provenance separately from the
+        # broker balance.  A usable FX rate must not make an unavailable cash
+        # amount look deployable, but it should no longer be represented as
+        # ``exchange_rate: null`` when conversion did succeed.
+        if currency == "USD" and "exchange_rate" in processed_acc:
+            processed_acc["exchange_rate"] = exchange_rate
+
+        if processed_acc.get("availability") == "unavailable":
+            processed_acc["orderable_included_in_total"] = False
+            processed_acc["krw_equivalent"] = None
+            processed_accounts.append(processed_acc)
+            continue
+
         orderable = float(acc.get("orderable", 0.0) or 0.0)
 
         if currency == "KRW":

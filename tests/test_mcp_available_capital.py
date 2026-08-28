@@ -43,6 +43,9 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
             "updated_at": datetime.now(UTC).isoformat(),
         }
 
+    async def mock_get_account_costs_setting():
+        return None
+
     def mock_now_kst():
         return datetime(2026, 4, 1, 9, 0, 0, tzinfo=UTC)
 
@@ -52,6 +55,9 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
     monkeypatch.setattr(portfolio_cash, "get_usd_krw_rate", mock_get_usd_krw_rate)
     monkeypatch.setattr(
         portfolio_cash, "get_manual_cash_setting", mock_get_manual_cash_setting
+    )
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
     )
     monkeypatch.setattr(portfolio_cash, "now_kst", mock_now_kst)
 
@@ -74,6 +80,75 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
     assert result["summary"]["as_of"] == "2026-04-01T09:00:00+00:00"
 
     assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_excludes_kis_usd_cash_orderable_mismatch(
+    monkeypatch,
+):
+    """A reported KIS general orderable is not aggregated without cash certainty."""
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        assert account == "kis_overseas"
+        return {
+            "accounts": [
+                {
+                    "account": "kis_overseas",
+                    "broker": "kis",
+                    "currency": "USD",
+                    "balance": None,
+                    "orderable": None,
+                    "reported_balance": 0.0,
+                    "reported_orderable": 1282.75,
+                    "availability": "unavailable",
+                    "unavailable_reason": "kis_overseas_usd_balance_orderable_mismatch",
+                    "exchange_rate": None,
+                }
+            ],
+            "summary": {
+                "total_krw": 0.0,
+                "total_usd": 0.0,
+                "unavailable_sources": {
+                    "kis_overseas": "kis_overseas_usd_balance_orderable_mismatch"
+                },
+            },
+            "errors": [
+                {
+                    "source": "kis",
+                    "market": "us",
+                    "error": "kis_overseas_usd_balance_orderable_mismatch",
+                    "degraded": True,
+                }
+            ],
+        }
+
+    async def mock_get_usd_krw_rate():
+        return 1382.0
+
+    async def mock_get_account_costs_setting():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(portfolio_cash, "get_usd_krw_rate", mock_get_usd_krw_rate)
+    monkeypatch.setattr(
+        portfolio_cash, "get_account_costs_setting", mock_get_account_costs_setting
+    )
+
+    result = await portfolio_cash.get_available_capital_impl(
+        account="kis_overseas", include_manual=False
+    )
+
+    account = result["accounts"][0]
+    assert account["exchange_rate"] == pytest.approx(1382.0)
+    assert account["krw_equivalent"] is None
+    assert account["orderable_included_in_total"] is False
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(0.0)
+    assert result["summary"]["unavailable_sources"] == {
+        "kis_overseas": "kis_overseas_usd_balance_orderable_mismatch"
+    }
 
 
 @pytest.mark.asyncio

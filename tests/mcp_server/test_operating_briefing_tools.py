@@ -138,7 +138,13 @@ async def test_get_operating_briefing_composes_all_sections(
                     ],
                 }
             ],
-            "errors": [],
+            "errors": [
+                {
+                    "source": "kis",
+                    "error": "kis_overseas_usd_balance_orderable_mismatch",
+                    "degraded": True,
+                }
+            ],
         }
 
     class FakePendingSnapshot:
@@ -194,12 +200,16 @@ async def test_get_operating_briefing_composes_all_sections(
             ],
         }
 
+    async def fake_account_costs():
+        return None
+
     monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
     monkeypatch.setattr(ob, "_recent_session_context", fake_session_context)
     monkeypatch.setattr(ob, "_recent_analysis_artifacts", fake_analysis_artifacts)
+    monkeypatch.setattr(ob, "get_account_costs_setting", fake_account_costs)
 
     result = await ob.get_operating_briefing_impl(
         market="kr",
@@ -219,6 +229,13 @@ async def test_get_operating_briefing_composes_all_sections(
     assert result["analysis_artifacts"]["artifacts"][0]["kind"] == "screening_ranking"
     assert result["staleness"]["analysis_artifacts"]["freshness_status"] == "db_read"
     assert result["staleness"]["pending_orders"]["freshness_status"] == "fresh"
+    assert result["staleness"]["holdings"]["errors"] == [
+        {
+            "source": "kis",
+            "error": "kis_overseas_usd_balance_orderable_mismatch",
+            "degraded": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio

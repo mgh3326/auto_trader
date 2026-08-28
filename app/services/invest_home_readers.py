@@ -30,6 +30,9 @@ from app.services.brokers.kis.account import (
 )
 from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.base import settings as kis_base_settings
+from app.services.brokers.kis.overseas_cash import (
+    overseas_usd_cash_unavailable_reason,
+)
 from app.services.brokers.upbit.client import (
     fetch_multiple_current_prices,
     fetch_my_coins,
@@ -270,7 +273,26 @@ class KISHomeReader:
                 except Exception as exc:
                     logger.warning("KIS overseas margin fallback failed: %s", exc)
 
-            if _is_missing_money(usd_balance) or _is_missing_money(usd_buying_power):
+            unavailable_reason = overseas_usd_cash_unavailable_reason(
+                balance=usd_balance,
+                orderable=usd_buying_power,
+            )
+            if unavailable_reason is not None:
+                # Do not select unsafe TTTC2101R cash/orderable fields as cash.
+                # The warning propagates through the portfolio snapshot into
+                # get_operating_briefing.staleness.holdings.errors.
+                usd_balance = None
+                usd_buying_power = None
+                message = (
+                    "USD 예수금/주문가능 금액을 안전하게 확인할 수 없습니다("
+                    f"{unavailable_reason}): KIS cash/orderable 값이 모순되었거나 "
+                    "유효하지 않아 주문가능 현금을 사용할 수 없습니다."
+                )
+                if fx_warning is None:
+                    fx_warning = InvestHomeWarning(source="kis", message=message)
+                else:
+                    fx_warning.message += f" {message}"
+            elif _is_missing_money(usd_balance) or _is_missing_money(usd_buying_power):
                 if fx_warning is None:
                     fx_warning = InvestHomeWarning(
                         source="kis",

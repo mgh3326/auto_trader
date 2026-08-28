@@ -28,6 +28,10 @@ from app.mcp_server.tooling.shared import to_float as _to_float
 from app.services.brokers.kis import (
     KISClient,
 )
+from app.services.brokers.kis.overseas_cash import (
+    KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH,
+    KISOverseasUsdCashUnavailable,
+)
 from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
@@ -818,6 +822,14 @@ async def _live_kis_orderable(account_token: str) -> float:
     result = await get_cash_balance_impl(account=account_token, is_mock=False)
     for acc in result.get("accounts", []):
         if acc.get("account") == account_token:
+            if (
+                account_token == "kis_overseas"
+                and acc.get("unavailable_reason")
+                == KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH
+            ):
+                raise KISOverseasUsdCashUnavailable(
+                    KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH
+                )
             return float(acc.get("orderable") or 0.0)
     raise RuntimeError(f"{account_token} orderable not found in cash balance")
 
@@ -1473,6 +1485,15 @@ async def _check_balance_and_warn(
 
     try:
         balance = await _get_balance_for_order(market_type, is_mock=is_mock)
+    except KISOverseasUsdCashUnavailable as balance_exc:
+        message = (
+            "KIS overseas USD cash unavailable: reported balance/orderable "
+            "mismatch; refusing to submit without verified orderable cash."
+        )
+        error = order_error_fn(message)
+        error["orderable_cash_unavailable"] = True
+        error["unavailable_reason"] = balance_exc.reason
+        return None, error
     except Exception as balance_exc:
         error_detail = str(balance_exc) or balance_exc.__class__.__name__
         logger.error(
