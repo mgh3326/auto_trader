@@ -18,10 +18,14 @@ from scripts.b0x.kr.kiwoom_coordination import (
     make_grant_only_kiwoom_coordination_adapter,
     resolve_kiwoom_lane_entry,
 )
+from scripts.b0x.ledger import DEFAULT_OBSERVATION_DIR
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
+_REGISTRY_NOW = dt.datetime(2026, 8, 28, 5, 0, tzinfo=dt.UTC)
+_VALID_EXPIRY = _REGISTRY_NOW + dt.timedelta(hours=1)
+_EXPIRED_EXPIRY = _REGISTRY_NOW - dt.timedelta(seconds=1)
 
 
 @pytest.fixture
@@ -40,6 +44,7 @@ def isolated_seal_runtime(
     monkeypatch.setattr(
         kiwoom_coordination, "_BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS", set()
     )
+    monkeypatch.setattr(bounded_send, "_wall_clock_now", lambda: _REGISTRY_NOW)
     return registry_path, marker_root
 
 
@@ -79,6 +84,22 @@ def _write_registry(path: Path, seals: list[dict[str, str]]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _load_registry() -> tuple[
+    dict[str, bounded_send.BoundedSendSeal] | None,
+    str | None,
+]:
+    try:
+        return bounded_send._registered_seals(), None
+    except bounded_send.KiwoomBoundedSendSealRejected as exc:
+        return None, exc.code
+
+
+def _test_krx_close() -> dt.datetime:
+    bounds = bounded_send.regular_session_bounds("kr", _REGISTRY_NOW.date())
+    assert bounds is not None
+    return bounds[1]
+
+
 def _ports(entry):  # noqa: ANN001, ANN202 - exact production-shaped test seam
     return make_grant_only_kiwoom_coordination_adapter(entry).ports
 
@@ -98,13 +119,66 @@ def _resolve(factory):  # noqa: ANN001, ANN202 - test helper
     )
 
 
+def test_consumption_root_is_xdg_state_outside_b0x_observation_tree() -> None:
+    root = bounded_send.KIWOOM_BOUNDED_SEND_CONSUMPTION_ROOT
+    expected = (
+        Path.home() / ".local" / "state" / "auto-trader" / "b0x-kr-kiwoom-bounded-send"
+    )
+    source = Path(bounded_send.__file__).read_text(encoding="utf-8")
+
+    assert root == expected
+    assert not root.is_relative_to(DEFAULT_OBSERVATION_DIR)
+    assert "DEFAULT_OBSERVATION_DIR" not in source
+
+
+def test_registry_rejects_expiry_beyond_same_day_krx_close(
+    isolated_seal_runtime: tuple[Path, Path],
+) -> None:
+    registry_path, _ = isolated_seal_runtime
+    seal = _seal(expires_at=_test_krx_close() + dt.timedelta(minutes=1))
+    _write_registry(registry_path, [seal])
+
+    registered, error_code = _load_registry()
+
+    assert registered is None
+    assert error_code == bounded_send.KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("close_offset", "expected_registered"),
+    [
+        (-dt.timedelta(microseconds=1), True),
+        (dt.timedelta(0), True),
+        (dt.timedelta(microseconds=1), False),
+    ],
+    ids=("just-before-close", "at-close", "just-after-close"),
+)
+def test_registry_expiry_cap_honors_krx_close_boundary(
+    isolated_seal_runtime: tuple[Path, Path],
+    close_offset: dt.timedelta,
+    expected_registered: bool,
+) -> None:
+    registry_path, _ = isolated_seal_runtime
+    seal = _seal(expires_at=_test_krx_close() + close_offset)
+    _write_registry(registry_path, [seal])
+
+    registered, error_code = _load_registry()
+
+    assert (registered is not None) is expected_registered
+    assert error_code == (
+        None
+        if expected_registered
+        else bounded_send.KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE
+    )
+
+
 def test_process_one_shot_cannot_be_bypassed_by_removing_durable_marker(
     isolated_seal_runtime: tuple[Path, Path],
 ) -> None:
     """① Deleting durable evidence cannot revive a digest in this process."""
 
     registry_path, _ = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
 
     owner, first = _resolve(_factory(seal))
@@ -127,7 +201,7 @@ def test_durable_consumption_marker_blocks_reuse_after_process_state_reset(
     """② A new-process-shaped request still sees the durable latch."""
 
     registry_path, _ = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
 
     owner, first = _resolve(_factory(seal))
@@ -145,7 +219,7 @@ def test_consumed_digest_cannot_construct_a_second_private_owner(
     isolated_seal_runtime: tuple[Path, Path],
 ) -> None:
     registry_path, _ = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
     sealed = bounded_send.snapshot_bounded_send_seal(seal)
     bounded_send.consume_registered_bounded_send_seal(sealed)
@@ -171,8 +245,8 @@ def test_factory_snapshots_seal_before_expiry_mutation(
     """③ Mutating the caller's dict cannot extend the snapshotted authority."""
 
     registry_path, _ = isolated_seal_runtime
-    original = _seal(expires_at=dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1))
-    future = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    original = _seal(expires_at=_EXPIRED_EXPIRY)
+    future = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [original.copy(), future.copy()])
     factory = _factory(original)
 
@@ -213,7 +287,7 @@ def test_matching_but_unregistered_digest_is_rejected(
     """⑤ A correctly forged digest is not registration authority."""
 
     registry_path, marker_root = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [])
 
     owner, record = _resolve(_factory(seal))
@@ -227,7 +301,7 @@ def test_seal_physical_account_must_match_current_registry(
 ) -> None:
     registry_path, marker_root = isolated_seal_runtime
     entry = resolve_kiwoom_lane_entry()
-    expires_at = _expires_at(dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    expires_at = _expires_at(_VALID_EXPIRY)
     wrong_account = "kiwoom_mock:kr:credential_fingerprint=sha256:wrong:test"
     seal = {
         "lane_id": entry.lane_id,
@@ -265,7 +339,7 @@ def test_expiry_boundary_is_open_only_strictly_before_expiry(
     """⑥ The exact boundary is closed; the public factory has no clock input."""
 
     registry_path, _ = isolated_seal_runtime
-    expiry = dt.datetime(2030, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+    expiry = _VALID_EXPIRY
     seal = _seal(expires_at=expiry)
     _write_registry(registry_path, [seal])
     monkeypatch.setattr(bounded_send, "_wall_clock_now", lambda: expiry + clock_offset)
@@ -290,7 +364,7 @@ def test_marker_write_failure_is_fail_closed(
     """⑦ No durable evidence means no owner authorization."""
 
     registry_path, _ = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
 
     calls = 0
@@ -311,7 +385,7 @@ def test_seal_digest_is_bound_into_the_owner_construction_proof(
     isolated_seal_runtime: tuple[Path, Path],
 ) -> None:
     registry_path, _ = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
     owner = _factory(seal)()
     owner._bounded_send_seal_digest = "0" * 64  # type: ignore[attr-defined]
@@ -324,8 +398,8 @@ def test_seal_digest_is_bound_into_the_owner_construction_proof(
 def test_consumption_marker_is_exact_durable_evidence_and_latch(
     isolated_seal_runtime: tuple[Path, Path],
 ) -> None:
-    registry_path, _ = isolated_seal_runtime
-    seal = _seal(expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5))
+    registry_path, marker_root = isolated_seal_runtime
+    seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
 
     owner, record = _resolve(_factory(seal))
@@ -336,6 +410,10 @@ def test_consumption_marker_is_exact_durable_evidence_and_latch(
             seal["seal_digest"]
         ).read_text(encoding="utf-8")
     )
+    readme_path = marker_root / "README.md"
+    assert readme_path.is_file()
+    assert "not a cleanup target" in readme_path.read_text(encoding="utf-8")
+    assert "Deleting a consumption marker" in readme_path.read_text(encoding="utf-8")
     assert marker == {
         "consumed_at": marker["consumed_at"],
         "expires_at": seal["expires_at"],
