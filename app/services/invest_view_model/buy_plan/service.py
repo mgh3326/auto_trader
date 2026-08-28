@@ -135,6 +135,11 @@ AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("breakeven_band", "매도 breakeven 밴드 밖"),
     ("expected_pnl_not_positive", "매도 기대손익 > 0"),
     ("sell_classification_unavailable", "매도 분류 가능"),
+    # §163차 — parking-allowlist gates. Unevaluated here for the same reason as
+    # the rest: this read surface has no broker balance, so it cannot know the
+    # account's cumulative SGOV/BIL exposure.
+    ("parking_exposure_unavailable", "파킹 보유액 조회 가능"),
+    ("parking_cap_exceeded", "파킹 누적 보유 상한 잔여"),
 )
 
 

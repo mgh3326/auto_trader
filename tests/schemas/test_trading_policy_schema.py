@@ -261,7 +261,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-26.3"
+    assert doc.version == "2026-08-28.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -328,7 +328,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-08-26.3"
+    assert current["version"] == "2026-08-28.1"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -352,6 +352,56 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
         suffix = path.removeprefix("order_proposals.auto_approve.")
         _policy_path_set(current_auto, suffix, baseline_value)
     assert current_auto == baseline_auto
+
+
+def test_s163_parking_allowlist_adds_no_policy_key_or_value():
+    """§163차 is recorded in this document but held nowhere in it.
+
+    The allowlist and the USD 10,000 cumulative parking cap are hardcoded
+    closed constants in ``app/services/order_proposals/parking_allowlist.py``.
+    Keeping them out of the policy document is the point: a §163차 that added
+    a ``parking_cap`` key would put the replacement loss boundary behind a YAML
+    edit. This test is the drift alarm for that decision.
+    """
+    from app.services.order_proposals.parking_allowlist import (
+        PARKING_ALLOWLIST_SYMBOLS,
+        PARKING_CUMULATIVE_CAP_USD,
+    )
+
+    current = _raw()
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current_auto = deepcopy(current["order_proposals"]["auto_approve"])
+    baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
+
+    assert current["version"] == "2026-08-28.1"
+    assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
+    assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
+    assert "the daily cap is explicitly NOT exempt" in current["source"]
+
+    # Keyset identical to §156차 — no parking key anywhere in the block.
+    assert set(current_auto) == {
+        "min_distance_pct",
+        "per_order_cap",
+        "daily_cap",
+        "breakeven_band_pct",
+        "round_trip_cost_bps",
+    }
+    for key in current_auto:
+        assert "parking" not in key
+    assert "parking" not in str(current_auto).lower()
+
+    # And no VALUE moved: replaying only the pre-existing §133/§145/§65/§71
+    # deltas still reproduces the frozen baseline block exactly.
+    for path, baseline_value, _current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
+        suffix = path.removeprefix("order_proposals.auto_approve.")
+        _policy_path_set(current_auto, suffix, baseline_value)
+    assert current_auto == baseline_auto
+
+    # The authorized scope lives in code, and the document agrees with it.
+    assert PARKING_ALLOWLIST_SYMBOLS == frozenset({"SGOV", "BIL"})
+    assert PARKING_CUMULATIVE_CAP_USD == 10000
+    assert "SGOV and BIL on kis_live/equity_us" in current["source"]
+    assert "USD 10,000 parking-exposure cap" in current["source"]
 
 
 def test_s156_scope_addendum_preserves_cap_keys_and_separate_hard_gates():
@@ -429,7 +479,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-08-26.3"
+    assert doc.version == "2026-08-28.1"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -2232,7 +2282,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-26.3"
+    assert doc.version == "2026-08-28.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3012,7 +3062,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-08-26.3"
+    assert doc.version == "2026-08-28.1"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history

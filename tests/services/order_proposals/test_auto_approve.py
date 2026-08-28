@@ -1741,7 +1741,7 @@ async def test_daily_notional_reuses_durable_execution_price_cap_observation(
         min_distance_pct=Decimal("3"),
         per_order_cap=Decimal("2000000"),
         daily_cap=Decimal("5000000"),
-        policy_version="2026-08-26.3",
+        policy_version="2026-08-28.1",
         mode="expanded",
         breakeven_band_pct=Decimal("1"),
         round_trip_cost_bps=Decimal("200"),

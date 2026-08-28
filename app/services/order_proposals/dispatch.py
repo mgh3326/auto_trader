@@ -73,6 +73,8 @@ from app.services.order_proposals.dispatch_contract import (
     build_proposal_dispatch_binding,
 )
 from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.parking_allowlist import ParkingExposure
+from app.services.order_proposals.parking_exposure import load_parking_exposure
 from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
@@ -970,15 +972,30 @@ async def dispatch_proposal(
             limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
+            # §163차 — the parking allowlist trades the per-order cap for a
+            # cumulative exposure cap, so that exposure has to be read from the
+            # broker before the classifier can grant the exemption. This
+            # returns ``unavailable("not_requested")`` for every non-parking
+            # group without touching the network, and any failure to read it
+            # rejects the auto-approval rather than clearing the rung.
+            parking_exposure = await load_parking_exposure(
+                account_mode=group.account_mode,
+                market=group.market,
+                # getattr, not attribute access: an absent symbol must degrade
+                # to "no parking exemption", never to an exception inside the
+                # auto-approve gate.
+                symbol=getattr(group, "symbol", None),
+            )
 
             async def eligibility_gate(**kwargs: Any) -> Any:
-                nonlocal daily_notional
+                nonlocal daily_notional, parking_exposure
                 decision = evaluate_auto_approve_eligibility(
                     group=kwargs["group"],
                     rung=kwargs["rung"],
                     preview=kwargs["preview"],
                     limits=limits,
                     daily_notional=daily_notional,
+                    parking_exposure=parking_exposure,
                 )
                 decisions.append(
                     {
@@ -990,6 +1007,16 @@ async def dispatch_proposal(
                 )
                 if decision.eligible:
                     daily_notional = Decimal(decision.details["daily_notional_after"])
+                    # §163차 — the parking cap is CUMULATIVE, so it has to
+                    # accumulate across the rungs of one proposal exactly as
+                    # the daily notional does. Without this, N rungs each
+                    # under the cap would each be measured against the same
+                    # pre-dispatch exposure and clear a total far above it.
+                    # Present on parking buys only; a parking sell reduces
+                    # exposure and is deliberately not credited back here.
+                    projected = decision.details.get("parking_exposure_after")
+                    if projected is not None:
+                        parking_exposure = ParkingExposure.observed(Decimal(projected))
                 return decision
 
             revalidate_kwargs: dict[str, Any] = {

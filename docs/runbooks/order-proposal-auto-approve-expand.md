@@ -1,4 +1,4 @@
-# Auto-approve eligibility expansion (§40차, §141차, §156차)
+# Auto-approve eligibility expansion (§40차, §141차, §156차, §163차)
 
 Extends ROB-871 resting-class auto-approval with the §40차 classification:
 **auto-submit, then veto**, for buys and for *proven* profit-take sells.
@@ -13,9 +13,19 @@ final scope addendum also permits one narrow marketable exception: an
 predicate — not a self-described tier. Every marketable buy, loss sell,
 break-even-band sell, and unclassifiable sell remains manual.
 
+§163차 adds a two-ticker **cash-parking allowlist** (`SGOV`, `BIL`) on
+`kis_live` / `equity_us`. It is the only place in this document where the
+per-order cap is *exempted* rather than applied, and it is the only marketable
+**buy** release that exists anywhere. The §106차 boundary is replaced, not
+deleted: a cumulative **USD 10,000** parking exposure cap, measured from the
+broker's own balance, is checked on every parking buy and fails closed. Full
+scope, and the equally important list of what it does not touch, in §8.
+
 Ships inert. `ORDER_PROPOSALS_AUTO_APPROVE_MODE` defaults to `off`, which is
 ROB-871 behaviour unchanged. Arming it is an operator decision and is not part
-of the change that introduced this document.
+of the change that introduced this document. §163차 adds no environment
+variable and no default change: the allowlist is live exactly when `expanded`
+mode is.
 
 ---
 
@@ -300,3 +310,145 @@ live and is exactly what a veto is for.
   **read-only legacy code**. It is never emitted again, but rows carrying it are
   already durable in `source_asof`; dropping it would silently rewrite that
   history to `invalid_reason_code`.
+
+## 8. The cash-parking ticker allowlist (§163차)
+
+Operator decision, 2026-08-28. Cash parking instruments are not what the
+anti-chase rules were written to protect against: an ultra-short Treasury ETF
+has essentially no intraday price risk, so "rest below the market" buys nothing
+and only costs a Telegram tap on money that is being parked, not invested.
+
+### 8.1 Scope — exactly this, and nothing adjacent
+
+| dimension | value |
+| --- | --- |
+| symbols | `SGOV`, `BIL` — closed `frozenset`, hardcoded in `app/services/order_proposals/parking_allowlist.py` |
+| account mode × market | `kis_live` × `equity_us` **only** |
+| mode | `expanded` only. `off` never reaches the branch. |
+| gates lifted | marketability (buy side) **and** the per-order cap |
+| replacement boundary | cumulative parking exposure ≤ **USD 10,000**, buy side |
+
+Neither constant is a settings key, an environment variable, or a
+`config/trading_policy.yaml` entry — §163차 adds **no** policy key, which
+`tests/schemas/test_trading_policy_schema.py` re-proves against the frozen
+auto-approve keyset. There is no setter and no loader. Widening the allowlist
+or raising the cap is an operator PR editing that one module, and a runtime
+session cannot do either. `test_allowlist_module_reads_no_settings_env_db_or_policy`
+asserts the module's whole import surface (stdlib + `app.core.symbol`) and that
+its code references no settings, environment, file or policy identifier.
+
+### 8.2 Why `kis_live` / `equity_us` only
+
+The cap is only meaningful if the *same account's* parking exposure can be read
+back. `kis_live` is the one veto-capable `equity_us` account mode for which it
+can (`KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt`, USD). `toss_live`
+`equity_us` is veto-capable in principle behind
+`ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED`, but its exposure lives on a different
+broker surface; metering a KIS balance to authorize a Toss order would be a
+wrong-account cap, which is worse than no exemption. Toss parking orders keep
+the ordinary gates. A KR- or crypto-market proposal carrying the same four
+characters is not a parking ticker and gets nothing.
+
+### 8.3 The measurement, and why a session cannot forge it
+
+`app/services/order_proposals/parking_exposure.py` sums `ovrs_stck_evlu_amt`
+over the allowlisted rows of one fresh KIS overseas balance
+(`currency_code="USD"`, so no FX conversion enters the comparison — the US
+per-order and daily caps are USD too). That is the same client and balance
+surface `order_validation._get_holdings_for_order` already uses for the
+avg-cost loss guard: no new credential, host or account.
+
+A proposal contributes exactly **one** input to the whole §163차 path — the
+symbol — and that same symbol is what the order is submitted against, so
+claiming `SGOV` to obtain the exemption submits a real `SGOV` order. There is
+no proposer-supplied notional, position, valuation or exposure field anywhere
+in the computation.
+
+Metering uses `max(limit_price, current_price) × quantity`, never the possibly
+discounted limit: a parking buy is *allowed* to be marketable, so the limit
+price is no longer an upper bound on what it can spend.
+
+### 8.4 Fail-closed
+
+Every one of these rejects the auto-approval and produces a human card:
+
+| situation | recorded reason |
+| --- | --- |
+| exposure not supplied to the classifier at all | `parking_exposure_unavailable` / `not_supplied` |
+| broker read raised or timed out | `… / fetch_failed` |
+| payload is not a list | `… / payload_not_a_list` |
+| a row is not a mapping | `… / row_not_a_mapping` |
+| a row's symbol is absent or unreadable | `… / symbol_unreadable` |
+| an allowlisted row has no evaluation amount | `… / evaluation_amount_missing` |
+| the amount is unparseable or non-finite | `… / evaluation_amount_invalid` |
+| the amount is negative | `… / evaluation_amount_negative` |
+| projected exposure > USD 10,000 | `parking_cap_exceeded` |
+
+`parking_exposure` defaults to `None` on the classifier, and `None` is the
+fail-closed value — a caller that forgets to supply it cannot obtain the
+exemption.
+
+### 8.5 Symbol matching is deliberately asymmetric
+
+Two different rules, and the asymmetry is the safety property.
+
+**Eligibility (grants the exemption) — strict.** The proposal symbol must
+*already be* the exact canonical ticker: exact built-in `str` (not a subclass,
+whose `strip`/`upper` could lie), pure ASCII, uppercase, no surrounding
+whitespace, no separator that `to_db_symbol` would rewrite. `sgov`, `" SGOV "`,
+`SGOV.U`, `SGOVX`, `BILS`, `BILL`, `BIL.TO`, `SG`, fullwidth `ＳＧＯＶ`, and
+Cyrillic/long-s look-alikes are all rejected. Membership is exact-element
+against a `frozenset` — never a prefix, suffix or substring test.
+
+The ASCII gate is load-bearing, not decoration: `str.upper()` folds U+017F
+LATIN SMALL LETTER LONG S onto `"S"`, so `"ſGOV".upper() == "SGOV"` and a
+naive uppercase-then-compare matcher would admit it. Rejecting non-ASCII before
+any case operation closes that whole class.
+
+Over-strictness here is safe in the only direction that matters: a rejected
+spelling does not make some *other* instrument allowlisted, it makes this
+proposal fall back to the ordinary gates and cost a Telegram tap. 🔴 The
+operational consequence is real, though: **a parking proposal must carry the
+ticker as exactly `SGOV` or `BIL`.** The proposal service stores the symbol
+verbatim, so a lowercase proposal will silently just be carded.
+
+**Exposure (counts against the cap) — lenient.** Broker balance rows are
+normalized for case and whitespace, because over-inclusion can only *raise*
+measured exposure and reject a buy, while under-inclusion would understate it
+and let one through. Non-ASCII rows are still rejected so an unrelated holding
+cannot inflate parking exposure.
+
+### 8.6 What §163차 did **not** authorize
+
+Proven unchanged by test, for parking rungs as for every other:
+
+* the **daily cap** — explicitly not exempt (`test_daily_cap_still_applies_to_a_parking_buy`),
+* `loss_cut` and every other exit intent,
+* the `policy_deviation` tag scan,
+* the veto-capable account/market allowlist and the Toss freeze,
+* `order_type == "limit"`, the fresh-preview requirement,
+* the sell-side **break-even band and round-trip-cost profit proof** — a
+  break-even `SGOV` sell still goes to a human. §163차 lifts marketability and
+  the per-order cap for sells, **not** the profit proof,
+* the mandatory veto thesis,
+* every `off`-mode verdict, and every verdict for every non-allowlisted symbol.
+
+### 8.7 Known limits — read these before trusting the cap
+
+* 🔴 **An allowlisted position the broker does not return is counted as zero.**
+  "Not held" and "not in this response" are indistinguishable, and it is the
+  one direction in which the measurement can *understate* exposure. What bounds
+  it is the daily cap, which §163차 does not exempt.
+* 🔴 **The exposure read and the submit are not atomic.** The balance is read
+  once per dispatch, before revalidation; a fill landing between the read and
+  the submit is not reflected. Same TOCTOU shape as the daily-notional
+  accumulator that ships today.
+* 🔴 **A parking buy can fill before the veto card is visible.** That is what
+  "marketable" means and it is the accepted cost of the release. §40차 safety
+  invariant ① (the veto button is honest) holds only post-hoc for this path,
+  exactly as it already does for §156's proven-profit marketable sell.
+* A limit buy priced *strictly above* the market never reaches the classifier
+  at all: `order_validation._preview_buy` rejects it (`Buy price … exceeds
+  current price …`) and the rung fails `preview_guard_failed`. In practice the
+  §163차 buy release therefore admits the at-market case (`limit == current`),
+  not an above-market chase.
