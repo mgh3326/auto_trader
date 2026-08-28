@@ -278,15 +278,15 @@ class KISHomeReader:
                 orderable=usd_buying_power,
             )
             if unavailable_reason is not None:
-                # Do not select either conflicting TTTC2101R field as cash.
+                # Do not select unsafe TTTC2101R cash/orderable fields as cash.
                 # The warning propagates through the portfolio snapshot into
                 # get_operating_briefing.staleness.holdings.errors.
                 usd_balance = None
                 usd_buying_power = None
                 message = (
-                    "USD 예수금/주문가능 금액 모순("
-                    f"{unavailable_reason}): KIS frcr_dncl_amt1=0 while "
-                    "frcr_gnrl_ord_psbl_amt>0; 주문가능 현금을 사용할 수 없습니다."
+                    "USD 예수금/주문가능 금액을 안전하게 확인할 수 없습니다("
+                    f"{unavailable_reason}): KIS cash/orderable 값이 모순되었거나 "
+                    "유효하지 않아 주문가능 현금을 사용할 수 없습니다."
                 )
                 if fx_warning is None:
                     fx_warning = InvestHomeWarning(source="kis", message=message)

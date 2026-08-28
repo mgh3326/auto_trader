@@ -478,7 +478,17 @@ async def test_kis_usd_mismatch_warning_keeps_usd_scope_unknown() -> None:
 
     plan = await _service(home=_StubHome(home)).build(user_id=1, market="all", now=NOW)
 
-    usd = _scope(plan, "kis", "USD")
+    usd = next(
+        (
+            scope
+            for scope in plan.funding.scopes
+            if scope.broker == "kis" and scope.currency == "USD"
+        ),
+        None,
+    )
+    assert usd is not None, (
+        "KISUSD_BUY_PLAN_MUTANT_ANCHOR: unavailable KIS USD scope disappeared"
+    )
     assert usd.available_cash is None
     assert usd.verdict == "unknown"
     assert usd.account_ids == ["kis-1"]

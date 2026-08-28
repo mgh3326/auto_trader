@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -242,16 +243,45 @@ def cost_profile_account_id(
 
 def _orderable_by_account_currency(
     snapshot: dict[str, Any],
-) -> dict[str, dict[str, float]]:
-    result: dict[str, dict[str, float]] = {}
+) -> dict[str, dict[str, float | None]]:
+    """Keep an unreadable orderable value distinct from a real numeric zero."""
+
+    result: dict[str, dict[str, float | None]] = {}
     for row in snapshot.get("accounts") or []:
         account = str(row.get("account") or "")
         currency = str(row.get("currency") or "KRW").upper()
-        orderable = float(row.get("orderable") or 0.0)
+        try:
+            raw_orderable = row.get("orderable")
+            orderable = (
+                float(raw_orderable) if raw_orderable not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            orderable = None
+        if orderable is not None and not math.isfinite(orderable):
+            orderable = None
         bucket = result.setdefault(account, {"KRW": 0.0, "USD": 0.0})
         if currency in bucket:
-            bucket[currency] += orderable
+            current = bucket[currency]
+            bucket[currency] = (
+                None if orderable is None or current is None else current + orderable
+            )
     return result
+
+
+def _unavailable_orderable_sources(snapshot: dict[str, Any]) -> dict[str, str]:
+    """Return account-scoped cash-read failures supplied by available capital."""
+
+    summary = snapshot.get("summary")
+    raw_sources = (
+        summary.get("unavailable_sources") if isinstance(summary, dict) else None
+    )
+    if not isinstance(raw_sources, dict):
+        return {}
+    return {
+        str(account): str(reason or "orderable_cash_unavailable")
+        for account, reason in raw_sources.items()
+        if str(account)
+    }
 
 
 def _existing_accounts(
@@ -301,11 +331,30 @@ def _cost_row(
     market: Market,
     notional_krw: float,
     notional_usd: float | None,
-    cash: dict[str, float],
+    cash: dict[str, float | None],
+    cash_unavailable_reason: str | None,
     usd_krw: float | None,
     profiles: AccountCostProfiles,
 ) -> dict[str, Any]:
     profile = profiles.market_profile(account_id, market)
+    if cash_unavailable_reason is not None:
+        commission_cost_krw = notional_krw * profile.commission_bps / 10_000.0
+        return {
+            "eligible": False,
+            "commission_bps": profile.commission_bps,
+            "fx_spread_bps": profile.fx_spread_bps,
+            "commission_cost_krw": commission_cost_krw,
+            "fx_notional_krw": None,
+            "fx_cost_krw": None,
+            "total_cost_krw": None,
+            "orderable_krw": None,
+            "orderable_usd": None,
+            "orderable_cash_krw": None,
+            "notional_usd": notional_usd,
+            "ineligible_reason": "orderable_cash_unavailable",
+            "orderable_unavailable_reason": cash_unavailable_reason,
+        }
+
     ineligible_reason = None
     usd_orderable = float(cash.get("USD") or 0.0)
     krw_orderable = float(cash.get("KRW") or 0.0)
@@ -353,6 +402,7 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
     notional_krw = float(notional["notional_krw"] or 0.0)
     notional_usd = notional["notional_usd"]
     orderable = _orderable_by_account_currency(input.capital_snapshot)
+    unavailable_sources = _unavailable_orderable_sources(input.capital_snapshot)
     candidates = _candidate_accounts(input.market)
     cost_comparison = {
         account: _cost_row(
@@ -361,6 +411,16 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
             notional_krw=notional_krw,
             notional_usd=float(notional_usd) if notional_usd is not None else None,
             cash=orderable.get(account, {}),
+            cash_unavailable_reason=(
+                unavailable_sources.get(account)
+                or (
+                    "orderable_value_unavailable"
+                    if any(
+                        value is None for value in orderable.get(account, {}).values()
+                    )
+                    else None
+                )
+            ),
             usd_krw=input.usd_krw,
             profiles=profiles,
         )
@@ -382,6 +442,11 @@ def suggest_account_from_snapshot(input: AccountRoutingInput) -> dict[str, Any]:
     data_quality = []
     if profiles.review_required:
         data_quality.append("using_default_account_costs_review_required")
+    data_quality.extend(
+        f"orderable_cash_unavailable:{account}"
+        for account in candidates
+        if account in unavailable_sources
+    )
 
     if not eligible:
         return {

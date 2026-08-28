@@ -40,14 +40,16 @@ def overseas_usd_cash_unavailable_reason(
 
     ``frcr_dncl_amt1`` and ``frcr_gnrl_ord_psbl_amt`` are independently
     reported KIS values, not aliases.  A positive orderable value does not
-    establish usable cash when the reported cash balance is explicitly zero.
-    Keep the condition deliberately narrow: missing/malformed values retain
-    their existing read-failure handling rather than being relabelled here.
+    establish usable cash when the reported cash balance is non-positive.
+    A missing, malformed, or non-finite value cannot establish deployable
+    cash either, so it is surfaced through the same unavailable path.
     """
 
     parsed_balance = _finite_float(balance)
     parsed_orderable = _finite_float(orderable)
-    if parsed_balance == 0.0 and parsed_orderable is not None and parsed_orderable > 0:
+    if parsed_balance is None or parsed_orderable is None:
+        return KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH
+    if parsed_balance <= 0.0 and parsed_orderable > 0.0:
         return KIS_OVERSEAS_USD_BALANCE_ORDERABLE_MISMATCH
     return None
 

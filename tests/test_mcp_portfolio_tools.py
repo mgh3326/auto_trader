@@ -648,6 +648,82 @@ async def test_get_cash_balance_kis_overseas_mismatch_is_explicitly_unavailable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("balance", "orderable"),
+    [
+        ("-50", "1000"),
+        ("nan", "1000"),
+        ("50", "nan"),
+    ],
+)
+async def test_get_cash_balance_kis_overseas_invalid_cash_shape_is_unavailable(
+    monkeypatch,
+    balance,
+    orderable,
+):
+    """A non-finite or negative cash value cannot make orderable USD usable."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": balance,
+                    "frcr_gnrl_ord_psbl_amt": orderable,
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    account = result["accounts"][0]
+    assert account["availability"] == "unavailable"
+    assert account["balance"] is None
+    assert account["orderable"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("balance", "orderable"),
+    [
+        ("1000", "800"),
+        ("1000", "0"),
+        ("0", "0"),
+    ],
+)
+async def test_get_cash_balance_kis_overseas_known_cash_shapes_remain_available(
+    monkeypatch,
+    balance,
+    orderable,
+):
+    """A true zero is not the zero-balance/positive-orderable contradiction."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": balance,
+                    "frcr_gnrl_ord_psbl_amt": orderable,
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    account = result["accounts"][0]
+    assert account.get("availability") != "unavailable"
+    assert account["balance"] == pytest.approx(float(balance))
+    assert account["orderable"] == pytest.approx(float(orderable))
+
+
+@pytest.mark.asyncio
 async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
     """get_cash_balance가 새 KIS 필드명(frcr_dncl_amt1, frcr_gnrl_ord_psbl_amt)을 사용하는지 테스트."""
     tools = build_tools()
