@@ -9,6 +9,7 @@ flips ``status`` between active / triggered / expired / canceled).
 
 from __future__ import annotations
 
+import copy
 from decimal import Decimal
 from typing import Any
 
@@ -139,6 +140,11 @@ class WatchActivationService:
             primary_threshold_high = None
         threshold_key = condition.get("threshold_key") or str(primary_threshold)
 
+        alert_metadata = _synthetic_canary_alert_metadata(
+            report_metadata=report.report_metadata,
+            item_metadata=item.item_metadata,
+        )
+
         alert = await self._repo.insert_alert(
             alert_uuid=None,  # default from PG
             idempotency_key=idempotency_key,
@@ -160,6 +166,7 @@ class WatchActivationService:
             trigger_checklist=list(item.trigger_checklist),
             max_action=dict(item.max_action),
             valid_until=valid_until,
+            alert_metadata=alert_metadata,
         )
 
         await self._repo.update_item_status(item.id, "activated")
@@ -173,3 +180,40 @@ def _to_decimal(value: Any) -> Decimal:
     if value is None:
         raise ValueError("threshold is required in watch_condition")
     return Decimal(str(value))
+
+
+_MISSING = object()
+
+
+def _synthetic_canary_alert_metadata(
+    *,
+    report_metadata: Any,
+    item_metadata: Any,
+) -> dict[str, Any]:
+    """Copy the source-backed synthetic marker into the alert snapshot.
+
+    Ordinary reports have no ``synthetic_canary`` key and retain the existing
+    empty alert metadata.  A canary source must stamp both the report and item
+    with the same marker so activation cannot silently lose one side of the
+    source identity or choose between conflicting values.
+    """
+
+    report_marker = (
+        report_metadata.get("synthetic_canary", _MISSING)
+        if isinstance(report_metadata, dict)
+        else _MISSING
+    )
+    item_marker = (
+        item_metadata.get("synthetic_canary", _MISSING)
+        if isinstance(item_metadata, dict)
+        else _MISSING
+    )
+
+    if report_marker is _MISSING and item_marker is _MISSING:
+        return {}
+    if report_marker is _MISSING or item_marker is _MISSING:
+        raise ValueError("synthetic_canary source metadata missing")
+    if report_marker != item_marker:
+        raise ValueError("synthetic_canary source metadata mismatch")
+
+    return {"synthetic_canary": copy.deepcopy(item_marker)}

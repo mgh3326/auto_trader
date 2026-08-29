@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,7 +17,12 @@ from app.models.review import WatchOrderIntentLedger
 from app.services.investment_reports import watch_auto_execute
 
 
-def _alert(max_action: dict | None, action_mode="auto_execute_mock"):
+def _alert(
+    max_action: dict | None,
+    action_mode="auto_execute_mock",
+    *,
+    alert_metadata: dict | None = None,
+):
     return InvestmentWatchAlert(
         alert_uuid=uuid.uuid4(),
         idempotency_key=f"k-{uuid.uuid4()}",
@@ -32,6 +39,7 @@ def _alert(max_action: dict | None, action_mode="auto_execute_mock"):
         action_mode=action_mode,
         rationale="r",
         max_action=max_action or {},
+        alert_metadata=alert_metadata or {},
         valid_until=datetime(2026, 12, 31, tzinfo=UTC),
     )
 
@@ -43,6 +51,29 @@ def _good_max_action():
         "limit_price": "55000",
         "account_mode": "kis_mock",
     }
+
+
+def _canonical_digest(value) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _synthetic_marker(**overrides):
+    marker = {
+        "canary_run_id": "q3-canary-test",
+        "mutation_disabled": True,
+        "policy": {"version": "v-test", "content_hash": "a" * 64},
+        "j7_manifest_ref": "manifest-j7:test",
+    }
+    supplied_digest = overrides.pop("pre_registration_digest", None)
+    marker.update(overrides)
+    marker["pre_registration_digest"] = supplied_digest or _canonical_digest(marker)
+    return marker
 
 
 async def _intent_for(db, correlation_id):
@@ -156,6 +187,193 @@ async def test_happy_path_places_order(db_session: AsyncSession, monkeypatch):
     row = await _intent_for(db_session, cid)
     assert row.lifecycle_state == "previewed"
     assert row.execution_allowed is True
+    assert row.blocking_reasons == []
+    assert row.detail == {}
+    assert "synthetic_canary" not in row.preview_line
+    assert "synthetic_canary_guard_digest" not in row.preview_line
+
+
+@pytest.mark.asyncio
+async def test_synthetic_canary_records_both_independent_layer_results(
+    db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", False
+    )
+    marker = _synthetic_marker()
+    alert = _alert(_good_max_action(), alert_metadata={"synthetic_canary": marker})
+    spy, calls = _make_place_spy()
+    cid = f"corr-{uuid.uuid4().hex}"
+
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=spy,
+    )
+
+    assert outcome == {
+        "executed": False,
+        "blocking_reasons": [
+            "synthetic_canary_mutation_disabled",
+            "auto_execute_globally_disabled",
+        ],
+    }
+    assert calls == []
+    row = await _intent_for(db_session, cid)
+    assert row.lifecycle_state == "failed"
+    assert row.execution_allowed is False
+    assert row.blocked_by == "synthetic_canary_mutation_disabled"
+    assert row.detail["synthetic_canary"] == marker
+    guard = row.detail["synthetic_canary_guard"]
+    assert guard == {
+        "contract": "synthetic-canary-guard/v1",
+        "canary_run_id": marker["canary_run_id"],
+        "pre_registration_digest": marker["pre_registration_digest"],
+        "decision": "blocked",
+        "evaluations": [
+            {
+                "layer": "synthetic_data_guard",
+                "evaluated": True,
+                "result": "block",
+                "code": "synthetic_canary_mutation_disabled",
+                "marker_digest_match": True,
+            },
+            {
+                "layer": "env_gate",
+                "evaluated": True,
+                "result": "block",
+                "code": "auto_execute_globally_disabled",
+            },
+        ],
+    }
+    assert row.preview_line["synthetic_canary"] == marker
+    assert row.preview_line["synthetic_canary_guard_digest"] == _canonical_digest(guard)
+
+
+@pytest.mark.asyncio
+async def test_synthetic_and_env_layers_are_evaluated_without_short_circuit(
+    db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", False
+    )
+    calls: list[str] = []
+    original_synthetic = watch_auto_execute._evaluate_synthetic_canary_layer
+    original_env = watch_auto_execute._evaluate_env_gate_layer
+
+    def _synthetic_spy(metadata, **kwargs):
+        calls.append("synthetic_data_guard")
+        return original_synthetic(metadata, **kwargs)
+
+    def _env_spy():
+        calls.append("env_gate")
+        return original_env()
+
+    monkeypatch.setattr(
+        watch_auto_execute, "_evaluate_synthetic_canary_layer", _synthetic_spy
+    )
+    monkeypatch.setattr(watch_auto_execute, "_evaluate_env_gate_layer", _env_spy)
+    marker = _synthetic_marker()
+    alert = _alert(_good_max_action(), alert_metadata={"synthetic_canary": marker})
+
+    await watch_auto_execute.maybe_auto_execute(
+        db_session,
+        alert=alert,
+        correlation_id=f"corr-{uuid.uuid4().hex}",
+        kst_date="2026-06-01",
+    )
+
+    assert calls == ["synthetic_data_guard", "env_gate"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "malformed-marker",
+        {
+            key: value
+            for key, value in _synthetic_marker().items()
+            if key != "j7_manifest_ref"
+        },
+        _synthetic_marker(pre_registration_digest="0" * 64),
+        _synthetic_marker(mutation_disabled=False),
+    ],
+    ids=[
+        "malformed",
+        "missing-required-field",
+        "digest-mismatch",
+        "mutation-enabled",
+    ],
+)
+async def test_marker_present_invalid_identity_fails_closed(
+    db_session: AsyncSession, monkeypatch, marker
+):
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+    spy, calls = _make_place_spy()
+    alert = _alert(_good_max_action(), alert_metadata={"synthetic_canary": marker})
+    cid = f"corr-{uuid.uuid4().hex}"
+
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=spy,
+    )
+
+    assert outcome == {
+        "executed": False,
+        "blocking_reasons": ["synthetic_canary_identity_invalid"],
+    }
+    assert calls == []
+    row = await _intent_for(db_session, cid)
+    assert row.execution_allowed is False
+    assert row.blocked_by == "synthetic_canary_identity_invalid"
+    assert row.detail["synthetic_canary"] == marker
+    evaluations = row.detail["synthetic_canary_guard"]["evaluations"]
+    assert evaluations[0]["evaluated"] is True
+    assert evaluations[0]["result"] == "block"
+    assert evaluations[0]["code"] == "synthetic_canary_identity_invalid"
+    assert evaluations[1] == {
+        "layer": "env_gate",
+        "evaluated": True,
+        "result": "allow",
+        "code": "auto_execute_globally_enabled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_marker_lost_from_event_snapshot_is_not_treated_as_markerless(
+    db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+    marker = _synthetic_marker()
+    alert = _alert(_good_max_action(), alert_metadata={"synthetic_canary": marker})
+    spy, calls = _make_place_spy()
+    cid = f"corr-{uuid.uuid4().hex}"
+
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db_session,
+        alert=alert,
+        scanner_snapshot={"metric": "price"},
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=spy,
+    )
+
+    assert outcome["blocking_reasons"] == ["synthetic_canary_identity_invalid"]
+    assert calls == []
+    row = await _intent_for(db_session, cid)
+    evaluation = row.detail["synthetic_canary_guard"]["evaluations"][0]
+    assert evaluation["code"] == "synthetic_canary_identity_invalid"
+    assert evaluation["marker_digest_match"] is False
 
 
 @pytest.mark.asyncio
