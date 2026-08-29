@@ -61,6 +61,34 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     Both additionally require the cancel/replace target evidence to be present
     and self-consistent (``target_evidence_missing``). An action outside
     ``{place, replace, cancel}`` still fails closed (``action_not_supported``).
+
+§163차 -- the cash-parking allowlist
+    Two ultra-short US Treasury ETFs (``SGOV``, ``BIL``) on ``kis_live`` /
+    ``equity_us`` get two changes, and exactly two:
+
+    1. the marketability rule is released on the buy side (the only
+       marketable-*buy* release that exists anywhere), and
+    2. 🔴 the per-order cap is **RAISED, not removed**. §106차's "maximum loss
+       of one automation error" boundary keeps its shape: the per-order check
+       still runs on every parking rung, against ``PARKING_PER_ORDER_CAP_USD``
+       rather than the ordinary US ``per_order_cap``. One automation error on
+       a parking ticker stays bounded at USD 10,000 per order.
+
+    A second boundary sits behind that one: ``PARKING_CUMULATIVE_CAP_USD``,
+    measured on every parking buy against the account's cumulative parking
+    exposure -- the broker balance PLUS the durable same-day record of
+    already-auto-approved parking buys, because the balance alone cannot see
+    an accepted-but-unfilled order. It fails closed whenever either half
+    cannot be read. It is the second line, never the only one: its measurement
+    has known residual gaps (runbook §8.7), and the per-order cap above is
+    what keeps each of them bounded per order.
+
+    Nothing else moves. The daily cap, loss-cut/exit intent, the
+    ``policy_deviation`` tag scan, the veto-capable account/market allowlist,
+    the sell-side break-even band and round-trip-cost profit proof, the veto
+    thesis requirement, and every ``off``-mode verdict are identical for a
+    parking rung and for any other. See ``parking_allowlist`` for the closed
+    constants and ``parking_exposure`` for the provenance of the measurement.
 """
 
 from __future__ import annotations
@@ -87,6 +115,13 @@ from app.services.order_proposals.auto_approve_audit import (
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     DispatchBinding,
+)
+from app.services.order_proposals.parking_allowlist import (
+    PARKING_CUMULATIVE_CAP_USD,
+    PARKING_PER_ORDER_CAP_USD,
+    ParkingExposure,
+    canonical_eligibility_symbol,
+    is_parking_allowlisted,
 )
 from app.services.trading_policy_service import load_trading_policy, policy_content_hash
 
@@ -577,8 +612,17 @@ def evaluate_auto_approve_eligibility(
     preview: dict[str, Any],
     limits: AutoApproveLimits,
     daily_notional: Decimal,
+    parking_exposure: ParkingExposure | None = None,
 ) -> AutoApproveDecision:
-    """Classify a rung using the fresh submit-time preview, failing closed."""
+    """Classify a rung using the fresh submit-time preview, failing closed.
+
+    ``parking_exposure`` is the §163차 cumulative parking exposure on this
+    account: broker-held market value plus the durable same-day record of
+    already-auto-approved parking buys (see ``parking_exposure``). It defaults
+    to ``None``, which is the fail-closed value: a caller that does not supply
+    it cannot obtain the parking treatment, and every non-parking rung is
+    unaffected either way.
+    """
 
     base = {"policy_version": limits.policy_version}
 
@@ -683,6 +727,17 @@ def evaluate_auto_approve_eligibility(
                 "loss_guard": "not_applicable",
             },
         )
+    # §163차 -- cash-parking allowlist. Evaluated only after every gate above
+    # has already passed (mode, action, target evidence, order type, exit
+    # intent, veto-capable account/market, approval-required tags), so parking
+    # can never be a way *past* one of them; it only ever relaxes the two gates
+    # named in ``parking_allowlist``. `off` mode never reaches this branch.
+    expanded = mode == "expanded"
+    parking = expanded and is_parking_allowlisted(
+        symbol=getattr(group, "symbol", None),
+        account_mode=account_mode,
+        market=market,
+    )
     if preview.get("success") is not True:
         return reject(
             "preview_guard_failed",
@@ -711,12 +766,66 @@ def evaluate_auto_approve_eligibility(
     # profit proof below; keeping this preliminary check preserves the exact
     # existing cap behavior for every other rung.
     notional = limit_price * quantity
-    if notional > limits.per_order_cap:
+    parking_details: dict[str, str] = {}
+    # §163차 -- the per-order cap is RAISED for a parking ticker, never removed.
+    # §106차's "maximum loss of one automation error" keeps its shape: the check
+    # below still runs on every rung, parking included, so a single parking
+    # order is bounded at PARKING_PER_ORDER_CAP_USD. That first line is what
+    # keeps the residual gaps in the cumulative measurement survivable.
+    per_order_cap = limits.per_order_cap
+    if parking:
+        # Meter the *executable* amount (max(limit, current) x quantity), never
+        # the possibly-discounted limit: a parking buy is allowed to be
+        # marketable, so the limit price is no longer an upper bound on what it
+        # can spend. For a resting rung this is identical to or larger than the
+        # limit basis, never smaller.
+        notional = max(limit_price, current_price) * quantity
+        per_order_cap = PARKING_PER_ORDER_CAP_USD
+        parking_details = {
+            "parking_allowlist": canonical_eligibility_symbol(
+                getattr(group, "symbol", None)
+            )
+            or "",
+            "per_order_cap_basis": "parking_raised",
+        }
+    if notional > per_order_cap:
         return reject(
             "per_order_cap_exceeded",
             notional=_text(notional),
-            per_order_cap=_text(limits.per_order_cap),
+            per_order_cap=_text(per_order_cap),
+            **parking_details,
         )
+    if parking and getattr(rung, "side", None) == "buy":
+        # SECOND line, behind the per-order cap above: cumulative parking
+        # exposure. Only a buy adds exposure; a sell reduces it.
+        if parking_exposure is None or not parking_exposure.available:
+            return reject(
+                "parking_exposure_unavailable",
+                parking_exposure_reason=(
+                    "not_supplied"
+                    if parking_exposure is None
+                    else str(parking_exposure.unavailable_reason)
+                ),
+                **parking_details,
+            )
+        observed = parking_exposure.exposure
+        if observed is None or not observed.is_finite() or observed < 0:
+            return reject(
+                "parking_exposure_unavailable",
+                parking_exposure_reason="invalid_exposure",
+                **parking_details,
+            )
+        parking_after = observed + notional
+        parking_details.update(
+            parking_exposure_before=_text(observed),
+            parking_exposure_after=_text(parking_after),
+            parking_cap=_text(PARKING_CUMULATIVE_CAP_USD),
+        )
+        if parking_after > PARKING_CUMULATIVE_CAP_USD:
+            return reject("parking_cap_exceeded", **parking_details)
+    # §163차 changes the per-order cap's VALUE for parking and nothing else
+    # about it. The daily circuit breaker applies to a parking rung exactly as
+    # it does to every other rung.
     daily_after = daily_notional + notional
     if daily_after > limits.daily_cap:
         return reject(
@@ -739,7 +848,11 @@ def evaluate_auto_approve_eligibility(
     # That sell can fill before the veto card is visible; do not generalize this
     # exception to buys or to any other sell classification. `off` keeps
     # ROB-871's non-strict distance boundary, so it cannot inherit this release.
-    expanded = mode == "expanded"
+    #
+    # §163차 adds the ONLY marketable-buy release there is: a cash-parking
+    # allowlist ticker (SGOV/BIL) on kis_live/equity_us. It is scoped by
+    # `parking`, which is false in `off` mode and false for every other symbol,
+    # account mode and market -- so no other buy inherits it either.
     min_fraction = (
         Decimal("0") if expanded else limits.min_distance_pct / Decimal("100")
     )
@@ -747,7 +860,16 @@ def evaluate_auto_approve_eligibility(
     if side == "buy":
         threshold = current_price * (Decimal("1") - min_fraction)
         distance_pct = (current_price - limit_price) / current_price * Decimal("100")
-        if (limit_price >= threshold) if expanded else (limit_price > threshold):
+        marketable_buy = (
+            (limit_price >= threshold) if expanded else (limit_price > threshold)
+        )
+        if marketable_buy and parking:
+            # §163차's sole buy-side release: a parking ticker may price at the
+            # market. Recorded so the durable eligibility projection names the
+            # one path on which a *buy* fill can precede the veto card.
+            parking_details["marketability"] = "parking_allowlist_marketable"
+            marketable_buy = False
+        if marketable_buy:
             return reject(
                 "marketable_not_resting" if expanded else "distance_below_minimum",
                 current_price=_text(current_price),
@@ -809,11 +931,16 @@ def evaluate_auto_approve_eligibility(
                 # this is an additional, stricter check only after the narrow
                 # §156 profit-take predicate has proved true.
                 notional = max(limit_price, current_price) * quantity
-                if notional > limits.per_order_cap:
+                if notional > per_order_cap:
+                    # `per_order_cap` is the effective cap: the ordinary one,
+                    # or §163차's raised parking value. The check runs for
+                    # parking and non-parking rungs alike -- §163차 changed
+                    # this cap's value, it did not remove it.
                     return reject(
                         "per_order_cap_exceeded",
                         notional=_text(notional),
-                        per_order_cap=_text(limits.per_order_cap),
+                        per_order_cap=_text(per_order_cap),
+                        **parking_details,
                     )
                 daily_after = daily_notional + notional
                 if daily_after > limits.daily_cap:
@@ -843,10 +970,11 @@ def evaluate_auto_approve_eligibility(
             "notional": _text(notional),
             "daily_notional_before": _text(daily_notional),
             "daily_notional_after": _text(daily_after),
-            "per_order_cap": _text(limits.per_order_cap),
+            "per_order_cap": _text(per_order_cap),
             "daily_cap": _text(limits.daily_cap),
             "loss_guard": loss_guard,
             **profit_details,
+            **parking_details,
         },
     )
 

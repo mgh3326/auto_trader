@@ -203,7 +203,7 @@ class OrderProposalRepository:
             stmt = stmt.where(OrderProposal.lifecycle_state == lifecycle_state)
         return list((await self._session.execute(stmt)).scalars().all())
 
-    async def auto_approved_notional_between(
+    async def _auto_approved_rung_rows(
         self,
         *,
         account_mode: str,
@@ -211,16 +211,14 @@ class OrderProposalRepository:
         broker_account_id: str | None,
         start: datetime,
         end: datetime,
-    ) -> Decimal:
-        """Sum durable cap measures for auto-approved rungs in a time window.
+    ) -> list[tuple[Any, int, Any, Any, Any, Any]]:
+        """Fetch auto-approved rungs in a window, once, for every durable cap.
 
-        Most rungs are metered at their booked ``limit_price × quantity``.
-        §156 marketable profit-take sells are the deliberately narrower
-        exception: their durable cap observation records the stricter
-        ``max(limit_price, current_price) × quantity`` execution-price basis.
-        Read that vetted observation when present so a subsequent dispatch
-        cannot reopen the daily-cap gap; legacy/malformed/missing observations
-        retain the historical limit-price fallback.
+        Deliberately shared by ``auto_approved_notional_between`` (§40차 daily
+        circuit breaker) and ``auto_approved_parking_notional_between`` (§163차
+        cumulative parking cap). Two hand-copied versions of this WHERE clause
+        would be free to drift, and a drift on the parking side silently
+        reopens the cap it exists to enforce.
         """
         approved_at = cast(
             OrderProposal.source_asof["auto_approved"]["approved_at"].astext,
@@ -232,6 +230,8 @@ class OrderProposalRepository:
                 OrderProposalRung.rung_index,
                 OrderProposalRung.quantity,
                 OrderProposalRung.limit_price,
+                OrderProposalRung.side,
+                OrderProposal.symbol,
             )
             .select_from(OrderProposal)
             .join(
@@ -260,29 +260,118 @@ class OrderProposalRepository:
             stmt = stmt.where(OrderProposal.broker_account_id.is_(None))
         else:
             stmt = stmt.where(OrderProposal.broker_account_id == broker_account_id)
+        return list((await self._session.execute(stmt)).all())
+
+    @staticmethod
+    def _durable_cap_measure(
+        source_asof: Any, rung_index: int, quantity: Any, limit_price: Any
+    ) -> Decimal:
+        """The vetted per-rung cap measure: booked amount, or stronger."""
+        # The schema accepts historical nullable numbers.  Preserve the
+        # previous SQL SUM semantics for such rows (NULL product contributes
+        # no value) rather than inventing a value during this read.
+        fallback = (
+            Decimal(quantity) * Decimal(limit_price)
+            if quantity is not None and limit_price is not None
+            else Decimal("0")
+        )
+        observations = project_auto_approve_cap_observations(source_asof)
+        observed_notionals = [
+            Decimal(observation["notional"])
+            for observation in observations
+            if observation["rung_index"] == rung_index
+        ]
+        # Stored observations are supplemental evidence, never permission
+        # to charge less than the booked amount.  The writer emits one per
+        # rung; taking the maximum also preserves the stronger measure if a
+        # legacy/manual repair left duplicates.
+        return max([fallback, *observed_notionals])
+
+    async def auto_approved_parking_notional_between(
+        self,
+        *,
+        account_mode: str,
+        market: str,
+        broker_account_id: str | None,
+        start: datetime,
+        end: datetime,
+        is_parking_symbol: Any,
+    ) -> Decimal:
+        """§163차 — durable sum of auto-approved parking BUY rungs in a window.
+
+        This exists because the broker balance alone cannot see an
+        accepted-but-unfilled order: ``KISAccount._filter_nonzero_holdings``
+        keeps only rows with ``ovrs_cblc_qty > 0``, so a submitted parking buy
+        that has not filled yet contributes nothing to the balance read. A
+        cumulative cap measured from the balance alone would therefore re-meter
+        the next proposal from zero and approve the same amount again.
+
+        Buys only: a sell reduces parking exposure. ``is_parking_symbol`` is
+        applied in Python with the same lenient normalizer the broker rows use,
+        so SQL-side and Python-side symbol normalization cannot drift, and so a
+        parking buy that was auto-approved under the *ordinary* gates (a small
+        resting SGOV rung that never needed the raised cap) still counts -- it
+        creates exactly the same real exposure.
+        """
         total = Decimal("0")
-        for source_asof, rung_index, quantity, limit_price in (
-            await self._session.execute(stmt)
-        ).all():
-            # The schema accepts historical nullable numbers.  Preserve the
-            # previous SQL SUM semantics for such rows (NULL product contributes
-            # no value) rather than inventing a value during this read.
-            fallback = (
-                Decimal(quantity) * Decimal(limit_price)
-                if quantity is not None and limit_price is not None
-                else Decimal("0")
+        for (
+            source_asof,
+            rung_index,
+            quantity,
+            limit_price,
+            side,
+            symbol,
+        ) in await self._auto_approved_rung_rows(
+            account_mode=account_mode,
+            market=market,
+            broker_account_id=broker_account_id,
+            start=start,
+            end=end,
+        ):
+            if side != "buy" or not is_parking_symbol(symbol):
+                continue
+            total += self._durable_cap_measure(
+                source_asof, rung_index, quantity, limit_price
             )
-            observations = project_auto_approve_cap_observations(source_asof)
-            observed_notionals = [
-                Decimal(observation["notional"])
-                for observation in observations
-                if observation["rung_index"] == rung_index
-            ]
-            # Stored observations are supplemental evidence, never permission
-            # to charge less than the booked amount.  The writer emits one per
-            # rung; taking the maximum also preserves the stronger measure if a
-            # legacy/manual repair left duplicates.
-            total += max([fallback, *observed_notionals])
+        return total
+
+    async def auto_approved_notional_between(
+        self,
+        *,
+        account_mode: str,
+        market: str,
+        broker_account_id: str | None,
+        start: datetime,
+        end: datetime,
+    ) -> Decimal:
+        """Sum durable cap measures for auto-approved rungs in a time window.
+
+        Most rungs are metered at their booked ``limit_price × quantity``.
+        §156 marketable profit-take sells are the deliberately narrower
+        exception: their durable cap observation records the stricter
+        ``max(limit_price, current_price) × quantity`` execution-price basis.
+        Read that vetted observation when present so a subsequent dispatch
+        cannot reopen the daily-cap gap; legacy/malformed/missing observations
+        retain the historical limit-price fallback.
+        """
+        total = Decimal("0")
+        for (
+            source_asof,
+            rung_index,
+            quantity,
+            limit_price,
+            _side,
+            _symbol,
+        ) in await self._auto_approved_rung_rows(
+            account_mode=account_mode,
+            market=market,
+            broker_account_id=broker_account_id,
+            start=start,
+            end=end,
+        ):
+            total += self._durable_cap_measure(
+                source_asof, rung_index, quantity, limit_price
+            )
         return total
 
     async def list_groups_for_toss_auto_submission_freeze(
