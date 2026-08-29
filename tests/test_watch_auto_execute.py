@@ -194,6 +194,38 @@ async def test_happy_path_places_order(db_session: AsyncSession, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_valid_canary_blocks_even_when_env_gate_is_armed(
+    db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+    marker = _synthetic_marker()
+    spy, calls = _make_place_spy()
+    alert = _alert(_good_max_action(), alert_metadata={"synthetic_canary": marker})
+    cid = f"corr-{uuid.uuid4().hex}"
+
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=spy,
+    )
+
+    assert calls == []
+    assert outcome["blocking_reasons"] == ["synthetic_canary_mutation_disabled"]
+    row = await _intent_for(db_session, cid)
+    assert row.blocked_by == "synthetic_canary_mutation_disabled"
+    assert row.detail["synthetic_canary_guard"]["evaluations"][1] == {
+        "layer": "env_gate",
+        "evaluated": True,
+        "result": "allow",
+        "code": "auto_execute_globally_enabled",
+    }
+
+
+@pytest.mark.asyncio
 async def test_synthetic_canary_records_both_independent_layer_results(
     db_session: AsyncSession, monkeypatch
 ):

@@ -749,6 +749,16 @@ async def test_synthetic_marker_propagates_four_hops_and_blocks_before_order(
     monkeypatch.setattr(
         watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", False
     )
+    actual_maybe_auto_execute = scanner_module.maybe_auto_execute
+    executor_calls: list[dict[str, object]] = []
+
+    async def _capture_maybe_auto_execute(db, **kwargs):
+        executor_calls.append(dict(kwargs))
+        return await actual_maybe_auto_execute(db, **kwargs)
+
+    monkeypatch.setattr(
+        scanner_module, "maybe_auto_execute", _capture_maybe_auto_execute
+    )
 
     stub = _StubHermesClient()
     summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
@@ -767,6 +777,12 @@ async def test_synthetic_marker_propagates_four_hops_and_blocks_before_order(
     # Hop 3: the event snapshot carries the exact detached marker.
     assert scanner_snapshot["synthetic_canary"] == marker
     assert stub.calls[0].scanner_snapshot["synthetic_canary"] == marker
+    assert len(executor_calls) == 1
+    executor_call = executor_calls[0]
+    assert "scanner_snapshot" in executor_call, (
+        "scanner did NOT pass the persisted event snapshot to the executor"
+    )
+    assert executor_call["scanner_snapshot"] == scanner_snapshot
 
     intent_row = await session.execute(
         sa.text(
