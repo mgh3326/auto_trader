@@ -22,8 +22,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Never
+from zoneinfo import ZoneInfo
 
-from scripts.b0x.ledger import DEFAULT_OBSERVATION_DIR
+from app.services.market_events.session_calendar import regular_session_bounds
 
 KIWOOM_BOUNDED_SEND_REGISTRY_SCHEMA: Final[str] = "kiwoom-bounded-send-seal-registry.v1"
 KIWOOM_BOUNDED_SEND_MARKER_SCHEMA: Final[str] = "kiwoom-bounded-send-consumption.v1"
@@ -31,7 +32,7 @@ KIWOOM_BOUNDED_SEND_SEAL_REGISTRY_PATH: Final[Path] = Path(__file__).with_name(
     "kiwoom_bounded_send_seals.toml"
 )
 KIWOOM_BOUNDED_SEND_CONSUMPTION_ROOT: Final[Path] = (
-    DEFAULT_OBSERVATION_DIR / "kr.kiwoom.mock" / "bounded-send-consumed"
+    Path.home() / ".local" / "state" / "auto-trader" / "b0x-kr-kiwoom-bounded-send"
 )
 
 KIWOOM_BOUNDED_SEND_INVALID_SEAL: Final[str] = "bounded_send_invalid_seal"
@@ -61,6 +62,14 @@ _MARKER_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_KST: Final[ZoneInfo] = ZoneInfo("Asia/Seoul")
+_STATE_README_NAME: Final[str] = "README.md"
+_STATE_README_BYTES: Final[bytes] = (
+    b"# Kiwoom bounded-send one-shot state\n\n"
+    b"This directory is durable authorization state, not a cleanup target.\n"
+    b"Deleting a consumption marker here releases that seal's one-shot latch "
+    b"after a process restart. Do not remove or edit these files.\n"
+)
 _PROCESS_CONSUMPTION_LOCK = threading.Lock()
 _PROCESS_CONSUMED_SEAL_DIGESTS: set[str] = set()
 
@@ -194,8 +203,15 @@ def _registered_seals() -> dict[str, BoundedSendSeal]:
         _reject(KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE)
     registered: dict[str, BoundedSendSeal] = {}
     try:
+        registry_now = _checked_wall_clock_now() if entries else None
         for raw_entry in entries:
             seal = snapshot_bounded_send_seal(raw_entry)
+            if registry_now is None:
+                _reject(KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE)
+            _assert_registry_expiry_within_current_krx_session(
+                seal,
+                now=registry_now,
+            )
             if seal.seal_digest in registered:
                 _reject(KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE)
             registered[seal.seal_digest] = seal
@@ -226,6 +242,23 @@ def _checked_wall_clock_now() -> dt.datetime:
 def _assert_unexpired(seal: BoundedSendSeal, *, now: dt.datetime) -> None:
     if seal.expiry <= now:
         _reject(KIWOOM_BOUNDED_SEND_EXPIRED)
+
+
+def _assert_registry_expiry_within_current_krx_session(
+    seal: BoundedSendSeal,
+    *,
+    now: dt.datetime,
+) -> None:
+    """Require effective issuance and expiry within today's confirmed KRX day."""
+
+    session_day = now.astimezone(_KST).date()
+    bounds = regular_session_bounds("kr", session_day)
+    if bounds is None:
+        _reject(KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE)
+    _, session_close = bounds
+    expiry = seal.expiry
+    if expiry.astimezone(_KST).date() != session_day or expiry > session_close:
+        _reject(KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE)
 
 
 def assert_bounded_send_seal_registered_and_current(seal: BoundedSendSeal) -> None:
@@ -271,10 +304,29 @@ def _write_all(fd: int, payload: bytes) -> None:
         written += count
 
 
+def _ensure_consumption_directory(path: Path) -> None:
+    """Create the state directory and its operator warning before any marker."""
+
+    path.mkdir(parents=True, exist_ok=True)
+    readme_path = path / _STATE_README_NAME
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(readme_path, flags, 0o644)
+    except FileExistsError:
+        return
+    try:
+        _write_all(fd, _STATE_README_BYTES)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _write_consumption_marker(path: Path, payload: bytes) -> None:
     """Exclusively create and fsync a marker; never remove it on uncertainty."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_consumption_directory(path.parent)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
