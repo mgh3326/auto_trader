@@ -158,6 +158,8 @@ async def test_crypto_universe_uses_canonical_upbit_partition() -> None:
     repo = MagicMock()
     repo.session = MagicMock()
     repo.session.execute = AsyncMock(return_value=[SimpleNamespace(market="KRW-BTC")])
+    repo.session.commit = AsyncMock()
+    repo.session.rollback = AsyncMock()
     svc = DailyCandleSyncService(
         repository=repo,
         kis_kr_fetcher=AsyncMock(),

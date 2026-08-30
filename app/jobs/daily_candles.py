@@ -43,7 +43,7 @@ async def run_daily_candles_sync(market: str) -> dict[str, Any]:
     try:
         svc = await _build_default_service()
         result = await svc.sync_market_universe(market=market, horizon_bars=horizon)
-        result["status"] = "ok"
+        result.setdefault("status", "ok")
         return result
     except Exception as exc:
         logger.error(
