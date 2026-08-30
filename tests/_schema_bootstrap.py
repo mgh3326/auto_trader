@@ -88,7 +88,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # trigger. Production applies alembic/versions/20260823_screener_pick_log.py
 # separately; tests never auto-run that migration.
 # v41 (ROB-s257 E-2): nullable rung void-reason group + closed CHECK.
-SCHEMA_BOOTSTRAP_VERSION = 41
+# v42 (ROB-1331): review.buy_gate_ab_collection_epoch ORM table + immutable
+# UPDATE/DELETE/TRUNCATE triggers. The production migration seeds the marker;
+# create_all test schemas leave it empty so tests can transact a canonical row.
+SCHEMA_BOOTSTRAP_VERSION = 42
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1780,6 +1783,28 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_screener_pick_log_append_only "
     "BEFORE UPDATE OR DELETE ON review.screener_pick_log "
     "FOR EACH ROW EXECUTE FUNCTION review.reject_screener_pick_log_mutation()",
+    # ---- ROB-1331 Q6 collection activation epoch (table via create_all).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_buy_gate_ab_epoch_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION
+            'review.buy_gate_ab_collection_epoch is immutable; % rejected',
+            TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_buy_gate_ab_collection_epoch_immutable "
+    "ON review.buy_gate_ab_collection_epoch",
+    "CREATE TRIGGER trg_buy_gate_ab_collection_epoch_immutable "
+    "BEFORE UPDATE OR DELETE ON review.buy_gate_ab_collection_epoch "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_buy_gate_ab_epoch_mutation()",
+    "DROP TRIGGER IF EXISTS trg_buy_gate_ab_collection_epoch_truncate_immutable "
+    "ON review.buy_gate_ab_collection_epoch",
+    "CREATE TRIGGER trg_buy_gate_ab_collection_epoch_truncate_immutable "
+    "BEFORE TRUNCATE ON review.buy_gate_ab_collection_epoch "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_buy_gate_ab_epoch_mutation()",
 )
 
 

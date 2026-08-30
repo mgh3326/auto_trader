@@ -15,6 +15,11 @@ from decimal import Decimal, InvalidOperation
 from statistics import median
 from typing import Any, Literal
 
+from app.services.buy_gate_ab_shadow.epoch import (
+    COLLECTION_EPOCH,
+    CollectionEpochMarker,
+    assess_collection_readiness,
+)
 from app.services.buy_gate_ab_shadow.spec import PRE_REGISTRATION
 
 Variant = Literal["A", "B"]
@@ -256,33 +261,79 @@ def compare_cohorts(
     samples: Sequence[CohortSample],
     *,
     scoring_as_of: datetime,
-    collection_start: date,
-    collection_calendar_days: int = int(PRE_REGISTRATION["collection_calendar_days"]),
+    first_valid_record_at: datetime | None = None,
+    epoch: CollectionEpochMarker = COLLECTION_EPOCH,
 ) -> dict[str, Any]:
-    """Compare A vs B with one scoring clock. Does not name a winner."""
+    """Compare A vs B only after the sealed clock and all events mature."""
 
     if scoring_as_of.tzinfo is None:
         raise ScoringError("scoring_as_of must be timezone-aware")
-    collection_end = date.fromordinal(
-        collection_start.toordinal() + collection_calendar_days - 1
+    for sample in samples:
+        if (
+            not epoch.collection_start
+            <= sample.decision_date
+            < (epoch.collection_end_exclusive)
+        ):
+            raise ScoringError("sample decision_date is outside the sealed epoch")
+
+    longest_window = max(_WINDOWS)
+    events_matured = all(
+        len(
+            _usable_bars(
+                sample.bars,
+                decision_date=sample.decision_date,
+                scoring_as_of=scoring_as_of,
+            )
+        )
+        >= longest_window
+        for sample in samples
     )
-    collection_complete = scoring_as_of.date() >= collection_end
-    if not collection_complete:
+    readiness = assess_collection_readiness(
+        as_of=scoring_as_of,
+        first_valid_record_at=first_valid_record_at,
+        event_count=len(samples),
+        all_events_matured=events_matured,
+        marker=epoch,
+    )
+    readiness_payload = readiness.as_dict()
+    base = {
+        "experiment_id": PRE_REGISTRATION["experiment_id"],
+        "scoring_as_of": scoring_as_of.isoformat(),
+        "collection_armed_at": readiness_payload["collection_armed_at"],
+        "collection_start": readiness_payload["collection_start"],
+        "collection_end": readiness_payload["collection_last_date"],
+        "collection_end_exclusive": readiness_payload["collection_end_exclusive"],
+        "collection_complete": readiness.collection_window_closed,
+        "collection_window_closed": readiness.collection_window_closed,
+        "first_valid_record_at": readiness_payload["first_valid_record_at"],
+        "first_valid_record_role": readiness_payload["first_valid_record_role"],
+        "event_count": readiness.event_count,
+        "all_events_matured": readiness.all_events_matured,
+        "scoring_ready": readiness.scoring_ready,
+        "status": readiness.status,
+        "outcome": readiness.outcome,
+        "policy_projection_sha256": epoch.policy_projection_sha256,
+        "preregistration_spec_sha256": epoch.preregistration_spec_sha256,
+        "policy_implication": "none_until_collection_complete",
+        "intermediate_use_forbidden": True,
+        "winner_declaration": "forbidden",
+        "combine_with": PRE_REGISTRATION["scoring"]["combine_with"],
+    }
+    if not readiness.scoring_ready:
         # Do not expose intermediate returns or drawdowns for selective reading.
-        # The collection status is the only permissible pre-close output.
+        # Both the collection clock and every event's longest window must close.
         return {
-            "experiment_id": PRE_REGISTRATION["experiment_id"],
-            "scoring_as_of": scoring_as_of.isoformat(),
-            "collection_start": collection_start.isoformat(),
-            "collection_end": collection_end.isoformat(),
-            "collection_complete": False,
-            "status": "collection_incomplete",
-            "policy_implication": "none_until_collection_complete",
-            "intermediate_use_forbidden": True,
-            "winner_declaration": "forbidden",
-            "score_computation": "refused_until_collection_complete",
-            "combine_with": PRE_REGISTRATION["scoring"]["combine_with"],
+            **base,
+            "score_computation": "refused_until_scoring_ready",
         }
+    if not samples:
+        # A zero-firing epoch still reaches a terminal outcome.  Waiting for a
+        # first record here would turn that record into a post-hoc start gate.
+        return {
+            **base,
+            "score_computation": "not_applicable_no_firing",
+        }
+
     by_variant: dict[str, dict[int, list[WindowScore]]] = {
         "A": {window: [] for window in _WINDOWS},
         "B": {window: [] for window in _WINDOWS},
@@ -312,17 +363,8 @@ def compare_cohorts(
         }
 
     return {
-        "experiment_id": PRE_REGISTRATION["experiment_id"],
-        "scoring_as_of": scoring_as_of.isoformat(),
-        "collection_start": collection_start.isoformat(),
-        "collection_end": collection_end.isoformat(),
-        "collection_complete": collection_complete,
-        "status": (
-            "collection_complete" if collection_complete else "collection_incomplete"
-        ),
-        "policy_implication": "none_until_collection_complete",
-        "intermediate_use_forbidden": True,
-        "winner_declaration": "forbidden",
+        **base,
+        "score_computation": "completed",
         "primary_metrics": list(PRIMARY_METRICS),
         "sensitivity_metrics": list(SENSITIVITY_METRICS),
         "actual_fill_return_is_sensitivity_only": True,
@@ -350,5 +392,4 @@ def compare_cohorts(
                 },
             },
         },
-        "combine_with": PRE_REGISTRATION["scoring"]["combine_with"],
     }

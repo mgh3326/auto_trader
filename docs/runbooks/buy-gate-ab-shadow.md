@@ -7,6 +7,9 @@ watch, a policy edit, or a scheduler.
 
 Controlling issue: [ROB-1301](https://linear.app/mgh3326/issue/ROB-1301).
 Code pin: `app/services/buy_gate_ab_shadow/spec.py` (`PINNED_SPEC_SHA256`).
+Q6 activation addendum: ROB-1331
+`rob-1331-q6-activation-epoch.v1`; immutable marker:
+`review.buy_gate_ab_collection_epoch`.
 
 ## Forbidden (issue canonical, not paraphrased)
 
@@ -45,6 +48,39 @@ Giving one arm later bars, a different entry, or a different other-gate
 bit is a contract violation; the evaluator/scorer drop bars after
 `scoring_as_of` and do not impute holes.
 
+## Q6 activation epoch addendum (ROB-1331, v1)
+
+This is a versioned addendum to the original ROB-1301 pre-registration, not a
+replacement chosen from observed records. The exact marker is:
+
+| Field | Sealed value |
+| --- | --- |
+| `collection_armed_at` | `2026-08-30T09:17:36+09:00` |
+| next complete eligible session / `collection_start` | `2026-08-31` (common KR/US regular-session date) |
+| fixed window | 28 calendar days |
+| last included calendar date | `2026-09-27` |
+| `collection_end_exclusive` | `2026-09-28` |
+| clock timezone | `Asia/Seoul` |
+| policy projection SHA-256 | `c47ce8e132b7c88fa9e2554cdddc0f84663b467e115d45b79a07c618de9d857d` |
+| amended pre-registration SHA-256 | `c07fb69001f5e48759718a4d725a327d5b6b1fb5d4aea442f3aeb7b170ffcd5b` |
+
+The projection hash covers only the exact A/B decision surface: KR/US,
+variant A `strong`, variant B `moderate`, the shared RSI/support-distance/
+upside/three-bit gates, and `support_strength_min` as the only difference. It
+does not live-read or hash unrelated policy keys.
+
+The production migration creates and seeds exactly one row. PostgreSQL rejects
+`UPDATE`, `DELETE`, and `TRUNCATE`; application code exposes the same marker as
+a frozen dataclass. Operators apply
+`alembic/versions/20260830_rob1331_q6_epoch.py` separately with
+`uv run alembic upgrade head`. Do not activate any evaluator/`forecast_save`
+caller wiring until that marker and this addendum are deployed and independently
+reviewed. Wiring is a separate PR.
+
+`first_valid_record_at` is not a marker column and is never a clock input. It
+is a nullable observation derived from valid event rows. Whether it is null,
+early, or late cannot move `collection_start` or `collection_end_exclusive`.
+
 ## Session procedure
 
 1. Run the live screen as today (variant A). Winners still go through
@@ -72,6 +108,10 @@ Every shadow row must carry:
 | `forecast_target.variant` | `B` |
 | `forecast_target.promote` | `false` |
 | `forecast_target.spec_sha256` | `PINNED_SPEC_SHA256` at the moment of registration |
+| `forecast_target.policy_projection_sha256` | exact Q6 policy projection pin |
+| `forecast_target.collection_epoch_id` | `rob-1301-q6-collection-epoch.v1` |
+| `forecast_target.collection_armed_at` | sealed timestamp above |
+| `forecast_target.collection_start` / `collection_end_exclusive` | sealed 28-day boundary above |
 | `forecast_target.evaluation_as_of` | timezone-aware decision timestamp |
 | `forecast_target.input_snapshot` / `_sha256` | the normalized shared A/B gate input and its digest |
 | `forecast_target.calibration_eligibility` | `calibration_exclude` |
@@ -90,12 +130,18 @@ malformed purported shadow target is rejected before it is saved.
 
 ## 4-week scoring report spec
 
-Run once `scoring_as_of.date() >= collection_start + 27 days` and every
-sample that should have a 20-session window can be supplied that many
-regular-session bars with `session_date <= scoring_as_of`. Until then
-`compare_cohorts` returns its collection status only and refuses to compute
-or return intermediate returns/drawdowns; `policy_implication` stays
+`scoring_ready` is exactly `collection_window_closed AND
+all_events_matured`. The collection window closes at the sealed exclusive
+boundary (`2026-09-28` in the clock timezone); every observed event must then
+have its full 20-session longest window. Satisfying only one side never permits
+scoring. Until both are true, `compare_cohorts` returns status only and refuses
+to compute or return intermediate returns/drawdowns; `policy_implication` stays
 `none_until_collection_complete`.
+
+Zero events do not hold the window open. With no event, universal maturity is
+true, so the fixed window closes normally with
+`status=INSUFFICIENT_SAMPLE`, `outcome=NO_FIRING`, and no score arms. Waiting
+for a first row would make that row a post-hoc start selector and is forbidden.
 
 ### Cohorts
 
@@ -139,3 +185,5 @@ Copy that JSON. Do not retune thresholds from it in the same change.
 * It does not call `order_proposal_create`, `place_order`, or watch
   create.
 * It does not register a schedule.
+* It does not add or activate the missing caller wiring; that is PR2 after this
+  marker is merged, deployed, migrated, and independently reviewed.

@@ -311,9 +311,22 @@ async def test_rob1301_shadow_save_records_actual_calibration_exclusion(
                 },
             }
         ),
-        evaluation_as_of=datetime(2026, 8, 20, 6, 30, tzinfo=UTC),
+        evaluation_as_of=datetime(2026, 8, 31, 0, 30, tzinfo=UTC),
     )
     payload = build_shadow_buy_forecasts(evaluation, created_by="shadow-test")[0]
+    tampered = {
+        **payload,
+        "forecast_target": {
+            **payload["forecast_target"],
+            "policy_projection_sha256": "0" * 64,
+        },
+    }
+    with pytest.raises(
+        svc.ForecastValidationError,
+        match="mismatched policy_projection_sha256",
+    ):
+        await svc.save_forecast(db_session, **tampered)
+
     action, row = await svc.save_forecast(db_session, **payload)
     await db_session.commit()
 
@@ -334,6 +347,13 @@ async def test_rob1301_shadow_save_records_actual_calibration_exclusion(
     assert len(decisions) == 1
     assert decisions[0].calibration_eligibility == CalibrationEligibility.EXCLUDE.value
     assert decisions[0].evidence["experiment_id"] == "rob-1301-buy-gate-ab-shadow"
+    assert decisions[0].evidence["collection_epoch_id"] == (
+        "rob-1301-q6-collection-epoch.v1"
+    )
+    assert (
+        decisions[0].evidence["policy_projection_sha256"]
+        == (payload["forecast_target"]["policy_projection_sha256"])
+    )
 
     _, repeated = await svc.save_forecast(
         db_session, forecast_id=str(row.forecast_id), **payload

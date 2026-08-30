@@ -56,7 +56,11 @@
     완화하지 마라.
 12. **매수 게이트 A/B shadow (ROB-1301)**: variant B는 순수 기록이다.
     라이브 게이트 문언·주문·워치·제안 승격 금지. 채점 전 중간값으로 정책
-    변경 금지. 스케줄러/자동화 트리거로 연결하지 마라.
+    변경 금지. 스케줄러/자동화 트리거로 연결하지 마라. Q6 epoch의
+    `collection_armed_at`/고정 28일 경계/policy projection hash는 변경 금지이며,
+    `first_valid_record_at`으로 시작점을 옮기지 마라. 0건도
+    `INSUFFICIENT_SAMPLE / NO_FIRING`으로 종료하고 readiness는 창 종료와 전 사건
+    성숙의 AND다. caller wiring은 epoch marker serving 뒤 별도 PR에서만 한다.
 13. **screener pick log**: `buy_candidate_fanout` 안에서 쓰지 마라 (no-write
     계약). 관측 레코더는 바깥, `SCREENER_PICK_LOG_ENABLED` 기본 false,
     fail-open, 스케줄러 금지. 가격은 exact decimal 문자열.

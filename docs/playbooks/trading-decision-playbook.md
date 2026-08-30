@@ -470,6 +470,15 @@ B만 통과하는 후보는 `evaluate_buy_gate_ab_shadow`가 돌려준
 민감도 분리는 런북
 [`docs/runbooks/buy-gate-ab-shadow.md`](../runbooks/buy-gate-ab-shadow.md).
 
+ROB-1331 Q6 부록은 시작점을 첫 record와 분리해 봉인한다:
+`collection_armed_at=2026-08-30T09:17:36+09:00` → 다음 공통 완전 세션
+`collection_start=2026-08-31` → 28일 고정 창
+(`collection_end_exclusive=2026-09-28`). `first_valid_record_at`은 nullable
+관측값일 뿐 경계 계산에 들어가지 않는다. 사건이 0건이어도 창은
+`INSUFFICIENT_SAMPLE / NO_FIRING`으로 종료하며, `scoring_ready`는 오직
+`collection_window_closed AND all_events_matured`이다. 호출 지점 배선은 이
+부록/불변 marker의 merge·배포·migration·독립 리뷰 뒤 별도 PR에서만 한다.
+
 금지 (이슈 정본, 변경 없음):
 
 * shadow가 제안·주문·워치로 승격 금지(순수 기록)

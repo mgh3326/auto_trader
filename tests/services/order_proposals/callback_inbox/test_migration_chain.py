@@ -43,12 +43,14 @@ suffix, and the fixture refuses to drop anything that does not match it.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC
 from typing import TypedDict
 
 import pytest
@@ -56,13 +58,15 @@ import pytest_asyncio
 from sqlalchemy.engine import make_url
 
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
+from app.services.buy_gate_ab_shadow.epoch import COLLECTION_EPOCH
+from app.services.buy_gate_ab_shadow.spec import POLICY_PROJECTION
 from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260824_s257_rung_reason"
+HEAD_REVISION = "20260830_rob1331_q6_epoch"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -96,6 +100,7 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.telegram_callback_recovery_cursor",
     "review.telegram_callback_inbox",
     "review.screener_pick_log",
+    "review.buy_gate_ab_collection_epoch",
 )
 
 
@@ -237,6 +242,75 @@ async def _cursor_table_exists(database_url: str) -> bool:
                 "SELECT to_regclass('review.telegram_callback_recovery_cursor') IS NOT NULL"
             )
         )
+    finally:
+        await connection.close()
+
+
+async def _epoch_table_exists(database_url: str) -> bool:
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        return bool(
+            await connection.fetchval(
+                "SELECT to_regclass('review.buy_gate_ab_collection_epoch') IS NOT NULL"
+            )
+        )
+    finally:
+        await connection.close()
+
+
+async def _assert_epoch_marker(database_url: str) -> None:
+    """Verify the seeded seal and exercise its mutation rejection."""
+
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        rows = await connection.fetch(
+            "SELECT * FROM review.buy_gate_ab_collection_epoch ORDER BY id"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["id"] == 1
+        assert row["experiment_id"] == COLLECTION_EPOCH.experiment_id
+        assert row["epoch_id"] == COLLECTION_EPOCH.epoch_id
+        assert row["addendum_version"] == COLLECTION_EPOCH.addendum_version
+        assert row["collection_armed_at"] == (
+            COLLECTION_EPOCH.collection_armed_at.astimezone(UTC)
+        )
+        assert row["collection_start"] == COLLECTION_EPOCH.collection_start
+        assert row["collection_end_exclusive"] == (
+            COLLECTION_EPOCH.collection_end_exclusive
+        )
+        assert row["collection_calendar_days"] == 28
+        assert row["policy_projection_sha256"] == (
+            COLLECTION_EPOCH.policy_projection_sha256
+        )
+        assert row["preregistration_spec_sha256"] == (
+            COLLECTION_EPOCH.preregistration_spec_sha256
+        )
+        projection = row["policy_projection"]
+        if isinstance(projection, str):
+            projection = json.loads(projection)
+        assert projection == POLICY_PROJECTION
+
+        mutation_rejected = False
+        try:
+            await connection.execute(
+                "UPDATE review.buy_gate_ab_collection_epoch "
+                "SET collection_armed_at = collection_armed_at + interval '1 second' "
+                "WHERE id = 1"
+            )
+        except asyncpg.PostgresError as exc:
+            mutation_rejected = exc.sqlstate == "23001"
+        assert mutation_rejected is True
     finally:
         await connection.close()
 
@@ -788,6 +862,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     )
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
+    assert await _epoch_table_exists(scratch_database) is False
     _alembic("stamp", PARENT_REVISION, database_url=scratch_database)
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False, (
@@ -796,11 +871,16 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _cursor_table_exists(scratch_database) is False, (
         "the recovery cursor exists at the parent revision; the chain is not additive"
     )
+    assert await _epoch_table_exists(scratch_database) is False, (
+        "the Q6 epoch exists at the parent revision; the chain is not additive"
+    )
 
     async def _check_head_state() -> None:
         await _assert_rung_reason_schema(scratch_database)
         assert await _table_exists(scratch_database) is True
         assert await _cursor_table_exists(scratch_database) is True
+        assert await _epoch_table_exists(scratch_database) is True
+        await _assert_epoch_marker(scratch_database)
         assert await _cursor_row_count(scratch_database) == 0
         await _assert_cursor_constraint_matrix(scratch_database)
         assert await _cursor_row_count(scratch_database) == 0
@@ -861,6 +941,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
+    assert await _epoch_table_exists(scratch_database) is False
 
     # -- and up again --------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)

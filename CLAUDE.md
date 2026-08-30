@@ -735,6 +735,16 @@ KR/US 매수 스크리닝의 **variant B(moderate+ 지지)** 는 계좌 불사�
 - **런북**: `docs/runbooks/buy-gate-ab-shadow.md`
 - **플레이북**: `docs/playbooks/trading-decision-playbook.md` §3.2 (lane
   sequence 아님)
+- **Q6 activation epoch (ROB-1331)**: versioned addendum
+  `rob-1331-q6-activation-epoch.v1` + immutable singleton
+  `review.buy_gate_ab_collection_epoch`. `collection_armed_at=2026-08-30T09:17:36+09:00`
+  → 다음 공통 완전 세션 `collection_start=2026-08-31` → 28일 고정 창
+  (`collection_end_exclusive=2026-09-28`). `first_valid_record_at`은 nullable
+  관측값이며 경계 입력이 아니다. 0건도 `INSUFFICIENT_SAMPLE / NO_FIRING`으로
+  종료한다. `scoring_ready = collection_window_closed AND all_events_matured`.
+  policy projection SHA-256은 spec/forecast/DB marker에 동일하게 봉인된다.
+  🔴 caller wiring은 marker의 merge·배포·migration·독립 리뷰 뒤 별도 PR에서만 한다.
+  ROB-1331 PR 자체에는 caller/scheduler/실행 배선이 없다.
 
 ### 데이터베이스 정규화 구조
 

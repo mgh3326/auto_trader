@@ -4,6 +4,7 @@ from .analysis_artifact import AnalysisArtifact
 from .analyst_consensus_snapshot import AnalystConsensusSnapshot
 from .base import Base
 from .binance_demo_order_ledger import BinanceDemoOrderLedger
+from .buy_gate_ab_collection_epoch import BuyGateABCollectionEpoch
 from .crypto_candles import CryptoCandle1d, CryptoCandle1m
 from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
@@ -180,6 +181,7 @@ __all__ = [
     "AnalysisArtifact",
     "AnalystConsensusSnapshot",
     "BinanceDemoOrderLedger",
+    "BuyGateABCollectionEpoch",
     "ScalpTradeAnalytics",
     "ScalpingDailyReview",
     "ScalpingReviewAction",

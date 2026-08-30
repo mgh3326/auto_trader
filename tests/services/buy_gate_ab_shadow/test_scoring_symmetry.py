@@ -14,12 +14,12 @@ from app.services.buy_gate_ab_shadow.scoring import (
     score_window,
 )
 
-_DECISION = date(2026, 8, 20)
-_SCORING_AS_OF = datetime(2026, 9, 18, 15, 0, tzinfo=UTC)
+_DECISION = date(2026, 8, 31)
+_SCORING_AS_OF = datetime(2026, 10, 10, 15, 0, tzinfo=UTC)
 
 
 def _bars(
-    n: int, *, start: date = date(2026, 8, 21), close: str = "110"
+    n: int, *, start: date = date(2026, 9, 1), close: str = "110"
 ) -> tuple[DailyBar, ...]:
     rows: list[DailyBar] = []
     for index in range(n):
@@ -50,7 +50,7 @@ def test_same_entry_and_bars_yield_identical_scores_regardless_of_label() -> Non
 
 
 def test_bars_after_scoring_as_of_are_ignored_even_if_one_arm_is_fed_them() -> None:
-    cutoff = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+    cutoff = datetime(2026, 9, 4, 0, 0, tzinfo=UTC)
     future = _bars(20)
     clipped = score_window(
         entry=Decimal("100"),
@@ -78,31 +78,31 @@ def test_missing_bars_are_not_imputed() -> None:
 def test_drawdown_uses_entry_as_initial_peak() -> None:
     bars = (
         DailyBar(
-            session_date=date(2026, 8, 21),
+            session_date=date(2026, 9, 1),
             high=Decimal("95"),
             low=Decimal("90"),
             close=Decimal("92"),
         ),
         DailyBar(
-            session_date=date(2026, 8, 22),
+            session_date=date(2026, 9, 2),
             high=Decimal("101"),
             low=Decimal("91"),
             close=Decimal("100"),
         ),
         DailyBar(
-            session_date=date(2026, 8, 24),
+            session_date=date(2026, 9, 3),
             high=Decimal("103"),
             low=Decimal("80"),
             close=Decimal("85"),
         ),
         DailyBar(
-            session_date=date(2026, 8, 25),
+            session_date=date(2026, 9, 4),
             high=Decimal("90"),
             low=Decimal("84"),
             close=Decimal("88"),
         ),
         DailyBar(
-            session_date=date(2026, 8, 26),
+            session_date=date(2026, 9, 5),
             high=Decimal("110"),
             low=Decimal("88"),
             close=Decimal("105"),
@@ -142,7 +142,6 @@ def test_compare_cohorts_uses_one_as_of_and_refuses_to_name_a_winner() -> None:
             ),
         ],
         scoring_as_of=_SCORING_AS_OF,
-        collection_start=date(2026, 8, 20),
     )
     assert report["winner_declaration"] == "forbidden"
     assert report["intermediate_use_forbidden"] is True
@@ -169,13 +168,48 @@ def test_incomplete_collection_is_flagged_not_for_policy() -> None:
                 bars=_bars(20),
             )
         ],
-        scoring_as_of=datetime(2026, 8, 25, tzinfo=UTC),
-        collection_start=date(2026, 8, 20),
+        scoring_as_of=datetime(2026, 9, 10, tzinfo=UTC),
     )
     assert report["collection_complete"] is False
-    assert report["status"] == "collection_incomplete"
+    assert report["status"] == "COLLECTION_OPEN"
+    assert report["scoring_ready"] is False
     assert report["policy_implication"] == "none_until_collection_complete"
-    assert report["score_computation"] == "refused_until_collection_complete"
+    assert report["score_computation"] == "refused_until_scoring_ready"
+    assert "arms" not in report
+
+
+def test_closed_collection_waits_until_every_event_is_mature() -> None:
+    report = compare_cohorts(
+        [
+            CohortSample(
+                variant="B",
+                symbol="005930",
+                decision_date=_DECISION,
+                entry=Decimal("100"),
+                entry_basis="frozen_decision_price",
+                bars=_bars(19),
+            )
+        ],
+        scoring_as_of=_SCORING_AS_OF,
+    )
+
+    assert report["collection_window_closed"] is True
+    assert report["all_events_matured"] is False
+    assert report["scoring_ready"] is False
+    assert report["status"] == "AWAITING_EVENT_MATURITY"
+    assert "arms" not in report
+
+
+def test_zero_events_close_without_waiting_for_a_first_record() -> None:
+    report = compare_cohorts([], scoring_as_of=_SCORING_AS_OF)
+
+    assert report["collection_window_closed"] is True
+    assert report["all_events_matured"] is True
+    assert report["scoring_ready"] is True
+    assert report["status"] == "INSUFFICIENT_SAMPLE"
+    assert report["outcome"] == "NO_FIRING"
+    assert report["first_valid_record_at"] is None
+    assert report["score_computation"] == "not_applicable_no_firing"
     assert "arms" not in report
 
 

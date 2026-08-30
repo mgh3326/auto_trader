@@ -10,6 +10,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.services.buy_gate_ab_shadow.epoch import (
+    COLLECTION_EPOCH,
+    CollectionEpochError,
+    assert_epoch_seal,
+)
 from app.services.buy_gate_ab_shadow.evaluate import (
     EvaluationError,
     evaluate_candidates,
@@ -54,9 +59,13 @@ def evaluate_buy_gate_ab_shadow_impl(
             "live_gate_impact": False,
         }
     try:
+        assert_epoch_seal()
         as_of = _parse_as_of(evaluation_as_of)
         rows = evaluate_candidates(candidates, evaluation_as_of=as_of)
-    except EvaluationError as exc:
+        shadow_forecasts: list[dict[str, Any]] = []
+        for row in rows:
+            shadow_forecasts.extend(build_shadow_buy_forecasts(row, created_by=author))
+    except (CollectionEpochError, EvaluationError, ValueError) as exc:
         return {
             "success": False,
             "error": str(exc),
@@ -64,14 +73,12 @@ def evaluate_buy_gate_ab_shadow_impl(
             "live_gate_impact": False,
         }
 
-    shadow_forecasts: list[dict[str, Any]] = []
-    for row in rows:
-        shadow_forecasts.extend(build_shadow_buy_forecasts(row, created_by=author))
     return {
         "success": True,
         "experiment_id": EXPERIMENT_ID,
         "spec_sha256": spec_sha256(),
         "pinned_spec_sha256": PINNED_SPEC_SHA256,
+        "collection_epoch": COLLECTION_EPOCH.as_dict(),
         "evaluation_as_of": as_of.isoformat(),
         "promote": False,
         "live_gate_impact": False,
