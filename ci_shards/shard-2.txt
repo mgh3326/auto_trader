@@ -333,6 +333,7 @@ tests/test_kis_overseas_pending_mock.py
 tests/test_kis_token_circuit_breaker.py
 tests/test_kiwoom_mock_config.py
 tests/test_kiwoom_mock_us_smoke_cli.py
+tests/test_kiwoom_stage2_daily_collect.py
 tests/test_kr_aliases_extension.py
 tests/test_kr_candles_sync.py
 tests/test_kr_market_ranking_collector.py
