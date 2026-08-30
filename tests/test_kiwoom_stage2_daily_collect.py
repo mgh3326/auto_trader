@@ -12,12 +12,13 @@ import asyncio
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import text
 
 from app.services.brokers.kiwoom.stage2_daily_collect import (
     CollectionResult,
@@ -391,7 +392,10 @@ async def test_cli_defaults_to_dry_run_until_commit_is_explicit(
 @pytest.mark.asyncio
 async def test_repository_inserts_missing_rows_without_source_overwrite() -> None:
     session = MagicMock()
-    execute_result = MagicMock(rowcount=1)
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = [
+        datetime(2026, 8, 28, tzinfo=UTC)
+    ]
     session.execute = AsyncMock(return_value=execute_result)
     repo = KiwoomDailyCandleRepository(session=session)
     candle = KiwoomDailyCandle(
@@ -409,9 +413,112 @@ async def test_repository_inserts_missing_rows_without_source_overwrite() -> Non
     inserted = await repo.insert_missing([candle])
 
     assert inserted == 1
-    statement, payload = session.execute.await_args.args
+    statement = session.execute.await_args.args[0]
     assert "ON CONFLICT (time, symbol, venue) DO NOTHING" in str(statement)
-    assert payload[0]["source"] == "kiwoom_live"
+    assert "RETURNING public.kr_candles_1d.time" in str(statement)
+    assert "kiwoom_live" in statement.compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_repository_counts_bulk_new_rows_then_conflicts_with_test_db(
+    db_session,
+) -> None:
+    """Exercise asyncpg against test_db, rather than a synthetic result."""
+    symbol = "ROB2000S2"
+    rows = tuple(
+        KiwoomDailyCandle(
+            symbol=symbol,
+            session_date=(
+                datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index)
+            ).strftime("%Y%m%d"),
+            time_utc=datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index),
+            open=Decimal("69800"),
+            high=Decimal("70500"),
+            low=Decimal("69600"),
+            close=Decimal("70100"),
+            volume=Decimal("9263135"),
+            value=Decimal("648525000000"),
+        )
+        for index in range(600)
+    )
+    repo = KiwoomDailyCandleRepository(session=db_session)
+
+    try:
+        inserted = await repo.insert_missing(rows)
+        await db_session.commit()
+        stored = await db_session.scalar(
+            text("SELECT count(*) FROM public.kr_candles_1d WHERE symbol = :symbol"),
+            {"symbol": symbol},
+        )
+
+        skipped = await repo.insert_missing(rows)
+        await db_session.commit()
+
+        assert stored == len(rows)
+        assert inserted == len(rows)
+        assert skipped == 0
+    finally:
+        await db_session.rollback()
+        await db_session.execute(
+            text("DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"),
+            {"symbol": symbol},
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_collector_reports_real_bulk_inserts_then_conflicts(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session,
+) -> None:
+    """Keep the commit summary aligned with actual rows for three 600-row symbols."""
+    _arm(monkeypatch)
+    symbols = ("200001", "200002", "200003")
+    dates = tuple(
+        (datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index)).strftime("%Y%m%d")
+        for index in range(600)
+    )
+    repo = KiwoomDailyCandleRepository(session=db_session)
+
+    async def write_rows(rows: Sequence[KiwoomDailyCandle]) -> int:
+        inserted = await repo.insert_missing(rows)
+        await db_session.commit()
+        return inserted
+
+    collector = KiwoomStage2DailyCollector(
+        client=StubDailyClient(
+            payloads={symbol: _payload(*dates) for symbol in symbols}
+        ),
+        write_rows=write_rows,
+        sleep=AsyncMock(),
+    )
+    try:
+        first = await collector.collect(
+            symbols=symbols,
+            bars=600,
+            rate_seconds=0.5,
+            commit=True,
+        )
+        repeated = await collector.collect(
+            symbols=symbols,
+            bars=600,
+            rate_seconds=0.5,
+            commit=True,
+        )
+
+        assert first.rows_received == 1_800
+        assert first.rows_inserted == 1_800
+        assert first.rows_conflict_skipped == 0
+        assert repeated.rows_inserted == 0
+        assert repeated.rows_conflict_skipped == 1_800
+    finally:
+        await db_session.rollback()
+        for symbol in symbols:
+            await db_session.execute(
+                text("DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"),
+                {"symbol": symbol},
+            )
+        await db_session.commit()
 
 
 def test_new_collector_has_no_order_or_account_import_or_reference() -> None:
