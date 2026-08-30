@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
+from sqlalchemy import Column, DateTime, MetaData, Numeric, String, Table, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.brokers.kiwoom.chart_compare import (
@@ -55,6 +56,21 @@ _REQUIRED_CREDENTIAL_ENV_KEYS = (
     "KIWOOM_LIVE_APP_SECRET",
 )
 _KST = ZoneInfo("Asia/Seoul")
+_KR_CANDLES_1D = Table(
+    "kr_candles_1d",
+    MetaData(),
+    Column("time", DateTime(timezone=True)),
+    Column("symbol", String),
+    Column("venue", String),
+    Column("open", Numeric),
+    Column("high", Numeric),
+    Column("low", Numeric),
+    Column("close", Numeric),
+    Column("volume", Numeric),
+    Column("value", Numeric),
+    Column("source", String),
+    schema="public",
+)
 
 
 class KiwoomStage2CollectionDisabled(RuntimeError):
@@ -332,22 +348,14 @@ class KiwoomDailyCandleRepository:
             }
             for row in rows
         ]
-        result = await self._session.execute(
-            text(
-                """
-                INSERT INTO public.kr_candles_1d (
-                    time, symbol, venue, open, high, low, close, volume, value, source
-                ) VALUES (
-                    :time, :symbol, :venue, :open, :high, :low, :close, :volume,
-                    :value, :source
-                )
-                ON CONFLICT (time, symbol, venue) DO NOTHING
-                """
-            ),
-            payload,
+        statement = (
+            pg_insert(_KR_CANDLES_1D)
+            .values(payload)
+            .on_conflict_do_nothing(index_elements=("time", "symbol", "venue"))
+            .returning(_KR_CANDLES_1D.c.time)
         )
-        rowcount = getattr(result, "rowcount", 0)
-        return max(int(rowcount or 0), 0)
+        result = await self._session.execute(statement)
+        return len(result.scalars().all())
 
 
 class DatabaseStage2CollectionStore:
