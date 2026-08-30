@@ -1,4 +1,4 @@
-# Auto-approve eligibility expansion (§40차, §141차, §156차, §163차)
+# Auto-approve eligibility expansion (§40차, §141차, §156차, §163차, §170차)
 
 Extends ROB-871 resting-class auto-approval with the §40차 classification:
 **auto-submit, then veto**, for buys and for *proven* profit-take sells.
@@ -13,10 +13,10 @@ final scope addendum also permits one narrow marketable exception: an
 predicate — not a self-described tier. Every marketable buy, loss sell,
 break-even-band sell, and unclassifiable sell remains manual.
 
-§163차 adds a two-ticker **cash-parking allowlist** (`SGOV`, `BIL`) on
-`kis_live` / `equity_us`. It is the only marketable **buy** release that
-exists anywhere, and the only place where the per-order cap takes a different
-*value*.
+§163차 adds a US cash-parking allowlist (`SGOV`, `BIL`) on `kis_live` /
+`equity_us`; §170차 adds only `459580` on `kis_live` / `equity_kr`. These are
+the only marketable **buy** releases, and the only places where the per-order
+cap takes a different *value*.
 
 🔴 **The per-order cap is RAISED, not removed.** §106차's "maximum loss of one
 automation error" boundary keeps its shape: the check still runs on every
@@ -579,3 +579,31 @@ BL-38 is not new to parking — the daily circuit breaker has the same shape.
 * Parking **sells** get the same raised per-order cap (USD 10,000) and are
   bounded by it plus the unchanged daily cap. The cumulative cap is buy-side
   per the operator decision, because a sell reduces exposure.
+
+### 8.8 KR extension (§170차) — one bound tuple, no FX conversion
+
+The only §170차 addition is this closed authorization tuple:
+
+| symbol | account mode × market | currency | per-order cap | cumulative buy cap |
+| --- | --- | --- | --- | --- |
+| `459580` KODEX CD금리액티브(합성) | `kis_live` × `equity_kr` | KRW | 10,000,000 | 15,000,000 |
+
+The code represents every parking authorization as one immutable tuple of
+symbol, account mode, market, currency, cap pair, and native KIS balance
+fields. It does **not** maintain independent symbol and market sets: `SGOV` /
+`BIL` on `equity_kr`, and `459580` on `equity_us`, are not parking rungs and
+retain every ordinary gate. Tests assert both rejections; removing the tuple
+binding makes the assertions red.
+
+KR cumulative exposure is the existing KIS domestic balance's `pdno` +
+`evlu_amt` for `459580`, plus the same KST-day durable sum of auto-approved KR
+parking buys. The durable reader is required exactly as it is for US, so an
+accepted-but-unfilled KR buy cannot reset the next proposal's measurement to
+zero. A missing balance or durable read is fail-closed. The comparison is
+native KRW only; neither this reader nor the cap selector performs FX
+conversion, and a declared non-KRW balance-row currency is rejected.
+
+`459580` is marked `nxt_eligible=false` in the referenced universe data. This
+means it cannot use NXT; for an ordinary regular-session sell there is no NXT
+extension and the exit window closes at 15:30 KST. This is an execution-window
+fact for operators, not a new eligibility rule or a reason added to the gate.

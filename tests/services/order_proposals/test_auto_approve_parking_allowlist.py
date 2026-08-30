@@ -28,18 +28,22 @@ from app.services.order_proposals.auto_approve import (
     evaluate_auto_approve_eligibility,
 )
 from app.services.order_proposals.parking_allowlist import (
-    PARKING_ALLOWLIST_ACCOUNT_MARKETS,
-    PARKING_ALLOWLIST_SYMBOLS,
+    PARKING_ALLOWLIST_SCOPES,
+    PARKING_CUMULATIVE_CAP_KRW,
     PARKING_CUMULATIVE_CAP_USD,
+    PARKING_PER_ORDER_CAP_KRW,
     PARKING_PER_ORDER_CAP_USD,
     ParkingExposure,
     canonical_eligibility_symbol,
     canonical_exposure_symbol,
     is_parking_allowlisted,
+    parking_scope,
 )
 from app.services.order_proposals.parking_exposure import (
     load_parking_exposure,
-    sum_parking_exposure,
+)
+from app.services.order_proposals.parking_exposure import (
+    sum_parking_exposure as _sum_parking_exposure,
 )
 
 # --------------------------------------------------------------------------
@@ -63,6 +67,17 @@ _US_OFF = AutoApproveLimits(
     mode="off",
     breakeven_band_pct=Decimal("1"),
     round_trip_cost_bps=Decimal("90"),
+)
+_KR_EXPANDED = AutoApproveLimits(
+    min_distance_pct=Decimal("3"),
+    # This fixture isolates the parking per-order boundary; production's
+    # ordinary KR daily breaker remains separately tested and unchanged.
+    per_order_cap=Decimal("2000000"),
+    daily_cap=Decimal("20000000"),
+    policy_version="test-policy",
+    mode="expanded",
+    breakeven_band_pct=Decimal("1"),
+    round_trip_cost_bps=Decimal("47.4"),
 )
 
 
@@ -110,6 +125,17 @@ def _flat() -> ParkingExposure:
     return ParkingExposure.observed(Decimal("0"))
 
 
+def _us_scope():
+    scope = parking_scope(symbol="SGOV", account_mode="kis_live", market="equity_us")
+    assert scope is not None
+    return scope
+
+
+def sum_parking_exposure(rows):
+    """Preserve the §163 US fixture shorthand with an explicit bound scope."""
+    return _sum_parking_exposure(rows, scope=_us_scope())
+
+
 async def _no_pending() -> Decimal:
     """No same-day auto-approved parking buys yet."""
     return Decimal("0")
@@ -121,20 +147,25 @@ async def _no_pending() -> Decimal:
 
 
 def test_allowlist_constants_are_exactly_the_authorized_scope():
-    assert PARKING_ALLOWLIST_SYMBOLS == frozenset({"SGOV", "BIL"})
-    assert PARKING_ALLOWLIST_ACCOUNT_MARKETS == frozenset({("kis_live", "equity_us")})
-    # Two separate boundaries, two separate constants: changing one must never
-    # silently move the other.
+    assert {
+        (scope.symbol, scope.account_mode, scope.market)
+        for scope in PARKING_ALLOWLIST_SCOPES
+    } == {
+        ("SGOV", "kis_live", "equity_us"),
+        ("BIL", "kis_live", "equity_us"),
+        ("459580", "kis_live", "equity_kr"),
+    }
+    # Cap pairs are selected only through the same immutable scope record.
     assert PARKING_PER_ORDER_CAP_USD == Decimal("10000")
     assert PARKING_CUMULATIVE_CAP_USD == Decimal("10000")
+    assert PARKING_PER_ORDER_CAP_KRW == Decimal("10000000")
+    assert PARKING_CUMULATIVE_CAP_KRW == Decimal("15000000")
 
 
 def test_allowlist_containers_are_immutable_frozensets():
-    assert isinstance(PARKING_ALLOWLIST_SYMBOLS, frozenset)
-    assert isinstance(PARKING_ALLOWLIST_ACCOUNT_MARKETS, frozenset)
-    for container in (PARKING_ALLOWLIST_SYMBOLS, PARKING_ALLOWLIST_ACCOUNT_MARKETS):
-        assert not hasattr(container, "add")
-        assert not hasattr(container, "update")
+    assert isinstance(PARKING_ALLOWLIST_SCOPES, frozenset)
+    assert not hasattr(PARKING_ALLOWLIST_SCOPES, "add")
+    assert not hasattr(PARKING_ALLOWLIST_SCOPES, "update")
 
 
 def test_allowlist_module_reads_no_settings_env_db_or_policy():
@@ -270,6 +301,13 @@ def test_exact_canonical_spellings_are_allowlisted():
             is True
         )
 
+    assert (
+        is_parking_allowlisted(
+            symbol="459580", account_mode="kis_live", market="equity_kr"
+        )
+        is True
+    )
+
 
 # --------------------------------------------------------------------------
 # 3. market and account scoping
@@ -308,6 +346,33 @@ def test_kr_proposal_named_sgov_keeps_the_ordinary_gates():
     assert decision.reason == "per_order_cap_exceeded"
 
 
+def test_symbol_market_pairs_cannot_open_a_cross_product_mutant():
+    """Removing the tuple binding makes either assertion RED immediately."""
+    assert not is_parking_allowlisted(
+        symbol="SGOV", account_mode="kis_live", market="equity_kr"
+    )
+    assert not is_parking_allowlisted(
+        symbol="459580", account_mode="kis_live", market="equity_us"
+    )
+
+
+def test_cap_currency_is_bound_to_the_same_scope_tuple():
+    """A KRW/USD selector swap makes these assertions RED (no FX fallback)."""
+    us = parking_scope(symbol="SGOV", account_mode="kis_live", market="equity_us")
+    kr = parking_scope(symbol="459580", account_mode="kis_live", market="equity_kr")
+    assert us is not None and kr is not None
+    assert (us.currency, us.per_order_cap, us.cumulative_cap) == (
+        "USD",
+        Decimal("10000"),
+        Decimal("10000"),
+    )
+    assert (kr.currency, kr.per_order_cap, kr.cumulative_cap) == (
+        "KRW",
+        Decimal("10000000"),
+        Decimal("15000000"),
+    )
+
+
 # --------------------------------------------------------------------------
 # 4. the three authorized directions
 # --------------------------------------------------------------------------
@@ -329,6 +394,35 @@ def test_allowlisted_marketable_buy_over_the_ordinary_cap_is_eligible():
     assert decision.details["parking_exposure_before"] == "0"
     assert decision.details["parking_exposure_after"] == "2000"
     assert decision.details["parking_cap"] == "10000"
+
+
+def test_kr_parking_per_order_cap_boundary_is_exactly_10m_krw():
+    group = _group(
+        symbol="459580",
+        market="equity_kr",
+        thesis="park idle KRW in 459580",
+    )
+    exact = _decide(
+        group=group,
+        rung=_rung(limit_price=Decimal("10000"), quantity=Decimal("1000")),
+        preview={"success": True, "current_price": "10000"},
+        limits=_KR_EXPANDED,
+        exposure=_flat(),
+    )
+    over = _decide(
+        group=group,
+        rung=_rung(limit_price=Decimal("10000.001"), quantity=Decimal("1000")),
+        preview={"success": True, "current_price": "10000.001"},
+        limits=_KR_EXPANDED,
+        exposure=_flat(),
+    )
+
+    assert exact.eligible is True
+    assert exact.details["per_order_cap"] == "10000000"
+    assert exact.details["parking_cap"] == "15000000"
+    assert exact.details["parking_currency"] == "KRW"
+    assert over.reason == "per_order_cap_exceeded"
+    assert over.details["per_order_cap"] == "10000000"
 
 
 def test_single_parking_order_over_the_raised_cap_is_rejected():
@@ -808,6 +902,46 @@ async def test_load_exposure_reads_the_broker_balance_for_a_parking_group():
     assert exposure.exposure == Decimal("4321.00")
 
 
+@pytest.mark.asyncio
+async def test_load_exposure_reads_native_krw_domestic_balance_and_durable_half():
+    """KR uses the existing KIS domestic ``pdno``/``evlu_amt`` read surface."""
+
+    async def _fetch_kr():
+        return [{"pdno": "459580", "evlu_amt": "9000000"}]
+
+    async def _pending_kr():
+        return Decimal("5000000")
+
+    exposure = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_kr",
+        symbol="459580",
+        fetch_kr_holdings=_fetch_kr,
+        durable_notional_fn=_pending_kr,
+    )
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("14000000")
+
+
+@pytest.mark.asyncio
+async def test_cross_product_symbol_never_selects_the_other_market_reader():
+    async def _must_not_read():  # pragma: no cover - must never run
+        raise AssertionError("cross-product parking scope must not read a balance")
+
+    for symbol, market in (("SGOV", "equity_kr"), ("459580", "equity_us")):
+        exposure = await load_parking_exposure(
+            account_mode="kis_live",
+            market=market,
+            symbol=symbol,
+            fetch_us_holdings=_must_not_read,
+            fetch_kr_holdings=_must_not_read,
+            durable_notional_fn=_no_pending,
+        )
+        assert exposure.available is False
+        assert exposure.unavailable_reason == "not_requested"
+
+
 def test_exposure_side_rejects_non_ascii_lookalike_rows():
     assert canonical_exposure_symbol("ſGOV") is None
     assert canonical_exposure_symbol("ЅGOV") is None
@@ -1011,10 +1145,24 @@ def test_durable_side_counts_parking_buys_approved_under_ordinary_gates():
         is_parking_exposure_symbol,
     )
 
-    assert is_parking_exposure_symbol(" sgov ") is True
-    assert is_parking_exposure_symbol("BIL") is True
-    assert is_parking_exposure_symbol("SGOVX") is False
-    assert is_parking_exposure_symbol("SPY") is False
+    assert (
+        is_parking_exposure_symbol(
+            " sgov ", account_mode="kis_live", market="equity_us"
+        )
+        is True
+    )
+    assert (
+        is_parking_exposure_symbol("BIL", account_mode="kis_live", market="equity_us")
+        is True
+    )
+    assert (
+        is_parking_exposure_symbol("SGOVX", account_mode="kis_live", market="equity_us")
+        is False
+    )
+    assert (
+        is_parking_exposure_symbol("SPY", account_mode="kis_live", market="equity_us")
+        is False
+    )
     # ...while the *eligibility* side stays strict on the same input.
     assert canonical_eligibility_symbol(" sgov ") is None
 
@@ -1073,3 +1221,33 @@ def test_non_usd_currency_on_a_non_parking_row_is_ignored():
 
     assert exposure.available is True
     assert exposure.exposure == Decimal("5")
+
+
+def test_krw_exposure_reducer_uses_domestic_fields_and_rejects_usd_rows():
+    scope = parking_scope(symbol="459580", account_mode="kis_live", market="equity_kr")
+    assert scope is not None
+    observed = _sum_parking_exposure(
+        [{"pdno": "459580", "evlu_amt": "14999999", "crcy_cd": "KRW"}],
+        scope=scope,
+    )
+    mismatch = _sum_parking_exposure(
+        [{"pdno": "459580", "evlu_amt": "1", "crcy_cd": "USD"}], scope=scope
+    )
+
+    assert observed.available is True
+    assert observed.exposure == Decimal("14999999")
+    assert mismatch.available is False
+    assert mismatch.unavailable_reason == "currency_not_krw"
+
+
+def test_kr_cumulative_cap_rejects_one_won_over_the_15m_limit():
+    decision = _decide(
+        group=_group(symbol="459580", market="equity_kr"),
+        rung=_rung(limit_price=Decimal("1"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "1"},
+        limits=_KR_EXPANDED,
+        exposure=ParkingExposure.observed(Decimal("15000000")),
+    )
+
+    assert decision.reason == "parking_cap_exceeded"
+    assert decision.details["parking_cap"] == "15000000"

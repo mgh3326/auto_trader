@@ -1,10 +1,10 @@
 """Broker-observed + durable cumulative parking exposure (§163차).
 
-§163차 bounds a parking rung twice: the per-order cap, RAISED for parking but
-never removed (``PARKING_PER_ORDER_CAP_USD``), and behind it a cumulative
-parking exposure cap. This module produces the number the *second* boundary
-compares against, and nothing else: the USD cumulative parking exposure on the
-one account the allowlist admits (``kis_live`` / ``equity_us``).
+§163차/§170차 bound a parking rung twice: the per-order cap, RAISED for
+parking but never removed, and behind it a native-currency cumulative parking
+exposure cap. This module produces only the number that *second* boundary
+compares against, selecting the existing KIS US or domestic balance surface
+from the immutable symbol×account×market scope.
 
 🔴 This is the second line, not the only one. Its measurement has known
 residual gaps (runbook §8.7 — BL-37 account labelling, BL-38 pre-submit
@@ -13,12 +13,11 @@ is the per-order cap that still runs above it.
 
 Two halves, and both are required
 ---------------------------------
-1. **Broker balance** -- ``KISClient.fetch_my_us_stocks()`` ->
-   ``inquire-balance`` with ``currency_code="USD"``, summing
-   ``ovrs_stck_evlu_amt`` (해외주식평가금액) over rows matched on
-   ``ovrs_pdno``. Same client and balance surface
-   ``order_validation._get_holdings_for_order`` already uses for the avg-cost
-   loss guard, so this introduces no new credential, host or account.
+1. **Broker balance** -- US uses ``KISClient.fetch_my_us_stocks()`` with
+   ``currency_code="USD"``, summing ``ovrs_stck_evlu_amt`` over ``ovrs_pdno``;
+   KR uses ``KISClient.fetch_my_stocks()``, summing domestic ``evlu_amt`` over
+   ``pdno``. Both are existing KIS balance surfaces already used for holdings
+   checks, so this introduces no new credential, host, or account.
 
 2. **Durable same-day auto-approved parking buys** -- 🔴 the balance alone is
    NOT a cumulative boundary. ``KISAccount._filter_nonzero_holdings`` keeps
@@ -92,27 +91,18 @@ from typing import Any
 
 from app.services.order_proposals.parking_allowlist import (
     ParkingExposure,
+    ParkingScope,
     canonical_exposure_symbol,
-    is_parking_allowlisted,
     is_parking_exposure_symbol,
+    parking_scope,
 )
 
 logger = logging.getLogger(__name__)
 
-# The KIS overseas balance field carrying per-position market value in the
-# balance's own currency. Not a proposal field.
-_EVALUATION_AMOUNT_FIELD = "ovrs_stck_evlu_amt"
-_SYMBOL_FIELD = "ovrs_pdno"
-
-# The request pins ``TR_CRCY_CD=USD``, so the amounts are expected in USD --
-# the same currency as ``per_order_cap.us`` / ``daily_cap.us``, which is what
-# makes the comparison FX-free. If a row *declares* its own currency and that
-# currency is not USD, the assumption is broken and summing the number anyway
-# would compare a non-USD amount against a USD cap. Whether KIS actually emits
-# any of these keys on an overseas balance row is UNVERIFIED here; this is a
-# guard against the assumption being wrong, not a claim that it is.
+# A US read pins ``TR_CRCY_CD=USD``; domestic KIS balance is a KRW surface.
+# The selected ParkingScope holds the corresponding native KIS fields and cap
+# currency. No branch converts, combines, or substitutes currencies.
 _CURRENCY_FIELDS = ("tr_crcy_cd", "crcy_cd", "currency_code", "curr_cd")
-_EXPECTED_CURRENCY = "USD"
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -125,8 +115,8 @@ def _decimal(value: Any) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
-def _row_currency_mismatch(row: Mapping[str, Any]) -> bool:
-    """True when the row names a currency and it is not USD.
+def _row_currency_mismatch(row: Mapping[str, Any], *, expected_currency: str) -> bool:
+    """True when the row names a currency other than the scope's native one.
 
     A row that declares nothing is left alone: the request pinned USD, and
     rejecting every row that omits an optional field would fail closed on
@@ -141,12 +131,16 @@ def _row_currency_mismatch(row: Mapping[str, Any]) -> bool:
         stripped = declared.strip()
         if not stripped:
             continue
-        if stripped.upper() != _EXPECTED_CURRENCY:
+        if stripped.upper() != expected_currency:
             return True
     return False
 
 
-def sum_parking_exposure(rows: Any) -> ParkingExposure:
+def _currency_mismatch_reason(scope: ParkingScope) -> str:
+    return "currency_not_usd" if scope.currency == "USD" else "currency_not_krw"
+
+
+def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
     """Pure reducer over broker balance rows. Fails closed on any anomaly."""
     if not isinstance(rows, list):
         return ParkingExposure.unavailable("payload_not_a_list")
@@ -154,17 +148,19 @@ def sum_parking_exposure(rows: Any) -> ParkingExposure:
     for row in rows:
         if not isinstance(row, Mapping):
             return ParkingExposure.unavailable("row_not_a_mapping")
-        raw_symbol = row.get(_SYMBOL_FIELD)
+        raw_symbol = row.get(scope.balance_symbol_field)
         # A row whose symbol cannot be normalized at all cannot be *proven*
         # non-parking, so it fails closed rather than being skipped. Only a
         # cleanly readable, definitely-not-parking symbol is passed over.
         if raw_symbol is None or canonical_exposure_symbol(raw_symbol) is None:
             return ParkingExposure.unavailable("symbol_unreadable")
-        if not is_parking_exposure_symbol(raw_symbol):
+        if not is_parking_exposure_symbol(
+            raw_symbol, account_mode=scope.account_mode, market=scope.market
+        ):
             continue
-        if _row_currency_mismatch(row):
-            return ParkingExposure.unavailable("currency_not_usd")
-        raw_amount = row.get(_EVALUATION_AMOUNT_FIELD)
+        if _row_currency_mismatch(row, expected_currency=scope.currency):
+            return ParkingExposure.unavailable(_currency_mismatch_reason(scope))
+        raw_amount = row.get(scope.balance_evaluation_field)
         if raw_amount is None or (
             isinstance(raw_amount, str) and not raw_amount.strip()
         ):
@@ -184,6 +180,7 @@ async def load_parking_exposure(
     market: Any,
     symbol: Any,
     fetch_us_holdings: Any = None,
+    fetch_kr_holdings: Any = None,
     durable_notional_fn: Any = None,
 ) -> ParkingExposure:
     """Cumulative parking exposure for an allowlisted ``kis_live`` US order.
@@ -198,30 +195,33 @@ async def load_parking_exposure(
     allowlisted parking order, so a caller that asks unconditionally still
     cannot obtain parking treatment for a non-parking symbol.
     """
-    if not is_parking_allowlisted(
-        symbol=symbol, account_mode=account_mode, market=market
-    ):
+    scope = parking_scope(symbol=symbol, account_mode=account_mode, market=market)
+    if scope is None:
         return ParkingExposure.unavailable("not_requested")
 
     if durable_notional_fn is None:
         return ParkingExposure.unavailable("durable_reader_missing")
 
-    fetcher = fetch_us_holdings
+    fetcher = fetch_us_holdings if scope.market == "equity_us" else fetch_kr_holdings
     if fetcher is None:
         # Imported lazily so this module stays importable (and the pure reducer
         # stays testable) without the broker client's settings surface.
         from app.services.brokers.kis.client import KISClient
 
-        # kis_live only -- ``PARKING_ALLOWLIST_ACCOUNT_MARKETS`` admits no mock
-        # or paper account mode, so there is no is_mock branch to get wrong.
-        fetcher = KISClient().fetch_my_us_stocks
+        # Every scope currently admits kis_live only, so no mock/paper branch
+        # can be selected. The market-bound reader preserves native currency.
+        fetcher = (
+            KISClient().fetch_my_us_stocks
+            if scope.market == "equity_us"
+            else KISClient().fetch_my_stocks
+        )
 
     try:
         rows = await fetcher()
     except Exception as exc:  # noqa: BLE001 - an unreadable balance is not a clearance
         logger.warning("parking exposure fetch failed: %s", type(exc).__name__)
         return ParkingExposure.unavailable("fetch_failed")
-    held = sum_parking_exposure(rows)
+    held = sum_parking_exposure(rows, scope=scope)
     if not held.available or held.exposure is None:
         return held
 
