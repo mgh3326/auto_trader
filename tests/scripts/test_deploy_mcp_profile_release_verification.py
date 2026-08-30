@@ -34,6 +34,7 @@ EXPECTED_PROFILE_PORTS = {
     "com.robinco.auto-trader.mcp-account-read": "8769",
     "com.robinco.auto-trader.mcp-tradingcodex-execution": "8770",
     "com.robinco.auto-trader.mcp-paper_001": "8771",
+    "com.robinco.auto-trader.mcp-kiwoom": "8772",
 }
 
 
@@ -209,6 +210,7 @@ def test_verify_passes_when_all_profiles_report_expected_cwd(
             f"8769 222 {canonical}",
             f"8770 333 {canonical}",
             f"8771 444 {canonical}",
+            f"8772 555 {canonical}",
         ],
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -230,6 +232,7 @@ def test_verify_fails_when_no_process_listens_on_a_profile_port(
             f"8769 222 {canonical}",
             # 8770 (mcp-tradingcodex-execution) has no listener at all.
             f"8771 444 {canonical}",
+            f"8772 555 {canonical}",
         ],
     )
     assert proc.returncode != 0
@@ -256,6 +259,7 @@ def test_verify_fails_when_process_still_serving_stale_release_cwd(
             f"8769 222 {canonical_new}",
             f"8770 333 {canonical_old}",
             f"8771 444 {canonical_new}",
+            f"8772 555 {canonical_new}",
         ],
     )
     assert proc.returncode != 0
@@ -280,8 +284,8 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     attempt_counter = tmp_path / "lsof_attempts_8770"
-    # lsof stub: 8768/8769/8771 always resolve correctly; 8770 only resolves to
-    # the NEW release cwd from the 3rd call onward (simulating restart lag).
+    # lsof stub: 8768/8769/8771/8772 always resolve correctly; 8770 only
+    # resolves to the NEW release cwd from the 3rd call onward (restart lag).
     stub = bin_dir / "lsof"
     stub.write_text(
         "#!/usr/bin/env bash\n"
@@ -293,6 +297,7 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
         "    8769) echo 222; exit 0 ;;\n"
         "    8770) echo 333; exit 0 ;;\n"
         "    8771) echo 444; exit 0 ;;\n"
+        "    8772) echo 555; exit 0 ;;\n"
         "  esac\n"
         "  exit 1\n"
         'elif [[ "$1" == "-a" ]]; then\n'
@@ -301,6 +306,7 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
         f'    111) printf "p111\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
         f'    222) printf "p222\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
         f'    444) printf "p444\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
+        f'    555) printf "p555\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
         "    333)\n"
         '      n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))\n'
         '      echo "$n" > "$counter"\n'
