@@ -11,6 +11,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+from app.services.buy_gate_ab_shadow.epoch import (
+    COLLECTION_EPOCH,
+    assert_epoch_seal,
+)
 from app.services.buy_gate_ab_shadow.evaluate import CandidateEvaluation
 from app.services.buy_gate_ab_shadow.spec import (
     EXPERIMENT_ID,
@@ -64,8 +68,16 @@ def build_shadow_buy_forecasts(
         return []
     if spec_sha256() != PINNED_SPEC_SHA256:
         raise RuntimeError("pre-registration spec hash does not match its pinned value")
+    assert_epoch_seal()
+    if not COLLECTION_EPOCH.contains_event(
+        market=evaluation.market,
+        observed_at=evaluation.evaluation_as_of,
+    ):
+        raise ValueError("evaluation_as_of is outside the sealed collection epoch")
 
-    decision = evaluation.evaluation_as_of.date()
+    decision = COLLECTION_EPOCH.session_date(
+        evaluation.market, evaluation.evaluation_as_of
+    )
     notional = assumed_notional(evaluation.market)
     payloads: list[dict[str, Any]] = []
     for window in _WINDOWS:
@@ -81,7 +93,15 @@ def build_shadow_buy_forecasts(
             "promote": False,
             "live_gate_impact": False,
             "spec_sha256": PINNED_SPEC_SHA256,
+            "policy_projection_sha256": (COLLECTION_EPOCH.policy_projection_sha256),
+            "collection_epoch_id": COLLECTION_EPOCH.epoch_id,
+            "collection_armed_at": COLLECTION_EPOCH.collection_armed_at.isoformat(),
+            "collection_start": COLLECTION_EPOCH.collection_start.isoformat(),
+            "collection_end_exclusive": (
+                COLLECTION_EPOCH.collection_end_exclusive.isoformat()
+            ),
             "evaluation_as_of": evaluation.evaluation_as_of.isoformat(),
+            "session_date": decision.isoformat(),
             "entry_price": str(evaluation.entry_price),
             "input_snapshot": dict(evaluation.input_snapshot),
             "input_snapshot_sha256": evaluation.input_snapshot_sha256,

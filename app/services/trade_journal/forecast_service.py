@@ -30,6 +30,7 @@ from app.models.decision_vocabulary import DECISION_BUCKETS
 from app.models.invalid_sample_eligibility import SampleEligibilityDecision
 from app.models.review import TradeForecast
 from app.models.trading import InstrumentType
+from app.services.buy_gate_ab_shadow.epoch import COLLECTION_EPOCH
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
@@ -146,7 +147,9 @@ def _is_rob1301_shadow_target(forecast_target: dict[str, Any]) -> bool:
     )
 
 
-def _validate_rob1301_shadow_target(forecast_target: dict[str, Any]) -> None:
+def _validate_rob1301_shadow_target(
+    forecast_target: dict[str, Any], *, instrument_type: str
+) -> None:
     """Fail closed when a purported shadow row lacks the exclusion contract."""
 
     if not _is_rob1301_shadow_target(forecast_target):
@@ -169,9 +172,62 @@ def _validate_rob1301_shadow_target(forecast_target: dict[str, Any]) -> None:
             "ROB-1301 shadow forecast must set "
             "trade_performance_eligibility=trade_performance_exclude"
         )
-    for key in ("spec_sha256", "evaluation_as_of", "input_snapshot_sha256"):
+    for key in (
+        "spec_sha256",
+        "policy_projection_sha256",
+        "collection_epoch_id",
+        "collection_armed_at",
+        "collection_start",
+        "collection_end_exclusive",
+        "evaluation_as_of",
+        "session_date",
+        "input_snapshot_sha256",
+    ):
         if not isinstance(forecast_target.get(key), str) or not forecast_target[key]:
             raise ForecastValidationError(f"ROB-1301 shadow forecast requires {key}")
+    exact_epoch_fields = {
+        "spec_sha256": COLLECTION_EPOCH.preregistration_spec_sha256,
+        "policy_projection_sha256": COLLECTION_EPOCH.policy_projection_sha256,
+        "collection_epoch_id": COLLECTION_EPOCH.epoch_id,
+        "collection_armed_at": COLLECTION_EPOCH.collection_armed_at.isoformat(),
+        "collection_start": COLLECTION_EPOCH.collection_start.isoformat(),
+        "collection_end_exclusive": (
+            COLLECTION_EPOCH.collection_end_exclusive.isoformat()
+        ),
+    }
+    for key, expected in exact_epoch_fields.items():
+        if forecast_target[key] != expected:
+            raise ForecastValidationError(
+                f"ROB-1301 shadow forecast has mismatched {key}"
+            )
+    market = {"equity_kr": "kr", "equity_us": "us"}.get(instrument_type)
+    if market is None:
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast requires equity_kr or equity_us"
+        )
+    try:
+        evaluation_as_of = datetime.fromisoformat(
+            forecast_target["evaluation_as_of"].replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast evaluation_as_of must be ISO-8601"
+        ) from exc
+    if evaluation_as_of.tzinfo is None:
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast evaluation_as_of must be timezone-aware"
+        )
+    if not COLLECTION_EPOCH.contains_event(market=market, observed_at=evaluation_as_of):
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast is outside the sealed collection epoch"
+        )
+    if (
+        forecast_target["session_date"]
+        != COLLECTION_EPOCH.session_date(market, evaluation_as_of).isoformat()
+    ):
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast has mismatched session_date"
+        )
 
 
 async def _record_rob1301_shadow_eligibility(
@@ -218,6 +274,11 @@ async def _record_rob1301_shadow_eligibility(
             "cohort": _ROB1301_SHADOW_COHORT,
             "variant": forecast_target.get("variant"),
             "spec_sha256": forecast_target["spec_sha256"],
+            "policy_projection_sha256": forecast_target["policy_projection_sha256"],
+            "collection_epoch_id": forecast_target["collection_epoch_id"],
+            "collection_armed_at": forecast_target["collection_armed_at"],
+            "collection_start": forecast_target["collection_start"],
+            "collection_end_exclusive": forecast_target["collection_end_exclusive"],
             "evaluation_as_of": forecast_target["evaluation_as_of"],
             "input_snapshot_sha256": forecast_target["input_snapshot_sha256"],
             "forecast_id": str(row.forecast_id),
@@ -686,7 +747,10 @@ async def save_forecast(
         forecast_target,
         instrument_type=instrument_type,
     )
-    _validate_rob1301_shadow_target(forecast_target)
+    _validate_rob1301_shadow_target(
+        forecast_target,
+        instrument_type=instrument_type,
+    )
     start = (
         _parse_date(forecast_start_date, "forecast_start_date")
         if forecast_start_date is not None

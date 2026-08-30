@@ -13,6 +13,7 @@ MCP_FILES = (
 )
 SHADOW_IMPORT_ALLOWED_FILES = MCP_FILES + (
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "analysis_registration.py",
+    REPO_ROOT / "app" / "services" / "trade_journal" / "forecast_service.py",
 )
 LIVE_PATH_FILES = (
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "order_proposal_tools.py",
@@ -118,3 +119,37 @@ def test_no_scheduler_or_flow_files_were_added() -> None:
         for path in directory.rglob("*1301*")
     ]
     assert stray == []
+
+
+def test_pr1_has_no_evaluator_caller_wiring() -> None:
+    excluded = {
+        REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow.py",
+        REPO_ROOT
+        / "app"
+        / "mcp_server"
+        / "tooling"
+        / "buy_gate_ab_shadow_registration.py",
+    }
+    wired_calls: list[str] = []
+    for root in (REPO_ROOT / "app", REPO_ROOT / "scripts"):
+        for path in root.rglob("*.py"):
+            if path in excluded:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                function = node.func
+                name = (
+                    function.id
+                    if isinstance(function, ast.Name)
+                    else function.attr
+                    if isinstance(function, ast.Attribute)
+                    else ""
+                )
+                if name in {
+                    "evaluate_buy_gate_ab_shadow",
+                    "evaluate_buy_gate_ab_shadow_impl",
+                }:
+                    wired_calls.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+    assert wired_calls == []

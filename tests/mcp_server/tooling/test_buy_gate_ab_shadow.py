@@ -16,6 +16,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     MUTATION_TOOLS,
     READ_ONLY_ADVISORY_TOOLS,
 )
+from app.services.buy_gate_ab_shadow.epoch import COLLECTION_EPOCH
 from app.services.buy_gate_ab_shadow.spec import PINNED_SPEC_SHA256, spec_sha256
 
 
@@ -39,7 +40,7 @@ def _candidate() -> dict[str, Any]:
 def test_impl_returns_shadow_forecasts_without_writing_or_promoting() -> None:
     result = evaluate_buy_gate_ab_shadow_impl(
         [_candidate()],
-        evaluation_as_of="2026-08-20T06:30:00+00:00",
+        evaluation_as_of="2026-08-31T00:30:00+00:00",
         created_by="orch-mock",
     )
     assert result["success"] is True
@@ -47,6 +48,7 @@ def test_impl_returns_shadow_forecasts_without_writing_or_promoting() -> None:
     assert result["live_gate_impact"] is False
     assert result["do_not_use_for_policy_change"] is True
     assert result["spec_sha256"] == spec_sha256() == PINNED_SPEC_SHA256
+    assert result["collection_epoch"] == COLLECTION_EPOCH.as_dict()
     assert result["counts"]["b_only"] == 1
     assert len(result["shadow_buy_forecasts"]) == 2
     assert result["candidates"][0]["cohort"] == "b_only"
@@ -55,7 +57,7 @@ def test_impl_returns_shadow_forecasts_without_writing_or_promoting() -> None:
 def test_blank_created_by_fails_closed() -> None:
     result = evaluate_buy_gate_ab_shadow_impl(
         [_candidate()],
-        evaluation_as_of="2026-08-20T06:30:00+00:00",
+        evaluation_as_of="2026-08-31T00:30:00+00:00",
         created_by=" ",
     )
     assert result["success"] is False
