@@ -60,6 +60,8 @@ SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.mcp-tradingcodex-execution"
   # ROB-1258: resident hermes-paper-kis MCP service outside the blue/green pair.
   "com.robinco.auto-trader.mcp-paper_001"
+  # KR-B1 파일럿(2026-08-31): resident kiwoom MCP service outside the blue/green pair.
+  "com.robinco.auto-trader.mcp-kiwoom"
   # ROB-469 PR3: single non-color-specific watchdog that restarts a wedged MCP color.
   "com.robinco.auto-trader.mcp-watchdog"
 )
@@ -79,6 +81,8 @@ MCP_PROFILE_PORTS=(
   "com.robinco.auto-trader.mcp-account-read:8769"
   "com.robinco.auto-trader.mcp-tradingcodex-execution:8770"
   "com.robinco.auto-trader.mcp-paper_001:8771"
+  # KR-B1 파일럿(2026-08-31): resident kiwoom MCP profile release-path verification.
+  "com.robinco.auto-trader.mcp-kiwoom:8772"
 )
 
 NEW_RELEASE="$RELEASES/$SHA"
