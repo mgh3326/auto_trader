@@ -40,7 +40,8 @@ LIVE_TOKEN_PATH: Final[str] = "/oauth2/token"
 
 # Keep this set small, literal, and physically local to the live quote client.
 # The collector has no host ownership and cannot add a route by configuration.
-KR_PERIOD_PATH: Final[str] = "/dsstock/quote/v1/period"
+# `krstockQuotePeriod` in the vendor-maintained krstock OpenAPI document.
+KR_PERIOD_PATH: Final[str] = "/krstock/quote/v1/period"
 US_PERIOD_PATH: Final[str] = "/gbstock/quote/v1/period"
 INDEXFX_PERIOD_PATH: Final[str] = "/gbstock/quote/v1/symbolIndexFxPeriod"
 ALLOWED_DATA_PATHS: Final[frozenset[str]] = frozenset(

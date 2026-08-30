@@ -555,6 +555,7 @@ def test_only_scoped_runtime_modules_own_the_production_host() -> None:
 
 def test_live_quote_contract_has_only_the_three_data_routes_and_token_path() -> None:
     assert LIVE_BASE_URL == "https://api.nhplug.com:8443"
+    assert KR_PERIOD_PATH == "/krstock/quote/v1/period"
     assert ALLOWED_DATA_PATHS == frozenset(
         {KR_PERIOD_PATH, US_PERIOD_PATH, INDEXFX_PERIOD_PATH}
     )
@@ -566,6 +567,7 @@ def test_live_quote_contract_has_only_the_three_data_routes_and_token_path() -> 
 @pytest.mark.parametrize(
     "source",
     (
+        'PATH = "/dsstock/quote/v1/period"\n',
         'PATH = "/gbstock/order/v1/buy"\n',
         'FIELD = "act_no"\n',
         'PATH = "/n2/acctinfo"\n',

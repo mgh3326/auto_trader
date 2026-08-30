@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from app.services.brokers.nhplug.live_quotes import (
+    KR_PERIOD_PATH,
     LIVE_TOKEN_PATH,
     US_PERIOD_PATH,
     NHPlugLiveQuotesClient,
@@ -75,6 +76,75 @@ async def test_gate_refuses_before_token_cache_or_network(
         await client.fetch_us_period(symbol="AAPL", end_date="20260831", bars=30)
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_kr_period_uses_the_confirmed_krstock_request_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vendor krstock document fixes both the route and Input_0 fields."""
+
+    monkeypatch.setenv("NHPLUG_LIVE_QUOTES_ENABLED", "true")
+    cache_path = tmp_path / "token-cache.json"
+    _write_cached_token(cache_path)
+    observed: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            200,
+            json={
+                "Output_1": [
+                    {
+                        "bsop_date": "20260828",
+                        "stck_oprc": "69800",
+                        "stck_hgpr": "70500",
+                        "stck_lwpr": "69600",
+                        "stck_prpr": "70100",
+                        "vol": "9263135",
+                        "tr_pbmn": "648525000000",
+                    }
+                ]
+            },
+        )
+
+    client = NHPlugLiveQuotesClient(
+        app_key="stub-key",
+        app_secret="stub-secret",
+        token_cache_path=cache_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = await client.fetch_kr_period(
+        symbol="005930", end_date="20260831", bars=30
+    )
+
+    assert KR_PERIOD_PATH == "/krstock/quote/v1/period"
+    assert response["Output_1"][0]["tr_pbmn"] == "648525000000"
+    assert observed == [
+        (
+            "/krstock/quote/v1/period",
+            {
+                "Input_0": {
+                    "market_cd": "KRX",
+                    "iem_cd": "005930",
+                    "mrkt_div_cls_code": "1",
+                    "edate": "20260831",
+                    "array_cnt": "0030",
+                    "maxavg": "000",
+                    "gubun": "1",
+                    "xtick": "000",
+                    "today_cls_code": "0",
+                    "fake_tick": "1",
+                    "sur_flag": "0",
+                    "sur_gb_day_cnt": "00",
+                    "sur_bf_end_time": "000000",
+                    "out1_scale_change": "0",
+                    "out2_scale_change": "0",
+                }
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

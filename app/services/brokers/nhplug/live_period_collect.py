@@ -570,6 +570,7 @@ def _parse_rows(
     for row in _response_rows(payload):
         try:
             if market == "kr":
+                # krstockQuotePeriod `Output_1` daily OHLCV field names.
                 date, timestamp = _session_date(row.get("bsop_date"))
                 open_value = _decimal(row.get("stck_oprc"), field="stck_oprc")
                 high_value = _decimal(row.get("stck_hgpr"), field="stck_hgpr")
