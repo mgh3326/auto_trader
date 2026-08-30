@@ -18,6 +18,7 @@ from app.schemas.investment_reports import (
     WatchConditionClause,
     WatchConditionPayload,
 )
+from app.services.investment_reports import watch_activation
 from app.services.investment_reports.decisions import (
     InvestmentReportDecisionService,
 )
@@ -35,8 +36,12 @@ async def _seed_approved_watch_item(
     kst_date: str = "2026-05-18",
     client_item_key: str = "watch-1",
     symbol: str = "005930",
+    synthetic_canary: object | None = None,
 ) -> InvestmentReportItem:
     ingest = InvestmentReportIngestionService(session)
+    source_metadata = (
+        {"synthetic_canary": synthetic_canary} if synthetic_canary is not None else {}
+    )
     report = await ingest.ingest(
         IngestReportRequest(
             report_type="kr_morning",
@@ -48,6 +53,7 @@ async def _seed_approved_watch_item(
             title="t",
             summary="s",
             kst_date=kst_date,
+            metadata=source_metadata,
             items=[
                 IngestReportItem(
                     client_item_key=client_item_key,
@@ -59,6 +65,7 @@ async def _seed_approved_watch_item(
                         metric="rsi", operator="below", threshold=Decimal("30")
                     ),
                     valid_until=future_datetime(),
+                    metadata=source_metadata,
                 )
             ],
         )
@@ -99,10 +106,52 @@ async def test_activate_copies_snapshot_and_transitions_item(
     assert alert.action_mode == "notify_only"
     assert alert.status == "active"
     assert alert.source_item_uuid == item.item_uuid
+    assert alert.alert_metadata == {}
 
     repo = InvestmentReportsRepository(session)
     refreshed = await repo.get_item_by_uuid(item.item_uuid)
     assert refreshed.status == "activated"
+
+
+@pytest.mark.asyncio
+async def test_activate_copies_exact_source_synthetic_canary_marker(
+    session: AsyncSession,
+) -> None:
+    marker = {
+        "canary_run_id": "q3-canary-test",
+        "pre_registration_digest": "1" * 64,
+        "mutation_disabled": True,
+        "policy": {"version": "v-test", "content_hash": "2" * 64},
+        "j7_manifest_ref": "manifest-j7:test",
+    }
+    item = await _seed_approved_watch_item(session, synthetic_canary=marker)
+
+    alert = await WatchActivationService(session).activate(
+        ActivateWatchRequest(item_uuid=item.item_uuid, actor="operator-test")
+    )
+
+    repo = InvestmentReportsRepository(session)
+    report = await repo.get_report_by_id(item.report_id)
+    assert report is not None
+    assert report.report_metadata["synthetic_canary"] == marker
+    assert item.item_metadata["synthetic_canary"] == marker
+    assert alert.alert_metadata == {"synthetic_canary": marker}
+
+
+def test_synthetic_canary_source_marker_requires_matching_report_and_item() -> None:
+    marker = {"canary_run_id": "q3-canary-test"}
+
+    with pytest.raises(ValueError, match="metadata missing"):
+        watch_activation._synthetic_canary_alert_metadata(
+            report_metadata={"synthetic_canary": marker},
+            item_metadata={},
+        )
+
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        watch_activation._synthetic_canary_alert_metadata(
+            report_metadata={"synthetic_canary": marker},
+            item_metadata={"synthetic_canary": {"canary_run_id": "different"}},
+        )
 
 
 @pytest.mark.asyncio

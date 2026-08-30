@@ -133,6 +133,7 @@ class _AlertSnapshot:
     conditions: list[Any]
     max_action: dict[str, Any]
     trigger_checklist: list[Any]
+    alert_metadata: dict[str, Any]
 
     @classmethod
     def from_row(cls, row: Any) -> _AlertSnapshot:
@@ -157,6 +158,7 @@ class _AlertSnapshot:
             conditions=copy.deepcopy(row.conditions or []),
             max_action=copy.deepcopy(row.max_action or {}),
             trigger_checklist=copy.deepcopy(row.trigger_checklist or []),
+            alert_metadata=copy.deepcopy(row.alert_metadata or {}),
         )
 
 
@@ -372,6 +374,7 @@ class InvestmentWatchScanner:
                         alert=alert,
                         correlation_id=payload.correlation_id,
                         kst_date=payload.kst_date,
+                        scanner_snapshot=payload.scanner_snapshot,
                     )
                     if execution_result.get("executed") is True:
                         execution_outcome = "executed"
@@ -447,6 +450,7 @@ class InvestmentWatchScanner:
         alert_action_mode = alert.action_mode
         alert_max_action = alert.max_action
         alert_trigger_checklist = alert.trigger_checklist
+        alert_metadata = alert.alert_metadata
 
         outcome = _OUTCOME_BY_ACTION_MODE.get(alert_action_mode, "notified")
         correlation_id = uuid4().hex
@@ -463,6 +467,10 @@ class InvestmentWatchScanner:
             "current_value": current_value,
             "threshold": float(alert_threshold),
         }
+        if "synthetic_canary" in alert_metadata:
+            scanner_snapshot["synthetic_canary"] = copy.deepcopy(
+                alert_metadata["synthetic_canary"]
+            )
 
         is_first_attempt = True
         try:

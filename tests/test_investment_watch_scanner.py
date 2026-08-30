@@ -8,6 +8,8 @@ and stubs Hermes delivery to capture payloads. Asserts both DB state
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -30,6 +32,7 @@ from app.schemas.investment_reports import (
     WatchConditionPayload,
 )
 from app.services.hermes_client import HermesDeliveryResult, ReviewTriggerPayload
+from app.services.investment_reports import watch_auto_execute
 from app.services.investment_reports.decisions import (
     InvestmentReportDecisionService,
 )
@@ -70,6 +73,27 @@ class _StubHermesClient:
         self.closed = True
 
 
+def _canonical_digest(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _synthetic_marker() -> dict[str, Any]:
+    marker: dict[str, Any] = {
+        "canary_run_id": "q3-canary-test",
+        "mutation_disabled": True,
+        "policy": {"version": "v-test", "content_hash": "a" * 64},
+        "j7_manifest_ref": "manifest-j7:test",
+    }
+    marker["pre_registration_digest"] = _canonical_digest(marker)
+    return marker
+
+
 async def _seed_active_kr_alert(
     session: AsyncSession,
     *,
@@ -81,10 +105,15 @@ async def _seed_active_kr_alert(
     market: str = "kr",
     kst_date: str = "2026-05-18",
     client_item_key: str = "watch-1",
+    synthetic_canary: object | None = None,
+    max_action: dict[str, Any] | None = None,
 ) -> Any:
     """Ingest report → approve watch item → activate. Returns the alert row."""
     ingest = InvestmentReportIngestionService(session)
     market_session = "regular" if market == "kr" else None
+    source_metadata = (
+        {"synthetic_canary": synthetic_canary} if synthetic_canary is not None else {}
+    )
     report = await ingest.ingest(
         IngestReportRequest(
             report_type="kr_morning",
@@ -96,6 +125,7 @@ async def _seed_active_kr_alert(
             title="t",
             summary="s",
             kst_date=kst_date,
+            metadata=source_metadata,
             items=[
                 IngestReportItem(
                     client_item_key=client_item_key,
@@ -110,6 +140,8 @@ async def _seed_active_kr_alert(
                         action_mode=action_mode,
                     ),
                     valid_until=future_datetime(days=30),
+                    max_action=max_action or {},
+                    metadata=source_metadata,
                 )
             ],
         )
@@ -681,6 +713,116 @@ async def test_scan_calls_auto_execute_for_auto_execute_mock(
     )
     assert event_outcome == "failed"
     assert stub.calls[0].outcome == "failed"
+
+
+@pytest.mark.asyncio
+async def test_synthetic_marker_propagates_four_hops_and_blocks_before_order(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = _synthetic_marker()
+    alert = await _seed_active_kr_alert(
+        session,
+        action_mode="auto_execute_mock",
+        client_item_key="watch-synthetic-canary",
+        synthetic_canary=marker,
+        max_action={
+            "side": "buy",
+            "quantity": "10",
+            "limit_price": "55000",
+            "account_mode": "kis_mock",
+        },
+    )
+
+    # Hop 1: source metadata was copied into the durable alert row.
+    assert alert.alert_metadata == {"synthetic_canary": marker}
+
+    # Hop 2: scanner materialization owns a detached deep copy.
+    detached = scanner_module._AlertSnapshot.from_row(alert)
+    assert detached.alert_metadata == {"synthetic_canary": marker}
+    assert detached.alert_metadata is not alert.alert_metadata
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", False
+    )
+    actual_maybe_auto_execute = scanner_module.maybe_auto_execute
+    executor_calls: list[dict[str, object]] = []
+
+    async def _capture_maybe_auto_execute(db, **kwargs):
+        executor_calls.append(dict(kwargs))
+        return await actual_maybe_auto_execute(db, **kwargs)
+
+    monkeypatch.setattr(
+        scanner_module, "maybe_auto_execute", _capture_maybe_auto_execute
+    )
+
+    stub = _StubHermesClient()
+    summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
+    assert summary["triggered"] == 1, summary
+
+    await session.commit()
+    event_row = await session.execute(
+        sa.text(
+            "SELECT scanner_snapshot, correlation_id "
+            "FROM review.investment_watch_events WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert.id},
+    )
+    scanner_snapshot, correlation_id = event_row.one()
+
+    # Hop 3: the event snapshot carries the exact detached marker.
+    assert scanner_snapshot["synthetic_canary"] == marker
+    assert stub.calls[0].scanner_snapshot["synthetic_canary"] == marker
+    assert len(executor_calls) == 1
+    executor_call = executor_calls[0]
+    assert "scanner_snapshot" in executor_call, (
+        "scanner did NOT pass the persisted event snapshot to the executor"
+    )
+    assert executor_call["scanner_snapshot"] == scanner_snapshot
+
+    intent_row = await session.execute(
+        sa.text(
+            "SELECT detail, preview_line, blocking_reasons, blocked_by, "
+            "execution_allowed, lifecycle_state "
+            "FROM review.watch_order_intent_ledger "
+            "WHERE correlation_id = :correlation_id"
+        ),
+        {"correlation_id": correlation_id},
+    )
+    detail, preview_line, reasons, blocked_by, allowed, lifecycle = intent_row.one()
+
+    # Hop 4: executor consumes the persisted event snapshot and records the
+    # source identity plus its own layer evidence in the intent JSONB fields.
+    assert detail["synthetic_canary"] == marker
+    assert preview_line["synthetic_canary"] == marker
+    guard = detail["synthetic_canary_guard"]
+    assert guard["evaluations"] == [
+        {
+            "layer": "synthetic_data_guard",
+            "evaluated": True,
+            "result": "block",
+            "code": "synthetic_canary_mutation_disabled",
+            "marker_digest_match": True,
+        },
+        {
+            "layer": "env_gate",
+            "evaluated": True,
+            "result": "block",
+            "code": "auto_execute_globally_disabled",
+        },
+    ]
+    assert preview_line["synthetic_canary_guard_digest"] == _canonical_digest(guard)
+    assert reasons == [
+        "synthetic_canary_mutation_disabled",
+        "auto_execute_globally_disabled",
+    ]
+    assert blocked_by == "synthetic_canary_mutation_disabled"
+    assert allowed is False
+    assert lifecycle == "failed"
 
 
 @pytest.mark.asyncio
