@@ -26,6 +26,7 @@ from app.services.brokers.nhplug.live_period_collect import (
     _response_rows,
     load_scoped_env_file,
 )
+from app.services.brokers.nhplug.live_quotes import NHPlugLiveQuotesSecurityBlocked
 
 pytestmark = pytest.mark.unit
 
@@ -336,6 +337,37 @@ async def test_one_symbol_failure_does_not_stop_later_symbols(
     assert client.calls == [("kr", "000001"), ("kr", "000002"), ("kr", "000003")]
     assert result.failed_symbols == ("000002",)
     assert result.rows_inserted == 2
+
+
+@pytest.mark.asyncio
+async def test_security_block_is_not_buried_as_a_symbol_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _arm(monkeypatch)
+
+    class SecurityBlockedClient(StubPeriodClient):
+        async def fetch_kr_period(self, **kwargs: str | int) -> dict[str, object]:
+            symbol = str(kwargs["symbol"])
+            self.calls.append(("kr", symbol))
+            raise NHPlugLiveQuotesSecurityBlocked(
+                "NHPLUG live token_issue stopped (HTTP 403): "
+                "보안 차단 가능성, 쿨다운 필요"
+            )
+
+    client = SecurityBlockedClient()
+    collector = NHPlugPeriodCollector(client=client)
+
+    with pytest.raises(NHPlugLiveQuotesSecurityBlocked, match="쿨다운 필요"):
+        await collector.collect(
+            market="kr",
+            symbols=["000001", "000002", "000003"],
+            start_date="20260801",
+            end_date="20260831",
+            bars=30,
+            rate_seconds=0.2,
+        )
+
+    assert client.calls == [("kr", "000001")]
 
 
 @pytest.mark.asyncio

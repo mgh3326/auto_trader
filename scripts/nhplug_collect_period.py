@@ -15,6 +15,8 @@ import logging
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from app.services.brokers.nhplug.live_period_collect import (
     DEFAULT_BARS,
     DEFAULT_RATE_SECONDS,
@@ -22,6 +24,7 @@ from app.services.brokers.nhplug.live_period_collect import (
     MIN_RATE_SECONDS,
     CollectionResult,
     NHPlugPeriodCollectionDisabled,
+    NHPlugPeriodSettingsLoadError,
     ResumeCheckpoint,
     arm_scoped_environment,
     build_default_collector,
@@ -164,9 +167,18 @@ async def main(argv: list[str] | None = None) -> int:
             ),
             verify_sample=args.verify_sample,
         )
+    except (NHPlugPeriodSettingsLoadError, ValidationError) as exc:
+        logger.error(
+            "NHPLUG period collection settings failed stage=settings_load "
+            "error_code=%s",
+            type(exc).__name__,
+        )
+        return 2
     except (NHPlugPeriodCollectionDisabled, ValueError) as exc:
         logger.error(
-            "NHPLUG period collection rejected error_code=%s", type(exc).__name__
+            "NHPLUG period collection rejected stage=collection_validation "
+            "error_code=%s",
+            type(exc).__name__,
         )
         return 2
     except Exception as exc:  # noqa: BLE001 - never render a response or secret

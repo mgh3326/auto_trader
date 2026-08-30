@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from app.services.brokers.nhplug.live_period_collect import CollectionResult
+from app.services.brokers.nhplug.live_period_collect import (
+    CollectionResult,
+    NHPlugPeriodSettingsLoadError,
+)
 from scripts import nhplug_collect_period as cli
 
 pytestmark = pytest.mark.unit
@@ -109,3 +114,34 @@ async def test_cli_defaults_to_dry_run_until_commit_is_explicit(
     assert result == 0
     assert captured["commit"] is False
     assert captured["symbols"] == ["005930"]
+
+
+@pytest.mark.asyncio
+async def test_cli_marks_scoped_configuration_failures_with_settings_load_stage(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def fail_settings_load(**_: object) -> None:
+        raise NHPlugPeriodSettingsLoadError("fixture settings failure")
+
+    monkeypatch.setattr(cli, "arm_scoped_environment", fail_settings_load)
+    caplog.set_level(logging.ERROR)
+
+    result = await cli.main(
+        [
+            "--env-file",
+            ".env.nhplug-live",
+            "--token-cache",
+            ".tokens.json",
+            "--market",
+            "kr",
+            "--symbols",
+            "005930",
+            "--start-date",
+            "20260801",
+            "--end-date",
+            "20260831",
+        ]
+    )
+
+    assert result == 2
+    assert "stage=settings_load error_code=NHPlugPeriodSettingsLoadError" in caplog.text
