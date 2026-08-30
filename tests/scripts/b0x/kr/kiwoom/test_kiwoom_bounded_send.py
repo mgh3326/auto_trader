@@ -454,13 +454,26 @@ def test_consumption_marker_is_exact_durable_evidence_and_latch(
     }
 
 
-def test_production_registry_ships_empty() -> None:
+def test_production_registry_exact_seal_set_is_pinned() -> None:
     payload = tomllib.loads(
         bounded_send.KIWOOM_BOUNDED_SEND_SEAL_REGISTRY_PATH.read_text(encoding="utf-8")
     )
     assert payload == {
         "schema_version": bounded_send.KIWOOM_BOUNDED_SEND_REGISTRY_SCHEMA,
-        "registered_seals": [],
+        "registered_seals": [
+            {
+                "lane_id": "kr.kiwoom.mock",
+                "physical_account_id": (
+                    "kiwoom_mock:kr:credential_fingerprint="
+                    "sha256:ad6ad5ebaa77aed5d8782b314f9713010dba72cafaf823e90c79a1ca128bebfb:"
+                    "kr_kiwoom_mock_domain"
+                ),
+                "expires_at": "2026-08-31T06:30:00Z",
+                "seal_digest": (
+                    "344f26e27d952d5eb8b8059b7e3119dd6c4f443a87873ce0343f530fcb3509de"
+                ),
+            }
+        ],
     }
 
 
