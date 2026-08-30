@@ -21,6 +21,38 @@ registry 상한으로 허용하지만 런타임 freshness는 `now < expires_at`�
 owner 구성 전 소비 마커는 `O_EXCL`, mode `0600`, 파일·디렉터리 `fsync`, exact
 readback을 모두 통과해야 한다. 기록 실패나 불확실성은 인가가 아니라 거부다.
 
+### 캘린더 가용성 위험 (NICE-4)
+
+**캘린더 실패는 봉인 불성립(거부)이다.** fail-closed이므로 안전 방향은 맞지만,
+라이브러리 오류, 지원 범위 밖 날짜 또는 콜드 동시 초기화 실패로 정당한 G3 봉인이
+거부될 수 있다. 이 가용성 위험을 선행 워밍업으로 완화했다고 간주하면 안 된다.
+
+bounded-send owner 경로에서 캘린더 최초 접촉은 봉인 검증 시점이다.
+`scripts/b0x/kr/kiwoom_coordination.py:425-439`의 factory가
+`scripts/b0x/kr/kiwoom_bounded_send.py:255`의 `regular_session_bounds`에 도달하며,
+이는 `scripts/b0x/kr/kiwoom_cycle.py:2361`의 `is_krx_regular_session`보다 앞선다.
+따라서 선행 워밍업이라는 완화는 이 경로에 적용되지 않는다. 현행 기본 grant-only
+경로도 confirm 시 `kiwoom_cycle.py:2330-2335`에서 조기 반환하므로 2361행에 도달하지
+않는다.
+
+2026-08-30에 실행 순서를 다시 확인한 명령과 원문은 다음과 같다.
+
+```text
+$ sed -n '2318,2325p;2359,2362p' /Users/mgh3326/work/auto_trader.rob1325-seal-precond/scripts/b0x/kr/kiwoom_cycle.py
+        )
+
+        coordination, coordination_record = _resolve_coordination_owner(
+            coordination_factory=coordination_factory,
+            expected_entry=coordination_entry,
+        )
+        record["coordination"] = coordination_record
+
+
+        # --- RTH gate: cheapest check, before any table/account I/O ---
+        in_session = is_krx_regular_session(now)
+        record["krx_regular_session"] = in_session
+```
+
 ## 내구 one-shot 상태 — 정리 금지
 
 소비 마커의 현재 위치는 다음과 같다.
@@ -51,6 +83,7 @@ readback을 모두 통과해야 한다. 기록 실패나 불확실성은 인가�
 non-legacy `grant_only=False`가 무조건 `CONTRACT_MISMATCH`라 어떤 모듈 상태 조작으로도
 `authorizes_send=True`에 도달할 수 없었다.** `_grant_only` 플립 하나만으로 현재 경계를
 우회할 수 있다는 뜻은 아니며, 빈 registry에서는 여전히 어떤 봉인 인가에도 도달하지 못한다.
+단, 봉인이 등록된 이후에는 이 문장이 성립하지 않는다.
 
 ## 향후 봉인 등록 PR 체크리스트
 

@@ -145,6 +145,27 @@ def test_registry_rejects_expiry_beyond_same_day_krx_close(
 
 
 @pytest.mark.parametrize(
+    "registry_now",
+    [_REGISTRY_NOW + dt.timedelta(days=1)],
+    ids=("saturday",),
+)
+def test_registry_calendar_unavailable_is_fail_closed(
+    isolated_seal_runtime: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    registry_now: dt.datetime,
+) -> None:
+    registry_path, _ = isolated_seal_runtime
+    seal = _seal(expires_at=registry_now + dt.timedelta(hours=1))
+    _write_registry(registry_path, [seal])
+    monkeypatch.setattr(bounded_send, "_wall_clock_now", lambda: registry_now)
+
+    registered, error_code = _load_registry()
+
+    assert registered is None
+    assert error_code == bounded_send.KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
     ("close_offset", "expected_registered"),
     [
         (-dt.timedelta(microseconds=1), True),
@@ -350,6 +371,16 @@ def test_expiry_boundary_is_open_only_strictly_before_expiry(
             build_bounded_send_kiwoom_coordination_factory
         ).parameters
     )
+    if not expected_authorization:
+        rejection_code = None
+        try:
+            bounded_send.assert_bounded_send_seal_registered_and_current(
+                bounded_send.snapshot_bounded_send_seal(seal)
+            )
+        except bounded_send.KiwoomBoundedSendSealRejected as exc:
+            rejection_code = exc.code
+        assert rejection_code == bounded_send.KIWOOM_BOUNDED_SEND_EXPIRED
+
     owner, record = _resolve(_factory(seal))
     assert (owner is not None) is expected_authorization
     assert record["authorizes_send"] is expected_authorization
@@ -405,11 +436,10 @@ def test_consumption_marker_is_exact_durable_evidence_and_latch(
     owner, record = _resolve(_factory(seal))
     assert owner is not None
     assert record["authorizes_send"] is True
-    marker = json.loads(
-        bounded_send.bounded_send_consumption_marker_path(
-            seal["seal_digest"]
-        ).read_text(encoding="utf-8")
-    )
+    marker_path = bounded_send.bounded_send_consumption_marker_path(seal["seal_digest"])
+    assert marker_path.is_file()
+    assert (marker_path.stat().st_mode & 0o777) == 0o600
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     readme_path = marker_root / "README.md"
     assert readme_path.is_file()
     assert "not a cleanup target" in readme_path.read_text(encoding="utf-8")
