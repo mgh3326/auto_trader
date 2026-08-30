@@ -191,13 +191,14 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Same for the kis_mock pre-submit signal ledger, added after this
             # boundary and already present in Base.metadata.
             await connection.execute(text("DROP TABLE review.kis_mock_signal_ledger"))
-            # W5's durable callback inbox and recovery cursor are later than
-            # this reconstructed boundary and already in Base.metadata; drop
-            # both so the upgrade chain creates them instead of colliding.
+            # These review tables are later than this reconstructed boundary
+            # and already in Base.metadata; drop them so the upgrade chain
+            # creates them instead of colliding.
             for table in (
                 "telegram_callback_recovery_cursor",
                 "telegram_callback_inbox",
                 "screener_pick_log",
+                "buy_gate_ab_collection_epoch",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
             # ROB-1286's repricing claim table is later than this boundary and
