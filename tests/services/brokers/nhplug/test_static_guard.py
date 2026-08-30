@@ -9,12 +9,21 @@ from pathlib import Path
 import pytest
 
 from app.services.brokers.nhplug.contracts import DryRunConfirmContract
+from app.services.brokers.nhplug.live_quotes import (
+    ALLOWED_DATA_PATHS,
+    INDEXFX_PERIOD_PATH,
+    KR_PERIOD_PATH,
+    LIVE_BASE_URL,
+    LIVE_TOKEN_PATH,
+    US_PERIOD_PATH,
+)
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_DIR = REPO_ROOT / "app" / "services" / "brokers" / "nhplug"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "nhplug_mock_smoke.py"
+LIVE_QUOTES_MODULE = RUNTIME_DIR / "live_quotes.py"
 
 _PRODUCTION_HOST_RE = re.compile(
     r"(?<![\w.\-])api\.nhplug\.com\.?(?![\w\-])", re.IGNORECASE
@@ -46,6 +55,37 @@ _FORBIDDEN_MUTATION_FRAGMENTS = (
 )
 _HTTPX_CLIENT_NAMES = frozenset({"AsyncClient", "Client"})
 _AUTH_OWNER_MODULE = "app.services.brokers.nhplug.auth"
+_LIVE_HOST_OWNER_FILENAMES = frozenset({"auth.py", "live_quotes.py"})
+_LIVE_ALLOWED_LITERAL_PATHS = frozenset(
+    {LIVE_TOKEN_PATH, KR_PERIOD_PATH, US_PERIOD_PATH, INDEXFX_PERIOD_PATH}
+)
+_FORBIDDEN_LIVE_IDENTITY_TEXT = (
+    "acct_no",
+    "act_no",
+    "account_no",
+    "account",
+    "/n2/",
+    "/inquiry/",
+    "/balance",
+)
+_FORBIDDEN_LIVE_IDENTIFIER_NAMES = frozenset(
+    {
+        "account_no",
+        "account_number",
+        "acct_no",
+        "act_no",
+        "NHPLUG_ACCOUNT_NO",
+        "NHPLUG_LIVE_ACCOUNT_NO",
+    }
+)
+_MOCK_RUNTIME_MODULES = frozenset(
+    {
+        "app.services.brokers.nhplug.auth",
+        "app.services.brokers.nhplug.client",
+        "app.services.brokers.nhplug.gating",
+        "app.services.brokers.nhplug.account_guard",
+    }
+)
 
 
 def _runtime_package_sources(package_dir: Path = RUNTIME_DIR) -> tuple[Path, ...]:
@@ -331,12 +371,17 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
             path.read_text(encoding="utf-8"),
             filename=path.name,
             permits_production_host=(
-                package_dir == RUNTIME_DIR and path == RUNTIME_DIR / "auth.py"
+                package_dir == RUNTIME_DIR and path.name in _LIVE_HOST_OWNER_FILENAMES
             ),
         )
     _assert_package_has_no_oauth_imports(package_sources)
     _assert_package_pins_follow_redirects(package_sources)
     _assert_package_exposes_no_mutation_methods(package_sources)
+    if package_dir == RUNTIME_DIR:
+        _assert_live_quote_source_safe(
+            LIVE_QUOTES_MODULE.read_text(encoding="utf-8"),
+            filename=LIVE_QUOTES_MODULE.name,
+        )
 
 
 def _assert_stage_one_source_safe(
@@ -359,13 +404,82 @@ def _assert_stage_one_source_safe(
     )
     if not permits_production_host:
         assert not any(_PRODUCTION_HOST_RE.search(literal) for literal in literals), (
-            "only auth.py may contain the production hostname"
+            "only scoped live modules may contain the production hostname"
         )
     assert not any(
         forbidden.casefold() in literal.casefold()
         for literal in literals
         for forbidden in _FORBIDDEN_ORDER_TEXT
     ), "stage-one source contains an out-of-scope order endpoint or TR"
+
+
+def _imports_mock_runtime(tree: ast.AST) -> list[str]:
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            offenders.extend(
+                alias.name
+                for alias in node.names
+                if alias.name in _MOCK_RUNTIME_MODULES
+            )
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module in _MOCK_RUNTIME_MODULES:
+                offenders.append(module)
+    return offenders
+
+
+def _assert_live_quote_source_safe(source: str, *, filename: str) -> None:
+    """Additive live contract: only four literal routes and no identity reach."""
+
+    tree = ast.parse(source, filename=filename)
+    literals = _literal_strings(tree)
+    literal_paths = {literal for literal in literals if literal.startswith("/")}
+    assert literal_paths <= _LIVE_ALLOWED_LITERAL_PATHS, (
+        "live quote source contains a non-allowlisted literal route"
+    )
+    assert not any(
+        fragment in literal.casefold()
+        for literal in literals
+        for fragment in _FORBIDDEN_LIVE_IDENTITY_TEXT
+    ), "live quote source contains an identity-scoped reference"
+    forbidden_identifiers = (
+        [
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+            and node.id in _FORBIDDEN_LIVE_IDENTIFIER_NAMES
+        ]
+        + [
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr in _FORBIDDEN_LIVE_IDENTIFIER_NAMES
+        ]
+        + [
+            node.arg
+            for node in ast.walk(tree)
+            if isinstance(node, ast.arg)
+            and node.arg in _FORBIDDEN_LIVE_IDENTIFIER_NAMES
+        ]
+        + [
+            node.arg
+            for node in ast.walk(tree)
+            if isinstance(node, ast.keyword)
+            and node.arg in _FORBIDDEN_LIVE_IDENTIFIER_NAMES
+        ]
+    )
+    assert not forbidden_identifiers, (
+        "live quote source names an identity-scoped identifier"
+    )
+    assert not any(
+        forbidden.casefold() in literal.casefold()
+        for literal in literals
+        for forbidden in _FORBIDDEN_ORDER_TEXT
+    ), "live quote source contains an out-of-scope order endpoint or TR"
+    assert not _imports_mock_runtime(tree), (
+        "live quote source imports a mock-only runtime module"
+    )
 
 
 def test_entire_nhplug_package_obeys_every_stage_one_static_guard() -> None:
@@ -423,11 +537,11 @@ def test_static_guard_mutants_fail_with_assertion_error(
 ) -> None:
     """Each required mutant must make the build guard red, never false-green."""
 
-    with pytest.raises(AssertionError, match="forbidden|only auth|order"):
+    with pytest.raises(AssertionError, match="forbidden|only scoped|order"):
         _assert_stage_one_source_safe(source, filename=filename)
 
 
-def test_auth_is_the_only_runtime_production_host_owner() -> None:
+def test_only_scoped_runtime_modules_own_the_production_host() -> None:
     owners = [
         path.name
         for path in _runtime_sources()
@@ -436,7 +550,39 @@ def test_auth_is_the_only_runtime_production_host_owner() -> None:
             for literal in _literal_strings(ast.parse(path.read_text(encoding="utf-8")))
         )
     ]
-    assert owners == ["auth.py"]
+    assert owners == ["auth.py", "live_quotes.py"]
+
+
+def test_live_quote_contract_has_only_the_three_data_routes_and_token_path() -> None:
+    assert LIVE_BASE_URL == "https://api.nhplug.com:8443"
+    assert KR_PERIOD_PATH == "/krstock/quote/v1/period"
+    assert ALLOWED_DATA_PATHS == frozenset(
+        {KR_PERIOD_PATH, US_PERIOD_PATH, INDEXFX_PERIOD_PATH}
+    )
+    _assert_live_quote_source_safe(
+        LIVE_QUOTES_MODULE.read_text(encoding="utf-8"), filename=LIVE_QUOTES_MODULE.name
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        'PATH = "/dsstock/quote/v1/period"\n',
+        'PATH = "/gbstock/order/v1/buy"\n',
+        'FIELD = "act_no"\n',
+        'PATH = "/n2/acctinfo"\n',
+        'PATH = "/gbstock/" + "inquiry/v1/balance"\n',
+        "def build(*, account_no):\n    return account_no\n",
+        'TR = "SCSOS61803A"\n',
+    ),
+)
+def test_live_quote_static_guard_rejects_route_and_identity_mutants(
+    source: str,
+) -> None:
+    with pytest.raises(
+        AssertionError, match="allowlisted|identity-scoped|out-of-scope"
+    ):
+        _assert_live_quote_source_safe(source, filename="live_quotes.py")
 
 
 @pytest.mark.parametrize(
@@ -517,7 +663,7 @@ def test_new_package_file_httpx_escape_mutants_fail_the_full_guard(
 
 
 def test_trailing_dot_production_host_literal_is_rejected_outside_auth() -> None:
-    with pytest.raises(AssertionError, match="only auth.py"):
+    with pytest.raises(AssertionError, match="only scoped"):
         _assert_stage_one_source_safe(
             'HOST = "https://api.nhplug.com.:8443"\n', filename="client.py"
         )
@@ -530,7 +676,7 @@ def test_nested_auth_named_file_cannot_claim_the_production_host_exception(
     nested_auth.parent.mkdir()
     nested_auth.write_text('HOST = "https://api.nhplug.com:8443"\n', encoding="utf-8")
 
-    with pytest.raises(AssertionError, match="only auth.py"):
+    with pytest.raises(AssertionError, match="only scoped"):
         _assert_entire_package_is_stage_one_safe(tmp_path)
 
 
