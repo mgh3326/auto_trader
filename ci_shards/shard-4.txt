@@ -130,6 +130,7 @@ tests/services/daily_candles/test_audit_no_other_consumer.py
 tests/services/daily_candles/test_crypto_venue_resolution.py
 tests/services/daily_candles/test_migration_round_trip.py
 tests/services/daily_candles/test_repository_crypto_path.py
+tests/services/daily_candles/test_sync_service.py
 tests/services/execution_ledger/test_normalizers.py
 tests/services/execution_ledger/test_opening_lots.py
 tests/services/execution_ledger/test_query_service_profit.py

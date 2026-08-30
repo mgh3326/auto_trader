@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from app.services.daily_candles.converters import frame_to_rows
 from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
@@ -238,19 +239,55 @@ class DailyCandleSyncService:
         rows_total = 0
         fallback_count = 0
         skipped = 0
+        failed_symbols: list[dict[str, str]] = []
         for target in targets:
-            result = await self.sync_one(target=target, horizon_bars=horizon_bars)
+            try:
+                result = await self.sync_one(target=target, horizon_bars=horizon_bars)
+            except (InterfaceError, OperationalError):
+                # A disconnected database is job-wide infrastructure failure,
+                # not a symbol-local candle failure. Let the entrypoint report
+                # its existing status=failed result.
+                await self._repository.session.rollback()
+                raise
+            except Exception as exc:
+                if market != "crypto":
+                    raise
+                # A failed statement can leave the shared session unusable for
+                # the next symbol. Seeds are committed before this loop, so
+                # this rollback cannot undo the newly created instruments.
+                await self._repository.session.rollback()
+                error_class = type(exc).__name__
+                logger.warning(
+                    "Crypto daily-candle sync failed symbol=%s error_class=%s",
+                    target.symbol,
+                    error_class,
+                )
+                failed_symbols.append(
+                    {"symbol": target.symbol, "error_class": error_class}
+                )
+                continue
             rows_total += result.rows_upserted
             if result.fallback_used:
                 fallback_count += 1
             if result.skipped_reason:
                 skipped += 1
+        failed_count = len(failed_symbols)
+        status = (
+            "failed"
+            if targets and failed_count == len(targets)
+            else "partial"
+            if failed_count
+            else "ok"
+        )
         return {
+            "status": status,
             "market": market,
             "targets_total": len(targets),
             "rows_upserted": rows_total,
             "fallback_count": fallback_count,
             "skipped": skipped,
+            "failed_symbols": failed_symbols,
+            "failed_count": failed_count,
         }
 
     async def _resolve_universe(self, *, market: str) -> list[SyncTarget]:
@@ -294,7 +331,7 @@ class DailyCandleSyncService:
                 " ORDER BY market"
             )
             result = await session.execute(sql)
-            return [
+            targets = [
                 SyncTarget(
                     market=MarketKey.CRYPTO,
                     symbol=row.market,
@@ -302,7 +339,45 @@ class DailyCandleSyncService:
                 )
                 for row in result
             ]
+            await self._seed_upbit_krw_instruments(targets)
+            return targets
         raise ValueError(f"Unknown market: {market}")
+
+    async def _seed_upbit_krw_instruments(self, targets: list[SyncTarget]) -> None:
+        """Persist missing Upbit KRW spot identities before candle writes.
+
+        The daily-candle repository deliberately remains fail-closed when an
+        instrument is absent. This producer-side, idempotent seed makes that
+        final guard unnecessary for active KRW universe rows without weakening
+        the repository contract for any other caller.
+        """
+        if not targets:
+            return
+
+        from sqlalchemy import text
+
+        await self._repository.session.execute(
+            text(
+                "INSERT INTO public.crypto_instruments "
+                "(venue, product, venue_symbol, base_asset, quote_asset, status) "
+                "VALUES (:venue, :product, :venue_symbol, :base_asset, :quote_asset, :status) "
+                "ON CONFLICT (venue, product, venue_symbol) DO NOTHING"
+            ),
+            [
+                {
+                    "venue": "upbit",
+                    "product": "spot",
+                    "venue_symbol": target.symbol,
+                    "base_asset": target.symbol[4:],
+                    "quote_asset": "KRW",
+                    "status": "active",
+                }
+                for target in targets
+            ],
+        )
+        # Commit before the per-symbol loop. A later fetch/write failure rolls
+        # back its own transaction so the seed must already be durable.
+        await self._commit_or_rollback()
 
     async def _commit_or_rollback(self) -> None:
         """Commit the repository session after a successful upsert; rollback on error.
