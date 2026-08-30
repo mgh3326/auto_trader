@@ -7,6 +7,7 @@ credentials and never reach NHPLUG.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.services.brokers.nhplug.live_quotes import (
     NHPlugLiveQuotesClient,
     NHPlugLiveQuotesDisabled,
     NHPlugLiveQuotesEndpointError,
+    NHPlugLiveQuotesSecurityBlocked,
 )
 
 pytestmark = pytest.mark.unit
@@ -310,6 +312,142 @@ async def test_shared_file_cache_suppresses_second_token_issuance(
 
 
 @pytest.mark.asyncio
+async def test_cache_write_failure_keeps_one_issued_token_in_memory_for_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable-cache failure must never cause a token issuance per symbol."""
+
+    monkeypatch.setenv("NHPLUG_LIVE_QUOTES_ENABLED", "true")
+    cache_path = tmp_path / "token-cache.json"
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == LIVE_TOKEN_PATH:
+            return httpx.Response(
+                200, json={"access_token": "issued-token", "expires_in": 3600}
+            )
+        return httpx.Response(200, json={"Output_1": []})
+
+    client = NHPlugLiveQuotesClient(
+        app_key="stub-key",
+        app_secret="stub-secret",
+        token_cache_path=cache_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    def fail_store(*, token: str, expires_at: float) -> None:
+        raise PermissionError("fixture cache mount is read-only")
+
+    monkeypatch.setattr(client._token_cache, "store", fail_store)  # noqa: SLF001
+
+    for symbol in ("AAPL", "MSFT", "NVDA"):
+        assert await client.fetch_us_period(
+            symbol=symbol, end_date="20260831", bars=30
+        ) == {"Output_1": []}
+
+    assert calls.count(LIVE_TOKEN_PATH) == 1
+    assert calls.count(US_PERIOD_PATH) == 3
+
+
+@pytest.mark.asyncio
+async def test_oauth_request_and_all_captured_logs_never_contain_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """OAuth must use a form body, so neither URL nor logs expose credentials."""
+
+    monkeypatch.setenv("NHPLUG_LIVE_QUOTES_ENABLED", "true")
+    app_key = "NHPLUG_APP_KEY_DO_NOT_LOG"
+    app_secret = "NHPLUG_APP_SECRET_DO_NOT_LOG"
+    access_token = "NHPLUG_ACCESS_TOKEN_DO_NOT_LOG"
+    observed: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        if request.url.path == LIVE_TOKEN_PATH:
+            return httpx.Response(
+                200, json={"access_token": access_token, "expires_in": 3600}
+            )
+        return httpx.Response(200, json={"Output_1": []})
+
+    caplog.set_level(logging.DEBUG)
+    client = NHPlugLiveQuotesClient(
+        app_key=app_key,
+        app_secret=app_secret,
+        token_cache_path=tmp_path / "token-cache.json",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.fetch_us_period(symbol="AAPL", end_date="20260831", bars=30)
+
+    token_request = observed[0]
+    assert token_request.url.query == b""
+    assert app_key.encode() in token_request.content
+    assert app_secret.encode() in token_request.content
+    rendered_logs = "\n".join(record.getMessage() for record in caplog.records)
+    for secret in (app_key, app_secret, access_token):
+        assert secret not in rendered_logs
+
+
+@pytest.mark.asyncio
+async def test_401_reissues_exactly_once_then_uses_the_reissued_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NHPLUG_LIVE_QUOTES_ENABLED", "true")
+    cache_path = tmp_path / "token-cache.json"
+    _write_cached_token(cache_path, token="expired-token")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == LIVE_TOKEN_PATH:
+            return httpx.Response(
+                200, json={"access_token": "reissued-token", "expires_in": 3600}
+            )
+        if request.headers["Authorization"] == "Bearer expired-token":
+            return httpx.Response(401, json={"message": "expired"})
+        assert request.headers["Authorization"] == "Bearer reissued-token"
+        return httpx.Response(200, json={"Output_1": []})
+
+    client = NHPlugLiveQuotesClient(
+        app_key="stub-key",
+        app_secret="stub-secret",
+        token_cache_path=cache_path,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await client.fetch_us_period(symbol="AAPL", end_date="20260831", bars=30)
+    assert calls == [US_PERIOD_PATH, LIVE_TOKEN_PATH, US_PERIOD_PATH]
+
+
+@pytest.mark.asyncio
+async def test_403_during_401_refresh_stops_without_another_reissue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NHPLUG_LIVE_QUOTES_ENABLED", "true")
+    cache_path = tmp_path / "token-cache.json"
+    _write_cached_token(cache_path, token="expired-token")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == US_PERIOD_PATH:
+            return httpx.Response(401, json={"message": "expired"})
+        return httpx.Response(403, json={"message": "security block"})
+
+    client = NHPlugLiveQuotesClient(
+        app_key="stub-key",
+        app_secret="stub-secret",
+        token_cache_path=cache_path,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(
+        NHPlugLiveQuotesSecurityBlocked, match="보안 차단 가능성, 쿨다운 필요"
+    ):
+        await client.fetch_us_period(symbol="AAPL", end_date="20260831", bars=30)
+
+    assert calls == [US_PERIOD_PATH, LIVE_TOKEN_PATH]
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_response_keeps_the_cached_token_and_never_reissues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -331,7 +469,9 @@ async def test_rate_limit_response_keeps_the_cached_token_and_never_reissues(
         transport=httpx.MockTransport(handler),
     )
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(
+        NHPlugLiveQuotesSecurityBlocked, match="보안 차단 가능성, 쿨다운 필요"
+    ):
         await client.fetch_us_period(symbol="AAPL", end_date="20260831", bars=30)
 
     assert calls == [US_PERIOD_PATH]

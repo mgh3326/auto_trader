@@ -43,6 +43,7 @@ from app.services.brokers.nhplug.live_quotes import (
     MAX_BARS_PER_REQUEST,
     MIN_RATE_SECONDS,
     NHPlugLiveQuotesClient,
+    NHPlugLiveQuotesSecurityBlocked,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,10 @@ class NHPlugPeriodCollectionDisabled(RuntimeError):
 
 class NHPlugPeriodResponseError(RuntimeError):
     """A response that cannot safely be normalized as daily quote data."""
+
+
+class NHPlugPeriodSettingsLoadError(ValueError):
+    """The dedicated live credential file could not be safely loaded."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,16 +264,16 @@ def assert_collection_enabled() -> None:
 
 def _assert_env_file_is_private(path: Path) -> None:
     if path.is_symlink() or not path.is_file():
-        raise ValueError("env file must be a regular file")
+        raise NHPlugPeriodSettingsLoadError("env file must be a regular file")
     if stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise ValueError("env file mode must be 0600")
+        raise NHPlugPeriodSettingsLoadError("env file mode must be 0600")
 
 
 def load_scoped_env_file(path: Path) -> dict[str, str]:
     """Read a dedicated 0600 credential file without exposing any values."""
 
     if "prod" in path.name.casefold():
-        raise ValueError("refusing to read a production env file")
+        raise NHPlugPeriodSettingsLoadError("refusing to read a production env file")
     _assert_env_file_is_private(path)
     values: dict[str, str] = {}
     unexpected: list[str] = []
@@ -277,7 +282,7 @@ def load_scoped_env_file(path: Path) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            raise ValueError("env file contains a malformed line")
+            raise NHPlugPeriodSettingsLoadError("env file contains a malformed line")
         key, _, value = line.partition("=")
         normalized_key = key.strip()
         if normalized_key not in SCOPED_ENV_KEYS:
@@ -285,12 +290,14 @@ def load_scoped_env_file(path: Path) -> dict[str, str]:
             continue
         values[normalized_key] = value.strip().strip('"').strip("'")
     if unexpected:
-        raise ValueError(
+        raise NHPlugPeriodSettingsLoadError(
             "env file contains non-NHPLUG-live keys: " + ", ".join(sorted(unexpected))
         )
     missing = [key for key in REQUIRED_CREDENTIAL_ENV_KEYS if not values.get(key)]
     if missing:
-        raise ValueError("env file missing required keys: " + ", ".join(missing))
+        raise NHPlugPeriodSettingsLoadError(
+            "env file missing required keys: " + ", ".join(missing)
+        )
     return values
 
 
@@ -971,6 +978,11 @@ class NHPlugPeriodCollector:
                     len(parsed.rows),
                     inserted,
                 )
+            except NHPlugLiveQuotesSecurityBlocked:
+                # A 403/429 can signal vendor security throttling.  This is
+                # process-wide, not a malformed individual symbol, so never
+                # bury it in a per-symbol failure and continue dispatching.
+                raise
             except Exception as exc:  # noqa: BLE001 - per-symbol isolation
                 error_code = type(exc).__name__
                 failures.append(

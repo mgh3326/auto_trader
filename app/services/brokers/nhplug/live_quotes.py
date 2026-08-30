@@ -23,6 +23,7 @@ and is invalidated only after a data response with HTTP 401.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import stat
@@ -55,6 +56,8 @@ MAX_BARS_PER_REQUEST: Final[int] = 9_999
 TOKEN_REFRESH_LEEWAY_SECONDS: Final[float] = 60.0
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 15.0
 
+logger = logging.getLogger(__name__)
+
 
 class NHPlugLiveQuotesError(RuntimeError):
     """Base class for redacted live period-quote failures."""
@@ -74,6 +77,10 @@ class NHPlugLiveQuotesEndpointError(NHPlugLiveQuotesError):
 
 class NHPlugLiveQuotesResponseError(NHPlugLiveQuotesError):
     """Raised for a malformed response without rendering its body."""
+
+
+class NHPlugLiveQuotesSecurityBlocked(NHPlugLiveQuotesError):
+    """A vendor block that must stop this run without further token issuance."""
 
 
 def _live_quotes_enabled() -> bool:
@@ -191,7 +198,7 @@ class _FileTokenCache:
                 "token cache file mode must be 0600"
             )
 
-    def load_valid(self, *, now: float) -> str | None:
+    def load_valid(self, *, now: float) -> tuple[str, float] | None:
         self._assert_existing_file_is_private()
         if not self._path.exists():
             return None
@@ -205,7 +212,7 @@ class _FileTokenCache:
             return None
         if now >= expires_at - TOKEN_REFRESH_LEEWAY_SECONDS:
             return None
-        return token
+        return token, expires_at
 
     def store(self, *, token: str, expires_at: float) -> None:
         if self._path.is_symlink():
@@ -274,6 +281,11 @@ class NHPlugLiveQuotesClient:
         self._transport = transport
         self._timeout = float(timeout)
         self._quotes_enabled = quotes_enabled
+        # A successfully issued token is authoritative for this process.  The
+        # file cache is solely a durable cross-invocation optimization: an
+        # unwritable mount must never turn one run into repeated OAuth issuance.
+        self._cached_token: str | None = None
+        self._token_expires_at = 0.0
 
     @classmethod
     def from_scoped_env(
@@ -307,7 +319,6 @@ class NHPlugLiveQuotesClient:
             request = client.build_request(
                 "POST",
                 LIVE_TOKEN_PATH,
-                params=form,
                 data=form,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
@@ -315,6 +326,7 @@ class NHPlugLiveQuotesClient:
                 request, allowed_paths=frozenset({LIVE_TOKEN_PATH})
             )
             response = await client.send(request)
+        self._raise_for_security_block(response, stage="token_issue")
         response.raise_for_status()
         try:
             payload = response.json()
@@ -347,17 +359,62 @@ class NHPlugLiveQuotesClient:
                 "NHPLUG live token response expiry is too short to cache safely"
             )
         normalized = token.strip()
-        self._token_cache.store(token=normalized, expires_at=time.time() + ttl)
+        expires_at = time.time() + ttl
+        self._cached_token = normalized
+        self._token_expires_at = expires_at
+        try:
+            self._token_cache.store(token=normalized, expires_at=expires_at)
+        except OSError as exc:
+            # Durable caching is best effort.  Do not include exception text:
+            # filesystem paths and platform error strings are not an operator
+            # contract, and tokens remain only in the in-process authority.
+            logger.warning(
+                "NHPLUG live token cache unavailable stage=token_cache_write "
+                "error_code=%s",
+                type(exc).__name__,
+            )
         return normalized
 
     async def _get_token(self, *, invalid_token: str | None = None) -> str:
         now = time.time()
-        cached = self._token_cache.load_valid(now=now)
-        if cached is not None and cached != invalid_token:
-            return cached
+        if (
+            self._cached_token is not None
+            and now < self._token_expires_at - TOKEN_REFRESH_LEEWAY_SECONDS
+            and self._cached_token != invalid_token
+        ):
+            return self._cached_token
+        try:
+            cached = self._token_cache.load_valid(now=now)
+        except OSError as exc:
+            logger.warning(
+                "NHPLUG live token cache unavailable stage=token_cache_load "
+                "error_code=%s",
+                type(exc).__name__,
+            )
+            cached = None
+        if cached is not None and cached[0] != invalid_token:
+            self._cached_token, self._token_expires_at = cached
+            return self._cached_token
         if invalid_token is not None:
-            self._token_cache.invalidate_if_matching(token=invalid_token)
+            self._cached_token = None
+            self._token_expires_at = 0.0
+            try:
+                self._token_cache.invalidate_if_matching(token=invalid_token)
+            except OSError as exc:
+                logger.warning(
+                    "NHPLUG live token cache unavailable stage=token_cache_invalidate "
+                    "error_code=%s",
+                    type(exc).__name__,
+                )
         return await self._issue_token()
+
+    @staticmethod
+    def _raise_for_security_block(response: httpx.Response, *, stage: str) -> None:
+        if response.status_code in {403, 429}:
+            raise NHPlugLiveQuotesSecurityBlocked(
+                f"NHPLUG live {stage} stopped (HTTP {response.status_code}): "
+                "보안 차단 가능성, 쿨다운 필요"
+            )
 
     async def _post_data(self, *, path: str, input_0: dict[str, str]) -> dict[str, Any]:
         """Issue one data request after every independent boundary check."""
@@ -383,6 +440,7 @@ class NHPlugLiveQuotesClient:
                 )
                 _assert_resolved_live_request(request, allowed_paths=ALLOWED_DATA_PATHS)
                 response = await client.send(request)
+            self._raise_for_security_block(response, stage="quote_request")
             if response.status_code == 401 and attempt == 0:
                 # The vendor documents 401 as the sole allowed reissuance case.
                 token = await self._get_token(invalid_token=token)
