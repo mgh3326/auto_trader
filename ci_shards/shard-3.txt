@@ -234,10 +234,10 @@ tests/services/watch_trigger_repricing/test_invariants.py
 tests/tasks/test_kis_live_reconcile_tasks.py
 tests/tasks/test_toss_live_reconcile_tasks.py
 tests/test_admin_router.py
+tests/test_alpaca_collect_us_daily.py
 tests/test_alpaca_paper_fill_reconcile_smoke.py
 tests/test_alpaca_paper_smoke_safety.py
 tests/test_alpaca_paper_submit_boundary_safety.py
-tests/test_alpaca_collect_us_daily.py
 tests/test_analysis_artifact_mcp.py
 tests/test_analyze_nxt_exposure.py
 tests/test_analyze_stock_batch_cache.py
