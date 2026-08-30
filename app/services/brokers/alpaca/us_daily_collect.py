@@ -17,7 +17,7 @@ import stat
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol, cast
@@ -41,6 +41,8 @@ DEFAULT_BATCH_SIZE = 200
 MAX_BATCH_SIZE = 200
 MIN_RATE_SECONDS = 0.3
 VERIFY_RELATIVE_TOLERANCE = Decimal("0.001")
+_CALENDAR_DAYS_PER_BAR_NUMERATOR = 8
+_CALENDAR_DAYS_PER_BAR_DENOMINATOR = 5
 COLLECT_GATE_ENV = "ALPACA_US_COLLECT_ENABLED"
 _SCOPED_ENV_KEYS = (
     COLLECT_GATE_ENV,
@@ -56,6 +58,17 @@ class AlpacaUsDailyCollectionDisabled(RuntimeError):
 
 class AlpacaUsDailyResponseError(RuntimeError):
     """A bars response could not safely be treated as daily candles."""
+
+
+def _start_date_for_bars(bars: int) -> str:
+    """Return a UTC calendar-date window with trading-day slack for ``bars``."""
+
+    window_days = (
+        int(bars) * _CALENDAR_DAYS_PER_BAR_NUMERATOR
+        + _CALENDAR_DAYS_PER_BAR_DENOMINATOR
+        - 1
+    ) // _CALENDAR_DAYS_PER_BAR_DENOMINATOR
+    return (datetime.now(UTC).date() - timedelta(days=window_days)).isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +204,9 @@ class HttpxAlpacaBarsClient:
             # avoiding dividend-total-return semantics in a candle table.
             "adjustment": ADJUSTMENT,
             "limit": min(int(bars), MAX_BARS_PER_REQUEST),
+            # Alpaca otherwise defaults start to the current day, which yields
+            # no daily bars on weekends and before the market opens.
+            "start": _start_date_for_bars(bars),
         }
         if page_token:
             params["page_token"] = page_token

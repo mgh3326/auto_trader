@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.services.brokers.alpaca.us_daily_collect import (
@@ -83,6 +84,50 @@ def test_env_mode_and_gate_reject_before_collector_network(tmp_path: Path) -> No
                 api_key="stub-key", api_secret="stub-secret"
             ).fetch_bars(symbols=["AAPL"], bars=1)
         )
+
+
+def test_http_client_requests_sufficient_start_window_on_every_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bars = 3
+    minimum_start = datetime.now(UTC).date() - timedelta(days=5)
+    requests: list[httpx.Request] = []
+
+    async def fake_get(
+        self: httpx.AsyncClient,
+        url: str,
+        *,
+        params: dict[str, str | int],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        request = httpx.Request(
+            "GET", "https://data.alpaca.markets/v2/stocks/bars", params=params
+        )
+        requests.append(request)
+        start = request.url.params.get("start")
+        assert start is not None, "bars request must include start in its query string"
+        assert date_fromisoformat(start) <= minimum_start, (
+            "bars request start window is too narrow for --bars"
+        )
+        assert request.url.params.get("end") is None
+        return httpx.Response(200, json={"bars": {}}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    client = HttpxAlpacaBarsClient(api_key="stub-key", api_secret="stub-secret")
+
+    asyncio_run(client.fetch_bars(symbols=["AAPL"], bars=bars))
+    asyncio_run(
+        client.fetch_bars(symbols=["AAPL"], bars=bars, page_token="second-page")
+    )
+
+    assert [request.url.params.get("page_token") for request in requests] == [
+        None,
+        "second-page",
+    ]
+
+
+def date_fromisoformat(value: str) -> date:
+    return datetime.fromisoformat(f"{value}T00:00:00+00:00").date()
 
 
 def asyncio_run(awaitable: object) -> object:
