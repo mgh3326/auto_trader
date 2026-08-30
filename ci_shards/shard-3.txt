@@ -87,6 +87,7 @@ tests/scripts/test_native_bundle_completeness.py
 tests/scripts/test_native_deploy_preflight.py
 tests/scripts/test_native_mcp_profile_registry.py
 tests/scripts/test_native_plists.py
+tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_run_rob1040_crs24_refreeze.py
 tests/scripts/test_seed_execution_ledger_opening_lots_cli.py
@@ -123,6 +124,8 @@ tests/services/brokers/binance/spot_demo/test_testnet_env_does_not_activate_demo
 tests/services/brokers/binance/test_gap_detection.py
 tests/services/brokers/binance/test_public_futures_stream_allowlist.py
 tests/services/brokers/binance/test_rest_client.py
+tests/services/brokers/nhplug/test_live_period_collect.py
+tests/services/brokers/nhplug/test_live_quotes.py
 tests/services/brokers/toss/test_auth_single_flight.py
 tests/services/brokers/toss/test_health.py
 tests/services/brokers/toss/test_warnings_guard.py
