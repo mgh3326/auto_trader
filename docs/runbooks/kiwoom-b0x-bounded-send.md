@@ -37,6 +37,39 @@ ROB-1325 동적 귀속 검증에서는 해당 봉인 검증이 캘린더의 최�
 `kiwoom_cycle.py:2361`은 5번째 접촉임을 확인했다. 현행 기본 grant-only 경로도
 confirm 시 `kiwoom_cycle.py:2330-2335`에서 조기 반환하므로 2361행에 도달하지 않는다.
 
+### 게이트 ⑦-0 — 집행 진입점 실행가능성 실측
+
+G3 발주와 운영 봉인 등록 전에, 계좌맵 게이트와 같은 지위로 **실제 serving SHA에서
+집행할 정확한 진입점이 bounded-send owner factory와 검토된 durable ports factory를
+함께 선택할 수 있음**을 먼저 실측한다. 소스에 factory가 존재하거나 CLI `--help`에
+플래그가 보이는 것만으로는 PASS가 아니다.
+
+필수 증거는 다음을 모두 포함한다.
+
+1. exact serving SHA와 최종 실행 명령을 고정한다. 명령은
+   `uv run python -m scripts.run_b0x_kr_kiwoom_cycle --bounded-send --seal <JSON_PATH>
+   --durable-ports-factory <MODULE:CALLABLE> --ordering --confirm` 형태여야 한다.
+2. 같은 SHA의 격리 테스트에서 `--bounded-send` 지정 시
+   `build_bounded_send_kiwoom_coordination_factory`가 실제 cycle의
+   `coordination_factory`로 전달되고, 플래그 미지정 시 기존
+   `production_kiwoom_coordination_factory()` grant-only 경로가 그대로 선택됨을 함께
+   증명한다. 정본 회귀 테스트는
+   `test_cli_bounded_send_reaches_registered_seal_factory`와
+   `test_cli_default_still_injects_production_grant_only_factory`다.
+3. 운영 명령에 지정할 `<MODULE:CALLABLE>`이 serving 환경에서 import 가능하고, 검토된
+   실제 durable `KiwoomCoordinationPorts`를 반환한다는 별도 배포 증거를 남긴다.
+   unit-test sentinel이나 `make_grant_only_kiwoom_coordination_adapter(...).ports`는 이
+   증거가 아니며, 후자는 명시적으로 G3 포트가 아니다.
+4. 이 사전 실측은 브로커 호출 0, 주문 0, 운영 봉인 소비 0이어야 한다. 실제 bounded
+   factory 내부 callable 호출은 봉인을 소비하므로, 운영 봉인으로 사전검증한다는 이유로
+   호출하지 않는다. one-shot 소비는 계속 bounded factory 내부에서만 일어난다.
+
+위 네 항목 중 하나라도 없으면 `GATE_7_0=FAIL`로 기록하고 ⑦, 운영자 승인, 봉인 등록,
+집행으로 진행하지 않는다. 특히 이 레포가 CLI 배선 테스트를 통과했다는 사실만으로 운영
+durable ports의 존재나 배포 결속을 추론하지 않는다. `<MODULE:CALLABLE>`은 동일 Python
+프로세스에서 실행되는 신뢰 코드이므로 exact module/symbol과 배포 artifact hash를 증거에
+고정한다.
+
 ### G3 필수 순서 — ① 같은 프로세스 1회 워밍업 + ③ 실패 폴백
 
 G3 집행 프로세스는 **봉인 검증 또는 bounded-send owner factory 진입 직전에**, 같은
