@@ -14,6 +14,13 @@
     # requires the same per-call confirmation gate.
     uv run python -m scripts.run_b0x_kr_kiwoom_cycle --ordering --confirm
 
+    # Registered-seal bounded owner. The seal is an exact four-field JSON
+    # object and the ports factory is reviewed in-process code. This path still
+    # requires the per-call confirmation gate and is never selected by default.
+    uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
+      --bounded-send --seal /operator/path/seal.json \
+      --durable-ports-factory package.module:build_ports --ordering --confirm
+
 ``--confirm`` alone is ``ACCEPTANCE_ONLY``: one submit followed by broker-proven
 cancel. ``--ordering --confirm`` is ``ORDERING``: it submits eligible
 envelope-derived DAY orders and deliberately does not auto-cancel them. Its
@@ -22,6 +29,13 @@ every mutation, checks its account writer lease, and refuses an unreadable
 realized-P&L input. Both paths are default-disabled, cannot be combined with
 ``--now``, and expose no envelope override. The §4 caps are module constants in
 ``scripts.b0x.envelope``, re-asserted before every read.
+
+``--bounded-send`` only selects the registered-seal coordination factory. It
+requires ``--confirm``, an exact seal JSON file, and an explicitly nominated
+durable-ports factory. The CLI performs a structural snapshot check only;
+``build_bounded_send_kiwoom_coordination_factory`` snapshots again, checks
+registry/currentness on invocation, and alone owns the one-shot consumption.
+Without the flag the production grant-only factory remains the selected path.
 
 🔴 There is no ``--no-cancel`` for acceptance. The cancellation it requires
 must be broker-proven or exits ``2``; that safe acceptance behavior is not
@@ -36,12 +50,62 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import importlib
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from scripts.b0x.ledger import DEFAULT_OBSERVATION_DIR, WriterLockUnavailable
 from scripts.b0x.table_source import DEFAULT_TABLE_DIR
+
+
+class BoundedSendCliConfigurationError(RuntimeError):
+    """Closed, secret-free refusal for malformed bounded-send CLI inputs."""
+
+
+def _load_bounded_send_seal(path_value: str) -> dict[str, object]:
+    """Load a seal object without validating or consuming its authority."""
+
+    path = Path(path_value).expanduser()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        raise BoundedSendCliConfigurationError(
+            "bounded_send_seal_file_unavailable"
+        ) from None
+    except json.JSONDecodeError:
+        raise BoundedSendCliConfigurationError(
+            "bounded_send_seal_file_invalid"
+        ) from None
+    if type(payload) is not dict:
+        raise BoundedSendCliConfigurationError("bounded_send_seal_file_invalid")
+    return payload
+
+
+def _load_durable_ports_factory(reference: str) -> Callable[..., object]:
+    """Resolve one explicit ``module:callable`` reviewed by the operator."""
+
+    module_name, separator, attribute_name = reference.partition(":")
+    if (
+        separator != ":"
+        or not module_name
+        or not attribute_name
+        or ":" in attribute_name
+    ):
+        raise BoundedSendCliConfigurationError(
+            "bounded_send_ports_factory_reference_invalid"
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, ValueError):
+        raise BoundedSendCliConfigurationError(
+            "bounded_send_ports_factory_unavailable"
+        ) from None
+    candidate = vars(module).get(attribute_name)
+    if not callable(candidate):
+        raise BoundedSendCliConfigurationError("bounded_send_ports_factory_unavailable")
+    return candidate
 
 
 def _print_outcome(outcome) -> None:  # noqa: ANN001 — local formatting helper
@@ -137,6 +201,24 @@ async def _run(args: argparse.Namespace) -> int:
     if args.ordering and not args.confirm:
         print("--ordering requires --confirm", file=sys.stderr)
         return 2
+    if args.bounded_send and not args.confirm:
+        print("--bounded-send requires --confirm", file=sys.stderr)
+        return 2
+    bounded_inputs_present = (
+        args.seal is not None or args.durable_ports_factory is not None
+    )
+    if not args.bounded_send and bounded_inputs_present:
+        print(
+            "--seal/--durable-ports-factory require --bounded-send",
+            file=sys.stderr,
+        )
+        return 2
+    if args.bounded_send and (args.seal is None or args.durable_ports_factory is None):
+        print(
+            "--bounded-send requires --seal and --durable-ports-factory",
+            file=sys.stderr,
+        )
+        return 2
     if args.confirm and args.now is not None:
         print("--confirm cannot be combined with --now", file=sys.stderr)
         return 2
@@ -147,8 +229,14 @@ async def _run(args: argparse.Namespace) -> int:
     if args.readiness:
         return await _readiness(args)
 
+    from scripts.b0x.kr.kiwoom_bounded_send import (
+        KiwoomBoundedSendSealRejected,
+        snapshot_bounded_send_seal,
+    )
     from scripts.b0x.kr.kiwoom_coordination import (
         KIWOOM_KR_LANE_ID,
+        KiwoomCoordinationOwnerRejected,
+        build_bounded_send_kiwoom_coordination_factory,
         production_kiwoom_coordination_factory,
         resolve_kiwoom_lane_entry,
     )
@@ -156,6 +244,30 @@ async def _run(args: argparse.Namespace) -> int:
 
     now = dt.datetime.now(dt.UTC) if args.now is None else args.now
     coordination_entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    if args.bounded_send:
+        try:
+            seal = snapshot_bounded_send_seal(
+                _load_bounded_send_seal(args.seal)
+            ).canonical()
+            ports_factory = _load_durable_ports_factory(args.durable_ports_factory)
+            coordination_factory = build_bounded_send_kiwoom_coordination_factory(
+                seal=seal,
+                ports_factory=ports_factory,  # type: ignore[arg-type]
+            )
+        except BoundedSendCliConfigurationError as exc:
+            print(f"BOUNDED_SEND_CONFIGURATION_INVALID — {exc}", file=sys.stderr)
+            return 2
+        except (
+            KiwoomBoundedSendSealRejected,
+            KiwoomCoordinationOwnerRejected,
+        ) as exc:
+            print(
+                f"BOUNDED_SEND_CONFIGURATION_INVALID — {exc.code}",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        coordination_factory = production_kiwoom_coordination_factory()
     try:
         outcome = await run_kiwoom_cycle(
             now=now,
@@ -163,7 +275,7 @@ async def _run(args: argparse.Namespace) -> int:
             out_dir=Path(args.out_dir).expanduser(),
             confirm=args.confirm,
             ordering=args.ordering,
-            coordination_factory=production_kiwoom_coordination_factory(),
+            coordination_factory=coordination_factory,
             coordination_entry=coordination_entry,
         )
     except WriterLockUnavailable as exc:
@@ -217,6 +329,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "select ORDERING DAY-order retention; requires --confirm. "
             "Without this flag, --confirm remains the one-order acceptance cancel"
         ),
+    )
+    parser.add_argument(
+        "--bounded-send",
+        action="store_true",
+        help=(
+            "select the registered-seal coordination factory; requires --confirm, "
+            "--seal, and --durable-ports-factory"
+        ),
+    )
+    parser.add_argument(
+        "--seal",
+        default=None,
+        metavar="JSON_PATH",
+        help="exact four-field bounded-send seal JSON (loaded but consumed by factory)",
+    )
+    parser.add_argument(
+        "--durable-ports-factory",
+        default=None,
+        metavar="MODULE:CALLABLE",
+        help="reviewed in-process factory returning exact durable Kiwoom ports",
     )
     parser.add_argument("--now", type=_iso, default=None, help="override cycle time")
     parser.add_argument("--json", action="store_true", help="print the full record")
