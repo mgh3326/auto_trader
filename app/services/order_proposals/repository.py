@@ -8,6 +8,7 @@ Never commits — the caller owns the transaction.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -343,6 +344,7 @@ class OrderProposalRepository:
         broker_account_id: str | None,
         start: datetime,
         end: datetime,
+        is_daily_cap_exempt: Callable[[Any, int, Any], bool] | None = None,
     ) -> Decimal:
         """Sum durable cap measures for auto-approved rungs in a time window.
 
@@ -361,7 +363,7 @@ class OrderProposalRepository:
             quantity,
             limit_price,
             _side,
-            _symbol,
+            symbol,
         ) in await self._auto_approved_rung_rows(
             account_mode=account_mode,
             market=market,
@@ -369,6 +371,14 @@ class OrderProposalRepository:
             start=start,
             end=end,
         ):
+            # §S170: this callback owns the exact parking-scope predicate and
+            # the durable `expanded`-mode evidence. Keeping it at the shared
+            # daily aggregation point excludes both the current decision and
+            # later contribution reads without duplicating ticker matching.
+            if is_daily_cap_exempt is not None and is_daily_cap_exempt(
+                source_asof, rung_index, symbol
+            ):
+                continue
             total += self._durable_cap_measure(
                 source_asof, rung_index, quantity, limit_price
             )

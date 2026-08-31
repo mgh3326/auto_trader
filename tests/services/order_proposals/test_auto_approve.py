@@ -1730,6 +1730,84 @@ async def test_daily_notional_uses_auto_approval_time_not_create_time(db_session
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "parking_symbol", "ordinary_symbol"),
+    [
+        ("equity_us", "SGOV", "QQQ"),
+        ("equity_kr", "459580", "005930"),
+    ],
+)
+async def test_daily_notional_excludes_only_durably_marked_expanded_parking_rungs(
+    db_session, market, parking_symbol, ordinary_symbol
+):
+    """§S170 contribution gate: legacy/off/non-parking rows still consume budget."""
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    account_id = f"parking-daily-{uuid.uuid4()}"
+
+    async def _approved(*, symbol, side="buy", price, eligibility):
+        await service.create_proposal(
+            symbol=symbol,
+            market=market,
+            account_mode="kis_live",
+            broker_account_id=account_id,
+            side=side,
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, side, Decimal("1"), price, None)],
+            source_asof={
+                "auto_approved": {
+                    "policy_version": "test-policy",
+                    "approved_at": now.isoformat(),
+                    "eligibility": eligibility,
+                    "outcomes": ["submitted_resting"],
+                }
+            },
+        )
+
+    # The precise writer marker plus the same scope predicate is the only
+    # durable contribution exemption.
+    await _approved(
+        symbol=parking_symbol,
+        price=Decimal("100"),
+        eligibility=[{"rung_index": 0, "mode": "expanded", "daily_cap_exempt": True}],
+    )
+    await _approved(
+        symbol=parking_symbol,
+        side="sell",
+        price=Decimal("150"),
+        eligibility=[{"rung_index": 0, "mode": "expanded", "daily_cap_exempt": True}],
+    )
+    # A legacy parking row and a forged/old off-mode marker remain charged.
+    await _approved(symbol=parking_symbol, price=Decimal("200"), eligibility=[])
+    await _approved(
+        symbol=parking_symbol,
+        price=Decimal("300"),
+        eligibility=[{"rung_index": 0, "mode": "off", "daily_cap_exempt": True}],
+    )
+    # The durable marker alone can never exempt an out-of-scope ticker.
+    await _approved(
+        symbol=ordinary_symbol,
+        price=Decimal("400"),
+        eligibility=[{"rung_index": 0, "mode": "expanded", "daily_cap_exempt": True}],
+    )
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol=ordinary_symbol,
+        market=market,
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_daily_notional(probe, now=now) == Decimal("900")
+
+
+@pytest.mark.asyncio
 async def test_parking_notional_counts_only_same_day_parking_buys(db_session):
     """§163차 재작업 1 — the durable half of the cumulative parking cap.
 

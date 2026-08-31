@@ -164,9 +164,10 @@ It therefore implies `limit_price > avg_buy_price`; the superficially looser
 just outside the band whose fee-netted P&L is zero or negative is also manual.
 `loss_cut`, every other exit intent, `policy_deviation`, account/market
 allowlists, thesis/card rendering, and the existing loss-sell guard remain
-unchanged. Per-order and daily caps remain hard gates; the sole marketable
-profit-sell path evaluates their notional at `max(limit_price, current_price) ×
-quantity` as described above.
+unchanged. Per-order and daily caps remain hard gates for every non-parking
+rung; §S170 excludes only its exact enabled parking subset. The sole
+marketable profit-sell path evaluates its applicable cap notional at
+`max(limit_price, current_price) × quantity` as described above.
 
 The cost basis is not a caller/session field: `order_proposal_create` accepts
 no preview. On the approval click, `_revalidate_place_rung` calls the internal
@@ -346,6 +347,7 @@ and only costs a Telegram tap on money that is being parked, not invested.
 | marketability | released on the **buy** side only |
 | per-order cap | 🔴 **raised** USD 1,500 → **USD 10,000**, and still enforced — this is a value change, not a removal |
 | 2nd boundary | cumulative parking exposure ≤ **USD 10,000**, buy side, where exposure = broker balance **+** same-day auto-approved parking buys (see §8.3) |
+| shared daily cap (§S170) | 🔴 **excluded on both buy and sell** for this explicitly enabled scope in `expanded` mode: it neither blocks the parking rung nor consumes budget for a later ordinary order |
 
 Neither constant is a settings key, an environment variable, or a
 `config/trading_policy.yaml` entry — §163차 adds **no** policy key, which
@@ -493,11 +495,10 @@ measured exposure and reject a buy, while under-inclusion would understate it
 and let one through. Non-ASCII rows are still rejected so an unrelated holding
 cannot inflate parking exposure.
 
-### 8.6 What §163차 did **not** authorize
+### 8.6 What §163차/§S170 did **not** authorize
 
 Proven unchanged by test, for parking rungs as for every other:
 
-* the **daily cap** — unchanged and still applied (`test_daily_cap_still_applies_to_a_parking_buy`),
 * `loss_cut` and every other exit intent,
 * the `policy_deviation` tag scan,
 * the veto-capable account/market allowlist and the Toss freeze,
@@ -511,6 +512,17 @@ Proven unchanged by test, for parking rungs as for every other:
   and releases marketability on the buy side, **not** the profit proof,
 * the mandatory veto thesis,
 * every `off`-mode verdict, and every verdict for every non-allowlisted symbol.
+
+🔴 **§S170's sole change beyond the existing parking treatment is precise:** an
+enabled parking scope in `expanded` mode is excluded from the shared daily-cap
+**decision and durable contribution sum**, on **both buy and sell**. It uses
+the identical strict `parking_scope` predicate that grants the parking
+treatment; `SGOVX`, another market, another account mode, `off` mode, a
+legacy row with no writer marker, or malformed durable evidence all remain
+charged. This is not a policy/YAML/env setting: each `ParkingScope` carries a
+closed `daily_cap_exempt` switch sourced from the closed
+`PARKING_DAILY_CAP_EXEMPT_US` / `PARKING_DAILY_CAP_EXEMPT_KR` literals. Both
+ship as `true`; narrowing one market later is a one-line operator code change.
 
 ### 8.7 Known limits — read these before trusting the cap
 
@@ -578,11 +590,16 @@ BL-38 is not new to parking — the daily circuit breaker has the same shape.
   overseas balance is **unverified here** — this repo holds no captured sample
   proving it either way — so the guard is deliberately inert when no row
   declares one, rather than failing closed on normal traffic.
-* Parking **sells** get the same raised per-order cap (USD 10,000) and are
-  bounded by it plus the unchanged daily cap. The cumulative cap is buy-side
-  per the operator decision, because a sell reduces exposure.
+* Parking **sells** get the same raised per-order cap (USD 10,000) and the
+  same §S170 daily-cap exclusion. The cumulative cap remains buy-side per the
+  operator decision, because a sell reduces exposure; the sell-side profit,
+  break-even, exit-intent, tag, veto-account and thesis gates are unchanged.
+  🔴 **A parking sell has no remaining daily aggregate boundary.** Its only
+  amount/eligibility boundaries are the immutable per-order cap, available held
+  quantity, and the existing `take_profit` proof; it does not receive a
+  cumulative-parking cap because that cap is deliberately buy-side only.
 
-### 8.8 KR extension (§170차) — two bound tuples, no FX conversion
+### 8.8 KR extension (§170차) and daily-cap exclusion finalization (§S170)
 
 The two §170차 additions are these closed authorization tuples:
 
@@ -590,6 +607,13 @@ The two §170차 additions are these closed authorization tuples:
 | --- | --- | --- | --- | --- |
 | `459580` KODEX CD금리액티브(합성) | `kis_live` × `equity_kr` | KRW | 10,000,000 | 15,000,000 |
 | `357870` TIGER CD금리투자KIS(합성) | `kis_live` × `equity_kr` | KRW | 10,000,000 | 15,000,000 |
+
+🔴 **The shared daily cap does not apply to either KR tuple's enabled
+`expanded`-mode parking orders, on either side.** A KR parking order therefore
+does not consume the ordinary KRW 5,000,000 daily budget and cannot prevent a
+later market-exposure-changing auto approval. It remains bounded by its
+KRW 10,000,000 per-order cap, and parking buys remain bounded by the shared
+KRW 15,000,000 cumulative parking cap.
 
 The code represents every parking authorization as one immutable tuple of
 symbol, account mode, market, currency, cap pair, and native KIS balance
@@ -618,10 +642,9 @@ the same displayed session (2026-08-28 15:30 KST), `459580` showed KRW 454.50bn
 turnover and a KRW 5 spread (0.047bp midpoint), whereas `357870` showed KRW
 8.85bn turnover and the same KRW 5 spread (0.862bp midpoint): the latter has
 about 51.4× less turnover and about 18.5× the relative spread. They are not
-equivalent by turnover or relative spread. Separately, at the current KRW 5m
-effective daily scale, the observed `357870` turnover is sufficient for that
-order size (about 0.0565% of turnover); this is not a claim that the two
-products have equivalent liquidity. Source URLs:
+equivalent by turnover or relative spread. Separately, the immutable KRW 10m
+per-order cap is about 0.113% of the observed `357870` turnover; this is not a
+claim that the two products have equivalent liquidity. Source URLs:
 <https://mbnmoney.mbn.co.kr/stock/item?code=459580> and
 <https://mbnmoney.mbn.co.kr/stock/item?code=357870>.
 
@@ -630,3 +653,40 @@ universe data. Neither can use NXT; for an ordinary regular-session sell there
 is no NXT extension and the exit window closes at 15:30 KST. This is an
 execution-window fact for operators, not a new eligibility rule or a reason
 added to the gate.
+
+### 8.9 §S170 aggregate-limit change; BL-38/BL-39 mechanism unchanged
+
+The one thing §S170 removes is the **shared daily aggregate ceiling for
+successfully durable-recorded parking rungs**. That is intentional: parking is
+cash-equivalent and its own immutable per-order and cumulative boundaries are
+the applicable controls; successful parking must not crowd out later
+market-exposure-changing auto approvals.
+
+For a parking **sell**, this removes the only aggregate limit: no daily total
+or cumulative-parking cap remains. The immutable per-order cap, available held
+quantity, and existing `take_profit` proof remain required.
+
+The mechanism of the known cumulative-cap limits is unchanged, but their
+effective binding amount is not symmetric by market:
+
+* **BL-38:** an order accepted by the broker but missing from
+  `source_asof.auto_approved` is absent from both the parking durable half and
+  the ordinary daily-cap reader today. §S170 does not make that pre-existing
+  missing-record case newly unbounded.
+* **BL-39:** both readers use the same current-KST-day window. Their reset at
+  KST midnight therefore occurs together; the daily cap was never a backstop
+  for the US intra-session reset.
+
+For **US**, the prior USD 20,000 daily cap was already looser than the
+USD 10,000 cumulative parking-buy cap. For **KR**, the prior KRW 5,000,000
+daily cap was the binding gate below the KRW 15,000,000 cumulative parking-buy
+cap. §S170 moves that KR binding gate from **KRW 5,000,000 to KRW 15,000,000**;
+the same BL-37/BL-39 defect can therefore expose up to **3×** the KR amount per
+day. This is an intentional aggregate-limit change, not a claim that the
+BL-38/BL-39 mechanisms are eliminated or mechanically worsened.
+
+The daily-cap reader excludes only a post-§S170 writer marker for the exact
+`expanded`-mode parking scope. Legacy rows, off-mode rows, and malformed
+markers continue to count, which is conservative during rollout. No
+per-order-cap value, cumulative-cap value, currency keying, roster, broker
+surface, scheduler, or other auto-approval gate changes here.
