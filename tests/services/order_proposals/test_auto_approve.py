@@ -1837,6 +1837,58 @@ async def test_parking_notional_is_scoped_to_the_same_broker_account(db_session)
 
 
 @pytest.mark.asyncio
+async def test_parking_notional_counts_kr_pair_only_from_the_same_durable_query(
+    db_session,
+):
+    """§170차 — KR uses the same durable ledger query, pair-bound at its caller."""
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    account_id = f"parking-kr-{uuid.uuid4()}"
+
+    async def _approved(*, symbol, market, price):
+        await service.create_proposal(
+            symbol=symbol,
+            market=market,
+            account_mode="kis_live",
+            broker_account_id=account_id,
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("10"), price, None)],
+            source_asof={
+                "auto_approved": {
+                    "policy_version": "test-policy",
+                    "approved_at": now.isoformat(),
+                    "eligibility": [],
+                    "outcomes": ["submitted_resting"],
+                }
+            },
+        )
+
+    await _approved(symbol="459580", market="equity_kr", price=Decimal("10000"))
+    await _approved(symbol="357870", market="equity_kr", price=Decimal("5000"))
+    await _approved(symbol="459580", market="equity_us", price=Decimal("999999"))
+    await _approved(symbol="SGOV", market="equity_kr", price=Decimal("999999"))
+    await _approved(symbol="SGOV", market="equity_us", price=Decimal("999999"))
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol="357870",
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_parking_notional(probe, now=now) == Decimal(
+        "150000"
+    )
+
+
+@pytest.mark.asyncio
 async def test_daily_notional_reuses_durable_execution_price_cap_observation(
     db_session,
 ):

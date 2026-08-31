@@ -3574,7 +3574,14 @@ class OrderProposalsService:
             broker_account_id=group.broker_account_id,
             start=start,
             end=end,
-            is_parking_symbol=is_parking_exposure_symbol,
+            # Durable rows must use the same symbol×account×market binding as
+            # broker balance rows; a US SGOV record cannot count as KR parking
+            # and a KR 459580 record cannot count as US parking.
+            is_parking_symbol=lambda symbol: is_parking_exposure_symbol(
+                symbol,
+                account_mode=group.account_mode,
+                market=group.market,
+            ),
         )
 
     async def acquire_auto_dispatch_lock(self, proposal_id: uuid.UUID) -> None:

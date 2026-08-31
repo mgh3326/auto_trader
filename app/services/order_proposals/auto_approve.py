@@ -62,21 +62,20 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     and self-consistent (``target_evidence_missing``). An action outside
     ``{place, replace, cancel}`` still fails closed (``action_not_supported``).
 
-§163차 -- the cash-parking allowlist
-    Two ultra-short US Treasury ETFs (``SGOV``, ``BIL``) on ``kis_live`` /
-    ``equity_us`` get two changes, and exactly two:
+§163차/§170차 -- the cash-parking allowlist
+    ``SGOV``/``BIL`` on ``kis_live`` / ``equity_us`` and ``459580`` on
+    ``kis_live`` / ``equity_kr`` get two changes, and exactly two:
 
     1. the marketability rule is released on the buy side (the only
        marketable-*buy* release that exists anywhere), and
     2. 🔴 the per-order cap is **RAISED, not removed**. §106차's "maximum loss
        of one automation error" boundary keeps its shape: the per-order check
-       still runs on every parking rung, against ``PARKING_PER_ORDER_CAP_USD``
-       rather than the ordinary US ``per_order_cap``. One automation error on
-       a parking ticker stays bounded at USD 10,000 per order.
+       still runs on every parking rung, against its immutable scope's
+       native-currency cap rather than the ordinary ``per_order_cap``.
 
-    A second boundary sits behind that one: ``PARKING_CUMULATIVE_CAP_USD``,
-    measured on every parking buy against the account's cumulative parking
-    exposure -- the broker balance PLUS the durable same-day record of
+    A second native-currency boundary sits behind that one, measured on every
+    parking buy against the account's cumulative parking exposure -- the
+    broker balance PLUS the durable same-day record of
     already-auto-approved parking buys, because the balance alone cannot see
     an accepted-but-unfilled order. It fails closed whenever either half
     cannot be read. It is the second line, never the only one: its measurement
@@ -117,11 +116,9 @@ from app.services.order_proposals.dispatch_contract import (
     DispatchBinding,
 )
 from app.services.order_proposals.parking_allowlist import (
-    PARKING_CUMULATIVE_CAP_USD,
-    PARKING_PER_ORDER_CAP_USD,
     ParkingExposure,
     canonical_eligibility_symbol,
-    is_parking_allowlisted,
+    parking_scope,
 )
 from app.services.trading_policy_service import load_trading_policy, policy_content_hash
 
@@ -733,11 +730,12 @@ def evaluate_auto_approve_eligibility(
     # can never be a way *past* one of them; it only ever relaxes the two gates
     # named in ``parking_allowlist``. `off` mode never reaches this branch.
     expanded = mode == "expanded"
-    parking = expanded and is_parking_allowlisted(
+    parking_scope_record = parking_scope(
         symbol=getattr(group, "symbol", None),
         account_mode=account_mode,
         market=market,
     )
+    parking = expanded and parking_scope_record is not None
     if preview.get("success") is not True:
         return reject(
             "preview_guard_failed",
@@ -780,13 +778,17 @@ def evaluate_auto_approve_eligibility(
         # can spend. For a resting rung this is identical to or larger than the
         # limit basis, never smaller.
         notional = max(limit_price, current_price) * quantity
-        per_order_cap = PARKING_PER_ORDER_CAP_USD
+        # The selected immutable tuple owns both its native currency and cap;
+        # a KRW cap can never be selected for a USD tuple or vice versa.
+        assert parking_scope_record is not None
+        per_order_cap = parking_scope_record.per_order_cap
         parking_details = {
             "parking_allowlist": canonical_eligibility_symbol(
                 getattr(group, "symbol", None)
             )
             or "",
             "per_order_cap_basis": "parking_raised",
+            "parking_currency": parking_scope_record.currency,
         }
     if notional > per_order_cap:
         return reject(
@@ -819,9 +821,9 @@ def evaluate_auto_approve_eligibility(
         parking_details.update(
             parking_exposure_before=_text(observed),
             parking_exposure_after=_text(parking_after),
-            parking_cap=_text(PARKING_CUMULATIVE_CAP_USD),
+            parking_cap=_text(parking_scope_record.cumulative_cap),
         )
-        if parking_after > PARKING_CUMULATIVE_CAP_USD:
+        if parking_after > parking_scope_record.cumulative_cap:
             return reject("parking_cap_exceeded", **parking_details)
     # §163차 changes the per-order cap's VALUE for parking and nothing else
     # about it. The daily circuit breaker applies to a parking rung exactly as
@@ -849,8 +851,8 @@ def evaluate_auto_approve_eligibility(
     # exception to buys or to any other sell classification. `off` keeps
     # ROB-871's non-strict distance boundary, so it cannot inherit this release.
     #
-    # §163차 adds the ONLY marketable-buy release there is: a cash-parking
-    # allowlist ticker (SGOV/BIL) on kis_live/equity_us. It is scoped by
+    # §163차/§170차 add the ONLY marketable-buy releases there are: cash-parking
+    # allowlist tickers on their exact kis_live market tuples. It is scoped by
     # `parking`, which is false in `off` mode and false for every other symbol,
     # account mode and market -- so no other buy inherits it either.
     min_fraction = (

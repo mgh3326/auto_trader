@@ -1,10 +1,9 @@
-"""Cash-parking ticker allowlist for auto-approval (§163차).
+"""Cash-parking allowlist for auto-approval (§163차, §170차).
 
-The operator authorized exactly two ultra-short US Treasury ETFs -- ``SGOV``
-and ``BIL`` -- as *cash parking* instruments. For those two tickers only, and
-only on the one account/market pair whose parking exposure this repo can read
-back from the broker, two §40차/§156차 gates change -- and 🔴 exactly one of
-them stops applying. The other keeps applying at a different value:
+The operator authorized two US Treasury ETFs (``SGOV``/``BIL``) and two KR
+CD-rate ETFs (``459580``/``357870``) as parking instruments, each only in its explicitly
+paired ``kis_live`` market. Two §40차/§156차 gates change -- and 🔴 exactly one
+of them stops applying. The other keeps applying at a different value:
 
 1. **marketability** -- a parking buy may price at the market instead of
    resting below it (§156차 ② kept "매수 marketable 은 수동 유지"; §163차 makes
@@ -14,17 +13,16 @@ them stops applying. The other keeps applying at a different value:
    §106차 defined ``per_order_cap`` as *the maximum loss boundary of one
    automation error*, and that boundary keeps its shape here: the per-order
    check still runs on every parking rung, against
-   ``PARKING_PER_ORDER_CAP_USD`` instead of the ordinary US
-   ``per_order_cap``. One automation error on a parking ticker therefore stays
-   bounded at USD 10,000 per order, which is what makes the residual gaps in
-   the cumulative measurement (see ``parking_exposure``) survivable.
+   the scope's native-currency raised cap instead of the ordinary
+   ``per_order_cap``. One automation error remains bounded by the selected
+   tuple's per-order cap, which is what makes residual measurement gaps
+   survivable.
 
-   A **second** boundary sits behind it: ``PARKING_CUMULATIVE_CAP_USD``, on
-   the buy side, measured against the broker balance **plus** the durable
-   same-day record of already-auto-approved parking buys -- the balance alone
-   cannot see an accepted-but-unfilled order and would re-meter the next
-   proposal from zero. The cumulative cap is the second line, never the only
-   one.
+   A **second** native-currency boundary sits behind it on the buy side,
+   measured against the broker balance **plus** the durable same-day record of
+   already-auto-approved parking buys -- the balance alone cannot see an
+   accepted-but-unfilled order and would re-meter the next proposal from zero.
+   The cumulative cap is the second line, never the only one.
 
 Nothing else changes, and the per-order cap above has not stopped applying --
 only its value moved. The daily cap, the loss-cut and exit-intent gates, the
@@ -65,34 +63,6 @@ from typing import Any
 
 from app.core.symbol import to_db_symbol
 
-# The closed allowlist. Two tickers, hardcoded, immutable at runtime.
-PARKING_ALLOWLIST_SYMBOLS: frozenset[str] = frozenset({"BIL", "SGOV"})
-
-# SGOV and BIL are US-listed ETFs, so the allowlist is market-scoped: the same
-# four characters arriving on a KR or crypto proposal are NOT parking tickers
-# and get no parking treatment.
-#
-# It is also account-scoped, and that is the stricter of the two decisions.
-# The cumulative cap is only meaningful if parking exposure can be read back at
-# all, and ``kis_live`` is the one equity_us account mode for which it can
-# (``fetch_my_us_stocks`` -> ``ovrs_stck_evlu_amt``).
-#
-# 🔴 That is an account *label*, not a proven account identity. The scoping
-# comes from the proposal's ``account_mode``/``market``/``broker_account_id``
-# labels and from whatever credentials ``KISClient()`` resolves; nothing here
-# proves the balance read and the account the order reaches are the same
-# physical account. That gap is BL-37 (backlog, not fixed here), and what
-# contains it is the per-order cap above, which bounds one automation error at
-# ``PARKING_PER_ORDER_CAP_USD`` per order regardless of labelling. Do not read
-# this comment as a stronger guarantee than runbook §8.2 states. ``toss_live`` equity_us is veto-capable in principle
-# (behind ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED) but its parking exposure
-# would have to come from a different broker surface; measuring a KIS balance
-# to authorize a Toss order would be a wrong-account cap, which is worse than
-# no parking treatment. Toss parking orders therefore keep the ordinary gates.
-PARKING_ALLOWLIST_ACCOUNT_MARKETS: frozenset[tuple[str, str]] = frozenset(
-    {("kis_live", "equity_us")}
-)
-
 # 🔴 TWO boundaries, deliberately separate constants so that changing one can
 # never silently move the other. Both are USD -- the same currency as
 # ``order_proposals.auto_approve.per_order_cap.us`` / ``daily_cap.us`` and as
@@ -112,6 +82,81 @@ PARKING_PER_ORDER_CAP_USD: Decimal = Decimal("10000")
 # the per-order cap above is what keeps each of those bounded per order.
 PARKING_CUMULATIVE_CAP_USD: Decimal = Decimal("10000")
 
+# The KR values are deliberately separate from USD values. No FX conversion
+# enters either comparison: a KR proposal is compared only with a KRW cap and
+# a domestic KIS balance value, while a US proposal remains USD-only.
+PARKING_PER_ORDER_CAP_KRW: Decimal = Decimal("10000000")
+PARKING_CUMULATIVE_CAP_KRW: Decimal = Decimal("15000000")
+
+
+@dataclass(frozen=True)
+class ParkingScope:
+    """One inseparable parking authorization tuple.
+
+    Symbol, account/market, native currency, cap pair, and the KIS balance
+    fields used to measure that same market live in one immutable record. This
+    is intentionally *not* two independent symbol/account sets: adding either
+    half alone cannot create an authorization through a cross product.
+    """
+
+    symbol: str
+    account_mode: str
+    market: str
+    currency: str
+    per_order_cap: Decimal
+    cumulative_cap: Decimal
+    balance_symbol_field: str
+    balance_evaluation_field: str
+
+
+# Closed operator allowlist. Each entry is a full authorization tuple, not
+# independently extensible symbol and market collections. ``toss_live`` is
+# intentionally absent: a KIS balance must never meter a Toss order.
+PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
+    {
+        ParkingScope(
+            symbol="BIL",
+            account_mode="kis_live",
+            market="equity_us",
+            currency="USD",
+            per_order_cap=PARKING_PER_ORDER_CAP_USD,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
+            balance_symbol_field="ovrs_pdno",
+            balance_evaluation_field="ovrs_stck_evlu_amt",
+        ),
+        ParkingScope(
+            symbol="SGOV",
+            account_mode="kis_live",
+            market="equity_us",
+            currency="USD",
+            per_order_cap=PARKING_PER_ORDER_CAP_USD,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
+            balance_symbol_field="ovrs_pdno",
+            balance_evaluation_field="ovrs_stck_evlu_amt",
+        ),
+        ParkingScope(
+            symbol="459580",
+            account_mode="kis_live",
+            market="equity_kr",
+            currency="KRW",
+            per_order_cap=PARKING_PER_ORDER_CAP_KRW,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_symbol_field="pdno",
+            balance_evaluation_field="evlu_amt",
+        ),
+        ParkingScope(
+            symbol="357870",
+            account_mode="kis_live",
+            market="equity_kr",
+            currency="KRW",
+            per_order_cap=PARKING_PER_ORDER_CAP_KRW,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_symbol_field="pdno",
+            balance_evaluation_field="evlu_amt",
+        ),
+    }
+)
+
 # Closed reason vocabulary. A parking rejection renders one of these and never
 # a broker- or proposer-supplied string.
 PARKING_EXPOSURE_UNAVAILABLE_REASONS: frozenset[str] = frozenset(
@@ -125,6 +170,8 @@ PARKING_EXPOSURE_UNAVAILABLE_REASONS: frozenset[str] = frozenset(
         "evaluation_amount_invalid",
         "evaluation_amount_negative",
         "currency_not_usd",
+        "currency_not_krw",
+        "scope_not_allowlisted",
         # §163차 재작업 1 — the durable half. Its absence or unreadability is
         # not a degraded measurement, it is a broken cap: without it an
         # accepted-but-unfilled parking buy is invisible and the next proposal
@@ -193,7 +240,28 @@ def canonical_exposure_symbol(value: Any) -> str | None:
     return to_db_symbol(stripped.upper())
 
 
-def is_parking_exposure_symbol(value: Any) -> bool:
+def parking_scope(
+    *, symbol: Any, account_mode: Any, market: Any
+) -> ParkingScope | None:
+    """Return the one closed authorization tuple, or ``None`` fail-closed."""
+    canonical = canonical_eligibility_symbol(symbol)
+    if canonical is None or type(account_mode) is not str or type(market) is not str:
+        return None
+    return next(
+        (
+            scope
+            for scope in PARKING_ALLOWLIST_SCOPES
+            if (
+                scope.symbol == canonical
+                and scope.account_mode == account_mode
+                and scope.market == market
+            )
+        ),
+        None,
+    )
+
+
+def is_parking_exposure_symbol(value: Any, *, account_mode: Any, market: Any) -> bool:
     """Lenient membership for anything that CONTRIBUTES to measured exposure.
 
     Used by both halves of the §163차 measurement -- broker balance rows and
@@ -203,7 +271,14 @@ def is_parking_exposure_symbol(value: Any) -> bool:
     only reject a buy, counting one too few lets a buy through.
     """
     canonical = canonical_exposure_symbol(value)
-    return canonical is not None and canonical in PARKING_ALLOWLIST_SYMBOLS
+    if canonical is None or type(account_mode) is not str or type(market) is not str:
+        return False
+    return any(
+        scope.symbol == canonical
+        and scope.account_mode == account_mode
+        and scope.market == market
+        for scope in PARKING_ALLOWLIST_SCOPES
+    )
 
 
 def is_parking_allowlisted(*, symbol: Any, account_mode: Any, market: Any) -> bool:
@@ -213,12 +288,10 @@ def is_parking_allowlisted(*, symbol: Any, account_mode: Any, market: Any) -> bo
     instruments and are rejected here because membership is tested against a
     ``frozenset`` of whole strings.
     """
-    canonical = canonical_eligibility_symbol(symbol)
-    if canonical is None or canonical not in PARKING_ALLOWLIST_SYMBOLS:
-        return False
-    if type(account_mode) is not str or type(market) is not str:
-        return False
-    return (account_mode, market) in PARKING_ALLOWLIST_ACCOUNT_MARKETS
+    return (
+        parking_scope(symbol=symbol, account_mode=account_mode, market=market)
+        is not None
+    )
 
 
 @dataclass(frozen=True)
@@ -256,14 +329,17 @@ class ParkingExposure:
 
 
 __all__ = [
-    "PARKING_ALLOWLIST_ACCOUNT_MARKETS",
-    "PARKING_ALLOWLIST_SYMBOLS",
+    "PARKING_ALLOWLIST_SCOPES",
     "PARKING_CUMULATIVE_CAP_USD",
+    "PARKING_CUMULATIVE_CAP_KRW",
     "PARKING_PER_ORDER_CAP_USD",
+    "PARKING_PER_ORDER_CAP_KRW",
     "PARKING_EXPOSURE_UNAVAILABLE_REASONS",
+    "ParkingScope",
     "ParkingExposure",
     "canonical_eligibility_symbol",
     "canonical_exposure_symbol",
     "is_parking_allowlisted",
     "is_parking_exposure_symbol",
+    "parking_scope",
 ]

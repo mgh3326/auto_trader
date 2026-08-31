@@ -1,4 +1,4 @@
-# Auto-approve eligibility expansion (§40차, §141차, §156차, §163차)
+# Auto-approve eligibility expansion (§40차, §141차, §156차, §163차, §170차)
 
 Extends ROB-871 resting-class auto-approval with the §40차 classification:
 **auto-submit, then veto**, for buys and for *proven* profit-take sells.
@@ -13,10 +13,10 @@ final scope addendum also permits one narrow marketable exception: an
 predicate — not a self-described tier. Every marketable buy, loss sell,
 break-even-band sell, and unclassifiable sell remains manual.
 
-§163차 adds a two-ticker **cash-parking allowlist** (`SGOV`, `BIL`) on
-`kis_live` / `equity_us`. It is the only marketable **buy** release that
-exists anywhere, and the only place where the per-order cap takes a different
-*value*.
+§163차 adds a US cash-parking allowlist (`SGOV`, `BIL`) on `kis_live` /
+`equity_us`; §170차 adds `459580` and `357870` on `kis_live` / `equity_kr`.
+These are the only marketable **buy** releases, and the only places where the
+per-order cap takes a different *value*.
 
 🔴 **The per-order cap is RAISED, not removed.** §106차's "maximum loss of one
 automation error" boundary keeps its shape: the check still runs on every
@@ -368,17 +368,19 @@ spellings is a losing game. What it buys is that re-introducing configurability
 *the obvious way* turns red in CI. The real boundary is that this file is
 operator-PR-only, like the policy document.
 
-### 8.2 Why `kis_live` / `equity_us` only
+### 8.2 Why only exact `kis_live` market tuples
 
 The cumulative cap is only meaningful if parking exposure can be read back at
-all, and `kis_live` is the one veto-capable `equity_us` account mode for which
-it can (`KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt`, USD).
-`toss_live` `equity_us` is veto-capable in principle behind
-`ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED`, but its exposure lives on a different
-broker surface; metering a KIS balance to authorize a Toss order would be a
-wrong-account cap, which is worse than no parking treatment at all. Toss
-parking orders keep the ordinary gates. A KR- or crypto-market proposal
-carrying the same four characters is not a parking ticker and gets nothing.
+all. `kis_live` has the existing read surface for each authorized market:
+`equity_us` uses `KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt` (USD),
+while `equity_kr` uses `KISClient.fetch_my_stocks` → `evlu_amt` (KRW).
+`toss_live` is veto-capable in principle behind
+`ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED` for both `equity_us` and `equity_kr`,
+but its exposure lives on a different broker surface. Metering a KIS balance to
+authorize a Toss order would be a wrong-account cap, which is worse than no
+parking treatment at all. No `toss_live` tuple is authorized, so Toss parking
+orders keep the ordinary gates. A proposal outside an exact KIS
+symbol×account×market tuple gets nothing.
 
 🔴 **This is an account *label*, not a proven account identity — do not read
 more into it than the code does.** Both halves of the measurement are scoped
@@ -389,8 +391,8 @@ reach are the same physical account. Two `kis_live` proposals carrying
 *different* `broker_account_id` labels are metered as separate books by the
 durable half while the broker balance is whatever the ambient credentials
 return. That is **BL-37**, tracked as backlog and deliberately not fixed here.
-What contains it is the per-order cap in §8.1: whatever the labelling does,
-one automation error is still bounded at USD 10,000 per order.
+What contains it is the scope-native per-order cap in §8.1: whatever the
+labelling does, one automation error remains bounded per order.
 
 ### 8.3 The measurement — two halves, both load-bearing
 
@@ -579,3 +581,52 @@ BL-38 is not new to parking — the daily circuit breaker has the same shape.
 * Parking **sells** get the same raised per-order cap (USD 10,000) and are
   bounded by it plus the unchanged daily cap. The cumulative cap is buy-side
   per the operator decision, because a sell reduces exposure.
+
+### 8.8 KR extension (§170차) — two bound tuples, no FX conversion
+
+The two §170차 additions are these closed authorization tuples:
+
+| symbol | account mode × market | currency | per-order cap | cumulative buy cap |
+| --- | --- | --- | --- | --- |
+| `459580` KODEX CD금리액티브(합성) | `kis_live` × `equity_kr` | KRW | 10,000,000 | 15,000,000 |
+| `357870` TIGER CD금리투자KIS(합성) | `kis_live` × `equity_kr` | KRW | 10,000,000 | 15,000,000 |
+
+The code represents every parking authorization as one immutable tuple of
+symbol, account mode, market, currency, cap pair, and native KIS balance
+fields. It does **not** maintain independent symbol and market sets: `SGOV` /
+`BIL` on `equity_kr`, and `459580` or `357870` on `equity_us`, are not parking
+rungs and retain every ordinary gate. Tests assert all three rejections;
+removing the tuple binding makes the assertions red.
+
+KR cumulative exposure is the existing KIS domestic balance's `pdno` +
+`evlu_amt` for **both** KR parking symbols, plus the same KST-day durable sum
+of auto-approved KR parking buys. The two symbols share **one** KRW 15,000,000
+cumulative buy cap; they do not receive one cap each, so the effective shared
+boundary is not KRW 30,000,000. A balance of `459580` KRW 9,000,000 plus
+`357870` KRW 5,000,000 measures as KRW 14,000,000 from either KR scope;
+likewise, same-day durable buys of KRW 6,000,000 plus KRW 5,000,000 measure as
+KRW 11,000,000. Thus a KRW 2,000,000 `357870` buy against a held KRW
+14,000,000 `459580` is rejected as `parking_cap_exceeded` against the single
+KRW 15,000,000 cap. The durable reader is required exactly as it is for US, so
+an accepted-but-unfilled KR buy cannot reset the next proposal's measurement to
+zero. A missing balance or durable read is fail-closed. The comparison is
+native KRW only; neither this reader nor the cap selector performs FX
+conversion, and a declared non-KRW balance-row currency is rejected.
+
+The observed liquidity is asymmetric. From the same 매일경제TV 증권 source and
+the same displayed session (2026-08-28 15:30 KST), `459580` showed KRW 454.50bn
+turnover and a KRW 5 spread (0.047bp midpoint), whereas `357870` showed KRW
+8.85bn turnover and the same KRW 5 spread (0.862bp midpoint): the latter has
+about 51.4× less turnover and about 18.5× the relative spread. They are not
+equivalent by turnover or relative spread. Separately, at the current KRW 5m
+effective daily scale, the observed `357870` turnover is sufficient for that
+order size (about 0.0565% of turnover); this is not a claim that the two
+products have equivalent liquidity. Source URLs:
+<https://mbnmoney.mbn.co.kr/stock/item?code=459580> and
+<https://mbnmoney.mbn.co.kr/stock/item?code=357870>.
+
+Both `459580` and `357870` are marked `nxt_eligible=false` in the referenced
+universe data. Neither can use NXT; for an ordinary regular-session sell there
+is no NXT extension and the exit window closes at 15:30 KST. This is an
+execution-window fact for operators, not a new eligibility rule or a reason
+added to the gate.

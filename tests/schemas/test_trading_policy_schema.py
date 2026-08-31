@@ -364,8 +364,10 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     edit. This test is the drift alarm for that decision.
     """
     from app.services.order_proposals.parking_allowlist import (
-        PARKING_ALLOWLIST_SYMBOLS,
+        PARKING_ALLOWLIST_SCOPES,
+        PARKING_CUMULATIVE_CAP_KRW,
         PARKING_CUMULATIVE_CAP_USD,
+        PARKING_PER_ORDER_CAP_KRW,
         PARKING_PER_ORDER_CAP_USD,
     )
 
@@ -406,9 +408,16 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     assert current_auto == baseline_auto
 
     # The authorized scope lives in code, and the document agrees with it.
-    assert PARKING_ALLOWLIST_SYMBOLS == frozenset({"SGOV", "BIL"})
+    assert {(scope.symbol, scope.market) for scope in PARKING_ALLOWLIST_SCOPES} == {
+        ("SGOV", "equity_us"),
+        ("BIL", "equity_us"),
+        ("459580", "equity_kr"),
+        ("357870", "equity_kr"),
+    }
     assert PARKING_PER_ORDER_CAP_USD == 10000
     assert PARKING_CUMULATIVE_CAP_USD == 10000
+    assert PARKING_PER_ORDER_CAP_KRW == 10000000
+    assert PARKING_CUMULATIVE_CAP_KRW == 15000000
     assert "SGOV and BIL on kis_live/equity_us" in current["source"]
     assert "USD 10,000 parking-exposure cap" in current["source"]
     # The ordinary US per-order cap is untouched by §163차.
