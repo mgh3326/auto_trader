@@ -46,6 +46,9 @@ from app.services.order_proposals.approval_window import (
     evaluate_approval_window,
     evaluate_approval_window_boundary,
 )
+from app.services.order_proposals.auto_approve_audit import (
+    AutoApproveNotEvaluatedReason,
+)
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
     fetch_submit_evidence,
@@ -1116,7 +1119,14 @@ async def _revalidate_place_rung(
         await service.transition_rung(
             proposal_id, rung_index, new_state="pending_approval"
         )
-        return RungOutcome(rung_index, "error", {"error": str(exc)})
+        return RungOutcome(
+            rung_index,
+            "error",
+            {
+                "error": str(exc),
+                "not_evaluated_reason": AutoApproveNotEvaluatedReason.PREVIEW_EXCEPTION.value,
+            },
+        )
 
     if preview.get("success") is False:
         await service.transition_rung(
@@ -1137,7 +1147,11 @@ async def _revalidate_place_rung(
         return RungOutcome(
             rung_index,
             "guard_blocked" if guard_blocked else "error",
-            {"error": preview.get("error"), "preview": preview},
+            {
+                "error": preview.get("error"),
+                "preview": preview,
+                "not_evaluated_reason": AutoApproveNotEvaluatedReason.PREVIEW_FAILED.value,
+            },
         )
 
     if group.account_mode == "toss_live":
@@ -1156,6 +1170,7 @@ async def _revalidate_place_rung(
                 {
                     "error": f"invalid_toss_preview:{invalid_reason}",
                     "preview": preview,
+                    "not_evaluated_reason": AutoApproveNotEvaluatedReason.PREVIEW_INVALID.value,
                 },
             )
 
@@ -1551,7 +1566,14 @@ async def _revalidate_replace_preview(
         await service.transition_rung(
             proposal_id, rung_index, new_state="pending_approval"
         )
-        return None, RungOutcome(rung_index, "error", {"error": str(exc)})
+        return None, RungOutcome(
+            rung_index,
+            "error",
+            {
+                "error": str(exc),
+                "not_evaluated_reason": AutoApproveNotEvaluatedReason.PREVIEW_EXCEPTION.value,
+            },
+        )
 
     if preview.get("success") is False:
         await service.transition_rung(
@@ -1560,7 +1582,11 @@ async def _revalidate_replace_preview(
         return None, RungOutcome(
             rung_index,
             "guard_blocked" if _is_guard_blocked_preview(preview) else "error",
-            {"error": preview.get("error"), "preview": preview},
+            {
+                "error": preview.get("error"),
+                "preview": preview,
+                "not_evaluated_reason": AutoApproveNotEvaluatedReason.PREVIEW_FAILED.value,
+            },
         )
 
     if rung.limit_price is None:

@@ -1469,6 +1469,7 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
         set_approval_nonce=AsyncMock(),
         get_proposal=AsyncMock(return_value=(group, [])),
         start_approval_dispatch=AsyncMock(),
+        record_auto_approve_not_evaluated=AsyncMock(),
     )
     result = TelegramDispatchResult(
         state=state,
@@ -1484,7 +1485,7 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
         ),
     )
     second_service = SimpleNamespace(
-        finish_approval_dispatch=AsyncMock(return_value=result)
+        finish_approval_dispatch=AsyncMock(return_value=result),
     )
     sessions = [
         _OrchestrationSession(first_service),
@@ -1539,6 +1540,7 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
 
     assert returned is result
     assert register.await_count == expected_batch_calls
+    first_service.record_auto_approve_not_evaluated.assert_not_awaited()
     if source_asof_state == "absent":
         rejection_card.assert_not_called()
     else:

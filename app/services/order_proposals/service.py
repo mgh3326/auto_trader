@@ -34,6 +34,8 @@ from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
+    AUTO_APPROVE_NOT_EVALUATED_KEY,
+    AutoApproveNotEvaluatedReason,
     append_auto_approve_rejection_attempt,
     build_auto_approve_cap_observations,
 )
@@ -89,6 +91,11 @@ from app.services.trade_journal.trade_retrospective_service import (
 logger = logging.getLogger(__name__)
 
 _TOSS_AUTO_SUBMISSION_FREEZE_KEY = "toss_auto_submission_freeze"
+
+
+def _clear_auto_approve_not_evaluated_stamp(source_asof: dict[str, Any]) -> None:
+    """Remove a superseded non-evaluation claim after actual evaluation."""
+    source_asof.pop(AUTO_APPROVE_NOT_EVALUATED_KEY, None)
 
 
 def _is_durable_parking_daily_cap_exempt(
@@ -3062,10 +3069,12 @@ class OrderProposalsService:
             evaluated_at=observation_time,
         ):
             auto_approved["cap_observations"] = cap_observations
-        source_asof = {
-            **(group.source_asof or {}),
-            "auto_approved": auto_approved,
-        }
+        source_asof = dict(group.source_asof or {})
+        # A successful auto decision is authoritative evidence that the
+        # proposal was evaluated. It therefore supersedes the observation-only
+        # stamp from an earlier manual pass.
+        _clear_auto_approve_not_evaluated_stamp(source_asof)
+        source_asof["auto_approved"] = auto_approved
         return await self._repo.update_group(group, source_asof=source_asof)
 
     async def record_auto_approve_rejections(
@@ -3085,11 +3094,40 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        # Rejection evidence is also a completed evaluation, so it cannot
+        # coexist with a claim that eligibility was never reached.
+        _clear_auto_approve_not_evaluated_stamp(source_asof)
         source_asof = append_auto_approve_rejection_attempt(
-            group.source_asof,
+            source_asof,
             decisions=decisions,
             now=now,
         )
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def record_auto_approve_not_evaluated(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        reason: AutoApproveNotEvaluatedReason,
+    ) -> OrderProposal:
+        """Stamp a closed cause when manual dispatch bypassed auto eligibility.
+
+        This intentionally writes only the enum value. In particular, preview
+        exception text and preview payloads are not audit inputs.
+        """
+        if not isinstance(reason, AutoApproveNotEvaluatedReason):
+            raise ValueError("invalid_auto_approve_not_evaluated_reason")
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        # Do not overwrite durable evidence that this proposal was evaluated.
+        # This retains the existing manual route while failing closed on a
+        # provenance claim that would be false after redispatch.
+        if "auto_approved" in source_asof or "auto_approve_rejections" in source_asof:
+            return group
+        source_asof[AUTO_APPROVE_NOT_EVALUATED_KEY] = reason.value
         return await self._repo.update_group(group, source_asof=source_asof)
 
     async def record_auto_veto(

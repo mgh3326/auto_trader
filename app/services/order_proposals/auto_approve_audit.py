@@ -12,10 +12,23 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 AUTO_APPROVE_REJECTIONS_KEY = "auto_approve_rejections"
 AUTO_APPROVE_CAP_OBSERVATIONS_KEY = "cap_observations"
+AUTO_APPROVE_NOT_EVALUATED_KEY = "auto_approve_not_evaluated"
+
+
+class AutoApproveNotEvaluatedReason(StrEnum):
+    """Closed, text-free causes for a manual path that skipped eligibility."""
+
+    MASTER_GATE_DISABLED = "master_gate_disabled"
+    PREVIEW_EXCEPTION = "preview_exception"
+    PREVIEW_FAILED = "preview_failed"
+    PREVIEW_INVALID = "preview_invalid"
+    DIRECT_MANUAL_DISPATCH = "direct_manual_dispatch"
+
 
 _MAX_ATTEMPTS = 8
 _MAX_RUNGS_PER_ATTEMPT = 16
@@ -381,6 +394,22 @@ def append_auto_approve_rejection_attempt(
     return source
 
 
+def project_auto_approve_not_evaluated(source_asof: Any) -> str | None:
+    """Return a known non-evaluation cause without exposing arbitrary JSONB."""
+    if not isinstance(source_asof, Mapping):
+        return None
+    # Defensive reader-side precedence for rows created before the writer-side
+    # cleanup existed: completed-evaluation evidence must never be rendered as
+    # a contradictory "not evaluated" claim.
+    if "auto_approved" in source_asof or AUTO_APPROVE_REJECTIONS_KEY in source_asof:
+        return None
+    value = source_asof.get(AUTO_APPROVE_NOT_EVALUATED_KEY)
+    try:
+        return AutoApproveNotEvaluatedReason(value).value
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_cap_observation(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -474,11 +503,14 @@ def build_auto_approve_rejection_card_block(source_asof: Any) -> str | None:
 
 __all__ = [
     "AUTO_APPROVE_CAP_OBSERVATIONS_KEY",
+    "AUTO_APPROVE_NOT_EVALUATED_KEY",
     "AUTO_APPROVE_REJECTIONS_KEY",
+    "AutoApproveNotEvaluatedReason",
     "append_auto_approve_rejection_attempt",
     "build_auto_approve_cap_observations",
     "build_auto_approve_rejection_attempt",
     "build_auto_approve_rejection_card_block",
     "project_auto_approve_cap_observations",
+    "project_auto_approve_not_evaluated",
     "project_auto_approve_rejections",
 ]

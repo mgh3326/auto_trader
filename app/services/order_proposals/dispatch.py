@@ -50,6 +50,7 @@ from app.services.order_proposals.auto_approve import (
     limits_for_market,
 )
 from app.services.order_proposals.auto_approve_audit import (
+    AutoApproveNotEvaluatedReason,
     build_auto_approve_rejection_card_block,
 )
 from app.services.order_proposals.auto_veto import (
@@ -218,6 +219,19 @@ def _unrecorded_revalidation_fallbacks(
             }
         )
     return fallbacks
+
+
+def _not_evaluated_reason_from_outcomes(
+    outcomes: list[RungOutcome],
+) -> AutoApproveNotEvaluatedReason | None:
+    """Read only the closed preview classification, never outcome detail text."""
+    for outcome in outcomes:
+        detail = outcome.detail if isinstance(outcome.detail, dict) else {}
+        try:
+            return AutoApproveNotEvaluatedReason(detail.get("not_evaluated_reason"))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _mirror_decimal_text(value: Any) -> str:
@@ -560,6 +574,7 @@ async def send_proposal_for_approval(
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
     redispatch: bool = False,
+    not_evaluated_reason: AutoApproveNotEvaluatedReason | None = None,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Mint a fresh approval nonce, render the message, and send it.
 
@@ -723,6 +738,14 @@ async def send_proposal_for_approval(
             payload_chars=messages.payload_chars,
             context_message_count=len(messages.context_messages),
         )
+        if not_evaluated_reason is not None:
+            # Keep this observation in the pre-publication transaction. A
+            # writer failure can then prevent publication, never roll back a
+            # card that Telegram has already accepted.
+            await service.record_auto_approve_not_evaluated(
+                proposal_id,
+                reason=not_evaluated_reason,
+            )
         # The nonce and pending attempt become durable before Telegram I/O.
         await session.commit()
 
@@ -896,6 +919,7 @@ async def dispatch_proposal(
             service_factory=service_factory,
             window_evaluator=window_evaluator,
             now_fn=now_fn,
+            not_evaluated_reason=AutoApproveNotEvaluatedReason.MASTER_GATE_DISABLED,
         )
 
     clock = now_fn or (lambda: now)
@@ -904,6 +928,7 @@ async def dispatch_proposal(
     attempt_id: uuid.UUID | None = None
     mirror_card: tuple[Any, list[Any], str] | None = None
     auto_policy_version: str | None = None
+    not_evaluated_reason: AutoApproveNotEvaluatedReason | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
         await service.acquire_auto_dispatch_lock(proposal_id)
@@ -1042,6 +1067,7 @@ async def dispatch_proposal(
                     now_fn=clock,
                 )
             outcomes: list[RungOutcome] = await revalidate_fn(**revalidate_kwargs)
+            not_evaluated_reason = _not_evaluated_reason_from_outcomes(outcomes)
             submitted_results = _auto_completed_results(group.action)
             auto_submitted = (
                 bool(outcomes)
@@ -1147,6 +1173,7 @@ async def dispatch_proposal(
             service_factory=service_factory,
             window_evaluator=window_evaluator,
             now_fn=clock,
+            not_evaluated_reason=not_evaluated_reason,
         )
 
     allowlist = settings.order_proposals_telegram_chat_allowlist
