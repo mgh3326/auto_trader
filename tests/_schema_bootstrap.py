@@ -91,7 +91,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v42 (ROB-1331): review.buy_gate_ab_collection_epoch ORM table + immutable
 # UPDATE/DELETE/TRUNCATE triggers. The production migration seeds the marker;
 # create_all test schemas leave it empty so tests can transact a canonical row.
-SCHEMA_BOOTSTRAP_VERSION = 42
+# v43 (ROB-1338): review.kiwoom_coordination_lifecycle is a new ORM table.
+# Production uses its additive migration; test schemas use create_all.
+SCHEMA_BOOTSTRAP_VERSION = 43
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
