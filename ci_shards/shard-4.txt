@@ -64,6 +64,7 @@ tests/schemas/test_research_pipeline_schemas.py
 tests/schemas/test_trade_journal_schemas.py
 tests/schemas/test_trading_policy_schema.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_cycle.py
+tests/scripts/b0x/kr/kiwoom/test_kiwoom_durable_ports.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_legacy_and_pending.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_round_trip.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_static_guards.py

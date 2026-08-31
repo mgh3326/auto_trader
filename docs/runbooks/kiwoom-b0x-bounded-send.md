@@ -70,6 +70,38 @@ durable ports의 존재나 배포 결속을 추론하지 않는다. `<MODULE:CAL
 프로세스에서 실행되는 신뢰 코드이므로 exact module/symbol과 배포 artifact hash를 증거에
 고정한다.
 
+### 운영 durable ports factory (ROB-1338)
+
+검토 대상 callable은 다음 exact 문자열이다.
+
+```text
+scripts.b0x.kr.kiwoom_durable_ports:build_ports
+```
+
+`build_ports(entry)`는 exact `KiwoomCoordinationPorts`를 반환하며, 호출 자체는 DB 연결,
+브로커 소켓, 주문 또는 봉인 소비를 만들지 않는다. 실제 I/O는 bounded factory가 별도로
+봉인을 소비해 owner를 구성한 뒤 coordination operation 안에서만 시작된다. 기본
+grant-only factory는 이 모듈을 선택하지 않으며 기존 in-memory canary 그대로다.
+이 factory는 signed lane registry의 policy/cap/owner/canary/activation 값을 만들거나
+완화하지 않는다. 따라서 해당 row가 `NOT_READY`/missing binding이면 generic coordination은
+여전히 broker callback 전에 fail-closed한다. factory 존재 증거를 activation 증거로
+대체하지 않는다.
+
+저장면은 두 부분이다. 기존 `review.order_send_intents`가 broker I/O 전에 binary claim을
+별도 트랜잭션으로 커밋하고, `review.kiwoom_coordination_lifecycle`가 immutable pre-send
+lineage와 post-dispatch evidence를 보존한다. dispatch writer는 ACK가 붙은 envelope와 typed
+dispatch evidence를 한 PostgreSQL 트랜잭션으로 쓴다. 프로세스 재시작 뒤 새 ports의
+`claims.rediscover_unreleased_claims()`가 살아 있는 claim을 lifecycle row와 left join하고,
+모든 실제 coordination 진입도 uncertainty gate에서 같은 재발견을 수행한다. evidence가
+없거나 uncertain이면 account mutation을 fail-closed한다.
+
+🔴 **알려진 원자성 한계:** Kiwoom HTTP ACK와 PostgreSQL commit을 하나의 분산
+트랜잭션으로 만들 수는 없다. ACK 뒤 모든 evidence write가 실패하는 창은 존재한다. 이때
+ACK를 기록했다고 가장하지 않으며, 먼저 커밋된 claim이 남아 재전송을 막고 restart
+rediscovery가 `evidence_missing`으로 복구한다. 해소는 `kt00007` authoritative readback과
+terminal evidence에 따른 exact claim release가 필요하다. claim 부재를 주문 부재로
+해석하거나 자동 재주문하지 않는다.
+
 ### G3 필수 순서 — ① 같은 프로세스 1회 워밍업 + ③ 실패 폴백
 
 G3 집행 프로세스는 **봉인 검증 또는 bounded-send owner factory 진입 직전에**, 같은

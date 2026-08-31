@@ -66,7 +66,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260830_rob1331_q6_epoch"
+HEAD_REVISION = "20260831_rob1338_kiwoom_coord"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -101,6 +101,7 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.telegram_callback_inbox",
     "review.screener_pick_log",
     "review.buy_gate_ab_collection_epoch",
+    "review.kiwoom_coordination_lifecycle",
 )
 
 
@@ -257,6 +258,23 @@ async def _epoch_table_exists(database_url: str) -> bool:
         return bool(
             await connection.fetchval(
                 "SELECT to_regclass('review.buy_gate_ab_collection_epoch') IS NOT NULL"
+            )
+        )
+    finally:
+        await connection.close()
+
+
+async def _kiwoom_coordination_table_exists(database_url: str) -> bool:
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        return bool(
+            await connection.fetchval(
+                "SELECT to_regclass('review.kiwoom_coordination_lifecycle') IS NOT NULL"
             )
         )
     finally:
@@ -863,6 +881,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
     assert await _epoch_table_exists(scratch_database) is False
+    assert await _kiwoom_coordination_table_exists(scratch_database) is False
     _alembic("stamp", PARENT_REVISION, database_url=scratch_database)
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False, (
@@ -874,12 +893,17 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _epoch_table_exists(scratch_database) is False, (
         "the Q6 epoch exists at the parent revision; the chain is not additive"
     )
+    assert await _kiwoom_coordination_table_exists(scratch_database) is False, (
+        "the Kiwoom lifecycle table exists at the parent revision; "
+        "the chain is not additive"
+    )
 
     async def _check_head_state() -> None:
         await _assert_rung_reason_schema(scratch_database)
         assert await _table_exists(scratch_database) is True
         assert await _cursor_table_exists(scratch_database) is True
         assert await _epoch_table_exists(scratch_database) is True
+        assert await _kiwoom_coordination_table_exists(scratch_database) is True
         await _assert_epoch_marker(scratch_database)
         assert await _cursor_row_count(scratch_database) == 0
         await _assert_cursor_constraint_matrix(scratch_database)
@@ -942,6 +966,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
     assert await _epoch_table_exists(scratch_database) is False
+    assert await _kiwoom_coordination_table_exists(scratch_database) is False
 
     # -- and up again --------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
