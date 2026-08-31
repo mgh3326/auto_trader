@@ -468,9 +468,9 @@ def test_production_registry_exact_seal_set_is_pinned() -> None:
                     "sha256:ad6ad5ebaa77aed5d8782b314f9713010dba72cafaf823e90c79a1ca128bebfb:"
                     "kr_kiwoom_mock_domain"
                 ),
-                "expires_at": "2026-08-31T06:30:00Z",
+                "expires_at": "2026-09-01T06:30:00Z",
                 "seal_digest": (
-                    "344f26e27d952d5eb8b8059b7e3119dd6c4f443a87873ce0343f530fcb3509de"
+                    "0b309a958d9eac051f0961c686aae0ab58ed4df58fe42ded5f428cf540fd0e61"
                 ),
             }
         ],
