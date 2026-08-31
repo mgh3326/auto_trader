@@ -35,6 +35,7 @@ from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     build_proposal_dispatch_binding,
 )
+from app.services.order_proposals.parking_allowlist import ParkingExposure
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
 from app.services.trading_policy_service import policy_version_stamp
@@ -894,6 +895,110 @@ async def test_dispatch_auto_eligible_qqq_records_cap_observation(
         }
     ]
     assert "auto_approve_rejections" not in refreshed.source_asof
+
+
+@pytest.mark.asyncio
+async def test_dispatch_parking_rungs_do_not_accumulate_daily_budget(
+    monkeypatch, db_session
+):
+    """§S170: dispatch's in-proposal accumulator must retain zero contribution."""
+    from app.core.config import settings
+
+    now = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
+    limits = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("1500"),
+        daily_cap=Decimal("1500"),
+        policy_version="s170-test-policy",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("90"),
+    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    monkeypatch.setattr(dispatch_module, "limits_for_market", lambda _market: limits)
+
+    async def flat_parking_exposure(**_kwargs):
+        return ParkingExposure.observed(Decimal("0"))
+
+    monkeypatch.setattr(dispatch_module, "load_parking_exposure", flat_parking_exposure)
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="s170-dispatch",
+        thesis="park idle USD in SGOV",
+        broker_account_id=f"s170-{uuid.uuid4()}",
+        rungs=[
+            RungInput(0, "buy", Decimal("10"), Decimal("100"), None),
+            RungInput(1, "buy", Decimal("10"), Decimal("100"), None),
+        ],
+        now=now,
+        valid_until=now + timedelta(hours=1),
+    )
+    await db_session.commit()
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        outcomes = []
+        for rung in rungs:
+            decision = await eligibility_gate(
+                group=fresh_group,
+                rung=rung,
+                preview={
+                    "success": True,
+                    "current_price": "100",
+                    "price": "100",
+                    "quantity": "10",
+                },
+                now=now,
+            )
+            # If dispatch re-added the first USD 1,000 contribution, the
+            # second rung would fail the USD 1,500 daily cap here.
+            assert decision.eligible is True
+            await service.transition_rung(
+                proposal_id, rung.rung_index, new_state="revalidating"
+            )
+            await service.transition_rung(
+                proposal_id, rung.rung_index, new_state="approved"
+            )
+            await service.transition_rung(
+                proposal_id, rung.rung_index, new_state="submitting"
+            )
+            await service.record_resting(
+                proposal_id,
+                rung.rung_index,
+                broker_order_id=f"s170-broker-{rung.rung_index}",
+                correlation_id=f"s170-corr-{rung.rung_index}",
+                idempotency_key=f"s170-idem-{rung.rung_index}",
+                approval_hash_digest=f"s170-digest-{rung.rung_index}",
+                now=now,
+            )
+            outcomes.append(RungOutcome(rung.rung_index, "submitted_resting", {}))
+        return outcomes
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=now,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    decisions = refreshed.source_asof["auto_approved"]["eligibility"]
+    assert [
+        (row["daily_notional_before"], row["daily_notional_after"]) for row in decisions
+    ] == [
+        ("0", "0"),
+        ("0", "0"),
+    ]
+    assert [row["daily_cap_exempt"] for row in decisions] == [True, True]
 
 
 @pytest.mark.asyncio

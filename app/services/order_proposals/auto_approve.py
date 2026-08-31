@@ -82,12 +82,16 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     has known residual gaps (runbook §8.7), and the per-order cap above is
     what keeps each of them bounded per order.
 
-    Nothing else moves. The daily cap, loss-cut/exit intent, the
-    ``policy_deviation`` tag scan, the veto-capable account/market allowlist,
-    the sell-side break-even band and round-trip-cost profit proof, the veto
-    thesis requirement, and every ``off``-mode verdict are identical for a
-    parking rung and for any other. See ``parking_allowlist`` for the closed
-    constants and ``parking_exposure`` for the provenance of the measurement.
+    §S170 additionally excludes an explicitly enabled parking scope from the
+    shared daily-cap decision and contribution sum, on **both** sides. The
+    exclusion is available only in ``expanded`` mode and only through the same
+    exact scope predicate. The per-order and cumulative parking caps remain
+    unchanged. Loss-cut/exit intent, the ``policy_deviation`` tag scan, the
+    veto-capable account/market allowlist, the sell-side break-even band and
+    round-trip-cost profit proof, the veto thesis requirement, and every
+    ``off``-mode verdict remain identical for a parking rung and every other
+    rung. See ``parking_allowlist`` for the closed constants and
+    ``parking_exposure`` for the provenance of the measurement.
 """
 
 from __future__ import annotations
@@ -118,6 +122,7 @@ from app.services.order_proposals.dispatch_contract import (
 from app.services.order_proposals.parking_allowlist import (
     ParkingExposure,
     canonical_eligibility_symbol,
+    is_parking_daily_cap_exempt,
     parking_scope,
 )
 from app.services.trading_policy_service import load_trading_policy, policy_content_hash
@@ -736,6 +741,12 @@ def evaluate_auto_approve_eligibility(
         market=market,
     )
     parking = expanded and parking_scope_record is not None
+    daily_cap_exempt = is_parking_daily_cap_exempt(
+        symbol=getattr(group, "symbol", None),
+        account_mode=account_mode,
+        market=market,
+        mode=mode,
+    )
     if preview.get("success") is not True:
         return reject(
             "preview_guard_failed",
@@ -825,11 +836,13 @@ def evaluate_auto_approve_eligibility(
         )
         if parking_after > parking_scope_record.cumulative_cap:
             return reject("parking_cap_exceeded", **parking_details)
-    # §163차 changes the per-order cap's VALUE for parking and nothing else
-    # about it. The daily circuit breaker applies to a parking rung exactly as
-    # it does to every other rung.
-    daily_after = daily_notional + notional
-    if daily_after > limits.daily_cap:
+    # §S170: daily-cap exclusion is scoped by the exact same strict parking
+    # tuple as the marketability/per-order treatment, plus `expanded` mode.
+    # It applies to both parking buys and sells. Its contribution is zero, so
+    # this rung neither trips the shared breaker nor consumes budget for a
+    # later ordinary order. Every non-parking and off-mode rung is unchanged.
+    daily_after = daily_notional + (Decimal("0") if daily_cap_exempt else notional)
+    if not daily_cap_exempt and daily_after > limits.daily_cap:
         return reject(
             "daily_cap_exceeded",
             daily_notional_after=_text(daily_after),
@@ -944,8 +957,10 @@ def evaluate_auto_approve_eligibility(
                         per_order_cap=_text(per_order_cap),
                         **parking_details,
                     )
-                daily_after = daily_notional + notional
-                if daily_after > limits.daily_cap:
+                daily_after = daily_notional + (
+                    Decimal("0") if daily_cap_exempt else notional
+                )
+                if not daily_cap_exempt and daily_after > limits.daily_cap:
                     return reject(
                         "daily_cap_exceeded",
                         daily_notional_after=_text(daily_after),
@@ -972,6 +987,7 @@ def evaluate_auto_approve_eligibility(
             "notional": _text(notional),
             "daily_notional_before": _text(daily_notional),
             "daily_notional_after": _text(daily_after),
+            "daily_cap_exempt": daily_cap_exempt,
             "per_order_cap": _text(per_order_cap),
             "daily_cap": _text(limits.daily_cap),
             "loss_guard": loss_guard,

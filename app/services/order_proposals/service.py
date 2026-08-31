@@ -11,7 +11,7 @@ import json
 import logging
 import secrets
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -61,6 +61,7 @@ from app.services.order_proposals.errors import (
     OrderProposalVoidNotAuthorized,
 )
 from app.services.order_proposals.parking_allowlist import (
+    is_parking_daily_cap_exempt,
     is_parking_exposure_symbol,
 )
 from app.services.order_proposals.payload import (
@@ -88,6 +89,49 @@ from app.services.trade_journal.trade_retrospective_service import (
 logger = logging.getLogger(__name__)
 
 _TOSS_AUTO_SUBMISSION_FREEZE_KEY = "toss_auto_submission_freeze"
+
+
+def _is_durable_parking_daily_cap_exempt(
+    source_asof: Any,
+    rung_index: int,
+    symbol: Any,
+    *,
+    account_mode: str,
+    market: str,
+) -> bool:
+    """Trust only the writer's exact per-rung exclusion evidence.
+
+    Legacy rows, ordinary/off-mode parking-symbol rows, and malformed
+    projections remain charged. The current scope predicate is reapplied so a
+    stale durable marker cannot exempt a symbol after an operator narrows its
+    closed tuple.
+    """
+    if not isinstance(source_asof, Mapping):
+        return False
+    auto_approved = source_asof.get("auto_approved")
+    if not isinstance(auto_approved, Mapping):
+        return False
+    eligibility = auto_approved.get("eligibility")
+    if not isinstance(eligibility, Sequence) or isinstance(eligibility, (str, bytes)):
+        return False
+    for decision in eligibility:
+        if not isinstance(decision, Mapping):
+            continue
+        if (
+            type(decision.get("rung_index")) is not int
+            or decision["rung_index"] != rung_index
+            or decision.get("daily_cap_exempt") is not True
+        ):
+            continue
+        return is_parking_daily_cap_exempt(
+            symbol=symbol,
+            account_mode=account_mode,
+            market=market,
+            mode=decision.get("mode"),
+        )
+    return False
+
+
 _TOSS_RESOLVED_MUTATION_SIBLING_STATUSES = frozenset(
     {
         "filled",
@@ -3544,6 +3588,15 @@ class OrderProposalsService:
             broker_account_id=group.broker_account_id,
             start=start,
             end=end,
+            is_daily_cap_exempt=lambda source_asof, rung_index, symbol: (
+                _is_durable_parking_daily_cap_exempt(
+                    source_asof,
+                    rung_index,
+                    symbol,
+                    account_mode=group.account_mode,
+                    market=group.market,
+                )
+            ),
         )
 
     async def auto_approved_parking_notional(

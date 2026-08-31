@@ -25,7 +25,8 @@ of them stops applying. The other keeps applying at a different value:
    The cumulative cap is the second line, never the only one.
 
 Nothing else changes, and the per-order cap above has not stopped applying --
-only its value moved. The daily cap, the loss-cut and exit-intent gates, the
+only its value moved. The daily cap is excluded only for an explicitly enabled
+parking authorization tuple in ``expanded`` mode; the loss-cut and exit-intent gates, the
 ``policy_deviation`` tag scan, the veto-capable account/market allowlist, the
 Toss auto-submission freeze, the sell-side break-even band and round-trip-cost
 profit proof, and the mandatory veto thesis all apply to a parking rung exactly
@@ -88,6 +89,12 @@ PARKING_CUMULATIVE_CAP_USD: Decimal = Decimal("10000")
 PARKING_PER_ORDER_CAP_KRW: Decimal = Decimal("10000000")
 PARKING_CUMULATIVE_CAP_KRW: Decimal = Decimal("15000000")
 
+# §S170: independently closed activation constants. These are deliberately
+# per-market rather than per-symbol so a future operator narrowing is a
+# one-line edit without changing a ticker's cap or exposure tuple.
+PARKING_DAILY_CAP_EXEMPT_US = True
+PARKING_DAILY_CAP_EXEMPT_KR = True
+
 
 @dataclass(frozen=True)
 class ParkingScope:
@@ -107,6 +114,10 @@ class ParkingScope:
     cumulative_cap: Decimal
     balance_symbol_field: str
     balance_evaluation_field: str
+    # §S170: a closed, per-scope operator switch. It is not a policy/env/DB
+    # setting. The eligibility predicate below is still responsible for the
+    # `expanded`-mode boundary.
+    daily_cap_exempt: bool
 
 
 # Closed operator allowlist. Each entry is a full authorization tuple, not
@@ -123,6 +134,7 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
             balance_symbol_field="ovrs_pdno",
             balance_evaluation_field="ovrs_stck_evlu_amt",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_US,
         ),
         ParkingScope(
             symbol="SGOV",
@@ -133,6 +145,7 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
             balance_symbol_field="ovrs_pdno",
             balance_evaluation_field="ovrs_stck_evlu_amt",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_US,
         ),
         ParkingScope(
             symbol="459580",
@@ -143,6 +156,7 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
             balance_symbol_field="pdno",
             balance_evaluation_field="evlu_amt",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
         ),
         ParkingScope(
             symbol="357870",
@@ -153,6 +167,7 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
             balance_symbol_field="pdno",
             balance_evaluation_field="evlu_amt",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
         ),
     }
 )
@@ -294,6 +309,31 @@ def is_parking_allowlisted(*, symbol: Any, account_mode: Any, market: Any) -> bo
     )
 
 
+def is_parking_daily_cap_exempt(
+    *, symbol: Any, account_mode: Any, market: Any, mode: Any
+) -> bool:
+    """Return whether this rung may be excluded from the shared daily cap.
+
+    This deliberately delegates tuple membership to :func:`parking_scope` --
+    the same strict predicate that grants the parking treatment. A separate
+    ticker check here would let the two authorization decisions drift. The
+    only additional condition is the already-existing ``expanded`` mode: an
+    ``off``-mode or otherwise ordinary parking-symbol rung retains the daily
+    cap.
+    """
+    scope = parking_scope(
+        symbol=symbol,
+        account_mode=account_mode,
+        market=market,
+    )
+    return (
+        scope is not None
+        and scope.daily_cap_exempt
+        and type(mode) is str
+        and mode == "expanded"
+    )
+
+
 @dataclass(frozen=True)
 class ParkingExposure:
     """Broker-observed cumulative market value of the allowlisted tickers.
@@ -332,6 +372,8 @@ __all__ = [
     "PARKING_ALLOWLIST_SCOPES",
     "PARKING_CUMULATIVE_CAP_USD",
     "PARKING_CUMULATIVE_CAP_KRW",
+    "PARKING_DAILY_CAP_EXEMPT_US",
+    "PARKING_DAILY_CAP_EXEMPT_KR",
     "PARKING_PER_ORDER_CAP_USD",
     "PARKING_PER_ORDER_CAP_KRW",
     "PARKING_EXPOSURE_UNAVAILABLE_REASONS",
@@ -340,6 +382,7 @@ __all__ = [
     "canonical_eligibility_symbol",
     "canonical_exposure_symbol",
     "is_parking_allowlisted",
+    "is_parking_daily_cap_exempt",
     "is_parking_exposure_symbol",
     "parking_scope",
 ]

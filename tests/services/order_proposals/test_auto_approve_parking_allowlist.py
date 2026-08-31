@@ -31,12 +31,15 @@ from app.services.order_proposals.parking_allowlist import (
     PARKING_ALLOWLIST_SCOPES,
     PARKING_CUMULATIVE_CAP_KRW,
     PARKING_CUMULATIVE_CAP_USD,
+    PARKING_DAILY_CAP_EXEMPT_KR,
+    PARKING_DAILY_CAP_EXEMPT_US,
     PARKING_PER_ORDER_CAP_KRW,
     PARKING_PER_ORDER_CAP_USD,
     ParkingExposure,
     canonical_eligibility_symbol,
     canonical_exposure_symbol,
     is_parking_allowlisted,
+    is_parking_daily_cap_exempt,
     parking_scope,
 )
 from app.services.order_proposals.parking_exposure import (
@@ -161,6 +164,9 @@ def test_allowlist_constants_are_exactly_the_authorized_scope():
     assert PARKING_CUMULATIVE_CAP_USD == Decimal("10000")
     assert PARKING_PER_ORDER_CAP_KRW == Decimal("10000000")
     assert PARKING_CUMULATIVE_CAP_KRW == Decimal("15000000")
+    assert PARKING_DAILY_CAP_EXEMPT_US is True
+    assert PARKING_DAILY_CAP_EXEMPT_KR is True
+    assert all(scope.daily_cap_exempt is True for scope in PARKING_ALLOWLIST_SCOPES)
 
 
 def test_allowlist_containers_are_immutable_frozensets():
@@ -358,6 +364,48 @@ def test_symbol_market_pairs_cannot_open_a_cross_product_mutant():
     )
     assert not is_parking_allowlisted(
         symbol="357870", account_mode="kis_live", market="equity_us"
+    )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "account_mode", "market", "mode"),
+    [
+        ("SGOVX", "kis_live", "equity_us", "expanded"),
+        ("SGOV", "toss_live", "equity_us", "expanded"),
+        ("SGOV", "kis_live", "equity_kr", "expanded"),
+        ("459580", "kis_live", "equity_us", "expanded"),
+        ("SGOV", "kis_live", "equity_us", "off"),
+    ],
+)
+def test_daily_cap_exemption_uses_the_exact_parking_scope(
+    symbol, account_mode, market, mode
+):
+    """Loosening the exclusion predicate makes this AssertionError-red."""
+    assert not is_parking_daily_cap_exempt(
+        symbol=symbol,
+        account_mode=account_mode,
+        market=market,
+        mode=mode,
+    )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "market"),
+    [
+        ("SGOV", "equity_us"),
+        ("BIL", "equity_us"),
+        ("459580", "equity_kr"),
+        ("357870", "equity_kr"),
+    ],
+)
+def test_every_enabled_parking_scope_is_daily_cap_exempt_in_expanded_mode(
+    symbol, market
+):
+    assert is_parking_daily_cap_exempt(
+        symbol=symbol,
+        account_mode="kis_live",
+        market=market,
+        mode="expanded",
     )
 
 
@@ -652,12 +700,48 @@ def test_malformed_available_exposure_still_rejects(exposure):
 # --------------------------------------------------------------------------
 
 
-def test_daily_cap_still_applies_to_a_parking_buy():
-    decision = _decide(exposure=_flat(), daily=Decimal("19000"))
+@pytest.mark.parametrize("side", ("buy", "sell"))
+def test_enabled_parking_order_does_not_trip_or_consume_daily_cap(side):
+    rung = _rung(side=side)
+    preview = {"success": True, "current_price": "100"}
+    if side == "sell":
+        preview["avg_buy_price"] = "1"
+    decision = _decide(
+        rung=rung,
+        preview=preview,
+        exposure=_flat(),
+        daily=Decimal("20000"),
+    )
+
+    assert decision.eligible is True
+    assert decision.details["daily_cap_exempt"] is True
+    assert decision.details["daily_notional_before"] == "20000"
+    assert decision.details["daily_notional_after"] == "20000"
+
+
+def test_off_mode_parking_symbol_keeps_daily_cap():
+    decision = _decide(
+        limits=_US_OFF,
+        rung=_rung(quantity=Decimal("10")),
+        exposure=_flat(),
+        daily=Decimal("19500"),
+    )
 
     assert decision.eligible is False
     assert decision.reason == "daily_cap_exceeded"
-    assert decision.details["daily_notional_after"] == "21000"
+    assert decision.details["daily_notional_after"] == "20500"
+
+
+def test_approval_required_tag_cannot_enter_daily_cap_exemption():
+    decision = _decide(
+        group=_group(source_asof={"tag": "policy_deviation"}),
+        exposure=_flat(),
+        daily=Decimal("20000"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "approval_required_tag"
+    assert "daily_cap_exempt" not in decision.details
 
 
 def test_off_mode_verdicts_are_untouched_by_the_allowlist():
