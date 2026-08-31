@@ -1,4 +1,4 @@
-"""§163차 — cash-parking ticker allowlist (SGOV/BIL).
+"""§163차/§170차 — cash-parking ticker allowlist.
 
 §163차 RAISES the per-order cap for two tickers rather than removing it, so
 §106차's "maximum loss of one automation error" boundary keeps its shape, and
@@ -154,6 +154,7 @@ def test_allowlist_constants_are_exactly_the_authorized_scope():
         ("SGOV", "kis_live", "equity_us"),
         ("BIL", "kis_live", "equity_us"),
         ("459580", "kis_live", "equity_kr"),
+        ("357870", "kis_live", "equity_kr"),
     }
     # Cap pairs are selected only through the same immutable scope record.
     assert PARKING_PER_ORDER_CAP_USD == Decimal("10000")
@@ -301,12 +302,13 @@ def test_exact_canonical_spellings_are_allowlisted():
             is True
         )
 
-    assert (
-        is_parking_allowlisted(
-            symbol="459580", account_mode="kis_live", market="equity_kr"
+    for symbol in ("459580", "357870"):
+        assert (
+            is_parking_allowlisted(
+                symbol=symbol, account_mode="kis_live", market="equity_kr"
+            )
+            is True
         )
-        is True
-    )
 
 
 # --------------------------------------------------------------------------
@@ -354,23 +356,31 @@ def test_symbol_market_pairs_cannot_open_a_cross_product_mutant():
     assert not is_parking_allowlisted(
         symbol="459580", account_mode="kis_live", market="equity_us"
     )
+    assert not is_parking_allowlisted(
+        symbol="357870", account_mode="kis_live", market="equity_us"
+    )
 
 
 def test_cap_currency_is_bound_to_the_same_scope_tuple():
     """A KRW/USD selector swap makes these assertions RED (no FX fallback)."""
     us = parking_scope(symbol="SGOV", account_mode="kis_live", market="equity_us")
-    kr = parking_scope(symbol="459580", account_mode="kis_live", market="equity_kr")
-    assert us is not None and kr is not None
+    kr_scopes = [
+        parking_scope(symbol=symbol, account_mode="kis_live", market="equity_kr")
+        for symbol in ("459580", "357870")
+    ]
+    assert us is not None and all(scope is not None for scope in kr_scopes)
     assert (us.currency, us.per_order_cap, us.cumulative_cap) == (
         "USD",
         Decimal("10000"),
         Decimal("10000"),
     )
-    assert (kr.currency, kr.per_order_cap, kr.cumulative_cap) == (
-        "KRW",
-        Decimal("10000000"),
-        Decimal("15000000"),
-    )
+    for kr in kr_scopes:
+        assert kr is not None
+        assert (kr.currency, kr.per_order_cap, kr.cumulative_cap) == (
+            "KRW",
+            Decimal("10000000"),
+            Decimal("15000000"),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -396,11 +406,12 @@ def test_allowlisted_marketable_buy_over_the_ordinary_cap_is_eligible():
     assert decision.details["parking_cap"] == "10000"
 
 
-def test_kr_parking_per_order_cap_boundary_is_exactly_10m_krw():
+@pytest.mark.parametrize("symbol", ("459580", "357870"))
+def test_kr_parking_per_order_cap_boundary_is_exactly_10m_krw(symbol):
     group = _group(
-        symbol="459580",
+        symbol=symbol,
         market="equity_kr",
-        thesis="park idle KRW in 459580",
+        thesis=f"park idle KRW in {symbol}",
     )
     exact = _decide(
         group=group,
@@ -907,7 +918,10 @@ async def test_load_exposure_reads_native_krw_domestic_balance_and_durable_half(
     """KR uses the existing KIS domestic ``pdno``/``evlu_amt`` read surface."""
 
     async def _fetch_kr():
-        return [{"pdno": "459580", "evlu_amt": "9000000"}]
+        return [
+            {"pdno": "459580", "evlu_amt": "9000000"},
+            {"pdno": "357870", "evlu_amt": "5000000"},
+        ]
 
     async def _pending_kr():
         return Decimal("5000000")
@@ -921,7 +935,37 @@ async def test_load_exposure_reads_native_krw_domestic_balance_and_durable_half(
     )
 
     assert exposure.available is True
-    assert exposure.exposure == Decimal("14000000")
+    assert exposure.exposure == Decimal("19000000")
+
+
+def test_kr_parking_symbols_share_one_cumulative_cap():
+    """Both KR symbols contribute to one 15m KRW cap, never one cap each.
+
+    A symbol-specific reducer mutant returns only 8m here and turns the final
+    rejection assertion RED; the actual scope-wide reducer returns 15m.
+    """
+    scope = parking_scope(symbol="357870", account_mode="kis_live", market="equity_kr")
+    assert scope is not None
+    exposure = _sum_parking_exposure(
+        [
+            {"pdno": "459580", "evlu_amt": "7000000", "crcy_cd": "KRW"},
+            {"pdno": "357870", "evlu_amt": "8000000", "crcy_cd": "KRW"},
+        ],
+        scope=scope,
+    )
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("15000000")
+
+    decision = _decide(
+        group=_group(symbol="357870", market="equity_kr", thesis="park idle KRW"),
+        rung=_rung(limit_price=Decimal("1"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "1"},
+        limits=_KR_EXPANDED,
+        exposure=exposure,
+    )
+    assert decision.eligible is False
+    assert decision.reason == "parking_cap_exceeded"
+    assert decision.details["parking_cap"] == "15000000"
 
 
 @pytest.mark.asyncio
@@ -929,7 +973,11 @@ async def test_cross_product_symbol_never_selects_the_other_market_reader():
     async def _must_not_read():  # pragma: no cover - must never run
         raise AssertionError("cross-product parking scope must not read a balance")
 
-    for symbol, market in (("SGOV", "equity_kr"), ("459580", "equity_us")):
+    for symbol, market in (
+        ("SGOV", "equity_kr"),
+        ("459580", "equity_us"),
+        ("357870", "equity_us"),
+    ):
         exposure = await load_parking_exposure(
             account_mode="kis_live",
             market=market,

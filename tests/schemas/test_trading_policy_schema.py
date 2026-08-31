@@ -412,6 +412,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
         ("SGOV", "equity_us"),
         ("BIL", "equity_us"),
         ("459580", "equity_kr"),
+        ("357870", "equity_kr"),
     }
     assert PARKING_PER_ORDER_CAP_USD == 10000
     assert PARKING_CUMULATIVE_CAP_USD == 10000

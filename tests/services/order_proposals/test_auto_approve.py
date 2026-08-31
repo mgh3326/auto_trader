@@ -1866,13 +1866,14 @@ async def test_parking_notional_counts_kr_pair_only_from_the_same_durable_query(
         )
 
     await _approved(symbol="459580", market="equity_kr", price=Decimal("10000"))
+    await _approved(symbol="357870", market="equity_kr", price=Decimal("5000"))
     await _approved(symbol="459580", market="equity_us", price=Decimal("999999"))
     await _approved(symbol="SGOV", market="equity_kr", price=Decimal("999999"))
     await _approved(symbol="SGOV", market="equity_us", price=Decimal("999999"))
     await db_session.commit()
 
     probe = await service.create_proposal(
-        symbol="459580",
+        symbol="357870",
         market="equity_kr",
         account_mode="kis_live",
         broker_account_id=account_id,
@@ -1883,7 +1884,7 @@ async def test_parking_notional_counts_kr_pair_only_from_the_same_durable_query(
     )
 
     assert await service.auto_approved_parking_notional(probe, now=now) == Decimal(
-        "100000"
+        "150000"
     )
 
 

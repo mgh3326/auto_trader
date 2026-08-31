@@ -368,17 +368,19 @@ spellings is a losing game. What it buys is that re-introducing configurability
 *the obvious way* turns red in CI. The real boundary is that this file is
 operator-PR-only, like the policy document.
 
-### 8.2 Why `kis_live` / `equity_us` only
+### 8.2 Why only exact `kis_live` market tuples
 
 The cumulative cap is only meaningful if parking exposure can be read back at
-all, and `kis_live` is the one veto-capable `equity_us` account mode for which
-it can (`KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt`, USD).
-`toss_live` `equity_us` is veto-capable in principle behind
-`ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED`, but its exposure lives on a different
-broker surface; metering a KIS balance to authorize a Toss order would be a
-wrong-account cap, which is worse than no parking treatment at all. Toss
-parking orders keep the ordinary gates. A KR- or crypto-market proposal
-carrying the same four characters is not a parking ticker and gets nothing.
+all. `kis_live` has the existing read surface for each authorized market:
+`equity_us` uses `KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt` (USD),
+while `equity_kr` uses `KISClient.fetch_my_stocks` → `evlu_amt` (KRW).
+`toss_live` is veto-capable in principle behind
+`ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED` for both `equity_us` and `equity_kr`,
+but its exposure lives on a different broker surface. Metering a KIS balance to
+authorize a Toss order would be a wrong-account cap, which is worse than no
+parking treatment at all. No `toss_live` tuple is authorized, so Toss parking
+orders keep the ordinary gates. A proposal outside an exact KIS
+symbol×account×market tuple gets nothing.
 
 🔴 **This is an account *label*, not a proven account identity — do not read
 more into it than the code does.** Both halves of the measurement are scoped
@@ -389,8 +391,8 @@ reach are the same physical account. Two `kis_live` proposals carrying
 *different* `broker_account_id` labels are metered as separate books by the
 durable half while the broker balance is whatever the ambient credentials
 return. That is **BL-37**, tracked as backlog and deliberately not fixed here.
-What contains it is the per-order cap in §8.1: whatever the labelling does,
-one automation error is still bounded at USD 10,000 per order.
+What contains it is the scope-native per-order cap in §8.1: whatever the
+labelling does, one automation error remains bounded per order.
 
 ### 8.3 The measurement — two halves, both load-bearing
 

@@ -1,7 +1,7 @@
 """Cash-parking allowlist for auto-approval (§163차, §170차).
 
-The operator authorized two US Treasury ETFs (``SGOV``/``BIL``) and one KR
-CD-rate ETF (``459580``) as parking instruments, each only in its explicitly
+The operator authorized two US Treasury ETFs (``SGOV``/``BIL``) and two KR
+CD-rate ETFs (``459580``/``357870``) as parking instruments, each only in its explicitly
 paired ``kis_live`` market. Two §40차/§156차 gates change -- and 🔴 exactly one
 of them stops applying. The other keeps applying at a different value:
 
@@ -136,6 +136,16 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
         ),
         ParkingScope(
             symbol="459580",
+            account_mode="kis_live",
+            market="equity_kr",
+            currency="KRW",
+            per_order_cap=PARKING_PER_ORDER_CAP_KRW,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_symbol_field="pdno",
+            balance_evaluation_field="evlu_amt",
+        ),
+        ParkingScope(
+            symbol="357870",
             account_mode="kis_live",
             market="equity_kr",
             currency="KRW",

@@ -851,8 +851,8 @@ def evaluate_auto_approve_eligibility(
     # exception to buys or to any other sell classification. `off` keeps
     # ROB-871's non-strict distance boundary, so it cannot inherit this release.
     #
-    # §163차 adds the ONLY marketable-buy release there is: a cash-parking
-    # allowlist ticker (SGOV/BIL) on kis_live/equity_us. It is scoped by
+    # §163차/§170차 add the ONLY marketable-buy releases there are: cash-parking
+    # allowlist tickers on their exact kis_live market tuples. It is scoped by
     # `parking`, which is false in `off` mode and false for every other symbol,
     # account mode and market -- so no other buy inherits it either.
     min_fraction = (
