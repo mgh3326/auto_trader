@@ -297,6 +297,9 @@ class Settings(BaseSettings):
     toss_api_client_secret: SecretStr | None = None
     toss_api_account_seq: int | None = None
     toss_api_base_url: str | None = None
+    # Opt-in only: local preserves the existing per-process singleton; redis
+    # shares the client-scoped Toss TPS budget across worker processes.
+    toss_rate_limiter_backend: Literal["local", "redis"] = "local"
     toss_live_order_mutations_enabled: bool = False
 
     # ROB-866: gate for the scheduleless Toss manual-activity sweep TaskIQ task.
