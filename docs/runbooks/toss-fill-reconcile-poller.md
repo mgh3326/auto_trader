@@ -62,11 +62,13 @@ preview.
 | `TOSS_API_ENABLED` + Toss credentials | — | Required by `TossReadClient.from_settings()`; unrelated to this poller's own gates. |
 
 Per-request rate limiting (TPS, including the 09:00–09:10 KST order-window
-throttle) is enforced by `TossReadClient`'s shared process-global rate
-limiter (`app/services/brokers/toss/rate_limiter.py`) — this script does not
-add its own sleep/backoff, it just reuses the same client every other Toss
-caller uses, so it inherits the same limits without a second, potentially
-divergent implementation.
+throttle) is enforced by `TossReadClient`'s shared limiter
+(`app/services/brokers/toss/rate_limiter.py`) — `TOSS_RATE_LIMITER_BACKEND=local`
+keeps the established process-global budget, while explicit `redis` opt-in
+shares the client-id-scoped budget across workers. A Redis failure degrades a
+process to its local singleton rather than passing an unthrottled request.
+This script does not add its own sleep/backoff, so it inherits the same limits
+without a second, potentially divergent implementation.
 
 ## Manual reps procedure
 
