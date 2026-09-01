@@ -118,18 +118,29 @@ def _run(
 
 
 def _run_lines(tmp_path: Path) -> list[str]:
-    return [line for line in (tmp_path / "docker.log").read_text().splitlines() if line.startswith("RUN")]
+    return [
+        line
+        for line in (tmp_path / "docker.log").read_text().splitlines()
+        if line.startswith("RUN")
+    ]
 
 
-def test_successful_deploy_runs_both_containers_by_resolved_repo_digest(tmp_path: Path) -> None:
+def test_successful_deploy_runs_both_containers_by_resolved_repo_digest(
+    tmp_path: Path,
+) -> None:
     proc, run_dir = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
 
     assert proc.returncode == 0, proc.stderr
-    assert _run_lines(tmp_path) == [f"RUN at-api {NEW_DIGEST}", f"RUN at-scheduler {NEW_DIGEST}"]
+    assert _run_lines(tmp_path) == [
+        f"RUN at-api {NEW_DIGEST}",
+        f"RUN at-scheduler {NEW_DIGEST}",
+    ]
     assert (run_dir / "deployed-digest").read_text() == f"{NEW_DIGEST}\n"
 
 
-def test_failed_healthcheck_rolls_back_to_saved_digest_never_mutable_main(tmp_path: Path) -> None:
+def test_failed_healthcheck_rolls_back_to_saved_digest_never_mutable_main(
+    tmp_path: Path,
+) -> None:
     proc, run_dir = _run(
         tmp_path,
         api_image=f"{REPOSITORY}:main",
@@ -150,7 +161,9 @@ def test_failed_healthcheck_rolls_back_to_saved_digest_never_mutable_main(tmp_pa
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
 
 
-def test_missing_digest_fallback_is_an_explicit_preflight_failure(tmp_path: Path) -> None:
+def test_missing_digest_fallback_is_an_explicit_preflight_failure(
+    tmp_path: Path,
+) -> None:
     proc, _ = _run(
         tmp_path,
         api_image=f"{REPOSITORY}:main",
@@ -164,7 +177,9 @@ def test_missing_digest_fallback_is_an_explicit_preflight_failure(tmp_path: Path
     assert _run_lines(tmp_path) == []
 
 
-def test_successful_deploy_rotates_current_digest_to_previous_file(tmp_path: Path) -> None:
+def test_successful_deploy_rotates_current_digest_to_previous_file(
+    tmp_path: Path,
+) -> None:
     proc, run_dir = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
 
     assert proc.returncode == 0, proc.stderr
@@ -183,6 +198,9 @@ def test_manual_rollback_uses_previous_digest_and_rotates_files(tmp_path: Path) 
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert _run_lines(tmp_path) == [f"RUN at-api {OLD_DIGEST}", f"RUN at-scheduler {OLD_DIGEST}"]
+    assert _run_lines(tmp_path) == [
+        f"RUN at-api {OLD_DIGEST}",
+        f"RUN at-scheduler {OLD_DIGEST}",
+    ]
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
     assert (run_dir / "deployed-digest.previous").read_text() == f"{NEW_DIGEST}\n"
