@@ -273,6 +273,7 @@ tests/test_crypto_voting_signals.py
 tests/test_csrf.py
 tests/test_daily_scan_tasks.py
 tests/test_db_pool_config.py
+tests/test_dev_kit.py
 tests/test_diagnose_research_reports_cli.py
 tests/test_dust_accounting.py
 tests/test_execution_event.py

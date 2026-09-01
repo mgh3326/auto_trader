@@ -1,0 +1,59 @@
+# Portable, host-local development dependencies only.
+#
+# `COMPOSE_PROJECT_NAME` is intentionally part of the file name contract:
+# use an `at-dev-<suffix>` value so volumes, networks, and containers cannot
+# collide with production or staging projects on the same Docker host.
+name: ${COMPOSE_PROJECT_NAME:-at-dev-local}
+
+services:
+  db:
+    # This is the non-HA Timescale image.  Unlike the production HA image, the
+    # pinned tag is selected for Linux amd64 and arm64 availability; see
+    # docs/runbooks/dev-kit.md for the required manifest check before use.
+    image: timescale/timescaledb:2.22.1-pg17
+    environment:
+      POSTGRES_USER: ${DEV_PG_USER:-atdev}
+      POSTGRES_PASSWORD: ${DEV_PG_PASSWORD:-atdev-local-password}
+      POSTGRES_DB: ${DEV_PG_DATABASE:-auto_trader_dev}
+    ports:
+      - "${DEV_PG_BIND_HOST:-127.0.0.1}:${DEV_PG_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    mem_limit: 768m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: "no"
+    networks:
+      - devnet
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes --save 60 1
+    ports:
+      - "${DEV_REDIS_BIND_HOST:-127.0.0.1}:${DEV_REDIS_PORT:-56379}:6379"
+    volumes:
+      - redis_data:/data
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: "no"
+    networks:
+      - devnet
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  devnet:
+    driver: bridge
