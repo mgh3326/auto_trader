@@ -1,6 +1,11 @@
 name: Build GHCR images (legacy Docker deploy disabled)
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   workflow_dispatch:
   release:
     types: [published]
@@ -8,6 +13,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  DOCKER_METADATA_SHORT_SHA_LENGTH: 7
 
 jobs:
   build-and-push:
@@ -58,7 +64,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=sha,prefix={{branch}}-
+            type=sha,format=short,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=production,enable=${{ startsWith(github.ref, 'refs/heads/production') }}
 
@@ -97,16 +103,18 @@ jobs:
       - name: Build Summary
         if: always()
         run: |
-          echo "## Build Summary for ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image**: ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Dockerfile**: ${{ matrix.dockerfile }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Status**: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.build.outcome }}" = "success" ]; then
-            echo "- **Image pushed**: ✅" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Tags**: ${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "- **Image pushed**: ❌" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            echo "## Build Summary for ${{ matrix.image }}"
+            echo "- **Image**: ${{ matrix.image }}"
+            echo "- **Dockerfile**: ${{ matrix.dockerfile }}"
+            echo "- **Status**: ${{ job.status }}"
+            if [ "${{ steps.build.outcome }}" = "success" ]; then
+              echo "- **Image pushed**: ✅"
+              echo "- **Tags**: ${{ steps.meta.outputs.tags }}"
+            else
+              echo "- **Image pushed**: ❌"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   notify:
     if: failure()
