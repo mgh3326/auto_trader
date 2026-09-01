@@ -208,6 +208,7 @@ celerybeat.pid
 .env
 .env.*
 !.env.example
+!.env.dev.example
 !.env.sample
 .env.test
 .env.mcp
@@ -219,6 +220,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Operator-produced portable development seed.  It may contain a bounded
+# production-derived dataset and must never be committed.
+/dev-seed.dump
 
 # Spyder project settings
 .spyderproject
