@@ -2,21 +2,45 @@
 # Pull and roll forward the NCP Docker deployment from GHCR.
 #
 # Usage: scripts/deploy-ncp-pull.sh [tag]
+#        scripts/deploy-ncp-pull.sh --rollback
 #
 # The target image is pulled before either container is replaced.  A failed
-# API health check recreates both containers from their previously configured
-# image references.  This script intentionally performs no migrations.
+# API health check recreates both containers from pinned prior references.
+# This script intentionally performs no migrations.
 
 set -Eeuo pipefail
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
-readonly IMAGE_TAG="${1:-main}"
+
+if (($# == 0)); then
+  readonly DEPLOY_MODE="deploy"
+  readonly IMAGE_TAG="main"
+elif [[ "$1" == "--rollback" ]]; then
+  (($# == 1)) || {
+    printf 'usage: %s [tag] | --rollback\n' "$0" >&2
+    exit 64
+  }
+  readonly DEPLOY_MODE="rollback"
+  readonly IMAGE_TAG=""
+elif [[ "$1" == -* ]]; then
+  printf 'usage: %s [tag] | --rollback\n' "$0" >&2
+  exit 64
+else
+  (($# == 1)) || {
+    printf 'usage: %s [tag] | --rollback\n' "$0" >&2
+    exit 64
+  }
+  readonly DEPLOY_MODE="deploy"
+  readonly IMAGE_TAG="$1"
+fi
+
 readonly IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 
 readonly RUN_DIRECTORY="${AT_RUN_DIRECTORY:-/root/at-run}"
 readonly API_CONTAINER="at-api"
 readonly SCHEDULER_CONTAINER="at-scheduler"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
+readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
 
 # Keep the established two-file environment shape. Operators may set these
 # names for an existing NCP host without placing environment contents in git.
@@ -47,6 +71,40 @@ require_file() {
 
 configured_image() {
   docker inspect --format '{{.Config.Image}}' "$1"
+}
+
+is_repo_digest() {
+  [[ "$1" =~ ^${IMAGE_REPOSITORY}@sha256:[[:xdigit:]]{64}$ ]]
+}
+
+read_digest_file() {
+  local digest_file="$1"
+  local digest
+
+  [[ -f "${digest_file}" ]] || return 1
+  IFS= read -r digest <"${digest_file}" || return 1
+  is_repo_digest "${digest}" || return 1
+  printf '%s\n' "${digest}"
+}
+
+rollback_reference() {
+  local previous_image="$1"
+  local component="$2"
+  local deployed_digest
+
+  if is_repo_digest "${previous_image}"; then
+    printf '%s\n' "${previous_image}"
+    return 0
+  fi
+
+  if deployed_digest="$(read_digest_file "${DEPLOYED_DIGEST_FILE}")"; then
+    printf '%s\n' "${deployed_digest}"
+    return 0
+  fi
+
+  printf '%s rollback reference is unavailable: container image is not a repo digest and %s is missing or invalid\n' \
+    "${component}" "${DEPLOYED_DIGEST_FILE}" >&2
+  return 1
 }
 
 run_api() {
@@ -86,33 +144,85 @@ wait_for_healthz() {
 rollback() {
   local previous_api_image="$1"
   local previous_scheduler_image="$2"
+  local rollback_api_image
+  local rollback_scheduler_image
   local rollback_status=0
 
-  printf 'API health check failed; rolling back to the previous image references.\n' >&2
+  rollback_api_image="$(rollback_reference "${previous_api_image}" "API")" || return 1
+  rollback_scheduler_image="$(rollback_reference "${previous_scheduler_image}" "scheduler")" || return 1
+
+  printf 'API health check failed; rolling back to pinned image references.\n' >&2
   docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" >/dev/null 2>&1 || true
 
-  run_api "${previous_api_image}" >/dev/null || rollback_status=1
-  run_scheduler "${previous_scheduler_image}" >/dev/null || rollback_status=1
+  run_api "${rollback_api_image}" >/dev/null || rollback_status=1
+  run_scheduler "${rollback_scheduler_image}" >/dev/null || rollback_status=1
   if ! wait_for_healthz; then
     rollback_status=1
   fi
 
-  if ((rollback_status != 0)); then
-    printf 'rollback failed; operator intervention is required.\n' >&2
-  else
+  if ((rollback_status == 0)); then
+    write_deployed_digest "${rollback_api_image}" || rollback_status=1
+  fi
+
+  if ((rollback_status == 0)); then
     printf 'rollback completed.\n' >&2
+  else
+    printf 'rollback failed; operator intervention is required.\n' >&2
   fi
   return "${rollback_status}"
 }
 
 write_deployed_digest() {
   local digest="$1"
+  local deployed_digest
   local temporary_file
+  local temporary_previous_file
 
+  is_repo_digest "${digest}" || return 1
   umask 077
   temporary_file="$(mktemp "${RUN_DIRECTORY}/.deployed-digest.XXXXXX")"
   printf '%s\n' "${digest}" >"${temporary_file}"
+
+  if [[ -f "${DEPLOYED_DIGEST_FILE}" ]]; then
+    deployed_digest="$(read_digest_file "${DEPLOYED_DIGEST_FILE}")" || {
+      rm -f "${temporary_file}"
+      return 1
+    }
+    temporary_previous_file="$(mktemp "${RUN_DIRECTORY}/.deployed-digest.previous.XXXXXX")"
+    printf '%s\n' "${deployed_digest}" >"${temporary_previous_file}"
+    mv -f "${temporary_previous_file}" "${DEPLOYED_DIGEST_PREVIOUS_FILE}"
+  fi
   mv -f "${temporary_file}" "${DEPLOYED_DIGEST_FILE}"
+}
+
+rollback_to_previous_digest() {
+  local previous_digest
+  local current_api_image
+  local current_scheduler_image
+
+  previous_digest="$(read_digest_file "${DEPLOYED_DIGEST_PREVIOUS_FILE}")" || {
+    printf 'manual rollback digest is unavailable or invalid: %s\n' "${DEPLOYED_DIGEST_PREVIOUS_FILE}" >&2
+    return 1
+  }
+  current_api_image="$(configured_image "${API_CONTAINER}")" || {
+    printf 'current API container is required for rollback: %s\n' "${API_CONTAINER}" >&2
+    return 78
+  }
+  current_scheduler_image="$(configured_image "${SCHEDULER_CONTAINER}")" || {
+    printf 'current scheduler container is required for rollback: %s\n' "${SCHEDULER_CONTAINER}" >&2
+    return 78
+  }
+  rollback_reference "${current_api_image}" "API" >/dev/null || return 1
+  rollback_reference "${current_scheduler_image}" "scheduler" >/dev/null || return 1
+
+  printf 'pulling rollback digest: %s\n' "${previous_digest}"
+  docker pull "${previous_digest}"
+  docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" >/dev/null || return 1
+  if ! run_api "${previous_digest}" >/dev/null || ! run_scheduler "${previous_digest}" >/dev/null || ! wait_for_healthz; then
+    rollback "${current_api_image}" "${current_scheduler_image}" || true
+    return 1
+  fi
+  write_deployed_digest "${previous_digest}"
 }
 
 main() {
@@ -136,11 +246,17 @@ main() {
     exit 78
   }
 
+  # Verify rollback is possible before a floating tag is pulled and before any
+  # running container is replaced. A legacy floating container may use the
+  # persisted digest exactly once during the transition to pinned containers.
+  rollback_reference "${previous_api_image}" "API" >/dev/null || exit 78
+  rollback_reference "${previous_scheduler_image}" "scheduler" >/dev/null || exit 78
+
   printf 'pulling %s\n' "${IMAGE}"
   docker pull "${IMAGE}"
   deployed_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE}")"
-  [[ -n "${deployed_digest}" ]] || {
-    printf 'could not resolve a repo digest for %s\n' "${IMAGE}" >&2
+  is_repo_digest "${deployed_digest}" || {
+    printf 'could not resolve a valid repo digest for %s\n' "${IMAGE}" >&2
     exit 1
   }
   printf 'pulled digest: %s\n' "${deployed_digest}"
@@ -150,7 +266,7 @@ main() {
     exit 1
   fi
 
-  if ! run_api "${IMAGE}" >/dev/null || ! run_scheduler "${IMAGE}" >/dev/null || ! wait_for_healthz; then
+  if ! run_api "${deployed_digest}" >/dev/null || ! run_scheduler "${deployed_digest}" >/dev/null || ! wait_for_healthz; then
     rollback "${previous_api_image}" "${previous_scheduler_image}" || true
     exit 1
   fi
@@ -164,4 +280,12 @@ main() {
   printf 'deployment completed: %s\n' "${deployed_digest}"
 }
 
-main
+if [[ "${DEPLOY_MODE}" == "rollback" ]]; then
+  require_command docker
+  require_command curl
+  require_file "${RUNTIME_ENV_FILE}"
+  require_file "${SECRETS_ENV_FILE}"
+  rollback_to_previous_digest
+else
+  main
+fi
