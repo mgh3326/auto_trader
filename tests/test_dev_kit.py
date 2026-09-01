@@ -169,7 +169,8 @@ def test_dev_compose_config_is_valid_when_docker_cli_is_available() -> None:
         if f"{published}:{target}" in rendered:
             return True
         return (
-            f'published: "{published}"' in rendered or f"published: {published}" in rendered
+            f'published: "{published}"' in rendered
+            or f"published: {published}" in rendered
         ) and f"target: {target}" in rendered
 
     assert _port_mapping_present(result.stdout, "55439", 5432), result.stdout[:2000]
