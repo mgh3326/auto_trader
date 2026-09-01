@@ -11,8 +11,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.mcp_server.tooling import order_execution
+from app.mcp_server.tooling import order_execution, orders_modify_cancel
 from app.services.brokers.edge_client import (
+    BrokerEdgeNotCreated,
     BrokerEdgeOutcomeUnknown,
     cancel_kis_mock_command,
 )
@@ -177,6 +178,263 @@ async def test_edge_accepted_posts_versioned_command_and_adopts_broker_order_id(
         "issued_at": request["body"]["issued_at"],
     }
     assert request["body"]["issued_at"].endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_us_edge_place_maps_accepted_and_uses_us_scope(
+    monkeypatch, fake_edge: _FakeEdgeServer
+) -> None:
+    command_id = "edge-us-accepted-001"
+    fake_edge.add_receipt(
+        disposition="ACCEPTED",
+        command_id=command_id,
+        broker_order_id="EDGE-US-ORDER-1",
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    create_kis = Mock()
+    monkeypatch.setattr(order_execution, "_create_kis_client", create_kis)
+    monkeypatch.setattr(
+        order_execution,
+        "get_us_exchange_by_symbol",
+        AsyncMock(side_effect=AssertionError("edge must not resolve KIS exchange")),
+    )
+
+    result = await order_execution._execute_us_order(
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        quantity=2,
+        price=123.45,
+        is_mock=True,
+        idempotency_key=command_id,
+    )
+
+    assert result["rt_cd"] == "0"
+    assert result["odno"] == "EDGE-US-ORDER-1"
+    create_kis.assert_not_called()
+    request = fake_edge.requests[0]
+    assert request["path"] == "/v1/commands"
+    assert request["body"] == {
+        "schema_version": "execution-command/v1",
+        "command_id": command_id,
+        "account_scope": "kis_mock_us",
+        "side": "buy",
+        "stock_code": "AAPL",
+        "quantity": "2",
+        "price": "123.45",
+        "order_type": "limit",
+        "issued_at": request["body"]["issued_at"],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("disposition", "error_code", "expected_exception"),
+    [
+        ("NOT_CREATED", "place_disabled", BrokerEdgeNotCreated),
+        ("UNKNOWN", "broker_timeout", order_execution.OrderSendOutcomeUnknown),
+    ],
+)
+async def test_us_edge_place_preserves_nonaccepted_dispositions(
+    monkeypatch,
+    fake_edge: _FakeEdgeServer,
+    disposition: str,
+    error_code: str,
+    expected_exception: type[Exception],
+) -> None:
+    command_id = f"edge-us-{disposition.lower()}-001"
+    fake_edge.add_receipt(
+        disposition=disposition,
+        command_id=command_id,
+        error_code=error_code,
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    monkeypatch.setattr(
+        order_execution,
+        "_create_kis_client",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("KIS fallback")),
+    )
+
+    with pytest.raises(expected_exception, match=error_code):
+        await order_execution._execute_us_order(
+            symbol="AAPL",
+            side="buy",
+            order_type="limit",
+            quantity=2,
+            price=123.45,
+            is_mock=True,
+            idempotency_key=command_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_us_mock_keeps_existing_kis_direct_call(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KIS_MOCK_EDGE_URL", raising=False)
+    kis = Mock()
+    kis.buy_overseas_stock = AsyncMock(return_value={"rt_cd": "0", "odno": "KIS-US-1"})
+    create_kis = Mock(return_value=kis)
+    monkeypatch.setattr(order_execution, "_create_kis_client", create_kis)
+    monkeypatch.setattr(
+        order_execution, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+
+    result = await order_execution._execute_us_order(
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        quantity=2,
+        price=123.45,
+        is_mock=True,
+    )
+
+    assert result == {"rt_cd": "0", "odno": "KIS-US-1"}
+    create_kis.assert_called_once_with(is_mock=True)
+    kis.buy_overseas_stock.assert_awaited_once_with(
+        symbol="AAPL",
+        exchange_code="NASD",
+        quantity=2,
+        price=123.45,
+        is_mock=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_us_edge_unsupported_market_order_fails_closed_without_kis_fallback(
+    monkeypatch, fake_edge: _FakeEdgeServer
+) -> None:
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    monkeypatch.setattr(
+        order_execution,
+        "_create_kis_client",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("KIS fallback")),
+    )
+
+    with pytest.raises(BrokerEdgeNotCreated, match="edge_unsupported_order_type"):
+        await order_execution._execute_us_order(
+            symbol="AAPL",
+            side="buy",
+            order_type="market",
+            quantity=2,
+            price=123.45,
+            is_mock=True,
+            idempotency_key="edge-us-market-001",
+        )
+
+    assert fake_edge.requests == []
+
+
+def _patch_us_mock_cancel_resolution(monkeypatch, *, command_id: str) -> AsyncMock:
+    """Use the existing ledger service boundary without making this HTTP test DB-bound."""
+    from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.kis_mock_runner import singleton
+
+    resolve = AsyncMock(
+        return_value={
+            "ledger_id": 42,
+            "symbol": "AAPL",
+            "side": "buy",
+            "quantity": 2.0,
+            "price": 123.45,
+            "krx_fwdg_ord_orgno": None,
+            "instrument_type": "equity_us",
+            "lifecycle_state": "accepted",
+            "edge_command_id": command_id,
+            "claim_account_scope": None,
+            "claim_idempotency_key": None,
+            "claim_row_id": None,
+        }
+    )
+    marked = AsyncMock()
+    monkeypatch.setattr(kis_mock_ledger, "resolve_mock_order_for_cancel", resolve)
+    monkeypatch.setattr(kis_mock_ledger, "mark_kis_mock_order_cancelled", marked)
+    monkeypatch.setattr(
+        singleton, "verify_kis_mock_followup_capability", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "_create_kis_client",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("KIS fallback")),
+    )
+    return marked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("disposition", "status", "expected_success"),
+    [
+        ("CANCELLED", 200, True),
+        ("NOT_FOUND", 404, False),
+    ],
+)
+async def test_us_edge_cancel_maps_terminal_dispositions(
+    monkeypatch,
+    fake_edge: _FakeEdgeServer,
+    disposition: str,
+    status: int,
+    expected_success: bool,
+) -> None:
+    command_id = f"edge-us-cancel-{disposition.lower()}-001"
+    fake_edge.add_receipt(
+        disposition=disposition,
+        command_id=command_id,
+        status=status,
+        error_code="command_not_found" if disposition == "NOT_FOUND" else None,
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    marked = _patch_us_mock_cancel_resolution(monkeypatch, command_id=command_id)
+
+    result = await orders_modify_cancel._cancel_kis_overseas(
+        "EDGE-US-ORDER-1", "AAPL", is_mock=True
+    )
+
+    assert result["success"] is expected_success
+    assert fake_edge.requests[0]["path"] == f"/v1/commands/{command_id}/cancel"
+    if expected_success:
+        marked.assert_awaited_once()
+    else:
+        assert result["reconciliation_required"] is True
+        marked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_us_edge_cancel_unknown_is_never_mapped_to_success(
+    monkeypatch, fake_edge: _FakeEdgeServer
+) -> None:
+    command_id = "edge-us-cancel-unknown-001"
+    fake_edge.add_receipt(
+        disposition="UNKNOWN",
+        command_id=command_id,
+        error_code="broker_timeout",
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    marked = _patch_us_mock_cancel_resolution(monkeypatch, command_id=command_id)
+
+    result = await orders_modify_cancel._cancel_kis_overseas(
+        "EDGE-US-ORDER-1", "AAPL", is_mock=True
+    )
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert result["error_code"] == "unknown_pending_reconcile"
+    assert result["edge_error_code"] == "broker_timeout"
+    marked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_us_mock_cancel_keeps_existing_unsupported_result(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KIS_MOCK_EDGE_URL", raising=False)
+
+    result = await orders_modify_cancel._cancel_kis_overseas(
+        "KIS-US-1", "AAPL", is_mock=True
+    )
+
+    assert result["success"] is False
+    assert result["mock_unsupported"] is True
+    assert "pending-orders inquiry" in result["error"]
 
 
 @pytest.mark.asyncio
