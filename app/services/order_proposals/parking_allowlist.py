@@ -100,10 +100,11 @@ PARKING_DAILY_CAP_EXEMPT_KR = True
 class ParkingScope:
     """One inseparable parking authorization tuple.
 
-    Symbol, account/market, native currency, cap pair, and the KIS balance
-    fields used to measure that same market live in one immutable record. This
-    is intentionally *not* two independent symbol/account sets: adding either
-    half alone cannot create an authorization through a cross product.
+    Symbol, account/market, native currency, cap pair, **balance provider**,
+    and balance fields used to measure that same broker account live in one
+    immutable record. This is intentionally *not* independent symbol,
+    account, market, or provider sets: adding either half alone cannot create
+    an authorization through a cross product or a wrong-account meter.
     """
 
     symbol: str
@@ -112,8 +113,12 @@ class ParkingScope:
     currency: str
     per_order_cap: Decimal
     cumulative_cap: Decimal
+    balance_provider: str
     balance_symbol_field: str
     balance_evaluation_field: str
+    balance_currency_field: str | None
+    balance_market_field: str | None
+    balance_market_value: str | None
     # §S170: a closed, per-scope operator switch. It is not a policy/env/DB
     # setting. The eligibility predicate below is still responsible for the
     # `expanded`-mode boundary.
@@ -121,8 +126,9 @@ class ParkingScope:
 
 
 # Closed operator allowlist. Each entry is a full authorization tuple, not
-# independently extensible symbol and market collections. ``toss_live`` is
-# intentionally absent: a KIS balance must never meter a Toss order.
+# independently extensible symbol, market, and balance-provider collections.
+# ``toss_live`` KR is metered only by its own Toss holdings surface; a KIS
+# balance must never meter a Toss order.
 PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
     {
         ParkingScope(
@@ -132,8 +138,12 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             currency="USD",
             per_order_cap=PARKING_PER_ORDER_CAP_USD,
             cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
+            balance_provider="kis_us_holdings",
             balance_symbol_field="ovrs_pdno",
             balance_evaluation_field="ovrs_stck_evlu_amt",
+            balance_currency_field=None,
+            balance_market_field=None,
+            balance_market_value=None,
             daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_US,
         ),
         ParkingScope(
@@ -143,8 +153,12 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             currency="USD",
             per_order_cap=PARKING_PER_ORDER_CAP_USD,
             cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
+            balance_provider="kis_us_holdings",
             balance_symbol_field="ovrs_pdno",
             balance_evaluation_field="ovrs_stck_evlu_amt",
+            balance_currency_field=None,
+            balance_market_field=None,
+            balance_market_value=None,
             daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_US,
         ),
         ParkingScope(
@@ -154,8 +168,12 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             currency="KRW",
             per_order_cap=PARKING_PER_ORDER_CAP_KRW,
             cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_provider="kis_kr_holdings",
             balance_symbol_field="pdno",
             balance_evaluation_field="evlu_amt",
+            balance_currency_field=None,
+            balance_market_field=None,
+            balance_market_value=None,
             daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
         ),
         ParkingScope(
@@ -165,8 +183,42 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             currency="KRW",
             per_order_cap=PARKING_PER_ORDER_CAP_KRW,
             cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_provider="kis_kr_holdings",
             balance_symbol_field="pdno",
             balance_evaluation_field="evlu_amt",
+            balance_currency_field=None,
+            balance_market_field=None,
+            balance_market_value=None,
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
+        ),
+        ParkingScope(
+            symbol="459580",
+            account_mode="toss_live",
+            market="equity_kr",
+            currency="KRW",
+            per_order_cap=PARKING_PER_ORDER_CAP_KRW,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_provider="toss_kr_holdings",
+            balance_symbol_field="symbol",
+            balance_evaluation_field="market_value.amount",
+            balance_currency_field="currency",
+            balance_market_field="market_country",
+            balance_market_value="KR",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
+        ),
+        ParkingScope(
+            symbol="357870",
+            account_mode="toss_live",
+            market="equity_kr",
+            currency="KRW",
+            per_order_cap=PARKING_PER_ORDER_CAP_KRW,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_KRW,
+            balance_provider="toss_kr_holdings",
+            balance_symbol_field="symbol",
+            balance_evaluation_field="market_value.amount",
+            balance_currency_field="currency",
+            balance_market_field="market_country",
+            balance_market_value="KR",
             daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
         ),
     }
@@ -186,6 +238,8 @@ PARKING_EXPOSURE_UNAVAILABLE_REASONS: frozenset[str] = frozenset(
         "evaluation_amount_negative",
         "currency_not_usd",
         "currency_not_krw",
+        "market_not_kr",
+        "account_identity_unavailable",
         "scope_not_allowlisted",
         # §163차 재작업 1 — the durable half. Its absence or unreadability is
         # not a degraded measurement, it is a broken cap: without it an

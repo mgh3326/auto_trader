@@ -1017,6 +1017,10 @@ async def dispatch_proposal(
                 # to "not a parking rung", never to an exception inside the
                 # auto-approve gate.
                 symbol=getattr(group, "symbol", None),
+                # TossReadClient selects its account from settings, not this
+                # proposal field. The parking meter verifies this durable ID
+                # against that settings-selected account before any Toss read.
+                broker_account_id=getattr(group, "broker_account_id", None),
                 durable_notional_fn=lambda: service.auto_approved_parking_notional(
                     parking_group, now=now
                 ),
