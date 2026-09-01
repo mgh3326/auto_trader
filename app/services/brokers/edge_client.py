@@ -11,6 +11,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -20,10 +21,13 @@ import httpx
 from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 
 KIS_MOCK_EDGE_URL_ENV = "KIS_MOCK_EDGE_URL"
+KIS_MOCK_ACCOUNT_SCOPE = "kis_mock"
+KIS_MOCK_US_ACCOUNT_SCOPE = "kis_mock_us"
 _COMMAND_PATH = "/v1/commands"
 _COMMAND_SCHEMA_VERSION = "execution-command/v1"
 _RECEIPT_SCHEMA_VERSION = "execution-receipt/v1"
 _HTTP_TIMEOUT = httpx.Timeout(15.0, connect=3.0)
+_KIS_MOCK_US_NOTIONAL_CAP = Decimal("1000")
 
 
 class ExecutionDisposition(StrEnum):
@@ -171,26 +175,70 @@ def get_kis_mock_edge_url() -> str | None:
 def build_kis_mock_execution_command(
     *,
     command_id: str | None,
+    account_scope: str = KIS_MOCK_ACCOUNT_SCOPE,
     side: str,
     stock_code: str,
-    quantity: int,
-    price: int,
+    quantity: int | float | Decimal | str,
+    price: int | float | Decimal | str,
     order_type: str,
 ) -> ExecutionCommandV1:
     """Build an edge command from the KIS mock normalized wire values."""
     normalized_command_id = _non_blank_string(command_id)
     if normalized_command_id is None:
         raise BrokerEdgeNotCreated("idempotency_key_required")
+    if account_scope not in {KIS_MOCK_ACCOUNT_SCOPE, KIS_MOCK_US_ACCOUNT_SCOPE}:
+        raise BrokerEdgeNotCreated("unsupported_edge_account_scope")
 
     return ExecutionCommandV1(
         command_id=normalized_command_id,
-        account_scope="kis_mock",
+        account_scope=account_scope,
         side=side,
         stock_code=stock_code,
         quantity=str(quantity),
         price=str(price),
         order_type=order_type,
         issued_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    )
+
+
+def build_kis_mock_us_execution_command(
+    *,
+    command_id: str | None,
+    side: str,
+    stock_code: str,
+    quantity: int | float | Decimal,
+    price: int | float | Decimal,
+    order_type: str,
+) -> ExecutionCommandV1:
+    """Build the bounded US mock edge envelope.
+
+    Broker-edge's US port intentionally accepts only limit orders without an
+    exchange field.  Rejecting incompatible inputs here prevents an operator
+    opt-in from silently falling back to the in-process KIS route.
+    """
+    if order_type != "limit":
+        raise BrokerEdgeNotCreated("edge_unsupported_order_type")
+
+    normalized_stock_code = _non_blank_string(stock_code)
+    if normalized_stock_code is None:
+        raise BrokerEdgeNotCreated("edge_stock_code_required")
+
+    normalized_quantity = _positive_decimal_wire_value(quantity, "quantity")
+    normalized_price = _positive_decimal_wire_value(price, "price")
+    if (
+        Decimal(normalized_quantity) * Decimal(normalized_price)
+        > _KIS_MOCK_US_NOTIONAL_CAP
+    ):
+        raise BrokerEdgeNotCreated("edge_notional_cap_exceeded")
+
+    return build_kis_mock_execution_command(
+        command_id=command_id,
+        account_scope=KIS_MOCK_US_ACCOUNT_SCOPE,
+        side=side,
+        stock_code=normalized_stock_code,
+        quantity=normalized_quantity,
+        price=normalized_price,
+        order_type=order_type,
     )
 
 
@@ -329,6 +377,18 @@ async def cancel_kis_mock_command(*, base_url: str, command_id: str) -> dict[str
     raise BrokerEdgeOutcomeUnknown(receipt.error_code or "edge_outcome_unknown")
 
 
+async def cancel_kis_mock_us_command(
+    *, base_url: str, command_id: str
+) -> dict[str, Any]:
+    """Cancel a US mock command through the shared command-id endpoint.
+
+    The edge cancellation contract has no request body or scope field; this
+    thin wrapper keeps US call sites explicit while preserving the established
+    domestic function signature and endpoint exactly.
+    """
+    return await cancel_kis_mock_command(base_url=base_url, command_id=command_id)
+
+
 def _validated_base_url(value: str) -> str:
     """Reject ambiguous URLs before the command crosses the send boundary."""
     try:
@@ -369,6 +429,22 @@ def _safe_error_code(value: object) -> str | None:
     return candidate
 
 
+def _positive_decimal_wire_value(
+    value: int | float | Decimal,
+    field: str,
+) -> str:
+    """Return a finite positive decimal in non-exponent wire notation."""
+    if isinstance(value, bool):
+        raise BrokerEdgeNotCreated(f"edge_{field}_invalid")
+    try:
+        normalized = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise BrokerEdgeNotCreated(f"edge_{field}_invalid") from None
+    if not normalized.is_finite() or normalized <= 0:
+        raise BrokerEdgeNotCreated(f"edge_{field}_invalid")
+    return format(normalized, "f")
+
+
 __all__ = [
     "BrokerEdgeNotCreated",
     "BrokerEdgeOutcomeUnknown",
@@ -378,7 +454,9 @@ __all__ = [
     "ExecutionDisposition",
     "ExecutionReceiptV1",
     "build_kis_mock_execution_command",
+    "build_kis_mock_us_execution_command",
     "cancel_kis_mock_command",
+    "cancel_kis_mock_us_command",
     "execute_kis_mock_command",
     "get_kis_mock_edge_url",
 ]

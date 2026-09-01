@@ -59,6 +59,7 @@ from app.services.brokers.edge_client import (
     BrokerEdgeNotCreated,
     BrokerEdgeOutcomeUnknown,
     build_kis_mock_execution_command,
+    build_kis_mock_us_execution_command,
     execute_kis_mock_command,
     get_kis_mock_edge_url,
 )
@@ -188,7 +189,15 @@ async def _execute_order(
             idempotency_key=idempotency_key,
         )
     return await _execute_us_order(
-        symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
+        symbol,
+        side,
+        order_type,
+        quantity,
+        price,
+        is_mock=is_mock,
+        pre_send_hook=pre_send_hook,
+        send_outcome=send_outcome,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -358,11 +367,47 @@ async def _execute_kr_order(
 async def _execute_us_order(
     symbol: str,
     side: str,
+    order_type: str,
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
+    edge_url = get_kis_mock_edge_url() if is_mock else None
+    if edge_url is not None:
+        # The edge US port has no exchange-code or market-order representation.
+        # Do not instantiate KIS or query its exchange resolver on this path:
+        # unsupported inputs fail closed before any edge command is sent.
+        command = build_kis_mock_us_execution_command(
+            command_id=idempotency_key,
+            side=side,
+            stock_code=symbol,
+            quantity=int(quantity) if quantity else 0,
+            price=price if price is not None else 0,
+            order_type=order_type,
+        )
+        try:
+            return await execute_kis_mock_command(
+                base_url=edge_url,
+                command=command,
+                pre_send_hook=pre_send_hook,
+                send_outcome=send_outcome,
+            )
+        except BrokerEdgeOutcomeUnknown as edge_exc:
+            raise OrderSendOutcomeUnknown(
+                edge_exc,
+                error_code="unknown_pending_reconcile",
+                edge_error_code=edge_exc.error_code,
+            ) from edge_exc
+        except httpx.RequestError as edge_exc:
+            raise OrderSendOutcomeUnknown(
+                edge_exc,
+                error_code="unknown_pending_reconcile",
+                edge_error_code="edge_transport_error",
+            ) from edge_exc
+
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
