@@ -35,6 +35,7 @@ from app.services.order_proposals.parking_allowlist import (
     PARKING_DAILY_CAP_EXEMPT_US,
     PARKING_PER_ORDER_CAP_KRW,
     PARKING_PER_ORDER_CAP_USD,
+    PARKING_REVALIDATION_UPWARD_PRICE_BAND_PCT,
     ParkingExposure,
     canonical_eligibility_symbol,
     canonical_exposure_symbol,
@@ -164,6 +165,7 @@ def test_allowlist_constants_are_exactly_the_authorized_scope():
     assert PARKING_CUMULATIVE_CAP_USD == Decimal("10000")
     assert PARKING_PER_ORDER_CAP_KRW == Decimal("10000000")
     assert PARKING_CUMULATIVE_CAP_KRW == Decimal("15000000")
+    assert PARKING_REVALIDATION_UPWARD_PRICE_BAND_PCT == Decimal("0.001")
     assert PARKING_DAILY_CAP_EXEMPT_US is True
     assert PARKING_DAILY_CAP_EXEMPT_KR is True
     assert all(scope.daily_cap_exempt is True for scope in PARKING_ALLOWLIST_SCOPES)

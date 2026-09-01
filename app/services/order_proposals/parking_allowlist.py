@@ -89,6 +89,14 @@ PARKING_CUMULATIVE_CAP_USD: Decimal = Decimal("10000")
 PARKING_PER_ORDER_CAP_KRW: Decimal = Decimal("10000000")
 PARKING_CUMULATIVE_CAP_KRW: Decimal = Decimal("15000000")
 
+# Revalidation has one deliberately narrow accommodation for the same closed
+# parking tuples: an upward fresh limit price may replace the card's price by
+# at most 10 bps. This is a Decimal literal rather than policy/env/DB input;
+# changing the number or direction is an operator-PR decision. The direction
+# is intentionally asymmetric: a lower fresh price is a changed decision
+# context, not a harmless cheaper fill, and keeps the ordinary reconfirm path.
+PARKING_REVALIDATION_UPWARD_PRICE_BAND_PCT: Decimal = Decimal("0.001")
+
 # §S170: independently closed activation constants. These are deliberately
 # per-market rather than per-symbol so a future operator narrowing is a
 # one-line edit without changing a ticker's cap or exposure tuple.
@@ -376,6 +384,7 @@ __all__ = [
     "PARKING_DAILY_CAP_EXEMPT_KR",
     "PARKING_PER_ORDER_CAP_USD",
     "PARKING_PER_ORDER_CAP_KRW",
+    "PARKING_REVALIDATION_UPWARD_PRICE_BAND_PCT",
     "PARKING_EXPOSURE_UNAVAILABLE_REASONS",
     "ParkingScope",
     "ParkingExposure",

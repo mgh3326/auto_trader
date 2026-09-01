@@ -66,6 +66,10 @@ from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
 )
+from app.services.order_proposals.parking_allowlist import (
+    PARKING_REVALIDATION_UPWARD_PRICE_BAND_PCT,
+    parking_scope,
+)
 from app.services.order_proposals.service import (
     OrderProposalsService,
     proposal_approval_block_reason,
@@ -399,6 +403,47 @@ def _norm(value: Any) -> str | None:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text
+
+
+def _parking_upward_revalidation_price(
+    *,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    preview: dict[str, Any],
+) -> Decimal | None:
+    """Return the fresh price only for the closed parking upward-band case.
+
+    This is deliberately a revalidation comparison aid, not an alternate
+    proposal classifier: exact quantity equality remains mandatory at the
+    caller, and the sole authorization input is ``parking_scope``'s exact
+    ``(symbol, account_mode, market)`` tuple. No proposer-authored rationale,
+    strategy, or thesis field participates.
+    """
+    if rung.limit_price is None:
+        return None
+    if (
+        parking_scope(
+            symbol=group.symbol,
+            account_mode=group.account_mode,
+            market=group.market,
+        )
+        is None
+    ):
+        return None
+    try:
+        booked = Decimal(str(rung.limit_price))
+        fresh = Decimal(str(preview.get("price")))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if (
+        not booked.is_finite()
+        or not fresh.is_finite()
+        or booked <= 0
+        or fresh < booked
+        or fresh > booked * (Decimal("1") + PARKING_REVALIDATION_UPWARD_PRICE_BAND_PCT)
+    ):
+        return None
+    return fresh
 
 
 def _toss_decimal_arg(value: Decimal | None) -> str | int | None:
@@ -1164,7 +1209,11 @@ async def _revalidate_place_rung(
     # current price for market orders — comparing that against the stored
     # `None` would deterministically mismatch on every attempt. Degrade the
     # comparison to quantity-only for market-order rungs (Task 13 review
-    # Finding 2); limit-order rungs keep the full price+quantity comparison.
+    # Finding 2). Limit orders keep the full price+quantity comparison except
+    # for one closed parking accommodation: same quantity plus a fresh upward
+    # price no more than the immutable 10-bps band is submitted at that fresh
+    # price. Lower prices and every out-of-scope tuple still reconfirm.
+    submit_limit_price = rung.limit_price
     if rung.limit_price is None:
         before = {"limit_price": None, "quantity": _norm(rung.quantity)}
         after = {"limit_price": None, "quantity": _norm(preview.get("quantity"))}
@@ -1177,6 +1226,12 @@ async def _revalidate_place_rung(
             "limit_price": _norm(preview.get("price")),
             "quantity": _norm(preview.get("quantity")),
         }
+        fresh_parking_price = _parking_upward_revalidation_price(
+            group=group, rung=rung, preview=preview
+        )
+        if fresh_parking_price is not None and before["quantity"] == after["quantity"]:
+            submit_limit_price = fresh_parking_price
+            before["limit_price"] = after["limit_price"]
     if before != after:
         await service.mark_needs_reconfirm(proposal_id, rung_index, now=now)
         return RungOutcome(
@@ -1206,11 +1261,11 @@ async def _revalidate_place_rung(
         return window_outcome
 
     buying_power_reservation: tuple[str, Decimal, str | None] | None = None
-    if rung.side == "buy" and rung.limit_price is not None:
+    if rung.side == "buy" and submit_limit_price is not None:
         currency = currency_for_market(group.market)
         required = required_cash(
             quantity=Decimal(rung.quantity),
-            limit_price=Decimal(rung.limit_price),
+            limit_price=Decimal(submit_limit_price),
             preview=preview,
         )
         try:
@@ -1310,7 +1365,7 @@ async def _revalidate_place_rung(
                 market=group.market,
                 order_type=group.order_type,
                 quantity=rung.quantity,
-                price=rung.limit_price,
+                price=submit_limit_price,
                 thesis=group.thesis,
                 strategy=group.strategy,
                 exit_intent=group.exit_intent,

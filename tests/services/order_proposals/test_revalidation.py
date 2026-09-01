@@ -1,7 +1,7 @@
 import functools
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -10,6 +10,10 @@ import pytest
 
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import revalidation as revalidation_module
+from app.services.order_proposals.auto_approve import (
+    AutoApproveLimits,
+    evaluate_auto_approve_eligibility,
+)
 from app.services.order_proposals.broker_gateway import SubmitEvidence
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
@@ -208,6 +212,273 @@ async def test_price_change_needs_reconfirm_no_submit(db_session):
     assert out[0].detail["after"]["limit_price"] == "2340000"
     _, rungs = await svc.get_proposal(g.proposal_id)
     assert rungs[0].state == "needs_reconfirm"
+
+
+@pytest.mark.asyncio
+async def test_kis_live_kr_parking_reissued_card_submits_fresh_upward_price(
+    db_session,
+):
+    """A fresh 459580 card still submits after the small intraday CD-rate rise."""
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="459580",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("10000"), None)],
+    )
+    await db_session.commit()
+    calls = []
+    # This models the observed fresh reissue failing four minutes later: the
+    # card is new, but the CD-rate ETF's quoted limit has ticked upward again.
+    revalidated_at = group.created_at + timedelta(minutes=4)
+
+    async def place_order(**kwargs):
+        calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "fresh-parking-preview",
+                "price": "10005",
+                "quantity": "10",
+            }
+        return {
+            "success": True,
+            "status": "acked",
+            "broker_order_id": "fresh-459580",
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=revalidated_at,
+        place_order_fn=place_order,
+    )
+
+    assert [call["dry_run"] for call in calls] == [True, False]
+    assert calls[0]["price"] == Decimal("10000")
+    assert calls[1]["price"] == Decimal("10005")
+    assert outcomes[0].result == "submitted_acked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fresh_price", "expected_result"),
+    [
+        (Decimal("10010"), "submitted_acked"),
+        (Decimal("10010.000000000001"), "needs_reconfirm"),
+    ],
+)
+async def test_kis_live_parking_upward_band_is_closed_at_10_bps(
+    db_session, fresh_price, expected_result
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="459580",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("10000"), None)],
+    )
+    await db_session.commit()
+    submit_prices = []
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "parking-boundary-preview",
+                "price": str(fresh_price),
+                "quantity": "10",
+            }
+        submit_prices.append(kwargs["price"])
+        return {
+            "success": True,
+            "status": "acked",
+            "broker_order_id": "parking-boundary",
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+    )
+
+    assert outcomes[0].result == expected_result
+    if expected_result == "submitted_acked":
+        assert submit_prices == [fresh_price]
+    else:
+        assert submit_prices == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fresh_price", "fresh_quantity"),
+    [
+        (Decimal("9999"), Decimal("10")),
+        (Decimal("10005"), Decimal("9")),
+    ],
+)
+async def test_kis_live_parking_downward_or_quantity_change_needs_reconfirm(
+    db_session, fresh_price, fresh_quantity
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="459580",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("10000"), None)],
+    )
+    await db_session.commit()
+    submitted = False
+
+    async def place_order(**kwargs):
+        nonlocal submitted
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "parking-no-relax-preview",
+                "price": str(fresh_price),
+                "quantity": str(fresh_quantity),
+            }
+        submitted = True
+        raise AssertionError("reconfirm mismatch must not submit")
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+    )
+
+    assert outcomes[0].result == "needs_reconfirm"
+    assert submitted is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("symbol", "account_mode", "market"),
+    [
+        ("000660", "kis_live", "equity_kr"),
+        ("459580", "toss_live", "equity_kr"),
+        ("459580", "kis_live", "equity_us"),
+    ],
+)
+async def test_parking_upward_band_cannot_leak_outside_exact_scope(
+    db_session, symbol, account_mode, market
+):
+    """A loose scope mutant makes these AssertionError expectations red."""
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol=symbol,
+        market=market,
+        account_mode=account_mode,
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("10000"), None)],
+    )
+    await db_session.commit()
+    submitted = False
+
+    async def place_order(**kwargs):
+        nonlocal submitted
+        if kwargs["dry_run"]:
+            preview = {
+                "success": True,
+                "approval_hash": "out-of-scope-preview",
+                "price": "10005",
+                "quantity": "10",
+            }
+            if account_mode == "toss_live":
+                preview["payload_preview"] = {
+                    "price": "10005",
+                    "quantity": "10",
+                    "clientOrderId": kwargs["proposal_client_order_id"],
+                }
+            return preview
+        submitted = True
+        raise AssertionError("out-of-scope price mismatch must not submit")
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+    )
+
+    assert outcomes[0].result == "needs_reconfirm"
+    assert submitted is False
+
+
+@pytest.mark.asyncio
+async def test_parking_upward_band_does_not_bypass_off_mode_auto_approval(
+    db_session,
+):
+    """The existing off-mode classifier still blocks the near-market buy."""
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="459580",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("10000"), None)],
+    )
+    await db_session.commit()
+    submitted = False
+    off_limits = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("2000000"),
+        daily_cap=Decimal("20000000"),
+        policy_version="test-policy",
+        mode="off",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("47.4"),
+    )
+
+    async def place_order(**kwargs):
+        nonlocal submitted
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "off-mode-preview",
+                "price": "10005",
+                "quantity": "10",
+                "current_price": "10005",
+            }
+        submitted = True
+        raise AssertionError("off-mode auto approval must not submit")
+
+    async def eligibility_gate(**kwargs):
+        return evaluate_auto_approve_eligibility(
+            group=kwargs["group"],
+            rung=kwargs["rung"],
+            preview=kwargs["preview"],
+            limits=off_limits,
+            daily_notional=Decimal("0"),
+        )
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        eligibility_gate=eligibility_gate,
+    )
+
+    assert outcomes[0].result == "approval_required"
+    assert outcomes[0].detail["reason"] == "distance_below_minimum"
+    assert submitted is False
 
 
 @pytest.mark.asyncio
