@@ -2,7 +2,7 @@
 
 The NCP host deploys a previously built image; it does not build from a source
 checkout. `scripts/deploy-ncp-pull.sh` pulls one GHCR tag, recreates `at-api`
-and `at-scheduler` from that same image reference, and verifies the API's
+and `at-scheduler` from that same repo-digest reference, and verifies the API's
 loopback `/healthz` endpoint before recording the deployed digest.
 
 ## Tag policy
@@ -61,8 +61,37 @@ image's default API command.
 
 The script prints the GHCR repo digest after pulling it. It retries
 `http://127.0.0.1:8000/healthz` for up to 60 seconds by default. If the new API
-does not return HTTP 200, it recreates both containers with their prior image
-references and verifies the restored API. On success it atomically writes the
-GHCR repo digest to `/root/at-run/deployed-digest`.
+does not return HTTP 200, it recreates both containers with pinned rollback
+references and verifies the restored API. A tag is used only to pull and
+resolve the image; `docker run` always receives `repo@sha256:...`, so the next
+deployment's `.Config.Image` is stable even after a later `:main` pull.
+
+The script maintains these operator-owned, mode-0600 digest files:
+
+- `/root/at-run/deployed-digest` is the currently healthy deployment.
+- `/root/at-run/deployed-digest.previous` is the prior healthy deployment;
+  each successful deployment atomically rotates the former current value here.
+
+For an automatic health-check rollback, a container's existing digest reference
+takes precedence. A legacy floating-tag container instead uses
+`deployed-digest` for this first transition. If neither is a valid repo digest,
+the script fails explicitly before replacing containers; it never silently
+restarts a floating tag. A successful automatic rollback restores
+`deployed-digest` to the recovered digest.
+
+## Operator rollback
+
+To return to the prior healthy digest without selecting a tag, run only on the
+NCP host:
+
+```bash
+/root/at-run/deploy-ncp-pull.sh --rollback
+```
+
+This pulls and runs the digest in `deployed-digest.previous`, health-checks it,
+and rotates the digest files so the prior current deployment remains available
+for a later return. It fails explicitly if `deployed-digest.previous` is absent
+or invalid. Do not edit either file to bypass a failed rollback; investigate
+the image and container logs instead.
 
 Do not run migrations or make a live deployment from CI as part of this flow.
