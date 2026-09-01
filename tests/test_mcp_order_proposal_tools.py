@@ -964,6 +964,8 @@ async def test_get_and_list_project_safe_auto_approve_rejection_evidence():
         if proposal["proposal_id"] == created["proposal_id"]
     )
     assert row["auto_approve_rejections"] == expected
+    assert got["proposal"]["auto_approve_not_evaluated"] is None
+    assert row["auto_approve_not_evaluated"] is None
     assert raw_input not in json.dumps(got)
     assert raw_input not in json.dumps(listed)
 
@@ -1365,6 +1367,9 @@ async def test_redispatch_execute_sends_only_fresh_telegram_card(monkeypatch):
     sender.assert_awaited_once()
     assert sender.await_args.kwargs["notifier"] is notifier
     assert sender.await_args.kwargs["redispatch"] is True
+    # Redispatch is not provenance for a skipped evaluation. The manual
+    # dispatch writer must receive an explicit opt-out, never its own default.
+    assert sender.await_args.kwargs["not_evaluated_reason"] is None
 
 
 @pytest.mark.unit

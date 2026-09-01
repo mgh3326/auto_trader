@@ -2894,6 +2894,7 @@ async def test_toss_incomplete_preview_fails_closed(db_session, monkeypatch, def
 
     assert outcomes[0].result == "error"
     assert outcomes[0].detail["error"].startswith("invalid_toss_preview:")
+    assert outcomes[0].detail["not_evaluated_reason"] == "preview_invalid"
     assert submitted is False
     _, rungs = await svc.get_proposal(group.proposal_id)
     assert rungs[0].state == "pending_approval"

@@ -15,6 +15,7 @@ from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import dispatch as dispatch_module
 from app.services.order_proposals import revalidation as revalidation_module
+from app.services.order_proposals import service as service_module
 from app.services.order_proposals.approval_message import (
     build_approval_dispatch_messages,
     parse_callback_data,
@@ -26,6 +27,9 @@ from app.services.order_proposals.approval_window import (
     evaluate_approval_window,
 )
 from app.services.order_proposals.auto_approve import AutoApproveLimits
+from app.services.order_proposals.auto_approve_audit import (
+    AutoApproveNotEvaluatedReason,
+)
 from app.services.order_proposals.dispatch import (
     dispatch_proposal,
     publish_approval_messages,
@@ -285,6 +289,7 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
         notifier=notifier,
         now=now,
         service_factory=_session_factory(db_session),
+        not_evaluated_reason=AutoApproveNotEvaluatedReason.DIRECT_MANUAL_DISPATCH,
     )
 
     assert dispatch.ok is True
@@ -302,6 +307,11 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
     assert refreshed.source_asof["approval_chat_id"] == isolated_chat_id
     assert refreshed.source_asof["approval_sent_at"] == now.isoformat()
     assert refreshed.source_asof["approval_window_policy_stamp"]
+    assert (
+        refreshed.source_asof["auto_approve_not_evaluated"]
+        == AutoApproveNotEvaluatedReason.DIRECT_MANUAL_DISPATCH.value
+    )
+    assert "direct_manual_dispatch" not in text
 
 
 @pytest.mark.asyncio
@@ -703,6 +713,360 @@ async def test_dispatch_auto_gate_off_preserves_human_approval_flow(
         group.proposal_id
     )
     assert rungs[0].state == "pending_approval"
+    assert _group.source_asof["auto_approve_not_evaluated"] == (
+        AutoApproveNotEvaluatedReason.MASTER_GATE_DISABLED.value
+    )
+    assert "auto_approved" not in _group.source_asof
+    assert "auto_approve_rejections" not in _group.source_asof
+
+
+@pytest.mark.asyncio
+async def test_redispatch_evaluation_removes_master_gate_stamp(monkeypatch, db_session):
+    """A later real eligibility pass cannot retain earlier skip provenance."""
+    from app.core.config import settings
+
+    now = datetime(2026, 9, 1, 13, 20, tzinfo=UTC)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", False)
+    group = await _seed_proposal(db_session)
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=now,
+        service_factory=_session_factory(db_session),
+    )
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+
+    async def evaluated_but_ineligible(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group,
+            rung=rungs[0],
+            preview={
+                "success": True,
+                "current_price": "100",
+                "price": "100",
+                "quantity": "10",
+            },
+            now=now,
+        )
+        assert decision.eligible is False
+        return [RungOutcome(0, "approval_required", {})]
+
+    # This is the ordinary public dispatcher twice on the same durable
+    # proposal: initial master-gate bypass, then a later evaluated fallback.
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=evaluated_but_ineligible,
+    )
+
+    refreshed, _rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert "auto_approve_not_evaluated" not in (refreshed.source_asof or {})
+    assert refreshed.source_asof["auto_approve_rejections"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("preview_mode", "expected_reason", "raw_secret_like_text"),
+    [
+        (
+            "exception",
+            AutoApproveNotEvaluatedReason.PREVIEW_EXCEPTION,
+            "preview-token=should-not-be-durable",
+        ),
+        (
+            "failed",
+            AutoApproveNotEvaluatedReason.PREVIEW_FAILED,
+            "preview-account=should-not-be-durable",
+        ),
+    ],
+)
+async def test_dispatch_preview_non_evaluation_stamps_only_closed_reason(
+    monkeypatch,
+    db_session,
+    preview_mode,
+    expected_reason,
+    raw_secret_like_text,
+):
+    """Yesterday's SGOV shape now leaves provenance without preview contents."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    now = datetime(2026, 9, 1, 13, 30, tzinfo=UTC)
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="preview-provenance",
+        thesis="park idle USD in SGOV",
+        broker_account_id=f"preview-provenance-{uuid.uuid4()}",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        now=now,
+        valid_until=now + timedelta(hours=1),
+    )
+    await db_session.commit()
+
+    async def preview_fn(**kwargs):
+        assert kwargs["dry_run"] is True
+        if preview_mode == "exception":
+            raise RuntimeError(raw_secret_like_text)
+        return {"success": False, "error": raw_secret_like_text}
+
+    async def real_preview_revalidation(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, _rungs = await service.get_proposal(proposal_id)
+        window = await allow_known_session(fresh_group, now=now)
+        return await revalidate_and_submit(
+            service=service,
+            proposal_id=proposal_id,
+            now=now,
+            place_order_fn=preview_fn,
+            eligibility_gate=eligibility_gate,
+            window_evaluator=allow_known_session,
+            expected_policy_stamp=window.policy_stamp,
+            now_fn=lambda: now,
+        )
+
+    notifier = _FakeNotifier()
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=now,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=real_preview_revalidation,
+    )
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+    assert refreshed.source_asof["auto_approve_not_evaluated"] == expected_reason.value
+    assert "auto_approved" not in refreshed.source_asof
+    assert "auto_approve_rejections" not in refreshed.source_asof
+    assert raw_secret_like_text not in json.dumps(refreshed.source_asof)
+    assert "자동 승인 제외" not in notifier.sent_messages[0][0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_invalid_toss_preview_stamps_closed_reason(
+    monkeypatch, db_session
+):
+    """Malformed Toss preview reaches manual approval with bounded provenance."""
+    from app.core.config import settings
+
+    now = datetime(2026, 9, 1, 13, 30, tzinfo=UTC)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="preview-provenance",
+        thesis="toss preview shape",
+        broker_account_id=f"preview-provenance-{uuid.uuid4()}",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+        now=now,
+        valid_until=now + timedelta(hours=1),
+    )
+    await db_session.commit()
+
+    async def invalid_toss_preview(**kwargs):
+        assert kwargs["dry_run"] is True
+        # Deliberately omit clientOrderId; this must not leak into source_asof.
+        return {
+            "success": True,
+            "approval_hash": "preview-only-token",
+            "payload_preview": {"price": "50000", "quantity": "1"},
+        }
+
+    async def real_toss_revalidation(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, _rungs = await service.get_proposal(proposal_id)
+        window = await allow_known_session(fresh_group, now=now)
+        return await revalidate_and_submit(
+            service=service,
+            proposal_id=proposal_id,
+            now=now,
+            place_order_fn=invalid_toss_preview,
+            eligibility_gate=eligibility_gate,
+            window_evaluator=allow_known_session,
+            expected_policy_stamp=window.policy_stamp,
+            now_fn=lambda: now,
+        )
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=now,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=real_toss_revalidation,
+    )
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+    assert refreshed.source_asof["auto_approve_not_evaluated"] == (
+        AutoApproveNotEvaluatedReason.PREVIEW_INVALID.value
+    )
+    assert "auto_approved" not in refreshed.source_asof
+    assert "auto_approve_rejections" not in refreshed.source_asof
+    assert "preview-only-token" not in json.dumps(refreshed.source_asof)
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_not_evaluated_stamp_mutant_is_red(monkeypatch, db_session):
+    """Removing the writer makes the observable master-gate assertion RED."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", False)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+
+    async def removed_stamp_writer(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        OrderProposalsService,
+        "record_auto_approve_not_evaluated",
+        removed_stamp_writer,
+    )
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=datetime(2026, 9, 1, 13, 31, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+    )
+
+    refreshed, _rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    with pytest.raises(AssertionError):
+        assert (refreshed.source_asof or {}).get("auto_approve_not_evaluated") == (
+            AutoApproveNotEvaluatedReason.MASTER_GATE_DISABLED.value
+        )
+
+
+@pytest.mark.asyncio
+async def test_evaluation_writers_clear_stale_non_evaluation_stamp(db_session):
+    """Actual eligibility evidence supersedes an earlier manual-pass stamp."""
+    service = OrderProposalsService(db_session)
+    group = await _seed_proposal(db_session)
+
+    await service.record_auto_approve_not_evaluated(
+        group.proposal_id,
+        reason=AutoApproveNotEvaluatedReason.MASTER_GATE_DISABLED,
+    )
+    await service.record_auto_approve_rejections(
+        group.proposal_id,
+        decisions=[
+            {
+                "rung_index": 0,
+                "eligible": False,
+                "reason": "distance_below_minimum",
+                "policy_version": "2026-09-01.1",
+            }
+        ],
+        now=datetime(2026, 9, 1, 13, 32, tzinfo=UTC),
+    )
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    assert "auto_approve_not_evaluated" not in (refreshed.source_asof or {})
+    assert refreshed.source_asof["auto_approve_rejections"]
+
+    await service.record_auto_approve_not_evaluated(
+        group.proposal_id,
+        reason=AutoApproveNotEvaluatedReason.MASTER_GATE_DISABLED,
+    )
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    assert "auto_approve_not_evaluated" not in (refreshed.source_asof or {})
+
+    await service.record_auto_approval(
+        group.proposal_id,
+        policy_version="2026-09-01.1",
+        eligibility=[],
+        outcomes=[],
+        now=datetime(2026, 9, 1, 13, 33, tzinfo=UTC),
+    )
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    assert "auto_approve_not_evaluated" not in (refreshed.source_asof or {})
+
+
+@pytest.mark.asyncio
+async def test_stale_stamp_cleanup_mutant_is_red(monkeypatch, db_session):
+    """Removing evaluation-time cleanup makes the stale-provenance assertion RED."""
+    group = await _seed_proposal(db_session)
+    service = OrderProposalsService(db_session)
+    await service.record_auto_approve_not_evaluated(
+        group.proposal_id,
+        reason=AutoApproveNotEvaluatedReason.MASTER_GATE_DISABLED,
+    )
+    monkeypatch.setattr(
+        service_module, "_clear_auto_approve_not_evaluated_stamp", lambda _source: None
+    )
+    await service.record_auto_approve_rejections(
+        group.proposal_id,
+        decisions=[
+            {
+                "rung_index": 0,
+                "eligible": False,
+                "reason": "distance_below_minimum",
+                "policy_version": "2026-09-01.1",
+            }
+        ],
+        now=datetime(2026, 9, 1, 13, 34, tzinfo=UTC),
+    )
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    with pytest.raises(AssertionError):
+        assert "auto_approve_not_evaluated" not in (refreshed.source_asof or {})
+
+
+@pytest.mark.asyncio
+async def test_pre_publication_stamp_writer_failure_sends_no_card(
+    monkeypatch, db_session
+):
+    """An observation writer failure occurs before Telegram publication."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+    notifier = _FakeNotifier()
+
+    async def unavailable_writer(*_args, **_kwargs):
+        raise RuntimeError("observation_writer_unavailable")
+
+    monkeypatch.setattr(
+        OrderProposalsService,
+        "record_auto_approve_not_evaluated",
+        unavailable_writer,
+    )
+    with pytest.raises(RuntimeError, match="observation_writer_unavailable"):
+        await send_proposal_for_approval(
+            group.proposal_id,
+            notifier=notifier,
+            now=datetime(2026, 9, 1, 13, 35, tzinfo=UTC),
+            service_factory=_session_factory(db_session),
+            not_evaluated_reason=AutoApproveNotEvaluatedReason.DIRECT_MANUAL_DISPATCH,
+        )
+    assert notifier.sent_messages == []
+    await db_session.rollback()
 
 
 @pytest.mark.asyncio
@@ -776,6 +1140,7 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
         refreshed.source_asof["auto_approved"]["policy_version"]
         == loaded_policy_version
     )
+    assert "auto_approve_not_evaluated" not in refreshed.source_asof
     text, keyboard, _chat_id = notifier.sent_messages[0]
     assert "자동 접수됨" in text
     assert f"auto:policy@{loaded_policy_version}" in text
@@ -1051,6 +1416,7 @@ async def test_dispatch_auto_ineligible_degrades_to_human_approval(
     )
     assert rungs[0].state == "pending_approval"
     assert "auto_approved" not in (refreshed.source_asof or {})
+    assert "auto_approve_not_evaluated" not in (refreshed.source_asof or {})
     audit = refreshed.source_asof["auto_approve_rejections"][-1]
     evidence = audit["rungs"][0]
     assert evidence["rung_index"] == 0
@@ -1145,7 +1511,9 @@ async def test_missing_auto_veto_thesis_never_revalidates_or_submits(
 
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
     monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        f"missing-thesis-{uuid.uuid4().hex}",
     )
     group = await _seed_proposal(
         db_session,

@@ -33,6 +33,7 @@ from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
 from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_cap_observations,
+    project_auto_approve_not_evaluated,
     project_auto_approve_rejections,
 )
 from app.services.order_proposals.broker_gateway import (
@@ -138,6 +139,7 @@ def _group_dict(g: Any) -> dict[str, Any]:
             g.source_asof
         ),
         "auto_approve_rejections": project_auto_approve_rejections(g.source_asof),
+        "auto_approve_not_evaluated": project_auto_approve_not_evaluated(g.source_asof),
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
 
@@ -1064,6 +1066,7 @@ async def order_proposal_redispatch(
                 now=now_kst(),
                 now_fn=now_kst,
                 redispatch=True,
+                not_evaluated_reason=None,
             )
         except OrderProposalError:
             raise
