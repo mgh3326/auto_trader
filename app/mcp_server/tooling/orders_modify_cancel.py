@@ -570,8 +570,10 @@ def _kis_mock_claim_identity(resolved: dict[str, Any]) -> tuple[str | None, str 
 async def _cancel_kis_mock_domestic(
     order_id: str,
     symbol: str | None,
+    *,
+    market_type: str = "equity_kr",
 ) -> dict[str, Any]:
-    """Cancel a KIS *mock* domestic order via the ledger (no TTTC8036R)."""
+    """Cancel a ledger-backed KIS mock order, preserving domestic defaults."""
     from decimal import Decimal as _Decimal
 
     from app.mcp_server.tooling.kis_mock_ledger import (
@@ -582,6 +584,7 @@ async def _cancel_kis_mock_domestic(
         BrokerEdgeNotCreated,
         BrokerEdgeOutcomeUnknown,
         cancel_kis_mock_command,
+        cancel_kis_mock_us_command,
         get_kis_mock_edge_url,
     )
     from app.services.kis_mock_runner.singleton import (
@@ -591,13 +594,26 @@ async def _cancel_kis_mock_domestic(
         verify_kis_mock_followup_capability,
     )
 
-    market = _normalize_market_type_to_external("equity_kr")
+    market = _normalize_market_type_to_external(market_type)
     resolved = await resolve_mock_order_for_cancel(order_id)
     if resolved is None:
         return {
             "success": False,
             "order_id": order_id,
             "error": "kis_mock: order not found in kis_mock_order_ledger",
+            "market": market,
+        }
+
+    # The domestic helper has long accepted legacy resolver projections without
+    # an instrument field.  Scope-check only the new US edge route, where a
+    # command id must never be used to cancel a domestic ledger row.
+    if market_type == "equity_us" and resolved.get("instrument_type") != market_type:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "broker_cancel_confirmed": False,
+            "error_code": "kis_mock_ledger_market_mismatch",
+            "error": "kis_mock cancel refused: ledger market does not match request",
             "market": market,
         }
 
@@ -659,7 +675,12 @@ async def _cancel_kis_mock_domestic(
     edge_command_id = resolved.get("edge_command_id")
     if edge_url is not None and isinstance(edge_command_id, str):
         try:
-            edge_result = await cancel_kis_mock_command(
+            cancel_command = (
+                cancel_kis_mock_us_command
+                if market_type == "equity_us"
+                else cancel_kis_mock_command
+            )
+            edge_result = await cancel_command(
                 base_url=edge_url,
                 command_id=edge_command_id,
             )
@@ -738,6 +759,23 @@ async def _cancel_kis_mock_domestic(
             ),
             "market": market,
             **edge_result,
+        }
+
+    # A configured US edge is the only cancellation route for US commands.
+    # Never hide an incomplete edge mapping by falling through to KIS direct.
+    if edge_url is not None and market_type == "equity_us":
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "error_code": "edge_command_id_required",
+            "claim_released": False,
+            "error": (
+                "kis_mock US edge cancel refused: the accepted order has no "
+                "edge command id; reconcile before another action"
+            ),
+            "market": market,
         }
 
     if not orgno or known_remainder is None:
@@ -968,6 +1006,14 @@ async def _cancel_kis_overseas(
 ) -> dict[str, Any]:
     """Cancel a KIS overseas (US equity) order."""
     if is_mock:
+        from app.services.brokers.edge_client import get_kis_mock_edge_url
+
+        if get_kis_mock_edge_url() is not None:
+            return await _cancel_kis_mock_domestic(
+                order_id,
+                symbol,
+                market_type="equity_us",
+            )
         return {
             "success": False,
             "order_id": order_id,
