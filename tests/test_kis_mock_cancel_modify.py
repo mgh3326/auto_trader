@@ -32,6 +32,7 @@ async def _seed(db_session: AsyncSession, **overrides) -> KISMockOrderLedger:
         status="accepted",
         lifecycle_state="accepted",
         holdings_baseline_qty=Decimal("0"),
+        raw_response=overrides.get("raw_response"),
     )
     db_session.add(row)
     await db_session.commit()
@@ -42,13 +43,19 @@ async def _seed(db_session: AsyncSession, **overrides) -> KISMockOrderLedger:
 async def test_resolve_mock_order_for_cancel_returns_fields(
     db_session: AsyncSession,
 ):
-    row = await _seed(db_session, orgno="00950", side="buy")
+    row = await _seed(
+        db_session,
+        orgno="00950",
+        side="buy",
+        raw_response={"edge_command_id": "edge-command-001"},
+    )
     resolved = await kml.resolve_mock_order_for_cancel(row.order_no)
     assert resolved is not None
     assert resolved["ledger_id"] == row.id
     assert resolved["symbol"] == "005930"
     assert resolved["krx_fwdg_ord_orgno"] == "00950"
     assert resolved["side"] == "buy"
+    assert resolved["edge_command_id"] == "edge-command-001"
 
 
 @pytest.mark.asyncio
@@ -127,6 +134,64 @@ async def test_mock_cancel_success_confirms_and_cancels(
     assert result["broker_cancel_confirmed"] is True
     assert fake.kwargs["krx_fwdg_ord_orgno"] == "00950"
     assert fake.kwargs["is_mock"] is True
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_mock_cancel_without_edge_url_keeps_direct_kis_call(
+    db_session: AsyncSession, monkeypatch
+):
+    """An unset opt-in URL must preserve the existing direct KIS cancel path."""
+    monkeypatch.delenv("KIS_MOCK_EDGE_URL", raising=False)
+    row = await _seed(db_session, orgno="00950")
+    fake = _FakeKisCancelOK()
+    monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
+
+    async with _cancel_receipt(row.order_no):
+        result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+
+    assert result["success"] is True
+    assert fake.kwargs["krx_fwdg_ord_orgno"] == "00950"
+
+
+@pytest.mark.asyncio
+async def test_mock_cancel_with_edge_command_id_delegates_to_edge(
+    db_session: AsyncSession, monkeypatch
+):
+    """The ledger's broker-order-id → command-id mapping drives edge cancel."""
+    from unittest.mock import AsyncMock
+
+    row = await _seed(
+        db_session,
+        raw_response={"edge_command_id": "edge-command-002"},
+    )
+    edge_cancel = AsyncMock(
+        return_value={
+            "success": True,
+            "broker_cancel_confirmed": True,
+            "edge_command_id": "edge-command-002",
+        }
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", "http://edge.invalid")
+    monkeypatch.setattr(
+        "app.services.brokers.edge_client.cancel_kis_mock_command", edge_cancel
+    )
+    monkeypatch.setattr(
+        omc,
+        "_create_kis_client",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("direct KIS called")),
+    )
+
+    async with _cancel_receipt(row.order_no):
+        result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is True
+    edge_cancel.assert_awaited_once_with(
+        base_url="http://edge.invalid",
+        command_id="edge-command-002",
+    )
     await db_session.refresh(row)
     assert row.lifecycle_state == "cancelled"
 

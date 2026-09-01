@@ -6,6 +6,8 @@ import hashlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import httpx
+
 import app.services.brokers.upbit.client as upbit_service
 from app.core.symbol import to_db_symbol
 from app.mcp_server.tick_size import adjust_tick_size_kr
@@ -576,6 +578,12 @@ async def _cancel_kis_mock_domestic(
         mark_kis_mock_order_cancelled,
         resolve_mock_order_for_cancel,
     )
+    from app.services.brokers.edge_client import (
+        BrokerEdgeNotCreated,
+        BrokerEdgeOutcomeUnknown,
+        cancel_kis_mock_command,
+        get_kis_mock_edge_url,
+    )
     from app.services.kis_mock_runner.singleton import (
         KISMockFollowupNotAuthorized,
         KISMockOperation,
@@ -643,6 +651,95 @@ async def _cancel_kis_mock_domestic(
     # authority to act on *one* order, not a licence for whatever the ledger row
     # happens to say.
     claim_scope, claim_key = _kis_mock_claim_identity(resolved)
+
+    # Only edge-created orders carry this durable reverse mapping.  Keeping
+    # direct KIS rows on their established path avoids treating a broker order
+    # number as an edge command id after an operator enables the opt-in URL.
+    edge_url = get_kis_mock_edge_url()
+    edge_command_id = resolved.get("edge_command_id")
+    if edge_url is not None and isinstance(edge_command_id, str):
+        try:
+            edge_result = await cancel_kis_mock_command(
+                base_url=edge_url,
+                command_id=edge_command_id,
+            )
+        except BrokerEdgeOutcomeUnknown as edge_exc:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "symbol": resolved_symbol,
+                "broker_cancel_confirmed": False,
+                "outcome_unknown": True,
+                "error_code": "unknown_pending_reconcile",
+                "edge_error_code": edge_exc.error_code,
+                "reconciliation_required": True,
+                "claim_released": False,
+                "error": (
+                    "kis_mock edge cancel outcome is unknown; do not retry the "
+                    "cancel and reconcile the original order first"
+                ),
+                "market": market,
+            }
+        except BrokerEdgeNotCreated as edge_exc:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "symbol": resolved_symbol,
+                "broker_cancel_confirmed": False,
+                "error_code": edge_exc.error_code,
+                "claim_released": False,
+                "error": "kis_mock edge cancel could not be prepared",
+                "market": market,
+            }
+        except httpx.RequestError:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "symbol": resolved_symbol,
+                "broker_cancel_confirmed": False,
+                "outcome_unknown": True,
+                "error_code": "unknown_pending_reconcile",
+                "edge_error_code": "edge_transport_error",
+                "reconciliation_required": True,
+                "claim_released": False,
+                "error": (
+                    "kis_mock edge cancel transport outcome is unknown; do not "
+                    "retry the cancel and reconcile the original order first"
+                ),
+                "market": market,
+            }
+
+        if edge_result["success"]:
+            await mark_kis_mock_order_cancelled(
+                ledger_id=resolved["ledger_id"],
+                broker_confirmed=True,
+                detail={
+                    "order_no": order_id,
+                    "edge_command_id": edge_command_id,
+                    "edge_cancel_confirmed": True,
+                },
+            )
+            return {
+                "success": True,
+                "order_id": order_id,
+                "symbol": resolved_symbol,
+                "broker_cancel_confirmed": True,
+                "edge_command_id": edge_command_id,
+                "market": market,
+            }
+
+        return {
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "claim_released": False,
+            "error": (
+                "kis_mock edge cancel command was not found; it may already be "
+                "terminal, so reconcile the original order before another action"
+            ),
+            "market": market,
+            **edge_result,
+        }
+
     if not orgno or known_remainder is None:
         return {
             "success": False,

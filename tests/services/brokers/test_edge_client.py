@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from app.mcp_server.tooling import order_execution
+from app.services.brokers.edge_client import (
+    BrokerEdgeOutcomeUnknown,
+    cancel_kis_mock_command,
+)
 from app.services.brokers.kis.send_outcome import (
     OrderSendDisposition,
     OrderSendOutcomeTracker,
@@ -29,7 +33,8 @@ class _FakeEdgeServer:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
                 content_length = int(self.headers.get("content-length", "0"))
-                payload = json.loads(self.rfile.read(content_length))
+                raw_body = self.rfile.read(content_length)
+                payload = json.loads(raw_body) if raw_body else None
                 owner.requests.append(
                     {
                         "path": self.path,
@@ -172,6 +177,69 @@ async def test_edge_accepted_posts_versioned_command_and_adopts_broker_order_id(
         "issued_at": request["body"]["issued_at"],
     }
     assert request["body"]["issued_at"].endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_edge_cancelled_maps_to_broker_confirmed_cancel(
+    fake_edge: _FakeEdgeServer,
+) -> None:
+    command_id = "edge-cancelled-001"
+    fake_edge.add_receipt(disposition="CANCELLED", command_id=command_id)
+
+    result = await cancel_kis_mock_command(
+        base_url=fake_edge.url,
+        command_id=command_id,
+    )
+
+    assert result == {
+        "success": True,
+        "broker_cancel_confirmed": True,
+        "edge_command_id": command_id,
+    }
+    assert fake_edge.requests[0]["path"] == f"/v1/commands/{command_id}/cancel"
+    assert fake_edge.requests[0]["body"] is None
+
+
+@pytest.mark.asyncio
+async def test_edge_cancel_not_found_requires_reconciliation(
+    fake_edge: _FakeEdgeServer,
+) -> None:
+    command_id = "edge-not-found-001"
+    fake_edge.add_receipt(
+        disposition="NOT_FOUND",
+        command_id=command_id,
+        status=404,
+        error_code="command_not_found",
+    )
+
+    result = await cancel_kis_mock_command(
+        base_url=fake_edge.url,
+        command_id=command_id,
+    )
+
+    assert result["success"] is False
+    assert result["broker_cancel_confirmed"] is False
+    assert result["reason_code"] == "edge_not_found_may_be_terminal"
+    assert result["error_code"] == "command_not_found"
+    assert result["reconciliation_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_edge_cancel_unknown_is_never_mapped_to_success_mutant_guard(
+    fake_edge: _FakeEdgeServer,
+) -> None:
+    command_id = "edge-cancel-unknown-001"
+    fake_edge.add_receipt(
+        disposition="UNKNOWN",
+        command_id=command_id,
+        error_code="broker_timeout",
+    )
+
+    with pytest.raises(BrokerEdgeOutcomeUnknown, match="broker_timeout"):
+        await cancel_kis_mock_command(
+            base_url=fake_edge.url,
+            command_id=command_id,
+        )
 
 
 def _patch_place_to_send_only(monkeypatch) -> None:

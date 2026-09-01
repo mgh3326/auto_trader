@@ -740,6 +740,13 @@ async def resolve_mock_order_for_cancel(order_no: str) -> dict[str, Any] | None:
         row = await svc.get_by_order_no(order_no=order_no)
         if row is None:
             return None
+        raw_response = row.raw_response if isinstance(row.raw_response, Mapping) else {}
+        raw_edge_command_id = raw_response.get("edge_command_id")
+        edge_command_id = (
+            raw_edge_command_id.strip()
+            if isinstance(raw_edge_command_id, str) and raw_edge_command_id.strip()
+            else None
+        )
         return {
             "ledger_id": row.id,
             "symbol": row.symbol,
@@ -749,6 +756,10 @@ async def resolve_mock_order_for_cancel(order_no: str) -> dict[str, Any] | None:
             "krx_fwdg_ord_orgno": row.krx_fwdg_ord_orgno,
             "instrument_type": row.instrument_type,
             "lifecycle_state": row.lifecycle_state,
+            # An edge-created order records its immutable command id alongside
+            # the broker response. Direct KIS rows intentionally have no such
+            # mapping and retain their legacy cancel path.
+            "edge_command_id": edge_command_id,
         }
 
 
