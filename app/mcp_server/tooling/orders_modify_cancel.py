@@ -607,10 +607,7 @@ async def _cancel_kis_mock_domestic(
     # The domestic helper has long accepted legacy resolver projections without
     # an instrument field.  Scope-check only the new US edge route, where a
     # command id must never be used to cancel a domestic ledger row.
-    if (
-        market_type == "equity_us"
-        and resolved.get("instrument_type") != market_type
-    ):
+    if market_type == "equity_us" and resolved.get("instrument_type") != market_type:
         return {
             "success": False,
             "order_id": order_id,
