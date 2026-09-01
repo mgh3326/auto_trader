@@ -319,7 +319,9 @@ def test_make_targets_keep_dev_workflow_bounded_and_local() -> None:
     assert "No $(DEV_SEED_DUMP) found" in makefile
     assert "dev-verify: dev-up" in makefile
     assert "uv run alembic current" in makefile
-    assert "uv run pytest tests/test_dev_kit.py -q --no-cov" in makefile
+    # --group test: the smoke needs pytest-asyncio et al.; a host that has
+    # never synced the test group (RPi first run) fails the import otherwise.
+    assert "uv run --group test pytest tests/test_dev_kit.py -q --no-cov" in makefile
     assert "uv run uvicorn app.main:app" in makefile
     assert 'DEV_RUNTIME_SANITIZER = env -i PATH="$(PATH)" TMPDIR=/tmp' in makefile
     assert (
