@@ -55,6 +55,13 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
+from app.services.brokers.edge_client import (
+    BrokerEdgeNotCreated,
+    BrokerEdgeOutcomeUnknown,
+    build_kis_mock_execution_command,
+    execute_kis_mock_command,
+    get_kis_mock_edge_url,
+)
 from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.kis.send_outcome import (
@@ -154,6 +161,7 @@ async def _execute_order(
     identifier: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
@@ -177,6 +185,7 @@ async def _execute_order(
             is_mock=is_mock,
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
+            idempotency_key=idempotency_key,
         )
     return await _execute_us_order(
         symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
@@ -245,8 +254,13 @@ async def _execute_kr_order(
     is_mock: bool = False,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    kis = _create_kis_client(is_mock=is_mock)
+    edge_url = get_kis_mock_edge_url() if is_mock else None
+    # Keep the existing direct KIS path's construction order intact whenever
+    # the opt-in URL is absent, while avoiding KIS credentials entirely on the
+    # edge path.
+    kis = _create_kis_client(is_mock=is_mock) if edge_url is None else None
     stock_code = symbol
     order_quantity = int(quantity) if quantity else 0
     order_price = int(price) if price else 0
@@ -273,6 +287,40 @@ async def _execute_kr_order(
                 original_price,
                 tick_size,
             )
+
+    if edge_url is not None:
+        command = build_kis_mock_execution_command(
+            command_id=idempotency_key,
+            side=side,
+            stock_code=stock_code,
+            quantity=order_quantity,
+            price=order_price,
+            order_type=order_type,
+        )
+        try:
+            return await execute_kis_mock_command(
+                base_url=edge_url,
+                command=command,
+                pre_send_hook=pre_send_hook,
+                send_outcome=send_outcome,
+            )
+        except BrokerEdgeOutcomeUnknown as edge_exc:
+            # A durable edge UNKNOWN has crossed a stronger boundary than a
+            # Python-side timeout. Reuse the established order response shape:
+            # no success claim, no retry invitation, and reconciliation required.
+            raise OrderSendOutcomeUnknown(
+                edge_exc,
+                error_code="unknown_pending_reconcile",
+                edge_error_code=edge_exc.error_code,
+            ) from edge_exc
+        except httpx.RequestError as edge_exc:
+            raise OrderSendOutcomeUnknown(
+                edge_exc,
+                error_code="unknown_pending_reconcile",
+                edge_error_code="edge_transport_error",
+            ) from edge_exc
+
+    assert kis is not None
 
     # ROB-843 P1: only thread the hook when present (mock scalping). The live /
     # normal path passes no callback at all → byte-for-byte identical behavior.
@@ -1018,6 +1066,7 @@ async def _execute_and_record(
             identifier=idempotency_key if market_type == "crypto" else None,
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
+            idempotency_key=idempotency_key,
         )
 
     try:
@@ -1408,11 +1457,15 @@ class OrderSendOutcomeUnknown(Exception):
         *,
         retry_allowed: bool = False,
         retry_hint: str | None = None,
+        error_code: str | None = None,
+        edge_error_code: str | None = None,
     ) -> None:
         super().__init__(describe_exception(original))
         self.original = original
         self.retry_allowed = retry_allowed
         self.retry_hint = retry_hint
+        self.error_code = error_code
+        self.edge_error_code = edge_error_code
 
 
 class OrderSendNotCreated(Exception):
@@ -1477,6 +1530,12 @@ def _augment_error_for_unknown_outcome(
     enriched = dict(base_error)
     enriched["outcome_unknown"] = True
     enriched["reconcile_tool"] = reconcile_tool
+    error_code = getattr(exc, "error_code", None)
+    if isinstance(error_code, str) and error_code:
+        enriched["error_code"] = error_code
+    edge_error_code = getattr(exc, "edge_error_code", None)
+    if isinstance(edge_error_code, str) and edge_error_code:
+        enriched["edge_error_code"] = edge_error_code
     if getattr(exc, "retry_allowed", False):
         enriched["retry_allowed"] = True
         retry_hint = getattr(exc, "retry_hint", None) or (
@@ -1899,6 +1958,8 @@ async def _place_order_impl(
         # ROB-645: a timed-out order send has an unknown outcome — tell the caller
         # to reconcile instead of re-sending (order retries are disabled).
         base_error = _order_error(describe_exception(exc))
+        if isinstance(exc, BrokerEdgeNotCreated):
+            base_error["error_code"] = exc.error_code
         return _augment_error_for_unknown_outcome(
             base_error, exc, market_type=market_type, is_mock=is_mock
         )

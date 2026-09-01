@@ -115,6 +115,7 @@ tests/services/brokers/kis/test_selector_raw_evidence.py
 tests/services/brokers/nhplug/test_client.py
 tests/services/brokers/paper/test_capabilities.py
 tests/services/brokers/paper/test_contracts.py
+tests/services/brokers/test_edge_client.py
 tests/services/brokers/toss/test_candles.py
 tests/services/brokers/toss/test_dto.py
 tests/services/brokers/toss/test_market_calendar.py

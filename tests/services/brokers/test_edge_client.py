@@ -1,0 +1,287 @@
+"""KIS mock broker-edge command-port contract tests."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Generator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+from typing import Any
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from app.mcp_server.tooling import order_execution
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
+
+
+class _FakeEdgeServer:
+    """A loopback HTTP server that records the exact edge command envelope."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.responses: list[tuple[int, dict[str, Any]]] = []
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
+                content_length = int(self.headers.get("content-length", "0"))
+                payload = json.loads(self.rfile.read(content_length))
+                owner.requests.append(
+                    {
+                        "path": self.path,
+                        "headers": dict(self.headers.items()),
+                        "body": payload,
+                    }
+                )
+                status, response_payload = owner.responses.pop(0)
+                encoded = json.dumps(response_payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = True
+        self._thread = Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self._server.server_port}"
+
+    def add_receipt(
+        self,
+        *,
+        disposition: str,
+        command_id: str,
+        status: int = 200,
+        broker_order_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "schema_version": "execution-receipt/v1",
+            "command_id": command_id,
+            "disposition": disposition,
+            "recorded_at": "2026-09-01T12:00:00Z",
+        }
+        if broker_order_id is not None:
+            payload["broker_order_id"] = broker_order_id
+        if error_code is not None:
+            payload["error_code"] = error_code
+        self.responses.append((status, payload))
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2)
+
+
+@pytest.fixture
+def fake_edge() -> Generator[_FakeEdgeServer]:
+    server = _FakeEdgeServer()
+    try:
+        yield server
+    finally:
+        server.close()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_mock_keeps_existing_kis_call_byte_for_byte(
+    monkeypatch,
+) -> None:
+    """The opt-in URL must not alter the old KIS mock call contract when absent."""
+    monkeypatch.delenv("KIS_MOCK_EDGE_URL", raising=False)
+    kis = Mock()
+    kis.order_korea_stock = AsyncMock(return_value={"rt_cd": "0", "odno": "KIS-1"})
+    create_kis = Mock(return_value=kis)
+    monkeypatch.setattr(order_execution, "_create_kis_client", create_kis)
+
+    result = await order_execution._execute_kr_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=2,
+        price=70000,
+        is_mock=True,
+        idempotency_key="ignored-when-edge-is-off",
+    )
+
+    assert result == {"rt_cd": "0", "odno": "KIS-1"}
+    create_kis.assert_called_once_with(is_mock=True)
+    kis.order_korea_stock.assert_awaited_once_with(
+        stock_code="005930",
+        order_type="buy",
+        quantity=2,
+        price=70000,
+        is_mock=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_edge_accepted_posts_versioned_command_and_adopts_broker_order_id(
+    monkeypatch, fake_edge: _FakeEdgeServer
+) -> None:
+    command_id = "edge-accepted-001"
+    fake_edge.add_receipt(
+        disposition="ACCEPTED",
+        command_id=command_id,
+        broker_order_id="EDGE-ORDER-1",
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    create_kis = Mock()
+    monkeypatch.setattr(order_execution, "_create_kis_client", create_kis)
+    outcome = OrderSendOutcomeTracker()
+
+    result = await order_execution._execute_kr_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=2,
+        price=70000,
+        is_mock=True,
+        idempotency_key=command_id,
+        send_outcome=outcome,
+    )
+
+    assert result["rt_cd"] == "0"
+    assert result["odno"] == "EDGE-ORDER-1"
+    assert result["broker_order_id"] == "EDGE-ORDER-1"
+    assert outcome.disposition is OrderSendDisposition.ACCEPTED
+    create_kis.assert_not_called()
+
+    request = fake_edge.requests[0]
+    assert request["path"] == "/v1/commands"
+    assert request["headers"].get("Authorization") is None
+    assert request["body"] == {
+        "schema_version": "execution-command/v1",
+        "command_id": command_id,
+        "account_scope": "kis_mock",
+        "side": "buy",
+        "stock_code": "005930",
+        "quantity": "2",
+        "price": "70000",
+        "order_type": "limit",
+        "issued_at": request["body"]["issued_at"],
+    }
+    assert request["body"]["issued_at"].endswith("Z")
+
+
+def _patch_place_to_send_only(monkeypatch) -> None:
+    monkeypatch.setattr(
+        order_execution,
+        "_resolve_market_type",
+        lambda _symbol, _market: ("equity_kr", "005930"),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=70000.0),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_resolve_buy_quantity",
+        lambda **kwargs: (kwargs["quantity"], kwargs["price"]),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={
+                "estimated_value": 70000.0,
+                "quantity": 1,
+                "price": 70000.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", AsyncMock())
+
+    async def execute_and_record(**kwargs: Any) -> dict[str, Any]:
+        return await order_execution._execute_order(
+            symbol=kwargs["normalized_symbol"],
+            side=kwargs["side"],
+            order_type=kwargs["order_type"],
+            quantity=kwargs["order_quantity"],
+            price=kwargs["price"],
+            market_type=kwargs["market_type"],
+            is_mock=kwargs["is_mock"],
+            idempotency_key=kwargs["idempotency_key"],
+            pre_send_hook=kwargs["pre_send_hook"],
+            send_outcome=kwargs["send_outcome"],
+        )
+
+    monkeypatch.setattr(order_execution, "_execute_and_record", execute_and_record)
+
+
+async def _place_edge_order(client_order_id: str) -> dict[str, Any]:
+    return await order_execution._place_order_impl(
+        symbol="005930",
+        side="buy",
+        market="kr",
+        order_type="limit",
+        quantity=1,
+        price=70000.0,
+        dry_run=False,
+        is_mock=True,
+        client_order_id=client_order_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_edge_not_created_surfaces_its_error_code(
+    monkeypatch, fake_edge: _FakeEdgeServer
+) -> None:
+    command_id = "edge-not-created-001"
+    fake_edge.add_receipt(
+        disposition="NOT_CREATED",
+        command_id=command_id,
+        status=400,
+        error_code="place_disabled",
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    _patch_place_to_send_only(monkeypatch)
+
+    result = await _place_edge_order(command_id)
+
+    assert result["success"] is False
+    assert result["error_code"] == "place_disabled"
+    assert "outcome_unknown" not in result
+
+
+@pytest.mark.asyncio
+async def test_edge_unknown_is_never_mapped_to_success(
+    monkeypatch, fake_edge: _FakeEdgeServer
+) -> None:
+    command_id = "edge-unknown-001"
+    fake_edge.add_receipt(
+        disposition="UNKNOWN",
+        command_id=command_id,
+        error_code="broker_timeout",
+    )
+    monkeypatch.setenv("KIS_MOCK_EDGE_URL", fake_edge.url)
+    _patch_place_to_send_only(monkeypatch)
+
+    result = await _place_edge_order(command_id)
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert result["error_code"] == "unknown_pending_reconcile"
+    assert result["edge_error_code"] == "broker_timeout"
+    assert "재전송하지 말고" in result["error"]
