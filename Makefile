@@ -11,7 +11,7 @@ DEV_PG_PASSWORD ?= atdev-local-password
 DEV_PG_DATABASE ?= auto_trader_dev
 DEV_REDIS_BIND_HOST ?= 127.0.0.1
 DEV_REDIS_PORT ?= 56379
-DEV_UP_TIMEOUT_SECONDS ?= 60
+DEV_UP_TIMEOUT_SECONDS ?= 180
 DEV_HEALTH_TIMEOUT_SECONDS ?= 30
 DEV_API_PORT ?= 58080
 DEV_SEED_DUMP ?= dev-seed.dump
@@ -140,6 +140,7 @@ dev-config: _dev-env-check ## Render and validate the isolated development compo
 	@$(DEV_COMPOSE) config
 
 dev-up: _dev-env-check ## Start isolated PostgreSQL/Timescale and Redis with a bounded readiness wait
+	@$(DEV_COMPOSE) pull -q
 	@$(DEV_COMPOSE) up -d
 	@deadline=$$(($$(date +%s) + $(DEV_UP_TIMEOUT_SECONDS))); \
 	until $(DEV_COMPOSE) exec -T db sh -ec 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" >/dev/null'; do \
@@ -163,7 +164,7 @@ dev-seed: dev-up ## Migrate to Alembic head, then restore dev-seed.dump when pre
 
 dev-verify: dev-up ## Verify Alembic, the bounded dev-kit smoke path, and /healthz startup
 	@$(DEV_RUNTIME_ENV) uv run alembic current
-	@$(DEV_RUNTIME_ENV) uv run pytest tests/test_dev_kit.py -q --no-cov
+	@$(DEV_RUNTIME_ENV) uv run --group test pytest tests/test_dev_kit.py -q --no-cov
 	@set -eu; \
 	log_file=$$(mktemp "$${TMPDIR:-/tmp}/at-dev-verify.XXXXXX"); \
 	cleanup() { \
