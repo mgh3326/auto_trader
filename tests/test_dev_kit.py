@@ -160,8 +160,20 @@ def test_dev_compose_config_is_valid_when_docker_cli_is_available() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "55439:5432" in result.stdout
-    assert "56389:6379" in result.stdout
+
+    def _port_mapping_present(rendered: str, published: str, target: int) -> bool:
+        # docker compose renders ports as short syntax ("55439:5432") on older
+        # versions and long syntax (published: "55439" / target: 5432) on newer
+        # ones — CI runs the latter, which failed the original exact-string
+        # assertion. Accept either rendering of the same mapping.
+        if f"{published}:{target}" in rendered:
+            return True
+        return (
+            f'published: "{published}"' in rendered or f"published: {published}" in rendered
+        ) and f"target: {target}" in rendered
+
+    assert _port_mapping_present(result.stdout, "55439", 5432), result.stdout[:2000]
+    assert _port_mapping_present(result.stdout, "56389", 6379), result.stdout[:2000]
 
 
 def test_make_dry_runs_keep_two_dev_projects_and_port_pairs_disjoint(
