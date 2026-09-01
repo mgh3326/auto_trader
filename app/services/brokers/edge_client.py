@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -31,6 +31,14 @@ class ExecutionDisposition(StrEnum):
 
     ACCEPTED = "ACCEPTED"
     NOT_CREATED = "NOT_CREATED"
+    UNKNOWN = "UNKNOWN"
+
+
+class CancellationDisposition(StrEnum):
+    """Wire-level cancellation disposition emitted by broker-edge."""
+
+    CANCELLED = "CANCELLED"
+    NOT_FOUND = "NOT_FOUND"
     UNKNOWN = "UNKNOWN"
 
 
@@ -115,6 +123,41 @@ class ExecutionReceiptV1:
             disposition=disposition,
             broker_order_id=broker_order_id,
             error_code=error_code,
+            recorded_at=recorded_at,
+        )
+
+
+@dataclass(frozen=True)
+class CancellationReceiptV1:
+    """Validated broker-edge cancellation receipt."""
+
+    command_id: str
+    disposition: CancellationDisposition
+    error_code: str | None
+    recorded_at: str
+
+    @classmethod
+    def from_payload(cls, payload: object) -> CancellationReceiptV1:
+        if not isinstance(payload, dict):
+            raise BrokerEdgeOutcomeUnknown("invalid_edge_receipt")
+
+        if payload.get("schema_version") != _RECEIPT_SCHEMA_VERSION:
+            raise BrokerEdgeOutcomeUnknown("invalid_edge_receipt")
+
+        command_id = _non_blank_string(payload.get("command_id"))
+        recorded_at = _non_blank_string(payload.get("recorded_at"))
+        if command_id is None or recorded_at is None:
+            raise BrokerEdgeOutcomeUnknown("invalid_edge_receipt")
+
+        try:
+            disposition = CancellationDisposition(payload.get("disposition"))
+        except (TypeError, ValueError):
+            raise BrokerEdgeOutcomeUnknown("invalid_edge_receipt") from None
+
+        return cls(
+            command_id=command_id,
+            disposition=disposition,
+            error_code=_safe_error_code(payload.get("error_code")),
             recorded_at=recorded_at,
         )
 
@@ -205,6 +248,10 @@ async def execute_kis_mock_command(
             "rt_cd": "0",
             "odno": receipt.broker_order_id,
             "broker_order_id": receipt.broker_order_id,
+            # Persisted with the KIS mock ledger's redacted broker response.
+            # This is the only durable reverse lookup from the visible broker
+            # order number to the edge command that created it.
+            "edge_command_id": receipt.command_id,
             "msg": "broker edge receipt accepted",
             "msg_cd": "EDGE_ACCEPTED",
         }
@@ -222,6 +269,63 @@ async def execute_kis_mock_command(
 
     if send_outcome is not None:
         send_outcome.mark_unknown()
+    raise BrokerEdgeOutcomeUnknown(receipt.error_code or "edge_outcome_unknown")
+
+
+async def cancel_kis_mock_command(*, base_url: str, command_id: str) -> dict[str, Any]:
+    """Cancel one KIS mock edge command using its durable command identity.
+
+    ``CANCELLED`` maps to the established broker-confirmed cancel outcome.
+    ``NOT_FOUND`` is deliberately non-terminal: it can mean the broker has
+    already finished the order, so the caller must reconcile instead of
+    claiming success. ``UNKNOWN`` and malformed/ambiguous receipts remain
+    explicit unknown outcomes and must not invite a retry.
+    """
+    normalized_base_url = _validated_base_url(base_url)
+    normalized_command_id = _non_blank_string(command_id)
+    if normalized_command_id is None:
+        raise BrokerEdgeNotCreated("edge_command_id_required")
+
+    path = f"{_COMMAND_PATH}/{quote(normalized_command_id, safe='')}/cancel"
+    async with httpx.AsyncClient(
+        base_url=normalized_base_url,
+        timeout=_HTTP_TIMEOUT,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        response = await client.post(path)
+
+    try:
+        receipt = CancellationReceiptV1.from_payload(response.json())
+    except (TypeError, ValueError) as exc:
+        raise BrokerEdgeOutcomeUnknown("invalid_edge_receipt") from exc
+
+    if receipt.command_id != normalized_command_id:
+        raise BrokerEdgeOutcomeUnknown("edge_command_id_mismatch")
+
+    if receipt.disposition is CancellationDisposition.CANCELLED:
+        if not 200 <= response.status_code < 300:
+            raise BrokerEdgeOutcomeUnknown("edge_http_status_uncertain")
+        return {
+            "success": True,
+            "broker_cancel_confirmed": True,
+            "edge_command_id": receipt.command_id,
+        }
+
+    if receipt.disposition is CancellationDisposition.NOT_FOUND:
+        # A 5xx receipt cannot prove that the command is absent.  A normal
+        # 2xx/4xx response can, but absence is still not cancel evidence.
+        if not (200 <= response.status_code < 300 or 400 <= response.status_code < 500):
+            raise BrokerEdgeOutcomeUnknown("edge_http_status_uncertain")
+        return {
+            "success": False,
+            "broker_cancel_confirmed": False,
+            "edge_command_id": receipt.command_id,
+            "reason_code": "edge_not_found_may_be_terminal",
+            "error_code": receipt.error_code or "edge_not_found_may_be_terminal",
+            "reconciliation_required": True,
+        }
+
     raise BrokerEdgeOutcomeUnknown(receipt.error_code or "edge_outcome_unknown")
 
 
@@ -268,10 +372,13 @@ def _safe_error_code(value: object) -> str | None:
 __all__ = [
     "BrokerEdgeNotCreated",
     "BrokerEdgeOutcomeUnknown",
+    "CancellationDisposition",
+    "CancellationReceiptV1",
     "ExecutionCommandV1",
     "ExecutionDisposition",
     "ExecutionReceiptV1",
     "build_kis_mock_execution_command",
+    "cancel_kis_mock_command",
     "execute_kis_mock_command",
     "get_kis_mock_edge_url",
 ]
