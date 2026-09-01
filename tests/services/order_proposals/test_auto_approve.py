@@ -1967,6 +1967,78 @@ async def test_parking_notional_counts_kr_pair_only_from_the_same_durable_query(
 
 
 @pytest.mark.asyncio
+async def test_toss_kr_parking_notional_excludes_kis_and_other_toss_accounts(
+    db_session,
+):
+    """The durable WHERE is an actual Toss account×market scope, not a label."""
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+
+    async def _approved(*, account_mode, broker_account_id, symbol, price):
+        await service.create_proposal(
+            symbol=symbol,
+            market="equity_kr",
+            account_mode=account_mode,
+            broker_account_id=broker_account_id,
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("10"), price, None)],
+            source_asof={
+                "auto_approved": {
+                    "policy_version": "test-policy",
+                    "approved_at": now.isoformat(),
+                    "eligibility": [],
+                    "outcomes": ["submitted_resting"],
+                }
+            },
+        )
+
+    # The Toss account's two allowed symbols share one 11m KRW durable meter.
+    await _approved(
+        account_mode="toss_live",
+        broker_account_id="731",
+        symbol="459580",
+        price=Decimal("800000"),
+    )
+    await _approved(
+        account_mode="toss_live",
+        broker_account_id="731",
+        symbol="357870",
+        price=Decimal("300000"),
+    )
+    # Same textual ID on KIS and another Toss account are both out of scope.
+    await _approved(
+        account_mode="kis_live",
+        broker_account_id="731",
+        symbol="459580",
+        price=Decimal("999999"),
+    )
+    await _approved(
+        account_mode="toss_live",
+        broker_account_id="other",
+        symbol="459580",
+        price=Decimal("500000"),
+    )
+    await db_session.commit()
+
+    probe = await service.create_proposal(
+        symbol="459580",
+        market="equity_kr",
+        account_mode="toss_live",
+        broker_account_id="731",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_parking_notional(probe, now=now) == Decimal(
+        "11000000"
+    )
+
+
+@pytest.mark.asyncio
 async def test_daily_notional_reuses_durable_execution_price_cap_observation(
     db_session,
 ):

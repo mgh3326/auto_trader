@@ -654,7 +654,55 @@ is no NXT extension and the exit window closes at 15:30 KST. This is an
 execution-window fact for operators, not a new eligibility rule or a reason
 added to the gate.
 
-### 8.9 §S170 aggregate-limit change; BL-38/BL-39 mechanism unchanged
+### 8.9 Toss KR extension (§S174) — a separate account meter
+
+The same two KR symbols are additionally authorized only for the following
+separate Toss surface:
+
+| symbol | account mode × market | balance provider | currency | per-order cap | cumulative buy cap |
+| --- | --- | --- | --- | --- | --- |
+| `459580` | `toss_live` × `equity_kr` | `TossReadClient.holdings()` | KRW | 10,000,000 | 15,000,000 |
+| `357870` | `toss_live` × `equity_kr` | `TossReadClient.holdings()` | KRW | 10,000,000 | 15,000,000 |
+
+This is not a tuple-only expansion. Each immutable `ParkingScope` binds its
+`balance_provider` together with symbol, account mode, market, native fields,
+and cap pair. `toss_kr_holdings` reads only typed `TossReadClient.holdings()`
+data, projects `symbol` and `market_value.amount`, and requires each counted
+row to declare `currency == KRW` and `market_country == KR`. There is no FX
+conversion. A non-KRW/null/unreadable value, non-KR market, malformed payload,
+or broker failure returns an unavailable exposure and produces the ordinary
+human card. The reader neither calls nor imports Toss place/modify/cancel
+methods.
+
+🔴 **Account identity is a hard precondition.** `TossReadClient.from_settings()`
+selects `settings.toss_api_account_seq`; it does not accept the proposal's
+`broker_account_id`. Before any Toss HTTP read, the parking meter therefore
+requires `broker_account_id` to be the exact canonical decimal string of that
+positive configured sequence. Null, whitespace/leading-zero variants, opaque
+IDs, a missing setting, and mismatches all fail closed as
+`account_identity_unavailable`. The implementation does not guess an
+account-number-to-sequence mapping. This makes the balance half and the
+durable `WHERE account_mode AND market AND broker_account_id` half refer to
+the same Toss scope; Toss and KIS rows remain disjoint even if their textual
+account labels happen to match.
+
+The shared daily cap is excluded for these exact enabled `expanded`-mode Toss
+KR tuples on both buy and sell, just as for the existing KIS parking tuples.
+The immutable KRW 10,000,000 per-order boundary and the shared Toss-only KRW
+15,000,000 cumulative-buy boundary remain in force. `toss_live × equity_us`
+is deliberately absent: its USD valuation contract is not authorized here.
+
+#### Critical execution warning: no-card does not mean filled
+
+S174 can remove the Telegram card for an otherwise eligible Toss KR parking
+order; it does **not** prove that the order will fill. `app/mcp_server/tick_size.py`
+currently has no KRX ETF branch and applies the KRX stock tick table. For
+`459580` at an ask of KRW 1,073,480, it produces a KRW 1,000 tick and floors a
+buy limit to KRW 1,073,000 — KRW 480 below the ask. The order can therefore
+remain an unfilled limit order. This is intentionally not changed by S174:
+correcting ETF ticks affects all KRX ETF orders and requires a separate review.
+
+### 8.10 §S170 aggregate-limit change; BL-38/BL-39 mechanism unchanged
 
 The one thing §S170 removes is the **shared daily aggregate ceiling for
 successfully durable-recorded parking rungs**. That is intentional: parking is

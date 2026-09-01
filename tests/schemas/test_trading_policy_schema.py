@@ -414,6 +414,17 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
         ("459580", "equity_kr"),
         ("357870", "equity_kr"),
     }
+    assert {
+        (scope.symbol, scope.account_mode, scope.market)
+        for scope in PARKING_ALLOWLIST_SCOPES
+    } == {
+        ("SGOV", "kis_live", "equity_us"),
+        ("BIL", "kis_live", "equity_us"),
+        ("459580", "kis_live", "equity_kr"),
+        ("357870", "kis_live", "equity_kr"),
+        ("459580", "toss_live", "equity_kr"),
+        ("357870", "toss_live", "equity_kr"),
+    }
     assert PARKING_PER_ORDER_CAP_USD == 10000
     assert PARKING_CUMULATIVE_CAP_USD == 10000
     assert PARKING_PER_ORDER_CAP_KRW == 10000000

@@ -85,7 +85,7 @@ error at ``PARKING_PER_ORDER_CAP_USD`` per order regardless.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -100,9 +100,27 @@ from app.services.order_proposals.parking_allowlist import (
 logger = logging.getLogger(__name__)
 
 # A US read pins ``TR_CRCY_CD=USD``; domestic KIS balance is a KRW surface.
-# The selected ParkingScope holds the corresponding native KIS fields and cap
+# The selected ParkingScope holds the corresponding native fields and cap
 # currency. No branch converts, combines, or substitutes currencies.
 _CURRENCY_FIELDS = ("tr_crcy_cd", "crcy_cd", "currency_code", "curr_cd")
+
+# The provider is a load-bearing part of the immutable parking scope.  Do not
+# select a balance client from ``market``: both KIS and Toss have an
+# ``equity_kr`` surface, but their accounts must never meter one another.
+_PROVIDER_BINDINGS: dict[str, tuple[str, str, str]] = {
+    "kis_us_holdings": ("kis_live", "equity_us", "USD"),
+    "kis_kr_holdings": ("kis_live", "equity_kr", "KRW"),
+    "toss_kr_holdings": ("toss_live", "equity_kr", "KRW"),
+}
+
+
+def _field_value(row: Mapping[str, Any], field: str) -> Any:
+    value: Any = row
+    for component in field.split("."):
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(component)
+    return value
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -115,13 +133,19 @@ def _decimal(value: Any) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
-def _row_currency_mismatch(row: Mapping[str, Any], *, expected_currency: str) -> bool:
+def _row_currency_mismatch(row: Mapping[str, Any], *, scope: ParkingScope) -> bool:
     """True when the row names a currency other than the scope's native one.
 
     A row that declares nothing is left alone: the request pinned USD, and
     rejecting every row that omits an optional field would fail closed on
     normal traffic rather than on a real anomaly.
     """
+    if scope.balance_currency_field is not None:
+        declared = _field_value(row, scope.balance_currency_field)
+        return (
+            not isinstance(declared, str) or declared.strip().upper() != scope.currency
+        )
+
     for field in _CURRENCY_FIELDS:
         declared = row.get(field)
         if declared is None:
@@ -131,13 +155,23 @@ def _row_currency_mismatch(row: Mapping[str, Any], *, expected_currency: str) ->
         stripped = declared.strip()
         if not stripped:
             continue
-        if stripped.upper() != expected_currency:
+        if stripped.upper() != scope.currency:
             return True
     return False
 
 
 def _currency_mismatch_reason(scope: ParkingScope) -> str:
     return "currency_not_usd" if scope.currency == "USD" else "currency_not_krw"
+
+
+def _row_market_mismatch(row: Mapping[str, Any], *, scope: ParkingScope) -> bool:
+    if scope.balance_market_field is None:
+        return False
+    declared = _field_value(row, scope.balance_market_field)
+    return (
+        not isinstance(declared, str)
+        or declared.strip().upper() != scope.balance_market_value
+    )
 
 
 def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
@@ -148,7 +182,7 @@ def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
     for row in rows:
         if not isinstance(row, Mapping):
             return ParkingExposure.unavailable("row_not_a_mapping")
-        raw_symbol = row.get(scope.balance_symbol_field)
+        raw_symbol = _field_value(row, scope.balance_symbol_field)
         # A row whose symbol cannot be normalized at all cannot be *proven*
         # non-parking, so it fails closed rather than being skipped. Only a
         # cleanly readable, definitely-not-parking symbol is passed over.
@@ -158,9 +192,11 @@ def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
             raw_symbol, account_mode=scope.account_mode, market=scope.market
         ):
             continue
-        if _row_currency_mismatch(row, expected_currency=scope.currency):
+        if _row_currency_mismatch(row, scope=scope):
             return ParkingExposure.unavailable(_currency_mismatch_reason(scope))
-        raw_amount = row.get(scope.balance_evaluation_field)
+        if _row_market_mismatch(row, scope=scope):
+            return ParkingExposure.unavailable("market_not_kr")
+        raw_amount = _field_value(row, scope.balance_evaluation_field)
         if raw_amount is None or (
             isinstance(raw_amount, str) and not raw_amount.strip()
         ):
@@ -174,16 +210,109 @@ def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
     return ParkingExposure.observed(total)
 
 
+def _toss_account_identity_matches(broker_account_id: Any) -> bool:
+    """Prove the proposal's durable scope names the settings-selected account.
+
+    ``TossReadClient.from_settings()`` always sends its configured account
+    sequence (or auto-resolves one); it does not consume proposal metadata.
+    The parking meter is therefore unavailable unless the proposal records the
+    one exact, canonical sequence selected by settings.  This intentionally
+    rejects null, whitespace, leading-zero, and opaque account labels instead
+    of guessing an account-number-to-sequence mapping.
+    """
+    from app.core.config import settings
+
+    configured = settings.toss_api_account_seq
+    return (
+        type(configured) is int
+        and configured > 0
+        and type(broker_account_id) is str
+        and broker_account_id == str(configured)
+    )
+
+
+def _select_balance_fetcher(
+    scope: ParkingScope,
+    *,
+    fetch_us_holdings: Any,
+    fetch_kr_holdings: Any,
+    fetch_toss_holdings: Any,
+) -> Callable[[], Awaitable[Any]]:
+    """Return only the reader cryptographically named by the parking scope.
+
+    Assertions are intentional mutation alarms: if a future edit detaches a
+    provider from its account×market×currency tuple, tests must go red rather
+    than silently selecting an equally named but wrong broker surface.
+    """
+    assert _PROVIDER_BINDINGS.get(scope.balance_provider) == (
+        scope.account_mode,
+        scope.market,
+        scope.currency,
+    )
+
+    if scope.balance_provider == "kis_us_holdings":
+        if fetch_us_holdings is not None:
+            return fetch_us_holdings
+        from app.services.brokers.kis.client import KISClient
+
+        return KISClient().fetch_my_us_stocks
+    if scope.balance_provider == "kis_kr_holdings":
+        if fetch_kr_holdings is not None:
+            return fetch_kr_holdings
+        from app.services.brokers.kis.client import KISClient
+
+        return KISClient().fetch_my_stocks
+    assert scope.balance_provider == "toss_kr_holdings"
+    if fetch_toss_holdings is not None:
+        return fetch_toss_holdings
+
+    async def _read_toss_holdings() -> Any:
+        # This path calls only TossReadClient.holdings(), a GET read surface.
+        # It neither imports nor invokes place/modify/cancel order methods.
+        from app.services.brokers.toss.client import TossReadClient
+
+        client = TossReadClient.from_settings()
+        try:
+            return await client.holdings()
+        finally:
+            await client.aclose()
+
+    return _read_toss_holdings
+
+
+def _toss_holdings_rows(payload: Any) -> list[dict[str, Any]] | None:
+    """Project the typed Toss read DTO into the scope's declared field names."""
+    from app.services.brokers.toss.dto import TossHoldingItem, TossHoldings
+
+    if not isinstance(payload, TossHoldings):
+        return None
+    rows: list[dict[str, Any]] = []
+    for item in payload.items:
+        if not isinstance(item, TossHoldingItem):
+            return None
+        rows.append(
+            {
+                "symbol": item.symbol,
+                "currency": item.currency,
+                "market_country": item.market_country,
+                "market_value": item.market_value,
+            }
+        )
+    return rows
+
+
 async def load_parking_exposure(
     *,
     account_mode: Any,
     market: Any,
     symbol: Any,
+    broker_account_id: Any = None,
     fetch_us_holdings: Any = None,
     fetch_kr_holdings: Any = None,
+    fetch_toss_holdings: Any = None,
     durable_notional_fn: Any = None,
 ) -> ParkingExposure:
-    """Cumulative parking exposure for an allowlisted ``kis_live`` US order.
+    """Cumulative exposure for an allowlisted order's bound broker account.
 
     ``durable_notional_fn`` is an awaitable returning the account's same-day
     auto-approved parking buy notional. It is **required** for a parking group:
@@ -199,28 +328,35 @@ async def load_parking_exposure(
     if scope is None:
         return ParkingExposure.unavailable("not_requested")
 
+    if (
+        scope.balance_provider == "toss_kr_holdings"
+        and not _toss_account_identity_matches(broker_account_id)
+    ):
+        # No broker read before the account identity is proven.  In particular,
+        # do not auto-resolve a Toss account to authorise an opaque proposal
+        # account label.
+        return ParkingExposure.unavailable("account_identity_unavailable")
+
     if durable_notional_fn is None:
         return ParkingExposure.unavailable("durable_reader_missing")
 
-    fetcher = fetch_us_holdings if scope.market == "equity_us" else fetch_kr_holdings
-    if fetcher is None:
-        # Imported lazily so this module stays importable (and the pure reducer
-        # stays testable) without the broker client's settings surface.
-        from app.services.brokers.kis.client import KISClient
-
-        # Every scope currently admits kis_live only, so no mock/paper branch
-        # can be selected. The market-bound reader preserves native currency.
-        fetcher = (
-            KISClient().fetch_my_us_stocks
-            if scope.market == "equity_us"
-            else KISClient().fetch_my_stocks
-        )
+    fetcher = _select_balance_fetcher(
+        scope,
+        fetch_us_holdings=fetch_us_holdings,
+        fetch_kr_holdings=fetch_kr_holdings,
+        fetch_toss_holdings=fetch_toss_holdings,
+    )
 
     try:
-        rows = await fetcher()
+        payload = await fetcher()
     except Exception as exc:  # noqa: BLE001 - an unreadable balance is not a clearance
         logger.warning("parking exposure fetch failed: %s", type(exc).__name__)
         return ParkingExposure.unavailable("fetch_failed")
+    rows = (
+        _toss_holdings_rows(payload)
+        if scope.balance_provider == "toss_kr_holdings"
+        else payload
+    )
     held = sum_parking_exposure(rows, scope=scope)
     if not held.available or held.exposure is None:
         return held
