@@ -76,7 +76,7 @@ def _run(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
         "PGPORT": "25432",
         "PGUSER": "backup_operator",
         "PGPASSWORD": "test-only-secret",
-        "PG_BACKUP_DATABASES": "auto_trader panewire",
+        "PG_BACKUP_DATABASES": "auto_trader handoffkeep",
         "PG_BACKUP_DIRECTORY": str(backup_dir),
         "PG_BACKUP_REMOTE": f"mgh3326@100.73.173.44:{remote_dir}/",
         "PG_BACKUP_SSH_KEY": str(key),
@@ -104,11 +104,11 @@ def test_multiple_databases_skip_missing_cleanup_and_mirror(tmp_path: Path) -> N
     remote_expired.write_text("old")
     os.utime(remote_expired, (1, 1))
 
-    proc = _run(tmp_path, MISSING_DATABASE="panewire")
+    proc = _run(tmp_path, MISSING_DATABASE="handoffkeep")
 
     assert proc.returncode == 0, proc.stderr
     assert "database=auto_trader dumped" in proc.stderr
-    assert "database=panewire missing; skipped" in proc.stderr
+    assert "database=handoffkeep missing; skipped" in proc.stderr
     assert "status=success client=host-pg_dump databases=2" in proc.stderr
     assert not expired.exists(), "retention-removal mutant must turn this red"
     local_names = sorted(path.name for path in backup_dir.iterdir())

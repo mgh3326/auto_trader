@@ -16,7 +16,7 @@ this file, a database URL, or any credential in the repository.
 | `PGPORT` | yes | PostgreSQL port; NCP uses `25432`. |
 | `PGUSER` | yes | Backup role name. |
 | `PGPASSWORD` or `PGPASSFILE` | deployment-specific | Authentication material; never log its value. |
-| `PG_BACKUP_DATABASES` | no | Space-separated database names; default `auto_trader panewire`. Missing databases are warned and skipped. `prefect` is deliberately excluded. |
+| `PG_BACKUP_DATABASES` | no | Space-separated database names; default `auto_trader handoffkeep`. Missing databases are warned and skipped. `prefect` is deliberately excluded. |
 | `PG_BACKUP_DIRECTORY` | no | NCP archive directory; default `/var/backups/ncp-pg`. |
 | `PG_BACKUP_RETENTION_DAYS_LOCAL` | no | NCP retention; default `7`. |
 | `PG_BACKUP_REMOTE` | yes | Primary MacBook mirror, e.g. `mgh3326@100.73.173.44:/Users/mgh3326/backups/ncp-pg/`. |
@@ -76,7 +76,7 @@ du -sh /var/backups/ncp-pg
 ```
 
 Observed planning sizes are `auto_trader` about 961 MB plus a small
-`panewire`; `prefect` is about 4 GB and remains excluded by default. A rough
+`handoffkeep`; `prefect` is about 4 GB and remains excluded by default. A rough
 upper bound before custom-format compression is daily logical size × 7 on NCP
 and × 30 on the MacBook. If `prefect` is explicitly added, budget its roughly
 4 GB/day contribution before enabling it. Recheck actual dump sizes after the

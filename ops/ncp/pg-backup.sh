@@ -6,7 +6,7 @@
 
 set -Euo pipefail
 
-readonly DEFAULT_DATABASES="auto_trader panewire"
+readonly DEFAULT_DATABASES="auto_trader handoffkeep"
 readonly DEFAULT_LOCAL_RETENTION_DAYS=7
 readonly DEFAULT_REMOTE_RETENTION_DAYS=30
 readonly DEFAULT_IMAGE="postgres:17"
