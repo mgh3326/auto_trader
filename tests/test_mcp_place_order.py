@@ -96,6 +96,108 @@ def _assert_market_rejected(result):
     assert "execution" not in result
 
 
+@pytest.mark.asyncio
+async def test_parking_proposal_preview_allows_only_exact_scoped_marketable_buy(
+    monkeypatch,
+):
+    """The §163 buy release reaches preview only through proposal revalidation.
+
+    The regression is the 2026-09-02 SGOV incident: the classifier permits the
+    exact parking tuple to be marketable, while the generic preview rejected
+    the same limit before eligibility ran.  Every direct path and every
+    out-of-scope tuple must retain the generic price-above-quote rejection.
+    """
+
+    captured: list[bool] = []
+
+    async def preview_spy(**kwargs):
+        captured.append(kwargs["allow_marketable_parking_buy"])
+        return {
+            "symbol": kwargs["normalized_symbol"],
+            "side": "buy",
+            "order_type": "limit",
+            "current_price": kwargs["current_price"],
+            "price": kwargs["price"],
+            "quantity": kwargs["order_quantity"],
+            "estimated_value": kwargs["price"] * kwargs["order_quantity"],
+            "fee": 0.0,
+        }
+
+    monkeypatch.setattr(
+        order_execution, "_fetch_current_price", AsyncMock(return_value=100.405)
+    )
+    monkeypatch.setattr(order_execution, "_build_preview", preview_spy)
+    monkeypatch.setattr(
+        order_execution, "_check_balance_and_warn", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+
+    base = {
+        "symbol": "SGOV",
+        "side": "buy",
+        "market": "equity_us",
+        "order_type": "limit",
+        "quantity": 39,
+        "price": 100.50,
+        "dry_run": True,
+        "thesis": "park idle USD",
+        "strategy": "cash_parking",
+    }
+    allowed = await order_execution._place_order_impl(
+        **base,
+        proposal_flow=True,
+        proposal_account_mode="kis_live",
+    )
+    direct = await order_execution._place_order_impl(**base)
+    wrong_account = await order_execution._place_order_impl(
+        **base,
+        proposal_flow=True,
+        proposal_account_mode="toss_live",
+    )
+    wrong_symbol = await order_execution._place_order_impl(
+        **{**base, "symbol": "AAPL"},
+        proposal_flow=True,
+        proposal_account_mode="kis_live",
+    )
+
+    assert allowed["success"] is True
+    assert direct["success"] is True
+    assert wrong_account["success"] is True
+    assert wrong_symbol["success"] is True
+    # This exact sequence is the mutation anchor: weakening any tuple, account,
+    # or proposal-flow predicate turns this assertion red.
+    assert captured == [True, False, False, False], "PARKING_PREVIEW_SCOPE_MUTANT"
+
+
+@pytest.mark.asyncio
+async def test_preview_buy_keeps_generic_above_quote_rejection_without_release():
+    blocked = await order_validation._preview_buy(
+        symbol="SGOV",
+        order_type="limit",
+        quantity=39,
+        price=100.50,
+        current_price=100.405,
+        market_type="equity_us",
+    )
+    released = await order_validation._preview_buy(
+        symbol="SGOV",
+        order_type="limit",
+        quantity=39,
+        price=100.50,
+        current_price=100.405,
+        market_type="equity_us",
+        allow_marketable_parking_buy=True,
+    )
+
+    assert blocked["error"] == "Buy price 100.5 exceeds current price 100.405"
+    assert "error" not in released
+    assert released["estimated_value"] == pytest.approx(3919.5)
+
+
 # ----------------------------------------------------------------------
 # Amount-based order tests
 # ----------------------------------------------------------------------

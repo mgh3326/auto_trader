@@ -985,6 +985,7 @@ async def _preview_buy(
     price: float | None,
     current_price: float,
     market_type: str,
+    allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a buy order."""
     result: dict[str, Any] = {
@@ -1026,7 +1027,7 @@ async def _preview_buy(
     if price is None:
         result["error"] = "price is required for limit buy orders"
         return result
-    if price > current_price:
+    if price > current_price and not allow_marketable_parking_buy:
         result["error"] = f"Buy price {price} exceeds current price {current_price}"
         return result
     if quantity is None:
@@ -1210,6 +1211,7 @@ async def _preview_order(
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
+    allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
 
@@ -1223,6 +1225,7 @@ async def _preview_order(
             price=price,
             current_price=current_price,
             market_type=market_type,
+            allow_marketable_parking_buy=allow_marketable_parking_buy,
         )
     return await _preview_sell(
         symbol=symbol,

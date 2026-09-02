@@ -690,7 +690,11 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     if proposal_client_order_id is not None:
         kwargs["client_order_id"] = str(proposal_client_order_id)
 
-    submit = await _place_order_impl(**kwargs, proposal_flow=True)
+    submit = await _place_order_impl(
+        **kwargs,
+        proposal_flow=True,
+        proposal_account_mode=account_mode,
+    )
     if kwargs.get("dry_run") is False:
         return _adapt_live_submit_response(
             submit, order_type=str(kwargs.get("order_type"))

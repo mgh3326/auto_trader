@@ -14,6 +14,7 @@ from app.services.order_proposals.broker_gateway import SubmitEvidence
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     _adapt_live_submit_response,
+    _default_place_order_fn,
     preview_loss_cut_confirmation,
 )
 from app.services.order_proposals.revalidation import (
@@ -63,6 +64,44 @@ def _fake_place_order(*, preview_price, preview_qty, submit_result):
         return submit_result
 
     return _fn
+
+
+@pytest.mark.asyncio
+async def test_default_kis_preview_forwards_pinned_proposal_account_mode(monkeypatch):
+    """Only the proposal binding may unlock the closed parking preview path."""
+
+    from app.mcp_server.tooling import order_execution
+
+    captured: dict[str, object] = {}
+
+    async def fake_place_order_impl(**kwargs):
+        captured.update(kwargs)
+        return {"success": True, "dry_run": True}
+
+    monkeypatch.setattr(order_execution, "_place_order_impl", fake_place_order_impl)
+
+    result = await _default_place_order_fn(
+        dry_run=True,
+        account_mode="kis_live",
+        symbol="SGOV",
+        side="buy",
+        market="equity_us",
+        order_type="limit",
+        quantity=Decimal("39"),
+        price=Decimal("100.50"),
+        thesis="park idle USD",
+        strategy="cash_parking",
+        exit_intent=None,
+        exit_reason=None,
+        retrospective_id=None,
+        approval_issue_id=None,
+        reason="proposal revalidation rung 1",
+        rung=1,
+    )
+
+    assert result["success"] is True
+    assert captured["proposal_flow"] is True
+    assert captured["proposal_account_mode"] == "kis_live"
 
 
 async def _create_proposal(db_session):
