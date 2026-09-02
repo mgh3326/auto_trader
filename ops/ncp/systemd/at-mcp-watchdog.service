@@ -1,0 +1,12 @@
+[Unit]
+Description=auto_trader NCP MCP wedged-process watchdog
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+ExecStart=/usr/bin/python3 /root/at-run/ncp_mcp_watchdog.py --run-directory /root/at-run
+User=root
+NoNewPrivileges=true
+PrivateTmp=true

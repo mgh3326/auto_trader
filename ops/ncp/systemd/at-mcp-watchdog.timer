@@ -1,0 +1,11 @@
+[Unit]
+Description=Run auto_trader NCP MCP watchdog every 15 seconds
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

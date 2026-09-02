@@ -25,7 +25,7 @@ def _write_executable(path: Path, body: str) -> None:
 
 def _stub_dir(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     _write_executable(
         bin_dir / "docker",
         """#!/usr/bin/env bash
@@ -34,6 +34,7 @@ printf 'DOCKER %s\\n' "$*" >>"$DOCKER_LOG"
 case "$1" in
   inspect)
     if [[ "$3" == '{{.State.Running}}' ]]; then printf '%s\\n' true
+    elif [[ "$4" == at-haproxy ]]; then exit 1
     elif [[ "$4" == at-api ]]; then printf '%s\\n' "$API_IMAGE"
     elif [[ "$4" == at-scheduler ]]; then printf '%s\\n' "$SCHEDULER_IMAGE"
     elif [[ "$WORKER_IMAGE" == ABSENT ]]; then
@@ -43,7 +44,7 @@ case "$1" in
   image)
     printf '%s\\n' "$NEW_DIGEST"
     ;;
-  pull|rm)
+  pull|rm|kill|restart)
     ;;
   logs)
     printf '%s\\n' "$WORKER_LOG"
@@ -53,7 +54,7 @@ case "$1" in
     image=""
     while (($#)); do
       if [[ "$1" == --name ]]; then container="$2"; shift 2; continue; fi
-      if [[ "$1" == ghcr.io/* ]]; then image="$1"; fi
+      if [[ "$1" == ghcr.io/* || "$1" == haproxy:* ]]; then image="$1"; fi
       shift
     done
     printf 'RUN %s %s\\n' "$container" "$image" >>"$DOCKER_LOG"
@@ -91,11 +92,26 @@ def _run(
     deployed_digest: str | None = OLD_DIGEST,
     previous_digest: str | None = None,
     args: tuple[str, ...] = (),
+    secret_lines: tuple[str, ...] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     run_dir = tmp_path / "at-run"
-    run_dir.mkdir()
+    run_dir.mkdir(exist_ok=True)
     (run_dir / ".env.runtime").write_text("runtime=unused\n")
-    (run_dir / ".env.secrets").write_text("secret=unused\n")
+    (run_dir / ".env.secrets").write_text(
+        "\n".join(
+            secret_lines
+            or (
+                "MCP_AUTH_TOKEN=test-main-token",
+                "MCP_ANALYSIS_READONLY_AUTH_TOKEN=test-analysis-token",
+                "MCP_ACCOUNT_READ_AUTH_TOKEN=test-account-token",
+                "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN=test-execution-token",
+                "MCP_PAPER_001_AUTH_TOKEN=test-paper-token",
+                "MCP_KIWOOM_AUTH_TOKEN=test-kiwoom-token",
+                "",
+            )
+        )
+    )
     if deployed_digest is not None:
         (run_dir / "deployed-digest").write_text(f"{deployed_digest}\n")
     if previous_digest is not None:
@@ -116,6 +132,7 @@ def _run(
         "HEALTH_FAILS": str(health_fails),
         "AT_HEALTHZ_ATTEMPTS": "1",
         "AT_HEALTHZ_SLEEP_SECONDS": "0",
+        **(extra_env or {}),
     }
     return (
         subprocess.run(
@@ -137,13 +154,21 @@ def _run_lines(tmp_path: Path) -> list[str]:
     ]
 
 
+def _core_run_lines(tmp_path: Path) -> list[str]:
+    return [
+        line
+        for line in _run_lines(tmp_path)
+        if line.split()[1] in {"at-api", "at-scheduler", "at-worker"}
+    ]
+
+
 def test_successful_deploy_runs_all_units_by_resolved_repo_digest(
     tmp_path: Path,
 ) -> None:
     proc, run_dir = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
 
     assert proc.returncode == 0, proc.stderr
-    assert _run_lines(tmp_path) == [
+    assert _core_run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
@@ -158,6 +183,15 @@ def test_successful_deploy_runs_all_units_by_resolved_repo_digest(
         in docker_log
     )
     assert (run_dir / "deployed-digest").read_text() == f"{NEW_DIGEST}\n"
+    assert _run_lines(tmp_path)[3:] == [
+        f"RUN at-mcp-blue {NEW_DIGEST}",
+        f"RUN at-mcp-analysis-readonly {NEW_DIGEST}",
+        f"RUN at-mcp-account-read {NEW_DIGEST}",
+        f"RUN at-mcp-tradingcodex-execution {NEW_DIGEST}",
+        f"RUN at-mcp-paper-001 {NEW_DIGEST}",
+        f"RUN at-mcp-kiwoom {NEW_DIGEST}",
+        "RUN at-haproxy haproxy:3.1-alpine",
+    ]
 
 
 def test_failed_healthcheck_rolls_back_all_units_to_saved_digest_never_mutable_main(
@@ -173,7 +207,7 @@ def test_failed_healthcheck_rolls_back_all_units_to_saved_digest_never_mutable_m
     assert proc.returncode == 1
     # A :main rollback mutant makes this assertion red after the pull replaced
     # the local tag. The old digest must be used for both restored containers.
-    assert _run_lines(tmp_path) == [
+    assert _core_run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
@@ -198,7 +232,54 @@ def test_missing_digest_fallback_is_an_explicit_preflight_failure(
     assert proc.returncode == 78
     assert "API rollback reference is unavailable" in proc.stderr
     assert "DOCKER pull" not in (tmp_path / "docker.log").read_text()
-    assert _run_lines(tmp_path) == []
+    assert _core_run_lines(tmp_path) == []
+
+
+def test_missing_required_mcp_token_fails_closed_before_pull(tmp_path: Path) -> None:
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        secret_lines=(
+            "MCP_AUTH_TOKEN=test-main-token",
+            "MCP_ANALYSIS_READONLY_AUTH_TOKEN=test-analysis-token",
+            "MCP_ACCOUNT_READ_AUTH_TOKEN=test-account-token",
+            "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN=test-execution-token",
+            "MCP_PAPER_001_AUTH_TOKEN=test-paper-token",
+            "",
+        ),
+    )
+
+    assert proc.returncode == 78
+    assert "MCP_KIWOOM_AUTH_TOKEN" in proc.stderr
+    assert "DOCKER pull" not in (tmp_path / "docker.log").read_text()
+
+
+def test_second_deploy_starts_only_inactive_color_and_switches_haproxy(
+    tmp_path: Path,
+) -> None:
+    first, run_dir = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+    )
+    second, _ = _run(
+        tmp_path,
+        api_image=NEW_DIGEST,
+        scheduler_image=NEW_DIGEST,
+        extra_env={"MCP_DRAIN_SECONDS": "1"},
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert any(line.startswith("RUN at-mcp-green ") for line in _run_lines(tmp_path))
+    assert not any(line.startswith("RUN at-mcp-blue ") for line in _run_lines(tmp_path))
+    assert (run_dir / "mcp-active-color").read_text() == "green\n"
+    rendered = (run_dir / "haproxy.cfg").read_text()
+    assert "bind 127.0.0.1:8765" in rendered
+    assert "bind 100.122.100.56:8765" in rendered
+    assert "127.0.0.1:8767" in rendered
+    assert "0.0.0.0" not in rendered
 
 
 def test_successful_deploy_rotates_current_digest_to_previous_file(
@@ -222,7 +303,7 @@ def test_manual_rollback_uses_previous_digest_and_rotates_files(tmp_path: Path) 
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert _run_lines(tmp_path) == [
+    assert _core_run_lines(tmp_path) == [
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
         f"RUN at-worker {OLD_DIGEST}",
@@ -245,7 +326,7 @@ def test_worker_readiness_requires_running_container_and_taskiq_startup_log(
     assert "waiting for TaskIQ worker startup" in proc.stderr
     # If the worker rollback call is removed, this safety regression test is
     # red: all three units must return to their pinned prior digest.
-    assert _run_lines(tmp_path) == [
+    assert _core_run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
@@ -272,7 +353,7 @@ def test_first_deploy_without_worker_container_bootstraps_rollback_from_api(
 
     assert proc.returncode == 0, proc.stderr
     assert "bootstrapping its rollback reference from at-api" in proc.stderr
-    assert _run_lines(tmp_path) == [
+    assert _core_run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
