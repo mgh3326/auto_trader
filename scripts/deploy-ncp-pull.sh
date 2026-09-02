@@ -53,6 +53,10 @@ declare -a MCP_PREVIOUS_NAMES=(blue green analysis-readonly account-read trading
 declare -a MCP_PREVIOUS_IMAGES=()
 declare -a MCP_PREVIOUS_PRESENT=()
 MCP_PREVIOUS_ACTIVE_COLOR=""
+MCP_DEPLOY_CANDIDATE_COLOR=""
+MCP_HAPROXY_SWITCHED=0
+MCP_DEPLOY_ATTEMPTED=0
+declare -a MCP_TOUCHED_FIXED_UNITS=()
 
 require_command() { command -v "$1" >/dev/null 2>&1 || { printf 'required command is unavailable: %s\n' "$1" >&2; exit 127; }; }
 require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s\n' "$1" >&2; exit 78; }; }
@@ -243,9 +247,15 @@ reload_haproxy() {
 
 switch_mcp_haproxy() {
   local new_color="$1" old_color="$2"
-  write_mcp_active_color "$new_color"
-  if render_haproxy_config "$new_color" && reload_haproxy; then return 0; fi
-  write_mcp_active_color "$old_color" || true
+  # The file is the committed routing record, not a pre-switch intent.  In
+  # particular, do not make it point at a candidate until HAProxy is serving
+  # that candidate successfully.
+  if ! render_haproxy_config "$new_color" || ! reload_haproxy; then
+    render_haproxy_config "$old_color" && reload_haproxy || true
+    return 1
+  fi
+  if write_mcp_active_color "$new_color"; then return 0; fi
+  # A failed durable record must not strand traffic on an unrecorded color.
   render_haproxy_config "$old_color" && reload_haproxy || true
   return 1
 }
@@ -264,6 +274,9 @@ start_mcp_fixed_units() {
   for i in "${!MCP_FIXED_UNIT_NAMES[@]}"; do
     unit="${MCP_FIXED_UNIT_NAMES[$i]}"; profile="${MCP_FIXED_PROFILES[$i]}"; port="${MCP_FIXED_PORTS[$i]}"; token_env="${MCP_FIXED_TOKEN_ENVS[$i]}"
     if mcp_unit_is_skipped "$unit"; then printf 'MCP unit skipped by MCP_UNITS_SKIP: %s\n' "$unit" >&2; continue; fi
+    # Record before removal: if either run or health fails, this exact unit is
+    # restarted from the captured image while unrelated profiles keep serving.
+    MCP_TOUCHED_FIXED_UNITS+=("$unit")
     docker rm -f "at-mcp-${unit}" >/dev/null 2>&1 || true
     run_mcp_container "$unit" "$port" "$profile" "$token_env" "" "$image" >/dev/null || return 1
     wait_for_mcp_health "$port" "$unit" || return 1
@@ -283,39 +296,40 @@ capture_mcp_state() {
   done
 }
 
-# Recreate exactly the MCP units that existed before this promotion. This is
-# separate from core rollback so a first MCP install cannot leave a candidate.
+# Undo an in-progress MCP promotion.  The active color is deliberately never
+# removed before it has been routed away; this function is also never called
+# from a core-only failure path.
 rollback_mcp() {
-  local fallback_image="$1" i name image port profile token_env fixed_index
-  for name in "${MCP_PREVIOUS_NAMES[@]}"; do
-    docker rm -f "at-mcp-${name}" >/dev/null 2>&1 || true
-  done
-  for i in "${!MCP_PREVIOUS_NAMES[@]}"; do
-    [[ "${MCP_PREVIOUS_PRESENT[$i]:-0}" == 1 ]] || continue
-    name="${MCP_PREVIOUS_NAMES[$i]}"; image="${MCP_PREVIOUS_IMAGES[$i]}"
-    image="$(rollback_reference "$image" "MCP ${name}" 2>/dev/null || printf '%s' "$fallback_image")"
-    case "$name" in
-      blue|green)
-        [[ "$name" == blue ]] && port=8766 || port=8767
-        run_mcp_container "$name" "$port" default MCP_AUTH_TOKEN "$name" "$image" >/dev/null || return 1
-        ;;
-      *)
-        for fixed_index in "${!MCP_FIXED_UNIT_NAMES[@]}"; do
-          [[ "${MCP_FIXED_UNIT_NAMES[$fixed_index]}" == "$name" ]] && break
-        done
-        profile="${MCP_FIXED_PROFILES[$fixed_index]}"
-        port="${MCP_FIXED_PORTS[$fixed_index]}"
-        token_env="${MCP_FIXED_TOKEN_ENVS[$fixed_index]}"
-        run_mcp_container "$name" "$port" "$profile" "$token_env" "" "$image" >/dev/null || return 1
-        ;;
-    esac
-  done
-  if [[ -n "$MCP_PREVIOUS_ACTIVE_COLOR" ]]; then
-    write_mcp_active_color "$MCP_PREVIOUS_ACTIVE_COLOR"
-    render_haproxy_config "$MCP_PREVIOUS_ACTIVE_COLOR" && reload_haproxy || return 1
-  else
-    rm -f "$MCP_ACTIVE_COLOR_FILE"
+  local fallback_image="$1" unit image profile port token_env fixed_index status=0 remove_candidate=1
+  if ((MCP_DEPLOY_ATTEMPTED == 0)); then
+    printf 'MCP rollback requested outside MCP promotion; refusing to touch MCP state.\n' >&2
+    return 70
   fi
+  # A later local bookkeeping failure can happen after a successful switch.
+  # Route back before touching that candidate; if that cannot be confirmed,
+  # leave it alive and report the failed rollback to the operator.
+  if ((MCP_HAPROXY_SWITCHED)); then
+    if [[ -n "$MCP_PREVIOUS_ACTIVE_COLOR" ]]; then
+      switch_mcp_haproxy "$MCP_PREVIOUS_ACTIVE_COLOR" "$MCP_DEPLOY_CANDIDATE_COLOR" || { status=1; remove_candidate=0; }
+    else
+      remove_candidate=0
+    fi
+  fi
+  if ((remove_candidate)) && [[ -n "$MCP_DEPLOY_CANDIDATE_COLOR" ]]; then
+    docker rm -f "at-mcp-${MCP_DEPLOY_CANDIDATE_COLOR}" >/dev/null 2>&1 || true
+  fi
+  for unit in "${MCP_TOUCHED_FIXED_UNITS[@]}"; do
+    for fixed_index in "${!MCP_FIXED_UNIT_NAMES[@]}"; do
+      [[ "${MCP_FIXED_UNIT_NAMES[$fixed_index]}" == "$unit" ]] && break
+    done
+    docker rm -f "at-mcp-${unit}" >/dev/null 2>&1 || true
+    [[ "${MCP_PREVIOUS_PRESENT[$((fixed_index + 2))]:-0}" == 1 ]] || continue
+    image="${MCP_PREVIOUS_IMAGES[$((fixed_index + 2))]}"
+    image="$(rollback_reference "$image" "MCP ${unit}" 2>/dev/null || printf '%s' "$fallback_image")"
+    profile="${MCP_FIXED_PROFILES[$fixed_index]}"; port="${MCP_FIXED_PORTS[$fixed_index]}"; token_env="${MCP_FIXED_TOKEN_ENVS[$fixed_index]}"
+    run_mcp_container "$unit" "$port" "$profile" "$token_env" "" "$image" >/dev/null || status=1
+  done
+  return "$status"
 }
 
 deploy_mcp() {
@@ -326,11 +340,16 @@ deploy_mcp() {
   mkdir -p "$MCP_HEARTBEAT_DIRECTORY"; chmod 1777 "$MCP_HEARTBEAT_DIRECTORY"
   validate_mcp_tokens || return $?
   capture_mcp_state
+  MCP_DEPLOY_ATTEMPTED=1
+  MCP_DEPLOY_CANDIDATE_COLOR=""
+  MCP_HAPROXY_SWITCHED=0
+  MCP_TOUCHED_FIXED_UNITS=()
   old_color="$(read_mcp_active_color 2>/dev/null || true)"
   if [[ -z "$old_color" ]]; then new_color=blue
   elif [[ "$old_color" == blue ]]; then new_color=green
   else new_color=blue; fi
   [[ "$new_color" == blue ]] && new_port=8766 || new_port=8767
+  MCP_DEPLOY_CANDIDATE_COLOR="$new_color"
   # Remove only the inactive candidate. The active color is never removed
   # before HAProxy has switched and its configured drain has elapsed.
   docker rm -f "at-mcp-${new_color}" >/dev/null 2>&1 || true
@@ -342,11 +361,12 @@ deploy_mcp() {
   # healthy and immediately before HAProxy starts/reloads.
   docker rm -f at-mcp-readonly >/dev/null 2>&1 || true
   if [[ -z "$old_color" ]]; then
-    write_mcp_active_color "$new_color"; render_haproxy_config "$new_color" && reload_haproxy || return 1
+    if ! render_haproxy_config "$new_color" || ! reload_haproxy || ! write_mcp_active_color "$new_color"; then return 1; fi
   else
     switch_mcp_haproxy "$new_color" "$old_color" || return 1
     schedule_mcp_drain "$old_color"
   fi
+  MCP_HAPROXY_SWITCHED=1
 }
 
 write_deployed_digest() {
@@ -367,8 +387,35 @@ rollback_core() {
   run_api "$api" >/dev/null || status=1; run_scheduler "$scheduler" >/dev/null || status=1; run_worker "$worker" >/dev/null || status=1; run_upbit_websocket "$upbit_websocket" >/dev/null || status=1; run_kis_websocket "$kis_websocket" >/dev/null || status=1
   wait_for_healthz || status=1; wait_for_worker_startup || status=1; wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || status=1; wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER" || status=1
   if ((status == 0)); then write_deployed_digest "$api" || status=1; fi
-  if ((status == 0)); then printf 'rollback completed.\n' >&2; else printf 'rollback failed; operator intervention is required.\n' >&2; fi
+  if ((status == 0)); then printf 'rollback completed.\n' >&2; else
+    printf 'rollback failed; operator intervention is required.\n' >&2
+    print_runtime_status
+  fi
   return "$status"
+}
+
+print_runtime_status() {
+  local container image running
+  printf 'rollback final runtime status:\n' >&2
+  printf '%-30s %-10s %s\n' 'CONTAINER' 'RUNNING' 'IMAGE' >&2
+  for container in "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom "$MCP_HAPROXY_CONTAINER"; do
+    image="$(configured_image "$container" 2>/dev/null || printf 'absent')"
+    running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || printf 'unknown')"
+    printf '%-30s %-10s %s\n' "$container" "$running" "$image" >&2
+  done
+}
+
+rollback_after_mcp_failure() {
+  local fallback_image="$1" api="$2" scheduler="$3" worker="$4" upbit_websocket="$5" kis_websocket="$6" mcp_status=0 core_status=0
+  rollback_mcp "$fallback_image" || mcp_status=1
+  rollback_core "$api" "$scheduler" "$worker" "$upbit_websocket" "$kis_websocket" || core_status=1
+  # rollback_core reports its own failure.  An MCP-only rollback failure also
+  # needs the same final inventory, rather than a misleading "completed" line.
+  if ((mcp_status != 0 && core_status == 0)); then
+    printf 'MCP rollback failed; operator intervention is required.\n' >&2
+    print_runtime_status
+  fi
+  ((mcp_status == 0 && core_status == 0))
 }
 
 main() {
@@ -381,11 +428,13 @@ main() {
   validate_mcp_tokens || exit $?
   printf 'pulling %s\n' "$IMAGE"; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
   is_repo_digest "$digest" || { printf 'could not resolve a valid repo digest for %s\n' "$IMAGE" >&2; exit 1; }; printf 'pulled digest: %s\n' "$digest"
-  if ! docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" >/dev/null || ! run_api "$digest" >/dev/null || ! run_scheduler "$digest" >/dev/null || ! run_worker "$digest" >/dev/null || ! run_upbit_websocket "$digest" >/dev/null || ! run_kis_websocket "$digest" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || ! wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER" || ! deploy_mcp "$digest"; then
-    rollback_mcp "$rollback_api" || true
+  if ! docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" >/dev/null || ! run_api "$digest" >/dev/null || ! run_scheduler "$digest" >/dev/null || ! run_worker "$digest" >/dev/null || ! run_upbit_websocket "$digest" >/dev/null || ! run_kis_websocket "$digest" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || ! wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER"; then
     rollback_core "$rollback_api" "$rollback_scheduler" "$rollback_worker" "$rollback_upbit_websocket" "$rollback_kis_websocket" || true; exit 1
   fi
-  write_deployed_digest "$digest" || { printf 'could not record deployed digest; rolling back.\n' >&2; rollback_mcp "$rollback_api" || true; rollback_core "$rollback_api" "$rollback_scheduler" "$rollback_worker" "$rollback_upbit_websocket" "$rollback_kis_websocket" || true; exit 1; }
+  if ! deploy_mcp "$digest"; then
+    rollback_after_mcp_failure "$rollback_api" "$rollback_api" "$rollback_scheduler" "$rollback_worker" "$rollback_upbit_websocket" "$rollback_kis_websocket" || true; exit 1
+  fi
+  write_deployed_digest "$digest" || { printf 'could not record deployed digest; rolling back.\n' >&2; rollback_after_mcp_failure "$rollback_api" "$rollback_api" "$rollback_scheduler" "$rollback_worker" "$rollback_upbit_websocket" "$rollback_kis_websocket" || true; exit 1; }
   printf 'deployment completed: %s\n' "$digest"
 }
 
@@ -395,7 +444,8 @@ manual_rollback() {
   previous="$(read_digest_file "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable or invalid: %s\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE" >&2; return 1; }
   current_api="$(configured_image "$API_CONTAINER")" || return 78; current_scheduler="$(configured_image "$SCHEDULER_CONTAINER")" || return 78; current_worker="$(unit_rollback_image "$WORKER_CONTAINER" "$current_api")"; current_upbit_websocket="$(unit_rollback_image "$UPBIT_WEBSOCKET_CONTAINER" "$current_api")"; current_kis_websocket="$(unit_rollback_image "$KIS_WEBSOCKET_CONTAINER" "$current_api")"
   docker pull "$previous"; docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" >/dev/null || return 1
-  if ! run_api "$previous" >/dev/null || ! run_scheduler "$previous" >/dev/null || ! run_worker "$previous" >/dev/null || ! run_upbit_websocket "$previous" >/dev/null || ! run_kis_websocket "$previous" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || ! wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER" || ! deploy_mcp "$previous"; then rollback_mcp "$current_api" || true; rollback_core "$current_api" "$current_scheduler" "$current_worker" "$current_upbit_websocket" "$current_kis_websocket" || true; return 1; fi
+  if ! run_api "$previous" >/dev/null || ! run_scheduler "$previous" >/dev/null || ! run_worker "$previous" >/dev/null || ! run_upbit_websocket "$previous" >/dev/null || ! run_kis_websocket "$previous" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || ! wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER"; then rollback_core "$current_api" "$current_scheduler" "$current_worker" "$current_upbit_websocket" "$current_kis_websocket" || true; return 1; fi
+  if ! deploy_mcp "$previous"; then rollback_after_mcp_failure "$current_api" "$current_api" "$current_scheduler" "$current_worker" "$current_upbit_websocket" "$current_kis_websocket" || true; return 1; fi
   write_deployed_digest "$previous"
 }
 

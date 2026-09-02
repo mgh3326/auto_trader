@@ -35,15 +35,22 @@ printf 'DOCKER %s\\n' "$*" >>"$DOCKER_LOG"
 case "$1" in
   inspect)
     if [[ "$3" == '{{.State.Running}}' ]]; then printf '%s\\n' true
-    elif [[ "$4" == at-haproxy ]]; then exit 1
-    elif [[ "$4" == at-api ]]; then printf '%s\\n' "$API_IMAGE"
-    elif [[ "$4" == at-scheduler ]]; then printf '%s\\n' "$SCHEDULER_IMAGE"
     else
       case "$4" in
+        at-api) image="$API_IMAGE" ;;
+        at-scheduler) image="$SCHEDULER_IMAGE" ;;
         at-worker) image="$WORKER_IMAGE" ;;
         at-upbit-ws) image="$UPBIT_WEBSOCKET_IMAGE" ;;
         at-kis-ws) image="$KIS_WEBSOCKET_IMAGE" ;;
-        *) image="$WORKER_IMAGE" ;;
+        at-mcp-blue) image="${MCP_BLUE_IMAGE:-ABSENT}" ;;
+        at-mcp-green) image="${MCP_GREEN_IMAGE:-ABSENT}" ;;
+        at-mcp-analysis-readonly) image="${MCP_ANALYSIS_READONLY_IMAGE:-ABSENT}" ;;
+        at-mcp-account-read) image="${MCP_ACCOUNT_READ_IMAGE:-ABSENT}" ;;
+        at-mcp-tradingcodex-execution) image="${MCP_TRADINGCODEX_EXECUTION_IMAGE:-ABSENT}" ;;
+        at-mcp-paper-001) image="${MCP_PAPER_001_IMAGE:-ABSENT}" ;;
+        at-mcp-kiwoom) image="${MCP_KIWOOM_IMAGE:-ABSENT}" ;;
+        at-haproxy) image="${HAPROXY_CONTAINER_IMAGE:-ABSENT}" ;;
+        *) image="ABSENT" ;;
       esac
       if [[ "$image" == ABSENT ]]; then
         printf 'Error: No such object: %s\\n' "$4" >&2; exit 1
@@ -84,6 +91,12 @@ esac
         bin_dir / "curl",
         """#!/usr/bin/env bash
 set -Eeuo pipefail
+url="${!#}"
+if [[ "$url" == http://127.0.0.1:*/health ]]; then
+  port="${url#http://127.0.0.1:}"
+  port="${port%/health}"
+  if [[ ",${MCP_HEALTH_FAIL_PORTS:-}," == *",${port},"* ]]; then printf '500'; exit 0; fi
+fi
 count=0
 [[ -f "$HEALTH_COUNT" ]] && count="$(<"$HEALTH_COUNT")"
 count=$((count + 1))
@@ -112,6 +125,7 @@ def _run(
     args: tuple[str, ...] = (),
     secret_lines: tuple[str, ...] | None = None,
     extra_env: dict[str, str] | None = None,
+    active_mcp_color: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     run_dir = tmp_path / "at-run"
     run_dir.mkdir(exist_ok=True)
@@ -134,6 +148,8 @@ def _run(
         (run_dir / "deployed-digest").write_text(f"{deployed_digest}\n")
     if previous_digest is not None:
         (run_dir / "deployed-digest.previous").write_text(f"{previous_digest}\n")
+    if active_mcp_color is not None:
+        (run_dir / "mcp-active-color").write_text(f"{active_mcp_color}\n")
     log = tmp_path / "docker.log"
     log.write_text("")
     env = {
@@ -577,3 +593,89 @@ def test_websocket_readiness_failure_rolls_back_all_units(tmp_path: Path) -> Non
         f"RUN at-upbit-ws {OLD_DIGEST}",
         f"RUN at-kis-ws {OLD_DIGEST}",
     ]
+
+
+def test_websocket_readiness_failure_does_not_touch_mcp_or_active_color(
+    tmp_path: Path,
+) -> None:
+    proc, run_dir = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        upbit_websocket_log="websocket process exists but has not connected",
+        active_mcp_color="blue",
+        extra_env={"MCP_BLUE_IMAGE": OLD_DIGEST},
+    )
+
+    assert proc.returncode == 1
+    docker_log = (tmp_path / "docker.log").read_text()
+    assert "MCP rollback requested outside MCP promotion" not in proc.stderr
+    assert "DOCKER rm -f at-mcp-" not in docker_log
+    assert run_dir.joinpath("mcp-active-color").read_text() == "blue\n"
+
+
+def test_mcp_candidate_health_failure_removes_only_candidate_without_haproxy_hup(
+    tmp_path: Path,
+) -> None:
+    proc, run_dir = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        active_mcp_color="blue",
+        extra_env={
+            "MCP_BLUE_IMAGE": OLD_DIGEST,
+            "HAPROXY_CONTAINER_IMAGE": "haproxy:3.1-alpine",
+            "MCP_HEALTH_FAIL_PORTS": "8767",
+        },
+    )
+
+    assert proc.returncode == 1
+    docker_log = (tmp_path / "docker.log").read_text()
+    assert "DOCKER rm -f at-mcp-green" in docker_log
+    assert "DOCKER rm -f at-mcp-blue" not in docker_log
+    assert "DOCKER kill -s HUP at-haproxy" not in docker_log
+    assert run_dir.joinpath("mcp-active-color").read_text() == "blue\n"
+
+
+def test_fixed_profile_failure_restarts_only_that_profile_at_previous_image(
+    tmp_path: Path,
+) -> None:
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        active_mcp_color="blue",
+        extra_env={
+            "MCP_BLUE_IMAGE": OLD_DIGEST,
+            "MCP_ANALYSIS_READONLY_IMAGE": OLD_DIGEST,
+            "MCP_HEALTH_FAIL_PORTS": "8768",
+        },
+    )
+
+    assert proc.returncode == 1
+    assert [
+        line
+        for line in _run_lines(tmp_path)
+        if line.startswith("RUN at-mcp-analysis-readonly ")
+    ] == [
+        f"RUN at-mcp-analysis-readonly {NEW_DIGEST}",
+        f"RUN at-mcp-analysis-readonly {OLD_DIGEST}",
+    ]
+    assert not any(
+        line.startswith("RUN at-mcp-account-read ") for line in _run_lines(tmp_path)
+    )
+
+
+def test_failed_core_rollback_prints_final_runtime_status_table(tmp_path: Path) -> None:
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        health_fails=2,
+    )
+
+    assert proc.returncode == 1
+    assert "rollback failed; operator intervention is required." in proc.stderr
+    assert "rollback final runtime status:" in proc.stderr
+    assert "CONTAINER                      RUNNING    IMAGE" in proc.stderr
+    assert "at-api" in proc.stderr
