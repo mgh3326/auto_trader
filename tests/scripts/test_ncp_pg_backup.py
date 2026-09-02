@@ -17,7 +17,7 @@ def _write_executable(path: Path, body: str) -> None:
 
 def _stub_bin(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     _write_executable(
         bin_dir / "pg_dump",
         """#!/usr/bin/env bash
@@ -157,3 +157,48 @@ def test_systemd_contract_uses_secret_env_daily_kst_and_optional_healthcheck() -
     assert "OnCalendar=*-*-* 04:10:00 Asia/Seoul" in timer
     assert "rsync -a -e" in script
     assert "rsync -a --delete" not in script
+
+
+def test_docker_fallback_bind_mounts_the_backup_directory(tmp_path: Path) -> None:
+    """Without host pg_dump the script runs the client in a container; the
+    ``--file`` target lives in the host backup directory, so that directory
+    must be bind-mounted at the same path (first NCP run failed otherwise)."""
+    stub_bin = _stub_bin(tmp_path)
+    # A second PATH directory with docker/rsync/ssh stubs; PG_BACKUP_CLIENT=docker
+    # pins the containerised client even where a host pg_dump exists (CI).
+    docker_bin = tmp_path / "bin-docker"
+    docker_bin.mkdir()
+    for name in ("rsync", "ssh"):
+        (docker_bin / name).write_bytes((stub_bin / name).read_bytes())
+        (docker_bin / name).chmod(0o755)
+    _write_executable(
+        docker_bin / "sha256sum",
+        "#!/usr/bin/env bash\nprintf 'deadbeef  %s\\n' \"$1\"\n",
+    )
+    docker_log = tmp_path / "docker.log"
+    _write_executable(
+        docker_bin / "docker",
+        """#!/usr/bin/env bash
+set -Euo pipefail
+printf 'DOCKER %s\\n' "$*" >>"$DOCKER_LOG"
+output=""
+while (($#)); do
+  if [[ "$1" == --file ]]; then output="$2"; shift 2; continue; fi
+  shift
+done
+if [[ -n "$output" ]]; then printf 'dump\\n' >"$output"; else printf -- '-- globals --\\n'; fi
+""",
+    )
+    proc = _run(
+        tmp_path,
+        DOCKER_LOG=str(docker_log),
+        PG_BACKUP_IMAGE="postgres:17",
+        PATH=f"{docker_bin}:{os.environ['PATH']}",
+        PG_BACKUP_CLIENT="docker",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    backup_dir = tmp_path / "ncp-backups"
+    lines = [line for line in docker_log.read_text().splitlines() if "pg_dump " in line]
+    assert lines, docker_log.read_text()
+    assert all(f"-v {backup_dir}:{backup_dir}" in line for line in lines), lines[0]

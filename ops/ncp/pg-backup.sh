@@ -55,12 +55,17 @@ client_mode=""
 declare -a client_prefix=()
 
 select_client() {
-  if command -v pg_dump >/dev/null 2>&1 && command -v pg_dumpall >/dev/null 2>&1; then
+  # PG_BACKUP_CLIENT=auto|host|docker. "docker" pins the containerised client
+  # even when a host pg_dump exists (version pinning; also used by tests).
+  local client_pref="${PG_BACKUP_CLIENT:-auto}"
+  case "$client_pref" in auto|host|docker) ;; *) die "PG_BACKUP_CLIENT must be auto, host or docker" ;; esac
+  if [[ "$client_pref" != docker ]] && command -v pg_dump >/dev/null 2>&1 && command -v pg_dumpall >/dev/null 2>&1; then
     client_mode="host-pg_dump"
     client_prefix=()
     return
   fi
 
+  [[ "$client_pref" != host ]] || die "PG_BACKUP_CLIENT=host but pg_dump/pg_dumpall are unavailable"
   command -v docker >/dev/null 2>&1 || die "pg_dump/pg_dumpall unavailable and docker fallback is unavailable"
   client_mode="docker-${PG_BACKUP_IMAGE}"
   client_prefix=(docker run --rm --network host)
@@ -73,6 +78,10 @@ select_client() {
   if [[ -n "${PGPASSFILE:-}" ]]; then
     client_prefix+=(-v "${PGPASSFILE}:${PGPASSFILE}:ro")
   fi
+  # pg_dump writes --file inside the container namespace: the backup directory
+  # must be bind-mounted at the same path or the dump fails with "could not
+  # open output file" (first NCP run, 2026-09-03).
+  client_prefix+=(-v "${PG_BACKUP_DIRECTORY}:${PG_BACKUP_DIRECTORY}")
   client_prefix+=("$PG_BACKUP_IMAGE")
 }
 

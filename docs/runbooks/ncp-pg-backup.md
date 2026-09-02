@@ -105,3 +105,7 @@ psql -d auto_trader_restore_rehearsal \
 Diff the two saved count files; any mismatch is a failed rehearsal. Record the
 dump timestamp, checksum result, restore output, and row-count diff. Destroy
 the staging database only after the drill evidence is retained.
+
+## Client selection
+
+`PG_BACKUP_CLIENT=auto|host|docker` (default `auto`): `docker` pins the containerised `postgres:17` client even when a host `pg_dump` exists — NCP sets `docker` so the client major always matches `PG_BACKUP_IMAGE`.
