@@ -23,7 +23,6 @@ PLISTS = [
     "com.robinco.auto-trader.mcp-paper_001.plist",
     "com.robinco.auto-trader.worker.plist",
     "com.robinco.auto-trader.worker-log-rotation.plist",
-    "com.robinco.auto-trader.scheduler.plist",
     "com.robinco.auto-trader.kis-websocket.plist",
     "com.robinco.auto-trader.upbit-websocket.plist",
 ]
@@ -133,3 +132,16 @@ def test_mcp_paper_001_plist_profile_port_and_wrapper() -> None:
     assert "<string>8771</string>" in body
     assert "current</string>" in body
     assert "<key>KeepAlive</key>\n  <true/>" in body
+
+
+def test_mac_scheduler_plist_is_gone_and_not_deployed() -> None:
+    """The TaskIQ scheduler runs on NCP only (at-scheduler).
+
+    A scheduler plist here or its label in deploy-native.sh resurrects a second
+    scheduler on the Mac on every native deploy and double-fires every cron
+    task (2026-09-02, twice).
+    """
+    assert not (PLIST_DIR / "com.robinco.auto-trader.scheduler.plist").exists()
+    deploy_script = (REPO_ROOT / "scripts" / "deploy-native.sh").read_text()
+    single_active = deploy_script.split("SINGLE_ACTIVE_LABELS=(", 1)[1].split(")", 1)[0]
+    assert "com.robinco.auto-trader.scheduler" not in single_active
