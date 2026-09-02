@@ -44,6 +44,22 @@ def test_toss_live_order_mutation_gate_defaults_false() -> None:
     assert configured.toss_live_order_mutations_enabled is False
 
 
+def test_broker_token_issuance_defaults_to_self_and_allows_gatewayd() -> None:
+    common = {
+        "kis_app_key": "kis-key",
+        "kis_app_secret": "kis-secret",
+        "opendart_api_key": "dart-key",
+        "upbit_access_key": "upbit-key",
+        "upbit_secret_key": "upbit-secret",
+        "SECRET_KEY": "TestSecret123-" + "x" * 32,
+    }
+
+    assert Settings(**common).broker_token_issuance_mode == "self"
+    assert Settings(**common, broker_token_issuance_mode="gatewayd").gatewayd_url == (
+        "http://127.0.0.1:8791"
+    )
+
+
 def test_toss_rate_limiter_backend_defaults_local_and_allows_redis() -> None:
     common = {
         "kis_app_key": "kis-key",

@@ -14,6 +14,11 @@ import redis.asyncio as redis
 from pydantic import SecretStr
 
 from app.core.config import settings, validate_toss_api_config
+from app.services.brokers.token_issuance import (
+    TokenIssuanceUnavailable,
+    ensure_gatewayd_token,
+    is_gatewayd_token_issuance,
+)
 from app.services.brokers.toss.errors import (
     TossApiDisabled,
     TossMissingCredentials,
@@ -206,6 +211,19 @@ class TossOAuthTokenManager:
                         return cached
                 if force_reissue:
                     await redis_client.delete(self.token_key)
+                if is_gatewayd_token_issuance(settings):
+                    await ensure_gatewayd_token("toss", settings_obj=settings)
+                    published = await self._get_cached_token()
+                    if published is None:
+                        raise TokenIssuanceUnavailable(
+                            "gatewayd acknowledged Toss token ensure without "
+                            "publishing a usable token"
+                        )
+                    logger.info(
+                        "Toss OAuth token ensured by gatewayd and read from Redis"
+                    )
+                    return published
+
                 issued = await self._issue_token()
                 await self._cache_token(issued)
                 logger.info("Toss OAuth token issued and cached")

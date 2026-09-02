@@ -5,13 +5,14 @@ import logging
 import math
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from functools import cache
 from urllib.parse import urlsplit
 
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.services.brokers.token_issuance import TokenIssuanceUnavailable
 
 
 class RedisTokenManager:
@@ -320,6 +321,46 @@ class RedisTokenManager:
         finally:
             # 락 해제
             logging.info("분산 락 해제")
+            await self._release_lock()
+
+    async def ensure_token_from_gateway(
+        self,
+        token_ensurer: Callable[[], Awaitable[None]],
+    ) -> str:
+        """Single-flight a gatewayd ensure and prove it by re-reading Redis.
+
+        gatewayd, not this process, writes the provider-compatible token value.
+        No local issuer or cache write is available on this path.
+        """
+        existing_token = await self.get_token(force_redis_check=True)
+        if existing_token:
+            return existing_token
+
+        lock_acquired = await self._acquire_lock()
+        if not lock_acquired:
+            await asyncio.sleep(0.2)
+            for _ in range(max(1, math.ceil(self._lock_wait_timeout_seconds / 0.1))):
+                existing_token = await self.get_token(force_redis_check=True)
+                if existing_token:
+                    return existing_token
+                await asyncio.sleep(0.1)
+            raise TokenIssuanceUnavailable(
+                "gatewayd token ensure contended; no cached token after bounded wait"
+            )
+
+        try:
+            existing_token = await self.get_token(force_redis_check=True)
+            if existing_token:
+                return existing_token
+
+            await token_ensurer()
+            published_token = await self.get_token(force_redis_check=True)
+            if published_token:
+                return published_token
+            raise TokenIssuanceUnavailable(
+                "gatewayd acknowledged token ensure without publishing a usable token"
+            )
+        finally:
             await self._release_lock()
 
     async def clear_token(self) -> None:
