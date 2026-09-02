@@ -736,6 +736,12 @@ class Settings(BaseSettings):
     HERMES_INGEST_TOKEN: str = ""
     HERMES_INGEST_TOKEN_HEADER: str = "X-Hermes-Ingest-Token"
 
+    # NCP task-kick machine-to-machine authentication. This token is the only
+    # accepted authority for the ops task surface; session cookies never pass
+    # its AuthMiddleware branch. Unset remains fail-closed.
+    OPS_TASK_KICK_TOKEN: str = ""
+    OPS_TASK_KICK_TOKEN_HEADER: str = "X-Ops-Task-Token"
+
     # ROB-491 — external news-relevance judgment job surface. Same prefix-token
     # shape as the Hermes branch; gates the whole
     # ``/trading/api/news-relevance/*`` family (pending read + judgment

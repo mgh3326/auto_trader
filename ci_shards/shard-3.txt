@@ -66,6 +66,7 @@ tests/routers/test_invest_buy_plan_router.py
 tests/routers/test_invest_loss_cut_approvals.py
 tests/routers/test_investment_hermes_http_auth.py
 tests/routers/test_news_relevance_auth.py
+tests/routers/test_ops_task_kick.py
 tests/routers/test_portfolio_actions.py
 tests/routers/test_research_retrospective_router.py
 tests/schemas/test_analysis_artifact_schemas.py

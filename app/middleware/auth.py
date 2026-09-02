@@ -59,6 +59,7 @@ class AuthMiddleware:
         "/trading/api/research-reports/ingest/bulk"
     )
     HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
+    OPS_TASK_KICK_PATH_PREFIX: ClassVar[str] = "/trading/api/ops/tasks/"
     NEWS_RELEVANCE_PATH_PREFIX: ClassVar[str] = "/trading/api/news-relevance/"
     TELEGRAM_CALLBACK_PATH_PREFIX: ClassVar[str] = "/trading/api/telegram/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
@@ -211,6 +212,31 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid Hermes ingest token"},
+                )
+            return None
+
+        # NCP TaskIQ operations surface. This prefix intentionally bypasses
+        # session auth only after its dedicated machine token is validated.
+        # Keeping it before the generic API/session logic means a valid cookie
+        # can never substitute for the ops token.
+        if path.startswith(self.OPS_TASK_KICK_PATH_PREFIX):
+            expected_token = settings.OPS_TASK_KICK_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Ops task kick token not configured"},
+                )
+            header_name = settings.OPS_TASK_KICK_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Ops task kick token header not configured"},
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid ops task kick token"},
                 )
             return None
 
