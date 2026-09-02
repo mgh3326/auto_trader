@@ -1,0 +1,15 @@
+[Unit]
+Description=auto_trader NCP PostgreSQL logical backup and off-host mirror
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+EnvironmentFile=/root/at-secrets/.env.pg-backup
+ExecStart=/root/at-run/pg-backup.sh
+ExecStartPost=/bin/sh -c 'test -z "$${PG_BACKUP_HC_URL:-}" || /usr/bin/curl --fail --silent --show-error --max-time 10 "$${PG_BACKUP_HC_URL}"'
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
