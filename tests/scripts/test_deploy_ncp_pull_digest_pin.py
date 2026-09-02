@@ -384,3 +384,33 @@ def test_first_deploy_without_worker_container_rolls_back_worker_to_api_digest(
         f"RUN at-worker {OLD_DIGEST}",
     ]
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
+
+
+def test_tradingcodex_mcp_unit_pins_required_approval_hash_modes_only_for_itself(
+    tmp_path: Path,
+) -> None:
+    """Mirror of the Mac launchd plist: the TradingCodex execution profile refuses
+    to start unless both approval-hash modes are ``required``. The pin must be
+    scoped to that one unit so api/scheduler/worker keep their env-file policy.
+    """
+    proc, _ = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
+
+    assert proc.returncode == 0, proc.stderr
+    docker_runs = [
+        line
+        for line in (tmp_path / "docker.log").read_text().splitlines()
+        if line.startswith("DOCKER run ")
+    ]
+    tradingcodex = [
+        line for line in docker_runs if "--name at-mcp-tradingcodex-execution" in line
+    ]
+    assert len(tradingcodex) == 1
+    assert "-e ORDER_APPROVAL_HASH_MODE=required" in tradingcodex[0]
+    assert "-e TOSS_APPROVAL_HASH_MODE=required" in tradingcodex[0]
+    others = [
+        line
+        for line in docker_runs
+        if "--name at-mcp-tradingcodex-execution" not in line
+    ]
+    assert others, "expected the other units to be started too"
+    assert all("APPROVAL_HASH_MODE" not in line for line in others)

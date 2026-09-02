@@ -137,12 +137,29 @@ validate_mcp_tokens() {
   done
 }
 
+# Profile-scoped policy env. The Mac launchd plist for the TradingCodex
+# execution profile pins both approval-hash modes to "required" (the app refuses
+# to start that profile otherwise); every other unit keeps the env-file default.
+# Keep this per unit rather than in .env.api so api/scheduler/worker semantics
+# do not change as a side effect of deploying MCP.
+mcp_profile_policy_args() {
+  local profile="$1"
+  case "$profile" in
+    tradingcodex_execution)
+      printf '%s\n' -e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required
+      ;;
+  esac
+}
+
 run_mcp_container() {
   local name="$1" port="$2" profile="$3" token_env="$4" color="${5:-}" token heartbeat image="$6"
+  local -a policy_args=()
   token="$(env_file_value "$token_env")" || return 78
   heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"
+  mapfile -t policy_args < <(mcp_profile_policy_args "$profile")
   docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" \
     -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" \
+    "${policy_args[@]}" \
     -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 \
     -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 \
     -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" \
