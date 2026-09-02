@@ -29,6 +29,10 @@ from app.services.brokers.kis.vts_distributed_gate import (
     VTSDistributedGate,
     get_vts_distributed_gate,
 )
+from app.services.brokers.token_issuance import (
+    ensure_gatewayd_token,
+    is_gatewayd_token_issuance,
+)
 from app.services.redis_token_manager import redis_token_manager
 
 # Official KIS mock (VTS) REST host. Stable KIS constant — used only as an
@@ -455,6 +459,22 @@ class BaseKISClient:
         if token:
             self._settings.kis_access_token = token
             logging.debug("KIS access token ready for request")
+            return
+
+        if is_gatewayd_token_issuance(self._settings):
+            provider = (
+                "kis-mock" if getattr(self, "_is_mock_client", False) else "kis-live"
+            )
+
+            async def ensure_from_gatewayd() -> None:
+                await ensure_gatewayd_token(provider, settings_obj=self._settings)
+
+            self._settings.kis_access_token = (
+                await self._token_manager.ensure_token_from_gateway(
+                    ensure_from_gatewayd
+                )
+            )
+            logging.info("KIS access token ensured by gatewayd and applied from Redis")
             return
 
         async def token_fetcher() -> tuple[str, int]:

@@ -324,6 +324,7 @@ tests/test_kis_overseas_premarket_probe.py
 tests/test_kis_rankings.py
 tests/test_kis_settings_view_isolation.py
 tests/test_kis_tasks.py
+tests/test_kis_token_issuance_gatewayd.py
 tests/test_kis_toss_notification.py
 tests/test_kis_trading_service.py
 tests/test_kis_websocket_mock_smoke.py

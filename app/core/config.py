@@ -224,6 +224,11 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
+    # Broker OAuth issuance stays local by default.  ``gatewayd`` makes this
+    # process a Redis token consumer only; gatewayd performs provider issuance.
+    broker_token_issuance_mode: Literal["self", "gatewayd"] = "self"
+    gatewayd_url: str = "http://127.0.0.1:8791"
+
     # KIS
     kis_app_key: str
     kis_app_secret: str
