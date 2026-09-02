@@ -239,6 +239,14 @@ MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY: Final[str] = (
     "MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY"
 )
 POST_ACK_CANCEL_WINDOW_EXCEPTION: Final[str] = "POST_ACK_CANCEL_WINDOW_EXCEPTION"
+POST_ACK_ORDER_ID_UNREADABLE: Final[str] = "POST_ACK_ORDER_ID_UNREADABLE"
+
+# A successful submit response whose order id cannot be read is earlier and
+# more dangerous than the closed BUY-ACK-to-cancel vocabulary below: the venue
+# accepted the order, but there is no exact id with which to cancel it.  Keep a
+# dedicated stage so an operator never mistakes this for a later cancel-window
+# failure.
+POST_ACK_STAGE_ORDER_ID_UNREADABLE: Final[str] = "post_ack_order_id_unreadable"
 
 # Closed stage vocabulary for the interval in which an exact BUY ACK exists but
 # cancel termination has not yet been established.  Keeping the list here makes
@@ -1331,6 +1339,28 @@ def _extract_order_no(payload: dict[str, Any]) -> str:
     return raw
 
 
+def summarize_unreadable_order_id_response(
+    payload: dict[str, Any],
+) -> dict[str, bool | int | str | None]:
+    """Project the accepted response without inventing or copying an order id.
+
+    Vendor payloads can grow arbitrary fields, so the durable risk artifact
+    keeps only the response facts needed to distinguish this incident shape.
+    The unreadable value itself is represented by type/length/shape; the
+    canonical ``order_id`` remains ``None``.
+    """
+
+    raw = payload.get(ORDER_NO_FIELD)
+    normalized = str(raw or "").strip()
+    return {
+        "return_code": _return_code(payload),
+        "ord_no_present": ORDER_NO_FIELD in payload,
+        "ord_no_shape": "blank" if not normalized else "non_numeric",
+        "ord_no_type": type(raw).__name__,
+        "ord_no_length": len(normalized),
+    }
+
+
 def assert_resting_echo(
     order: RestingOrder, *, planned: PlannedOrder, order_no: str
 ) -> None:
@@ -1767,8 +1797,9 @@ async def submit_and_cancel(
 
     ``record_order_no(order_no, planned, at)`` is the journal writer; it is
     called **immediately** after an exact broker order number is extracted.
-    Once that ACK exists, every exception through cancel termination is sent
-    to ``on_post_ack_exception`` before its original state behavior continues.
+    An accepted response with an unreadable order id, plus every exception
+    after an exact ACK through cancel termination, is sent to
+    ``on_post_ack_exception`` before its original state behavior continues.
 
     Raises:
         RoundTripIncomplete: when the order was sent but its cancellation could
@@ -1796,7 +1827,27 @@ async def submit_and_cancel(
     )
     result.submitted = True
     result.submit_response = dict(submit_payload)
-    order_no = _extract_order_no(submit_payload)
+    try:
+        order_no = _extract_order_no(submit_payload)
+    except BrokerEchoMismatch as exc:
+        # Narrow ROB-1340 SHOULD-1 boundary: the account facade has already
+        # accepted return_code=0, but test doubles make that premise explicit
+        # here too. Rejections and failures outside order-id parsing keep their
+        # existing behavior.
+        if (
+            _return_code(submit_payload) == kiwoom_constants.SUCCESS_RETURN_CODE
+            and on_post_ack_exception is not None
+        ):
+            try:
+                await on_post_ack_exception(
+                    result,
+                    planned.quantity,
+                    POST_ACK_STAGE_ORDER_ID_UNREADABLE,
+                    exc,
+                )
+            except Exception as observer_error:
+                result.risk_notification_error_type = type(observer_error).__name__
+        raise
     result.order_no = order_no
     try:
         # S10: this is deliberately the first fallible call after exact ACK
@@ -1857,7 +1908,9 @@ __all__ = [
     "KRX_MIN_TRADE_UNIT_SHARES",
     "MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY",
     "POST_ACK_CANCEL_WINDOW_EXCEPTION",
+    "POST_ACK_ORDER_ID_UNREADABLE",
     "POST_ACK_EXCEPTION_STAGES",
+    "POST_ACK_STAGE_ORDER_ID_UNREADABLE",
     "POST_ACK_STAGE_BUY_JOURNAL",
     "POST_ACK_STAGE_PRE_CANCEL_READ",
     "POST_ACK_STAGE_PRE_CANCEL_PARSE",
@@ -1912,4 +1965,5 @@ __all__ = [
     "submit_day_order",
     "submit_day_order_in_batch",
     "submit_and_cancel",
+    "summarize_unreadable_order_id_response",
 ]

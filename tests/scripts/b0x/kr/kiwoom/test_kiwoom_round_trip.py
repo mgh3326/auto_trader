@@ -699,6 +699,45 @@ async def test_missing_order_number_stops_before_anything_is_claimed(now) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_order_no", "expected_shape", "expected_length"),
+    (("", "blank", 0), ("not-a-number", "non_numeric", 12)),
+)
+async def test_accepted_buy_with_unreadable_order_id_reaches_dedicated_observer(
+    raw_order_no: str,
+    expected_shape: str,
+    expected_length: int,
+    now,
+) -> None:  # noqa: ANN001
+    """The accepted-but-unaddressable order is observed before propagating."""
+
+    account = FakeAccount(buy_response={"return_code": 0, "ord_no": raw_order_no})
+
+    observations, result, error = await _run_with_exception_observer(account, now=now)
+
+    assert result is None
+    assert type(error) is kiwoom_lane.BrokerEchoMismatch
+    assert observations == [
+        {
+            "stage": kiwoom_lane.POST_ACK_STAGE_ORDER_ID_UNREADABLE,
+            "error_type": "BrokerEchoMismatch",
+            "order_no": None,
+            "quantity": 1,
+        }
+    ]
+    assert account.cancel_calls == []
+    assert kiwoom_lane.summarize_unreadable_order_id_response(
+        {"return_code": 0, "ord_no": raw_order_no}
+    ) == {
+        "return_code": 0,
+        "ord_no_present": True,
+        "ord_no_shape": expected_shape,
+        "ord_no_type": "str",
+        "ord_no_length": expected_length,
+    }
+
+
+@pytest.mark.asyncio
 async def test_resting_row_that_does_not_echo_the_request_is_rejected(now) -> None:  # noqa: ANN001
     """A row for a different symbol is not evidence for our order."""
 
