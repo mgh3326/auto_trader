@@ -72,6 +72,9 @@ COPY app/ ./app/
 COPY research_contracts/ ./research_contracts/
 COPY alembic/ ./alembic/
 COPY alembic.ini pyproject.toml README.md ./
+# NCP runs the Upbit/KIS websocket monitors from this image (at-upbit-ws /
+# at-kis-ws, deploy-ncp-pull.sh); the script lives at the repo root.
+COPY websocket_monitor.py ./
 COPY scripts/ ./scripts/
 COPY static/ ./static/
 COPY config/ ./config/
