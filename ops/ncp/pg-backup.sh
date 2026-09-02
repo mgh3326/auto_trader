@@ -73,6 +73,10 @@ select_client() {
   if [[ -n "${PGPASSFILE:-}" ]]; then
     client_prefix+=(-v "${PGPASSFILE}:${PGPASSFILE}:ro")
   fi
+  # pg_dump writes --file inside the container namespace: the backup directory
+  # must be bind-mounted at the same path or the dump fails with "could not
+  # open output file" (first NCP run, 2026-09-03).
+  client_prefix+=(-v "${PG_BACKUP_DIRECTORY}:${PG_BACKUP_DIRECTORY}")
   client_prefix+=("$PG_BACKUP_IMAGE")
 }
 
