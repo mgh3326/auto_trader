@@ -88,6 +88,7 @@ tests/scripts/test_native_deploy_preflight.py
 tests/scripts/test_native_plists.py
 tests/scripts/test_ncp_pg_backup.py
 tests/scripts/test_nhplug_collect_period.py
+tests/scripts/test_perf_compare_sentry.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_run_rob1040_crs24_refreeze.py
 tests/scripts/test_seed_execution_ledger_opening_lots_cli.py
