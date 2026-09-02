@@ -53,9 +53,9 @@ export AUTO_TRADER_PLIST_DIR="$PLIST_DIR"
 # native deploys on 2026-09-02 (08:17, 18:47) resurrected it from this list +
 # ops/native/plists; test_native_plists.py now pins its absence.
 SINGLE_ACTIVE_LABELS=(
-  "com.robinco.auto-trader.worker"
-  "com.robinco.auto-trader.kis-websocket"
-  "com.robinco.auto-trader.upbit-websocket"
+  # 2026-09-02: NCP at-worker (#2012) replaced the Mac worker; restarting it
+  # here creates competing TaskIQ consumers. WebSocket monitors likewise run
+  # as NCP at-upbit-ws/at-kis-ws units while this Mac may be offline.
   # ROB-760: fixed-profile readonly MCP services outside the blue/green pair.
   "com.robinco.auto-trader.mcp-analysis-readonly"
   "com.robinco.auto-trader.mcp-account-read"

@@ -22,6 +22,7 @@ fi
 readonly IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 readonly RUN_DIRECTORY="${AT_RUN_DIRECTORY:-/root/at-run}"
 readonly API_CONTAINER="at-api" SCHEDULER_CONTAINER="at-scheduler" WORKER_CONTAINER="at-worker"
+readonly UPBIT_WEBSOCKET_CONTAINER="at-upbit-ws" KIS_WEBSOCKET_CONTAINER="at-kis-ws"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
 readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.runtime}"
@@ -75,16 +76,23 @@ rollback_reference() {
   return 1
 }
 
-worker_rollback_image() {
-  local api_image="$1" worker_image
-  if worker_image="$(configured_image "$WORKER_CONTAINER" 2>/dev/null)"; then printf '%s\n' "$worker_image"; return 0; fi
-  printf 'worker container %s is absent; bootstrapping its rollback reference from %s\n' "$WORKER_CONTAINER" "$API_CONTAINER" >&2
+unit_rollback_image() {
+  local container="$1" api_image="$2" unit_image
+  if ! unit_image="$(configured_image "$container" 2>/dev/null)"; then
+    printf 'container %s is absent; bootstrapping its rollback reference from %s\n' "$container" "$API_CONTAINER" >&2
+    printf '%s\n' "$api_image"
+    return 0
+  fi
+  if is_repo_digest "$unit_image"; then printf '%s\n' "$unit_image"; return 0; fi
+  printf 'container %s is not using a repo digest; bootstrapping its rollback reference from %s\n' "$container" "$API_CONTAINER" >&2
   printf '%s\n' "$api_image"
 }
 
 run_api() { docker run -d --name "$API_CONTAINER" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$1"; }
 run_scheduler() { docker run -d --name "$SCHEDULER_CONTAINER" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$1" /app/.venv/bin/taskiq scheduler app.core.scheduler:sched app.tasks; }
 run_worker() { docker run -d --name "$WORKER_CONTAINER" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$1" /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1; }
+run_upbit_websocket() { docker run -d --name "$UPBIT_WEBSOCKET_CONTAINER" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$1" /app/.venv/bin/python websocket_monitor.py --mode upbit; }
+run_kis_websocket() { docker run -d --name "$KIS_WEBSOCKET_CONTAINER" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" "$1" /app/.venv/bin/python websocket_monitor.py --mode kis; }
 
 wait_for_healthz() {
   local attempt status
@@ -101,6 +109,16 @@ wait_for_worker_startup() {
     running="$(docker inspect --format '{{.State.Running}}' "$WORKER_CONTAINER" 2>/dev/null || true)"
     if [[ "$running" == true ]] && docker logs --tail 100 "$WORKER_CONTAINER" 2>&1 | grep --fixed-strings --quiet 'Starting 1 worker processes.'; then return 0; fi
     printf 'waiting for TaskIQ worker startup (%s/%s)\n' "$attempt" "$HEALTHZ_ATTEMPTS" >&2; sleep "$HEALTHZ_SLEEP_SECONDS"
+  done
+  return 1
+}
+
+wait_for_websocket_startup() {
+  local container="$1" attempt running
+  for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do
+    running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)"
+    if [[ "$running" == true ]] && docker logs --tail 100 "$container" 2>&1 | grep --extended-regexp --quiet 'Unified WebSocket health:.*connected=True|connected=True'; then return 0; fi
+    printf 'waiting for WebSocket startup (%s, %s/%s)\n' "$container" "$attempt" "$HEALTHZ_ATTEMPTS" >&2; sleep "$HEALTHZ_SLEEP_SECONDS"
   done
   return 1
 }
@@ -156,10 +174,12 @@ run_mcp_container() {
   local -a policy_args=()
   token="$(env_file_value "$token_env")" || return 78
   heartbeat="/var/run/auto-trader/mcp-heartbeat/mcp-${color:-$name}.json"
-  mapfile -t policy_args < <(mcp_profile_policy_args "$profile")
+  if [[ "$profile" == tradingcodex_execution ]]; then
+    policy_args=(-e ORDER_APPROVAL_HASH_MODE=required -e TOSS_APPROVAL_HASH_MODE=required)
+  fi
   docker run -d --name "at-mcp-${name}" --restart unless-stopped --network host "${ENV_FILE_ARGS[@]}" \
     -v "${MCP_HEARTBEAT_DIRECTORY}:/var/run/auto-trader/mcp-heartbeat" \
-    "${policy_args[@]}" \
+    ${policy_args[@]+"${policy_args[@]}"} \
     -e "MCP_AUTH_TOKEN=${token}" -e "MCP_PROFILE=${profile}" -e MCP_HOST=127.0.0.1 \
     -e "MCP_PORT=${port}" -e MCP_TYPE=streamable-http -e MCP_PATH=/mcp -e MCP_USER_ID=1 \
     -e "AUTO_TRADER_COLOR=${color:-$name}" -e "MCP_HEARTBEAT_PATH=${heartbeat}" "$image" \
@@ -341,41 +361,41 @@ write_deployed_digest() {
 }
 
 rollback_core() {
-  local api="$1" scheduler="$2" worker="$3" status=0
+  local api="$1" scheduler="$2" worker="$3" upbit_websocket="$4" kis_websocket="$5" status=0
   printf 'deployment readiness check failed; rolling back to pinned image references.\n' >&2
-  docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" >/dev/null 2>&1 || true
-  run_api "$api" >/dev/null || status=1; run_scheduler "$scheduler" >/dev/null || status=1; run_worker "$worker" >/dev/null || status=1
-  wait_for_healthz || status=1; wait_for_worker_startup || status=1
+  docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" >/dev/null 2>&1 || true
+  run_api "$api" >/dev/null || status=1; run_scheduler "$scheduler" >/dev/null || status=1; run_worker "$worker" >/dev/null || status=1; run_upbit_websocket "$upbit_websocket" >/dev/null || status=1; run_kis_websocket "$kis_websocket" >/dev/null || status=1
+  wait_for_healthz || status=1; wait_for_worker_startup || status=1; wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || status=1; wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER" || status=1
   if ((status == 0)); then write_deployed_digest "$api" || status=1; fi
   if ((status == 0)); then printf 'rollback completed.\n' >&2; else printf 'rollback failed; operator intervention is required.\n' >&2; fi
   return "$status"
 }
 
 main() {
-  local previous_api previous_scheduler previous_worker digest rollback_api rollback_scheduler rollback_worker
+  local previous_api previous_scheduler previous_worker previous_upbit_websocket previous_kis_websocket digest rollback_api rollback_scheduler rollback_worker rollback_upbit_websocket rollback_kis_websocket
   require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"
   previous_api="$(configured_image "$API_CONTAINER")" || { printf 'previous API container is required for rollback: %s\n' "$API_CONTAINER" >&2; exit 78; }
   previous_scheduler="$(configured_image "$SCHEDULER_CONTAINER")" || { printf 'previous scheduler container is required for rollback: %s\n' "$SCHEDULER_CONTAINER" >&2; exit 78; }
-  previous_worker="$(worker_rollback_image "$previous_api")"
-  rollback_api="$(rollback_reference "$previous_api" API)" || exit 78; rollback_scheduler="$(rollback_reference "$previous_scheduler" scheduler)" || exit 78; rollback_worker="$(rollback_reference "$previous_worker" worker)" || exit 78
+  previous_worker="$(unit_rollback_image "$WORKER_CONTAINER" "$previous_api")"; previous_upbit_websocket="$(unit_rollback_image "$UPBIT_WEBSOCKET_CONTAINER" "$previous_api")"; previous_kis_websocket="$(unit_rollback_image "$KIS_WEBSOCKET_CONTAINER" "$previous_api")"
+  rollback_api="$(rollback_reference "$previous_api" API)" || exit 78; rollback_scheduler="$(rollback_reference "$previous_scheduler" scheduler)" || exit 78; rollback_worker="$(rollback_reference "$previous_worker" worker)" || exit 78; rollback_upbit_websocket="$(rollback_reference "$previous_upbit_websocket" 'Upbit WebSocket')" || exit 78; rollback_kis_websocket="$(rollback_reference "$previous_kis_websocket" 'KIS WebSocket')" || exit 78
   validate_mcp_tokens || exit $?
   printf 'pulling %s\n' "$IMAGE"; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
   is_repo_digest "$digest" || { printf 'could not resolve a valid repo digest for %s\n' "$IMAGE" >&2; exit 1; }; printf 'pulled digest: %s\n' "$digest"
-  if ! docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" >/dev/null || ! run_api "$digest" >/dev/null || ! run_scheduler "$digest" >/dev/null || ! run_worker "$digest" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! deploy_mcp "$digest"; then
+  if ! docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" >/dev/null || ! run_api "$digest" >/dev/null || ! run_scheduler "$digest" >/dev/null || ! run_worker "$digest" >/dev/null || ! run_upbit_websocket "$digest" >/dev/null || ! run_kis_websocket "$digest" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || ! wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER" || ! deploy_mcp "$digest"; then
     rollback_mcp "$rollback_api" || true
-    rollback_core "$rollback_api" "$rollback_scheduler" "$rollback_worker" || true; exit 1
+    rollback_core "$rollback_api" "$rollback_scheduler" "$rollback_worker" "$rollback_upbit_websocket" "$rollback_kis_websocket" || true; exit 1
   fi
-  write_deployed_digest "$digest" || { printf 'could not record deployed digest; rolling back.\n' >&2; rollback_mcp "$rollback_api" || true; rollback_core "$rollback_api" "$rollback_scheduler" "$rollback_worker" || true; exit 1; }
+  write_deployed_digest "$digest" || { printf 'could not record deployed digest; rolling back.\n' >&2; rollback_mcp "$rollback_api" || true; rollback_core "$rollback_api" "$rollback_scheduler" "$rollback_worker" "$rollback_upbit_websocket" "$rollback_kis_websocket" || true; exit 1; }
   printf 'deployment completed: %s\n' "$digest"
 }
 
 manual_rollback() {
-  local previous current_api current_scheduler current_worker
+  local previous current_api current_scheduler current_worker current_upbit_websocket current_kis_websocket
   require_command docker; require_command curl; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"
   previous="$(read_digest_file "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable or invalid: %s\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE" >&2; return 1; }
-  current_api="$(configured_image "$API_CONTAINER")" || return 78; current_scheduler="$(configured_image "$SCHEDULER_CONTAINER")" || return 78; current_worker="$(worker_rollback_image "$current_api")"
-  docker pull "$previous"; docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" >/dev/null || return 1
-  if ! run_api "$previous" >/dev/null || ! run_scheduler "$previous" >/dev/null || ! run_worker "$previous" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! deploy_mcp "$previous"; then rollback_mcp "$current_api" || true; rollback_core "$current_api" "$current_scheduler" "$current_worker" || true; return 1; fi
+  current_api="$(configured_image "$API_CONTAINER")" || return 78; current_scheduler="$(configured_image "$SCHEDULER_CONTAINER")" || return 78; current_worker="$(unit_rollback_image "$WORKER_CONTAINER" "$current_api")"; current_upbit_websocket="$(unit_rollback_image "$UPBIT_WEBSOCKET_CONTAINER" "$current_api")"; current_kis_websocket="$(unit_rollback_image "$KIS_WEBSOCKET_CONTAINER" "$current_api")"
+  docker pull "$previous"; docker rm -f "$API_CONTAINER" "$SCHEDULER_CONTAINER" "$WORKER_CONTAINER" "$UPBIT_WEBSOCKET_CONTAINER" "$KIS_WEBSOCKET_CONTAINER" >/dev/null || return 1
+  if ! run_api "$previous" >/dev/null || ! run_scheduler "$previous" >/dev/null || ! run_worker "$previous" >/dev/null || ! run_upbit_websocket "$previous" >/dev/null || ! run_kis_websocket "$previous" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup || ! wait_for_websocket_startup "$UPBIT_WEBSOCKET_CONTAINER" || ! wait_for_websocket_startup "$KIS_WEBSOCKET_CONTAINER" || ! deploy_mcp "$previous"; then rollback_mcp "$current_api" || true; rollback_core "$current_api" "$current_scheduler" "$current_worker" "$current_upbit_websocket" "$current_kis_websocket" || true; return 1; fi
   write_deployed_digest "$previous"
 }
 

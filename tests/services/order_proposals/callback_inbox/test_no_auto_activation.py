@@ -212,7 +212,7 @@ OMITTED_SURFACES = (
     "run_docker.sh",
     "run_api_compose.sh",
     ".github/workflows/taskiq-smoke.sh",
-    "ops/native/plists/com.robinco.auto-trader.worker.plist",
+    "ops/native/plists/com.robinco.auto-trader.haproxy.plist",
     "ops/native/scripts/run-scheduler.sh",
     "scripts/deploy/native/deploy-native.sh",
 )
@@ -301,7 +301,7 @@ def test_discovery_is_anchored_on_the_real_repository() -> None:
     for relative in (
         "env.prod.example",
         ".github/workflows/taskiq-smoke.sh",
-        "ops/native/plists/com.robinco.auto-trader.worker.plist",
+        "ops/native/plists/com.robinco.auto-trader.haproxy.plist",
         "ops/native/scripts/run-scheduler.sh",
     ):
         assert (_REPO / relative).is_file(), relative
@@ -314,7 +314,7 @@ def test_discovery_is_anchored_on_the_real_repository() -> None:
         "env.prod.example",
         "Makefile",
         ".github/workflows/taskiq-smoke.sh",
-        "ops/native/plists/com.robinco.auto-trader.worker.plist",
+        "ops/native/plists/com.robinco.auto-trader.haproxy.plist",
         "ops/native/scripts/run-scheduler.sh",
     ):
         assert relative in discovered, relative

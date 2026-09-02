@@ -16,6 +16,7 @@ DEPLOY = REPO_ROOT / "scripts" / "deploy-ncp-pull.sh"
 REPOSITORY = "ghcr.io/mgh3326/auto_trader"
 OLD_DIGEST = f"{REPOSITORY}@sha256:{'1' * 64}"
 NEW_DIGEST = f"{REPOSITORY}@sha256:{'2' * 64}"
+FALLBACK_DIGEST = f"{REPOSITORY}@sha256:{'3' * 64}"
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -37,9 +38,17 @@ case "$1" in
     elif [[ "$4" == at-haproxy ]]; then exit 1
     elif [[ "$4" == at-api ]]; then printf '%s\\n' "$API_IMAGE"
     elif [[ "$4" == at-scheduler ]]; then printf '%s\\n' "$SCHEDULER_IMAGE"
-    elif [[ "$WORKER_IMAGE" == ABSENT ]]; then
-      printf 'Error: No such object: at-worker\\n' >&2; exit 1
-    else printf '%s\\n' "$WORKER_IMAGE"; fi
+    else
+      case "$4" in
+        at-worker) image="$WORKER_IMAGE" ;;
+        at-upbit-ws) image="$UPBIT_WEBSOCKET_IMAGE" ;;
+        at-kis-ws) image="$KIS_WEBSOCKET_IMAGE" ;;
+        *) image="$WORKER_IMAGE" ;;
+      esac
+      if [[ "$image" == ABSENT ]]; then
+        printf 'Error: No such object: %s\\n' "$4" >&2; exit 1
+      else printf '%s\\n' "$image"; fi
+    fi
     ;;
   image)
     printf '%s\\n' "$NEW_DIGEST"
@@ -47,7 +56,12 @@ case "$1" in
   pull|rm|kill|restart)
     ;;
   logs)
-    printf '%s\\n' "$WORKER_LOG"
+    case "${!#}" in
+      at-worker) printf '%s\\n' "$WORKER_LOG" ;;
+      at-upbit-ws) printf '%s\\n' "$UPBIT_WEBSOCKET_LOG" ;;
+      at-kis-ws) printf '%s\\n' "$KIS_WEBSOCKET_LOG" ;;
+      *) printf 'unexpected logged container: %s\\n' "${!#}" >&2; exit 99 ;;
+    esac
     ;;
   run)
     container=""
@@ -87,8 +101,12 @@ def _run(
     api_image: str,
     scheduler_image: str,
     worker_image: str | None = None,
+    upbit_websocket_image: str | None = None,
+    kis_websocket_image: str | None = None,
     health_fails: int = 0,
     worker_log: str = "Starting 1 worker processes.",
+    upbit_websocket_log: str = "Unified WebSocket health: mode=upbit connected=True",
+    kis_websocket_log: str = "Unified WebSocket health: mode=kis connected=True",
     deployed_digest: str | None = OLD_DIGEST,
     previous_digest: str | None = None,
     args: tuple[str, ...] = (),
@@ -125,7 +143,11 @@ def _run(
         "API_IMAGE": api_image,
         "SCHEDULER_IMAGE": scheduler_image,
         "WORKER_IMAGE": worker_image or scheduler_image,
+        "UPBIT_WEBSOCKET_IMAGE": upbit_websocket_image or scheduler_image,
+        "KIS_WEBSOCKET_IMAGE": kis_websocket_image or scheduler_image,
         "WORKER_LOG": worker_log,
+        "UPBIT_WEBSOCKET_LOG": upbit_websocket_log,
+        "KIS_WEBSOCKET_LOG": kis_websocket_log,
         "NEW_DIGEST": NEW_DIGEST,
         "DOCKER_LOG": str(log),
         "HEALTH_COUNT": str(tmp_path / "health-count"),
@@ -158,7 +180,8 @@ def _core_run_lines(tmp_path: Path) -> list[str]:
     return [
         line
         for line in _run_lines(tmp_path)
-        if line.split()[1] in {"at-api", "at-scheduler", "at-worker"}
+        if line.split()[1]
+        in {"at-api", "at-scheduler", "at-worker", "at-upbit-ws", "at-kis-ws"}
     ]
 
 
@@ -172,18 +195,28 @@ def test_successful_deploy_runs_all_units_by_resolved_repo_digest(
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-upbit-ws {NEW_DIGEST}",
+        f"RUN at-kis-ws {NEW_DIGEST}",
     ]
     docker_log = (tmp_path / "docker.log").read_text()
-    assert (
-        "DOCKER run -d --name at-worker --restart unless-stopped --network host"
-        in docker_log
-    )
+    for container in (
+        "at-api",
+        "at-scheduler",
+        "at-worker",
+        "at-upbit-ws",
+        "at-kis-ws",
+    ):
+        assert (
+            f"DOCKER run -d --name {container} --restart unless-stopped --network host"
+        ) in docker_log
     assert (
         "/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1"
         in docker_log
     )
+    assert "/app/.venv/bin/python websocket_monitor.py --mode upbit" in docker_log
+    assert "/app/.venv/bin/python websocket_monitor.py --mode kis" in docker_log
     assert (run_dir / "deployed-digest").read_text() == f"{NEW_DIGEST}\n"
-    assert _run_lines(tmp_path)[3:] == [
+    assert _run_lines(tmp_path)[5:] == [
         f"RUN at-mcp-blue {NEW_DIGEST}",
         f"RUN at-mcp-analysis-readonly {NEW_DIGEST}",
         f"RUN at-mcp-account-read {NEW_DIGEST}",
@@ -211,9 +244,13 @@ def test_failed_healthcheck_rolls_back_all_units_to_saved_digest_never_mutable_m
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-upbit-ws {NEW_DIGEST}",
+        f"RUN at-kis-ws {NEW_DIGEST}",
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
         f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
     ]
     assert f"RUN at-api {REPOSITORY}:main" not in (tmp_path / "docker.log").read_text()
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
@@ -307,6 +344,8 @@ def test_manual_rollback_uses_previous_digest_and_rotates_files(tmp_path: Path) 
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
         f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
     ]
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
     assert (run_dir / "deployed-digest.previous").read_text() == f"{NEW_DIGEST}\n"
@@ -325,14 +364,18 @@ def test_worker_readiness_requires_running_container_and_taskiq_startup_log(
     assert proc.returncode == 1
     assert "waiting for TaskIQ worker startup" in proc.stderr
     # If the worker rollback call is removed, this safety regression test is
-    # red: all three units must return to their pinned prior digest.
+    # red: all five units must return to their pinned prior digest.
     assert _core_run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-upbit-ws {NEW_DIGEST}",
+        f"RUN at-kis-ws {NEW_DIGEST}",
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
         f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
     ]
 
 
@@ -357,6 +400,8 @@ def test_first_deploy_without_worker_container_bootstraps_rollback_from_api(
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-upbit-ws {NEW_DIGEST}",
+        f"RUN at-kis-ws {NEW_DIGEST}",
     ]
     assert (run_dir / "deployed-digest").read_text() == f"{NEW_DIGEST}\n"
 
@@ -379,9 +424,13 @@ def test_first_deploy_without_worker_container_rolls_back_worker_to_api_digest(
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
         f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-upbit-ws {NEW_DIGEST}",
+        f"RUN at-kis-ws {NEW_DIGEST}",
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
         f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
     ]
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
 
@@ -457,3 +506,74 @@ def test_haproxy_config_render_keeps_the_bind_mounted_inode(tmp_path: Path) -> N
     assert proc.returncode == 0, proc.stderr
     assert cfg.stat().st_ino == before
     assert "stale" not in cfg.read_text()
+
+
+def test_local_tagged_upbit_bootstraps_rollback_from_api_digest(
+    tmp_path: Path,
+) -> None:
+    """The hand-started Upbit unit must not preserve its mutable local tag."""
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        upbit_websocket_image="auto_trader:ncp-main",
+        deployed_digest=FALLBACK_DIGEST,
+        health_fails=1,
+    )
+
+    assert proc.returncode == 1
+    assert "at-upbit-ws is not using a repo digest" in proc.stderr
+    assert _core_run_lines(tmp_path)[-5:] == [
+        f"RUN at-api {OLD_DIGEST}",
+        f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
+    ]
+
+
+def test_missing_kis_websocket_bootstraps_rollback_from_api_digest(
+    tmp_path: Path,
+) -> None:
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        kis_websocket_image="ABSENT",
+        deployed_digest=FALLBACK_DIGEST,
+        health_fails=1,
+    )
+
+    assert proc.returncode == 1
+    assert "container at-kis-ws is absent" in proc.stderr
+    assert _core_run_lines(tmp_path)[-5:] == [
+        f"RUN at-api {OLD_DIGEST}",
+        f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
+    ]
+
+
+def test_websocket_readiness_failure_rolls_back_all_units(tmp_path: Path) -> None:
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        upbit_websocket_log="websocket process exists but has not connected",
+    )
+
+    assert proc.returncode == 1
+    assert "waiting for WebSocket startup (at-upbit-ws" in proc.stderr
+    assert _core_run_lines(tmp_path) == [
+        f"RUN at-api {NEW_DIGEST}",
+        f"RUN at-scheduler {NEW_DIGEST}",
+        f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-upbit-ws {NEW_DIGEST}",
+        f"RUN at-kis-ws {NEW_DIGEST}",
+        f"RUN at-api {OLD_DIGEST}",
+        f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
+        f"RUN at-upbit-ws {OLD_DIGEST}",
+        f"RUN at-kis-ws {OLD_DIGEST}",
+    ]

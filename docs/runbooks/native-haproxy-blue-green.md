@@ -8,7 +8,7 @@ Cloudflare Tunnel
   └─ trader-mcp.robinco.dev  → 127.0.0.1:8765  (HAProxy) → mcp-blue :8766 | mcp-green :8767
 ```
 
-HAProxy owns the stable origin ports. The deploy script bootstraps the inactive color, smokes it directly, atomically swaps HAProxy's backend, smokes the public path, then drains the old color. Worker, scheduler, kis-websocket, upbit-websocket remain single-active and continue to use `current`.
+HAProxy owns the stable origin ports. The deploy script bootstraps the inactive color, smokes it directly, atomically swaps HAProxy's backend, smokes the public path, then drains the old color. Trading roles (`at-worker`, `at-upbit-ws`, `at-kis-ws`) run on NCP and are intentionally absent from the Mac native deployment.
 
 ## First-time bootstrap (CRITICAL ORDERING)
 
@@ -36,7 +36,7 @@ Expected window: ~10–30 s during which `trader.robinco.dev` may briefly 502 wh
 
 Verify after:
 
-- `launchctl list | grep auto-trader` shows `haproxy`, `api-blue`, `mcp-blue`, plus worker, scheduler, kis-websocket, upbit-websocket.
+- `launchctl list | grep auto-trader` shows `haproxy`, `api-blue`, `mcp-blue`, and the fixed-profile MCP services; it must not show worker, scheduler, kis-websocket, or upbit-websocket.
 - `curl http://127.0.0.1:8000/healthz` returns 200 (HAProxy → :8001).
 - `curl -H 'Accept: text/event-stream' http://127.0.0.1:8765/mcp` returns 400 or 401 (HAProxy → :8766).
 - `curl https://trader.robinco.dev/healthz` returns 200.
@@ -61,7 +61,7 @@ The script does:
 6. Render new HAProxy config with green primary; `haproxy -c -f` validate; atomically move into live path; SIGUSR2 reload.
 7. Public smoke via `:8000` and `:8765` (HAProxy now routes to green).
 8. Drain blue (bootout).
-9. Flip the `current` symlink, restart worker/scheduler/kis-websocket/upbit-websocket against the new `current`.
+9. Flip the `current` symlink and restart only the remaining Mac fixed-profile services against the new `current`.
 10. Final stable-mode healthcheck.
 
 Cloudflare Tunnel sees zero `connection refused` because HAProxy never closes its listeners.
@@ -75,7 +75,7 @@ The `deploy_bluegreen_flow` library function handles api+mcp rollback internally
 - **HAProxy swap mcp failed:** both `api-active-color` and `mcp-active-color` are restored to blue. A compensating `haproxy_switch.sh` puts HAProxy back on blue. Green is bootout. Deploy exits non-zero.
 - **Public smoke failed (step 7):** both state files restored, compensating `haproxy_switch.sh` runs, green is bootout. Deploy exits non-zero.
 
-The outer `rollback()` in `deploy-native.sh` reverts the `current` symlink (worker/scheduler/websocket path) only when bluegreen succeeded but a later step failed.
+The outer `rollback()` in `deploy-native.sh` reverts the `current` symlink only when bluegreen succeeded but a later native-service step failed.
 
 ## Manual rollback (operator-driven)
 

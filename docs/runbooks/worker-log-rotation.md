@@ -1,4 +1,10 @@
-# Worker launchd 로그 회전 및 25GB 기존 파일 처리
+# Retired Mac worker launchd 로그 회전 및 25GB 기존 파일 처리
+
+> **2026-09-02 retired:** TaskIQ worker is now NCP `at-worker` (#2012). The
+> Mac worker and its `worker-log-rotation` launchd plists are intentionally
+> absent; do not install or arm them, because reviving the Mac worker creates
+> competing TaskIQ consumers. The remaining material is historical incident
+> guidance for already-retired files only.
 
 ROB-1118은 TaskIQ worker의 launchd stderr가 무제한 증가한 사고를 다룬다.
 애플리케이션은 `httpx`를 `WARNING` 이상으로 유지해 요청별 INFO 라인을
