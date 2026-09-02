@@ -442,3 +442,18 @@ def test_rendered_haproxy_exposes_fixed_profiles_on_tailnet_only(
     assert (
         "bind 127.0.0.1:8768" not in cfg
     )  # loopback is served by the container itself
+
+
+def test_haproxy_config_render_keeps_the_bind_mounted_inode(tmp_path: Path) -> None:
+    """A file bind mount follows the inode: swapping it makes reloads a no-op."""
+    run_dir = tmp_path / "at-run"
+    run_dir.mkdir()
+    cfg = run_dir / "haproxy.cfg"
+    cfg.write_text("stale\n")
+    before = cfg.stat().st_ino
+
+    proc, _ = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
+
+    assert proc.returncode == 0, proc.stderr
+    assert cfg.stat().st_ino == before
+    assert "stale" not in cfg.read_text()

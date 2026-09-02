@@ -205,7 +205,14 @@ render_haproxy_config() {
   # The deploy umask of 077 would leave it unreadable there and the container
   # crash-loops on "Permission denied" (observed on the first NCP deploy).
   chmod 0644 "${MCP_HAPROXY_CONFIG}.tmp"
-  mv -f "${MCP_HAPROXY_CONFIG}.tmp" "$MCP_HAPROXY_CONFIG"
+  # The config is bind-mounted as a *file* into the haproxy container, and a
+  # file bind mount follows the inode. `mv` would swap the inode and leave the
+  # container reloading the stale copy forever; copy into place instead.
+  if [[ -e "$MCP_HAPROXY_CONFIG" ]]; then
+    cat "${MCP_HAPROXY_CONFIG}.tmp" >"$MCP_HAPROXY_CONFIG" && rm -f "${MCP_HAPROXY_CONFIG}.tmp"
+  else
+    mv -f "${MCP_HAPROXY_CONFIG}.tmp" "$MCP_HAPROXY_CONFIG"
+  fi
 }
 
 reload_haproxy() {
