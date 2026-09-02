@@ -48,9 +48,12 @@ export AUTO_TRADER_SOURCE_REPO="$SOURCE_REPO"
 export AUTO_TRADER_ENV_FILE="$SHARED_ENV"
 export AUTO_TRADER_PLIST_DIR="$PLIST_DIR"
 
+# The TaskIQ scheduler is intentionally absent: it moved to NCP (at-scheduler,
+# B-2a) and a second instance on the Mac double-fires every cron task. Two
+# native deploys on 2026-09-02 (08:17, 18:47) resurrected it from this list +
+# ops/native/plists; test_native_plists.py now pins its absence.
 SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.worker"
-  "com.robinco.auto-trader.scheduler"
   "com.robinco.auto-trader.kis-websocket"
   "com.robinco.auto-trader.upbit-websocket"
   # ROB-760: fixed-profile readonly MCP services outside the blue/green pair.
