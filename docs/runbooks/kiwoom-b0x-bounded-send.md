@@ -226,6 +226,33 @@ claim을 재발견하고 `kt00007` exact readback을 수행하며, terminal evid
 `release_with_terminal_evidence`로 claim을 해제한다. open/unknown이면 계속 account를
 막고 자동 재주문하지 않는다. DAY 마감 소멸은 하한 안전망일 뿐 claim 해제 증거가 아니다.
 
+### BUY ACK→cancel 종료 예외의 침묵 금지
+
+유효한 BUY `ord_no`를 추출한 순간부터 사후 `kt00007`로 cancel 종료를 판정할 때까지의
+예외는 `POST_ACK_CANCEL_WINDOW_EXCEPTION` live-order-risk로 같은 `cycles.jsonl` 경로에
+먼저 append하고, 그 뒤 위와 같은 기존 Telegram notifier를 호출한다. 저장하는 예외 정보는
+닫힌 `exception_stage`와 예외 **type**뿐이며 메시지·URL·vendor payload는 저장하거나
+알리지 않는다. 단계 어휘는 다음 11개다.
+
+1. `buy_ack_journal`
+2. `pre_cancel_resting_read`
+3. `pre_cancel_resting_parse`
+4. `cancel_authority_check`
+5. `cancel_transport_guard`
+6. `cancel_request`
+7. `cancel_ack_parse`
+8. `cancel_ack_journal`
+9. `post_cancel_reconcile_read`
+10. `post_cancel_reconcile_parse`
+11. `post_cancel_terminal_classification`
+
+이 관측은 기존 주문 상태 판정을 바꾸지 않는다. 기존에 계속하던 journal/read/cancel API
+예외는 계속하고, 기존에 실패/반환하던 경로는 그대로 실패/반환한다. 알림의 일반 예외도
+이미 append된 flag를 되돌리거나 취소 시도 여부를 바꾸지 않는다. `CancelledError`,
+`KeyboardInterrupt`, `SystemExit`를 포함한 `BaseException`은 잠깐 관측 경계에서 잡되,
+flag·알림 시도 뒤 **원본을 그대로 재발생**시킨다. 즉 이 경계는 프로세스 제어 예외를
+삼키는 recovery 경계가 아니다.
+
 ### migration·권한 preflight와 신뢰 한계 (S11)
 
 상류 운영자는 배포 전에 additive migration을 적용한다. worker/검증 세션은 운영 DB에서

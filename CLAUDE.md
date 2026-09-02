@@ -272,7 +272,9 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
   journal→resting read→CANCEL→즉시 journal→reconcile은 하나의 PostgreSQL
   `CoordinationScope` 안에서만 실행한다. cancel 직전 ownership 상실 시 cancel을 보내지
   않고 `MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY` live-order-risk를 cycle JSON에 먼저
-  append한 뒤 기존 Telegram notifier로 알린다. authority start/terminal은 전용
+  append한 뒤 기존 Telegram notifier로 알린다. exact BUY ACK부터 cancel 종료 사이의
+  다른 예외도 `POST_ACK_CANCEL_WINDOW_EXCEPTION`으로 같은 write-before-notify 계약을
+  따르며, 프로세스 제어 `BaseException`은 관측 뒤 그대로 다시 올린다. authority start/terminal은 전용
   append-only DB table의 current-cycle 완전 열거와 exact receipt coverage가 있어야만
   `RELEASE_VERIFIED`다. 빈 lock/close/PID 부재만으로 승격하거나 receipt를 reporter가
   만들지 않는다. 상세 복구·신뢰 한계는

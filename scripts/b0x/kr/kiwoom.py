@@ -238,6 +238,38 @@ class RoundTripIncomplete(RuntimeError):
 MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY: Final[str] = (
     "MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY"
 )
+POST_ACK_CANCEL_WINDOW_EXCEPTION: Final[str] = "POST_ACK_CANCEL_WINDOW_EXCEPTION"
+
+# Closed stage vocabulary for the interval in which an exact BUY ACK exists but
+# cancel termination has not yet been established.  Keeping the list here makes
+# omissions reviewable and keeps cycle artifacts free of arbitrary exception
+# messages (only the exception type is recorded).
+POST_ACK_STAGE_BUY_JOURNAL: Final[str] = "buy_ack_journal"
+POST_ACK_STAGE_PRE_CANCEL_READ: Final[str] = "pre_cancel_resting_read"
+POST_ACK_STAGE_PRE_CANCEL_PARSE: Final[str] = "pre_cancel_resting_parse"
+POST_ACK_STAGE_CANCEL_AUTHORITY: Final[str] = "cancel_authority_check"
+POST_ACK_STAGE_CANCEL_GUARD: Final[str] = "cancel_transport_guard"
+POST_ACK_STAGE_CANCEL_REQUEST: Final[str] = "cancel_request"
+POST_ACK_STAGE_CANCEL_ACK_PARSE: Final[str] = "cancel_ack_parse"
+POST_ACK_STAGE_CANCEL_JOURNAL: Final[str] = "cancel_ack_journal"
+POST_ACK_STAGE_RECONCILE_READ: Final[str] = "post_cancel_reconcile_read"
+POST_ACK_STAGE_RECONCILE_PARSE: Final[str] = "post_cancel_reconcile_parse"
+POST_ACK_STAGE_TERMINAL_CLASSIFICATION: Final[str] = (
+    "post_cancel_terminal_classification"
+)
+POST_ACK_EXCEPTION_STAGES: Final[tuple[str, ...]] = (
+    POST_ACK_STAGE_BUY_JOURNAL,
+    POST_ACK_STAGE_PRE_CANCEL_READ,
+    POST_ACK_STAGE_PRE_CANCEL_PARSE,
+    POST_ACK_STAGE_CANCEL_AUTHORITY,
+    POST_ACK_STAGE_CANCEL_GUARD,
+    POST_ACK_STAGE_CANCEL_REQUEST,
+    POST_ACK_STAGE_CANCEL_ACK_PARSE,
+    POST_ACK_STAGE_CANCEL_JOURNAL,
+    POST_ACK_STAGE_RECONCILE_READ,
+    POST_ACK_STAGE_RECONCILE_PARSE,
+    POST_ACK_STAGE_TERMINAL_CLASSIFICATION,
+)
 
 
 class SameCycleBuyBatchViolation(RuntimeError):
@@ -1283,6 +1315,11 @@ class RoundTripResult:
         }
 
 
+type PostAckExceptionObserver = Callable[
+    [RoundTripResult, int, str, BaseException], Awaitable[None]
+]
+
+
 def _extract_order_no(payload: dict[str, Any]) -> str:
     raw = str(payload.get(ORDER_NO_FIELD) or "").strip()
     if not raw or not raw.isdigit():
@@ -1496,6 +1533,216 @@ async def _submit_day_order_after_resubmit_gate(
     return result
 
 
+async def _complete_cancel_after_ack(  # noqa: PLR0915
+    account: ReadOnlyKiwoomMockAccount,
+    *,
+    planned: PlannedOrder,
+    result: RoundTripResult,
+    order_no: str,
+    record_order_no: Any,
+    now: dt.datetime,
+    cancel_authority_decision: (Callable[[RoundTripResult], Awaitable[bool]] | None),
+    before_cancel_send: Callable[[], Awaitable[None]] | None,
+    on_mandatory_cancel_blocked: (
+        Callable[[RoundTripResult, int], Awaitable[None]] | None
+    ),
+    on_post_ack_exception: PostAckExceptionObserver | None,
+    continue_after_journal_error: bool,
+    require_cancel_order_no: bool,
+    raise_on_incomplete: bool,
+) -> RoundTripResult:
+    """Finish the ACK→cancel interval without changing its state decisions.
+
+    Every exception in this interval is observed through one closed callback.
+    Ordinary exceptions retain their pre-existing contained/raised behavior.
+    ``BaseException`` is caught only long enough to record and notify, then is
+    re-raised; cancellation and process-control signals are never swallowed.
+    """
+
+    observed_exception_ids: set[int] = set()
+    stage = POST_ACK_STAGE_PRE_CANCEL_READ
+
+    def _risk_quantity() -> int:
+        snapshot = result.resting_snapshot
+        if snapshot is not None:
+            remaining = snapshot.get("remaining_quantity")
+            if type(remaining) is int and remaining >= 0:
+                return remaining
+        return planned.quantity
+
+    def _already_observed(error: BaseException) -> bool:
+        current: BaseException | None = error
+        chain_ids: set[int] = set()
+        while current is not None and id(current) not in chain_ids:
+            if id(current) in observed_exception_ids:
+                return True
+            chain_ids.add(id(current))
+            current = current.__cause__ or current.__context__
+        return False
+
+    async def _observe(error: BaseException) -> None:
+        observed_exception_ids.add(id(error))
+        if on_post_ack_exception is None:
+            return
+        try:
+            await on_post_ack_exception(
+                result,
+                _risk_quantity(),
+                stage,
+                error,
+            )
+        except Exception as observer_error:  # state was recorded before alert
+            result.risk_notification_error_type = type(observer_error).__name__
+        except BaseException as observer_control:
+            # Do not turn KeyboardInterrupt/SystemExit/CancelledError raised by
+            # the observer into an ordinary notification failure.
+            observed_exception_ids.add(id(observer_control))
+            raise
+
+    try:
+        # --- prove it rests (this is the surface kis_mock does not have) ---
+        try:
+            resting = await account.read_resting_orders()
+        except Exception as exc:  # noqa: BLE001
+            result.failure = f"pending_read_failed:{type(exc).__name__}"
+            await _observe(exc)
+            resting = ()
+        else:
+            stage = POST_ACK_STAGE_PRE_CANCEL_PARSE
+            match = next((row for row in resting if row.order_id == order_no), None)
+            if match is not None:
+                assert_resting_echo(match, planned=planned, order_no=order_no)
+                result.observed_resting = True
+                result.resting_snapshot = {
+                    "order_id": match.order_id,
+                    "symbol": match.symbol,
+                    "status": match.status,
+                    "remaining_quantity": match.remaining_quantity,
+                    "ordered_price": match.ordered_price,
+                }
+            else:
+                # A marketable limit can fill instantly, but that is never
+                # represented as a cancellation.
+                result.resting_snapshot = None
+
+        # --- cancel: always attempted once the order exists ---
+        cancel_quantity = (
+            result.resting_snapshot["remaining_quantity"]
+            if result.resting_snapshot
+            else planned.quantity
+        )
+        stage = POST_ACK_STAGE_CANCEL_AUTHORITY
+        if cancel_authority_decision is not None:
+            cancel_authorized = await cancel_authority_decision(result)
+            if cancel_authorized is not True:
+                result.failure = MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY
+                if on_mandatory_cancel_blocked is not None:
+                    try:
+                        await on_mandatory_cancel_blocked(result, int(cancel_quantity))
+                    except Exception as exc:
+                        # The callback appends the state before notifying.
+                        result.risk_notification_error_type = type(exc).__name__
+                return result
+
+        stage = POST_ACK_STAGE_CANCEL_GUARD
+        if before_cancel_send is not None:
+            await before_cancel_send()
+        result.cancel_attempted = True
+        stage = POST_ACK_STAGE_CANCEL_REQUEST
+        try:
+            result.cancel_response = dict(
+                await account.cancel(
+                    original_order_no=order_no,
+                    symbol=planned.symbol,
+                    cancel_quantity=int(cancel_quantity),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — state semantics retained
+            result.cancel_response = {
+                "error_type": type(exc).__name__,
+                "detail": str(exc),
+            }
+            await _observe(exc)
+        else:
+            # 🔴 A Kiwoom cancel is itself an order and gets its **own**
+            # ``ord_no``. Journal it as ownership evidence without moving an
+            # attributed quantity.
+            stage = POST_ACK_STAGE_CANCEL_ACK_PARSE
+            try:
+                cancel_order_no = _extract_order_no(result.cancel_response)
+            except BrokerEchoMismatch as exc:
+                cancel_order_no = None
+                if require_cancel_order_no:
+                    result.failure = f"cancel_order_no_unavailable:{type(exc).__name__}"
+                await _observe(exc)
+            result.cancel_order_no = cancel_order_no
+            if cancel_order_no is not None and cancel_order_no != order_no:
+                stage = POST_ACK_STAGE_CANCEL_JOURNAL
+                try:
+                    # S10 applies to the cancel ACK too: journal before the
+                    # post-cancel read or coordinator durable writes.
+                    record_order_no(
+                        order_no=cancel_order_no,
+                        planned=replace(planned, side="cancel"),
+                        at=now,
+                    )
+                except Exception as exc:
+                    if continue_after_journal_error:
+                        result.journal_error_types.append(type(exc).__name__)
+                        result.failure = result.failure or (
+                            f"cancel_journal_failed:{type(exc).__name__}"
+                        )
+                    await _observe(exc)
+                    if not continue_after_journal_error:
+                        raise
+
+        # --- reconcile: the ONLY thing that may set cancel_confirmed ---
+        stage = POST_ACK_STAGE_RECONCILE_READ
+        try:
+            after = await account.read_resting_orders()
+        except Exception as exc:  # noqa: BLE001
+            result.failure = f"reconcile_read_failed:{type(exc).__name__}"
+            await _observe(exc)
+            incomplete = RoundTripIncomplete(
+                f"order {order_no} was submitted but the post-cancel broker read "
+                f"failed ({type(exc).__name__}) — cancellation is unproven and "
+                "this run must not be reported as clean"
+            )
+            if raise_on_incomplete:
+                raise incomplete from exc
+            return result
+
+        stage = POST_ACK_STAGE_RECONCILE_PARSE
+        still_resting = next((row for row in after if row.order_id == order_no), None)
+        result.reconcile_snapshot = {
+            "account_resting_order_count": len(after),
+            "this_order_still_resting": still_resting is not None,
+            "this_order_remaining_quantity": (
+                None if still_resting is None else still_resting.remaining_quantity
+            ),
+        }
+        result.cancel_confirmed = still_resting is None
+        stage = POST_ACK_STAGE_TERMINAL_CLASSIFICATION
+        if not result.cancel_confirmed:
+            result.failure = "cancel_unconfirmed"
+            incomplete = RoundTripIncomplete(
+                f"order {order_no} ({planned.symbol}) is still reported as "
+                f"resting by kt00007 after kt10003 — remaining="
+                f"{still_resting.remaining_quantity if still_resting else '?'}. "
+                "Refusing to report a cancellation the broker did not confirm."
+            )
+            if raise_on_incomplete:
+                raise incomplete
+        return result
+    except BaseException as exc:
+        # This boundary deliberately includes control-flow exceptions.  It is
+        # observation-only: after the flag/alert callback, the exact exception
+        # continues outward with a bare raise.
+        if not _already_observed(exc):
+            await _observe(exc)
+        raise
+
+
 async def submit_and_cancel(
     account: ReadOnlyKiwoomMockAccount,
     *,
@@ -1511,6 +1758,7 @@ async def submit_and_cancel(
     on_mandatory_cancel_blocked: (
         Callable[[RoundTripResult, int], Awaitable[None]] | None
     ) = None,
+    on_post_ack_exception: PostAckExceptionObserver | None = None,
     continue_after_journal_error: bool = False,
     require_cancel_order_no: bool = False,
     raise_on_incomplete: bool = True,
@@ -1518,9 +1766,9 @@ async def submit_and_cancel(
     """Submit one planned BUY, prove it rests, cancel it, prove it is gone.
 
     ``record_order_no(order_no, planned, at)`` is the journal writer; it is
-    called **immediately** after the broker returns an order number and before
-    anything else can fail, because an unrecorded order number is an order this
-    lane can no longer attribute or cancel on a later run.
+    called **immediately** after an exact broker order number is extracted.
+    Once that ACK exists, every exception through cancel termination is sent
+    to ``on_post_ack_exception`` before its original state behavior continues.
 
     Raises:
         RoundTripIncomplete: when the order was sent but its cancellation could
@@ -1528,15 +1776,11 @@ async def submit_and_cancel(
     """
 
     if planned.side != "buy":
-        # The acceptance lever is buy-only by construction. A sell would have
-        # to clear the legacy gate, and this function is not where that
-        # judgement belongs — ``kiwoom_cycle`` refuses it before here.
         raise ValueError(
             f"kiwoom acceptance round trip is buy-only; got {planned.side}"
         )
 
     assert_resubmit_allowed(broker_truth, symbol=planned.symbol, lane=LANE)
-
     result = RoundTripResult(
         correlation_id=planned.client_order_id,
         symbol=planned.symbol,
@@ -1555,138 +1799,53 @@ async def submit_and_cancel(
     order_no = _extract_order_no(submit_payload)
     result.order_no = order_no
     try:
-        # S10: no broker read, lifecycle write, or other fallible operation may
-        # be inserted between exact ACK extraction and this durable journal.
+        # S10: this is deliberately the first fallible call after exact ACK
+        # extraction. Risk observation happens only on the exception branch.
         record_order_no(order_no=order_no, planned=planned, at=now)
     except Exception as exc:
+        if continue_after_journal_error:
+            result.journal_error_types.append(type(exc).__name__)
+            result.failure = f"buy_journal_failed:{type(exc).__name__}"
+        if on_post_ack_exception is not None:
+            try:
+                await on_post_ack_exception(
+                    result,
+                    planned.quantity,
+                    POST_ACK_STAGE_BUY_JOURNAL,
+                    exc,
+                )
+            except Exception as observer_error:
+                result.risk_notification_error_type = type(observer_error).__name__
         if not continue_after_journal_error:
             raise
-        result.journal_error_types.append(type(exc).__name__)
-        result.failure = f"buy_journal_failed:{type(exc).__name__}"
-
-    # --- prove it rests (this is the surface kis_mock does not have) ---
-    try:
-        resting = await account.read_resting_orders()
-    except Exception as exc:  # noqa: BLE001
-        result.failure = f"pending_read_failed:{type(exc).__name__}"
-        resting = ()
-    else:
-        match = next((row for row in resting if row.order_id == order_no), None)
-        if match is not None:
-            assert_resting_echo(match, planned=planned, order_no=order_no)
-            result.observed_resting = True
-            result.resting_snapshot = {
-                "order_id": match.order_id,
-                "symbol": match.symbol,
-                "status": match.status,
-                "remaining_quantity": match.remaining_quantity,
-                "ordered_price": match.ordered_price,
-            }
-        else:
-            # Not an error by itself — a marketable limit can fill instantly —
-            # but it must be recorded as "not observed resting", never as a
-            # cancellation.
-            result.resting_snapshot = None
-
-    # --- cancel: always attempted once the order exists ---
-    cancel_quantity = (
-        result.resting_snapshot["remaining_quantity"]
-        if result.resting_snapshot
-        else planned.quantity
-    )
-    if cancel_authority_decision is not None:
-        cancel_authorized = await cancel_authority_decision(result)
-        if cancel_authorized is not True:
-            result.failure = MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY
-            if on_mandatory_cancel_blocked is not None:
-                try:
-                    await on_mandatory_cancel_blocked(result, int(cancel_quantity))
-                except Exception as exc:  # state was recorded before notification
-                    result.risk_notification_error_type = type(exc).__name__
-            return result
-    if before_cancel_send is not None:
-        await before_cancel_send()
-    result.cancel_attempted = True
-    try:
-        result.cancel_response = dict(
-            await account.cancel(
-                original_order_no=order_no,
-                symbol=planned.symbol,
-                cancel_quantity=int(cancel_quantity),
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 — recorded, never swallowed
-        result.cancel_response = {
-            "error_type": type(exc).__name__,
-            "detail": str(exc),
-        }
-    else:
-        # 🔴 A Kiwoom cancel is itself an order and gets its **own** ``ord_no``
-        # (observed 2026-08-12: buy ``0107387`` → cancel ``0107388``). Journal
-        # it too, or the next cycle's same-day foreign-trace gate reads this
-        # lane's own cancel as a second writer and refuses to start — which is
-        # exactly what happened on the first acceptance attempt. The record is
-        # written with ``side="cancel"``: :func:`kiwoom_attribution.
-        # build_attribution` counts only ``buy``/``sell``, so a cancel row
-        # establishes *ownership* without ever moving an attributed quantity.
-        try:
-            cancel_order_no = _extract_order_no(result.cancel_response)
-        except BrokerEchoMismatch as exc:
-            cancel_order_no = None
-            if require_cancel_order_no:
-                result.failure = f"cancel_order_no_unavailable:{type(exc).__name__}"
-        result.cancel_order_no = cancel_order_no
-        if cancel_order_no is not None and cancel_order_no != order_no:
+    except BaseException as exc:
+        # Process-control exceptions are observed but never swallowed.
+        if on_post_ack_exception is not None:
             try:
-                # S10 applies to the cancel ACK too: journal first, before the
-                # post-cancel read or coordinator durable writes.
-                record_order_no(
-                    order_no=cancel_order_no,
-                    planned=replace(planned, side="cancel"),
-                    at=now,
+                await on_post_ack_exception(
+                    result,
+                    planned.quantity,
+                    POST_ACK_STAGE_BUY_JOURNAL,
+                    exc,
                 )
-            except Exception as exc:
-                if not continue_after_journal_error:
-                    raise
-                result.journal_error_types.append(type(exc).__name__)
-                result.failure = result.failure or (
-                    f"cancel_journal_failed:{type(exc).__name__}"
-                )
-
-    # --- reconcile: the ONLY thing that may set cancel_confirmed ---
-    try:
-        after = await account.read_resting_orders()
-    except Exception as exc:  # noqa: BLE001
-        result.failure = f"reconcile_read_failed:{type(exc).__name__}"
-        incomplete = RoundTripIncomplete(
-            f"order {order_no} was submitted but the post-cancel broker read "
-            f"failed ({type(exc).__name__}) — cancellation is unproven and this "
-            "run must not be reported as clean"
-        )
-        if raise_on_incomplete:
-            raise incomplete from exc
-        return result
-
-    still_resting = next((row for row in after if row.order_id == order_no), None)
-    result.reconcile_snapshot = {
-        "account_resting_order_count": len(after),
-        "this_order_still_resting": still_resting is not None,
-        "this_order_remaining_quantity": (
-            None if still_resting is None else still_resting.remaining_quantity
-        ),
-    }
-    result.cancel_confirmed = still_resting is None
-    if not result.cancel_confirmed:
-        result.failure = "cancel_unconfirmed"
-        incomplete = RoundTripIncomplete(
-            f"order {order_no} ({planned.symbol}) is still reported as resting by "
-            f"kt00007 after kt10003 — remaining="
-            f"{still_resting.remaining_quantity if still_resting else '?'}. "
-            "Refusing to report a cancellation the broker did not confirm."
-        )
-        if raise_on_incomplete:
-            raise incomplete
-    return result
+            except Exception as observer_error:
+                result.risk_notification_error_type = type(observer_error).__name__
+        raise
+    return await _complete_cancel_after_ack(
+        account,
+        planned=planned,
+        result=result,
+        order_no=order_no,
+        record_order_no=record_order_no,
+        now=now,
+        cancel_authority_decision=cancel_authority_decision,
+        before_cancel_send=before_cancel_send,
+        on_mandatory_cancel_blocked=on_mandatory_cancel_blocked,
+        on_post_ack_exception=on_post_ack_exception,
+        continue_after_journal_error=continue_after_journal_error,
+        require_cancel_order_no=require_cancel_order_no,
+        raise_on_incomplete=raise_on_incomplete,
+    )
 
 
 __all__ = [
@@ -1697,6 +1856,19 @@ __all__ = [
     "KIS_LANE_CLIENT_ORDER_ID_PREFIX",
     "KRX_MIN_TRADE_UNIT_SHARES",
     "MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY",
+    "POST_ACK_CANCEL_WINDOW_EXCEPTION",
+    "POST_ACK_EXCEPTION_STAGES",
+    "POST_ACK_STAGE_BUY_JOURNAL",
+    "POST_ACK_STAGE_PRE_CANCEL_READ",
+    "POST_ACK_STAGE_PRE_CANCEL_PARSE",
+    "POST_ACK_STAGE_CANCEL_AUTHORITY",
+    "POST_ACK_STAGE_CANCEL_GUARD",
+    "POST_ACK_STAGE_CANCEL_REQUEST",
+    "POST_ACK_STAGE_CANCEL_ACK_PARSE",
+    "POST_ACK_STAGE_CANCEL_JOURNAL",
+    "POST_ACK_STAGE_RECONCILE_READ",
+    "POST_ACK_STAGE_RECONCILE_PARSE",
+    "POST_ACK_STAGE_TERMINAL_CLASSIFICATION",
     "ORDER_NO_FIELD",
     "OWN_PENDING_BASIS",
     "OWN_PENDING_SOURCE",
@@ -1712,6 +1884,7 @@ __all__ = [
     "KiwoomHostViolation",
     "KiwoomLaneDisabled",
     "PlannedOrder",
+    "PostAckExceptionObserver",
     "RawPosition",
     "ReadOnlyKiwoomMockAccount",
     "RestingOrder",

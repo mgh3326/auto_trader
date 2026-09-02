@@ -189,6 +189,24 @@ def test_complete_exact_current_cycle_coverage_is_verified() -> None:
     assert assessment.release_verified is True
 
 
+def test_complete_receipt_coverage_is_still_vetoed_by_an_active_hold() -> None:
+    """S-C: exact coverage cannot substitute for the independent hold veto."""
+
+    started = _started()
+    assessment = _assessment(
+        (started,),
+        (_terminal(started),),
+        active_hold_attempt_ids=(started.authority_attempt_id,),
+    )
+
+    assert assessment.enumeration_complete is True
+    assert assessment.expected_attempt_ids == (started.authority_attempt_id,)
+    assert assessment.committed_receipt_attempt_ids == (started.authority_attempt_id,)
+    assert "committed_receipt_coverage_mismatch" not in assessment.reasons
+    assert "unreleased_authority_hold_veto" in assessment.reasons
+    _assert_not_verified(assessment, "an active hold independently vetoes coverage")
+
+
 def test_exact_termination_resolves_an_in_flight_unknown_key() -> None:
     started = _started()
     terminal = _terminal(

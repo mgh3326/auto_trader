@@ -249,18 +249,21 @@ async def _notify_mandatory_cancel_risk(risk: dict[str, Any]) -> None:
 
     from app.monitoring.trade_notifier import get_trade_notifier
 
+    lines = [
+        "🚨 Kiwoom ACCEPTANCE live resting-order risk",
+        f"status={risk['status']}",
+        f"order_id={risk['order_id']}",
+        f"symbol={risk['symbol']}",
+        f"quantity={risk['quantity']}",
+        f"side={risk['side']}",
+        f"at={risk['at']}",
+    ]
+    if risk.get("exception_stage") is not None:
+        lines.append(f"exception_stage={risk['exception_stage']}")
+    if risk.get("exception_type") is not None:
+        lines.append(f"exception_type={risk['exception_type']}")
     delivered = await get_trade_notifier().notify_agent_message(
-        "\n".join(
-            (
-                "🚨 Kiwoom ACCEPTANCE live resting-order risk",
-                f"status={risk['status']}",
-                f"order_id={risk['order_id']}",
-                f"symbol={risk['symbol']}",
-                f"quantity={risk['quantity']}",
-                f"side={risk['side']}",
-                f"at={risk['at']}",
-            )
-        ),
+        "\n".join(lines),
         parse_mode=None,
         correlation_id=str(risk["order_id"]),
         skip_discord=True,
@@ -918,13 +921,18 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             position_symbols=scoped.cap_position_symbols, pending=current_pending
         )
 
-        async def _record_risk_then_notify(
-            trip: kiwoom_lane.RoundTripResult, remaining_quantity: int
+        async def _record_live_order_risk_then_notify(
+            trip: kiwoom_lane.RoundTripResult,
+            remaining_quantity: int,
+            *,
+            status: str,
+            exception_stage: str | None = None,
+            exception_type: str | None = None,
         ) -> None:
             risk_at = dt.datetime.now(dt.UTC)
             risk = {
                 "present": True,
-                "status": kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY,
+                "status": status,
                 "order_id": trip.order_no,
                 "symbol": trip.symbol,
                 "quantity": remaining_quantity,
@@ -932,8 +940,14 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
                 "at": risk_at.isoformat(),
                 "operator_notification": "pending",
             }
-            # AC7 ordering is deliberate: the cycle JSON gets an append-only
-            # risk snapshot before any external notifier code is entered.
+            if exception_stage is not None:
+                risk["exception_stage"] = exception_stage
+            if exception_type is not None:
+                # Exception messages can carry URLs or vendor payloads. Keep
+                # this projection category-only.
+                risk["exception_type"] = exception_type
+            # S-D/AC7 ordering is deliberate: every risk gets an append-only
+            # cycle snapshot before any external notifier code is entered.
             record[LIVE_ORDER_RISK_FLAG] = risk
             risk_snapshot = dict(record)
             risk_snapshot["cycle_record_phase"] = "live_order_risk_immediate"
@@ -944,6 +958,29 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
                 risk["operator_notification"] = "failed"
                 raise
             risk["operator_notification"] = "sent"
+
+        async def _record_authority_blocked_risk(
+            trip: kiwoom_lane.RoundTripResult, remaining_quantity: int
+        ) -> None:
+            await _record_live_order_risk_then_notify(
+                trip,
+                remaining_quantity,
+                status=kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY,
+            )
+
+        async def _record_post_ack_exception_risk(
+            trip: kiwoom_lane.RoundTripResult,
+            remaining_quantity: int,
+            exception_stage: str,
+            error: BaseException,
+        ) -> None:
+            await _record_live_order_risk_then_notify(
+                trip,
+                remaining_quantity,
+                status=kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION,
+                exception_stage=exception_stage,
+                exception_type=type(error).__name__,
+            )
 
         try:
             if coordination is None or coordination.grant_only:
@@ -958,7 +995,8 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
                 policy_version=coordination.policy_binding.policy_version,
                 policy_version_hash=coordination.policy_binding.policy_version_hash,
                 now=submitted_at,
-                on_mandatory_cancel_blocked=_record_risk_then_notify,
+                on_mandatory_cancel_blocked=_record_authority_blocked_risk,
+                on_post_ack_exception=_record_post_ack_exception_risk,
             )
             trip = composite.round_trip
             record["preflight"]["writer_lease"]["acquired"] = True
