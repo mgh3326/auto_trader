@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.market_data as market_data_service
@@ -52,7 +52,9 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
 _TRADER_AGENT_ID_DEFAULT = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
 # ROB-912 — marketable sell(지정가<현재가)은 유리 체결이므로 허용, fat-finger 딥디스카운트만 차단. 2%는 trim_preplace ultra_near 티어(≤2%)와 대칭.
-SELL_MARKETABLE_MAX_DISCOUNT = 0.02
+SELL_MARKETABLE_MAX_DISCOUNT: Final[float] = 0.02
+# Marketable parking buys mirror the sell-side fat-finger band on the upside.
+BUY_MARKETABLE_MAX_PREMIUM: Final[float] = 0.02
 
 
 @dataclass(frozen=True)
@@ -1030,6 +1032,15 @@ async def _preview_buy(
     if price > current_price and not allow_marketable_parking_buy:
         result["error"] = f"Buy price {price} exceeds current price {current_price}"
         return result
+    if allow_marketable_parking_buy:
+        band_ceiling = current_price * (1.0 + BUY_MARKETABLE_MAX_PREMIUM)
+        if price > band_ceiling:
+            result["error"] = (
+                f"Buy price {price} above marketable band ceiling "
+                f"{band_ceiling:.4f} (current {current_price} * "
+                f"(1 + {BUY_MARKETABLE_MAX_PREMIUM}))"
+            )
+            return result
     if quantity is None:
         result["error"] = "quantity is required for limit buy orders"
         return result

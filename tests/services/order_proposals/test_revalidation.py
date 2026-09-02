@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -102,6 +103,77 @@ async def test_default_kis_preview_forwards_pinned_proposal_account_mode(monkeyp
     assert result["success"] is True
     assert captured["proposal_flow"] is True
     assert captured["proposal_account_mode"] == "kis_live"
+
+
+@pytest.mark.asyncio
+async def test_manual_revalidation_chain_applies_parking_buy_band_before_submit(
+    db_session, monkeypatch
+):
+    """The Telegram approval revalidation path applies the buy band locally."""
+
+    from app.mcp_server.tooling import order_execution, order_validation
+
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="telegram",
+        thesis="park idle USD",
+        strategy="cash_parking",
+        rungs=[RungInput(0, "buy", Decimal("39"), Decimal("120"), None)],
+    )
+    await db_session.commit()
+
+    preview_calls: list[dict] = []
+    real_preview_buy = order_validation._preview_buy
+
+    async def traced_preview_buy(**kwargs):
+        preview_calls.append(kwargs)
+        return await real_preview_buy(**kwargs)
+
+    monkeypatch.setattr(order_validation, "_preview_buy", traced_preview_buy)
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=100.405),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+
+    real_place_order_impl = order_execution._place_order_impl
+    calls: list[dict] = []
+
+    async def guarded_place_order_impl(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("dry_run") is not True:
+            raise AssertionError("manual over-band preview must block before submit")
+        return await real_place_order_impl(**kwargs)
+
+    monkeypatch.setattr(order_execution, "_place_order_impl", guarded_place_order_impl)
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_default_place_order_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    assert "marketable band ceiling" in outcomes[0].detail["error"]
+    assert [call["dry_run"] for call in calls] == [True]
+    assert len(preview_calls) == 1
+    assert preview_calls[0]["allow_marketable_parking_buy"] is True
 
 
 async def _create_proposal(db_session):

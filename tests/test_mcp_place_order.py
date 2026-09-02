@@ -121,6 +121,9 @@ async def test_parking_proposal_preview_allows_only_exact_scoped_marketable_buy(
             "quantity": kwargs["order_quantity"],
             "estimated_value": kwargs["price"] * kwargs["order_quantity"],
             "fee": 0.0,
+            "preview_allow_marketable_parking_buy": kwargs[
+                "allow_marketable_parking_buy"
+            ],
         }
 
     monkeypatch.setattr(
@@ -164,10 +167,10 @@ async def test_parking_proposal_preview_allows_only_exact_scoped_marketable_buy(
         proposal_account_mode="kis_live",
     )
 
-    assert allowed["success"] is True
-    assert direct["success"] is True
-    assert wrong_account["success"] is True
-    assert wrong_symbol["success"] is True
+    assert allowed["preview_allow_marketable_parking_buy"] is True
+    assert direct["preview_allow_marketable_parking_buy"] is False
+    assert wrong_account["preview_allow_marketable_parking_buy"] is False
+    assert wrong_symbol["preview_allow_marketable_parking_buy"] is False
     # This exact sequence is the mutation anchor: weakening any tuple, account,
     # or proposal-flow predicate turns this assertion red.
     assert captured == [True, False, False, False], "PARKING_PREVIEW_SCOPE_MUTANT"
@@ -196,6 +199,105 @@ async def test_preview_buy_keeps_generic_above_quote_rejection_without_release()
     assert blocked["error"] == "Buy price 100.5 exceeds current price 100.405"
     assert "error" not in released
     assert released["estimated_value"] == pytest.approx(3919.5)
+
+
+async def _run_parking_preview_gate_probe(monkeypatch, **overrides):
+    captured: list[bool] = []
+
+    async def preview_spy(**kwargs):
+        captured.append(kwargs["allow_marketable_parking_buy"])
+        return {"estimated_value": 1.0}
+
+    monkeypatch.setattr(
+        order_execution, "_fetch_current_price", AsyncMock(return_value=100.405)
+    )
+    monkeypatch.setattr(order_execution, "_build_preview", preview_spy)
+    monkeypatch.setattr(
+        order_execution, "_check_balance_and_warn", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+
+    request = {
+        "symbol": "SGOV",
+        "side": "buy",
+        "market": "equity_us",
+        "order_type": "limit",
+        "quantity": 39,
+        "price": 100.50,
+        "dry_run": True,
+        "thesis": "park idle USD",
+        "strategy": "cash_parking",
+    }
+    request.update(overrides)
+    result = await order_execution._place_order_impl(**request)
+
+    assert result["estimated_value"] == pytest.approx(1.0)
+    assert len(captured) == 1
+    return captured[0]
+
+
+@pytest.mark.asyncio
+async def test_parking_preview_requires_proposal_flow(monkeypatch):
+    allowance = await _run_parking_preview_gate_probe(
+        monkeypatch,
+        proposal_flow=False,
+        proposal_account_mode="kis_live",
+    )
+
+    assert allowance is False
+
+
+@pytest.mark.asyncio
+async def test_parking_preview_requires_live_order(monkeypatch):
+    allowance = await _run_parking_preview_gate_probe(
+        monkeypatch,
+        proposal_flow=True,
+        proposal_account_mode="kis_live",
+        is_mock=True,
+    )
+
+    assert allowance is False
+
+
+@pytest.mark.asyncio
+async def test_parking_preview_requires_pinned_account_mode(monkeypatch):
+    allowance = await _run_parking_preview_gate_probe(
+        monkeypatch,
+        proposal_flow=True,
+        proposal_account_mode=None,
+    )
+
+    assert allowance is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("price", [100.5, 120.0, 200.0, 1000.0, 100000.0])
+async def test_marketable_parking_buy_premium_band_reproduces_axis_d(price):
+    current_price = 100.405
+    result = await order_validation._preview_buy(
+        symbol="SGOV",
+        order_type="limit",
+        quantity=39,
+        price=price,
+        current_price=current_price,
+        market_type="equity_us",
+        allow_marketable_parking_buy=True,
+    )
+
+    band_ceiling = current_price * (1.0 + order_validation.BUY_MARKETABLE_MAX_PREMIUM)
+    if price == 100.5:
+        assert "error" not in result
+        assert result["estimated_value"] == pytest.approx(price * 39)
+    else:
+        assert result.get("error") == (
+            f"Buy price {price} above marketable band ceiling "
+            f"{band_ceiling:.4f} (current {current_price} * "
+            f"(1 + {order_validation.BUY_MARKETABLE_MAX_PREMIUM}))"
+        )
 
 
 # ----------------------------------------------------------------------

@@ -1667,10 +1667,11 @@ async def _place_order_impl(
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
 
-    # The auto-approve classifier already permits a marketable parking buy
-    # only for its exact closed tuple.  Keep the preview aligned with that
-    # existing exception, but only when the proposal revalidation binding has
-    # supplied the pinned account mode.  Direct order tools and every other
+    # The classifier bounds the exact parking tuple's notional with its caps;
+    # preview bounds the marketable limit price with its fixed premium band.
+    # Keep those dimensions independently bounded, and carry the price-side
+    # allowance into preview only when the proposal revalidation binding has
+    # supplied the pinned account mode. Direct order tools and every other
     # proposal continue to reject a buy limit above the fresh quote here.
     allow_marketable_parking_buy = (
         proposal_flow
