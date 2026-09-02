@@ -14,6 +14,9 @@ import redis.asyncio as redis
 from app.core.config import settings
 from app.services.brokers.token_issuance import TokenIssuanceUnavailable
 
+GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS = 3.0
+GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS = 0.05
+
 
 class RedisTokenManager:
     """Redis 기반 토큰 관리 서비스 with 분산 락"""
@@ -327,41 +330,31 @@ class RedisTokenManager:
         self,
         token_ensurer: Callable[[], Awaitable[None]],
     ) -> str:
-        """Single-flight a gatewayd ensure and prove it by re-reading Redis.
+        """Delegate token single-flight to gatewayd and prove it via Redis.
 
         gatewayd, not this process, writes the provider-compatible token value.
-        No local issuer or cache write is available on this path.
+        It also owns the Redis issuance lock, so Python must never acquire the
+        provider lock before calling it. Concurrent API callers may all call
+        gatewayd; gatewayd serializes them and this bounded poll observes its
+        published result.
         """
         existing_token = await self.get_token(force_redis_check=True)
         if existing_token:
             return existing_token
 
-        lock_acquired = await self._acquire_lock()
-        if not lock_acquired:
-            await asyncio.sleep(0.2)
-            for _ in range(max(1, math.ceil(self._lock_wait_timeout_seconds / 0.1))):
-                existing_token = await self.get_token(force_redis_check=True)
-                if existing_token:
-                    return existing_token
-                await asyncio.sleep(0.1)
-            raise TokenIssuanceUnavailable(
-                "gatewayd token ensure contended; no cached token after bounded wait"
-            )
-
-        try:
-            existing_token = await self.get_token(force_redis_check=True)
-            if existing_token:
-                return existing_token
-
-            await token_ensurer()
+        await token_ensurer()
+        deadline = time.monotonic() + GATEWAYD_TOKEN_POLL_TIMEOUT_SECONDS
+        while True:
             published_token = await self.get_token(force_redis_check=True)
             if published_token:
                 return published_token
-            raise TokenIssuanceUnavailable(
-                "gatewayd acknowledged token ensure without publishing a usable token"
-            )
-        finally:
-            await self._release_lock()
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(GATEWAYD_TOKEN_POLL_INTERVAL_SECONDS)
+
+        raise TokenIssuanceUnavailable(
+            "gatewayd acknowledged token ensure without publishing a usable token"
+        )
 
     async def clear_token(self) -> None:
         """Redis에서 토큰 삭제"""

@@ -77,6 +77,8 @@ async def test_gatewayd_miss_ensures_once_reloads_redis_and_never_calls_toss_oau
     async def ensure_gatewayd(provider: str, *, settings_obj: object) -> None:
         assert provider == "toss"
         assert settings_obj is settings
+        if manager.lock_key in fake_redis.strings:
+            raise TokenIssuanceUnavailable("gatewayd issuer lock is held by Python")
         fake_redis.strings[manager.token_key] = json.dumps(
             {"access_token": "toss-gatewayd-token", "expires_at": time.time() + 3600}
         )
@@ -104,6 +106,41 @@ async def test_gatewayd_failure_propagates_without_toss_oauth_fallback(
 
     with pytest.raises(TokenIssuanceUnavailable, match="gatewayd unavailable"):
         await manager.get_access_token()
+
+    ensure.assert_awaited_once_with("toss", settings_obj=settings)
+    oauth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gatewayd_force_reissue_keeps_python_read_only_until_gateway_publishes(
+    fake_redis: _FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "broker_token_issuance_mode", "gatewayd")
+    manager = _manager()
+    failed_token = "known-bad-token"
+    fake_redis.strings[manager.token_key] = json.dumps(
+        {"access_token": failed_token, "expires_at": time.time() + 3600}
+    )
+
+    async def ensure_gatewayd(provider: str, *, settings_obj: object) -> None:
+        assert provider == "toss"
+        assert settings_obj is settings
+        assert fake_redis.strings[manager.token_key]
+        assert manager.lock_key not in fake_redis.strings
+        fake_redis.strings[manager.token_key] = json.dumps(
+            {"access_token": "gatewayd-fresh-token", "expires_at": time.time() + 3600}
+        )
+
+    ensure = AsyncMock(side_effect=ensure_gatewayd)
+    monkeypatch.setattr(auth, "ensure_gatewayd_token", ensure)
+    oauth = AsyncMock(side_effect=AssertionError("Toss OAuth must not run"))
+    monkeypatch.setattr(manager, "_issue_token", oauth)
+
+    assert (
+        await manager.get_access_token(force_reissue=True, failed_token=failed_token)
+        == "gatewayd-fresh-token"
+    )
 
     ensure.assert_awaited_once_with("toss", settings_obj=settings)
     oauth.assert_not_awaited()

@@ -14,7 +14,11 @@ keys as the API process. Python performs the following fail-closed sequence:
 
 1. Read the existing Redis token.
 2. On a miss or expiry buffer hit, POST gatewayd's provider ensure endpoint.
-3. Re-read Redis and use only a valid published token.
+3. Re-read Redis with a short bounded poll and use only a valid published token.
+
+Python never takes a provider issuance lock in `gatewayd` mode. gatewayd owns
+the OAuth leg and serializes concurrent ensures with that lock; taking it in
+the API process before the ensure request would deadlock a cache miss.
 
 The endpoints are `/v1/tokens/kis-live/ensure`, `/v1/tokens/kis-mock/ensure`,
 and `/v1/tokens/toss/ensure`. A gatewayd transport failure, non-2xx response,

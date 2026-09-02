@@ -190,6 +190,12 @@ class TossOAuthTokenManager:
     async def _issue_single_flight(
         self, *, force_reissue: bool = False, failed_token: str | None = None
     ) -> str:
+        if is_gatewayd_token_issuance(settings):
+            return await self._ensure_token_from_gatewayd(
+                force_reissue=force_reissue,
+                failed_token=failed_token,
+            )
+
         redis_client = await _get_redis_client()
         lock_token = str(uuid.uuid4())
         acquired = await redis_client.set(
@@ -211,19 +217,6 @@ class TossOAuthTokenManager:
                         return cached
                 if force_reissue:
                     await redis_client.delete(self.token_key)
-                if is_gatewayd_token_issuance(settings):
-                    await ensure_gatewayd_token("toss", settings_obj=settings)
-                    published = await self._get_cached_token()
-                    if published is None:
-                        raise TokenIssuanceUnavailable(
-                            "gatewayd acknowledged Toss token ensure without "
-                            "publishing a usable token"
-                        )
-                    logger.info(
-                        "Toss OAuth token ensured by gatewayd and read from Redis"
-                    )
-                    return published
-
                 issued = await self._issue_token()
                 await self._cache_token(issued)
                 logger.info("Toss OAuth token issued and cached")
@@ -235,6 +228,33 @@ class TossOAuthTokenManager:
             return waited
         raise TossTokenIssuanceUnavailable(
             "Toss OAuth token issuance contended; no cached token after bounded wait"
+        )
+
+    async def _ensure_token_from_gatewayd(
+        self, *, force_reissue: bool, failed_token: str | None
+    ) -> str:
+        """Request gatewayd issuance without touching Toss's issuer lock/key.
+
+        gatewayd owns both the OAuth leg and the Redis issuance lock. Python
+        only rechecks and reads the token cache around the ensure call. For a
+        failed-token refresh, a same-token cache result remains unusable and
+        fails closed instead of returning the known-bad token.
+        """
+        cached = await self._get_cached_token()
+        if cached is not None and (
+            not force_reissue or failed_token is not None and cached != failed_token
+        ):
+            return cached
+
+        await ensure_gatewayd_token("toss", settings_obj=settings)
+        published = await self._wait_for_cached_token(
+            failed_token=(failed_token or cached) if force_reissue else None
+        )
+        if published is not None:
+            logger.info("Toss OAuth token ensured by gatewayd and read from Redis")
+            return published
+        raise TokenIssuanceUnavailable(
+            "gatewayd acknowledged Toss token ensure without publishing a usable token"
         )
 
     async def _wait_for_cached_token(
