@@ -197,11 +197,7 @@ tests/services/paper_validation/test_safety_guards.py
 tests/services/paper_validation/test_service_concurrency.py
 tests/services/research/test_honest_gate_reason_code_docs.py
 tests/services/research/test_no_broker_import_guard.py
-tests/services/research/test_research_campaign_bridge_observer_effect.py
-tests/services/research/test_research_campaign_bridge_registration.py
-tests/services/research/test_research_campaign_bridge_trials.py
 tests/services/research/test_rob1025_funding_and_observability.py
-tests/services/research/test_rob944_campaign_controller.py
 tests/services/research/test_rob984_cp6_diagnostics.py
 tests/services/research/test_strategy_learning_event_service.py
 tests/services/research_candles/test_promotion.py
