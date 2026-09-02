@@ -163,12 +163,21 @@ def test_docker_fallback_bind_mounts_the_backup_directory(tmp_path: Path) -> Non
     """Without host pg_dump the script runs the client in a container; the
     ``--file`` target lives in the host backup directory, so that directory
     must be bind-mounted at the same path (first NCP run failed otherwise)."""
-    bin_dir = _stub_bin(tmp_path)
-    (bin_dir / "pg_dump").unlink()
-    (bin_dir / "pg_dumpall").unlink()
+    stub_bin = _stub_bin(tmp_path)
+    # A second PATH directory with everything except pg_dump/pg_dumpall so the
+    # docker fallback is the only client available.
+    docker_bin = tmp_path / "bin-docker"
+    docker_bin.mkdir()
+    for name in ("rsync", "ssh"):
+        (docker_bin / name).write_bytes((stub_bin / name).read_bytes())
+        (docker_bin / name).chmod(0o755)
+    _write_executable(
+        docker_bin / "sha256sum",
+        "#!/usr/bin/env bash\nprintf 'deadbeef  %s\\n' \"$1\"\n",
+    )
     docker_log = tmp_path / "docker.log"
     _write_executable(
-        bin_dir / "docker",
+        docker_bin / "docker",
         """#!/usr/bin/env bash
 set -Euo pipefail
 printf 'DOCKER %s\\n' "$*" >>"$DOCKER_LOG"
@@ -180,7 +189,12 @@ done
 if [[ -n "$output" ]]; then printf 'dump\\n' >"$output"; else printf -- '-- globals --\\n'; fi
 """,
     )
-    proc = _run(tmp_path, DOCKER_LOG=str(docker_log), PG_BACKUP_IMAGE="postgres:17")
+    proc = _run(
+        tmp_path,
+        DOCKER_LOG=str(docker_log),
+        PG_BACKUP_IMAGE="postgres:17",
+        PATH=f"{docker_bin}:/usr/bin:/bin",
+    )
 
     assert proc.returncode == 0, proc.stderr
     backup_dir = tmp_path / "ncp-backups"
