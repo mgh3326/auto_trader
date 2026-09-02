@@ -71,6 +71,7 @@ def build_ports(entry: LaneRegistryEntry) -> KiwoomCoordinationPorts:
         registry=CANONICAL_LANE_REGISTRY,
         lineage_factory=MockLineageFactory(),
         entry=entry,
+        authority_evidence=store,
         # Owner construction deliberately requires this exact private proof
         # type.  The bounded factory still consumes and validates the seal; this
         # only binds the returned ports to its canonical registry object.

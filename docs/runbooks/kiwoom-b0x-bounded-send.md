@@ -180,6 +180,67 @@ termination receipt**뿐이다. 단순히 lock holder가 보이지 않는다는 
 `RELEASE_VERIFIED`를 선언하지 않는다. 둘 중 어느 증거도 확보하지 못하면
 `G3_OVERALL = INCOMPLETE_EVIDENCE`다.
 
+ROB-1340부터 정본 열거원은 첫 `pg_try_advisory_lock` 전에 commit+readback한
+`review.kiwoom_authority_attempts`의 **현재 cycle** 행이다. `E`는 그 start 중 key를
+하나라도 획득했거나 응답이 in-flight unknown인 attempt 전체다. 다음을 모두 만족할 때만
+`RELEASE_VERIFIED`다.
+
+1. `E`가 비어 있지 않다.
+2. 모든 current-cycle start가 정확히 한 terminal을 가지며 enumeration이 완전하다.
+3. `E`와 committed qualifying receipt의 `authority_attempt_id` 집합이 정확히 같다.
+4. unlock receipt는 모든 acquired key의 exact-true와 같은 backend의 사후 matching row
+   0을, termination receipt는 exact owner binding·`pg_terminate_backend=true`·독립
+   observer의 PID 부재를 모두 증명한다.
+5. `unreleased_authority_holds_for_cycle(cycle_id)`가 비어 있다.
+
+빈 `pg_locks`, pool close, 프로세스 종료, claim 0, 마지막 성공 receipt 또는 cycle JSON은
+양성 증거가 아니다. release 자체가 증명된 뒤 receipt commit만 실패하면 주문 결과를
+소급 실패/재시도하지 않고 `G3_AUTHORITY_RELEASE=INCOMPLETE_EVIDENCE`로 남긴다.
+
+### current-cycle 범위와 과거 crash orphan 복구 (S9)
+
+`enumeration_complete`의 범위는 명시적으로 **현재 cycle_id 하나**다. 과거 cycle의 crash
+orphan은 전역 운영자 hold 목록에는 계속 보이지만, 새 cycle을 영구 INCOMPLETE로 만들지는
+않는다. 그렇다고 과거 cycle을 승격하거나 orphan을 삭제하는 것도 아니다.
+
+복구 절차는 해당 과거 cycle을 그대로 고정하고 surviving durable claim과
+`authority_attempt_id`를 조회한 뒤 `kt00007`로 exact broker order를 재확인한다. terminal
+broker evidence와 account/position reconciliation이 완전할 때만 기존
+`release_with_terminal_evidence`를 사용한다. authority receipt가 끝내 없으면 그 **과거
+cycle은 INCOMPLETE_EVIDENCE로 유지**하고, 운영자 승인 후 별도 새 cycle을 시작한다. DB
+행이나 process hold를 수정·삭제해서 새 cycle에 합치지 않는다.
+
+### `MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY`
+
+ACCEPTANCE 매수와 취소는 하나의 coordinator scope다. cancel 직전
+`scope.assert_owned()`가 실패하면 계약 불변식 때문에 취소를 보내지 않는다. 대신 그
+시점에 `cycles.jsonl`에 `live_order_risk`(order id, symbol, remaining quantity, side,
+timestamp)를 먼저 append하고, 그 write 뒤 기존 `get_trade_notifier().notify_agent_message`
+경로로 Telegram 운영 알림을 시도한다. 알림 실패는 이미 기록된 flag를 되돌리지 않는다.
+설정은 기존 `TELEGRAM_TOKEN`과 `TELEGRAM_CHAT_IDS_STR`(단일 대상 fallback은
+`TELEGRAM_CHAT_ID`) 키를 사용하며 값은 로그나 산출물에 남기지 않는다.
+
+남은 주문은 새 retry/send 표면이 아니라 기존 recovery contract가 흡수한다. composite
+dispatch는 BUY order id와 `UNCERTAIN` claim을 durable하게 남긴다. recovery owner가 그
+claim을 재발견하고 `kt00007` exact readback을 수행하며, terminal evidence가 완전할 때만
+`release_with_terminal_evidence`로 claim을 해제한다. open/unknown이면 계속 account를
+막고 자동 재주문하지 않는다. DAY 마감 소멸은 하한 안전망일 뿐 claim 해제 증거가 아니다.
+
+### migration·권한 preflight와 신뢰 한계 (S11)
+
+상류 운영자는 배포 전에 additive migration을 적용한다. worker/검증 세션은 운영 DB에서
+`alembic upgrade head`를 실행하지 않는다. confirmed ACCEPTANCE는 broker send 전에 fresh
+read-only catalog projection으로 두 table, 필수 column, named CHECK/UNIQUE,
+`rob1340.v1`, effective `SELECT`/`INSERT` 허용과 `UPDATE`/`DELETE`/`TRUNCATE` 부재를
+검증한다. probe INSERT는 receipt를 위조하므로 금지한다.
+이 privilege projection을 만족하는 운영 role 실사가 끝나기 전에는 confirmed
+ACCEPTANCE를 활성화하지 않는다.
+
+DB trigger와 REVOKE는 update/delete/truncate를 막지만, **같은 application role을 획득한
+임의 코드의 INSERT 위조까지 막지는 못한다.** producer와 reader의 운영 role 분리는 이번
+범위 밖이며 상류 후속 결정 사항이다. 따라서 이 receipt는 동일 role 자체가 침해되지
+않았다는 운영 신뢰 경계를 전제로 한다.
+
 ### 게이트 ⑬ — 추가 주문 0 + 동일 봉인 재사용 불가
 
 게이트 ⑬은 두 조건을 모두 요구한다. G3의 허용된 1회 이후 broker evidence에서 추가

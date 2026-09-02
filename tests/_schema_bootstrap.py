@@ -93,7 +93,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # create_all test schemas leave it empty so tests can transact a canonical row.
 # v43 (ROB-1338): review.kiwoom_coordination_lifecycle is a new ORM table.
 # Production uses its additive migration; test schemas use create_all.
-SCHEMA_BOOTSTRAP_VERSION = 43
+# v44 (ROB-1340): append-only authority start/terminal evidence tables and
+# UPDATE/DELETE/TRUNCATE rejection triggers.
+SCHEMA_BOOTSTRAP_VERSION = 44
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1807,6 +1809,42 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.buy_gate_ab_collection_epoch "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_buy_gate_ab_epoch_mutation()",
+    # ---- ROB-1340 authority attempt/cessation evidence (tables via create_all).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_kiwoom_authority_evidence_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.% is append-only; % rejected',
+            TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_kiwoom_authority_attempts_immutable "
+    "ON review.kiwoom_authority_attempts",
+    "CREATE TRIGGER trg_kiwoom_authority_attempts_immutable "
+    "BEFORE UPDATE OR DELETE ON review.kiwoom_authority_attempts "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_kiwoom_authority_evidence_mutation()",
+    "DROP TRIGGER IF EXISTS trg_kiwoom_authority_attempts_truncate_immutable "
+    "ON review.kiwoom_authority_attempts",
+    "CREATE TRIGGER trg_kiwoom_authority_attempts_truncate_immutable "
+    "BEFORE TRUNCATE ON review.kiwoom_authority_attempts "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_kiwoom_authority_evidence_mutation()",
+    "DROP TRIGGER IF EXISTS trg_kiwoom_authority_cessation_receipts_immutable "
+    "ON review.kiwoom_authority_cessation_receipts",
+    "CREATE TRIGGER trg_kiwoom_authority_cessation_receipts_immutable "
+    "BEFORE UPDATE OR DELETE ON review.kiwoom_authority_cessation_receipts "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_kiwoom_authority_evidence_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_kiwoom_authority_cessation_receipts_truncate_immutable "
+    "ON review.kiwoom_authority_cessation_receipts",
+    "CREATE TRIGGER "
+    "trg_kiwoom_authority_cessation_receipts_truncate_immutable "
+    "BEFORE TRUNCATE ON review.kiwoom_authority_cessation_receipts "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_kiwoom_authority_evidence_mutation()",
 )
 
 

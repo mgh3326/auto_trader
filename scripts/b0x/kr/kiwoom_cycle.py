@@ -42,7 +42,7 @@ before any network call and this lane never offers the choice.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -239,6 +239,37 @@ DAY_ORDER_RETAINED_NOTE: Final[str] = (
 
 REALIZED_PNL_UNAVAILABLE_REASON: Final[str] = "realized_pnl_unavailable"
 COORDINATION_GRANT_UNAVAILABLE_REASON: Final[str] = "coordination_grant_unavailable"
+LIVE_ORDER_RISK_FLAG: Final[str] = "live_order_risk"
+
+type AuthorityRiskNotifier = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+async def _notify_mandatory_cancel_risk(risk: dict[str, Any]) -> None:
+    """Reuse the existing notifier's Telegram transport; create no send surface."""
+
+    from app.monitoring.trade_notifier import get_trade_notifier
+
+    delivered = await get_trade_notifier().notify_agent_message(
+        "\n".join(
+            (
+                "🚨 Kiwoom ACCEPTANCE live resting-order risk",
+                f"status={risk['status']}",
+                f"order_id={risk['order_id']}",
+                f"symbol={risk['symbol']}",
+                f"quantity={risk['quantity']}",
+                f"side={risk['side']}",
+                f"at={risk['at']}",
+            )
+        ),
+        parse_mode=None,
+        correlation_id=str(risk["order_id"]),
+        skip_discord=True,
+        mirror_telegram=True,
+    )
+    if delivered is not True:
+        raise RuntimeError("existing Telegram notifier did not confirm delivery")
+
+
 _LIFECYCLE_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
     {
         REALIZED_PNL_UNAVAILABLE_REASON,
@@ -611,12 +642,11 @@ def _confirm_preflight_record(
         },
         "writer_lease": {
             "acquired": False,
+            "required": True,
             "surface": "ACCEPTANCE_ONLY",
             "note": (
-                "이 retained acceptance lever는 ORDERING의 account-keyed lease를 "
-                "획득하지 않는다. ORDERING은 별도 host-local fcntl lease와 매 "
-                "mutation kt00007 foreign-trace boundary를 사용한다; 어느 쪽도 "
-                "KR-B1 비활성 확인이라는 운영 조치를 대체하지 않는다."
+                "clean account preflight 뒤 coordinator의 PostgreSQL "
+                "physical-account authority를 획득해야만 send할 수 있다."
             ),
         },
         "passed": not reasons,
@@ -661,8 +691,8 @@ def _preflight_truth_unavailable_record(
         "writer_lease": {
             "acquired": False,
             "surface": "ACCEPTANCE_ONLY",
-            "note": "the retained acceptance lever does not claim ORDERING's "
-            "account-keyed writer lease",
+            "note": "account truth failed before the coordinated PostgreSQL "
+            "authority scope could be entered",
         },
         "passed": False,
         "reasons": ["account_truth_unavailable"],
@@ -683,6 +713,8 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
     account: kiwoom_lane.ReadOnlyKiwoomMockAccount | None,
     journal: kiwoom_attr.OwnOrderJournal,
     account_identity: dict[str, str] | None,
+    coordination: ordering_support.KiwoomCoordinationAdapter | None,
+    authority_risk_notifier: AuthorityRiskNotifier,
 ) -> KiwoomCycleOutcome:
     """Preserved ``ACCEPTANCE_ONLY`` submit → cancel → reconcile lever.
 
@@ -829,9 +861,22 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             outcome=outcome, ledger=ledger, record=record, labels=labels
         )
 
+    if coordination is None or coordination.grant_only:
+        return _finish_zero_order(
+            outcome=outcome,
+            ledger=ledger,
+            record=record,
+            labels=labels,
+            reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+            detail="confirmed ACCEPTANCE requires a non-grant coordination owner",
+        )
+
     record["round_trip_policy"] = ROUND_TRIP_MANDATORY_NOTE
+    record["cancel_authority_policy"] = (
+        ordering_support.ACCEPTANCE_CANCEL_AUTHORITY_POLICY
+    )
     round_trips: list[dict[str, Any]] = []
-    incomplete: kiwoom_lane.RoundTripIncomplete | None = None
+    incomplete = False
     for index, order in enumerate(planned):
         if index >= ACCEPTANCE_SUBMISSION_LIMIT:
             record["submission_stopped"] = (
@@ -872,15 +917,80 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
         current_truth = kiwoom_lane.broker_truth_from(
             position_symbols=scoped.cap_position_symbols, pending=current_pending
         )
+
+        async def _record_risk_then_notify(
+            trip: kiwoom_lane.RoundTripResult, remaining_quantity: int
+        ) -> None:
+            risk_at = dt.datetime.now(dt.UTC)
+            risk = {
+                "present": True,
+                "status": kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY,
+                "order_id": trip.order_no,
+                "symbol": trip.symbol,
+                "quantity": remaining_quantity,
+                "side": trip.side,
+                "at": risk_at.isoformat(),
+                "operator_notification": "pending",
+            }
+            # AC7 ordering is deliberate: the cycle JSON gets an append-only
+            # risk snapshot before any external notifier code is entered.
+            record[LIVE_ORDER_RISK_FLAG] = risk
+            risk_snapshot = dict(record)
+            risk_snapshot["cycle_record_phase"] = "live_order_risk_immediate"
+            ledger.record_cycle(risk_snapshot)
+            try:
+                await authority_risk_notifier(dict(risk))
+            except Exception:
+                risk["operator_notification"] = "failed"
+                raise
+            risk["operator_notification"] = "sent"
+
         try:
-            trip = await kiwoom_lane.submit_and_cancel(
+            if coordination is None or coordination.grant_only:
+                raise ordering_support.KiwoomSendNotAuthorized(
+                    "acceptance_requires_non_grant_coordination_owner"
+                )
+            composite = await coordination.acceptance_round_trip(
                 account,
                 planned=order,
                 broker_truth=current_truth,
                 record_order_no=_journal_writer(journal),
+                policy_version=coordination.policy_binding.policy_version,
+                policy_version_hash=coordination.policy_binding.policy_version_hash,
                 now=submitted_at,
+                on_mandatory_cancel_blocked=_record_risk_then_notify,
             )
+            trip = composite.round_trip
+            record["preflight"]["writer_lease"]["acquired"] = True
             round_trips.append(trip.canonical())
+            authority = composite.authority_release
+            record["authority_cessation"] = {
+                "status": authority.status.value,
+                "enumeration_complete": authority.enumeration_complete,
+                # Only committed receipt ids/digests leave the authority layer.
+                "committed_receipts": [
+                    {"receipt_id": receipt_id, "receipt_digest": digest}
+                    for receipt_id, digest in authority.committed_receipt_refs
+                ],
+                "reasons": list(authority.reasons),
+            }
+            record["G3_AUTHORITY_RELEASE"] = authority.status.value
+            if not authority.release_verified:
+                record["G3_OVERALL"] = "INCOMPLETE_EVIDENCE"
+                record["submission_stopped"] = "authority_evidence_incomplete"
+                incomplete = True
+                break
+            if trip.failure is not None or not trip.cancel_confirmed:
+                record["G3_OVERALL"] = "INCOMPLETE_EVIDENCE"
+                record["submission_stopped"] = (
+                    "mandatory_cancel_blocked_by_authority"
+                    if trip.failure == kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY
+                    else "round_trip_incomplete"
+                )
+                record.setdefault("round_trip_failures", []).append(trip.failure)
+                incomplete = True
+                break
+            record["G3_OVERALL"] = "RELEASE_VERIFIED"
         except OwnPendingResubmitBlocked as exc:
             record.setdefault("submission_dedup_blocked", []).append(
                 {
@@ -892,10 +1002,12 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             )
             record["submission_stopped"] = "dedup_blocked"
             break
-        except kiwoom_lane.RoundTripIncomplete as exc:
-            incomplete = exc
-            record["submission_stopped"] = "round_trip_incomplete"
-            record.setdefault("round_trip_failures", []).append(str(exc))
+        except Exception as exc:  # fail closed; durable claim/recovery owns unknowns
+            incomplete = True
+            record["submission_stopped"] = "coordinated_round_trip_failed"
+            record.setdefault("round_trip_failures", []).append(
+                _coordination_error_code(exc)
+            )
             break
 
     record["round_trip"] = round_trips
@@ -909,7 +1021,7 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
         }
         for trip in round_trips
     ]
-    if incomplete is not None:
+    if incomplete:
         outcome.exit_code = 2
     return _persist_outcome(
         outcome=outcome, ledger=ledger, record=record, labels=labels
@@ -2270,6 +2382,7 @@ async def run_kiwoom_cycle(
     coordination_factory: (Callable[[], object] | None) = None,
     coordination_entry: LaneRegistryEntry | None = None,
     realized_pnl_reader: Callable[..., kiwoom_attr.RealizedPnlInput] | None = None,
+    authority_risk_notifier: AuthorityRiskNotifier | None = None,
 ) -> KiwoomCycleOutcome:
     """One manual kiwoom_mock B0-X cycle.
 
@@ -2297,6 +2410,11 @@ async def run_kiwoom_cycle(
         if journal is None
         else journal
     )
+    risk_notifier = (
+        _notify_mandatory_cancel_risk
+        if authority_risk_notifier is None
+        else authority_risk_notifier
+    )
 
     with writer_lock(lane=LANE, root=root):
         ledger = ObservationLedger(lane=LANE, root=root)
@@ -2322,27 +2440,6 @@ async def run_kiwoom_cycle(
             expected_entry=coordination_entry,
         )
         record["coordination"] = coordination_record
-
-        # A configured owner factory is an explicit production dependency.  A
-        # missing/rejected owner, or a grant-only canary, must therefore stop
-        # every confirmed mutation mode before account/broker work.  Preview is
-        # still allowed to render the diagnostic record and planned derivation.
-        if (
-            confirm
-            and coordination_factory is not None
-            and (coordination is None or coordination.grant_only)
-        ):
-            return _finish_zero_order(
-                outcome=outcome,
-                ledger=ledger,
-                record=record,
-                labels=labels,
-                reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
-                detail=(
-                    "coordination owner is absent or grant-only; "
-                    "G1 does not authorize send"
-                ),
-            )
 
         if ordering and not confirm:
             return _finish_zero_order(
@@ -2407,6 +2504,8 @@ async def run_kiwoom_cycle(
                 account=account,
                 journal=lane_journal,
                 account_identity=None,
+                coordination=coordination,
+                authority_risk_notifier=risk_notifier,
             )
 
         try:
@@ -2435,6 +2534,20 @@ async def run_kiwoom_cycle(
                 account=account,
                 journal=lane_journal,
                 account_identity=account_identity,
+                coordination=coordination,
+                authority_risk_notifier=risk_notifier,
+            )
+
+        # Cheap/session/account gates above remain diagnostically observable,
+        # but no ORDERING mutation may proceed without the effective owner.
+        if coordination is None or coordination.grant_only:
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+                detail="confirmed mutation requires a non-grant coordination owner",
             )
 
         make_lease = (

@@ -12,16 +12,31 @@ evidence, blocking replay until authoritative reconciliation.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.kiwoom_authority_cessation import (
+    KiwoomAuthorityAttempt,
+    KiwoomAuthorityCessationReceipt,
+)
 from app.models.kiwoom_coordination_lifecycle import KiwoomCoordinationLifecycle
 from app.models.review import OrderSendIntent
+from app.services.mock_integration.authority_cessation import (
+    AUTHORITY_CESSATION_CONTRACT_VERSION,
+    AuthorityAttemptStartedV1,
+    AuthorityAttemptTerminalState,
+    AuthorityAttemptTerminalV1,
+    AuthorityCessationKind,
+    AuthorityReleaseAssessment,
+    canonical_digest,
+    terminal_receipt_digest,
+    verify_authority_cessation,
+)
 from app.services.mock_integration.coordination import (
     DispatchEvidence,
     DispatchEvidenceKind,
@@ -35,6 +50,112 @@ from app.services.order_send_intent_service import (
 )
 
 type AsyncSessionFactory = Callable[[], AsyncSession]
+
+_AUTHORITY_TABLE_COLUMNS = {
+    "kiwoom_authority_attempts": (
+        "authority_attempt_id",
+        "baseline_matching_rows",
+        "contract_version",
+        "created_at",
+        "cycle_id",
+        "id",
+        "key_count",
+        "keyset_digest",
+        "lane_id",
+        "order_attempt_id",
+        "owner_binding_digest",
+    ),
+    "kiwoom_authority_cessation_receipts": (
+        "acquired_key_count",
+        "authority_attempt_id",
+        "claim_row_id",
+        "contract_version",
+        "created_at",
+        "cycle_id",
+        "id",
+        "in_flight_unknown",
+        "key_count",
+        "keyset_digest",
+        "kind",
+        "lane_id",
+        "lock_definite_false",
+        "lock_statement_dispatched",
+        "observer_pid_absent",
+        "order_attempt_id",
+        "owner_binding_digest",
+        "post_release_matching_rows",
+        "receipt_digest",
+        "terminal_state",
+        "termination_returned_exact_true",
+        "unlock_true_count",
+    ),
+}
+_AUTHORITY_TABLE_CONSTRAINTS = {
+    "kiwoom_authority_attempts": (
+        "ck_kiwoom_authority_attempts_baseline_matching_rows_zero",
+        "ck_kiwoom_authority_attempts_contract_version_rob1340_v1",
+        "ck_kiwoom_authority_attempts_key_count_positive",
+        "ck_kiwoom_authority_attempts_keyset_digest_sha256",
+        "ck_kiwoom_authority_attempts_lane_kr_kiwoom_mock",
+        "ck_kiwoom_authority_attempts_owner_binding_digest_sha256",
+        "uq_kiwoom_authority_attempt_id",
+    ),
+    "kiwoom_authority_cessation_receipts": (
+        "ck_kiwoom_authority_cessation_receipts_acquired_count_bounded",
+        "ck_kiwoom_authority_cessation_receipts_cessation_kind",
+        "ck_kiwoom_authority_cessation_receipts_contract_rob1340_v1",
+        "ck_kiwoom_authority_cessation_receipts_key_count_positive",
+        "ck_kiwoom_authority_cessation_receipts_keyset_digest_sha256",
+        "ck_kiwoom_authority_cessation_receipts_kind_exact_proof",
+        "ck_kiwoom_authority_cessation_receipts_lane_kr_kiwoom_mock",
+        "ck_kiwoom_authority_cessation_receipts_owner_digest_sha256",
+        "ck_kiwoom_authority_cessation_receipts_receipt_digest_sha256",
+        "ck_kiwoom_authority_cessation_receipts_terminal_state",
+        "ck_kiwoom_authority_cessation_receipts_unlock_count_bounded",
+        "uq_kiwoom_authority_receipt_attempt",
+        "uq_kiwoom_authority_receipt_digest",
+    ),
+}
+
+
+def _authority_schema_projection(
+    *,
+    columns: dict[str, tuple[str, ...]],
+    constraints: dict[str, tuple[str, ...]],
+    privileges: dict[str, dict[str, bool]],
+) -> dict[str, object]:
+    return {
+        "contract_version": AUTHORITY_CESSATION_CONTRACT_VERSION,
+        "tables": [
+            {
+                "name": table,
+                "columns": list(columns[table]),
+                "constraints": list(constraints[table]),
+                "privileges": privileges[table],
+            }
+            for table in sorted(_AUTHORITY_TABLE_COLUMNS)
+        ],
+    }
+
+
+_EXPECTED_AUTHORITY_SCHEMA_PROJECTION = _authority_schema_projection(
+    columns=_AUTHORITY_TABLE_COLUMNS,
+    constraints=_AUTHORITY_TABLE_CONSTRAINTS,
+    privileges={
+        table: {
+            "SELECT": True,
+            "INSERT": True,
+            "UPDATE": False,
+            "DELETE": False,
+            "TRUNCATE": False,
+        }
+        for table in _AUTHORITY_TABLE_COLUMNS
+    },
+)
+AUTHORITY_SCHEMA_CONTRACT_DIGEST = canonical_digest(
+    _EXPECTED_AUTHORITY_SCHEMA_PROJECTION,
+    domain="rob1340-authority-schema-v1",
+)
 
 
 class KiwoomCoordinationStoreConflict(RuntimeError):
@@ -153,6 +274,438 @@ class KiwoomCoordinationStore:
         self._lane_id = lane_id
         self._physical_account_id = physical_account_id
         self._claim_account_scope = claim_account_scope
+
+    async def assert_ready(self) -> None:
+        """Prove the immutable evidence schema and effective app privileges.
+
+        This is a read-only catalog projection on a fresh session.  An INSERT
+        probe would itself become a fake authority attempt, so none is used.
+        """
+
+        try:
+            async with self._session_factory() as session:
+                column_rows = (
+                    (
+                        await session.execute(
+                            text(
+                                """
+                            SELECT c.relname AS table_name, a.attname AS column_name
+                            FROM pg_catalog.pg_class AS c
+                            JOIN pg_catalog.pg_namespace AS n
+                              ON n.oid = c.relnamespace
+                            JOIN pg_catalog.pg_attribute AS a
+                              ON a.attrelid = c.oid
+                            WHERE n.nspname = 'review'
+                              AND c.relkind IN ('r', 'p')
+                              AND c.relname IN (
+                                'kiwoom_authority_attempts',
+                                'kiwoom_authority_cessation_receipts'
+                              )
+                              AND a.attnum > 0
+                              AND NOT a.attisdropped
+                            ORDER BY c.relname, a.attname
+                            """
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                constraint_rows = (
+                    (
+                        await session.execute(
+                            text(
+                                """
+                            SELECT c.relname AS table_name,
+                                   con.conname AS constraint_name
+                            FROM pg_catalog.pg_constraint AS con
+                            JOIN pg_catalog.pg_class AS c
+                              ON c.oid = con.conrelid
+                            JOIN pg_catalog.pg_namespace AS n
+                              ON n.oid = c.relnamespace
+                            WHERE n.nspname = 'review'
+                              AND c.relname IN (
+                                'kiwoom_authority_attempts',
+                                'kiwoom_authority_cessation_receipts'
+                              )
+                            ORDER BY c.relname, con.conname
+                            """
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                privilege_rows = (
+                    (
+                        await session.execute(
+                            text(
+                                """
+                            SELECT c.relname AS table_name,
+                                   has_table_privilege(
+                                     current_user, c.oid, 'SELECT'
+                                   ) AS can_select,
+                                   has_table_privilege(
+                                     current_user, c.oid, 'INSERT'
+                                   ) AS can_insert,
+                                   has_table_privilege(
+                                     current_user, c.oid, 'UPDATE'
+                                   ) AS can_update,
+                                   has_table_privilege(
+                                     current_user, c.oid, 'DELETE'
+                                   ) AS can_delete,
+                                   has_table_privilege(
+                                     current_user, c.oid, 'TRUNCATE'
+                                   ) AS can_truncate
+                            FROM pg_catalog.pg_class AS c
+                            JOIN pg_catalog.pg_namespace AS n
+                              ON n.oid = c.relnamespace
+                            WHERE n.nspname = 'review'
+                              AND c.relkind IN ('r', 'p')
+                              AND c.relname IN (
+                                'kiwoom_authority_attempts',
+                                'kiwoom_authority_cessation_receipts'
+                              )
+                            ORDER BY c.relname
+                            """
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+        except Exception as exc:
+            raise KiwoomCoordinationStoreConflict(
+                "authority_schema_preflight_unavailable"
+            ) from exc
+
+        columns: dict[str, tuple[str, ...]] = {}
+        constraints: dict[str, tuple[str, ...]] = {}
+        privileges: dict[str, dict[str, bool]] = {}
+        for table in _AUTHORITY_TABLE_COLUMNS:
+            columns[table] = tuple(
+                sorted(
+                    str(row["column_name"])
+                    for row in column_rows
+                    if row["table_name"] == table
+                )
+            )
+            required_constraints = set(_AUTHORITY_TABLE_CONSTRAINTS[table])
+            constraints[table] = tuple(
+                sorted(
+                    str(row["constraint_name"])
+                    for row in constraint_rows
+                    if row["table_name"] == table
+                    and row["constraint_name"] in required_constraints
+                )
+            )
+            privilege = next(
+                (row for row in privilege_rows if row["table_name"] == table), None
+            )
+            if privilege is None:
+                privileges[table] = {}
+            else:
+                privileges[table] = {
+                    "SELECT": privilege["can_select"] is True,
+                    "INSERT": privilege["can_insert"] is True,
+                    "UPDATE": privilege["can_update"] is True,
+                    "DELETE": privilege["can_delete"] is True,
+                    "TRUNCATE": privilege["can_truncate"] is True,
+                }
+
+        actual = _authority_schema_projection(
+            columns=columns, constraints=constraints, privileges=privileges
+        )
+        digest = canonical_digest(actual, domain="rob1340-authority-schema-v1")
+        if digest != AUTHORITY_SCHEMA_CONTRACT_DIGEST:
+            raise KiwoomCoordinationStoreConflict("authority_schema_contract_mismatch")
+
+    @staticmethod
+    def _validate_started(started: AuthorityAttemptStartedV1) -> None:
+        if (
+            type(started) is not AuthorityAttemptStartedV1
+            or started.contract_version != AUTHORITY_CESSATION_CONTRACT_VERSION
+            or started.lane_id != "kr.kiwoom.mock"
+            or not started.authority_attempt_id.strip()
+            or not started.cycle_id.strip()
+            or not started.order_attempt_id.strip()
+            or len(started.owner_binding_digest) != 64
+            or len(started.keyset_digest) != 64
+            or started.key_count <= 0
+            or started.baseline_matching_rows != 0
+        ):
+            raise KiwoomCoordinationStoreConflict("authority_attempt_shape_rejected")
+
+    @staticmethod
+    def _started_matches(
+        row: KiwoomAuthorityAttempt, started: AuthorityAttemptStartedV1
+    ) -> bool:
+        return (
+            row.authority_attempt_id == started.authority_attempt_id
+            and row.contract_version == started.contract_version
+            and row.lane_id == started.lane_id
+            and row.cycle_id == started.cycle_id
+            and row.order_attempt_id == started.order_attempt_id
+            and row.owner_binding_digest == started.owner_binding_digest
+            and row.keyset_digest == started.keyset_digest
+            and row.key_count == started.key_count
+            and row.baseline_matching_rows == started.baseline_matching_rows
+        )
+
+    async def _read_started(
+        self, authority_attempt_id: str
+    ) -> KiwoomAuthorityAttempt | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(KiwoomAuthorityAttempt).where(
+                    KiwoomAuthorityAttempt.authority_attempt_id == authority_attempt_id
+                )
+            )
+
+    async def record_started(
+        self, started: AuthorityAttemptStartedV1, /
+    ) -> AuthorityAttemptStartedV1:
+        """Commit and independently read back a start before lock dispatch."""
+
+        self._validate_started(started)
+        existing = await self._read_started(started.authority_attempt_id)
+        if existing is not None:
+            if not self._started_matches(existing, started):
+                raise KiwoomCoordinationStoreConflict(
+                    "authority_attempt_immutable_conflict"
+                )
+            return started
+
+        async with self._session_factory() as session:
+            session.add(
+                KiwoomAuthorityAttempt(
+                    authority_attempt_id=started.authority_attempt_id,
+                    contract_version=started.contract_version,
+                    lane_id=started.lane_id,
+                    cycle_id=started.cycle_id,
+                    order_attempt_id=started.order_attempt_id,
+                    owner_binding_digest=started.owner_binding_digest,
+                    keyset_digest=started.keyset_digest,
+                    key_count=started.key_count,
+                    baseline_matching_rows=started.baseline_matching_rows,
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+
+        readback = await self._read_started(started.authority_attempt_id)
+        if readback is None or not self._started_matches(readback, started):
+            raise KiwoomCoordinationStoreConflict(
+                "authority_attempt_commit_readback_failed"
+            )
+        return started
+
+    @staticmethod
+    def _terminal_from_row(
+        row: KiwoomAuthorityCessationReceipt,
+    ) -> AuthorityAttemptTerminalV1:
+        return AuthorityAttemptTerminalV1(
+            authority_attempt_id=row.authority_attempt_id,
+            contract_version=row.contract_version,
+            lane_id=row.lane_id,
+            cycle_id=row.cycle_id,
+            order_attempt_id=row.order_attempt_id,
+            claim_row_id=row.claim_row_id,
+            owner_binding_digest=row.owner_binding_digest,
+            keyset_digest=row.keyset_digest,
+            key_count=row.key_count,
+            terminal_state=AuthorityAttemptTerminalState(row.terminal_state),
+            kind=AuthorityCessationKind(row.kind),
+            lock_statement_dispatched=row.lock_statement_dispatched,
+            lock_definite_false=row.lock_definite_false,
+            acquired_key_count=row.acquired_key_count,
+            in_flight_unknown=row.in_flight_unknown,
+            unlock_true_count=row.unlock_true_count,
+            post_release_matching_rows=row.post_release_matching_rows,
+            termination_returned_exact_true=row.termination_returned_exact_true,
+            observer_pid_absent=row.observer_pid_absent,
+            receipt_digest=row.receipt_digest,
+            receipt_id=row.id,
+            committed=True,
+        )
+
+    async def _read_terminal(
+        self, authority_attempt_id: str
+    ) -> AuthorityAttemptTerminalV1 | None:
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(KiwoomAuthorityCessationReceipt).where(
+                    KiwoomAuthorityCessationReceipt.authority_attempt_id
+                    == authority_attempt_id
+                )
+            )
+            return None if row is None else self._terminal_from_row(row)
+
+    async def record_terminal(
+        self, terminal: AuthorityAttemptTerminalV1, /
+    ) -> AuthorityAttemptTerminalV1:
+        """Commit/read back the sole terminal row; no UPDATE fallback exists."""
+
+        if (
+            type(terminal) is not AuthorityAttemptTerminalV1
+            or terminal.committed
+            or terminal.receipt_id is not None
+            or terminal.contract_version != AUTHORITY_CESSATION_CONTRACT_VERSION
+            or terminal.lane_id != "kr.kiwoom.mock"
+            or terminal.receipt_digest != terminal_receipt_digest(terminal)
+        ):
+            raise KiwoomCoordinationStoreConflict("authority_terminal_shape_rejected")
+        started = await self._read_started(terminal.authority_attempt_id)
+        if started is None or not self._started_matches(
+            started,
+            AuthorityAttemptStartedV1(
+                authority_attempt_id=terminal.authority_attempt_id,
+                contract_version=terminal.contract_version,
+                lane_id=terminal.lane_id,
+                cycle_id=terminal.cycle_id,
+                order_attempt_id=terminal.order_attempt_id,
+                owner_binding_digest=terminal.owner_binding_digest,
+                keyset_digest=terminal.keyset_digest,
+                key_count=terminal.key_count,
+                baseline_matching_rows=0,
+            ),
+        ):
+            raise KiwoomCoordinationStoreConflict(
+                "authority_terminal_attempt_binding_mismatch"
+            )
+
+        existing = await self._read_terminal(terminal.authority_attempt_id)
+        if existing is not None:
+            expected = replace(existing, receipt_id=None, committed=False)
+            if expected != terminal:
+                raise KiwoomCoordinationStoreConflict(
+                    "authority_terminal_immutable_conflict"
+                )
+            return existing
+
+        async with self._session_factory() as session:
+            session.add(
+                KiwoomAuthorityCessationReceipt(
+                    authority_attempt_id=terminal.authority_attempt_id,
+                    contract_version=terminal.contract_version,
+                    lane_id=terminal.lane_id,
+                    cycle_id=terminal.cycle_id,
+                    order_attempt_id=terminal.order_attempt_id,
+                    claim_row_id=terminal.claim_row_id,
+                    owner_binding_digest=terminal.owner_binding_digest,
+                    keyset_digest=terminal.keyset_digest,
+                    key_count=terminal.key_count,
+                    terminal_state=terminal.terminal_state.value,
+                    kind=terminal.kind.value,
+                    lock_statement_dispatched=terminal.lock_statement_dispatched,
+                    lock_definite_false=terminal.lock_definite_false,
+                    acquired_key_count=terminal.acquired_key_count,
+                    in_flight_unknown=terminal.in_flight_unknown,
+                    unlock_true_count=terminal.unlock_true_count,
+                    post_release_matching_rows=(terminal.post_release_matching_rows),
+                    termination_returned_exact_true=(
+                        terminal.termination_returned_exact_true
+                    ),
+                    observer_pid_absent=terminal.observer_pid_absent,
+                    receipt_digest=terminal.receipt_digest,
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+
+        readback = await self._read_terminal(terminal.authority_attempt_id)
+        if (
+            readback is None
+            or replace(readback, receipt_id=None, committed=False) != terminal
+        ):
+            raise KiwoomCoordinationStoreConflict(
+                "authority_terminal_commit_readback_failed"
+            )
+        return readback
+
+    @staticmethod
+    def _started_from_row(row: KiwoomAuthorityAttempt) -> AuthorityAttemptStartedV1:
+        return AuthorityAttemptStartedV1(
+            authority_attempt_id=row.authority_attempt_id,
+            contract_version=row.contract_version,
+            lane_id=row.lane_id,
+            cycle_id=row.cycle_id,
+            order_attempt_id=row.order_attempt_id,
+            owner_binding_digest=row.owner_binding_digest,
+            keyset_digest=row.keyset_digest,
+            key_count=row.key_count,
+            baseline_matching_rows=row.baseline_matching_rows,
+        )
+
+    async def release_assessment_for_cycle(
+        self, *, cycle_id: str
+    ) -> AuthorityReleaseAssessment:
+        """Use only this cycle's durable journal; old crash orphans stay local."""
+
+        async with self._session_factory() as session:
+            attempt_rows = tuple(
+                (
+                    await session.scalars(
+                        select(KiwoomAuthorityAttempt)
+                        .where(KiwoomAuthorityAttempt.cycle_id == cycle_id)
+                        .order_by(KiwoomAuthorityAttempt.id)
+                    )
+                ).all()
+            )
+            attempt_ids = tuple(row.authority_attempt_id for row in attempt_rows)
+            terminal_filter = KiwoomAuthorityCessationReceipt.cycle_id == cycle_id
+            if attempt_ids:
+                terminal_filter = or_(
+                    terminal_filter,
+                    KiwoomAuthorityCessationReceipt.authority_attempt_id.in_(
+                        attempt_ids
+                    ),
+                )
+            terminal_rows = tuple(
+                (
+                    await session.scalars(
+                        select(KiwoomAuthorityCessationReceipt)
+                        .where(terminal_filter)
+                        .order_by(KiwoomAuthorityCessationReceipt.id)
+                    )
+                ).all()
+            )
+
+        # Imported lazily: coordination owns the process-local capabilities and
+        # imports this store's protocol types at module import time.
+        from app.services.mock_integration.coordination import (
+            authority_hold_history,
+            unreleased_authority_holds_for_cycle,
+        )
+
+        history = tuple(
+            hold for hold in authority_hold_history() if hold.cycle_id == cycle_id
+        )
+        active = unreleased_authority_holds_for_cycle(cycle_id)
+        enumeration_complete = all(
+            hold.authority_attempt_id is not None for hold in history
+        )
+        history_ids = tuple(
+            hold.authority_attempt_id
+            for hold in history
+            if hold.authority_attempt_id is not None
+        )
+        active_ids = tuple(
+            hold.authority_attempt_id or f"unbound-hold:{hold.hold_id}"
+            for hold in active
+        )
+        return verify_authority_cessation(
+            cycle_id=cycle_id,
+            attempts=tuple(self._started_from_row(row) for row in attempt_rows),
+            terminals=tuple(self._terminal_from_row(row) for row in terminal_rows),
+            enumeration_complete=enumeration_complete,
+            history_hold_attempt_ids=history_ids,
+            active_hold_attempt_ids=active_ids,
+        )
 
     def _validate_plan(self, execution_plan: Any) -> None:
         if (

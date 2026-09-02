@@ -51,6 +51,12 @@ from app.schemas.execution_contracts import LaneStatus, SchedulerOwner
 from app.services import mock_lane_registry as registry
 from app.services.brokers.client_order_ids import BrokerClientIdTarget
 from app.services.mock_integration import coordination
+from app.services.mock_integration.authority_cessation import (
+    AuthorityAttemptContextV1,
+    AuthorityAttemptStartedV1,
+    AuthorityAttemptTerminalV1,
+    AuthorityCessationKind,
+)
 from app.services.mock_integration.coordination import (
     AUTOMATIC_CLAIM_RELEASE_AVAILABLE,
     COORDINATION_REASON_CODES,
@@ -517,7 +523,11 @@ class FakeLockConnection:
         receipt = self._termination_receipt
         if receipt == "default":
             receipt = BackendTerminationReceipt(
-                backend_pid=expected_pid, owner_token=owner_token, terminated=True
+                backend_pid=expected_pid,
+                owner_token=owner_token,
+                terminated=True,
+                termination_returned_exact_true=True,
+                observer_pid_absent=True,
             )
         if isinstance(receipt, BackendTerminationReceipt) and receipt.terminated:
             self.terminated = True
@@ -1456,19 +1466,31 @@ async def test_lock_termination_receipt_must_bind_the_exact_pid_and_owner_token(
     [
         (
             BackendTerminationReceipt(
-                backend_pid=9999, owner_token="", terminated=True
+                backend_pid=9999,
+                owner_token="",
+                terminated=True,
+                termination_returned_exact_true=True,
+                observer_pid_absent=True,
             ),
             None,
         ),
         (
             BackendTerminationReceipt(
-                backend_pid=4242, owner_token="forged", terminated=True
+                backend_pid=4242,
+                owner_token="forged",
+                terminated=True,
+                termination_returned_exact_true=True,
+                observer_pid_absent=True,
             ),
             None,
         ),
         (
             BackendTerminationReceipt(
-                backend_pid=4242, owner_token="", terminated=False
+                backend_pid=4242,
+                owner_token="",
+                terminated=False,
+                termination_returned_exact_true=False,
+                observer_pid_absent=True,
             ),
             None,
         ),
@@ -1722,11 +1744,13 @@ async def test_lock_sqlalchemy_authority_with_no_observer_acquires_nothing():
 @pytest.mark.parametrize(
     "observer_results",
     [
+        [_FakeResult([{"terminated": False}]), _FakeResult([{"alive": 0}])],
         [_FakeResult([{"terminated": False}]), _FakeResult([{"alive": 1}])],
         [_FakeResult([{"terminated": True}]), _FakeResult([{"alive": 1}])],
         RuntimeError("permission denied for function pg_terminate_backend"),
     ],
     ids=[
+        "terminate_false_even_when_pid_absent",
         "terminate_false_and_still_alive",
         "backend_still_alive",
         "permission_failure",
@@ -1777,7 +1801,11 @@ async def test_lock_adapter_closes_the_owner_only_after_a_proven_termination():
     )
 
     assert receipt == BackendTerminationReceipt(
-        backend_pid=4242, owner_token="lockconn:abc", terminated=True
+        backend_pid=4242,
+        owner_token="lockconn:abc",
+        terminated=True,
+        termination_returned_exact_true=True,
+        observer_pid_absent=True,
     )
     assert owner.close.await_count == 1
     assert observer.close.await_count == 1
@@ -1810,6 +1838,167 @@ async def test_lock_partial_rollback_terminates_with_the_real_backend_pid_and_to
     assert sent_pid != 0
     assert sent_token.startswith("lockconn:")
     assert connection.terminated is True
+
+
+@pytest.mark.asyncio
+async def test_partial_rollback_rereads_row_zero_after_all_true_unlocks():
+    """S7: exact-true rollback unlocks cannot hide a re-entrant hold."""
+
+    space = FakeLockSpace()
+    blocker = FakeLockConnection(space, pid=2002)
+    await acquire_physical_account_lease(
+        keys=[11], connection_factory=ConnectionFactory(blocker)
+    )
+
+    class ReentrantPartialConnection(FakeLockConnection):
+        async def execute(self, statement, parameters=None, /):  # noqa: ANN001, ANN201
+            sql = str(statement)
+            params = dict(parameters or {})
+            if "pg_try_advisory_lock" in sql and int(params["key"]) == 11:
+                # The already-acquired key is stacked before contention is
+                # observed. One rollback unlock still returns true.
+                assert self._space.try_lock(5, self.session_pid) is True
+            return await super().execute(statement, parameters)
+
+    connection = ReentrantPartialConnection(space, pid=3003)
+    with pytest.raises(CoordinationError):
+        await acquire_physical_account_lease(
+            keys=[5, 11], connection_factory=ConnectionFactory(connection)
+        )
+
+    assert connection.unlock_calls == [5]
+    assert connection.termination_calls == [
+        (3003, connection.termination_calls[0][1])
+    ], "matching-row reread must force exact backend termination"
+    assert connection.terminated is True
+
+
+class _TrackingAuthorityEvidence:
+    def __init__(
+        self,
+        *,
+        connection: FakeLockConnection | None = None,
+        fail_ready: bool = False,
+        fail_terminal: bool = False,
+    ) -> None:
+        self.connection = connection
+        self.fail_ready = fail_ready
+        self.fail_terminal = fail_terminal
+        self.events: list[str] = []
+        self.attempts: list[AuthorityAttemptStartedV1] = []
+        self.terminals: list[AuthorityAttemptTerminalV1] = []
+
+    async def assert_ready(self) -> None:
+        self.events.append("schema_preflight")
+        if self.fail_ready:
+            raise RuntimeError("fake schema mismatch")
+
+    async def record_started(
+        self, started: AuthorityAttemptStartedV1
+    ) -> AuthorityAttemptStartedV1:
+        self.events.append("start_committed")
+        if self.connection is not None:
+            assert self.connection.lock_calls == []
+        self.attempts.append(started)
+        return started
+
+    async def record_terminal(
+        self, terminal: AuthorityAttemptTerminalV1
+    ) -> AuthorityAttemptTerminalV1:
+        self.events.append("terminal_commit")
+        if self.fail_terminal:
+            raise RuntimeError("fake receipt commit failure")
+        committed = replace(terminal, receipt_id=1, committed=True)
+        self.terminals.append(committed)
+        return committed
+
+    async def release_assessment_for_cycle(self, *, cycle_id: str):  # noqa: ANN201
+        del cycle_id
+        raise AssertionError("assessment is not part of the authority producer test")
+
+
+@pytest.mark.asyncio
+async def test_authority_start_commits_before_first_lock_and_release_is_internal():
+    space = FakeLockSpace()
+    connection = FakeLockConnection(space, pid=31337)
+    events: list[str] = []
+    evidence = _TrackingAuthorityEvidence(connection=connection)
+    evidence.events = events
+
+    async def connection_factory():  # noqa: ANN202
+        events.append("connection_opened")
+        return connection
+
+    lease = await acquire_physical_account_lease(
+        keys=[41],
+        connection_factory=connection_factory,
+        authority_evidence=evidence,
+        authority_context=AuthorityAttemptContextV1(
+            lane_id="kr.kiwoom.mock",
+            cycle_id="cycle-authority-order",
+            order_attempt_id="order-authority-order",
+        ),
+    )
+    assert events[:3] == [
+        "schema_preflight",
+        "connection_opened",
+        "start_committed",
+    ]
+    assert connection.lock_calls == [41]
+
+    await lease.release(lease.grant)
+    assert evidence.events[-1] == "terminal_commit"
+    assert evidence.terminals[0].kind is AuthorityCessationKind.ADVISORY_UNLOCK
+    assert evidence.terminals[0].post_release_matching_rows == 0
+
+
+@pytest.mark.asyncio
+async def test_authority_schema_preflight_failure_opens_no_lock_connection():
+    evidence = _TrackingAuthorityEvidence(fail_ready=True)
+    opens = 0
+
+    async def connection_factory():  # noqa: ANN202
+        nonlocal opens
+        opens += 1
+        raise AssertionError("preflight failure opened the lock authority")
+
+    with pytest.raises(CoordinationError) as excinfo:
+        await acquire_physical_account_lease(
+            keys=[42],
+            connection_factory=connection_factory,
+            authority_evidence=evidence,
+            authority_context=AuthorityAttemptContextV1(
+                lane_id="kr.kiwoom.mock",
+                cycle_id="cycle-preflight-fail",
+                order_attempt_id="order-preflight-fail",
+            ),
+        )
+    assert (
+        excinfo.value.reason_code is CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
+    )
+    assert opens == 0
+
+
+@pytest.mark.asyncio
+async def test_post_release_receipt_commit_failure_does_not_reopen_or_retry_send():
+    space = FakeLockSpace()
+    connection = FakeLockConnection(space, pid=31338)
+    evidence = _TrackingAuthorityEvidence(connection=connection, fail_terminal=True)
+    lease = await acquire_physical_account_lease(
+        keys=[43],
+        connection_factory=ConnectionFactory(connection),
+        authority_evidence=evidence,
+        authority_context=AuthorityAttemptContextV1(
+            lane_id="kr.kiwoom.mock",
+            cycle_id="cycle-receipt-fail",
+            order_attempt_id="order-receipt-fail",
+        ),
+    )
+    await lease.release(lease.grant)
+    assert lease.released is True
+    assert lease.authority_terminal_record is None
+    assert lease.authority_terminal_commit_failed is True
+    assert space.held == {}
 
 
 @pytest.mark.asyncio
@@ -5082,7 +5271,11 @@ async def test_lock_close_cancellation_after_absence_keeps_the_receipt(which: st
 
     # The proof stands, bound to the exact PID and owner token.
     assert receipt == BackendTerminationReceipt(
-        backend_pid=4242, owner_token="lockconn:abc", terminated=True
+        backend_pid=4242,
+        owner_token="lockconn:abc",
+        terminated=True,
+        termination_returned_exact_true=True,
+        observer_pid_absent=True,
     )
     # And no false active authority was manufactured by the failed cleanup.
     assert len(unreleased_authority_holds()) == holds_before

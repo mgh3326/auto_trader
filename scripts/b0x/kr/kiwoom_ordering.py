@@ -26,6 +26,11 @@ from app.schemas.execution_contracts import LaneStatus
 from app.services.brokers.client_order_ids import BrokerClientIdTarget
 from app.services.brokers.kiwoom import constants as kiwoom_constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.mock_integration.authority_cessation import (
+    AuthorityCessationEvidencePort,
+    AuthorityReleaseAssessment,
+    AuthorityReleaseStatus,
+)
 from app.services.mock_integration.coordination import (
     AccountUncertaintyGatePort,
     ClaimFollowupRequest,
@@ -55,6 +60,7 @@ from app.services.mock_lane_registry import (
     RegistrySource,
 )
 from app.services.order_send_intent_service import DuplicateOrderIntent
+from scripts.b0x.kr import kiwoom as kiwoom_lane
 
 ORDERING_EVENT_JOURNAL_NAME: Final[str] = "ordering-events.jsonl"
 
@@ -261,6 +267,32 @@ KIWOOM_RELEASE_IF_MATCHES: Final[str] = (
     "account_position_reconciled=True, remainder_known=True) "
     "or authoritative_absence_proven=True after pre-send NOT_CREATED)"
 )
+
+# S6's approved policy is isolated here. Changing whether a cancel may be sent
+# after authority loss must require changing this one named decision point.
+ACCEPTANCE_CANCEL_AUTHORITY_POLICY: Final[str] = "ABANDON_CANCEL_WHEN_SCOPE_NOT_OWNED"
+
+
+async def acceptance_cancel_authority_decision(
+    owner: KiwoomCoordinationAdapter,
+    scope: CoordinationScope,
+    *,
+    native_order_id: str,
+) -> bool:
+    """S6=(가): never send a cancel outside the exact owned authority scope."""
+
+    try:
+        await owner.reassert_before_mutation(scope, action=f"cancel:{native_order_id}")
+    except Exception:
+        owner.record_lane_evidence(
+            "unknown",
+            reason=kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY,
+            broker_order_id=native_order_id,
+            policy=ACCEPTANCE_CANCEL_AUTHORITY_POLICY,
+        )
+        return False
+    return True
+
 
 # C3-1..C3-6: one immutable lane contract assembled from the existing
 # Kiwoom constants.  Keep the values above as the single definitions; this
@@ -676,6 +708,16 @@ class KiwoomCoordinationPorts:
     diagnostic_fingerprint: str | None = None
     coordination_provenance: object | None = None
     legacy_offline: bool = False
+    authority_evidence: AuthorityCessationEvidencePort | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptanceCoordinatedRoundTripResult:
+    """One BUY/cancel/reconcile callback plus post-release evidence verdict."""
+
+    coordination: CoordinatedMutationResult
+    round_trip: kiwoom_lane.RoundTripResult
+    authority_release: AuthorityReleaseAssessment
 
 
 class KiwoomCoordinationAdapter:
@@ -791,6 +833,149 @@ class KiwoomCoordinationAdapter:
     ) -> None:
         await scope.assert_owned()
         self.fence_rechecks.append(action)
+
+    async def acceptance_round_trip(
+        self,
+        account: kiwoom_lane.ReadOnlyKiwoomMockAccount,
+        *,
+        planned: kiwoom_lane.PlannedOrder,
+        broker_truth: Any,
+        record_order_no: Callable[..., None],
+        policy_version: str,
+        policy_version_hash: str,
+        now: datetime,
+        on_mandatory_cancel_blocked: (
+            Callable[[kiwoom_lane.RoundTripResult, int], Awaitable[None]] | None
+        ) = None,
+    ) -> AcceptanceCoordinatedRoundTripResult:
+        """Hold one PostgreSQL authority across BUY → cancel → reconcile."""
+
+        authority_evidence = self.ports.authority_evidence
+        if self.grant_only or authority_evidence is None:
+            raise KiwoomSendNotAuthorized("authority_evidence_port_required")
+
+        envelope = self._attempt_envelope(
+            planned,
+            policy_version=policy_version,
+            policy_version_hash=policy_version_hash,
+        )
+        assert_broker_client_id_contract(envelope)
+        self.ordered_events.append("j2b_attempt_built")
+        completed: list[kiwoom_lane.RoundTripResult] = []
+
+        def _journal_immediately(**kwargs: Any) -> None:
+            record_order_no(**kwargs)
+            order_no = str(kwargs["order_no"])
+            self.jsonl_appends.append(
+                {"order_no": order_no, "order_key": planned.order_key}
+            )
+            self.ordered_events.append(f"jsonl_appended:{order_no}")
+
+        async def _callback(scope: CoordinationScope) -> MutationCallbackResult:
+            async def _before_submit() -> None:
+                await self.reassert_before_mutation(
+                    scope, action=f"post:{planned.order_key}"
+                )
+                assert_kiwoom_transport_ready(
+                    account=account,
+                    entry=self.ports.entry,
+                    physical_account_id=self.physical_account_id,
+                    grant_owned=True,
+                    diagnostic_fingerprint=self.ports.diagnostic_fingerprint,
+                )
+                self.transport_calls.append(f"post:{planned.order_key}")
+
+            async def _cancel_decision(
+                trip: kiwoom_lane.RoundTripResult,
+            ) -> bool:
+                assert trip.order_no is not None
+                return await acceptance_cancel_authority_decision(
+                    self, scope, native_order_id=trip.order_no
+                )
+
+            async def _before_cancel() -> None:
+                assert_kiwoom_transport_ready(
+                    account=account,
+                    entry=self.ports.entry,
+                    physical_account_id=self.physical_account_id,
+                    grant_owned=True,
+                    diagnostic_fingerprint=self.ports.diagnostic_fingerprint,
+                )
+                self.transport_calls.append(f"cancel:{planned.order_key}")
+
+            trip = await kiwoom_lane.submit_and_cancel(
+                account,
+                planned=planned,
+                broker_truth=broker_truth,
+                record_order_no=_journal_immediately,
+                now=now,
+                before_submit=_before_submit,
+                cancel_authority_decision=_cancel_decision,
+                before_cancel_send=_before_cancel,
+                on_mandatory_cancel_blocked=on_mandatory_cancel_blocked,
+                continue_after_journal_error=True,
+                require_cancel_order_no=True,
+                raise_on_incomplete=False,
+            )
+            completed.append(trip)
+            if trip.order_no is not None:
+                self.record_lane_evidence("ack", broker_order_id=trip.order_no)
+            if trip.cancel_order_no is not None:
+                self.record_lane_evidence(
+                    "cancel", broker_order_id=trip.cancel_order_no
+                )
+            self.ordered_events.append("acceptance_callback_complete")
+            return MutationCallbackResult(
+                certainty=(
+                    MutationCertainty.DEFINITIVE
+                    if trip.canonical()["round_trip_complete"] is True
+                    else MutationCertainty.UNCERTAIN
+                ),
+                # The BUY id is retained even for an uncertain/blocked cancel so
+                # restart rediscovery can drive exact kt00007 readback.
+                broker_order_id=trip.order_no,
+            )
+
+        coordinated = await coordinate_mock_order_mutation(
+            envelope=envelope,
+            persistence=self.ports.persistence,
+            dispatch_evidence=self.ports.dispatch_evidence,
+            uncertainty_gate=self.ports.uncertainty_gate,
+            claims=self.ports.claims,
+            connection_factory=self.ports.connection_factory,
+            mutation=_callback,
+            registry=self.ports.registry,
+            lineage_factory=self.ports.lineage_factory,
+            authority_evidence=authority_evidence,
+        )
+        self.last_result = coordinated
+        self.ordered_events.append("j2b_composite_evidence_persisted")
+        if not completed:
+            raise KiwoomSendNotAuthorized("acceptance_round_trip_result_missing")
+        try:
+            assessment = await authority_evidence.release_assessment_for_cycle(
+                cycle_id=planned.cycle_id
+            )
+        except Exception as exc:
+            assessment = AuthorityReleaseAssessment(
+                cycle_id=planned.cycle_id,
+                status=AuthorityReleaseStatus.INCOMPLETE_EVIDENCE,
+                enumeration_complete=False,
+                expected_attempt_ids=(
+                    ()
+                    if coordinated.authority_attempt_id is None
+                    else (coordinated.authority_attempt_id,)
+                ),
+                committed_receipt_attempt_ids=(),
+                committed_receipt_refs=(),
+                active_hold_attempt_ids=(),
+                reasons=(f"assessment_read_failed:{type(exc).__name__}",),
+            )
+        return AcceptanceCoordinatedRoundTripResult(
+            coordination=coordinated,
+            round_trip=completed[0],
+            authority_release=assessment,
+        )
 
     async def submit_coordinated(
         self,
@@ -990,6 +1175,7 @@ class KiwoomCoordinationAdapter:
 
 __all__ = [
     "ACCOUNT_SUMMARY_FINGERPRINT_IDENTITY_REJECTED",
+    "ACCEPTANCE_CANCEL_AUTHORITY_POLICY",
     "CALLER_DERIVED_IDENTITY_REJECTED",
     "JSONL_ABSENCE_NOT_EMPTY_OWNERSHIP",
     "KIWOOM_CANONICAL_LANE_ID",
@@ -1014,6 +1200,7 @@ __all__ = [
     "InMemoryLineagePersistence",
     "InMemoryReservationPort",
     "InMemoryUncertaintyGate",
+    "AcceptanceCoordinatedRoundTripResult",
     "KiwoomAttributionRejected",
     "KiwoomCoordinationAdapter",
     "KiwoomCoordinationPorts",
@@ -1026,6 +1213,7 @@ __all__ = [
     "RestartDisposition",
     "WriterLease",
     "actual_kiwoom_client",
+    "acceptance_cancel_authority_decision",
     "assert_broker_client_id_contract",
     "assert_kiwoom_transport_ready",
     "followup_precheck",

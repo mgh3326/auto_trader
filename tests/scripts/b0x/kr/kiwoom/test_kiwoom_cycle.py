@@ -13,11 +13,17 @@ import datetime as dt
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.services.brokers.kiwoom import constants as kiwoom_constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.mock_integration.coordination import (
+    CoordinationScope,
+    MutationCertainty,
+)
 from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
@@ -28,6 +34,7 @@ from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_tabl
 from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount, position, resting
 from tests.services.mock_integration.test_kiwoom_coordination_adapter import (
     bound_kiwoom_entry,
+    build_offline_adapter,
     offline_coordination_factory,
 )
 
@@ -149,7 +156,7 @@ async def _run(
     now=IN_SESSION,  # noqa: ANN001
     **kwargs,
 ):  # noqa: ANN202
-    if ordering and "coordination_factory" not in kwargs:
+    if confirm and "coordination_factory" not in kwargs:
         offline_entry = bound_kiwoom_entry()
         kwargs["coordination_factory"] = lambda: offline_coordination_factory(
             entry=offline_entry
@@ -459,6 +466,55 @@ async def test_confirm_submits_exactly_one_order_and_cancels_it(
         kiwoom_cycle.ACCEPTANCE_ONLY_STATUS_LABEL
     )
     assert outcome.record["day_orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_acceptance_buy_cancel_reconcile_share_one_authority_scope(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    entry = bound_kiwoom_entry()
+    adapter = build_offline_adapter(entry=entry)
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+            (),
+        ]
+    )
+    _attach_test_mock_client(account)
+    outcome = await kiwoom_cycle.run_kiwoom_cycle(
+        now=IN_SESSION,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        account=account,
+        coordination_factory=lambda: adapter,
+        coordination_entry=entry,
+        authority_risk_notifier=lambda _risk: pytest.fail(
+            "clean cancellation must not alert"
+        ),
+    )
+
+    assert outcome.exit_code == 0
+    assert adapter.ports.connection_factory.calls == 1  # type: ignore[attr-defined]
+    assert len(adapter.ports.authority_evidence.attempts) == 1  # type: ignore[union-attr]
+    assert len(adapter.ports.authority_evidence.terminals) == 1  # type: ignore[union-attr]
+    assert adapter.fence_rechecks == [
+        f"post:{outcome.record['planned'][0]['order_key']}",
+        "cancel:0000123456",
+    ]
+    assert adapter.ordered_events.index("jsonl_appended:0000123456") < (
+        adapter.ordered_events.index("acceptance_callback_complete")
+    )
+    assert adapter.ordered_events.index("jsonl_appended:0000123457") < (
+        adapter.ordered_events.index("acceptance_callback_complete")
+    )
+    assert adapter.ordered_events.index("acceptance_callback_complete") < (
+        adapter.ordered_events.index("j2b_composite_evidence_persisted")
+    )
+    assert outcome.record["authority_cessation"]["status"] == "RELEASE_VERIFIED"
+    assert outcome.record["G3_OVERALL"] == "RELEASE_VERIFIED"
 
 
 class _TestOrderingLease:
@@ -1509,6 +1565,8 @@ async def test_confirm_writes_the_order_number_to_the_journal(
             (),
         ]
     )
+    offline_entry = bound_kiwoom_entry()
+    _attach_test_mock_client(account)
     await kiwoom_cycle.run_kiwoom_cycle(
         now=frozen_cycle_clock,
         table_dir=table_dir,
@@ -1516,9 +1574,14 @@ async def test_confirm_writes_the_order_number_to_the_journal(
         confirm=True,
         account=account,
         journal=journal,
+        coordination_factory=lambda: offline_coordination_factory(entry=offline_entry),
+        coordination_entry=offline_entry,
     )
     records = journal.read_all()
-    assert [record.order_no for record in records] == ["0000123456"]
+    assert [record.order_no for record in records] == [
+        "0000123456",
+        "0000123457",
+    ]
     assert records[0].correlation_id.startswith("b0xkw-")
     assert records[0].order_date == kiwoom_attr.kst_order_date(frozen_cycle_clock)
 
@@ -1540,8 +1603,155 @@ async def test_unconfirmed_cancel_exits_non_zero(table_dir, out_dir, armed) -> N
     )
     assert outcome.exit_code == 2
     assert outcome.record["submission_stopped"] == "round_trip_incomplete"
-    assert outcome.record["round_trip"] == []
+    assert len(outcome.record["round_trip"]) == 1
+    assert outcome.record["round_trip"][0]["failure"] == "cancel_unconfirmed"
     assert outcome.record["round_trip_failures"]
+
+
+def _lose_authority_only_at_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    events: list[str] = []
+    original = CoordinationScope.assert_owned
+
+    async def _assert(self: CoordinationScope) -> None:
+        events.append("assert_owned")
+        if len(events) == 2:
+            raise RuntimeError("simulated authority loss before cancel")
+        await original(self)
+
+    monkeypatch.setattr(CoordinationScope, "assert_owned", _assert)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_authority_blocked_cancel_records_cycle_risk_before_fake_alert(
+    table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """AC7: no cancel outside scope, and the live-order risk is never silent."""
+
+    assertions = _lose_authority_only_at_cancel(monkeypatch)
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+        ]
+    )
+    entry = bound_kiwoom_entry()
+    adapter = build_offline_adapter(entry=entry)
+    alerts: list[dict[str, Any]] = []
+
+    async def fake_alert(risk: dict[str, Any]) -> None:
+        immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+            encoding="utf-8"
+        )
+        assert kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY in immediate
+        alerts.append(risk)
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        coordination_factory=lambda: adapter,
+        coordination_entry=entry,
+        authority_risk_notifier=fake_alert,
+    )
+
+    assert assertions == ["assert_owned", "assert_owned"]
+    assert len(account.buy_calls) == 1
+    assert account.cancel_calls == []
+    assert outcome.exit_code == 2
+    risk = outcome.record["live_order_risk"]
+    assert risk == {
+        "present": True,
+        "status": kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY,
+        "order_id": "0000123456",
+        "symbol": "005930",
+        "quantity": 4,
+        "side": "buy",
+        "at": risk["at"],
+        "operator_notification": "sent",
+    }
+    assert alerts and alerts[0]["operator_notification"] == "pending"
+    assert outcome.record["round_trip"][0]["cancel_attempted"] is False
+    assert adapter.last_result is not None
+    assert adapter.last_result.certainty is MutationCertainty.UNCERTAIN
+    assert adapter.last_result.evidence.broker_order_id == risk["order_id"]
+    assert adapter.last_result.claim.row_id > 0
+
+
+@pytest.mark.asyncio
+async def test_authority_risk_flag_survives_fake_alert_failure(
+    table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """AC7: alert failure cannot roll back the already-appended risk snapshot."""
+
+    _lose_authority_only_at_cancel(monkeypatch)
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+        ]
+    )
+
+    async def failing_fake_alert(_risk: dict[str, Any]) -> None:
+        raise RuntimeError("fake notification failure")
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        authority_risk_notifier=failing_fake_alert,
+    )
+
+    assert account.cancel_calls == []
+    assert outcome.exit_code == 2
+    assert outcome.record["live_order_risk"]["present"] is True
+    assert outcome.record["live_order_risk"]["operator_notification"] == "failed"
+    assert (
+        outcome.record["round_trip"][0]["risk_notification_error_type"]
+        == "RuntimeError"
+    )
+    cycle_lines = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "live_order_risk_immediate" in cycle_lines
+
+
+@pytest.mark.asyncio
+async def test_authority_risk_default_alert_reuses_existing_telegram_notifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC7: the default alert is the existing notifier, never a new transport."""
+
+    from app.monitoring import trade_notifier
+
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        trade_notifier,
+        "get_trade_notifier",
+        lambda: SimpleNamespace(notify_agent_message=notify),
+    )
+    risk = {
+        "status": kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY,
+        "order_id": "0000123456",
+        "symbol": "005930",
+        "quantity": 4,
+        "side": "buy",
+        "at": IN_SESSION.isoformat(),
+    }
+
+    await kiwoom_cycle._notify_mandatory_cancel_risk(risk)
+
+    notify.assert_awaited_once()
+    _, kwargs = notify.await_args
+    assert kwargs["skip_discord"] is True
+    assert kwargs["mirror_telegram"] is True
+    assert kwargs["correlation_id"] == risk["order_id"]
 
 
 @pytest.mark.asyncio
