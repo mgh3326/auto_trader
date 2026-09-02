@@ -1,0 +1,82 @@
+global
+    log stdout format raw local0
+    master-worker
+
+defaults
+    log global
+    mode http
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+    timeout tunnel 1h
+    timeout http-request 10s
+
+# Do not add a wildcard/public bind: MCP is reachable only through the NCP
+# loopback listener and its tailnet address.
+frontend ft_mcp_loopback
+    bind 127.0.0.1:8765
+    default_backend bk_mcp
+
+frontend ft_mcp_tailnet
+    bind 100.122.100.56:8765
+    default_backend bk_mcp
+
+backend bk_mcp
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_active 127.0.0.1:__MCP_ACTIVE_PORT__ check
+
+# Fixed-profile MCP units bind loopback only inside their containers; the
+# tailnet reaches them through these listeners so haproxy stays the single
+# tailnet-facing process (same port numbers as the Mac launchd services).
+
+frontend ft_mcp_analysis_readonly_tailnet
+    bind 100.122.100.56:8768
+    default_backend bk_mcp_analysis_readonly
+
+backend bk_mcp_analysis_readonly
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_analysis_readonly 127.0.0.1:8768 check
+
+frontend ft_mcp_account_read_tailnet
+    bind 100.122.100.56:8769
+    default_backend bk_mcp_account_read
+
+backend bk_mcp_account_read
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_account_read 127.0.0.1:8769 check
+
+frontend ft_mcp_tradingcodex_execution_tailnet
+    bind 100.122.100.56:8770
+    default_backend bk_mcp_tradingcodex_execution
+
+backend bk_mcp_tradingcodex_execution
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_tradingcodex_execution 127.0.0.1:8770 check
+
+frontend ft_mcp_paper_001_tailnet
+    bind 100.122.100.56:8771
+    default_backend bk_mcp_paper_001
+
+backend bk_mcp_paper_001
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_paper_001 127.0.0.1:8771 check
+
+frontend ft_mcp_kiwoom_tailnet
+    bind 100.122.100.56:8772
+    default_backend bk_mcp_kiwoom
+
+backend bk_mcp_kiwoom
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_kiwoom 127.0.0.1:8772 check
