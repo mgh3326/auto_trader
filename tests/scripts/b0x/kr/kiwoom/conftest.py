@@ -76,7 +76,10 @@ class FakeAccount:
         self._resting = resting if resting is not None else [()]
         self._order_detail = order_detail or {}
         self._buy_response = buy_response or {"return_code": 0, "ord_no": "0000123456"}
-        self._cancel_response = cancel_response or {"return_code": 0}
+        self._cancel_response = cancel_response or {
+            "return_code": 0,
+            "ord_no": "0000123457",
+        }
         self._buy_error = buy_error
         self._cancel_error = cancel_error
         self._resting_error = resting_error

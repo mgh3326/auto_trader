@@ -335,7 +335,8 @@ async def test_happy_round_trip_confirms_cancellation_from_the_broker(now) -> No
     # 🔴 The journal is written the moment the order number exists, before
     # anything downstream can fail.
     assert writer.written == [  # type: ignore[attr-defined]
-        {"order_no": "0000123456", "symbol": "005930", "at": now}
+        {"order_no": "0000123456", "symbol": "005930", "at": now},
+        {"order_no": "0000123457", "symbol": "005930", "at": now},
     ]
 
 
@@ -538,6 +539,44 @@ async def test_cancel_order_number_is_journalled_as_ours(now) -> None:  # noqa: 
         "0107387",
         "0107388",
     ]
+
+
+@pytest.mark.asyncio
+async def test_buy_journal_failure_does_not_skip_same_scope_mandatory_cancel(
+    now,
+) -> None:  # noqa: ANN001
+    account = FakeAccount(
+        buy_response={"return_code": 0, "ord_no": "0107387"},
+        cancel_response={"return_code": 0, "ord_no": "0107388"},
+        resting=[
+            (resting("0107387", "005930", remaining=1, price=70_000),),
+            (),
+        ],
+    )
+    calls = 0
+
+    def journal(**_kwargs):  # noqa: ANN003, ANN202
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("fake journal unavailable")
+
+    result = await kiwoom_lane.submit_and_cancel(
+        account,
+        planned=_planned(),
+        broker_truth=CLEAN_TRUTH,
+        record_order_no=journal,
+        now=now,
+        continue_after_journal_error=True,
+        require_cancel_order_no=True,
+        raise_on_incomplete=False,
+    )
+
+    assert result.order_no == "0107387"
+    assert result.journal_error_types == ["OSError"]
+    assert result.cancel_attempted is True
+    assert result.cancel_confirmed is True
+    assert len(account.cancel_calls) == 1
 
 
 @pytest.mark.asyncio

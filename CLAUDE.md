@@ -268,6 +268,16 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 
 Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `account_mode="kiwoom_mock"`(KRX). **US는 ROB-867로 확장** — `kiwoom_mock_us_*` 변형(account_mode="kiwoom_mock_us", US 전용 앱키 4종 env, order-id 9자리 — 07-20 full 스모크 실측 확정).
 
+- **ROB-1340 ACCEPTANCE authority cessation**: confirmed ACCEPTANCE의 BUY→즉시
+  journal→resting read→CANCEL→즉시 journal→reconcile은 하나의 PostgreSQL
+  `CoordinationScope` 안에서만 실행한다. cancel 직전 ownership 상실 시 cancel을 보내지
+  않고 `MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY` live-order-risk를 cycle JSON에 먼저
+  append한 뒤 기존 Telegram notifier로 알린다. authority start/terminal은 전용
+  append-only DB table의 current-cycle 완전 열거와 exact receipt coverage가 있어야만
+  `RELEASE_VERIFIED`다. 빈 lock/close/PID 부재만으로 승격하거나 receipt를 reporter가
+  만들지 않는다. 상세 복구·신뢰 한계는
+  `docs/runbooks/kiwoom-b0x-bounded-send.md`를 따른다.
+
 - **MCP 도구**: `app/mcp_server/tooling/orders_kiwoom_variants.py` — `kiwoom_mock_preview_order`, `kiwoom_mock_place_order`, `kiwoom_mock_modify_order`, `kiwoom_mock_cancel_order`, `kiwoom_mock_get_order_history`, `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`
 - **클라이언트**: `app/services/brokers/kiwoom/` — `client.KiwoomMockClient` (transport, host allowlist), `domestic_orders.KiwoomDomesticOrderClient` (buy/sell/modify/cancel), `domestic_account.KiwoomDomesticAccountClient` (orderable-amount/balance/order-status/order-detail)
 - **스모크 CLI**: `scripts/kiwoom_mock_smoke.py` (default-disabled, 3 modes: preflight/preview/full)

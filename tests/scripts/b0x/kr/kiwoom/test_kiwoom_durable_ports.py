@@ -9,14 +9,30 @@ from __future__ import annotations
 
 import importlib
 import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
+from app.models.kiwoom_authority_cessation import (
+    KiwoomAuthorityAttempt,
+    KiwoomAuthorityCessationReceipt,
+)
+from app.services.brokers.kiwoom import coordination_store as store_module
 from app.services.brokers.kiwoom.coordination_store import (
     KiwoomCoordinationStore,
     KiwoomDurableSendClaimAdapter,
     KiwoomRestartClaimState,
+)
+from app.services.mock_integration.authority_cessation import (
+    AuthorityAttemptStartedV1,
+    AuthorityAttemptTerminalState,
+    AuthorityAttemptTerminalV1,
+    AuthorityCessationKind,
+    AuthorityReleaseStatus,
+    terminal_receipt_digest,
 )
 from app.services.mock_integration.coordination import (
     CoordinationError,
@@ -47,6 +63,32 @@ from scripts.b0x.kr.kiwoom_ordering import (
 )
 
 FACTORY_REFERENCE = "scripts.b0x.kr.kiwoom_durable_ports:build_ports"
+
+
+@pytest.mark.unit
+def test_authority_schema_preflight_contract_matches_orm_metadata() -> None:
+    """Compiled preflight names must match SQLAlchemy's final convention names."""
+
+    models = {
+        "kiwoom_authority_attempts": KiwoomAuthorityAttempt,
+        "kiwoom_authority_cessation_receipts": KiwoomAuthorityCessationReceipt,
+    }
+    for table_name, model in models.items():
+        table = model.__table__
+        assert (
+            tuple(sorted(column.name for column in table.columns))
+            == (
+                store_module._AUTHORITY_TABLE_COLUMNS[table_name]  # noqa: SLF001
+            )
+        )
+        actual_constraint_names = {constraint.name for constraint in table.constraints}
+        expected_constraint_names = set(
+            store_module._AUTHORITY_TABLE_CONSTRAINTS[table_name]  # noqa: SLF001
+        )
+        assert expected_constraint_names.issubset(actual_constraint_names)
+        assert all(len(name) <= 63 for name in expected_constraint_names), (
+            "PostgreSQL must not silently truncate a preflight constraint name"
+        )
 
 
 def _attempt(ports: KiwoomCoordinationPorts):
@@ -94,6 +136,47 @@ def _dispatch_evidence(ports, envelope, claim, broker_order_id: str):  # noqa: A
     )
 
 
+def _authority_started() -> AuthorityAttemptStartedV1:
+    token = uuid.uuid4().hex
+    return AuthorityAttemptStartedV1(
+        authority_attempt_id=f"authority-attempt:{token}",
+        lane_id="kr.kiwoom.mock",
+        cycle_id=f"cycle:{token}",
+        order_attempt_id=f"order:{token}",
+        owner_binding_digest="a" * 64,
+        keyset_digest="b" * 64,
+        key_count=1,
+        baseline_matching_rows=0,
+    )
+
+
+def _authority_terminal(
+    started: AuthorityAttemptStartedV1,
+) -> AuthorityAttemptTerminalV1:
+    draft = AuthorityAttemptTerminalV1(
+        authority_attempt_id=started.authority_attempt_id,
+        lane_id=started.lane_id,
+        cycle_id=started.cycle_id,
+        order_attempt_id=started.order_attempt_id,
+        claim_row_id=None,
+        owner_binding_digest=started.owner_binding_digest,
+        keyset_digest=started.keyset_digest,
+        key_count=1,
+        terminal_state=AuthorityAttemptTerminalState.CESSATION_RECEIPT_COMMITTED,
+        kind=AuthorityCessationKind.ADVISORY_UNLOCK,
+        lock_statement_dispatched=True,
+        lock_definite_false=False,
+        acquired_key_count=1,
+        in_flight_unknown=False,
+        unlock_true_count=1,
+        post_release_matching_rows=0,
+        termination_returned_exact_true=None,
+        observer_pid_absent=None,
+        receipt_digest="",
+    )
+    return replace(draft, receipt_digest=terminal_receipt_digest(draft))
+
+
 async def _release_test_claim(ports, claim) -> None:  # noqa: ANN001
     assert (
         await ports.claims.release_with_terminal_evidence(
@@ -131,6 +214,7 @@ def test_module_callable_imports_with_serving_loader_shape_and_returns_exact_por
     assert type(ports.persistence) is KiwoomCoordinationStore
     assert ports.dispatch_evidence is ports.persistence
     assert ports.uncertainty_gate is ports.persistence
+    assert ports.authority_evidence is ports.persistence
     assert type(ports.claims) is KiwoomDurableSendClaimAdapter
     assert ports.registry is CANONICAL_LANE_REGISTRY
     assert callable(ports.connection_factory)
@@ -301,3 +385,170 @@ async def test_restart_rediscovers_missing_evidence_claim_and_blocks_account(
         )
     finally:
         await _release_test_claim(ports, claim)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mandatory_cancel_blocked_claim_is_picked_up_by_existing_recovery(
+    db_session,
+) -> None:
+    """AC8: uncertain BUY id reaches rediscovery → kt00007 → terminal release."""
+
+    del db_session
+    entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    ports = kiwoom_durable_ports.build_ports(entry)
+    envelope = _attempt(ports)
+    attempt = envelope.order_attempt
+    plan = envelope.execution_plan
+    assert attempt is not None
+    assert plan is not None
+    scope = physical_account_scope_for_entry(entry)
+    await ports.persistence.persist(envelope)
+    claim = await ports.claims.reserve(
+        scope=scope,
+        idempotency_key=attempt.idempotency_key,
+        symbol=plan.normalized_symbol,
+        side=envelope.decision_intent.side,
+    )
+    broker_order_id = f"rob1340-{uuid.uuid4().hex[:16]}"
+    uncertain = replace(
+        _dispatch_evidence(ports, envelope, claim, broker_order_id),
+        envelope=envelope,
+        kind=DispatchEvidenceKind.LANE_REPORTED_UNCERTAIN,
+        certainty=MutationCertainty.UNCERTAIN,
+    )
+    await ports.dispatch_evidence.persist_dispatch_evidence(uncertain)
+
+    restarted_ports = kiwoom_durable_ports.build_ports(entry)
+    discovered = await restarted_ports.claims.rediscover_unreleased_claims()
+    recovered_claim = next(row for row in discovered if row.row_id == claim.row_id)
+    assert recovered_claim.state is KiwoomRestartClaimState.UNCERTAIN
+    assert recovered_claim.broker_order_id == broker_order_id
+    assert recovered_claim.blocks_account is True
+
+    owner = KiwoomCoordinationAdapter(restarted_ports, grant_only=False)
+    resting_disposition = owner.apply_restart_disposition(
+        durable_broker_order_id=recovered_claim.broker_order_id,
+        kt00007_readable=True,
+        kt00007_rows=(
+            {
+                "order_id": broker_order_id,
+                "status": "open",
+                "filled_quantity": 0,
+                "remaining_quantity": 1,
+            },
+        ),
+    )
+    assert resting_disposition.status == "recovered_from_j2b_and_kt00007"
+    assert resting_disposition.native is not None
+    assert resting_disposition.native.normalized_state == "open"
+    assert resting_disposition.native.remaining_quantity == 1
+    assert any(
+        row.row_id == claim.row_id
+        for row in await restarted_ports.claims.rediscover_unreleased_claims()
+    ), "a live readback must not release the durable recovery claim"
+
+    # A later terminal kt00007 read (for example broker cancellation or DAY
+    # expiry) supplies the existing recovery contract's release evidence.
+    disposition = owner.apply_restart_disposition(
+        durable_broker_order_id=recovered_claim.broker_order_id,
+        kt00007_readable=True,
+        kt00007_rows=(
+            {
+                "order_id": broker_order_id,
+                "status": "cancelled",
+                "filled_quantity": 0,
+                "remaining_quantity": 0,
+            },
+        ),
+    )
+    assert disposition.status == "recovered_from_j2b_and_kt00007"
+    assert disposition.native is not None
+    assert disposition.native.normalized_state == "cancelled"
+    assert (
+        await owner.release_if_matches_terminal(
+            claim,
+            TerminalClaimEvidence(
+                lane_native_terminal_evidence=True,
+                account_position_reconciled=True,
+                remainder_known=True,
+            ),
+        )
+        == 1
+    )
+    assert all(
+        row.row_id != claim.row_id
+        for row in await restarted_ports.claims.rediscover_unreleased_claims()
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_authority_attempt_and_receipt_commit_readback_cover_current_cycle(
+    db_session,
+) -> None:
+    """The append-only DB rows, not cycle JSON, produce RELEASE_VERIFIED."""
+
+    del db_session
+    entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    store = kiwoom_durable_ports.build_ports(entry).authority_evidence
+    assert isinstance(store, KiwoomCoordinationStore)
+    started = _authority_started()
+    assert await store.record_started(started) == started
+    terminal = _authority_terminal(started)
+    committed = await store.record_terminal(terminal)
+    assert committed.committed is True
+    assert committed.receipt_id is not None
+
+    assessment = await store.release_assessment_for_cycle(cycle_id=started.cycle_id)
+    assert assessment.status is AuthorityReleaseStatus.RELEASE_VERIFIED
+    assert assessment.committed_receipt_refs == (
+        (committed.receipt_id, committed.receipt_digest),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("table_name", "operation"),
+    (
+        ("kiwoom_authority_attempts", "UPDATE"),
+        ("kiwoom_authority_attempts", "DELETE"),
+        ("kiwoom_authority_attempts", "TRUNCATE"),
+        ("kiwoom_authority_cessation_receipts", "UPDATE"),
+        ("kiwoom_authority_cessation_receipts", "DELETE"),
+        ("kiwoom_authority_cessation_receipts", "TRUNCATE"),
+    ),
+)
+async def test_authority_evidence_tables_reject_every_non_append_mutation(
+    db_session, table_name: str, operation: str
+) -> None:
+    """Attempt and receipt rows reject UPDATE, DELETE, and TRUNCATE."""
+
+    entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    store = kiwoom_durable_ports.build_ports(entry).authority_evidence
+    assert isinstance(store, KiwoomCoordinationStore)
+    started = _authority_started()
+    await store.record_started(started)
+    if table_name == "kiwoom_authority_cessation_receipts":
+        await store.record_terminal(_authority_terminal(started))
+
+    statements = {
+        "UPDATE": (
+            f"UPDATE review.{table_name} SET cycle_id = cycle_id "
+            "WHERE authority_attempt_id = :attempt_id"
+        ),
+        "DELETE": (
+            f"DELETE FROM review.{table_name} WHERE authority_attempt_id = :attempt_id"
+        ),
+        "TRUNCATE": (
+            f"TRUNCATE TABLE review.{table_name}"
+            + (" CASCADE" if table_name == "kiwoom_authority_attempts" else "")
+        ),
+    }
+    parameters = (
+        {} if operation == "TRUNCATE" else {"attempt_id": started.authority_attempt_id}
+    )
+    with pytest.raises(DBAPIError, match="append-only"):
+        await db_session.execute(text(statements[operation]), parameters)
+    await db_session.rollback()

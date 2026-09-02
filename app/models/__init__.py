@@ -47,6 +47,10 @@ from .investment_snapshots import (
     InvestmentSnapshotRun,
 )
 from .investor_flow_snapshot import InvestorFlowSnapshot
+from .kiwoom_authority_cessation import (
+    KiwoomAuthorityAttempt,
+    KiwoomAuthorityCessationReceipt,
+)
 from .kiwoom_coordination_lifecycle import KiwoomCoordinationLifecycle
 from .kr_stock_warnings import KRStockWarning
 from .kr_symbol_universe import KRSymbolUniverse
@@ -242,6 +246,8 @@ __all__ = [
     "KRStockWarning",
     "KRSymbolUniverse",
     "KiwoomCoordinationLifecycle",
+    "KiwoomAuthorityAttempt",
+    "KiwoomAuthorityCessationReceipt",
     "UpbitSymbolUniverse",
     "USSymbolUniverse",
     "UserSetting",

@@ -93,6 +93,7 @@ import datetime as dt
 import hashlib
 import os
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Final
@@ -232,6 +233,11 @@ class RoundTripIncomplete(RuntimeError):
     account in a state B0-X did not intend, and the only honest report is a
     failure. Never downgraded to a warning.
     """
+
+
+MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY: Final[str] = (
+    "MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY"
+)
 
 
 class SameCycleBuyBatchViolation(RuntimeError):
@@ -1245,6 +1251,8 @@ class RoundTripResult:
     cancel_confirmed: bool = False
     reconcile_snapshot: dict[str, Any] | None = None
     failure: str | None = None
+    journal_error_types: list[str] = field(default_factory=list)
+    risk_notification_error_type: str | None = None
 
     def canonical(self) -> dict[str, Any]:
         return {
@@ -1267,6 +1275,8 @@ class RoundTripResult:
             "cancel_confirmed": self.cancel_confirmed,
             "reconcile_snapshot": self.reconcile_snapshot,
             "failure": self.failure,
+            "journal_error_types": list(self.journal_error_types),
+            "risk_notification_error_type": self.risk_notification_error_type,
             "round_trip_complete": bool(
                 self.submitted and self.cancel_confirmed and self.failure is None
             ),
@@ -1493,6 +1503,17 @@ async def submit_and_cancel(
     broker_truth: BrokerTruth,
     record_order_no: Any,
     now: dt.datetime,
+    before_submit: Callable[[], Awaitable[None]] | None = None,
+    cancel_authority_decision: (
+        Callable[[RoundTripResult], Awaitable[bool]] | None
+    ) = None,
+    before_cancel_send: Callable[[], Awaitable[None]] | None = None,
+    on_mandatory_cancel_blocked: (
+        Callable[[RoundTripResult, int], Awaitable[None]] | None
+    ) = None,
+    continue_after_journal_error: bool = False,
+    require_cancel_order_no: bool = False,
+    raise_on_incomplete: bool = True,
 ) -> RoundTripResult:
     """Submit one planned BUY, prove it rests, cancel it, prove it is gone.
 
@@ -1524,6 +1545,8 @@ async def submit_and_cancel(
         quantity=planned.quantity,
     )
 
+    if before_submit is not None:
+        await before_submit()
     submit_payload = await account.place_limit_buy(
         symbol=planned.symbol, quantity=planned.quantity, price=planned.price
     )
@@ -1531,7 +1554,15 @@ async def submit_and_cancel(
     result.submit_response = dict(submit_payload)
     order_no = _extract_order_no(submit_payload)
     result.order_no = order_no
-    record_order_no(order_no=order_no, planned=planned, at=now)
+    try:
+        # S10: no broker read, lifecycle write, or other fallible operation may
+        # be inserted between exact ACK extraction and this durable journal.
+        record_order_no(order_no=order_no, planned=planned, at=now)
+    except Exception as exc:
+        if not continue_after_journal_error:
+            raise
+        result.journal_error_types.append(type(exc).__name__)
+        result.failure = f"buy_journal_failed:{type(exc).__name__}"
 
     # --- prove it rests (this is the surface kis_mock does not have) ---
     try:
@@ -1563,6 +1594,18 @@ async def submit_and_cancel(
         if result.resting_snapshot
         else planned.quantity
     )
+    if cancel_authority_decision is not None:
+        cancel_authorized = await cancel_authority_decision(result)
+        if cancel_authorized is not True:
+            result.failure = MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY
+            if on_mandatory_cancel_blocked is not None:
+                try:
+                    await on_mandatory_cancel_blocked(result, int(cancel_quantity))
+                except Exception as exc:  # state was recorded before notification
+                    result.risk_notification_error_type = type(exc).__name__
+            return result
+    if before_cancel_send is not None:
+        await before_cancel_send()
     result.cancel_attempted = True
     try:
         result.cancel_response = dict(
@@ -1588,26 +1631,41 @@ async def submit_and_cancel(
         # establishes *ownership* without ever moving an attributed quantity.
         try:
             cancel_order_no = _extract_order_no(result.cancel_response)
-        except BrokerEchoMismatch:
+        except BrokerEchoMismatch as exc:
             cancel_order_no = None
+            if require_cancel_order_no:
+                result.failure = f"cancel_order_no_unavailable:{type(exc).__name__}"
         result.cancel_order_no = cancel_order_no
         if cancel_order_no is not None and cancel_order_no != order_no:
-            record_order_no(
-                order_no=cancel_order_no,
-                planned=replace(planned, side="cancel"),
-                at=now,
-            )
+            try:
+                # S10 applies to the cancel ACK too: journal first, before the
+                # post-cancel read or coordinator durable writes.
+                record_order_no(
+                    order_no=cancel_order_no,
+                    planned=replace(planned, side="cancel"),
+                    at=now,
+                )
+            except Exception as exc:
+                if not continue_after_journal_error:
+                    raise
+                result.journal_error_types.append(type(exc).__name__)
+                result.failure = result.failure or (
+                    f"cancel_journal_failed:{type(exc).__name__}"
+                )
 
     # --- reconcile: the ONLY thing that may set cancel_confirmed ---
     try:
         after = await account.read_resting_orders()
     except Exception as exc:  # noqa: BLE001
         result.failure = f"reconcile_read_failed:{type(exc).__name__}"
-        raise RoundTripIncomplete(
+        incomplete = RoundTripIncomplete(
             f"order {order_no} was submitted but the post-cancel broker read "
             f"failed ({type(exc).__name__}) — cancellation is unproven and this "
             "run must not be reported as clean"
-        ) from exc
+        )
+        if raise_on_incomplete:
+            raise incomplete from exc
+        return result
 
     still_resting = next((row for row in after if row.order_id == order_no), None)
     result.reconcile_snapshot = {
@@ -1620,12 +1678,14 @@ async def submit_and_cancel(
     result.cancel_confirmed = still_resting is None
     if not result.cancel_confirmed:
         result.failure = "cancel_unconfirmed"
-        raise RoundTripIncomplete(
+        incomplete = RoundTripIncomplete(
             f"order {order_no} ({planned.symbol}) is still reported as resting by "
             f"kt00007 after kt10003 — remaining="
             f"{still_resting.remaining_quantity if still_resting else '?'}. "
             "Refusing to report a cancellation the broker did not confirm."
         )
+        if raise_on_incomplete:
+            raise incomplete
     return result
 
 
@@ -1636,6 +1696,7 @@ __all__ = [
     "CLIENT_ORDER_ID_PREFIX",
     "KIS_LANE_CLIENT_ORDER_ID_PREFIX",
     "KRX_MIN_TRADE_UNIT_SHARES",
+    "MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY",
     "ORDER_NO_FIELD",
     "OWN_PENDING_BASIS",
     "OWN_PENDING_SOURCE",

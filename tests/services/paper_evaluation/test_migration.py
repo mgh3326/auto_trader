@@ -195,6 +195,8 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # and already in Base.metadata; drop them so the upgrade chain
             # creates them instead of colliding.
             for table in (
+                "kiwoom_authority_cessation_receipts",
+                "kiwoom_authority_attempts",
                 "telegram_callback_recovery_cursor",
                 "telegram_callback_inbox",
                 "screener_pick_log",

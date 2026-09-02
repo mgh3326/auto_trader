@@ -70,6 +70,12 @@
     token/revoke 2 path 예외뿐이다. `NHPLUG_MOCK_ENABLED` default false 유지,
     vendor SDK·`NHPLUG_BASE_URL`/`NHPLUG_AUTH_URL`·주문 endpoint/TR 추가 금지.
     주문 메서드/MCP/레저/reconcile/스케줄러는 Stage 1 범위 밖이다.
+15. **Kiwoom ACCEPTANCE authority cessation (ROB-1340)**: confirmed BUY·cancel·reconcile은
+    하나의 PostgreSQL coordination scope에서만 수행한다. cancel 직전 ownership 상실 시
+    취소를 보내지 말고 cycle JSON live-order-risk를 먼저 append한 뒤 기존 Telegram
+    notifier로 알린다. authority attempt/terminal DB 행은 append-only이며 current-cycle
+    완전 열거 + exact committed receipt coverage + active-hold 0일 때만
+    `RELEASE_VERIFIED`다. 빈 lock, pool close, PID 부재만으로 승격 금지.
 
 ## 최소 명령어
 

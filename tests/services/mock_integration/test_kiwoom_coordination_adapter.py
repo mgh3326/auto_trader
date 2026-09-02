@@ -20,6 +20,11 @@ from app.schemas.execution_contracts import LaneStatus, SchedulerOwner
 from app.services.brokers.client_order_ids import BrokerClientIdTarget
 from app.services.brokers.kiwoom import constants as kiwoom_constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.mock_integration.authority_cessation import (
+    AuthorityAttemptStartedV1,
+    AuthorityAttemptTerminalV1,
+    verify_authority_cessation,
+)
 from app.services.mock_integration.coordination import (
     CoordinationError,
     CoordinationReasonCode,
@@ -233,7 +238,11 @@ class FakeLockConnection:
         from app.services.mock_integration.coordination import BackendTerminationReceipt
 
         return BackendTerminationReceipt(
-            backend_pid=self._pid, owner_token="x", terminated=True
+            backend_pid=self._pid,
+            owner_token="x",
+            terminated=True,
+            termination_returned_exact_true=True,
+            observer_pid_absent=True,
         )
 
 
@@ -382,6 +391,40 @@ def make_test_mock_client() -> KiwoomMockClient:
     )
 
 
+@dataclass
+class InMemoryAuthorityEvidence:
+    """No-DB authority journal used only by broker-free unit tests."""
+
+    attempts: list[AuthorityAttemptStartedV1] = field(default_factory=list)
+    terminals: list[AuthorityAttemptTerminalV1] = field(default_factory=list)
+
+    async def assert_ready(self) -> None:
+        return None
+
+    async def record_started(
+        self, started: AuthorityAttemptStartedV1
+    ) -> AuthorityAttemptStartedV1:
+        self.attempts.append(started)
+        return started
+
+    async def record_terminal(
+        self, terminal: AuthorityAttemptTerminalV1
+    ) -> AuthorityAttemptTerminalV1:
+        committed = replace(
+            terminal, receipt_id=len(self.terminals) + 1, committed=True
+        )
+        self.terminals.append(committed)
+        return committed
+
+    async def release_assessment_for_cycle(self, *, cycle_id: str):  # noqa: ANN201
+        return verify_authority_cessation(
+            cycle_id=cycle_id,
+            attempts=tuple(self.attempts),
+            terminals=tuple(self.terminals),
+            enumeration_complete=True,
+        )
+
+
 def build_offline_adapter(
     *,
     space: FakeLockSpace | None = None,
@@ -414,6 +457,7 @@ def build_offline_adapter(
         diagnostic_fingerprint=FINGERPRINT_REF,
         coordination_provenance=_entry_provenance(bound),
         legacy_offline=True,
+        authority_evidence=InMemoryAuthorityEvidence(),
     )
     return _register_approved_adapter(ports, grant_only=False)
 

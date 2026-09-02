@@ -105,6 +105,11 @@ grant to do that with: it calls `await scope.assert_owned()` on the
 
 Multi-key: partial-acquire rolls back every acquired key in reverse order;
 release unlocks in reverse order and counts only keys PostgreSQL confirmed.
+ROB-1340 applies the same re-entrancy rule to partial rollback: after every
+acquired key returned exact `true`, the rollback producer re-reads the same
+backend and requires zero matching rows. Without that final read it terminates
+the exact backend or records an unresolved hold; it never emits an unlock
+receipt.
 
 ### Release, and what does not count as one
 
@@ -113,10 +118,12 @@ Release is exactly two things:
 - an **attested** owner/key-matched `pg_advisory_unlock` whose boolean is `true`
   for every key, then close; or
 - a **positive termination receipt** bound to the exact backend PID and owner
-  token.
+  token, for which the actual `pg_terminate_backend` scalar was exact `true`
+  **and** an independent observer then proved that exact PID absent.
 
-`close()` and a pool return are **never** termination. An ambiguous driver error
-is not a receipt. When neither can be proven, the lease is not marked released
+`close()` and a pool return are **never** termination. An ambiguous driver
+error, `pg_terminate_backend=false` followed by PID absence, or PID absence
+alone is not a receipt. When neither can be proven, the lease is not marked released
 and an auditable `UnreleasedAuthorityHold` is recorded.
 
 A single `pg_advisory_unlock` returning true is **not** proof either. Session

@@ -61,6 +61,17 @@ from typing import Any, Final, Protocol, runtime_checkable
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.services.mock_integration.authority_cessation import (
+    AuthorityAttemptContextV1,
+    AuthorityAttemptStartedV1,
+    AuthorityAttemptTerminalState,
+    AuthorityAttemptTerminalV1,
+    AuthorityCessationEvidencePort,
+    AuthorityCessationKind,
+    keyset_digest,
+    owner_binding_digest,
+    terminal_receipt_digest,
+)
 from app.services.mock_integration.lineage import (
     LineageEnvelope,
     LineagePersistencePort,
@@ -275,6 +286,8 @@ class BackendTerminationReceipt:
     backend_pid: int
     owner_token: str
     terminated: bool
+    termination_returned_exact_true: bool
+    observer_pid_absent: bool
 
 
 @runtime_checkable
@@ -356,11 +369,15 @@ class SqlAlchemyLockAuthority:
             )
         observer = await self._observer_factory()
         try:
-            # The boolean is informational: it is false both when the PID never
-            # existed and when it had already gone. Absence from
-            # ``pg_stat_activity`` is the decisive proof, and it is the only
-            # thing this treats as one.
-            await observer.execute(text(_TERMINATE_BACKEND_SQL), {"pid": expected_pid})
+            termination = await observer.execute(
+                text(_TERMINATE_BACKEND_SQL), {"pid": expected_pid}
+            )
+            # ROB-1340: absence after a false termination is not proof that this
+            # call ended the owner. Both positive facts are load-bearing.
+            if termination.scalar_one() is not True:
+                raise BackendSessionTerminationUnproven(
+                    "pg_terminate_backend did not return exact true"
+                )
             alive = await observer.execute(
                 text(_BACKEND_ALIVE_SQL), {"pid": expected_pid}
             )
@@ -382,7 +399,11 @@ class SqlAlchemyLockAuthority:
             # load-bearing property is the one below it, that no receipt exists
             # until absence has been proven.
             receipt = BackendTerminationReceipt(
-                backend_pid=expected_pid, owner_token=owner_token, terminated=True
+                backend_pid=expected_pid,
+                owner_token=owner_token,
+                terminated=True,
+                termination_returned_exact_true=True,
+                observer_pid_absent=True,
             )
         finally:
             # Only the *observer* is disposable on every path. Closing the owner
@@ -455,6 +476,12 @@ class UnreleasedAuthorityHold:
     # are permanent until the process dies. Claiming otherwise would be the same
     # kind of false report B30 forbade in the other direction.
     recoverable_in_process: bool
+    # ROB-1340 lineage makes process-local holds joinable to the committed start
+    # journal. Generic pre-ROB-1340 callers leave these additive fields empty.
+    authority_attempt_id: str | None = None
+    lane_id: str | None = None
+    cycle_id: str | None = None
+    order_attempt_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +584,24 @@ def unreleased_authority_holds() -> tuple[UnreleasedAuthorityHold, ...]:
     """The authorities that are unresolved **right now**, in recording order."""
 
     return tuple(_hold_view(hold) for hold in _ACTIVE_AUTHORITY_HOLDS.values())
+
+
+def unreleased_authority_holds_for_cycle(
+    cycle_id: str,
+) -> tuple[UnreleasedAuthorityHold, ...]:
+    """N4: active authority holds bound to one exact current cycle.
+
+    A crash orphan from an older cycle remains visible in the global operator
+    view but cannot permanently poison every later cycle's enumeration.
+    """
+
+    if type(cycle_id) is not str or not cycle_id.strip():
+        raise ValueError("cycle_id must be a non-empty exact string")
+    return tuple(
+        _hold_view(hold)
+        for hold in _ACTIVE_AUTHORITY_HOLDS.values()
+        if hold.cycle_id == cycle_id
+    )
 
 
 def _retained_authorities() -> Mapping[str, _RetainedAuthority]:
@@ -819,6 +864,107 @@ class AdvisoryLeaseGrant:
     database_oid: int
     connection_token: str
     event_loop: asyncio.AbstractEventLoop
+    # Additive ROB-1340 binding. Other production callers keep ``None`` and
+    # retain byte-for-byte acquisition semantics.
+    authority_started: AuthorityAttemptStartedV1 | None = None
+    authority_evidence: AuthorityCessationEvidencePort | None = None
+
+
+def _authority_terminal(
+    grant: AdvisoryLeaseGrant,
+    *,
+    claim_row_id: int | None,
+    kind: AuthorityCessationKind,
+    lock_statement_dispatched: bool,
+    lock_definite_false: bool,
+    acquired_key_count: int,
+    in_flight_unknown: bool,
+    unlock_true_count: int,
+    post_release_matching_rows: int | None,
+    termination_receipt: BackendTerminationReceipt | None = None,
+) -> AuthorityAttemptTerminalV1 | None:
+    started = grant.authority_started
+    if started is None or grant.authority_evidence is None:
+        return None
+    terminal_state = {
+        AuthorityCessationKind.NO_KEY_ACQUIRED_PROVEN: (
+            AuthorityAttemptTerminalState.NO_KEY_ACQUIRED_PROVEN
+        ),
+        AuthorityCessationKind.ADVISORY_UNLOCK: (
+            AuthorityAttemptTerminalState.CESSATION_RECEIPT_COMMITTED
+        ),
+        AuthorityCessationKind.BACKEND_TERMINATION: (
+            AuthorityAttemptTerminalState.CESSATION_RECEIPT_COMMITTED
+        ),
+        AuthorityCessationKind.UNRESOLVED_HOLD: (
+            AuthorityAttemptTerminalState.UNRESOLVED_HOLD
+        ),
+    }[kind]
+    draft = AuthorityAttemptTerminalV1(
+        authority_attempt_id=started.authority_attempt_id,
+        contract_version=started.contract_version,
+        lane_id=started.lane_id,
+        cycle_id=started.cycle_id,
+        order_attempt_id=started.order_attempt_id,
+        claim_row_id=claim_row_id,
+        owner_binding_digest=started.owner_binding_digest,
+        keyset_digest=started.keyset_digest,
+        key_count=started.key_count,
+        terminal_state=terminal_state,
+        kind=kind,
+        lock_statement_dispatched=lock_statement_dispatched,
+        lock_definite_false=lock_definite_false,
+        acquired_key_count=acquired_key_count,
+        in_flight_unknown=in_flight_unknown,
+        unlock_true_count=unlock_true_count,
+        post_release_matching_rows=post_release_matching_rows,
+        termination_returned_exact_true=(
+            None
+            if termination_receipt is None
+            else termination_receipt.termination_returned_exact_true
+        ),
+        observer_pid_absent=(
+            None
+            if termination_receipt is None
+            else termination_receipt.observer_pid_absent
+        ),
+        receipt_digest="",
+    )
+    return replace(draft, receipt_digest=terminal_receipt_digest(draft))
+
+
+async def _persist_authority_terminal(
+    grant: AdvisoryLeaseGrant,
+    **terminal_fields: Any,
+) -> tuple[AuthorityAttemptTerminalV1 | None, BaseException | None]:
+    """Retain terminal commit/readback and contain post-release failures."""
+
+    terminal = _authority_terminal(grant, **terminal_fields)
+    port = grant.authority_evidence
+    if terminal is None or port is None:
+        return None, None
+
+    recorded: list[AuthorityAttemptTerminalV1] = []
+
+    async def _record() -> None:
+        recorded.append(await port.record_terminal(terminal))
+
+    task: asyncio.Task[None] = asyncio.ensure_future(_record())
+    cancellation = await _await_retained_task(task)
+    error = _task_error(task)
+    if error is not None:
+        return None, error
+    if cancellation is not None:
+        return None, cancellation
+    result = recorded[0] if recorded else None
+    if (
+        type(result) is not AuthorityAttemptTerminalV1
+        or result.committed is not True
+        or result.receipt_id is None
+        or replace(result, receipt_id=None, committed=False) != terminal
+    ):
+        return None, TypeError("authority terminal port returned invalid readback")
+    return result, None
 
 
 async def _read_session_identity(
@@ -877,7 +1023,7 @@ async def _unlock_proven(connection: LockAuthorityConnection, key: int) -> bool:
     """
 
     result = await connection.execute(text(_ADVISORY_UNLOCK_SQL), {"key": key})
-    return bool(result.scalar_one())
+    return result.scalar_one() is True
 
 
 async def _terminate_authority(
@@ -902,6 +1048,8 @@ async def _terminate_authority(
     if (
         not isinstance(receipt, BackendTerminationReceipt)
         or receipt.terminated is not True
+        or receipt.termination_returned_exact_true is not True
+        or receipt.observer_pid_absent is not True
         or receipt.backend_pid != grant.backend_pid
         or receipt.owner_token != grant.connection_token
     ):
@@ -984,6 +1132,24 @@ def _record_unreleased_authority(
         durable_evidence_written=durable_evidence_written,
         # Recorded conservatively; :func:`_hold_view` recomputes it on read.
         recoverable_in_process=False,
+        authority_attempt_id=(
+            None
+            if grant.authority_started is None
+            else grant.authority_started.authority_attempt_id
+        ),
+        lane_id=(
+            None if grant.authority_started is None else grant.authority_started.lane_id
+        ),
+        cycle_id=(
+            None
+            if grant.authority_started is None
+            else grant.authority_started.cycle_id
+        ),
+        order_attempt_id=(
+            None
+            if grant.authority_started is None
+            else grant.authority_started.order_attempt_id
+        ),
     )
     _AUTHORITY_HOLD_HISTORY.append(hold)
     _ACTIVE_AUTHORITY_HOLDS[hold.hold_id] = hold
@@ -1028,6 +1194,9 @@ class PostgresAdvisoryKeysetLease:
     """
 
     __slots__ = (
+        "_authority_claim_row_id",
+        "_authority_terminal_error",
+        "_authority_terminal_record",
         "_connection",
         "_coordination_hold_id",
         "_grant",
@@ -1047,6 +1216,9 @@ class PostgresAdvisoryKeysetLease:
     ) -> None:
         self._connection = connection
         self._grant = grant
+        self._authority_claim_row_id: int | None = None
+        self._authority_terminal_record: AuthorityAttemptTerminalV1 | None = None
+        self._authority_terminal_error: BaseException | None = None
         self._released = False
         self._unlocked_keys: tuple[int, ...] = ()
         self._release_task: asyncio.Task[None] | None = None
@@ -1092,6 +1264,49 @@ class PostgresAdvisoryKeysetLease:
         """The positive receipt, when release fell back to a proven termination."""
 
         return self._termination_receipt
+
+    @property
+    def authority_terminal_record(self) -> AuthorityAttemptTerminalV1 | None:
+        """Committed receipt projection, never a producer capability."""
+
+        return self._authority_terminal_record
+
+    @property
+    def authority_terminal_commit_failed(self) -> bool:
+        return self._authority_terminal_error is not None
+
+    def _bind_authority_claim(self, claim_row_id: int) -> None:
+        """Bind the later durable claim without mutating the frozen grant."""
+
+        if type(claim_row_id) is not int or claim_row_id <= 0:
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
+            )
+        if self._authority_claim_row_id not in (None, claim_row_id):
+            raise CoordinationError(CoordinationReasonCode.LEASE_LOST)
+        self._authority_claim_row_id = claim_row_id
+
+    async def _record_authority_terminal(self, **fields: Any) -> None:
+        if self._authority_terminal_record is not None:
+            return
+        terminal, error = await _persist_authority_terminal(
+            self._grant,
+            claim_row_id=self._authority_claim_row_id,
+            **fields,
+        )
+        self._authority_terminal_record = terminal
+        self._authority_terminal_error = error
+
+    async def _record_unresolved_hold_terminal(self) -> None:
+        await self._record_authority_terminal(
+            kind=AuthorityCessationKind.UNRESOLVED_HOLD,
+            lock_statement_dispatched=True,
+            lock_definite_false=False,
+            acquired_key_count=len(self._grant.keys),
+            in_flight_unknown=False,
+            unlock_true_count=len(self._unlocked_keys),
+            post_release_matching_rows=None,
+        )
 
     def _require_grant(self, expected_grant: AdvisoryLeaseGrant) -> None:
         if asyncio.get_running_loop() is not self._grant.event_loop:
@@ -1324,6 +1539,19 @@ class PostgresAdvisoryKeysetLease:
             await self._terminate_or_hold(CoordinationReasonCode.LEASE_LOST)
             raise CoordinationError(CoordinationReasonCode.LEASE_LOST)
 
+        # The same authority that executed every exact-true unlock produces the
+        # durable receipt. A commit failure cannot make the already-proven
+        # release false, but it does leave the cycle INCOMPLETE_EVIDENCE.
+        await self._record_authority_terminal(
+            kind=AuthorityCessationKind.ADVISORY_UNLOCK,
+            lock_statement_dispatched=True,
+            lock_definite_false=False,
+            acquired_key_count=len(self._grant.keys),
+            in_flight_unknown=False,
+            unlock_true_count=len(confirmed),
+            post_release_matching_rows=0,
+        )
+
         # Proven released at this instant. Resolving before the fallible close
         # keeps introspection honest: a pool-return error must not leave a
         # released authority reported as still held.
@@ -1345,6 +1573,16 @@ class PostgresAdvisoryKeysetLease:
             # is gone with it. That is an allowed release outcome even though the
             # caller still sees the failure that forced it.
             self._termination_receipt = receipt
+            await self._record_authority_terminal(
+                kind=AuthorityCessationKind.BACKEND_TERMINATION,
+                lock_statement_dispatched=True,
+                lock_definite_false=False,
+                acquired_key_count=len(self._grant.keys),
+                in_flight_unknown=False,
+                unlock_true_count=len(self._unlocked_keys),
+                post_release_matching_rows=None,
+                termination_receipt=receipt,
+            )
             self._released = True
             self._resolve_own_hold()
             _unregister_owned_coordination(self)
@@ -1370,12 +1608,15 @@ class PostgresAdvisoryKeysetLease:
             # supplied id cannot be adopted by anything that lacks it.
             capability=self._release_capability,
         )
+        await self._record_unresolved_hold_terminal()
 
 
 async def acquire_physical_account_lease(
     *,
     keys: Sequence[int],
     connection_factory: LockAuthorityConnectionFactory,
+    authority_evidence: AuthorityCessationEvidencePort | None = None,
+    authority_context: AuthorityAttemptContextV1 | None = None,
 ) -> PostgresAdvisoryKeysetLease:
     """Acquire an ordered advisory keyset on one dedicated session.
 
@@ -1395,6 +1636,27 @@ async def acquire_physical_account_lease(
     ordered_keys = ordered_advisory_keyset(keys)
     if not ordered_keys:
         raise CoordinationError(CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE)
+
+    # S8: this pair is additive. Existing callers pass neither and retain the
+    # original behavior; a half-wired evidence contract fails before a lock.
+    if (authority_evidence is None) != (authority_context is None):
+        raise CoordinationError(CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE)
+    if authority_evidence is not None:
+        if (
+            not isinstance(authority_evidence, AuthorityCessationEvidencePort)
+            or type(authority_context) is not AuthorityAttemptContextV1
+            or authority_context.lane_id != "kr.kiwoom.mock"
+            or not authority_context.cycle_id.strip()
+            or not authority_context.order_attempt_id.strip()
+        ):
+            raise CoordinationError(CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE)
+        try:
+            await authority_evidence.assert_ready()
+        except BaseException as exc:
+            raise CoordinationError(
+                CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE,
+                lane_id=authority_context.lane_id,
+            ) from exc
 
     connection = await _open_lock_authority(connection_factory)
 
@@ -1440,6 +1702,60 @@ async def acquire_physical_account_lease(
         connection_token=f"lockconn:{secrets.token_hex(8)}",
         event_loop=loop,
     )
+    if authority_evidence is not None:
+        assert authority_context is not None
+        started = AuthorityAttemptStartedV1(
+            authority_attempt_id=f"authority-attempt:{secrets.token_hex(16)}",
+            lane_id=authority_context.lane_id,
+            cycle_id=authority_context.cycle_id,
+            order_attempt_id=authority_context.order_attempt_id,
+            owner_binding_digest=owner_binding_digest(
+                backend_pid=backend_pid,
+                database_oid=database_oid,
+                token=grant.connection_token,
+            ),
+            keyset_digest=keyset_digest(ordered_keys),
+            key_count=len(ordered_keys),
+            baseline_matching_rows=0,
+        )
+        recorded: list[AuthorityAttemptStartedV1] = []
+
+        async def _record_started() -> None:
+            recorded.append(await authority_evidence.record_started(started))
+
+        start_task: asyncio.Task[None] = asyncio.ensure_future(_record_started())
+        start_cancellation = await _await_retained_task(start_task)
+        start_error = _task_error(start_task)
+        if (
+            start_error is not None
+            or not recorded
+            or type(recorded[0]) is not AuthorityAttemptStartedV1
+            or recorded[0] != started
+        ):
+            await _close_quietly(connection)
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
+                lane_id=authority_context.lane_id,
+            ) from start_error
+        grant = replace(
+            grant,
+            authority_started=started,
+            authority_evidence=authority_evidence,
+        )
+        if start_cancellation is not None:
+            await _persist_authority_terminal(
+                grant,
+                claim_row_id=None,
+                kind=AuthorityCessationKind.NO_KEY_ACQUIRED_PROVEN,
+                lock_statement_dispatched=False,
+                lock_definite_false=False,
+                acquired_key_count=0,
+                in_flight_unknown=False,
+                unlock_true_count=0,
+                post_release_matching_rows=0,
+            )
+            await _close_quietly(connection)
+            raise start_cancellation
     acquired: list[int] = []
     # A key is marked in flight *before* the statement is dispatched and cleared
     # only once a definite answer comes back. Anything still listed here has an
@@ -1449,7 +1765,7 @@ async def acquire_physical_account_lease(
     in_flight: list[int] = []
     try:
         await _acquire_attested_keyset(connection, grant, acquired, in_flight)
-    except BaseException:
+    except BaseException as acquisition_error:
         # The rollback runs as a retained task: a cancellation arriving *during*
         # it must not abandon a connection that may still hold a key. The
         # original failure is re-raised only after the rollback reached a safe
@@ -1462,6 +1778,25 @@ async def acquire_physical_account_lease(
         rollback_cancellation = await _await_retained_task(rollback)
         rollback_error = _task_error(rollback)
         rollback_interruption = rollback.result() if rollback_error is None else None
+        if not acquired and not in_flight:
+            # The only dispatched path that returns with both lists empty is an
+            # exact false from the first lock request. A pre-dispatch start
+            # cancellation was handled above.
+            await _persist_authority_terminal(
+                grant,
+                claim_row_id=None,
+                kind=AuthorityCessationKind.NO_KEY_ACQUIRED_PROVEN,
+                lock_statement_dispatched=True,
+                lock_definite_false=(
+                    isinstance(acquisition_error, CoordinationError)
+                    and acquisition_error.reason_code
+                    is CoordinationReasonCode.LEASE_CONTENDED
+                ),
+                acquired_key_count=0,
+                in_flight_unknown=False,
+                unlock_true_count=0,
+                post_release_matching_rows=0,
+            )
         if rollback_error is not None and not _authority_already_retained(
             owner=connection, grant=grant, connection=connection
         ):
@@ -1532,9 +1867,14 @@ async def _acquire_attested_keyset(
             # granted. Any raise or cancellation between dispatch and here
             # leaves the key marked in flight, because local silence is not
             # evidence that the server did nothing.
-            if not bool(result.scalar_one()):
+            acquired_result = result.scalar_one()
+            if acquired_result is False:
                 in_flight.remove(key)
                 raise CoordinationError(CoordinationReasonCode.LEASE_CONTENDED)
+            if acquired_result is not True:
+                raise CoordinationError(
+                    CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
+                )
             in_flight.remove(key)
             acquired.append(key)
         # Explicit COMMIT boundary: everything after this runs in a new
@@ -1578,7 +1918,20 @@ async def _rollback_partial_acquisition(
     """
 
     if in_flight:
-        if await _terminate_authority(connection, grant) is not None:
+        termination = await _terminate_authority(connection, grant)
+        if termination is not None:
+            await _persist_authority_terminal(
+                grant,
+                claim_row_id=None,
+                kind=AuthorityCessationKind.BACKEND_TERMINATION,
+                lock_statement_dispatched=True,
+                lock_definite_false=False,
+                acquired_key_count=len(acquired),
+                in_flight_unknown=True,
+                unlock_true_count=0,
+                post_release_matching_rows=None,
+                termination_receipt=termination,
+            )
             return None
         _record_unreleased_authority(
             grant,
@@ -1588,15 +1941,39 @@ async def _rollback_partial_acquisition(
             durable_evidence_written=True,
             connection=connection,
         )
+        await _persist_authority_terminal(
+            grant,
+            claim_row_id=None,
+            kind=AuthorityCessationKind.UNRESOLVED_HOLD,
+            lock_statement_dispatched=True,
+            lock_definite_false=False,
+            acquired_key_count=len(acquired),
+            in_flight_unknown=True,
+            unlock_true_count=0,
+            post_release_matching_rows=None,
+        )
         return None
 
     proven = True
+    confirmed: list[int] = []
     interruption: BaseException | None = None
     try:
         for key in reversed(tuple(acquired)):
             if not await _unlock_proven(connection, key):
                 proven = False
                 break
+            confirmed.append(key)
+        if proven and acquired:
+            # S7: exact-true unlocks are insufficient for re-entrant advisory
+            # locks. The producer must re-read the same backend and prove zero
+            # matching rows before it can emit an advisory-unlock receipt.
+            remaining = await _read_owned_advisory_rows(connection, grant.backend_pid)
+            proven = not _rows_hold_any_key(
+                remaining,
+                keys=tuple(acquired),
+                backend_pid=grant.backend_pid,
+                database_oid=grant.database_oid,
+            )
     except BaseException as exc:
         # Including a cancellation: an interrupted unlock proves nothing, so the
         # remainder is unknown rather than absent. The interruption is carried
@@ -1606,9 +1983,35 @@ async def _rollback_partial_acquisition(
         interruption = exc
         proven = False
     if proven:
+        if acquired:
+            await _persist_authority_terminal(
+                grant,
+                claim_row_id=None,
+                kind=AuthorityCessationKind.ADVISORY_UNLOCK,
+                lock_statement_dispatched=True,
+                lock_definite_false=False,
+                acquired_key_count=len(acquired),
+                in_flight_unknown=False,
+                unlock_true_count=len(confirmed),
+                post_release_matching_rows=0,
+            )
         await _close_quietly(connection)
         return interruption
-    if await _terminate_authority(connection, grant) is None:
+    termination = await _terminate_authority(connection, grant)
+    if termination is not None:
+        await _persist_authority_terminal(
+            grant,
+            claim_row_id=None,
+            kind=AuthorityCessationKind.BACKEND_TERMINATION,
+            lock_statement_dispatched=True,
+            lock_definite_false=False,
+            acquired_key_count=len(acquired),
+            in_flight_unknown=False,
+            unlock_true_count=len(confirmed),
+            post_release_matching_rows=None,
+            termination_receipt=termination,
+        )
+    else:
         # Metadata alone would let a GC pass or a pool return drop the very
         # authority it claims is still held, so the real connection is retained.
         _record_unreleased_authority(
@@ -1618,6 +2021,17 @@ async def _rollback_partial_acquisition(
             termination_proven=False,
             durable_evidence_written=True,
             connection=connection,
+        )
+        await _persist_authority_terminal(
+            grant,
+            claim_row_id=None,
+            kind=AuthorityCessationKind.UNRESOLVED_HOLD,
+            lock_statement_dispatched=True,
+            lock_definite_false=False,
+            acquired_key_count=len(acquired),
+            in_flight_unknown=False,
+            unlock_true_count=len(confirmed),
+            post_release_matching_rows=None,
         )
     return interruption
 
@@ -2227,6 +2641,10 @@ class CoordinatedMutationResult:
     # Opaque derived keys only — never the grant, which pairs a backend PID with
     # an owner token and is therefore a termination capability.
     lease_keys: tuple[int, ...]
+    authority_attempt_id: str | None = None
+    authority_receipt_id: int | None = None
+    authority_receipt_digest: str | None = None
+    authority_terminal_commit_failed: bool = False
 
 
 async def _await_retained_task(
@@ -2418,6 +2836,7 @@ async def coordinate_mock_order_mutation(
     registry: RegistrySource | None = None,
     lineage_factory: MockLineageFactory | None = None,
     additional_advisory_keys: Sequence[int] = (),
+    authority_evidence: AuthorityCessationEvidencePort | None = None,
 ) -> CoordinatedMutationResult:
     """Run one mutation behind the full J3A coordination order.
 
@@ -2477,6 +2896,16 @@ async def coordinate_mock_order_mutation(
     lease = await acquire_physical_account_lease(
         keys=(scope.advisory_key, *additional_advisory_keys),
         connection_factory=connection_factory,
+        authority_evidence=authority_evidence,
+        authority_context=(
+            None
+            if authority_evidence is None
+            else AuthorityAttemptContextV1(
+                lane_id=entry.lane_id,
+                cycle_id=order_attempt.cycle_id,
+                order_attempt_id=order_attempt.order_attempt_id,
+            )
+        ),
     )
     grant = lease.grant
     claim: DurableClaim | None = None
@@ -2507,6 +2936,8 @@ async def coordinate_mock_order_mutation(
             symbol=execution_plan.normalized_symbol,
             side=envelope.decision_intent.side,
         )
+        if grant.authority_started is not None:
+            lease._bind_authority_claim(claim.row_id)
         await lease.assert_owned(grant)
         _require_pinned_entry(envelope, registry, entry)
         # Strong handle first, callback second: between these two lines there is
@@ -2675,6 +3106,9 @@ async def coordinate_mock_order_mutation(
                 else None
             ),
         )
+        # The process hold exists even if this append fails; the missing row
+        # then makes durable enumeration incomplete rather than disappearing.
+        await lease._record_unresolved_hold_terminal()
         raise CoordinationError(
             CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
             lane_id=entry.lane_id,
@@ -2706,6 +3140,22 @@ async def coordinate_mock_order_mutation(
         certainty=result.certainty,
         evidence=evidence,
         lease_keys=grant.keys,
+        authority_attempt_id=(
+            None
+            if grant.authority_started is None
+            else grant.authority_started.authority_attempt_id
+        ),
+        authority_receipt_id=(
+            None
+            if lease.authority_terminal_record is None
+            else lease.authority_terminal_record.receipt_id
+        ),
+        authority_receipt_digest=(
+            None
+            if lease.authority_terminal_record is None
+            else lease.authority_terminal_record.receipt_digest
+        ),
+        authority_terminal_commit_failed=lease.authority_terminal_commit_failed,
     )
 
 
@@ -2778,4 +3228,5 @@ __all__ = [
     "supports_backend_session_termination",
     "authority_hold_history",
     "unreleased_authority_holds",
+    "unreleased_authority_holds_for_cycle",
 ]

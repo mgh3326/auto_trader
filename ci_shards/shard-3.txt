@@ -163,6 +163,7 @@ tests/services/market_close_digest/test_formatter_flags.py
 tests/services/market_events/test_earnings_decision_time.py
 tests/services/market_events/test_session_calendar.py
 tests/services/market_events/test_us_earnings_coverage.py
+tests/services/mock_integration/test_authority_cessation.py
 tests/services/mock_integration/test_kis_coordination_adapter.py
 tests/services/mock_integration/test_lineage.py
 tests/services/order_proposals/callback_inbox/test_attempt_budget_cross_field.py
