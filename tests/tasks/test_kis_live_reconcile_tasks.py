@@ -58,3 +58,20 @@ async def test_runs_kernel_when_enabled():
         result = await mod.kis_live_reconcile_periodic()
     kernel.assert_awaited_once_with(dry_run=False)
     assert result == fake
+
+
+@pytest.mark.asyncio
+async def test_explicit_dry_run_reaches_kernel_when_enabled():
+    fake = {"success": True, "counts": {"filled": 0}}
+    with (
+        patch.object(mod.settings, "KIS_LIVE_AUTO_RECONCILE_ENABLED", True),
+        patch.object(
+            mod.settings, "KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED", True
+        ),
+        patch.object(
+            mod, "kis_live_reconcile_orders_impl", AsyncMock(return_value=fake)
+        ) as kernel,
+    ):
+        result = await mod.kis_live_reconcile_periodic(dry_run=True)
+    kernel.assert_awaited_once_with(dry_run=True)
+    assert result == fake

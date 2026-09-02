@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @broker.task(task_name="kis_live.reconcile_periodic")  # no schedule → paused
-async def kis_live_reconcile_periodic() -> dict:
+async def kis_live_reconcile_periodic(dry_run: bool = False) -> dict:
     if not settings.KIS_LIVE_AUTO_RECONCILE_ENABLED:
         return {
             "status": "paused",
@@ -32,4 +32,4 @@ async def kis_live_reconcile_periodic() -> dict:
             "status": "paused",
             "message": "KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED is False",
         }
-    return await kis_live_reconcile_orders_impl(dry_run=False)
+    return await kis_live_reconcile_orders_impl(dry_run=dry_run)
