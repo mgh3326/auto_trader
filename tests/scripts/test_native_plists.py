@@ -15,12 +15,6 @@ PLISTS = [
     "com.robinco.auto-trader.haproxy.plist",
     "com.robinco.auto-trader.api-blue.plist",
     "com.robinco.auto-trader.api-green.plist",
-    "com.robinco.auto-trader.mcp-blue.plist",
-    "com.robinco.auto-trader.mcp-green.plist",
-    "com.robinco.auto-trader.mcp-analysis-readonly.plist",
-    "com.robinco.auto-trader.mcp-account-read.plist",
-    "com.robinco.auto-trader.mcp-tradingcodex-execution.plist",
-    "com.robinco.auto-trader.mcp-paper_001.plist",
 ]
 
 
@@ -79,62 +73,16 @@ def test_api_green_plist_port() -> None:
     assert "current-green" in body
 
 
-def test_mcp_blue_plist_port() -> None:
-    body = (PLIST_DIR / "com.robinco.auto-trader.mcp-blue.plist").read_text()
-    assert "<string>blue</string>" in body
-    assert "<string>8766</string>" in body
-    assert "current-blue" in body
+def test_mac_mcp_plists_are_gone_and_not_deployed() -> None:
+    assert not list(PLIST_DIR.glob("com.robinco.auto-trader.mcp-*.plist"))
 
-
-def test_mcp_green_plist_port() -> None:
-    body = (PLIST_DIR / "com.robinco.auto-trader.mcp-green.plist").read_text()
-    assert "<string>green</string>" in body
-    assert "<string>8767</string>" in body
-    assert "current-green" in body
-
-
-def test_mcp_account_read_plist_profile_port_and_token_env() -> None:
-    body = (PLIST_DIR / "com.robinco.auto-trader.mcp-account-read.plist").read_text()
-    assert "scripts/run-mcp-profile.sh" in body
-    assert "<string>account_read</string>" in body
-    assert "<string>8769</string>" in body
-    assert "<string>MCP_ACCOUNT_READ_AUTH_TOKEN</string>" in body
-    assert "current</string>" in body
-
-
-def test_mcp_analysis_readonly_plist_profile_port_and_token_env() -> None:
-    body = (
-        PLIST_DIR / "com.robinco.auto-trader.mcp-analysis-readonly.plist"
+    deploy_script = (REPO_ROOT / "scripts" / "deploy-native.sh").read_text()
+    deploy_lib = (
+        REPO_ROOT / "ops" / "native" / "scripts" / "native_deploy_lib.sh"
     ).read_text()
-    assert "scripts/run-mcp-profile.sh" in body
-    assert "<string>analysis_readonly</string>" in body
-    assert "<string>8768</string>" in body
-    assert "<string>MCP_ANALYSIS_READONLY_AUTH_TOKEN</string>" in body
-    assert "current</string>" in body
-
-
-def test_mcp_tradingcodex_execution_plist_profile_port_and_token_env() -> None:
-    body = (
-        PLIST_DIR / "com.robinco.auto-trader.mcp-tradingcodex-execution.plist"
-    ).read_text()
-    assert "scripts/run-mcp-profile.sh" in body
-    assert "<string>tradingcodex_execution</string>" in body
-    assert "<string>8770</string>" in body
-    assert "<string>MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN</string>" in body
-    assert (
-        "<key>ORDER_APPROVAL_HASH_MODE</key>\n    <string>required</string>"
-    ) in body
-    assert ("<key>TOSS_APPROVAL_HASH_MODE</key>\n    <string>required</string>") in body
-    assert "current</string>" in body
-
-
-def test_mcp_paper_001_plist_profile_port_and_wrapper() -> None:
-    body = (PLIST_DIR / "com.robinco.auto-trader.mcp-paper_001.plist").read_text()
-    assert "scripts/run-mcp-paper_001.sh" in body
-    assert "<string>hermes-paper-kis</string>" in body
-    assert "<string>8771</string>" in body
-    assert "current</string>" in body
-    assert "<key>KeepAlive</key>\n  <true/>" in body
+    for body in (deploy_script, deploy_lib):
+        assert "com.robinco.auto-trader.mcp-" not in body
+        assert "mcp-active-color" not in body
 
 
 def test_mac_scheduler_plist_is_gone_and_not_deployed() -> None:

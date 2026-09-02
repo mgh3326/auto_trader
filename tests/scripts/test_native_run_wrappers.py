@@ -1,4 +1,4 @@
-"""ROB-259 run-api / run-mcp wrapper smoke tests (no actual server start)."""
+"""Native API wrapper smoke tests (no server start)."""
 
 from __future__ import annotations
 
@@ -8,304 +8,50 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_API = REPO_ROOT / "ops" / "native" / "scripts" / "run-api.sh"
-RUN_MCP = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp.sh"
-RUN_MCP_PROFILE = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp-profile.sh"
-RUN_MCP_PAPER = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp-paper_001.sh"
 
 
-def _build_base(tmp_path: Path, color: str) -> Path:
-    """Build a fake $AUTO_TRADER_BASE with current-<color>, common.sh, env file, uv stub."""
+def _run_api(
+    tmp_path: Path, color: str, port_env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
     base = tmp_path / "services" / "auto_trader"
     (base / f"current-{color}").mkdir(parents=True)
-    (base / "shared").mkdir(parents=True)
-    (base / "shared" / ".env.prod.native").write_text("# empty env for test\n")
+    (base / "shared").mkdir()
+    (base / "shared" / ".env.prod.native").write_text("# test env\n")
     (base / "scripts").mkdir()
-    # Minimal common.sh that mirrors the production behavior the wrapper relies on.
     (base / "scripts" / "common.sh").write_text(
-        "#!/bin/zsh\n"
-        "set -euo pipefail\n"
-        'export AUTO_TRADER_BASE="${AUTO_TRADER_BASE:-$HOME/services/auto_trader}"\n'
-        'export AUTO_TRADER_CURRENT="${AUTO_TRADER_CURRENT:-$AUTO_TRADER_BASE/current}"\n'
-        'export AUTO_TRADER_ENV_FILE="${AUTO_TRADER_ENV_FILE:-$AUTO_TRADER_BASE/shared/.env.prod.native}"\n'
-        'export ENV_FILE="$AUTO_TRADER_ENV_FILE"\n'
-        '[[ -d "$AUTO_TRADER_CURRENT" ]] || { echo "AUTO_TRADER_CURRENT missing: $AUTO_TRADER_CURRENT" >&2; exit 70; }\n'
-        '[[ -f "$AUTO_TRADER_ENV_FILE" ]] || { echo "AUTO_TRADER_ENV_FILE missing" >&2; exit 78; }\n'
-        'cd "$AUTO_TRADER_CURRENT"\n'
-        "_export_selected_env_prefixes() {\n"
-        '  local prefixes=("$@")\n'
-        "  local key value prefix\n"
-        '  while IFS="=" read -r key value; do\n'
-        '    [[ -z "${key:-}" || "$key" == \\#* ]] && continue\n'
-        '    key="${key%%[[:space:]]*}"\n'
-        '    for prefix in "${prefixes[@]}"; do\n'
-        '      if [[ "$key" == ${prefix}* ]]; then\n'
-        '        export "$key=$value"\n'
-        "      fi\n"
-        "    done\n"
-        '  done < "$AUTO_TRADER_ENV_FILE"\n'
-        "}\n"
-    )
-    return base
-
-
-def _uv_stub_dir(tmp_path: Path) -> Path:
-    """uv stub that prints its argv and the value of MCP_PORT and AUTO_TRADER_CURRENT, then exits."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    stub = bin_dir / "uv"
-    stub.write_text(
         "#!/usr/bin/env bash\n"
-        'echo "argv=$*"\n'
-        'echo "MCP_PORT=${MCP_PORT:-unset}"\n'
-        'echo "MCP_PROFILE=${MCP_PROFILE:-unset}"\n'
-        'echo "MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-unset}"\n'
-        'echo "AUTO_TRADER_CURRENT=${AUTO_TRADER_CURRENT:-unset}"\n'
-        'echo "PWD=$(pwd)"\n'
-        "env\n"
+        "set -euo pipefail\n"
+        'cd "${AUTO_TRADER_CURRENT}"\n'
+        "_export_selected_env_prefixes() { :; }\n"
     )
-    stub.chmod(0o755)
-    return bin_dir
-
-
-def _run(
-    script: Path, color: str, port_env: dict[str, str], tmp_path: Path
-) -> subprocess.CompletedProcess:
-    base = _build_base(tmp_path, color)
-    bin_dir = _uv_stub_dir(tmp_path)
-    env = {
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "HOME": str(tmp_path),
-        "AUTO_TRADER_BASE": str(base),
-        "AUTO_TRADER_COLOR": color,
-        **port_env,
-    }
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "uv").write_text(
+        '#!/usr/bin/env bash\nprintf "argv=%s\\nPWD=%s\\n" "$*" "$PWD"\n'
+    )
+    (bin_dir / "uv").chmod(0o755)
     return subprocess.run(
-        ["bash", str(script)], check=False, capture_output=True, text=True, env=env
-    )
-
-
-# ----- run-api ---------------------------------------------------------------
-
-
-def test_run_api_explicit_port(tmp_path: Path) -> None:
-    proc = _run(RUN_API, "blue", {"AUTO_TRADER_API_PORT": "8001"}, tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert "--port" in proc.stdout
-    assert "8001" in proc.stdout
-
-
-def test_run_api_default_port_blue(tmp_path: Path) -> None:
-    proc = _run(RUN_API, "blue", {}, tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert "8001" in proc.stdout
-
-
-def test_run_api_default_port_green(tmp_path: Path) -> None:
-    proc = _run(RUN_API, "green", {}, tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert "8002" in proc.stdout
-
-
-def test_run_api_invalid_color(tmp_path: Path) -> None:
-    proc = _run(RUN_API, "purple", {}, tmp_path)
-    assert proc.returncode != 0
-    assert "invalid" in proc.stderr.lower() or "purple" in proc.stderr.lower()
-
-
-def test_run_api_cds_into_color_current(tmp_path: Path) -> None:
-    proc = _run(RUN_API, "green", {}, tmp_path)
-    assert proc.returncode == 0
-    # PWD reflects current-green, not current
-    assert "current-green" in proc.stdout
-
-
-# ----- run-mcp ---------------------------------------------------------------
-
-
-def test_run_mcp_exports_mcp_port_explicit(tmp_path: Path) -> None:
-    proc = _run(RUN_MCP, "blue", {"AUTO_TRADER_MCP_PORT": "8766"}, tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert "MCP_PORT=8766" in proc.stdout
-    assert "app.mcp_server.main" in proc.stdout
-
-
-def test_run_mcp_default_port_blue(tmp_path: Path) -> None:
-    proc = _run(RUN_MCP, "blue", {}, tmp_path)
-    assert proc.returncode == 0
-    assert "MCP_PORT=8766" in proc.stdout
-
-
-def test_run_mcp_default_port_green(tmp_path: Path) -> None:
-    proc = _run(RUN_MCP, "green", {}, tmp_path)
-    assert proc.returncode == 0
-    assert "MCP_PORT=8767" in proc.stdout
-
-
-def test_run_mcp_invalid_color(tmp_path: Path) -> None:
-    proc = _run(RUN_MCP, "purple", {}, tmp_path)
-    assert proc.returncode != 0
-
-
-def test_run_mcp_cds_into_color_current(tmp_path: Path) -> None:
-    proc = _run(RUN_MCP, "green", {}, tmp_path)
-    assert proc.returncode == 0
-    assert "current-green" in proc.stdout
-
-
-def test_run_mcp_exports_binance_env_vars(tmp_path: Path) -> None:
-    color = "blue"
-    base = _build_base(tmp_path, color)
-    env_file = base / "shared" / ".env.prod.native"
-    env_file.write_text(
-        "MCP_SOME_VAR=mcp_val\n"
-        "BINANCE_FUTURES_DEMO_ENABLED=true\n"
-        "BINANCE_SOME_OTHER=binance_val\n"
-        "OTHER_VAR=should_not_export\n"
-    )
-    bin_dir = _uv_stub_dir(tmp_path)
-    env = {
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "HOME": str(tmp_path),
-        "AUTO_TRADER_BASE": str(base),
-        "AUTO_TRADER_COLOR": color,
-    }
-    proc = subprocess.run(
-        ["bash", str(RUN_MCP)], check=False, capture_output=True, text=True, env=env
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "MCP_SOME_VAR=mcp_val" in proc.stdout
-    assert "BINANCE_FUTURES_DEMO_ENABLED=true" in proc.stdout
-    assert "BINANCE_SOME_OTHER=binance_val" in proc.stdout
-    assert "OTHER_VAR" not in proc.stdout
-
-
-# ----- run-mcp-profile -------------------------------------------------------
-
-
-def _run_profile(
-    script: Path, env_overrides: dict[str, str], tmp_path: Path
-) -> subprocess.CompletedProcess:
-    """run-mcp-profile.sh uses a fixed `current` dir, not color-specific."""
-    base = _build_base(tmp_path, "blue")
-    (base / "current").mkdir(exist_ok=True)
-    bin_dir = _uv_stub_dir(tmp_path)
-    env = {
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "HOME": str(tmp_path),
-        "AUTO_TRADER_BASE": str(base),
-        **env_overrides,
-    }
-    return subprocess.run(
-        ["bash", str(script)], check=False, capture_output=True, text=True, env=env
-    )
-
-
-def test_run_mcp_profile_exports_fixed_profile_port_and_token(tmp_path: Path) -> None:
-    proc = _run_profile(
-        RUN_MCP_PROFILE,
-        {
-            "AUTO_TRADER_MCP_PROFILE": "account_read",
-            "AUTO_TRADER_MCP_PORT": "8769",
-            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_ACCOUNT_READ_AUTH_TOKEN",
-            "MCP_ACCOUNT_READ_AUTH_TOKEN": "account-read-token",
-        },
-        tmp_path,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "MCP_PROFILE=account_read" in proc.stdout
-    assert "MCP_PORT=8769" in proc.stdout
-    assert "MCP_AUTH_TOKEN=account-read-token" in proc.stdout
-    assert "current" in proc.stdout
-
-
-def test_run_mcp_profile_fails_without_dedicated_token(tmp_path: Path) -> None:
-    proc = _run_profile(
-        RUN_MCP_PROFILE,
-        {
-            "AUTO_TRADER_MCP_PROFILE": "account_read",
-            "AUTO_TRADER_MCP_PORT": "8769",
-            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_ACCOUNT_READ_AUTH_TOKEN",
-        },
-        tmp_path,
-    )
-    assert proc.returncode == 78
-    assert "MCP_ACCOUNT_READ_AUTH_TOKEN is required" in proc.stderr
-
-
-def test_run_mcp_profile_exports_tradingcodex_execution_profile(tmp_path: Path) -> None:
-    proc = _run_profile(
-        RUN_MCP_PROFILE,
-        {
-            "AUTO_TRADER_MCP_PROFILE": "tradingcodex_execution",
-            "AUTO_TRADER_MCP_PORT": "8770",
-            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
-            "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN": "execution-token",
-            "ORDER_APPROVAL_HASH_MODE": "required",
-            "TOSS_APPROVAL_HASH_MODE": "required",
-        },
-        tmp_path,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "MCP_PROFILE=tradingcodex_execution" in proc.stdout
-    assert "MCP_PORT=8770" in proc.stdout
-    assert "MCP_AUTH_TOKEN=execution-token" in proc.stdout
-
-
-# ----- run-mcp-paper_001 -----------------------------------------------------
-
-
-def test_run_mcp_paper_001_defaults_preserve_installed_plist_compatibility(
-    tmp_path: Path,
-) -> None:
-    proc = _run_profile(RUN_MCP_PAPER, {}, tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert "MCP_PROFILE=hermes-paper-kis" in proc.stdout
-    assert "MCP_PORT=8771" in proc.stdout
-    assert "MCP_HOST=127.0.0.1" in proc.stdout
-    assert "current" in proc.stdout
-
-
-def test_run_mcp_paper_001_rejects_profile_or_port_override(tmp_path: Path) -> None:
-    proc = _run_profile(
-        RUN_MCP_PAPER,
-        {
-            "AUTO_TRADER_MCP_PROFILE": "default",
-            "AUTO_TRADER_MCP_PORT": "9999",
-        },
-        tmp_path,
-    )
-    assert proc.returncode == 78
-    assert "must remain hermes-paper-kis:8771" in proc.stderr
-
-
-def test_run_mcp_paper_001_exports_only_mcp_and_kis_mock_env(
-    tmp_path: Path,
-) -> None:
-    base = _build_base(tmp_path, "blue")
-    (base / "current").mkdir(exist_ok=True)
-    (base / "shared" / ".env.prod.native").write_text(
-        "MCP_AUTH_TOKEN=fake-paper-token\n"
-        "KIS_MOCK_ENABLED=true\n"
-        "KIS_MOCK_APP_KEY=fake-mock-key\n"
-        "KIS_APP_KEY=must-not-export\n"
-        "OTHER_VAR=must-not-export\n"
-    )
-    bin_dir = _uv_stub_dir(tmp_path)
-    env = {
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "HOME": str(tmp_path),
-        "AUTO_TRADER_BASE": str(base),
-    }
-    proc = subprocess.run(
-        ["bash", str(RUN_MCP_PAPER)],
+        ["bash", str(RUN_API)],
         check=False,
         capture_output=True,
         text=True,
-        env=env,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "AUTO_TRADER_BASE": str(base),
+            "AUTO_TRADER_COLOR": color,
+            **port_env,
+        },
     )
+
+
+def test_run_api_uses_explicit_port_and_color_current(tmp_path: Path) -> None:
+    proc = _run_api(tmp_path, "green", {"AUTO_TRADER_API_PORT": "8002"})
     assert proc.returncode == 0, proc.stderr
-    assert "MCP_AUTH_TOKEN=fake-paper-token" in proc.stdout
-    assert "KIS_MOCK_ENABLED=true" in proc.stdout
-    assert "KIS_MOCK_APP_KEY=fake-mock-key" in proc.stdout
-    assert "KIS_APP_KEY" not in proc.stdout
-    assert "OTHER_VAR" not in proc.stdout
+    assert "--port 8002" in proc.stdout
+    assert "current-green" in proc.stdout
+
+
+def test_run_api_rejects_invalid_color(tmp_path: Path) -> None:
+    proc = _run_api(tmp_path, "purple", {})
+    assert proc.returncode != 0

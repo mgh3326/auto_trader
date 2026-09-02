@@ -17,7 +17,7 @@ _ndl_uid() { id -u; }
 # Fail-fast preflight before deploy-native.sh rsync's plists with --delete.
 # Verifies that scripts/native_haproxy_first_cutover.sh has run and the HAProxy
 # blue/green baseline is in place. Without this guard, a first deploy that
-# skips cutover would `rsync --delete` the legacy api/mcp plists, SIGUSR2 a
+# skips cutover would `rsync --delete` the legacy API plists, SIGUSR2 a
 # nonexistent HAProxy launchd job, and leave the system half-installed.
 #
 # Required:
@@ -37,7 +37,6 @@ require_haproxy_baseline() {
 
   for f in \
     "$AUTO_TRADER_BASE/shared/api-active-color" \
-    "$AUTO_TRADER_BASE/shared/mcp-active-color" \
     "$AUTO_TRADER_BASE/shared/haproxy/haproxy.cfg"
   do
     if [[ ! -f "$f" ]]; then
@@ -152,10 +151,10 @@ probe_color_direct() {
   _bg_validate_color "$color" || return $?
   local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-24}"
   local interval="${AUTO_TRADER_HEALTHCHECK_INTERVAL_SECONDS:-5}"
-  local hc="$AUTO_TRADER_BASE/scripts/healthcheck-native.sh"
-  local attempt
+  local api_port attempt
+  api_port="$(color_port api "$color")"
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    if AUTO_TRADER_HEALTHCHECK_SKIP_WS=1 "$hc" --direct "$color"; then
+    if curl -fsS "http://127.0.0.1:${api_port}/healthz" >/dev/null; then
       return 0
     fi
     if (( attempt < attempts )); then
@@ -180,14 +179,9 @@ haproxy_swap_to_color() {
 probe_public_stable() {
   local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-24}"
   local interval="${AUTO_TRADER_HEALTHCHECK_INTERVAL_SECONDS:-5}"
-  local hc="$AUTO_TRADER_BASE/scripts/healthcheck-native.sh"
   local attempt
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    # Deploy-time stable probing should validate the newly switched API/MCP
-    # routing only. KIS/Upbit websocket monitors are singleton background
-    # services with independent external session state; a transient KIS appkey
-    # lock must not roll back an otherwise healthy API/MCP deployment.
-    if AUTO_TRADER_HEALTHCHECK_SKIP_WS=1 "$hc"; then
+    if curl -fsS http://127.0.0.1:8000/healthz >/dev/null; then
       return 0
     fi
     if (( attempt < attempts )); then
@@ -198,21 +192,20 @@ probe_public_stable() {
 }
 
 # capture_bluegreen_state
-# Print the pre-deploy api/mcp colors and color-symlink targets as four
+# Print the pre-deploy API color and color-symlink targets as three
 # space-separated fields on a single line:
-#   <api_color> <mcp_color> <blue_target_or_-> <green_target_or_->
+#   <api_color> <blue_target_or_-> <green_target_or_->
 # Missing color symlinks are reported as `-`.
 capture_bluegreen_state() {
-  local api mcp blue green
+  local api blue green
   api="$(detect_active_color api)"
-  mcp="$(detect_active_color mcp)"
   blue="$(readlink "$AUTO_TRADER_BASE/current-blue" 2>/dev/null || true)"
   green="$(readlink "$AUTO_TRADER_BASE/current-green" 2>/dev/null || true)"
-  printf '%s %s %s %s\n' "$api" "$mcp" "${blue:--}" "${green:--}"
+  printf '%s %s %s\n' "$api" "${blue:--}" "${green:--}"
 }
 
-# rollback_bluegreen_post_deploy <api_pre> <mcp_pre> <blue_pre> <green_pre>
-# Restore api/mcp state files, color symlinks, color launchd jobs, and HAProxy
+# rollback_bluegreen_post_deploy <api_pre> <blue_pre> <green_pre>
+# Restore API state, color symlinks, color launchd jobs, and HAProxy
 # config to the snapshot captured before deploy_bluegreen_flow succeeded.
 # Use `-` for blue_pre/green_pre to indicate "was not a symlink".
 #
@@ -220,18 +213,15 @@ capture_bluegreen_state() {
 # rollback) logs warnings; manual intervention may still be needed if launchd
 # refuses to bootstrap.
 rollback_bluegreen_post_deploy() {
-  local api_pre="$1" mcp_pre="$2" blue_pre="$3" green_pre="$4"
+  local api_pre="$1" blue_pre="$2" green_pre="$3"
   _bg_validate_color "$api_pre" || return $?
-  _bg_validate_color "$mcp_pre" || return $?
 
-  local api_cur mcp_cur
+  local api_cur
   api_cur="$(detect_active_color api)"
-  mcp_cur="$(detect_active_color mcp)"
-  echo "rollback_bluegreen_post_deploy: restoring api $api_cur->$api_pre mcp $mcp_cur->$mcp_pre" >&2
+  echo "rollback_bluegreen_post_deploy: restoring api $api_cur->$api_pre" >&2
 
   # 1. State files (atomic via mktemp+mv inside set_active_color)
   set_active_color api "$api_pre" || true
-  set_active_color mcp "$mcp_pre" || true
 
   # 2. Color symlinks (only if we captured a real target)
   if [[ "$blue_pre" != "-" && -n "$blue_pre" ]]; then
@@ -247,12 +237,6 @@ rollback_bluegreen_post_deploy() {
       echo "warning: failed to re-bootstrap api-$api_pre; manual launchctl bootstrap needed" >&2
     drain_color api "$api_cur" || true
   fi
-  if [[ "$mcp_pre" != "$mcp_cur" ]]; then
-    bootstrap_color mcp "$mcp_pre" || \
-      echo "warning: failed to re-bootstrap mcp-$mcp_pre; manual launchctl bootstrap needed" >&2
-    drain_color mcp "$mcp_cur" || true
-  fi
-
   # 4. HAProxy live cfg + reload (uses restored state files)
   AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
     bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || \
@@ -264,41 +248,21 @@ deploy_bluegreen_flow() {
   local release="$1"
   [[ -d "$release" ]] || { echo "release dir missing: $release" >&2; return 78; }
 
-  local api_active mcp_active api_new mcp_new
+  local api_active api_new
   api_active="$(detect_active_color api)"
-  mcp_active="$(detect_active_color mcp)"
   api_new="$(inactive_color "$api_active")"
-  mcp_new="$(inactive_color "$mcp_active")"
-  echo "active api=$api_active mcp=$mcp_active; bootstrapping api=$api_new mcp=$mcp_new"
+  echo "active api=$api_active; bootstrapping api=$api_new"
 
   sync_release_to_color_symlink "$api_new" "$release"
-  if [[ "$api_new" != "$mcp_new" ]]; then
-    sync_release_to_color_symlink "$mcp_new" "$release"
-  fi
 
   if ! bootstrap_color api "$api_new"; then
     echo "bootstrap api-$api_new failed" >&2
     drain_color api "$api_new" || true
     return 1
   fi
-  if ! bootstrap_color mcp "$mcp_new"; then
-    echo "bootstrap mcp-$mcp_new failed" >&2
-    drain_color mcp "$mcp_new" || true
-    drain_color api "$api_new" || true
-    return 1
-  fi
-
   if ! probe_color_direct "$api_new"; then
     drain_color api "$api_new" || true
-    drain_color mcp "$mcp_new" || true
     return 1
-  fi
-  if [[ "$api_new" != "$mcp_new" ]]; then
-    if ! probe_color_direct "$mcp_new"; then
-      drain_color api "$api_new" || true
-      drain_color mcp "$mcp_new" || true
-      return 1
-    fi
   fi
 
   if ! haproxy_swap_to_color api "$api_new"; then
@@ -310,31 +274,18 @@ deploy_bluegreen_flow() {
     AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
       bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || true
     drain_color api "$api_new" || true
-    drain_color mcp "$mcp_new" || true
-    return 1
-  fi
-  if ! haproxy_swap_to_color mcp "$mcp_new"; then
-    set_active_color api "$api_active"
-    set_active_color mcp "$mcp_active"
-    AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
-      bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || true
-    drain_color api "$api_new" || true
-    drain_color mcp "$mcp_new" || true
     return 1
   fi
 
   if ! probe_public_stable; then
     set_active_color api "$api_active"
-    set_active_color mcp "$mcp_active"
     AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
       bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || true
     drain_color api "$api_new" || true
-    drain_color mcp "$mcp_new" || true
     return 1
   fi
 
   drain_color api "$api_active"
-  drain_color mcp "$mcp_active"
 
-  echo "deploy_bluegreen_flow: success api=$api_new mcp=$mcp_new"
+  echo "deploy_bluegreen_flow: success api=$api_new"
 }

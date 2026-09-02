@@ -81,12 +81,10 @@ tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_deploy_healthcheck_ws_advisory.py
-tests/scripts/test_deploy_mcp_profile_release_verification.py
 tests/scripts/test_deploy_native_bluegreen.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_native_bundle_completeness.py
 tests/scripts/test_native_deploy_preflight.py
-tests/scripts/test_native_mcp_profile_registry.py
 tests/scripts/test_native_plists.py
 tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
@@ -360,7 +358,6 @@ tests/test_mcp_paper_limit_order.py
 tests/test_mcp_place_order_defensive_trim.py
 tests/test_mcp_profiles.py
 tests/test_mcp_tool_registration_boot.py
-tests/test_mcp_watchdog.py
 tests/test_merged_portfolio_service.py
 tests/test_mock_loop_retro_tool.py
 tests/test_mock_loop_retrospective_service.py
