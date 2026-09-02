@@ -103,17 +103,16 @@ UPBIT_SECRET_KEY=your_upbit_secret_key_here
 
 ## 🚀 운영 배포
 
-macOS 네이티브 배포의 업비트 소비자는
-`com.robinco.auto-trader.upbit-websocket` 단일 활성 launchd 서비스입니다. API/MCP처럼
-블루/그린으로 교체되지 않으므로 코드 배포 후 재시작해야 합니다.
+업비트 소비자는 NCP의 `at-upbit-ws` Docker 유닛입니다. 맥 launchd plist는
+2026-09-02에 제거되었으며, 맥 배포에서 다시 시작하면 중복 실행이 됩니다. API/MCP처럼
+블루/그린으로 교체되지 않으며 NCP digest-pinned 배포에 함께 승격됩니다.
 
 ```bash
-# 표준 네이티브 배포: current 심볼릭 전환 후 서비스를 자동 재시작
-scripts/deploy-native.sh <commit-sha>
-
-# 수동/아웃오브밴드 배포 후 재시작 확인
-launchctl kickstart -k gui/$(id -u)/com.robinco.auto-trader.upbit-websocket
+# NCP 운영자만 실행: 5개 유닛을 같은 GHCR digest로 승격
+/root/at-run/deploy-ncp-pull.sh sha-abcdef0
 ```
+
+배포·준비 로그·롤백 절차는 `docs/runbooks/ncp-pull-deploy.md`를 따른다.
 
 ## 🚨 주의사항
 

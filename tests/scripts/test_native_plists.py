@@ -21,10 +21,6 @@ PLISTS = [
     "com.robinco.auto-trader.mcp-account-read.plist",
     "com.robinco.auto-trader.mcp-tradingcodex-execution.plist",
     "com.robinco.auto-trader.mcp-paper_001.plist",
-    "com.robinco.auto-trader.worker.plist",
-    "com.robinco.auto-trader.worker-log-rotation.plist",
-    "com.robinco.auto-trader.kis-websocket.plist",
-    "com.robinco.auto-trader.upbit-websocket.plist",
 ]
 
 
@@ -55,11 +51,18 @@ def test_haproxy_plist_label() -> None:
     assert "/opt/homebrew/bin/haproxy" not in body
 
 
-def test_worker_log_rotation_is_bounded_and_not_auto_armed() -> None:
-    body = (PLIST_DIR / "com.robinco.auto-trader.worker-log-rotation.plist").read_text()
-    assert "scripts/rotate-worker-logs.sh" in body
-    assert "<key>StartInterval</key>\n  <integer>60</integer>" in body
-    assert "<key>RunAtLoad</key>" not in body
+def test_mac_worker_and_its_log_rotation_plists_are_gone_and_not_deployed() -> None:
+    """NCP at-worker is the sole TaskIQ consumer after the 2026-09-02 move."""
+    labels = (
+        "com.robinco.auto-trader.worker",
+        "com.robinco.auto-trader.worker-log-rotation",
+    )
+    deploy_script = (REPO_ROOT / "scripts" / "deploy-native.sh").read_text()
+    single_active = deploy_script.split("SINGLE_ACTIVE_LABELS=(", 1)[1].split(")", 1)[0]
+
+    for label in labels:
+        assert not (PLIST_DIR / f"{label}.plist").exists()
+        assert label not in single_active
 
 
 def test_api_blue_plist_port() -> None:
@@ -145,3 +148,17 @@ def test_mac_scheduler_plist_is_gone_and_not_deployed() -> None:
     deploy_script = (REPO_ROOT / "scripts" / "deploy-native.sh").read_text()
     single_active = deploy_script.split("SINGLE_ACTIVE_LABELS=(", 1)[1].split(")", 1)[0]
     assert "com.robinco.auto-trader.scheduler" not in single_active
+
+
+def test_mac_websocket_plists_are_gone_and_not_deployed() -> None:
+    """WebSocket monitors are NCP units so native deploy cannot resurrect them."""
+    labels = (
+        "com.robinco.auto-trader.kis-websocket",
+        "com.robinco.auto-trader.upbit-websocket",
+    )
+    deploy_script = (REPO_ROOT / "scripts" / "deploy-native.sh").read_text()
+    single_active = deploy_script.split("SINGLE_ACTIVE_LABELS=(", 1)[1].split(")", 1)[0]
+
+    for label in labels:
+        assert not (PLIST_DIR / f"{label}.plist").exists()
+        assert label not in single_active
