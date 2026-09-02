@@ -40,6 +40,8 @@ the default loopback address only works when gatewayd is local to that process.
 
 KIS API key and secret remain in the API environment: KIS requires them on
 every API request header even when gatewayd owns OAuth issuance. Toss client ID
-and secret are OAuth-only here, so they may be removed from the API environment
-only after gatewayd mode has stabilized and the accompanying Redis namespace
-configuration supports that operational change.
+remains in the API environment to select the established Redis namespace, but
+the Toss client secret is OAuth-only and may be removed in `gatewayd` mode.
+The local `_issue_token` path is explicitly sealed in that mode; attempting to
+reach it raises `TossLocalTokenIssuanceForbidden` rather than using a missing
+secret. In `self` mode, Toss client ID and secret remain required.

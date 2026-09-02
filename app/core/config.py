@@ -1273,7 +1273,11 @@ def validate_toss_api_config(settings_obj: Any = settings) -> list[str]:
         missing.append("TOSS_API_ENABLED")
     if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_id", None)):
         missing.append("TOSS_API_CLIENT_ID")
-    if not _has_nonempty_value(getattr(settings_obj, "toss_api_client_secret", None)):
+    if getattr(
+        settings_obj, "broker_token_issuance_mode", "self"
+    ) != "gatewayd" and not _has_nonempty_value(
+        getattr(settings_obj, "toss_api_client_secret", None)
+    ):
         missing.append("TOSS_API_CLIENT_SECRET")
     return missing
 
