@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import settings, validate_toss_api_config
 from app.core.timezone import KST, now_kst
-from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
+from app.mcp_server.tick_size import (
+    adjust_tick_size_kr,
+    get_tick_size_kr,
+    is_krx_etp_security_type,
+)
 from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
@@ -54,7 +58,10 @@ from app.services.brokers.toss.errors import TossApiResponseError
 from app.services.brokers.toss.market_calendar import get_kr_toss_session_from_toss
 from app.services.brokers.toss.warnings_guard import check_warnings_guard
 from app.services.exchange_rate_service import get_usd_krw_rate_details
-from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
+from app.services.kr_symbol_universe_service import (
+    get_kr_nxt_tradability,
+    get_kr_security_type,
+)
 from app.services.nxt_preflight import (
     RETRY_AT_REGULAR,
     ROUTE_VIA_KIS,
@@ -341,23 +348,53 @@ def _high_value_error(
     return None
 
 
-def _snap_kr_limit_price(
-    price: Decimal, side: str, market: Literal["kr", "us"], order_type: str
-) -> tuple[Decimal, Decimal | None]:
-    """KR 지정가만 KRX tick에 스냅. 반환 (적용가, 원가 또는 None[무변경])."""
+async def _snap_kr_limit_price(
+    *,
+    symbol: str,
+    price: Decimal,
+    side: str,
+    market: Literal["kr", "us"],
+    order_type: str,
+) -> tuple[Decimal, Decimal | None, dict[str, str | None]]:
+    """Snap a KR limit price using trusted universe ETP classification.
+
+    The universe read is advisory classification evidence, never an order gate:
+    unavailable, missing, or unrecognised classification falls back to the
+    pre-existing stock tick table and records that conservative choice.
+    """
     if market != "kr" or order_type != "limit" or price <= 0:
-        return price, None
-    adjusted = Decimal(str(adjust_tick_size_kr(float(price), side)))
+        return price, None, {}
+    security_type: str | None = None
+    try:
+        security_type = await get_kr_security_type(symbol)
+    except Exception as exc:  # noqa: BLE001 - preserve existing stock-table path
+        logger.warning(
+            "KR tick classification unavailable; using stock fallback: symbol=%s error=%s",
+            symbol,
+            type(exc).__name__,
+        )
+    etp = is_krx_etp_security_type(security_type)
+    tick_rule = "etp" if etp else "stock"
+    if security_type is None or not etp:
+        tick_rule = "stock_fallback_unknown" if security_type is None else "stock"
+    tick_meta: dict[str, str | None] = {
+        "tick_rule": tick_rule,
+        "tick_security_type": security_type,
+        "tick_unit": str(get_tick_size_kr(float(price), security_type)),
+    }
+    adjusted = Decimal(str(adjust_tick_size_kr(float(price), side, security_type)))
     if adjusted == price:
-        return price, None
+        return price, None, tick_meta
     logger.info(
-        "Toss KR limit tick-snapped: side=%s original=%s tick=%s adjusted=%s",
+        "Toss KR limit tick-snapped: symbol=%s side=%s original=%s tick=%s rule=%s adjusted=%s",
+        symbol,
         side,
         price,
-        get_tick_size_kr(float(price)),
+        tick_meta["tick_unit"],
+        tick_rule,
         adjusted,
     )
-    return adjusted, price
+    return adjusted, price, tick_meta
 
 
 def _live_mutation_disabled_error(
@@ -985,15 +1022,21 @@ async def toss_preview_order(
 
     tick_meta: dict[str, Any] = {}
     if price_dec is not None:
-        price_dec, original_for_meta = _snap_kr_limit_price(
-            price_dec, side, mkt, order_type
+        price_dec, original_for_meta, tick_meta = await _snap_kr_limit_price(
+            symbol=symbol,
+            price=price_dec,
+            side=side,
+            market=mkt,
+            order_type=order_type,
         )
         if original_for_meta is not None:
-            tick_meta = {
-                "tick_adjusted": True,
-                "original_price": _stringify_decimal(original_for_meta),
-                "adjusted_price": _stringify_decimal(price_dec),
-            }
+            tick_meta.update(
+                {
+                    "tick_adjusted": True,
+                    "original_price": _stringify_decimal(original_for_meta),
+                    "adjusted_price": _stringify_decimal(price_dec),
+                }
+            )
 
     quantity_str = _stringify_decimal(quantity_dec)
     price_str = _stringify_decimal(price_dec)
@@ -1274,15 +1317,21 @@ async def _toss_place_order_impl(
 
     tick_meta: dict[str, Any] = {}
     if price_dec is not None:
-        price_dec, original_for_meta = _snap_kr_limit_price(
-            price_dec, side, mkt, order_type
+        price_dec, original_for_meta, tick_meta = await _snap_kr_limit_price(
+            symbol=symbol,
+            price=price_dec,
+            side=side,
+            market=mkt,
+            order_type=order_type,
         )
         if original_for_meta is not None:
-            tick_meta = {
-                "tick_adjusted": True,
-                "original_price": _stringify_decimal(original_for_meta),
-                "adjusted_price": _stringify_decimal(price_dec),
-            }
+            tick_meta.update(
+                {
+                    "tick_adjusted": True,
+                    "original_price": _stringify_decimal(original_for_meta),
+                    "adjusted_price": _stringify_decimal(price_dec),
+                }
+            )
 
     quantity_str = _stringify_decimal(quantity_dec)
     price_str = _stringify_decimal(price_dec)
@@ -1818,15 +1867,21 @@ async def toss_modify_order(
         # Snap BEFORE the sell-loss guard so the guard validates the real price.
         tick_meta: dict[str, Any] = {}
         if new_price_dec is not None:
-            new_price_dec, original_for_meta = _snap_kr_limit_price(
-                new_price_dec, side, mkt, orig_order_type
+            new_price_dec, original_for_meta, tick_meta = await _snap_kr_limit_price(
+                symbol=symbol,
+                price=new_price_dec,
+                side=side,
+                market=mkt,
+                order_type=orig_order_type,
             )
             if original_for_meta is not None:
-                tick_meta = {
-                    "tick_adjusted": True,
-                    "original_price": _stringify_decimal(original_for_meta),
-                    "adjusted_price": _stringify_decimal(new_price_dec),
-                }
+                tick_meta.update(
+                    {
+                        "tick_adjusted": True,
+                        "original_price": _stringify_decimal(original_for_meta),
+                        "adjusted_price": _stringify_decimal(new_price_dec),
+                    }
+                )
 
         payload: dict[str, Any] = {
             "orderType": orig_order_type.upper(),

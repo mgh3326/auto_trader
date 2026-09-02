@@ -13,6 +13,7 @@ import pytest
 from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
     _high_value_uncheckable,
+    _snap_kr_limit_price,
     register_toss_live_order_tools,
     toss_cancel_order,
     toss_get_order_history,
@@ -39,6 +40,62 @@ def test_high_value_uncheckable_false_for_kr_limit_order() -> None:
 def test_high_value_uncheckable_false_for_us_market_order() -> None:
     # US notional is in USD; the KRW 1억 gate does not apply (broker-side check).
     assert _high_value_uncheckable("us", Decimal("10"), None, None) is False
+
+
+@pytest.mark.asyncio
+async def test_kr_etf_tick_snap_uses_universe_classification_and_records_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _etf_type(symbol: str) -> str:
+        assert symbol == "459580"
+        return "ETF"
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_toss_variants.get_kr_security_type", _etf_type
+    )
+
+    adjusted, original, metadata = await _snap_kr_limit_price(
+        symbol="459580",
+        price=Decimal("1073480"),
+        side="buy",
+        market="kr",
+        order_type="limit",
+    )
+
+    assert adjusted == Decimal("1073480")
+    assert original is None
+    assert metadata == {
+        "tick_rule": "etp",
+        "tick_security_type": "ETF",
+        "tick_unit": "5",
+    }
+
+
+@pytest.mark.asyncio
+async def test_kr_tick_unknown_universe_classification_uses_recorded_stock_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unknown_type(_: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_toss_variants.get_kr_security_type",
+        _unknown_type,
+    )
+
+    adjusted, original, metadata = await _snap_kr_limit_price(
+        symbol="000000",
+        price=Decimal("1073480"),
+        side="buy",
+        market="kr",
+        order_type="limit",
+    )
+
+    assert adjusted == Decimal("1073000")
+    assert original == Decimal("1073480")
+    assert metadata["tick_rule"] == "stock_fallback_unknown"
+    assert metadata["tick_security_type"] is None
+    assert metadata["tick_unit"] == "1000"
 
 
 @pytest.fixture(autouse=True)

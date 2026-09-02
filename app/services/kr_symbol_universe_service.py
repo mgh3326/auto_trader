@@ -463,6 +463,44 @@ async def get_kr_nxt_tradability(
         await session.close()
 
 
+async def _get_kr_security_type_impl(
+    db: AsyncSession,
+    symbol: str,
+) -> str | None:
+    """Read the active universe classification used for KRX tick selection.
+
+    This is deliberately a read-only, narrow projection.  A missing/inactive
+    row and a NULL ``security_type`` are both unknown to the caller.
+    """
+    normalized = _normalize_symbol_or_none(symbol)
+    if normalized is None:
+        return None
+    stmt = select(KRSymbolUniverse.security_type).where(
+        KRSymbolUniverse.symbol == normalized,
+        KRSymbolUniverse.is_active.is_(True),
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def get_kr_security_type(
+    symbol: str,
+    db: AsyncSession | None = None,
+) -> str | None:
+    """Return the trusted active KR universe security type, else ``None``.
+
+    The return value is classification evidence only.  It never consults order
+    rationale or any proposer-supplied field, and it never mutates the
+    universe.
+    """
+    if db is not None:
+        return await _get_kr_security_type_impl(db, symbol)
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
+        return await _get_kr_security_type_impl(session, symbol)
+    finally:
+        await session.close()
+
+
 async def _search_kr_symbols_impl(
     db: AsyncSession,
     query: str,

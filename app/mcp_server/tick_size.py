@@ -1,7 +1,8 @@
-"""KRX (Korean Exchange) tick size adjustment for Korean equities.
+"""KRX (Korean Exchange) tick size adjustment for Korean securities.
 
 This module provides tick size adjustment logic following KRX's standard
-tick size table, which is required for placing limit orders on Korean stocks.
+tick size tables, which are required for placing limit orders on Korean
+stocks and ETPs.
 
 Based on KRX market rules (2023+):
 - Buy orders: Round DOWN (floor) to nearest tick
@@ -10,6 +11,8 @@ Based on KRX market rules (2023+):
 References:
 - KRX 유가증권시장 매매거래제도 일반: https://regulation.krx.co.kr/contents/RGL/03/03010100/RGL03010100.jsp
 - KRX 코스닥시장 매매거래제도 일반: https://regulation.krx.co.kr/contents/RGL/03/03020100/RGL03020100.jsp
+- KRX ETF 매매절차: https://regulation.krx.co.kr/contents/RGL/03/03060101/RGL03060101.jsp
+- KRX ETN 매매제도: https://regulation.krx.co.kr/contents/RGL/03/03060201/RGL03060201.jsp
 
 KRX Tick Size Table (KRW, 2023+):
 | Price Range       | Tick Size |
@@ -21,20 +24,50 @@ KRX Tick Size Table (KRW, 2023+):
 | 50,000-200,000    | 100       |
 | 200,000-500,000   | 500       |
 | 500,000~          | 1,000     |
+
+KRX ETF/ETN Tick Size Table (KRW):
+| Price Range       | Tick Size |
+|-------------------|-----------|
+| ~2,000            | 1         |
+| 2,000~            | 5         |
+
+The caller supplies ``security_type`` from the trusted KR symbol-universe
+record.  Only the explicit ``ETF`` and ``ETN`` values select the ETP table;
+missing or unrecognised values deliberately retain the stock table.
 """
 
 import math
 
+_ETP_SECURITY_TYPES = frozenset({"ETF", "ETN"})
 
-def get_tick_size_kr(price: float) -> int:
-    """Return the tick size for a given price based on KRX rules (2023+).
+
+def is_krx_etp_security_type(security_type: str | None) -> bool:
+    """Return whether a trusted universe classification is a KRX ETF or ETN.
+
+    This deliberately has no symbol-list or proposer-payload fallback.  A
+    missing or unrecognised classification is not evidence that an instrument
+    is an ETP, so callers retain the established stock tick table.
+    """
+    return (
+        isinstance(security_type, str)
+        and security_type.strip().upper() in _ETP_SECURITY_TYPES
+    )
+
+
+def get_tick_size_kr(price: float, security_type: str | None = None) -> int:
+    """Return the KRX tick size for a price and trusted security classification.
 
     Args:
-        price: Stock price in KRW
+        price: Security price in KRW
+        security_type: ``kr_symbol_universe.security_type``. Explicit ETF/ETN
+            values use the KRX ETP table; missing/unknown values use the
+            established stock table conservatively.
 
     Returns:
         Tick size in KRW
     """
+    if is_krx_etp_security_type(security_type):
+        return 1 if price < 2000 else 5
     if price < 2000:
         return 1
     elif price < 5000:
@@ -51,7 +84,7 @@ def get_tick_size_kr(price: float) -> int:
         return 1000
 
 
-def _get_tick_size(price: float) -> int:
+def _get_tick_size(price: float, security_type: str | None = None) -> int:
     """Return the tick size for a given price based on KRX rules.
 
     DEPRECATED: Use get_tick_size_kr() instead.
@@ -62,10 +95,12 @@ def _get_tick_size(price: float) -> int:
     Returns:
         Tick size in KRW
     """
-    return get_tick_size_kr(price)
+    return get_tick_size_kr(price, security_type)
 
 
-def adjust_tick_size_kr(price: float, side: str = "buy") -> int:
+def adjust_tick_size_kr(
+    price: float, side: str = "buy", security_type: str | None = None
+) -> int:
     """Adjust price to KRX tick size rules.
 
     For Korean stocks (equity_kr), prices must align with tick sizes:
@@ -75,6 +110,8 @@ def adjust_tick_size_kr(price: float, side: str = "buy") -> int:
     Args:
         price: Price to adjust in KRW
         side: Order side ("buy" or "sell")
+        security_type: Trusted universe classification. Explicit ETF/ETN values
+            use the KRX ETP table; missing/unknown values retain the stock table.
 
     Returns:
         Adjusted price in KRW (integer)
@@ -92,7 +129,7 @@ def adjust_tick_size_kr(price: float, side: str = "buy") -> int:
     if price < 0:
         raise ValueError(f"Price must be non-negative, got {price}")
 
-    tick_size = _get_tick_size(price)
+    tick_size = _get_tick_size(price, security_type)
 
     # Normalize to tick size boundaries
     if side == "buy":

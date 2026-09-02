@@ -32,6 +32,7 @@ from app.services.brokers.kis.live_order_expiry import (
     row_has_cancel_evidence,
 )
 from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
+from app.services.kr_symbol_universe_service import get_kr_security_type
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
@@ -39,6 +40,19 @@ def _create_kis_client(*, is_mock: bool) -> KISClient:
     if is_mock:
         return KISClient(is_mock=True)
     return KISClient()
+
+
+async def _kr_security_type_or_none(symbol: str) -> str | None:
+    """Return trusted KR classification, preserving stock ticks on lookup failure."""
+    try:
+        return await get_kr_security_type(symbol)
+    except Exception as exc:  # noqa: BLE001 - existing stock path is conservative
+        logger.warning(
+            "KR tick classification unavailable; using stock fallback: symbol=%s error=%s",
+            symbol,
+            type(exc).__name__,
+        )
+        return None
 
 
 def _map_upbit_state(state: str, filled: float, remaining: float) -> str:
@@ -1433,9 +1447,12 @@ async def _modify_kis_mock_domestic(
     side = resolved["side"]
     original_price = int(resolved["price"])
     original_quantity = int(resolved["quantity"])
+    security_type = await _kr_security_type_or_none(normalized_symbol)
     final_price = int(
         adjust_tick_size_kr(
-            float(new_price) if new_price is not None else original_price, side
+            float(new_price) if new_price is not None else original_price,
+            side,
+            security_type,
         )
     )
     final_quantity = (
@@ -1609,7 +1626,10 @@ async def _modify_kis_domestic(
             }
 
         final_price_raw = int(new_price) if new_price is not None else original_price
-        final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
+        security_type = await _kr_security_type_or_none(normalized_symbol)
+        final_price = int(
+            adjust_tick_size_kr(float(final_price_raw), side, security_type)
+        )
         final_quantity = (
             int(new_quantity) if new_quantity is not None else original_quantity
         )
