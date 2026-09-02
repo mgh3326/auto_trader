@@ -14,7 +14,9 @@ ways a fake could creep in, each covered below:
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -58,6 +60,47 @@ def _sink():  # noqa: ANN202
 
     _record.written = written  # type: ignore[attr-defined]
     return _record
+
+
+async def _run_with_exception_observer(
+    account: FakeAccount,
+    *,
+    now,
+    record_order_no=None,  # noqa: ANN001
+    **kwargs: Any,
+) -> tuple[
+    list[dict[str, Any]], kiwoom_lane.RoundTripResult | None, BaseException | None
+]:
+    observations: list[dict[str, Any]] = []
+
+    async def _observe(
+        result: kiwoom_lane.RoundTripResult,
+        remaining_quantity: int,
+        stage: str,
+        error: BaseException,
+    ) -> None:
+        observations.append(
+            {
+                "stage": stage,
+                "error_type": type(error).__name__,
+                "order_no": result.order_no,
+                "quantity": remaining_quantity,
+            }
+        )
+
+    try:
+        result = await kiwoom_lane.submit_and_cancel(
+            account,
+            planned=_planned(),
+            broker_truth=CLEAN_TRUTH,
+            record_order_no=(_sink() if record_order_no is None else record_order_no),
+            now=now,
+            on_post_ack_exception=_observe,
+            **kwargs,
+        )
+    except BaseException as error:  # test harness captures exact propagation
+        return observations, None, error
+    return observations, result, None
 
 
 def _readback_row(
@@ -338,6 +381,236 @@ async def test_happy_round_trip_confirms_cancellation_from_the_broker(now) -> No
         {"order_no": "0000123456", "symbol": "005930", "at": now},
         {"order_no": "0000123457", "symbol": "005930", "at": now},
     ]
+
+
+def test_post_ack_exception_stage_vocabulary_is_closed_and_complete() -> None:
+    assert kiwoom_lane.POST_ACK_EXCEPTION_STAGES == (
+        "buy_ack_journal",
+        "pre_cancel_resting_read",
+        "pre_cancel_resting_parse",
+        "cancel_authority_check",
+        "cancel_transport_guard",
+        "cancel_request",
+        "cancel_ack_parse",
+        "cancel_ack_journal",
+        "post_cancel_reconcile_read",
+        "post_cancel_reconcile_parse",
+        "post_cancel_terminal_classification",
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_post_ack_exception_exit_reaches_the_closed_observer(now) -> None:  # noqa: ANN001, PLR0915
+    """S-E: exercise every fallible stage in the exact ACK→terminal window."""
+
+    order = resting("0000123456", "005930", price=70_000)
+    observed_stages: set[str] = set()
+
+    async def _expect(
+        expected_stage: str,
+        account: FakeAccount,
+        **kwargs: Any,
+    ) -> None:
+        observations, _result, _error = await _run_with_exception_observer(
+            account, now=now, **kwargs
+        )
+        assert [item["stage"] for item in observations] == [expected_stage]
+        assert observations[0]["order_no"] == "0000123456"
+        assert observations[0]["quantity"] == 1
+        observed_stages.add(expected_stage)
+
+    journal_calls = 0
+
+    def _fail_buy_journal_once(**_kwargs: Any) -> None:
+        nonlocal journal_calls
+        journal_calls += 1
+        if journal_calls == 1:
+            raise OSError("synthetic buy journal failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_BUY_JOURNAL,
+        FakeAccount(resting=[(order,), ()]),
+        record_order_no=_fail_buy_journal_once,
+        continue_after_journal_error=True,
+    )
+
+    class _FirstReadFails(FakeAccount):
+        async def read_resting_orders(self):  # noqa: ANN201
+            self.resting_calls += 1
+            if self.resting_calls == 1:
+                raise TimeoutError("synthetic pre-cancel read timeout")
+            return ()
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_PRE_CANCEL_READ,
+        _FirstReadFails(),
+    )
+
+    class _BrokenPreCancelRow:
+        order_id = "0000123456"
+
+        @property
+        def symbol(self):  # noqa: ANN201
+            raise ValueError("synthetic resting-row parse failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_PRE_CANCEL_PARSE,
+        FakeAccount(resting=[(_BrokenPreCancelRow(),)]),  # type: ignore[list-item]
+    )
+
+    async def _authority_error(
+        _result: kiwoom_lane.RoundTripResult,
+    ) -> bool:
+        raise RuntimeError("synthetic authority callback failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_CANCEL_AUTHORITY,
+        FakeAccount(resting=[(order,)]),
+        cancel_authority_decision=_authority_error,
+    )
+
+    async def _guard_error() -> None:
+        raise RuntimeError("synthetic cancel guard failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_CANCEL_GUARD,
+        FakeAccount(resting=[(order,)]),
+        before_cancel_send=_guard_error,
+    )
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_CANCEL_REQUEST,
+        FakeAccount(
+            resting=[(order,), ()],
+            cancel_error=TimeoutError("synthetic cancel timeout"),
+        ),
+    )
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_CANCEL_ACK_PARSE,
+        FakeAccount(
+            resting=[(order,), ()],
+            cancel_response={"return_code": 0},
+        ),
+        require_cancel_order_no=True,
+    )
+
+    cancel_journal_calls = 0
+
+    def _fail_cancel_journal_once(**_kwargs: Any) -> None:
+        nonlocal cancel_journal_calls
+        cancel_journal_calls += 1
+        if cancel_journal_calls == 2:
+            raise OSError("synthetic cancel journal failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_CANCEL_JOURNAL,
+        FakeAccount(resting=[(order,), ()]),
+        record_order_no=_fail_cancel_journal_once,
+        continue_after_journal_error=True,
+    )
+
+    class _SecondReadFails(FakeAccount):
+        async def read_resting_orders(self):  # noqa: ANN201
+            self.resting_calls += 1
+            if self.resting_calls == 1:
+                return (order,)
+            raise ConnectionError("synthetic reconcile network failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_RECONCILE_READ,
+        _SecondReadFails(),
+    )
+
+    class _BrokenPostCancelRow:
+        @property
+        def order_id(self):  # noqa: ANN201
+            raise ValueError("synthetic reconcile parse failure")
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_RECONCILE_PARSE,
+        FakeAccount(
+            resting=[(order,), (_BrokenPostCancelRow(),)]  # type: ignore[list-item]
+        ),
+    )
+
+    await _expect(
+        kiwoom_lane.POST_ACK_STAGE_TERMINAL_CLASSIFICATION,
+        FakeAccount(resting=[(order,), (order,)]),
+    )
+
+    assert observed_stages == set(kiwoom_lane.POST_ACK_EXCEPTION_STAGES)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "control_error",
+    (
+        asyncio.CancelledError("synthetic cancellation"),
+        KeyboardInterrupt("synthetic interrupt"),
+        SystemExit(17),
+    ),
+)
+async def test_process_control_exceptions_are_observed_then_propagated_exactly(
+    now, control_error: BaseException
+) -> None:  # noqa: ANN001
+    """S-E: BaseException observation must never become a swallow boundary."""
+
+    async def _raise_control() -> None:
+        raise control_error
+
+    account = FakeAccount(resting=[(resting("0000123456", "005930", price=70_000),)])
+    observations, result, propagated = await _run_with_exception_observer(
+        account,
+        now=now,
+        before_cancel_send=_raise_control,
+    )
+
+    assert result is None
+    assert propagated is control_error
+    assert observations == [
+        {
+            "stage": kiwoom_lane.POST_ACK_STAGE_CANCEL_GUARD,
+            "error_type": type(control_error).__name__,
+            "order_no": "0000123456",
+            "quantity": 1,
+        }
+    ]
+    assert account.cancel_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exception_observer_does_not_change_cancel_state_semantics(now) -> None:  # noqa: ANN001
+    """S-E is observation-only even for an internally contained API error."""
+
+    def _account() -> FakeAccount:
+        return FakeAccount(
+            resting=[
+                (resting("0000123456", "005930", price=70_000),),
+                (),
+            ],
+            cancel_error=TimeoutError("synthetic cancel timeout"),
+        )
+
+    baseline_account = _account()
+    baseline = await kiwoom_lane.submit_and_cancel(
+        baseline_account,
+        planned=_planned(),
+        broker_truth=CLEAN_TRUTH,
+        record_order_no=_sink(),
+        now=now,
+    )
+    observed_account = _account()
+    observations, observed, propagated = await _run_with_exception_observer(
+        observed_account,
+        now=now,
+    )
+
+    assert propagated is None
+    assert observed is not None
+    assert observed.canonical() == baseline.canonical()
+    assert observed_account.cancel_calls == baseline_account.cancel_calls
+    assert observations[0]["stage"] == kiwoom_lane.POST_ACK_STAGE_CANCEL_REQUEST
 
 
 @pytest.mark.asyncio

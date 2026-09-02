@@ -9,6 +9,7 @@ while an order went out is the failure mode these tests exist to catch, so
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from decimal import Decimal
 from pathlib import Path
@@ -1624,6 +1625,22 @@ def _lose_authority_only_at_cancel(
     return events
 
 
+def _raise_only_at_cancel_transport_guard(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> list[str]:
+    calls: list[str] = []
+    original = ordering_support.assert_kiwoom_transport_ready
+
+    def _guard(**kwargs: Any) -> None:
+        calls.append("transport_guard")
+        if len(calls) == 2:
+            raise error
+        original(**kwargs)
+
+    monkeypatch.setattr(ordering_support, "assert_kiwoom_transport_ready", _guard)
+    return calls
+
+
 @pytest.mark.asyncio
 async def test_authority_blocked_cancel_records_cycle_risk_before_fake_alert(
     table_dir, out_dir, armed, monkeypatch
@@ -1641,12 +1658,19 @@ async def test_authority_blocked_cancel_records_cycle_risk_before_fake_alert(
     entry = bound_kiwoom_entry()
     adapter = build_offline_adapter(entry=entry)
     alerts: list[dict[str, Any]] = []
+    alert_entry_observations: list[bool] = []
 
     async def fake_alert(risk: dict[str, Any]) -> None:
-        immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
-            encoding="utf-8"
+        cycle_path = out_dir / kiwoom_cycle.LANE / "cycles.jsonl"
+        immediate = (
+            cycle_path.read_text(encoding="utf-8") if cycle_path.exists() else ""
         )
-        assert kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY in immediate
+        # S-D: collect inside the notifier, assert in the test body. Production
+        # intentionally contains notifier Exceptions, so an assertion here
+        # would turn a reversed-order mutant into a downstream KeyError.
+        alert_entry_observations.append(
+            kiwoom_lane.MANDATORY_CANCEL_BLOCKED_BY_AUTHORITY in immediate
+        )
         alerts.append(risk)
 
     outcome = await _run(
@@ -1663,6 +1687,7 @@ async def test_authority_blocked_cancel_records_cycle_risk_before_fake_alert(
     assert len(account.buy_calls) == 1
     assert account.cancel_calls == []
     assert outcome.exit_code == 2
+    assert alert_entry_observations == [True]
     risk = outcome.record["live_order_risk"]
     assert risk == {
         "present": True,
@@ -1720,6 +1745,181 @@ async def test_authority_risk_flag_survives_fake_alert_failure(
         encoding="utf-8"
     )
     assert "live_order_risk_immediate" in cycle_lines
+
+
+@pytest.mark.asyncio
+async def test_post_ack_cancel_guard_exception_records_risk_before_fake_alert(
+    table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """S-E: an exception outside the named S6 state is no longer silent."""
+
+    guard_calls = _raise_only_at_cancel_transport_guard(
+        monkeypatch, RuntimeError("synthetic cancel transport guard failure")
+    )
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+        ]
+    )
+    alert_entry_observations: list[bool] = []
+    alerts: list[dict[str, Any]] = []
+
+    async def fake_alert(risk: dict[str, Any]) -> None:
+        immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+            encoding="utf-8"
+        )
+        alert_entry_observations.append(
+            kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION in immediate
+        )
+        alerts.append(dict(risk))
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        authority_risk_notifier=fake_alert,
+    )
+
+    assert guard_calls == ["transport_guard", "transport_guard"]
+    assert account.cancel_calls == []
+    assert outcome.exit_code == 2
+    assert outcome.record["submission_stopped"] == "coordinated_round_trip_failed"
+    assert alert_entry_observations == [True]
+    assert len(alerts) == 1
+    risk = outcome.record["live_order_risk"]
+    assert risk == {
+        "present": True,
+        "status": kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION,
+        "order_id": "0000123456",
+        "symbol": "005930",
+        "quantity": 4,
+        "side": "buy",
+        "at": risk["at"],
+        "operator_notification": "sent",
+        "exception_stage": kiwoom_lane.POST_ACK_STAGE_CANCEL_GUARD,
+        "exception_type": "RuntimeError",
+    }
+    assert alerts[0]["operator_notification"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_post_ack_cancelled_error_records_risk_and_still_propagates(
+    table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """S-E: process cancellation is observed, not converted or swallowed."""
+
+    control_error = asyncio.CancelledError("synthetic post-ACK cancellation")
+    _raise_only_at_cancel_transport_guard(monkeypatch, control_error)
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+        ]
+    )
+    alerts: list[dict[str, Any]] = []
+
+    async def fake_alert(risk: dict[str, Any]) -> None:
+        alerts.append(dict(risk))
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await _run(
+            account=account,
+            out_dir=out_dir,
+            table_dir=table_dir,
+            confirm=True,
+            authority_risk_notifier=fake_alert,
+        )
+
+    # The coordination layer intentionally re-materializes cancellation after
+    # its retained durable writes; the control-flow category still propagates.
+    assert type(exc_info.value) is asyncio.CancelledError
+    assert account.cancel_calls == []
+    assert alerts == [
+        {
+            "present": True,
+            "status": kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION,
+            "order_id": "0000123456",
+            "symbol": "005930",
+            "quantity": 4,
+            "side": "buy",
+            "at": alerts[0]["at"],
+            "operator_notification": "pending",
+            "exception_stage": kiwoom_lane.POST_ACK_STAGE_CANCEL_GUARD,
+            "exception_type": "CancelledError",
+        }
+    ]
+    immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION in immediate
+    assert "live_order_risk_immediate" in immediate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ("cancel_guard", "cancel_api", "reconcile_read"))
+async def test_post_ack_risk_flag_survives_alert_failure_for_new_paths(
+    fault: str, table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """S-E/AC4: notifier failure cannot erase any new-path risk snapshot."""
+
+    order = resting("0000123456", "005930", price=70_000, remaining=4)
+    if fault == "cancel_guard":
+        _raise_only_at_cancel_transport_guard(
+            monkeypatch, RuntimeError("synthetic cancel guard failure")
+        )
+        account = FakeAccount(resting=[(), (), (order,)])
+        expected_stage = kiwoom_lane.POST_ACK_STAGE_CANCEL_GUARD
+    elif fault == "cancel_api":
+        account = FakeAccount(
+            resting=[(), (), (order,)],
+            cancel_error=TimeoutError("synthetic cancel timeout"),
+        )
+        expected_stage = kiwoom_lane.POST_ACK_STAGE_CANCEL_REQUEST
+    else:
+
+        class _ReconcileReadFails(FakeAccount):
+            async def read_resting_orders(self):  # noqa: ANN201
+                if self.cancel_calls:
+                    raise ConnectionError("synthetic reconcile read failure")
+                return await super().read_resting_orders()
+
+        account = _ReconcileReadFails(resting=[(), (), (order,)])
+        expected_stage = kiwoom_lane.POST_ACK_STAGE_RECONCILE_READ
+
+    alert_entry_observations: list[bool] = []
+
+    async def failing_fake_alert(_risk: dict[str, Any]) -> None:
+        immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+            encoding="utf-8"
+        )
+        alert_entry_observations.append(
+            kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION in immediate
+        )
+        raise RuntimeError("synthetic notification failure")
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        authority_risk_notifier=failing_fake_alert,
+    )
+
+    assert outcome.exit_code == 2
+    assert alert_entry_observations == [True]
+    risk = outcome.record["live_order_risk"]
+    assert risk["present"] is True
+    assert risk["status"] == kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION
+    assert risk["exception_stage"] == expected_stage
+    assert risk["operator_notification"] == "failed"
+    immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "live_order_risk_immediate" in immediate
 
 
 @pytest.mark.asyncio

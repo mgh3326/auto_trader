@@ -847,6 +847,7 @@ class KiwoomCoordinationAdapter:
         on_mandatory_cancel_blocked: (
             Callable[[kiwoom_lane.RoundTripResult, int], Awaitable[None]] | None
         ) = None,
+        on_post_ack_exception: kiwoom_lane.PostAckExceptionObserver | None = None,
     ) -> AcceptanceCoordinatedRoundTripResult:
         """Hold one PostgreSQL authority across BUY → cancel → reconcile."""
 
@@ -913,6 +914,7 @@ class KiwoomCoordinationAdapter:
                 cancel_authority_decision=_cancel_decision,
                 before_cancel_send=_before_cancel,
                 on_mandatory_cancel_blocked=on_mandatory_cancel_blocked,
+                on_post_ack_exception=on_post_ack_exception,
                 continue_after_journal_error=True,
                 require_cancel_order_no=True,
                 raise_on_incomplete=False,
