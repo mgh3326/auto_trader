@@ -262,10 +262,24 @@ async def _notify_mandatory_cancel_risk(risk: dict[str, Any]) -> None:
         lines.append(f"exception_stage={risk['exception_stage']}")
     if risk.get("exception_type") is not None:
         lines.append(f"exception_type={risk['exception_type']}")
+    if risk.get("client_order_id") is not None:
+        lines.append(f"client_order_id={risk['client_order_id']}")
+    response_summary = risk.get("raw_response_summary")
+    if isinstance(response_summary, dict):
+        lines.extend(
+            [
+                f"raw_response.return_code={response_summary.get('return_code')}",
+                f"raw_response.ord_no_present={response_summary.get('ord_no_present')}",
+                f"raw_response.ord_no_shape={response_summary.get('ord_no_shape')}",
+                f"raw_response.ord_no_type={response_summary.get('ord_no_type')}",
+                f"raw_response.ord_no_length={response_summary.get('ord_no_length')}",
+            ]
+        )
+    correlation_id = risk.get("order_id") or risk.get("client_order_id")
     delivered = await get_trade_notifier().notify_agent_message(
         "\n".join(lines),
         parse_mode=None,
-        correlation_id=str(risk["order_id"]),
+        correlation_id=str(correlation_id),
         skip_discord=True,
         mirror_telegram=True,
     )
@@ -928,6 +942,7 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             status: str,
             exception_stage: str | None = None,
             exception_type: str | None = None,
+            raw_response_summary: dict[str, bool | int | str | None] | None = None,
         ) -> None:
             risk_at = dt.datetime.now(dt.UTC)
             risk = {
@@ -946,6 +961,12 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
                 # Exception messages can carry URLs or vendor payloads. Keep
                 # this projection category-only.
                 risk["exception_type"] = exception_type
+            if raw_response_summary is not None:
+                # The broker order id is intentionally None on this path. The
+                # local correlation plus a bounded response projection are the
+                # only honest identifiers available for operator recovery.
+                risk["client_order_id"] = trip.correlation_id
+                risk["raw_response_summary"] = dict(raw_response_summary)
             # S-D/AC7 ordering is deliberate: every risk gets an append-only
             # cycle snapshot before any external notifier code is entered.
             record[LIVE_ORDER_RISK_FLAG] = risk
@@ -974,6 +995,20 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             exception_stage: str,
             error: BaseException,
         ) -> None:
+            if exception_stage == kiwoom_lane.POST_ACK_STAGE_ORDER_ID_UNREADABLE:
+                await _record_live_order_risk_then_notify(
+                    trip,
+                    remaining_quantity,
+                    status=kiwoom_lane.POST_ACK_ORDER_ID_UNREADABLE,
+                    exception_stage=exception_stage,
+                    exception_type=type(error).__name__,
+                    raw_response_summary=(
+                        kiwoom_lane.summarize_unreadable_order_id_response(
+                            trip.submit_response or {}
+                        )
+                    ),
+                )
+                return
             await _record_live_order_risk_then_notify(
                 trip,
                 remaining_quantity,

@@ -1767,8 +1767,9 @@ async def test_post_ack_cancel_guard_exception_records_risk_before_fake_alert(
     alerts: list[dict[str, Any]] = []
 
     async def fake_alert(risk: dict[str, Any]) -> None:
-        immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
-            encoding="utf-8"
+        cycle_path = out_dir / kiwoom_cycle.LANE / "cycles.jsonl"
+        immediate = (
+            cycle_path.read_text(encoding="utf-8") if cycle_path.exists() else ""
         )
         alert_entry_observations.append(
             kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION in immediate
@@ -1893,8 +1894,9 @@ async def test_post_ack_risk_flag_survives_alert_failure_for_new_paths(
     alert_entry_observations: list[bool] = []
 
     async def failing_fake_alert(_risk: dict[str, Any]) -> None:
-        immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
-            encoding="utf-8"
+        cycle_path = out_dir / kiwoom_cycle.LANE / "cycles.jsonl"
+        immediate = (
+            cycle_path.read_text(encoding="utf-8") if cycle_path.exists() else ""
         )
         alert_entry_observations.append(
             kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION in immediate
@@ -1915,6 +1917,131 @@ async def test_post_ack_risk_flag_survives_alert_failure_for_new_paths(
     assert risk["present"] is True
     assert risk["status"] == kiwoom_lane.POST_ACK_CANCEL_WINDOW_EXCEPTION
     assert risk["exception_stage"] == expected_stage
+    assert risk["operator_notification"] == "failed"
+    immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "live_order_risk_immediate" in immediate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_order_no", "expected_shape", "expected_length"),
+    (("", "blank", 0), ("not-a-number", "non_numeric", 12)),
+)
+async def test_post_ack_unreadable_order_id_records_risk_before_fake_alert(
+    raw_order_no: str,
+    expected_shape: str,
+    expected_length: int,
+    table_dir,
+    out_dir,
+    armed,
+) -> None:  # noqa: ANN001, ARG001
+    """SHOULD-1: accepted but unaddressable BUYs are no longer silent."""
+
+    account = FakeAccount(buy_response={"return_code": 0, "ord_no": raw_order_no})
+    alert_entry_observations: list[bool] = []
+    alerts: list[dict[str, Any]] = []
+
+    async def fake_alert(risk: dict[str, Any]) -> None:
+        cycle_path = out_dir / kiwoom_cycle.LANE / "cycles.jsonl"
+        immediate = (
+            cycle_path.read_text(encoding="utf-8") if cycle_path.exists() else ""
+        )
+        # Keep the ordering assertion outside notifier code: production
+        # contains notifier Exceptions to preserve the original broker error.
+        alert_entry_observations.append(
+            kiwoom_lane.POST_ACK_ORDER_ID_UNREADABLE in immediate
+            and "live_order_risk_immediate" in immediate
+        )
+        alerts.append(dict(risk))
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        authority_risk_notifier=fake_alert,
+    )
+
+    assert len(account.buy_calls) == 1
+    assert account.cancel_calls == []
+    assert outcome.exit_code == 2
+    assert outcome.record["submission_stopped"] == "coordinated_round_trip_failed"
+    assert outcome.record["round_trip_failures"] == ["BrokerEchoMismatch"]
+    assert outcome.record["round_trip"] == []
+    assert outcome.record["submitted"] == []
+    assert alert_entry_observations == [True]
+    assert len(alerts) == 1
+    risk = outcome.record["live_order_risk"]
+    assert risk == {
+        "present": True,
+        "status": kiwoom_lane.POST_ACK_ORDER_ID_UNREADABLE,
+        "order_id": None,
+        "symbol": "005930",
+        "quantity": account.buy_calls[0]["quantity"],
+        "side": "buy",
+        "at": risk["at"],
+        "operator_notification": "sent",
+        "exception_stage": kiwoom_lane.POST_ACK_STAGE_ORDER_ID_UNREADABLE,
+        "exception_type": "BrokerEchoMismatch",
+        "client_order_id": risk["client_order_id"],
+        "raw_response_summary": {
+            "return_code": 0,
+            "ord_no_present": True,
+            "ord_no_shape": expected_shape,
+            "ord_no_type": "str",
+            "ord_no_length": expected_length,
+        },
+    }
+    assert risk["client_order_id"].startswith(kiwoom_lane.CLIENT_ORDER_ID_PREFIX)
+    assert alerts[0]["order_id"] is None
+    assert alerts[0]["operator_notification"] == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_order_no", "expected_shape"),
+    (("", "blank"), ("not-a-number", "non_numeric")),
+)
+async def test_post_ack_unreadable_order_id_flag_survives_fake_alert_failure(
+    raw_order_no: str,
+    expected_shape: str,
+    table_dir,
+    out_dir,
+    armed,
+) -> None:  # noqa: ANN001, ARG001
+    """The durable flag precedes and survives a notifier failure."""
+
+    account = FakeAccount(buy_response={"return_code": 0, "ord_no": raw_order_no})
+    alert_entry_observations: list[bool] = []
+
+    async def failing_fake_alert(_risk: dict[str, Any]) -> None:
+        cycle_path = out_dir / kiwoom_cycle.LANE / "cycles.jsonl"
+        immediate = (
+            cycle_path.read_text(encoding="utf-8") if cycle_path.exists() else ""
+        )
+        alert_entry_observations.append(
+            kiwoom_lane.POST_ACK_ORDER_ID_UNREADABLE in immediate
+            and "live_order_risk_immediate" in immediate
+        )
+        raise RuntimeError("synthetic notification failure")
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        authority_risk_notifier=failing_fake_alert,
+    )
+
+    assert account.cancel_calls == []
+    assert outcome.exit_code == 2
+    assert alert_entry_observations == [True]
+    risk = outcome.record["live_order_risk"]
+    assert risk["status"] == kiwoom_lane.POST_ACK_ORDER_ID_UNREADABLE
+    assert risk["order_id"] is None
+    assert risk["raw_response_summary"]["ord_no_shape"] == expected_shape
     assert risk["operator_notification"] == "failed"
     immediate = (out_dir / kiwoom_cycle.LANE / "cycles.jsonl").read_text(
         encoding="utf-8"
@@ -1952,6 +2079,51 @@ async def test_authority_risk_default_alert_reuses_existing_telegram_notifier(
     assert kwargs["skip_discord"] is True
     assert kwargs["mirror_telegram"] is True
     assert kwargs["correlation_id"] == risk["order_id"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_order_id_alert_uses_local_correlation_and_safe_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The existing notifier carries the dedicated incident without a fake id."""
+
+    from app.monitoring import trade_notifier
+
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        trade_notifier,
+        "get_trade_notifier",
+        lambda: SimpleNamespace(notify_agent_message=notify),
+    )
+    risk = {
+        "status": kiwoom_lane.POST_ACK_ORDER_ID_UNREADABLE,
+        "order_id": None,
+        "symbol": "005930",
+        "quantity": 4,
+        "side": "buy",
+        "at": IN_SESSION.isoformat(),
+        "exception_stage": kiwoom_lane.POST_ACK_STAGE_ORDER_ID_UNREADABLE,
+        "exception_type": "BrokerEchoMismatch",
+        "client_order_id": "b0xkw-local-correlation",
+        "raw_response_summary": {
+            "return_code": 0,
+            "ord_no_present": True,
+            "ord_no_shape": "non_numeric",
+            "ord_no_type": "str",
+            "ord_no_length": 12,
+        },
+    }
+
+    await kiwoom_cycle._notify_mandatory_cancel_risk(risk)
+
+    notify.assert_awaited_once()
+    args, kwargs = notify.await_args
+    assert "status=POST_ACK_ORDER_ID_UNREADABLE" in args[0]
+    assert "order_id=None" in args[0]
+    assert "raw_response.ord_no_shape=non_numeric" in args[0]
+    assert kwargs["skip_discord"] is True
+    assert kwargs["mirror_telegram"] is True
+    assert kwargs["correlation_id"] == risk["client_order_id"]
 
 
 @pytest.mark.asyncio

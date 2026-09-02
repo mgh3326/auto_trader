@@ -226,6 +226,22 @@ claim을 재발견하고 `kt00007` exact readback을 수행하며, terminal evid
 `release_with_terminal_evidence`로 claim을 해제한다. open/unknown이면 계속 account를
 막고 자동 재주문하지 않는다. DAY 마감 소멸은 하한 안전망일 뿐 claim 해제 증거가 아니다.
 
+### `POST_ACK_ORDER_ID_UNREADABLE`
+
+`kt10000`이 `return_code=0`으로 접수됐지만 `ord_no`가 빈 값 또는 비숫자라 읽을 수 없으면,
+취소에 사용할 exact broker id가 없는 최우선 live-order incident다. 이 경로는 기존 11단계
+cancel-window 어휘와 구분되는 `post_ack_order_id_unreadable` stage를 사용한다. cycle JSON은
+`order_id=None`을 정직하게 보존하고 symbol, quantity, side, timestamp, local client order
+correlation과 bounded `raw_response_summary`(`return_code`, `ord_no` 존재 여부·shape·type·
+length)를 즉시 append한다. 읽을 수 없는 값을 주문번호로 대체하거나 원 vendor payload를
+통째로 복사하지 않는다.
+
+이 append가 완료된 뒤에만 기존 Telegram notifier를 호출하며, 알림 실패도 이미 기록된
+flag를 없애지 않는다. 관측 후 원래 `BrokerEchoMismatch`, `CALLBACK_FAILED`/`UNCERTAIN`
+claim, exit 2가 그대로 유지된다. exact order id가 없으므로 이 경로가 임의 취소나 새
+reconcile 의미를 만들지 않으며, 운영자는 local correlation과 broker/account readback으로
+미해소 claim을 조사한다.
+
 ### BUY ACK→cancel 종료 예외의 침묵 금지
 
 유효한 BUY `ord_no`를 추출한 순간부터 사후 `kt00007`로 cancel 종료를 판정할 때까지의
