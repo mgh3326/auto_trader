@@ -1,9 +1,11 @@
 """Cash-parking allowlist for auto-approval (§163차, §170차).
 
 The operator authorized two US Treasury ETFs (``SGOV``/``BIL``) and two KR
-CD-rate ETFs (``459580``/``357870``) as parking instruments, each only in its explicitly
-paired ``kis_live`` market. Two §40차/§156차 gates change -- and 🔴 exactly one
-of them stops applying. The other keeps applying at a different value:
+CD-rate ETFs (``459580``/``357870``) as parking instruments, each only in its
+explicitly paired broker/account market tuple. §173 adds the US pair on
+``toss_live`` after its holdings valuation was observed to be native USD.
+Two §40차/§156차 gates change -- and 🔴 exactly one of them stops applying.
+The other keeps applying at a different value:
 
 1. **marketability** -- a parking buy may price at the market instead of
    resting below it (§156차 ② kept "매수 marketable 은 수동 유지"; §163차 makes
@@ -127,7 +129,7 @@ class ParkingScope:
 
 # Closed operator allowlist. Each entry is a full authorization tuple, not
 # independently extensible symbol, market, and balance-provider collections.
-# ``toss_live`` KR is metered only by its own Toss holdings surface; a KIS
+# ``toss_live`` KR/US is metered only by its own Toss holdings surface; a KIS
 # balance must never meter a Toss order.
 PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
     {
@@ -221,6 +223,36 @@ PARKING_ALLOWLIST_SCOPES: frozenset[ParkingScope] = frozenset(
             balance_market_value="KR",
             daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_KR,
         ),
+        ParkingScope(
+            symbol="SGOV",
+            account_mode="toss_live",
+            market="equity_us",
+            currency="USD",
+            per_order_cap=PARKING_PER_ORDER_CAP_USD,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
+            balance_provider="toss_us_holdings",
+            balance_symbol_field="symbol",
+            balance_evaluation_field="market_value.amount",
+            balance_currency_field="currency",
+            balance_market_field="market_country",
+            balance_market_value="US",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_US,
+        ),
+        ParkingScope(
+            symbol="BIL",
+            account_mode="toss_live",
+            market="equity_us",
+            currency="USD",
+            per_order_cap=PARKING_PER_ORDER_CAP_USD,
+            cumulative_cap=PARKING_CUMULATIVE_CAP_USD,
+            balance_provider="toss_us_holdings",
+            balance_symbol_field="symbol",
+            balance_evaluation_field="market_value.amount",
+            balance_currency_field="currency",
+            balance_market_field="market_country",
+            balance_market_value="US",
+            daily_cap_exempt=PARKING_DAILY_CAP_EXEMPT_US,
+        ),
     }
 )
 
@@ -239,6 +271,7 @@ PARKING_EXPOSURE_UNAVAILABLE_REASONS: frozenset[str] = frozenset(
         "currency_not_usd",
         "currency_not_krw",
         "market_not_kr",
+        "market_not_us",
         "account_identity_unavailable",
         "scope_not_allowlisted",
         # §163차 재작업 1 — the durable half. Its absence or unreadability is

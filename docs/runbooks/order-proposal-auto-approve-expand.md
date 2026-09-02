@@ -708,7 +708,53 @@ buy limit to KRW 1,073,000 — KRW 480 below the ask. The order can therefore
 remain an unfilled limit order. This is intentionally not changed by S174:
 correcting ETF ticks affects all KRX ETF orders and requires a separate review.
 
-### 8.10 §S170 aggregate-limit change; BL-38/BL-39 mechanism unchanged
+### 8.10 Toss US extension (§173) — a separate USD account meter
+
+The two US parking symbols are additionally authorized on a separate Toss
+surface. This is a new exception with the same immutable USD controls already
+used by the KIS US face; no cap value or policy key is changed:
+
+| symbol | account mode × market | currency | per-order cap | cumulative buy cap | daily cap |
+| --- | --- | --- | --- | --- | --- |
+| `SGOV` | `toss_live` × `equity_us` | USD | 10,000 | 10,000 | exempt |
+| `BIL` | `toss_live` × `equity_us` | USD | 10,000 | 10,000 | exempt |
+
+Each closed scope binds `balance_provider=toss_us_holdings`,
+`balance_symbol_field=symbol`, `balance_evaluation_field=market_value.amount`,
+`balance_currency_field=currency`, `balance_market_field=market_country`, and
+`balance_market_value=US`. `_select_balance_fetcher` maps this provider to the
+same read-only `TossReadClient.holdings()` method used by `toss_kr_holdings`,
+but keeps a separate provider key because the provider binding is also an
+exact `(account_mode, market, currency)` contract. The response may contain KR
+and US rows together; only native `currency == USD` and
+`market_country == US` rows are projected into the US meter. `market_value.amount`
+is consumed directly as USD and is not FX-converted.
+
+🔴 **Account identity is a hard precondition.** Before the Toss holdings read,
+the parking exposure path requires `broker_account_id` to be the exact
+canonical decimal string of `settings.toss_api_account_seq`. Missing,
+non-canonical, or mismatched values fail closed as
+`account_identity_unavailable`; no KIS balance is substituted. The US Toss
+face therefore cannot charge a KIS balance or a different Toss account's cap.
+
+The Toss US face and the KIS US face are deliberately independent meters. Each
+can consume its own USD 10,000 cumulative-buy cap, so the accepted US aggregate
+upper bound is **USD 20,000** (KIS USD 10,000 + Toss USD 10,000), not one shared
+USD 10,000 pool. This is the same per-face structure accepted for the two KR
+faces in §S174. The existing daily-cap exclusion applies through the exact
+expanded parking marker; no scheduler or automatic trigger is added.
+
+The native-USD interpretation is supported by today's live observation of
+three Toss holdings rows (SGOV, IVV, and NVDA) where quantity × last price
+matched `market_value.amount` with zero arithmetic error. That is an observed
+wire-value fact, not a Toss API documentation guarantee; the field contract
+must be revalidated if Toss changes its representation. BL-37 account
+labelling, BL-38 missing pre-submit reservation, and BL-39 KST-day-window
+residuals remain unchanged and are exposed on this additional face. A parking
+buy can also fill before a veto card under the existing `marketable`
+definition; that accepted risk is unchanged.
+
+### 8.11 §S170 aggregate-limit change; BL-38/BL-39 mechanism unchanged
 
 The one thing §S170 removes is the **shared daily aggregate ceiling for
 successfully durable-recorded parking rungs**. That is intentional: parking is

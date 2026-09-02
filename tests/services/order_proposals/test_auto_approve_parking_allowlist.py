@@ -1,4 +1,4 @@
-"""§163차/§170차 — cash-parking ticker allowlist.
+"""§163차/§170차/§173 — cash-parking ticker allowlist.
 
 §163차 RAISES the per-order cap for two tickers rather than removing it, so
 §106차's "maximum loss of one automation error" boundary keeps its shape, and
@@ -8,7 +8,9 @@ everything else), the allowlist is closed and unwidenable at runtime,
 membership is exact-element (never substring or case-folded), the cumulative
 USD 10,000 cap is enforced from broker-origin plus durable exposure, every way
 of failing to read that exposure rejects, and everything §163차 did NOT
-authorize is proven unchanged.
+authorize is proven unchanged. §173 additionally proves that Toss US uses
+the same read-only holdings surface with an independent
+symbol×account×market×currency binding.
 """
 
 from __future__ import annotations
@@ -161,6 +163,8 @@ def test_allowlist_constants_are_exactly_the_authorized_scope():
         ("357870", "kis_live", "equity_kr"),
         ("459580", "toss_live", "equity_kr"),
         ("357870", "toss_live", "equity_kr"),
+        ("SGOV", "toss_live", "equity_us"),
+        ("BIL", "toss_live", "equity_us"),
     }
     # Cap pairs are selected only through the same immutable scope record.
     assert PARKING_PER_ORDER_CAP_USD == Decimal("10000")
@@ -325,6 +329,14 @@ def test_exact_canonical_spellings_are_allowlisted():
             is True
         )
 
+    for symbol in ("SGOV", "BIL"):
+        assert (
+            is_parking_allowlisted(
+                symbol=symbol, account_mode="toss_live", market="equity_us"
+            )
+            is True
+        )
+
 
 # --------------------------------------------------------------------------
 # 3. market and account scoping
@@ -332,22 +344,24 @@ def test_exact_canonical_spellings_are_allowlisted():
 
 
 @pytest.mark.parametrize(
-    ("account_mode", "market"),
+    ("symbol", "account_mode", "market"),
     [
-        ("kis_live", "equity_kr"),  # same four characters, KR market
-        ("kis_live", "crypto"),
-        ("upbit", "crypto"),
-        ("toss_live", "equity_us"),  # veto-capable, but exposure is not readable
-        ("toss_live", "equity_kr"),
-        ("kis_mock", "equity_us"),
-        ("db_simulated", "equity_us"),
-        (None, "equity_us"),
-        ("kis_live", None),
+        ("SGOV", "kis_live", "equity_kr"),  # same ticker, KR market
+        ("SGOV", "kis_live", "crypto"),
+        ("SGOV", "upbit", "crypto"),
+        ("SGOV", "toss_live", "equity_kr"),
+        ("459580", "toss_live", "equity_us"),
+        ("SGOV", "kis_mock", "equity_us"),
+        ("SGOV", "db_simulated", "equity_us"),
+        ("SGOV", None, "equity_us"),
+        ("SGOV", "kis_live", None),
     ],
 )
-def test_allowlist_is_scoped_to_kis_live_equity_us(account_mode, market):
+def test_allowlist_is_scoped_to_closed_account_market_tuples(
+    symbol, account_mode, market
+):
     assert (
-        is_parking_allowlisted(symbol="SGOV", account_mode=account_mode, market=market)
+        is_parking_allowlisted(symbol=symbol, account_mode=account_mode, market=market)
         is False
     )
 
@@ -380,7 +394,7 @@ def test_symbol_market_pairs_cannot_open_a_cross_product_mutant():
     ("symbol", "account_mode", "market", "mode"),
     [
         ("SGOVX", "kis_live", "equity_us", "expanded"),
-        ("SGOV", "toss_live", "equity_us", "expanded"),
+        ("SGOV", "toss_live", "equity_kr", "expanded"),
         ("SGOV", "kis_live", "equity_kr", "expanded"),
         ("459580", "kis_live", "equity_us", "expanded"),
         ("SGOV", "kis_live", "equity_us", "off"),
@@ -407,6 +421,8 @@ def test_daily_cap_exemption_uses_the_exact_parking_scope(
         ("357870", "kis_live", "equity_kr"),
         ("459580", "toss_live", "equity_kr"),
         ("357870", "toss_live", "equity_kr"),
+        ("SGOV", "toss_live", "equity_us"),
+        ("BIL", "toss_live", "equity_us"),
     ],
 )
 def test_every_enabled_parking_scope_is_daily_cap_exempt_in_expanded_mode(
@@ -439,6 +455,43 @@ def test_cap_currency_is_bound_to_the_same_scope_tuple():
             "KRW",
             Decimal("10000000"),
             Decimal("15000000"),
+        )
+
+
+def test_toss_us_scope_binds_every_requested_field_to_existing_us_caps():
+    for symbol in ("SGOV", "BIL"):
+        scope = parking_scope(
+            symbol=symbol, account_mode="toss_live", market="equity_us"
+        )
+        assert scope is not None
+        assert (
+            scope.symbol,
+            scope.account_mode,
+            scope.market,
+            scope.currency,
+            scope.per_order_cap,
+            scope.cumulative_cap,
+            scope.balance_provider,
+            scope.balance_symbol_field,
+            scope.balance_evaluation_field,
+            scope.balance_currency_field,
+            scope.balance_market_field,
+            scope.balance_market_value,
+            scope.daily_cap_exempt,
+        ) == (
+            symbol,
+            "toss_live",
+            "equity_us",
+            "USD",
+            PARKING_PER_ORDER_CAP_USD,
+            PARKING_CUMULATIVE_CAP_USD,
+            "toss_us_holdings",
+            "symbol",
+            "market_value.amount",
+            "currency",
+            "market_country",
+            "US",
+            PARKING_DAILY_CAP_EXEMPT_US,
         )
 
 
@@ -1053,6 +1106,10 @@ def _toss_kr_holding(
     )
 
 
+def _toss_us_holding(*, symbol: str, amount: str):
+    return _toss_kr_holding(symbol=symbol, amount=amount, currency="USD", market="US")
+
+
 @pytest.mark.asyncio
 async def test_toss_kr_exposure_uses_toss_holdings_and_never_kis(monkeypatch):
     """The provider binding prevents a KR market name from selecting KIS."""
@@ -1088,6 +1145,183 @@ async def test_toss_kr_exposure_uses_toss_holdings_and_never_kis(monkeypatch):
 
     assert exposure.available is True
     assert exposure.exposure == Decimal("15000000")
+
+
+@pytest.mark.asyncio
+async def test_toss_us_exposure_uses_native_usd_holdings_and_never_kis(monkeypatch):
+    """§173: both US Treasury rows use direct USD market values."""
+    from app.core.config import settings
+    from app.services.brokers.toss.dto import TossHoldings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+
+    async def _must_not_read_kis():  # pragma: no cover - must never run
+        raise AssertionError("Toss US parking must not read a KIS account")
+
+    async def _toss_holdings():
+        return TossHoldings(
+            items=[
+                # Toss returns KR and US rows in one holdings response. The
+                # KR row must not enter the US face's exposure sum.
+                _toss_kr_holding(symbol="459580", amount="1000000"),
+                _toss_us_holding(symbol="SGOV", amount="2008.4"),
+                _toss_us_holding(symbol="BIL", amount="764.26"),
+                _toss_us_holding(symbol="NVDA", amount="1302.72"),
+            ]
+        )
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_us_holdings=_must_not_read_kis,
+        fetch_kr_holdings=_must_not_read_kis,
+        fetch_toss_holdings=_toss_holdings,
+        durable_notional_fn=_no_pending,
+    )
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("2772.66")
+
+
+@pytest.mark.asyncio
+async def test_toss_us_filter_excludes_kr_market_rows_from_the_us_face(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss.dto import TossHoldings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+
+    async def _toss_holdings():
+        return TossHoldings(
+            items=[
+                _toss_kr_holding(symbol="459580", amount="9999999"),
+                _toss_us_holding(symbol="SGOV", amount="2008.4"),
+            ]
+        )
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_toss_holdings=_toss_holdings,
+        durable_notional_fn=_no_pending,
+    )
+
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("2008.4")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broker_account_id", [None, "0731", "other"])
+async def test_toss_us_account_identity_rejects_wrong_account_before_any_balance_read(
+    monkeypatch, broker_account_id
+):
+    """A KIS balance cannot be substituted for the settings-selected Toss account."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    called = False
+
+    async def _must_not_read():  # pragma: no cover - must never run
+        nonlocal called
+        called = True
+        raise AssertionError("identity failure must precede every balance read")
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id=broker_account_id,
+        # This callback represents a KIS balance attempt; it must be rejected
+        # before either the KIS or Toss reader can run.
+        fetch_us_holdings=_must_not_read,
+        fetch_toss_holdings=_must_not_read,
+        durable_notional_fn=_no_pending,
+    )
+
+    assert called is False
+    assert exposure.available is False
+    assert exposure.unavailable_reason == "account_identity_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("currency", "market", "reason"),
+    [("KRW", "US", "currency_not_usd"), ("USD", "KR", "market_not_us")],
+)
+async def test_toss_us_holdings_must_be_native_usd_and_us_market(
+    monkeypatch, currency, market, reason
+):
+    from app.core.config import settings
+    from app.services.brokers.toss.dto import TossHoldings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+
+    async def _toss_holdings():
+        return TossHoldings(
+            items=[
+                _toss_kr_holding(
+                    symbol="SGOV", amount="1", currency=currency, market=market
+                )
+            ]
+        )
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_toss_holdings=_toss_holdings,
+        durable_notional_fn=_no_pending,
+    )
+
+    assert exposure.available is False
+    assert exposure.unavailable_reason == reason
+
+
+def test_toss_us_provider_binding_cannot_reuse_toss_kr_key():
+    scope = parking_scope(symbol="SGOV", account_mode="toss_live", market="equity_us")
+    assert scope is not None
+
+    with pytest.raises(AssertionError):
+        _select_balance_fetcher(
+            replace(scope, balance_provider="toss_kr_holdings"),
+            fetch_us_holdings=None,
+            fetch_kr_holdings=None,
+            fetch_toss_holdings=None,
+        )
+
+
+def test_kis_and_toss_us_faces_each_have_an_independent_10k_cap(monkeypatch):
+    """The accepted aggregate is USD 20,000 across two independent faces."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True)
+    rung = _rung(limit_price=Decimal("100"), quantity=Decimal("100"))
+    kis = _decide(
+        group=_group(symbol="SGOV", account_mode="kis_live"),
+        rung=rung,
+        exposure=ParkingExposure.observed(Decimal("0")),
+    )
+    toss = _decide(
+        group=_group(
+            symbol="BIL",
+            account_mode="toss_live",
+            broker_account_id="731",
+        ),
+        rung=rung,
+        exposure=ParkingExposure.observed(Decimal("0")),
+    )
+
+    assert kis.eligible is True
+    assert toss.eligible is True
+    assert Decimal(kis.details["parking_exposure_after"]) == Decimal("10000")
+    assert Decimal(toss.details["parking_exposure_after"]) == Decimal("10000")
+    assert Decimal(kis.details["parking_exposure_after"]) + Decimal(
+        toss.details["parking_exposure_after"]
+    ) == Decimal("20000")
 
 
 def test_provider_binding_mutant_is_an_assertion_error():

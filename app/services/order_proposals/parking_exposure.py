@@ -3,8 +3,8 @@
 §163차/§170차 bound a parking rung twice: the per-order cap, RAISED for
 parking but never removed, and behind it a native-currency cumulative parking
 exposure cap. This module produces only the number that *second* boundary
-compares against, selecting the existing KIS US or domestic balance surface
-from the immutable symbol×account×market scope.
+compares against, selecting the existing KIS or Toss holdings surface from the
+immutable symbol×account×market scope.
 
 🔴 This is the second line, not the only one. Its measurement has known
 residual gaps (runbook §8.7 — BL-37 account labelling, BL-38 pre-submit
@@ -13,11 +13,13 @@ is the per-order cap that still runs above it.
 
 Two halves, and both are required
 ---------------------------------
-1. **Broker balance** -- US uses ``KISClient.fetch_my_us_stocks()`` with
+1. **Broker balance** -- KIS US uses ``KISClient.fetch_my_us_stocks()`` with
    ``currency_code="USD"``, summing ``ovrs_stck_evlu_amt`` over ``ovrs_pdno``;
-   KR uses ``KISClient.fetch_my_stocks()``, summing domestic ``evlu_amt`` over
-   ``pdno``. Both are existing KIS balance surfaces already used for holdings
-   checks, so this introduces no new credential, host, or account.
+   KIS KR uses ``KISClient.fetch_my_stocks()``, summing domestic ``evlu_amt``
+   over ``pdno``. Toss KR and US both use the existing read-only
+   ``TossReadClient.holdings()`` surface; the typed rows are projected to
+   ``symbol`` and ``market_value.amount`` and filtered by their bound currency
+   and ``market_country``. No new credential, host, or account is introduced.
 
 2. **Durable same-day auto-approved parking buys** -- 🔴 the balance alone is
    NOT a cumulative boundary. ``KISAccount._filter_nonzero_holdings`` keeps
@@ -111,7 +113,9 @@ _PROVIDER_BINDINGS: dict[str, tuple[str, str, str]] = {
     "kis_us_holdings": ("kis_live", "equity_us", "USD"),
     "kis_kr_holdings": ("kis_live", "equity_kr", "KRW"),
     "toss_kr_holdings": ("toss_live", "equity_kr", "KRW"),
+    "toss_us_holdings": ("toss_live", "equity_us", "USD"),
 }
+_TOSS_HOLDINGS_PROVIDERS = frozenset({"toss_kr_holdings", "toss_us_holdings"})
 
 
 def _field_value(row: Mapping[str, Any], field: str) -> Any:
@@ -174,6 +178,10 @@ def _row_market_mismatch(row: Mapping[str, Any], *, scope: ParkingScope) -> bool
     )
 
 
+def _market_mismatch_reason(scope: ParkingScope) -> str:
+    return "market_not_kr" if scope.balance_market_value == "KR" else "market_not_us"
+
+
 def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
     """Pure reducer over broker balance rows. Fails closed on any anomaly."""
     if not isinstance(rows, list):
@@ -195,7 +203,7 @@ def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
         if _row_currency_mismatch(row, scope=scope):
             return ParkingExposure.unavailable(_currency_mismatch_reason(scope))
         if _row_market_mismatch(row, scope=scope):
-            return ParkingExposure.unavailable("market_not_kr")
+            return ParkingExposure.unavailable(_market_mismatch_reason(scope))
         raw_amount = _field_value(row, scope.balance_evaluation_field)
         if raw_amount is None or (
             isinstance(raw_amount, str) and not raw_amount.strip()
@@ -262,22 +270,25 @@ def _select_balance_fetcher(
         from app.services.brokers.kis.client import KISClient
 
         return KISClient().fetch_my_stocks
-    assert scope.balance_provider == "toss_kr_holdings"
-    if fetch_toss_holdings is not None:
-        return fetch_toss_holdings
+    if scope.balance_provider in _TOSS_HOLDINGS_PROVIDERS:
+        if fetch_toss_holdings is not None:
+            return fetch_toss_holdings
 
-    async def _read_toss_holdings() -> Any:
-        # This path calls only TossReadClient.holdings(), a GET read surface.
-        # It neither imports nor invokes place/modify/cancel order methods.
-        from app.services.brokers.toss.client import TossReadClient
+        async def _read_toss_holdings() -> Any:
+            # This path calls only TossReadClient.holdings(), a GET read
+            # surface. It neither imports nor invokes place/modify/cancel.
+            from app.services.brokers.toss.client import TossReadClient
 
-        client = TossReadClient.from_settings()
-        try:
-            return await client.holdings()
-        finally:
-            await client.aclose()
+            client = TossReadClient.from_settings()
+            try:
+                return await client.holdings()
+            finally:
+                await client.aclose()
 
-    return _read_toss_holdings
+        return _read_toss_holdings
+    raise AssertionError(
+        f"unsupported parking balance provider: {scope.balance_provider}"
+    )
 
 
 def _toss_holdings_rows(payload: Any) -> list[dict[str, Any]] | None:
@@ -329,7 +340,7 @@ async def load_parking_exposure(
         return ParkingExposure.unavailable("not_requested")
 
     if (
-        scope.balance_provider == "toss_kr_holdings"
+        scope.balance_provider in _TOSS_HOLDINGS_PROVIDERS
         and not _toss_account_identity_matches(broker_account_id)
     ):
         # No broker read before the account identity is proven.  In particular,
@@ -354,7 +365,7 @@ async def load_parking_exposure(
         return ParkingExposure.unavailable("fetch_failed")
     rows = (
         _toss_holdings_rows(payload)
-        if scope.balance_provider == "toss_kr_holdings"
+        if scope.balance_provider in _TOSS_HOLDINGS_PROVIDERS
         else payload
     )
     held = sum_parking_exposure(rows, scope=scope)
