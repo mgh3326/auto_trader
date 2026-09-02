@@ -414,3 +414,14 @@ def test_tradingcodex_mcp_unit_pins_required_approval_hash_modes_only_for_itself
     ]
     assert others, "expected the other units to be started too"
     assert all("APPROVAL_HASH_MODE" not in line for line in others)
+
+
+def test_rendered_haproxy_config_is_readable_by_the_unprivileged_container_user(
+    tmp_path: Path,
+) -> None:
+    """haproxy:3.x drops to user ``haproxy``; a 0600 config crash-loops it."""
+    proc, run_dir = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
+
+    assert proc.returncode == 0, proc.stderr
+    mode = (run_dir / "haproxy.cfg").stat().st_mode & 0o777
+    assert mode & 0o044 == 0o044, f"haproxy.cfg mode {oct(mode)} is not world-readable"

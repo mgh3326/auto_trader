@@ -200,6 +200,11 @@ render_haproxy_config() {
   if grep --fixed-strings --quiet '0.0.0.0' "${MCP_HAPROXY_CONFIG}.tmp" || ! grep --fixed-strings --quiet 'bind 127.0.0.1:8765' "${MCP_HAPROXY_CONFIG}.tmp" || ! grep --fixed-strings --quiet "bind ${TAILNET_MCP_BIND}" "${MCP_HAPROXY_CONFIG}.tmp"; then
     rm -f "${MCP_HAPROXY_CONFIG}.tmp"; printf 'HAProxy MCP binds must be loopback and the configured tailnet address only\n' >&2; return 78
   fi
+  # The rendered config carries ports only (no secrets) and is bind-mounted into
+  # the official haproxy image, which drops to the unprivileged "haproxy" user.
+  # The deploy umask of 077 would leave it unreadable there and the container
+  # crash-loops on "Permission denied" (observed on the first NCP deploy).
+  chmod 0644 "${MCP_HAPROXY_CONFIG}.tmp"
   mv -f "${MCP_HAPROXY_CONFIG}.tmp" "$MCP_HAPROXY_CONFIG"
 }
 
