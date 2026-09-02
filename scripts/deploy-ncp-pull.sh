@@ -74,6 +74,25 @@ configured_image() {
   docker inspect --format '{{.Config.Image}}' "$1"
 }
 
+# The worker unit was introduced after the API/scheduler units, so the first
+# deployment on a host has no at-worker container to read a rollback image
+# from. Bootstrap its rollback reference from the API container instead of
+# refusing the whole promotion: both units run the same repo digest, and the
+# API image is already required to exist. Every later deployment reads the
+# real worker container again.
+worker_rollback_image() {
+  local api_image="$1"
+  local worker_image
+
+  if worker_image="$(configured_image "${WORKER_CONTAINER}" 2>/dev/null)"; then
+    printf '%s\n' "${worker_image}"
+    return 0
+  fi
+  printf 'worker container %s is absent; bootstrapping its rollback reference from %s\n' \
+    "${WORKER_CONTAINER}" "${API_CONTAINER}" >&2
+  printf '%s\n' "${api_image}"
+}
+
 is_repo_digest() {
   [[ "$1" =~ ^${IMAGE_REPOSITORY}@sha256:[[:xdigit:]]{64}$ ]]
 }
@@ -247,10 +266,7 @@ rollback_to_previous_digest() {
     printf 'current scheduler container is required for rollback: %s\n' "${SCHEDULER_CONTAINER}" >&2
     return 78
   }
-  current_worker_image="$(configured_image "${WORKER_CONTAINER}")" || {
-    printf 'current worker container is required for rollback: %s\n' "${WORKER_CONTAINER}" >&2
-    return 78
-  }
+  current_worker_image="$(worker_rollback_image "${current_api_image}")"
   rollback_reference "${current_api_image}" "API" >/dev/null || return 1
   rollback_reference "${current_scheduler_image}" "scheduler" >/dev/null || return 1
   rollback_reference "${current_worker_image}" "worker" >/dev/null || return 1
@@ -286,10 +302,7 @@ main() {
     printf 'previous scheduler container is required for rollback: %s\n' "${SCHEDULER_CONTAINER}" >&2
     exit 78
   }
-  previous_worker_image="$(configured_image "${WORKER_CONTAINER}")" || {
-    printf 'previous worker container is required for rollback: %s\n' "${WORKER_CONTAINER}" >&2
-    exit 78
-  }
+  previous_worker_image="$(worker_rollback_image "${previous_api_image}")"
 
   # Verify rollback is possible before a floating tag is pulled and before any
   # running container is replaced. A legacy floating container may use the

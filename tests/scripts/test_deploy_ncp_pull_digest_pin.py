@@ -36,6 +36,8 @@ case "$1" in
     if [[ "$3" == '{{.State.Running}}' ]]; then printf '%s\\n' true
     elif [[ "$4" == at-api ]]; then printf '%s\\n' "$API_IMAGE"
     elif [[ "$4" == at-scheduler ]]; then printf '%s\\n' "$SCHEDULER_IMAGE"
+    elif [[ "$WORKER_IMAGE" == ABSENT ]]; then
+      printf 'Error: No such object: at-worker\\n' >&2; exit 1
     else printf '%s\\n' "$WORKER_IMAGE"; fi
     ;;
   image)
@@ -251,3 +253,53 @@ def test_worker_readiness_requires_running_container_and_taskiq_startup_log(
         f"RUN at-scheduler {OLD_DIGEST}",
         f"RUN at-worker {OLD_DIGEST}",
     ]
+
+
+def test_first_deploy_without_worker_container_bootstraps_rollback_from_api(
+    tmp_path: Path,
+) -> None:
+    """The at-worker unit is new: hosts deployed before it have no container.
+
+    The first promotion must still run and must not stop at the rollback
+    preflight (exit 78) just because at-worker does not exist yet.
+    """
+    proc, run_dir = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        worker_image="ABSENT",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "bootstrapping its rollback reference from at-api" in proc.stderr
+    assert _run_lines(tmp_path) == [
+        f"RUN at-api {NEW_DIGEST}",
+        f"RUN at-scheduler {NEW_DIGEST}",
+        f"RUN at-worker {NEW_DIGEST}",
+    ]
+    assert (run_dir / "deployed-digest").read_text() == f"{NEW_DIGEST}\n"
+
+
+def test_first_deploy_without_worker_container_rolls_back_worker_to_api_digest(
+    tmp_path: Path,
+) -> None:
+    proc, run_dir = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        worker_image="ABSENT",
+        health_fails=1,
+    )
+
+    assert proc.returncode == 1
+    # The worker had no prior container, so its rollback image is the API's
+    # pinned digest rather than the mutable :main tag or a refusal.
+    assert _run_lines(tmp_path) == [
+        f"RUN at-api {NEW_DIGEST}",
+        f"RUN at-scheduler {NEW_DIGEST}",
+        f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-api {OLD_DIGEST}",
+        f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
+    ]
+    assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
