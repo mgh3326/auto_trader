@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-source "${AUTO_TRADER_BASE:-$HOME/services/auto_trader}/scripts/common.sh"
-export WS_MONITOR_HEARTBEAT_PATH="$AUTO_TRADER_BASE/state/heartbeat/kis.json"
-export WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS="${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}"
-export WS_MONITOR_RECONNECT_DELAY_SECONDS="${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}"
-export WS_MONITOR_KIS_APPKEY_IN_USE_BACKOFF_SECONDS="${WS_MONITOR_KIS_APPKEY_IN_USE_BACKOFF_SECONDS:-1800}"
-export WS_MONITOR_EXPECT_MODE="kis"
-exec uv run python websocket_monitor.py --mode kis

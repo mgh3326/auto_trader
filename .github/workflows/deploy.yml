@@ -95,9 +95,9 @@ jobs:
           Raspberry Pi Docker production deploy path that used the old Pi SSH
           deployment secret and `scripts/deploy.sh`.
 
-          Production deployment is handled by:
-          - `.github/workflows/deploy-macos-native.yml`
-          - `scripts/deploy-native.sh`
+          Production deployment is operator-run on NCP with:
+          - `scripts/deploy-ncp-pull.sh`
+          - `docs/runbooks/ncp-pull-deploy.md`
           EOF
 
       - name: Build Summary

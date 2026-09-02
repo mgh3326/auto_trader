@@ -427,12 +427,10 @@ Logging is formatted in real UTC before adding the `Z` suffix. Webhook delivery
 success/failure is appended separately, so an outage cannot erase its own
 alert history.
 
-No scheduler or service registration is part of this change. The example
-`KeepAlive` plists in `ops/native/plists/examples/` are documentation-only,
-unrendered templates; the repository does not load or deploy them. This
-runbook intentionally provides no `launchctl`, TaskIQ, cron, or Prefect
-registration step. Rendering or installation requires a separate, explicit
-operator-approved change.
+No scheduler or service registration is part of this change. The repository
+ships no launchd plist or native deployment bundle. This runbook intentionally
+provides no `launchctl`, TaskIQ, cron, or Prefect registration step. Any
+service installation requires a separate, explicit operator-approved change.
 
 ## Manual pre-arm verification
 

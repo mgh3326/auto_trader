@@ -2409,71 +2409,6 @@ async def test_full_retrospective_hydrates_canonical_child_status(
     assert len(await repo.read_actions(5004)) == 1
 
 
-# ---------------------------------------------------------------------------
-# Section 6: Deploy script post-switch cutover step
-# ---------------------------------------------------------------------------
-
-
-def test_deploy_native_script_has_cutover_after_bluegreen_committed():
-    """deploy-native.sh calls cutover only after BLUEGREEN_COMMITTED=1."""
-    script_path = (
-        Path(__file__).resolve().parent.parent / "scripts" / "deploy-native.sh"
-    )
-    content = script_path.read_text()
-
-    # BLUEGREEN_COMMITTED=1 must appear before the cutover call
-    bg_idx = content.find("BLUEGREEN_COMMITTED=1")
-    assert bg_idx != -1, "BLUEGREEN_COMMITTED=1 not found in deploy-native.sh"
-
-    cutover_idx = content.rfind("run_retrospective_action_cutover")
-    assert cutover_idx != -1, (
-        "run_retrospective_action_cutover not found in deploy-native.sh"
-    )
-
-    assert bg_idx < cutover_idx, (
-        "BLUEGREEN_COMMITTED=1 must appear before retrospective_action_cutover"
-    )
-
-
-def test_deploy_native_script_cutover_uses_if_shadow():
-    """deploy-native.sh uses --if-shadow for idempotent cutover."""
-    script_path = (
-        Path(__file__).resolve().parent.parent / "scripts" / "deploy-native.sh"
-    )
-    content = script_path.read_text()
-
-    assert "--if-shadow" in content, (
-        "deploy-native.sh must use --if-shadow for idempotent cutover"
-    )
-
-
-def test_deploy_native_script_cutover_uses_shared_env_file():
-    """The standalone cutover command loads the same production env as migrations."""
-    script_path = (
-        Path(__file__).resolve().parent.parent / "scripts" / "deploy-native.sh"
-    )
-    content = script_path.read_text()
-
-    assert (
-        'ENV_FILE="$SHARED_ENV" uv run python '
-        "scripts/retrospective_action_cutover.py --if-shadow"
-    ) in content
-
-
-def test_deploy_native_rollback_warns_after_cutover_attempt():
-    script_path = (
-        Path(__file__).resolve().parent.parent / "scripts" / "deploy-native.sh"
-    )
-    content = script_path.read_text()
-
-    assert "RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0" in content
-    assert "RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=1" in content
-    assert "database may already be canonical" in content.lower()
-    assert "do not schema-downgrade" in content.lower()
-    assert "RETROSPECTIVE_ACTION_SAFE_PRECOMMIT_EXIT=10" in content
-    assert "RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0" in content
-
-
 @pytest.mark.asyncio
 async def test_cutover_cli_health_exception_is_fatal(monkeypatch):
     """A committed cutover is not reported successful when health cannot run."""
@@ -2514,30 +2449,6 @@ async def test_cutover_cli_safe_precommit_failure_has_distinct_exit(monkeypatch)
     monkeypatch.setattr(cli, "_run", _fail)
 
     assert await cli._async_main(if_shadow=True) == cli.EXIT_SAFE_PRECOMMIT
-
-
-def test_deploy_native_script_cutover_conditional_on_committed():
-    """Cutover is conditional on BLUEGREEN_COMMITTED=1."""
-    script_path = (
-        Path(__file__).resolve().parent.parent / "scripts" / "deploy-native.sh"
-    )
-    content = script_path.read_text()
-
-    # The cutover should be guarded by a conditional check on BLUEGREEN_COMMITTED
-    # Look for a pattern like: if (( BLUEGREEN_COMMITTED == 1 )); then ... cutover
-    assert "BLUEGREEN_COMMITTED" in content
-    assert "retrospective_action_cutover" in content
-    # Verify there's a conditional structure around the cutover
-    cutover_section = content[content.find("retrospective_action_cutover") - 200 :]
-    assert (
-        "BLUEGREEN_COMMITTED" in cutover_section
-        or "if "
-        in content[
-            content.find("retrospective_action_cutover") - 500 : content.find(
-                "retrospective_action_cutover"
-            )
-        ]
-    )
 
 
 # ---------------------------------------------------------------------------
