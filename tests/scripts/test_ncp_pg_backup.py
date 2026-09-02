@@ -164,8 +164,8 @@ def test_docker_fallback_bind_mounts_the_backup_directory(tmp_path: Path) -> Non
     ``--file`` target lives in the host backup directory, so that directory
     must be bind-mounted at the same path (first NCP run failed otherwise)."""
     stub_bin = _stub_bin(tmp_path)
-    # A second PATH directory with everything except pg_dump/pg_dumpall so the
-    # docker fallback is the only client available.
+    # A second PATH directory with docker/rsync/ssh stubs; PG_BACKUP_CLIENT=docker
+    # pins the containerised client even where a host pg_dump exists (CI).
     docker_bin = tmp_path / "bin-docker"
     docker_bin.mkdir()
     for name in ("rsync", "ssh"):
@@ -193,7 +193,8 @@ if [[ -n "$output" ]]; then printf 'dump\\n' >"$output"; else printf -- '-- glob
         tmp_path,
         DOCKER_LOG=str(docker_log),
         PG_BACKUP_IMAGE="postgres:17",
-        PATH=f"{docker_bin}:/usr/bin:/bin",
+        PATH=f"{docker_bin}:{os.environ['PATH']}",
+        PG_BACKUP_CLIENT="docker",
     )
 
     assert proc.returncode == 0, proc.stderr
