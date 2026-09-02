@@ -21,7 +21,11 @@ from app.core.config import settings
 from app.core.exceptions import describe_exception
 from app.core.timezone import KST, now_kst
 from app.mcp_server.caller_identity import get_caller_source
-from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
+from app.mcp_server.tick_size import (
+    adjust_tick_size_kr,
+    get_tick_size_kr,
+    is_krx_etp_security_type,
+)
 from app.mcp_server.tooling import order_approval
 from app.mcp_server.tooling import order_validation as ov
 from app.mcp_server.tooling.order_journal import (
@@ -78,6 +82,7 @@ from app.services.kis_mock_attribution import (
     resolve_attribution,
 )
 from app.services.kis_mock_runner.singleton import run_kis_mock_send
+from app.services.kr_symbol_universe_service import get_kr_security_type
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -276,25 +281,39 @@ async def _execute_kr_order(
 
     original_price = order_price if order_price else None
     if order_type == "limit" and order_price > 0:
-        tick_size = get_tick_size_kr(float(order_price))
-        order_price = adjust_tick_size_kr(float(order_price), side)
+        security_type: str | None = None
+        try:
+            security_type = await get_kr_security_type(symbol)
+        except Exception as exc:  # noqa: BLE001 - retain established stock fallback
+            logger.warning(
+                "KR tick classification unavailable; using stock fallback: symbol=%s error=%s",
+                symbol,
+                type(exc).__name__,
+            )
+        tick_size = get_tick_size_kr(float(order_price), security_type)
+        order_price = adjust_tick_size_kr(float(order_price), side, security_type)
+        tick_rule = "etp" if is_krx_etp_security_type(security_type) else "stock"
+        if security_type is None:
+            tick_rule = "stock_fallback_unknown"
 
         if original_price is not None and order_price != original_price:
             logger.info(
-                "KR limit order tick adjusted: symbol=%s side=%s original_price=%s tick_size=%s adjusted_price=%s",
+                "KR limit order tick adjusted: symbol=%s side=%s original_price=%s tick_size=%s tick_rule=%s adjusted_price=%s",
                 symbol,
                 side,
                 original_price,
                 tick_size,
+                tick_rule,
                 order_price,
             )
         else:
             logger.debug(
-                "KR limit order tick valid: symbol=%s side=%s price=%s tick_size=%s tick_adjusted=false",
+                "KR limit order tick valid: symbol=%s side=%s price=%s tick_size=%s tick_rule=%s tick_adjusted=false",
                 symbol,
                 side,
                 original_price,
                 tick_size,
+                tick_rule,
             )
 
     if edge_url is not None:

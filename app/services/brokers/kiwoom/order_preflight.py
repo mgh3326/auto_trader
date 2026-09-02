@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.mcp_server.tick_size import get_tick_size_kr
+from app.mcp_server.tick_size import get_tick_size_kr, is_krx_etp_security_type
 from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
@@ -11,6 +11,7 @@ from app.services.brokers.kiwoom.normalization import (
     normalize_positions,
     validate_mock_response_provenance,
 )
+from app.services.kr_symbol_universe_service import get_kr_security_type
 
 PREFLIGHT_OK = "preflight_ok"
 PREFLIGHT_SELLABLE_EXCEEDED = "preflight_sellable_exceeded"
@@ -119,15 +120,29 @@ async def run_order_preflight(
         )
     checks.append(PreflightCheck("quote_freshness", True))
 
-    tick = get_tick_size_kr(float(price))
+    security_type: str | None = None
+    try:
+        security_type = await get_kr_security_type(symbol)
+    except Exception:  # Existing stock tick table is the conservative fallback.
+        pass
+    tick = get_tick_size_kr(float(price), security_type)
+    tick_rule = "etp" if is_krx_etp_security_type(security_type) else "stock"
+    if security_type is None:
+        tick_rule = "stock_fallback_unknown"
     if tick > 0 and price % tick != 0:
         return _fail(
             PREFLIGHT_TICK_INVALID,
-            f"Price {price} is not a valid KRX tick multiple (tick={tick})",
+            f"Price {price} is not a valid KRX tick multiple (tick={tick}, rule={tick_rule})",
             checks
-            + [PreflightCheck("tick_valid", False, f"price%tick={price % tick}")],
+            + [
+                PreflightCheck(
+                    "tick_valid",
+                    False,
+                    f"price%tick={price % tick}, tick={tick}, rule={tick_rule}",
+                )
+            ],
         )
-    checks.append(PreflightCheck("tick_valid", True, f"tick={tick}"))
+    checks.append(PreflightCheck("tick_valid", True, f"tick={tick}, rule={tick_rule}"))
 
     distance_pct = abs(price - quote_price) / quote_price * 100
     estimated["price_distance_pct"] = round(distance_pct, 2)

@@ -2,7 +2,11 @@
 
 import pytest
 
-from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
+from app.mcp_server.tick_size import (
+    adjust_tick_size_kr,
+    get_tick_size_kr,
+    is_krx_etp_security_type,
+)
 
 
 class TestGetTickSizeKR:
@@ -145,6 +149,36 @@ class TestKRXTickSizeAdjustment:
         assert adjust_tick_size_kr(10000000, "buy") == 10000000
         assert adjust_tick_size_kr(10500000, "sell") == 10500000
         assert adjust_tick_size_kr(50000000, "buy") == 50000000
+
+
+class TestKRXEtpTickSize:
+    """KRX ETF/ETN tick table must not inherit the stock price bands."""
+
+    @pytest.mark.parametrize("security_type", ["ETF", "ETN", " etf "])
+    def test_etp_above_2000_uses_five_won_tick(self, security_type: str):
+        assert is_krx_etp_security_type(security_type) is True
+        assert get_tick_size_kr(1_073_480, security_type) == 5
+        assert get_tick_size_kr(57_980, security_type) == 5
+
+    def test_parking_etfs_preserve_ask_and_keep_floor_ceil_directions(self):
+        # 459580 KODEX CD금리액티브(합성), observed ask 1,073,480.
+        # This assertion is deliberately sensitive to removal of the ETP branch.
+        assert adjust_tick_size_kr(1_073_480, "buy", "ETF") == 1_073_480
+        assert adjust_tick_size_kr(1_073_481, "buy", "ETF") == 1_073_480
+        assert adjust_tick_size_kr(1_073_481, "sell", "ETF") == 1_073_485
+
+        # 357870 TIGER CD금리투자KIS(합성), observed ask 57,980.
+        assert adjust_tick_size_kr(57_980, "buy", "ETF") == 57_980
+        assert adjust_tick_size_kr(57_981, "buy", "ETF") == 57_980
+        assert adjust_tick_size_kr(57_981, "sell", "ETF") == 57_985
+
+    def test_unknown_or_non_etp_classification_preserves_stock_table(self):
+        # Unknown classification is intentionally not guessed from a symbol or
+        # proposal text. It retains the legacy stock table conservatively.
+        for security_type in (None, "", "STOCK", "REIT", "unrecognised"):
+            assert is_krx_etp_security_type(security_type) is False
+            assert get_tick_size_kr(1_073_480, security_type) == 1000
+            assert adjust_tick_size_kr(1_073_480, "buy", security_type) == 1_073_000
 
 
 class TestPR139Regression:
