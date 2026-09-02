@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -25,6 +26,7 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
 from app.mcp_server.tooling.shared import to_float as _to_float
+from app.monitoring.sentry import record_order_performance
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.kis.live_order_expiry import (
     kr_day_order_expiry,
@@ -1171,14 +1173,31 @@ async def cancel_order_impl(
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     order_id, symbol, market_type = _validate_cancel_inputs(order_id, symbol, market)
+    started_at = time.perf_counter()
+    path = "direct"
+    if is_mock:
+        from app.services.brokers.edge_client import get_kis_mock_edge_url
+
+        path = "edge" if get_kis_mock_edge_url() else "direct"
+    scope = (
+        "kis_mock_us"
+        if is_mock and market_type == "equity_us"
+        else (
+            "kis_mock"
+            if is_mock
+            else "kis_live"
+            if market_type != "crypto"
+            else "upbit_live"
+        )
+    )
 
     try:
         if market_type == "crypto":
-            return await _cancel_upbit(
+            result = await _cancel_upbit(
                 order_id,
                 pre_send_hook=pre_send_hook,
             )
-        if market_type == "equity_kr":
+        elif market_type == "equity_kr":
             result = await _cancel_kis_domestic(
                 order_id,
                 symbol,
@@ -1193,19 +1212,29 @@ async def cancel_order_impl(
                 )
 
                 await _mark_ledger_cancelled(order_id)
-            return result
-        if market_type == "equity_us":
-            return await _cancel_kis_overseas(
+        elif market_type == "equity_us":
+            result = await _cancel_kis_overseas(
                 order_id,
                 symbol,
                 is_mock=is_mock,
                 pre_send_hook=pre_send_hook,
             )
-        return {
-            "success": False,
-            "order_id": order_id,
-            "error": "Unsupported market type",
-        }
+        else:
+            result = {
+                "success": False,
+                "order_id": order_id,
+                "error": "Unsupported market type",
+            }
+        try:
+            record_order_performance(
+                path=path,
+                scope=scope,
+                broker_ms=(time.perf_counter() - started_at) * 1000,
+                total_ms=(time.perf_counter() - started_at) * 1000,
+            )
+        except Exception:  # noqa: BLE001 - observability must not alter execution
+            logger.debug("cancel performance telemetry unavailable", exc_info=True)
+        return result
     except Exception as exc:
         return {
             "success": False,

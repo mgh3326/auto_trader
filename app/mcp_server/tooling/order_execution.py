@@ -7,6 +7,7 @@ Business logic lives in order_validation and order_journal.
 from __future__ import annotations
 
 import datetime
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -59,6 +60,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
+from app.monitoring.sentry import record_order_performance
 from app.services.brokers.edge_client import (
     BrokerEdgeNotCreated,
     BrokerEdgeOutcomeUnknown,
@@ -900,6 +902,18 @@ async def _execute_and_record(
     send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
+    total_started_at = time.perf_counter()
+    submit_path = "edge" if is_mock and get_kis_mock_edge_url() else "direct"
+    account_scope = (
+        "kis_mock_us"
+        if is_mock and market_type == "equity_us"
+        else "kis_mock"
+        if is_mock
+        else "kis_live"
+        if market_type in {"equity_kr", "equity_us"}
+        else "upbit_live"
+    )
+    broker_ms: float | None = None
     # Pre-submit attribution gate (kis_mock). Deliberately the FIRST thing in
     # this function: an unattributed mock order must not reach the broker at
     # all, not even the baseline holdings read below. Resolution is pure, and
@@ -1119,19 +1133,24 @@ async def _execute_and_record(
         # fired immediately before each real mutation HTTP attempt (including
         # eligible token/rate-limit re-sends). Callers without a hook retain
         # the existing execution behavior.
-        return await _execute_order(
-            symbol=normalized_symbol,
-            side=side,
-            order_type=order_type,
-            quantity=order_quantity,
-            price=price,
-            market_type=market_type,
-            is_mock=is_mock,
-            identifier=idempotency_key if market_type == "crypto" else None,
-            pre_send_hook=pre_send_hook,
-            send_outcome=send_outcome,
-            idempotency_key=idempotency_key,
-        )
+        nonlocal broker_ms
+        broker_started_at = time.perf_counter()
+        try:
+            return await _execute_order(
+                symbol=normalized_symbol,
+                side=side,
+                order_type=order_type,
+                quantity=order_quantity,
+                price=price,
+                market_type=market_type,
+                is_mock=is_mock,
+                identifier=idempotency_key if market_type == "crypto" else None,
+                pre_send_hook=pre_send_hook,
+                send_outcome=send_outcome,
+                idempotency_key=idempotency_key,
+            )
+        finally:
+            broker_ms = (time.perf_counter() - broker_started_at) * 1000
 
     try:
         if is_mock and market_type == "equity_kr":
@@ -1262,6 +1281,27 @@ async def _execute_and_record(
         caller_source=get_caller_source() if defensive_trim_ctx else None,
     )
 
+    total_ms = (time.perf_counter() - total_started_at) * 1000
+    try:
+        record_order_performance(
+            path=submit_path,
+            scope=account_scope,
+            broker_ms=broker_ms,
+            total_ms=total_ms,
+            shadow=mirror_cohort == "mock_counterfactual",
+        )
+    except Exception:  # noqa: BLE001 - observability must not alter execution
+        logger.debug("order performance telemetry unavailable", exc_info=True)
+    performance_metadata = {
+        key: value
+        for key, value in {
+            "submit_path": submit_path,
+            "broker_ms": round(broker_ms, 3) if broker_ms is not None else None,
+            "total_ms": round(total_ms, 3),
+        }.items()
+        if value is not None
+    }
+
     # KIS mock: write to dedicated ledger, skip live journal/fill paths entirely.
     if is_mock:
         from app.mcp_server.tooling.kis_mock_ledger import _record_kis_mock_order
@@ -1284,6 +1324,7 @@ async def _execute_and_record(
             report_item_uuid=report_item_uuid,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
+            extra_metadata=performance_metadata or None,
         )
         if send_outcome is not None:
             if result.get("success"):
