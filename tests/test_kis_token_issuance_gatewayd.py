@@ -122,6 +122,8 @@ async def test_gatewayd_miss_ensures_once_reloads_redis_and_never_calls_kis_oaut
     async def ensure_gatewayd(actual_provider: str, *, settings_obj: object) -> None:
         assert actual_provider == provider
         assert settings_obj is client._settings
+        if client._token_manager._lock_key in redis.values:
+            raise TokenIssuanceUnavailable("gatewayd issuer lock is held by Python")
         redis.values[client._token_manager._token_key] = json.dumps(
             {
                 "access_token": f"{provider}-redis-token",
