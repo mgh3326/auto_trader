@@ -74,39 +74,13 @@ scripts/mock_session_mcp.py run \
 생성 JSON, connected `tools/list`를 모두 확인해야 한다. profile-isolated adapter가 없는
 Codex/Kiro mock lane은 full/default로 fallback하지 않고 spawn 전에 실패한다.
 
-## 🔴 배포 체인 판정 — `MCP_PROFILE_PORTS`에 넣지 않는다
+## 🔴 배포 체인 판정
 
-**판정: per-session 기동(위 명령 + 클라이언트 url 등록). 배포 상주 서비스로 만들지
-않는다.** 근거는 추론이 아니라 코드다.
+Mac native 배포에는 MCP profile 포트·plist·watchdog가 없다. NCP MCP fleet가
+`kiwoom` fixed profile의 상주 배포와 health supervision을 소유한다. 운영 변경은
+[`ncp-mcp.md`](ncp-mcp.md)를 따르며, Mac launchd 표면을 다시 추가하지 않는다.
 
-1. **`MCP_PROFILE_PORTS`는 서비스를 만들지 않는다.** `scripts/deploy-native.sh:75-79`의
-   `label:port` 배열은 `verify_mcp_profile_release_paths()`
-   (`scripts/deploy-native.sh:211-249`, `:466`에서 호출)에서만 소비된다. 그 함수는
-   `lsof`로 해당 포트의 LISTEN 프로세스를 찾아 cwd가 `$NEW_RELEASE`인지 검증한다
-   (ROB-831, 2026-07-11 wedged 프로세스 사고). 엔트리만 추가하면 **아무것도 뜨지 않고
-   deploy hard gate만 하나 늘어난다** — 리스너가 없으면 rc=1 → 롤백.
-2. **실제로 상주시키려면 3곳을 동시에 건드려야 한다.** launchd plist
-   (`ops/native/plists/com.robinco.auto-trader.mcp-*.plist`: `KeepAlive=true`,
-   `RunAtLoad=false`, 고정 포트, 전용 토큰 env) + `SINGLE_ACTIVE_LABELS`
-   (`scripts/deploy-native.sh:51-64`) + `$BASE/shared/.env.prod.native`의 토큰
-   (`ops/native/scripts/run-mcp-profile.sh:14-19`, 빈 토큰이면 exit 78). 현재
-   `kiwoom` 계열은 plist·포트·라벨이 **하나도 없다** — 원래부터 세션 기동 profile이다.
-3. **상주화는 권한을 넓히는 방향이다.** `MCP_HOST` 기본값이 `0.0.0.0`
-   (`app/mcp_server/main.py`)이고 profile 서비스는 HAProxy(`127.0.0.1:8765`
-   단일 바인드) 뒤에 없다. 즉 mock 자격증명을 물고 24/7 LAN에 노출된 리스너가 하나
-   늘어난다. ROB-1159는 권한을 **좁히는** 이슈이므로 자기모순이다.
-4. **관측 공백.** `ops/native/scripts/healthcheck-native.sh`는 `:8000`과 `:8765`만
-   찔러본다. 8768-8770조차 healthcheck 대상이 아니고 `mcp-watchdog`은 blue/green
-   color 전용이다. 상주 서비스를 늘리면 감시되지 않는 표면이 늘어난다.
-5. **수요 형태가 세션형이다.** KR-B1 P0는 정해진 세션(2026-07-30 08:50)이고 상시
-   트래픽이 없다. per-session 기동은 배포 변경 0, 노출 창 = 세션 길이다.
-6. AGENTS.md #6(스케줄러/상주 등록은 명시 승인 없이 금지)과 이 이슈의 정지점(PR까지,
-   머지·배포 금지)에도 배포 체인 배선은 맞지 않는다.
-
-**나중에 상주가 필요해지면** 필요한 것은 이 목록이다(별도 승인 필요): plist 1개 +
-`SINGLE_ACTIVE_LABELS` 엔트리 + `MCP_PROFILE_PORTS` 엔트리 + `.env.prod.native`에
-전용 토큰 + `healthcheck-native.sh` 포트 추가. 이 중 하나라도 빠지면 deploy가 깨지거나
-감시되지 않는 리스너가 남는다.
+per-session `stdio` 기동은 위의 profile-isolated adapter 계약을 계속 따른다.
 
 ## 회귀 테스트
 

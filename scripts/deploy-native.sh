@@ -39,7 +39,6 @@ SOURCE_REPO="${AUTO_TRADER_SOURCE_REPO:-$HOME/work/auto_trader}"
 SHARED_ENV="${AUTO_TRADER_ENV_FILE:-$BASE/shared/.env.prod.native}"
 LOG_DIR="$BASE/logs"
 PLIST_DIR="${AUTO_TRADER_PLIST_DIR:-$BASE/plists}"
-SERVER_HEALTHCHECK="$BASE/scripts/healthcheck-native.sh"
 
 # The blue/green helper libraries are sourced later and expect these values as
 # environment variables rather than deploy-native.sh-local shell variables.
@@ -48,59 +47,22 @@ export AUTO_TRADER_SOURCE_REPO="$SOURCE_REPO"
 export AUTO_TRADER_ENV_FILE="$SHARED_ENV"
 export AUTO_TRADER_PLIST_DIR="$PLIST_DIR"
 
-# The TaskIQ scheduler is intentionally absent: it moved to NCP (at-scheduler,
-# B-2a) and a second instance on the Mac double-fires every cron task. Two
-# native deploys on 2026-09-02 (08:17, 18:47) resurrected it from this list +
-# ops/native/plists; test_native_plists.py now pins its absence.
-SINGLE_ACTIVE_LABELS=(
-  # 2026-09-02: NCP at-worker (#2012) replaced the Mac worker; restarting it
-  # here creates competing TaskIQ consumers. WebSocket monitors likewise run
-  # as NCP at-upbit-ws/at-kis-ws units while this Mac may be offline.
-  # ROB-760: fixed-profile readonly MCP services outside the blue/green pair.
-  "com.robinco.auto-trader.mcp-analysis-readonly"
-  "com.robinco.auto-trader.mcp-account-read"
-  # ROB-762: TradingCodex execution MCP service outside the blue/green pair.
-  "com.robinco.auto-trader.mcp-tradingcodex-execution"
-  # ROB-1258: resident hermes-paper-kis MCP service outside the blue/green pair.
-  "com.robinco.auto-trader.mcp-paper_001"
-  # KR-B1 파일럿(2026-08-31): resident kiwoom MCP service outside the blue/green pair.
-  "com.robinco.auto-trader.mcp-kiwoom"
-  # ROB-469 PR3: single non-color-specific watchdog that restarts a wedged MCP color.
-  "com.robinco.auto-trader.mcp-watchdog"
-)
-
-# ROB-831: fixed-profile MCP services (label:port) whose *process release path*
-# must be re-verified after restart_single_active_services() kickstarts them.
-# restart_single_active_services() already bounces these via
-# `launchctl kickstart -k`, but a wedged/slow-to-reap process can survive the
-# kickstart and keep serving the previous release's code while /health still
-# answers 200 — this is exactly what was observed on 2026-07-11: PR-3a's
-# order_proposal_void tool was missing from :8770 (mcp-tradingcodex-execution)
-# after an otherwise "successful" deploy until an operator ran
-# `launchctl kickstart -k` by hand. verify_mcp_profile_release_paths() below
-# closes that gap by asserting the listening process's cwd is $NEW_RELEASE.
-MCP_PROFILE_PORTS=(
-  "com.robinco.auto-trader.mcp-analysis-readonly:8768"
-  "com.robinco.auto-trader.mcp-account-read:8769"
-  "com.robinco.auto-trader.mcp-tradingcodex-execution:8770"
-  "com.robinco.auto-trader.mcp-paper_001:8771"
-  # KR-B1 파일럿(2026-08-31): resident kiwoom MCP profile release-path verification.
-  "com.robinco.auto-trader.mcp-kiwoom:8772"
-)
+# NCP owns the worker, scheduler, and WebSocket monitors.
+# The Mac native deploy has no single-active launchd jobs to restart.
+SINGLE_ACTIVE_LABELS=()
 
 NEW_RELEASE="$RELEASES/$SHA"
 PREVIOUS_RELEASE="$(readlink "$CURRENT" 2>/dev/null || true)"
 SWITCHED=0
-# Snapshot of the api/mcp blue/green state captured BEFORE deploy_bluegreen_flow.
+# Snapshot of the API blue/green state captured BEFORE deploy_bluegreen_flow.
 # Set to 1 once deploy_bluegreen_flow has committed (state files + HAProxy live
 # cfg now point at the new color). The rollback handler uses this to decide
-# whether it also needs to roll back the api/mcp half (color state, color
+# whether it also needs to roll back the API half (color state, color
 # symlinks, color launchd jobs, HAProxy cfg).
 BLUEGREEN_COMMITTED=0
 RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0
 RETROSPECTIVE_ACTION_SAFE_PRECOMMIT_EXIT=10
 API_PRE_COLOR=""
-MCP_PRE_COLOR=""
 BLUE_PRE_TARGET=""
 GREEN_PRE_TARGET=""
 
@@ -123,24 +85,6 @@ sync_release_ops_to_base() {
   mkdir -p "$BASE/scripts/haproxy"
   rsync -a "$NEW_RELEASE/ops/native/haproxy/" "$BASE/scripts/haproxy/"
   chmod +x "$BASE/scripts/"*.sh 2>/dev/null || true
-}
-
-verify_mcp_profile_registry() {
-  local -a args
-  local label entry
-
-  args=(
-    --source-plist-dir "$NEW_RELEASE/ops/native/plists"
-    --installed-plist-dir "$HOME/Library/LaunchAgents"
-  )
-  for label in "${SINGLE_ACTIVE_LABELS[@]}"; do
-    args+=(--single-active-label "$label")
-  done
-  for entry in "${MCP_PROFILE_PORTS[@]}"; do
-    args+=(--profile-port "$entry")
-  done
-
-  python3 "$NEW_RELEASE/scripts/check_native_mcp_profile_registry.py" "${args[@]}"
 }
 
 build_frontend_workspace() {
@@ -218,109 +162,13 @@ restart_single_active_services() {
   done
 }
 
-# verify_mcp_profile_release_paths
-#
-# ROB-831: after restart_single_active_services() kickstarts the fixed-profile
-# MCP services (MCP_PROFILE_PORTS), confirm the process actually LISTENING on
-# each port has a working directory under $NEW_RELEASE. Each service's plist
-# sets WorkingDirectory to the `current` symlink, which is repointed to
-# $NEW_RELEASE before restart_single_active_services() runs; a kernel chdir()
-# through that symlink resolves to the release's real (canonical) path, so a
-# freshly-restarted process's cwd must equal $NEW_RELEASE's canonical path. A
-# process that failed to actually restart (wedged, slow to reap, or a stray
-# survivor still bound to the port) keeps its OLD cwd and therefore old code —
-# `/health` can still answer 200 while serving stale tools (the 2026-07-11
-# incident: order_proposal_void missing from :8770/mcp-tradingcodex-execution
-# after a "successful" deploy). Fail closed instead of silently skipping.
-#
-# Tunables (mainly for tests / slow cold starts):
-#   AUTO_TRADER_MCP_RELEASE_VERIFY_ATTEMPTS          (default 10)
-#   AUTO_TRADER_MCP_RELEASE_VERIFY_INTERVAL_SECONDS  (default 2)
-verify_mcp_profile_release_paths() {
-  local expected entry label port attempts interval attempt pid cwd rc
-  expected="$(cd "$NEW_RELEASE" && pwd -P)"
-  attempts="${AUTO_TRADER_MCP_RELEASE_VERIFY_ATTEMPTS:-10}"
-  interval="${AUTO_TRADER_MCP_RELEASE_VERIFY_INTERVAL_SECONDS:-2}"
-  [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts >= 1 )) || attempts=10
-  rc=0
-
-  for entry in "${MCP_PROFILE_PORTS[@]}"; do
-    label="${entry%%:*}"
-    port="${entry##*:}"
-    pid=""
-    cwd=""
-
-    for ((attempt = 1; attempt <= attempts; attempt++)); do
-      pid="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
-      if [[ -n "$pid" ]]; then
-        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n/{print substr($0, 2); exit}' || true)"
-        if [[ "$cwd" == "$expected" ]]; then
-          log "verify_mcp_profile_release_paths: $label (pid $pid, :$port) OK -> $cwd"
-          break
-        fi
-      fi
-      if (( attempt < attempts )); then
-        sleep "$interval"
-      fi
-    done
-
-    if [[ -z "$pid" ]]; then
-      echo "verify_mcp_profile_release_paths: no listening process found on :$port ($label) after $attempts attempts" >&2
-      rc=1
-      continue
-    fi
-    if [[ "$cwd" != "$expected" ]]; then
-      echo "verify_mcp_profile_release_paths: $label (pid $pid, :$port) is running from '${cwd:-<unknown>}', expected '$expected' -- stale release, this MCP profile did not actually reload" >&2
-      rc=1
-    fi
-  done
-
-  return "$rc"
-}
-
 run_healthcheck_once() {
-  if [[ -x "$SERVER_HEALTHCHECK" ]]; then
-    # ROB-698: WS connectivity (KIS/Upbit real-time) must NOT be a fatal deploy
-    # gate. The blue-green cutover checks already run with
-    # AUTO_TRADER_HEALTHCHECK_SKIP_WS=1 (native_deploy_lib.sh); make this final
-    # post-cutover retry check consistent so a broker's scheduled maintenance
-    # (e.g. KIS) cannot fail+rollback an otherwise-healthy deploy. api/mcp
-    # /healthz stay hard gates; WS is monitored separately (watchdog/Sentry).
-    # An operator can still force WS-gating with AUTO_TRADER_HEALTHCHECK_SKIP_WS=0.
-    AUTO_TRADER_HEALTHCHECK_SKIP_WS="${AUTO_TRADER_HEALTHCHECK_SKIP_WS:-1}" "$SERVER_HEALTHCHECK"
-    return $?
-  fi
-
-  local rc=0 code
+  local rc=0
 
   curl -fsS http://127.0.0.1:8000/healthz >/dev/null || {
     echo "API healthz failed" >&2
     rc=1
   }
-
-  # ROB-469: probe unauthenticated /health (200) instead of auth-gated /mcp.
-  code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/health || true)"
-  if [[ "$code" != "200" ]]; then
-    echo "MCP health failed: $code" >&2
-    rc=1
-  fi
-
-  if [[ -f "$CURRENT/scripts/websocket_healthcheck.py" ]]; then
-    # ROB-698: WS heartbeat is advisory (logged, non-fatal) here too — a broker
-    # WS outage (e.g. KIS scheduled maintenance) must not roll back an
-    # otherwise-healthy deploy (consistent with the primary path above and the
-    # blue-green cutover checks, which skip WS).
-    WS_MONITOR_HEARTBEAT_PATH="$BASE/state/heartbeat/kis.json" \
-      WS_MONITOR_EXPECT_MODE=kis \
-      uv run python scripts/websocket_healthcheck.py \
-      || echo "WS(kis) heartbeat not connected (advisory, non-fatal)" >&2
-    WS_MONITOR_HEARTBEAT_PATH="$BASE/state/heartbeat/upbit.json" \
-      WS_MONITOR_EXPECT_MODE=upbit \
-      uv run python scripts/websocket_healthcheck.py \
-      || echo "WS(upbit) heartbeat not connected (advisory, non-fatal)" >&2
-  else
-    echo "websocket_healthcheck.py not found; skipping websocket heartbeat checks" >&2
-  fi
 
   return $rc
 }
@@ -330,11 +178,7 @@ run_healthcheck() {
   local interval="${AUTO_TRADER_HEALTHCHECK_INTERVAL_SECONDS:-5}"
   local attempt
 
-  if [[ -x "$SERVER_HEALTHCHECK" ]]; then
-    log "Running server native healthcheck with retries: $SERVER_HEALTHCHECK"
-  else
-    log "Running built-in native healthcheck fallback with retries"
-  fi
+  log "Running API healthcheck with retries"
 
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     log "Healthcheck attempt $attempt/$attempts"
@@ -379,19 +223,19 @@ rollback() {
   fi
 
   # ROB-259 review: when deploy_bluegreen_flow committed but a later step
-  # (restart_single_active_services, run_healthcheck) failed, the api/mcp
+  # (restart_single_active_services, run_healthcheck) failed, the API
   # half is now on the new release while worker/scheduler/websocket are
-  # still on PREVIOUS_RELEASE. Roll back api/mcp first so the whole system
+  # still on PREVIOUS_RELEASE. Roll back API first so the whole system
   # ends up on the previous release together.
   if (( BLUEGREEN_COMMITTED == 1 )); then
     if declare -F rollback_bluegreen_post_deploy >/dev/null 2>&1; then
-      echo "Rolling back api/mcp blue/green to api=$API_PRE_COLOR mcp=$MCP_PRE_COLOR" >&2
+      echo "Rolling back API blue/green to api=$API_PRE_COLOR" >&2
       rollback_bluegreen_post_deploy \
-        "$API_PRE_COLOR" "$MCP_PRE_COLOR" \
+        "$API_PRE_COLOR" \
         "${BLUE_PRE_TARGET:--}" "${GREEN_PRE_TARGET:--}" || \
-        echo "warning: api/mcp blue/green rollback reported errors; verify manually" >&2
+        echo "warning: API blue/green rollback reported errors; verify manually" >&2
     else
-      echo "warning: rollback_bluegreen_post_deploy not loaded; api/mcp not rolled back" >&2
+      echo "warning: rollback_bluegreen_post_deploy not loaded; API not rolled back" >&2
     fi
   fi
 
@@ -447,9 +291,6 @@ fi
 git cat-file -e "$SHA^{commit}"
 git checkout --detach "$SHA"
 
-log "Preflight: verifying fixed-profile MCP registry completeness"
-verify_mcp_profile_registry
-
 git clean -fdx -e .venv
 
 log "Installing dependencies with uv"
@@ -473,18 +314,18 @@ log "Preflight: verifying HAProxy baseline from previous cutover"
 source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"
 require_haproxy_baseline
 
-log "Capturing pre-deploy api/mcp blue/green state for rollback"
-read -r API_PRE_COLOR MCP_PRE_COLOR BLUE_PRE_TARGET GREEN_PRE_TARGET <<<"$(capture_bluegreen_state)"
-log "pre-deploy: api=$API_PRE_COLOR mcp=$MCP_PRE_COLOR blue=$BLUE_PRE_TARGET green=$GREEN_PRE_TARGET"
+log "Capturing pre-deploy API blue/green state for rollback"
+read -r API_PRE_COLOR BLUE_PRE_TARGET GREEN_PRE_TARGET <<<"$(capture_bluegreen_state)"
+log "pre-deploy: api=$API_PRE_COLOR blue=$BLUE_PRE_TARGET green=$GREEN_PRE_TARGET"
 
 log "Syncing release ops into base"
 sync_release_ops_to_base
 
-log "Running blue/green deploy for api + mcp"
+log "Running blue/green deploy for API"
 deploy_bluegreen_flow "$NEW_RELEASE"
 # deploy_bluegreen_flow only returns success after state files, HAProxy cfg,
 # new-color bootstrap, and public smoke all succeeded. From here on, any
-# failure must also roll back the api/mcp half via rollback_bluegreen_post_deploy.
+# failure must also roll back the API half via rollback_bluegreen_post_deploy.
 BLUEGREEN_COMMITTED=1
 
 log "Switching current symlink (worker/scheduler/websockets)"
@@ -493,9 +334,6 @@ SWITCHED=1
 
 log "Restarting single-active services"
 restart_single_active_services
-
-log "Verifying fixed-profile MCP services loaded the new release"
-verify_mcp_profile_release_paths
 
 log "Running healthcheck"
 run_healthcheck

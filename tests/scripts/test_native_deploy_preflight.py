@@ -2,7 +2,7 @@
 
 Verifies require_haproxy_baseline catches each failure mode and that
 scripts/deploy-native.sh calls it BEFORE sync_release_ops_to_base (which
-contains the rsync --delete that would wipe legacy api/mcp plists).
+contains the rsync --delete that would wipe legacy API plists).
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ def _build_baseline(tmp_path: Path, *, include_color_symlink: bool = True) -> Pa
     base = tmp_path / "auto_trader"
     (base / "shared" / "haproxy").mkdir(parents=True)
     (base / "shared" / "api-active-color").write_text("blue\n")
-    (base / "shared" / "mcp-active-color").write_text("blue\n")
     (base / "shared" / "haproxy" / "haproxy.cfg").write_text("global\n")
     (base / "releases" / "sha-old").mkdir(parents=True)
     if include_color_symlink:
@@ -87,14 +86,6 @@ def test_preflight_fails_when_api_state_file_missing(tmp_path: Path) -> None:
     assert "api-active-color" in proc.stderr
 
 
-def test_preflight_fails_when_mcp_state_file_missing(tmp_path: Path) -> None:
-    base = _build_baseline(tmp_path)
-    (base / "shared" / "mcp-active-color").unlink()
-    proc = _run_preflight(base, tmp_path, haproxy_loaded=True)
-    assert proc.returncode == 78
-    assert "mcp-active-color" in proc.stderr
-
-
 def test_preflight_fails_when_haproxy_cfg_missing(tmp_path: Path) -> None:
     base = _build_baseline(tmp_path)
     (base / "shared" / "haproxy" / "haproxy.cfg").unlink()
@@ -127,7 +118,7 @@ def test_preflight_reports_all_failures(tmp_path: Path) -> None:
 def test_deploy_script_calls_preflight_before_sync_release_ops_to_base() -> None:
     """deploy-native.sh must invoke require_haproxy_baseline BEFORE calling
     sync_release_ops_to_base, which contains the rsync --delete that would
-    wipe the legacy api/mcp plists if cutover was skipped.
+    wipe the legacy API plists if cutover was skipped.
     """
     body = DEPLOY.read_text()
     lines = body.splitlines()
