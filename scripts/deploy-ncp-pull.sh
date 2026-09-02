@@ -4,8 +4,8 @@
 # Usage: scripts/deploy-ncp-pull.sh [tag]
 #        scripts/deploy-ncp-pull.sh --rollback
 #
-# The target image is pulled before either container is replaced.  A failed
-# API health check recreates both containers from pinned prior references.
+# The target image is pulled before any container is replaced. A failed
+# readiness check recreates every unit from pinned prior references.
 # This script intentionally performs no migrations.
 
 set -Eeuo pipefail
@@ -39,6 +39,7 @@ readonly IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 readonly RUN_DIRECTORY="${AT_RUN_DIRECTORY:-/root/at-run}"
 readonly API_CONTAINER="at-api"
 readonly SCHEDULER_CONTAINER="at-scheduler"
+readonly WORKER_CONTAINER="at-worker"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
 
@@ -128,6 +129,17 @@ run_scheduler() {
     /app/.venv/bin/taskiq scheduler app.core.scheduler:sched app.tasks
 }
 
+run_worker() {
+  local image="$1"
+  docker run -d \
+    --name "${WORKER_CONTAINER}" \
+    --restart unless-stopped \
+    --network host \
+    "${ENV_FILE_ARGS[@]}" \
+    "$image" \
+    /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1
+}
+
 wait_for_healthz() {
   local attempt
   local http_status
@@ -141,22 +153,44 @@ wait_for_healthz() {
   return 1
 }
 
+wait_for_worker_startup() {
+  local attempt
+  local running
+
+  for ((attempt = 1; attempt <= HEALTHZ_ATTEMPTS; attempt += 1)); do
+    running="$(docker inspect --format '{{.State.Running}}' "${WORKER_CONTAINER}" 2>/dev/null || true)"
+    if [[ "${running}" == "true" ]] && docker logs --tail 100 "${WORKER_CONTAINER}" 2>&1 | grep --fixed-strings --quiet 'Starting 1 worker processes.'; then
+      return 0
+    fi
+    printf 'waiting for TaskIQ worker startup (%s/%s)\n' "$attempt" "${HEALTHZ_ATTEMPTS}" >&2
+    sleep "${HEALTHZ_SLEEP_SECONDS}"
+  done
+  return 1
+}
+
 rollback() {
   local previous_api_image="$1"
   local previous_scheduler_image="$2"
+  local previous_worker_image="$3"
   local rollback_api_image
   local rollback_scheduler_image
+  local rollback_worker_image
   local rollback_status=0
 
   rollback_api_image="$(rollback_reference "${previous_api_image}" "API")" || return 1
   rollback_scheduler_image="$(rollback_reference "${previous_scheduler_image}" "scheduler")" || return 1
+  rollback_worker_image="$(rollback_reference "${previous_worker_image}" "worker")" || return 1
 
-  printf 'API health check failed; rolling back to pinned image references.\n' >&2
-  docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" >/dev/null 2>&1 || true
+  printf 'deployment readiness check failed; rolling back to pinned image references.\n' >&2
+  docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" "${WORKER_CONTAINER}" >/dev/null 2>&1 || true
 
   run_api "${rollback_api_image}" >/dev/null || rollback_status=1
   run_scheduler "${rollback_scheduler_image}" >/dev/null || rollback_status=1
+  run_worker "${rollback_worker_image}" >/dev/null || rollback_status=1
   if ! wait_for_healthz; then
+    rollback_status=1
+  fi
+  if ! wait_for_worker_startup; then
     rollback_status=1
   fi
 
@@ -199,6 +233,7 @@ rollback_to_previous_digest() {
   local previous_digest
   local current_api_image
   local current_scheduler_image
+  local current_worker_image
 
   previous_digest="$(read_digest_file "${DEPLOYED_DIGEST_PREVIOUS_FILE}")" || {
     printf 'manual rollback digest is unavailable or invalid: %s\n' "${DEPLOYED_DIGEST_PREVIOUS_FILE}" >&2
@@ -212,14 +247,19 @@ rollback_to_previous_digest() {
     printf 'current scheduler container is required for rollback: %s\n' "${SCHEDULER_CONTAINER}" >&2
     return 78
   }
+  current_worker_image="$(configured_image "${WORKER_CONTAINER}")" || {
+    printf 'current worker container is required for rollback: %s\n' "${WORKER_CONTAINER}" >&2
+    return 78
+  }
   rollback_reference "${current_api_image}" "API" >/dev/null || return 1
   rollback_reference "${current_scheduler_image}" "scheduler" >/dev/null || return 1
+  rollback_reference "${current_worker_image}" "worker" >/dev/null || return 1
 
   printf 'pulling rollback digest: %s\n' "${previous_digest}"
   docker pull "${previous_digest}"
-  docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" >/dev/null || return 1
-  if ! run_api "${previous_digest}" >/dev/null || ! run_scheduler "${previous_digest}" >/dev/null || ! wait_for_healthz; then
-    rollback "${current_api_image}" "${current_scheduler_image}" || true
+  docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" "${WORKER_CONTAINER}" >/dev/null || return 1
+  if ! run_api "${previous_digest}" >/dev/null || ! run_scheduler "${previous_digest}" >/dev/null || ! run_worker "${previous_digest}" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup; then
+    rollback "${current_api_image}" "${current_scheduler_image}" "${current_worker_image}" || true
     return 1
   fi
   write_deployed_digest "${previous_digest}"
@@ -228,6 +268,7 @@ rollback_to_previous_digest() {
 main() {
   local previous_api_image
   local previous_scheduler_image
+  local previous_worker_image
   local deployed_digest
 
   require_command docker
@@ -245,12 +286,17 @@ main() {
     printf 'previous scheduler container is required for rollback: %s\n' "${SCHEDULER_CONTAINER}" >&2
     exit 78
   }
+  previous_worker_image="$(configured_image "${WORKER_CONTAINER}")" || {
+    printf 'previous worker container is required for rollback: %s\n' "${WORKER_CONTAINER}" >&2
+    exit 78
+  }
 
   # Verify rollback is possible before a floating tag is pulled and before any
   # running container is replaced. A legacy floating container may use the
   # persisted digest exactly once during the transition to pinned containers.
   rollback_reference "${previous_api_image}" "API" >/dev/null || exit 78
   rollback_reference "${previous_scheduler_image}" "scheduler" >/dev/null || exit 78
+  rollback_reference "${previous_worker_image}" "worker" >/dev/null || exit 78
 
   printf 'pulling %s\n' "${IMAGE}"
   docker pull "${IMAGE}"
@@ -261,19 +307,19 @@ main() {
   }
   printf 'pulled digest: %s\n' "${deployed_digest}"
 
-  if ! docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" >/dev/null; then
+  if ! docker rm -f "${API_CONTAINER}" "${SCHEDULER_CONTAINER}" "${WORKER_CONTAINER}" >/dev/null; then
     printf 'could not remove the current containers; no replacement was started.\n' >&2
     exit 1
   fi
 
-  if ! run_api "${deployed_digest}" >/dev/null || ! run_scheduler "${deployed_digest}" >/dev/null || ! wait_for_healthz; then
-    rollback "${previous_api_image}" "${previous_scheduler_image}" || true
+  if ! run_api "${deployed_digest}" >/dev/null || ! run_scheduler "${deployed_digest}" >/dev/null || ! run_worker "${deployed_digest}" >/dev/null || ! wait_for_healthz || ! wait_for_worker_startup; then
+    rollback "${previous_api_image}" "${previous_scheduler_image}" "${previous_worker_image}" || true
     exit 1
   fi
 
   if ! write_deployed_digest "${deployed_digest}"; then
     printf 'could not record deployed digest; rolling back.\n' >&2
-    rollback "${previous_api_image}" "${previous_scheduler_image}" || true
+    rollback "${previous_api_image}" "${previous_scheduler_image}" "${previous_worker_image}" || true
     exit 1
   fi
 

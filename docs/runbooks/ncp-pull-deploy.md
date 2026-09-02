@@ -1,9 +1,10 @@
 # NCP GHCR pull deployment
 
 The NCP host deploys a previously built image; it does not build from a source
-checkout. `scripts/deploy-ncp-pull.sh` pulls one GHCR tag, recreates `at-api`
-and `at-scheduler` from that same repo-digest reference, and verifies the API's
-loopback `/healthz` endpoint before recording the deployed digest.
+checkout. `scripts/deploy-ncp-pull.sh` pulls one GHCR tag, recreates `at-api`,
+`at-scheduler`, and `at-worker` from that same repo-digest reference, and
+verifies the API's loopback `/healthz` endpoint plus bounded TaskIQ worker
+startup before recording the deployed digest.
 
 ## Tag policy
 
@@ -39,8 +40,8 @@ Install the versioned operator script with restricted permissions:
 install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
 ```
 
-The script requires existing `at-api` and `at-scheduler` containers before it
-will replace either one. This intentional preflight ensures a failed health
+The script requires existing `at-api`, `at-scheduler`, and `at-worker`
+containers before it will replace any unit. This intentional preflight ensures a failed health
 check has a concrete previous image to restore; bootstrap remains a separate,
 operator-reviewed procedure.
 
@@ -53,16 +54,19 @@ Run only on the NCP host:
 /root/at-run/deploy-ncp-pull.sh sha-abcdef0
 ```
 
-Both containers use `--network host`, the two existing `--env-file` arguments,
+All three units use `--network host`, the two existing `--env-file` arguments,
 and `--restart unless-stopped`. The image now copies `research_contracts/` and
 `config/`, so this deployment deliberately has no bind mounts for either path.
 `at-scheduler` runs the image's TaskIQ scheduler command; `at-api` uses the
-image's default API command.
+image's default API command; `at-worker` runs
+`/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1`.
 
 The script prints the GHCR repo digest after pulling it. It retries
 `http://127.0.0.1:8000/healthz` for up to 60 seconds by default. If the new API
-does not return HTTP 200, it recreates both containers with pinned rollback
-references and verifies the restored API. A tag is used only to pull and
+does not return HTTP 200, or the worker is not running and does not emit its
+TaskIQ startup line before the bounded wait expires, it recreates all three
+units with pinned rollback references and verifies the restored API and worker.
+A tag is used only to pull and
 resolve the image; `docker run` always receives `repo@sha256:...`, so the next
 deployment's `.Config.Image` is stable even after a later `:main` pull.
 
@@ -95,3 +99,12 @@ or invalid. Do not edit either file to bypass a failed rollback; investigate
 the image and container logs instead.
 
 Do not run migrations or make a live deployment from CI as part of this flow.
+
+## Worker operation notes
+
+Running the NCP worker and the existing Mac worker at the same time is expected
+to create competing TaskIQ consumers: Redis delivers each message to one worker,
+not both. This increases capacity without duplicate task execution. The KIS
+rate limiter remains process-local, so observe KIS 429s while both are active.
+For Toss, set `TOSS_RATE_LIMITER_BACKEND=redis` on both worker environments as
+recommended by #2004.

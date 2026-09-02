@@ -33,12 +33,18 @@ set -Eeuo pipefail
 printf 'DOCKER %s\\n' "$*" >>"$DOCKER_LOG"
 case "$1" in
   inspect)
-    if [[ "$4" == at-api ]]; then printf '%s\\n' "$API_IMAGE"; else printf '%s\\n' "$SCHEDULER_IMAGE"; fi
+    if [[ "$3" == '{{.State.Running}}' ]]; then printf '%s\\n' true
+    elif [[ "$4" == at-api ]]; then printf '%s\\n' "$API_IMAGE"
+    elif [[ "$4" == at-scheduler ]]; then printf '%s\\n' "$SCHEDULER_IMAGE"
+    else printf '%s\\n' "$WORKER_IMAGE"; fi
     ;;
   image)
     printf '%s\\n' "$NEW_DIGEST"
     ;;
   pull|rm)
+    ;;
+  logs)
+    printf '%s\\n' "$WORKER_LOG"
     ;;
   run)
     container=""
@@ -77,7 +83,9 @@ def _run(
     *,
     api_image: str,
     scheduler_image: str,
+    worker_image: str | None = None,
     health_fails: int = 0,
+    worker_log: str = "Starting 1 worker processes.",
     deployed_digest: str | None = OLD_DIGEST,
     previous_digest: str | None = None,
     args: tuple[str, ...] = (),
@@ -98,6 +106,8 @@ def _run(
         "AT_RUN_DIRECTORY": str(run_dir),
         "API_IMAGE": api_image,
         "SCHEDULER_IMAGE": scheduler_image,
+        "WORKER_IMAGE": worker_image or scheduler_image,
+        "WORKER_LOG": worker_log,
         "NEW_DIGEST": NEW_DIGEST,
         "DOCKER_LOG": str(log),
         "HEALTH_COUNT": str(tmp_path / "health-count"),
@@ -125,7 +135,7 @@ def _run_lines(tmp_path: Path) -> list[str]:
     ]
 
 
-def test_successful_deploy_runs_both_containers_by_resolved_repo_digest(
+def test_successful_deploy_runs_all_units_by_resolved_repo_digest(
     tmp_path: Path,
 ) -> None:
     proc, run_dir = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
@@ -134,11 +144,21 @@ def test_successful_deploy_runs_both_containers_by_resolved_repo_digest(
     assert _run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
+        f"RUN at-worker {NEW_DIGEST}",
     ]
+    docker_log = (tmp_path / "docker.log").read_text()
+    assert (
+        "DOCKER run -d --name at-worker --restart unless-stopped --network host"
+        in docker_log
+    )
+    assert (
+        "/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1"
+        in docker_log
+    )
     assert (run_dir / "deployed-digest").read_text() == f"{NEW_DIGEST}\n"
 
 
-def test_failed_healthcheck_rolls_back_to_saved_digest_never_mutable_main(
+def test_failed_healthcheck_rolls_back_all_units_to_saved_digest_never_mutable_main(
     tmp_path: Path,
 ) -> None:
     proc, run_dir = _run(
@@ -154,8 +174,10 @@ def test_failed_healthcheck_rolls_back_to_saved_digest_never_mutable_main(
     assert _run_lines(tmp_path) == [
         f"RUN at-api {NEW_DIGEST}",
         f"RUN at-scheduler {NEW_DIGEST}",
+        f"RUN at-worker {NEW_DIGEST}",
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
     ]
     assert f"RUN at-api {REPOSITORY}:main" not in (tmp_path / "docker.log").read_text()
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
@@ -201,6 +223,31 @@ def test_manual_rollback_uses_previous_digest_and_rotates_files(tmp_path: Path) 
     assert _run_lines(tmp_path) == [
         f"RUN at-api {OLD_DIGEST}",
         f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
     ]
     assert (run_dir / "deployed-digest").read_text() == f"{OLD_DIGEST}\n"
     assert (run_dir / "deployed-digest.previous").read_text() == f"{NEW_DIGEST}\n"
+
+
+def test_worker_readiness_requires_running_container_and_taskiq_startup_log(
+    tmp_path: Path,
+) -> None:
+    proc, _ = _run(
+        tmp_path,
+        api_image=OLD_DIGEST,
+        scheduler_image=OLD_DIGEST,
+        worker_log="worker process exists but TaskIQ did not start",
+    )
+
+    assert proc.returncode == 1
+    assert "waiting for TaskIQ worker startup" in proc.stderr
+    # If the worker rollback call is removed, this safety regression test is
+    # red: all three units must return to their pinned prior digest.
+    assert _run_lines(tmp_path) == [
+        f"RUN at-api {NEW_DIGEST}",
+        f"RUN at-scheduler {NEW_DIGEST}",
+        f"RUN at-worker {NEW_DIGEST}",
+        f"RUN at-api {OLD_DIGEST}",
+        f"RUN at-scheduler {OLD_DIGEST}",
+        f"RUN at-worker {OLD_DIGEST}",
+    ]
