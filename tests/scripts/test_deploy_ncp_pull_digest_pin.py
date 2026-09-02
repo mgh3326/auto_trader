@@ -425,3 +425,20 @@ def test_rendered_haproxy_config_is_readable_by_the_unprivileged_container_user(
     assert proc.returncode == 0, proc.stderr
     mode = (run_dir / "haproxy.cfg").stat().st_mode & 0o777
     assert mode & 0o044 == 0o044, f"haproxy.cfg mode {oct(mode)} is not world-readable"
+
+
+def test_rendered_haproxy_exposes_fixed_profiles_on_tailnet_only(
+    tmp_path: Path,
+) -> None:
+    """Fixed-profile containers bind loopback; the tailnet reaches them via haproxy."""
+    proc, run_dir = _run(tmp_path, api_image=OLD_DIGEST, scheduler_image=OLD_DIGEST)
+
+    assert proc.returncode == 0, proc.stderr
+    cfg = (run_dir / "haproxy.cfg").read_text()
+    for port in (8768, 8769, 8770, 8771, 8772):
+        assert f"bind 100.122.100.56:{port}" in cfg
+        assert f"127.0.0.1:{port} check" in cfg
+    assert "0.0.0.0" not in cfg
+    assert (
+        "bind 127.0.0.1:8768" not in cfg
+    )  # loopback is served by the container itself
