@@ -71,6 +71,7 @@ tests/scripts/b0x/test_labels.py
 tests/scripts/b0x/test_owner_release_observation.py
 tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
+tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_haproxy_render.py
 tests/scripts/test_haproxy_switch.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
