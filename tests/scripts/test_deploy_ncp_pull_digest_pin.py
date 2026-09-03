@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-DEPLOY = REPO / "scripts/deploy-ncp-pull.sh"
+DEPLOY = Path(os.environ.get("DEPLOY_UNDER_TEST", REPO / "scripts/deploy-ncp-pull.sh"))
 OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "1" * 64
 NEW = "ghcr.io/mgh3326/auto_trader@sha256:" + "2" * 64
 
@@ -74,6 +74,7 @@ esac
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
             "AT_RUN_DIRECTORY": str(run_dir),
+            "MCP_HAPROXY_TEMPLATE": str(REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"),
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
             "FAIL_CANDIDATE": str(fail_candidate).lower(),
@@ -171,6 +172,23 @@ def test_scheduler_failure_restores_its_previous_image(tmp_path: Path) -> None:
     ]
     assert any(NEW in line for line in scheduler_runs)
     assert any(OLD in line for line in scheduler_runs)
+
+
+def test_ws_failure_restores_every_singleton_previous_image(tmp_path: Path) -> None:
+    p, log, _ = run(tmp_path, api_color="blue", fail_once_container="at-upbit-ws")
+    assert p.returncode != 0
+    for name in ("at-scheduler", "at-upbit-ws", "at-kis-ws"):
+        runs = [
+            line
+            for line in log.splitlines()
+            if line.startswith("docker run") and f"--name {name}" in line
+        ]
+        assert any(OLD in line for line in runs), name
+    assert any(
+        NEW in line
+        for line in log.splitlines()
+        if line.startswith("docker run") and "--name at-upbit-ws" in line
+    )
 
 
 def test_failed_post_hup_probe_restores_the_prior_haproxy_config(
