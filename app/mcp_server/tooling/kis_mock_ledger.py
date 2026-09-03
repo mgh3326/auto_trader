@@ -378,6 +378,7 @@ async def _save_kis_mock_order_ledger(
     report_item_uuid: uuid.UUID | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
     raise_on_error: bool = False,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
@@ -417,6 +418,7 @@ async def _save_kis_mock_order_ledger(
                     response_code=response_code,
                     response_message=response_message,
                     raw_response=raw_response,
+                    extra_metadata=extra_metadata,
                     reason=(reason or None),
                     thesis=thesis,
                     strategy=strategy,
@@ -490,6 +492,7 @@ async def _record_kis_mock_order(
     report_item_uuid: uuid.UUID | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     # This helper is intentionally fail-closed for direct callers too.  The
@@ -595,6 +598,7 @@ async def _record_kis_mock_order(
             report_item_uuid=report_item_uuid,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
+            extra_metadata=extra_metadata,
             raise_on_error=True,
         )
     except LedgerWriteError as exc:
