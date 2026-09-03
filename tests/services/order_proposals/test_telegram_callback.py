@@ -1954,6 +1954,25 @@ async def test_web_core_exception_dead_letters_before_retry(monkeypatch, db_sess
 
 
 @pytest.mark.asyncio
+async def test_web_deny_records_web_channel(monkeypatch, db_session):
+    group = await _seed_proposal(db_session, nonce="web-deny")
+    proposal_id = group.proposal_id
+
+    result = await handle_web_approval(
+        proposal_id,
+        action="deny",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+    )
+
+    refreshed, _ = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    assert result["reason"] == "denied"
+    assert refreshed.approved_by_channel == "web"
+    assert refreshed.approved_by_subject == "user:9"
+
+
+@pytest.mark.asyncio
 async def test_loss_cut_second_nonce_replay_is_rejected(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_loss_cut_proposal(db_session, monkeypatch)
