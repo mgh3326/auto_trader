@@ -950,7 +950,7 @@ class Settings(BaseSettings):
         float, Field(gt=0.0, le=10.0, allow_inf_nan=False)
     ] = 2.0
     # Web approval surfaces are default-disabled until a post-deploy operator
-    # explicitly enables them.  Loss-cut confirmation retains its own gate.
+    # explicitly enables them. Loss-cut confirmation retains its own gate.
     INVEST_APPROVALS_ENABLED: bool = False
     INVEST_LOSS_CUT_EVIDENCE_ENABLED: bool = False
     INVEST_LOSS_CUT_APPROVAL_ENABLED: bool = False
