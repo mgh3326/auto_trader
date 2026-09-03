@@ -268,6 +268,14 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # NHPLUG mirror-lane mock account.  Both gates default false: read access
+    # and mutation access are intentionally independent.
+    nhplug_mock_enabled: bool = False
+    nhplug_mock_orders_enabled: bool = False
+    nhplug_app_key: str | None = None
+    nhplug_app_secret: str | None = None
+    nhplug_mock_account_no: str | None = None
+
     # Kiwoom LIVE read-only market data (charts only). Disabled by default.
     # 🔴 Minimal surface on purpose: app key, app secret, and base URL ONLY.
     # No account number is exposed here — ``KiwoomLiveReadOnlyClient`` must not
@@ -1228,6 +1236,26 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_nhplug_mock_config(
+    settings_obj: Any = settings, *, orders: bool = False
+) -> list[str]:
+    """Return only missing NHPLUG mock key names, never configured values."""
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "nhplug_mock_enabled", False)):
+        missing.append("NHPLUG_MOCK_ENABLED")
+    if orders and not bool(getattr(settings_obj, "nhplug_mock_orders_enabled", False)):
+        missing.append("NHPLUG_MOCK_ORDERS_ENABLED")
+    for name, attr in (
+        ("NHPLUG_APP_KEY", "nhplug_app_key"),
+        ("NHPLUG_APP_SECRET", "nhplug_app_secret"),
+        ("NHPLUG_MOCK_ACCOUNT_NO", "nhplug_mock_account_no"),
+    ):
+        if not _has_nonempty_value(getattr(settings_obj, attr, None)):
+            missing.append(name)
     return missing
 
 

@@ -107,7 +107,7 @@ from typing import TYPE_CHECKING
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
-from app.mcp_server.tooling import orders_kiwoom_variants
+from app.mcp_server.tooling import orders_kiwoom_variants, orders_nhplug_variants
 from app.mcp_server.tooling.account_read_registration import (
     register_account_read_tools,
 )
@@ -463,6 +463,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # still fail-closes on missing credentials at call time.
         if settings.kiwoom_mock_enabled:
             orders_kiwoom_variants.register(mcp)
+        if settings.nhplug_mock_enabled:
+            orders_nhplug_variants.register(mcp)
         # ROB-867: US-equity kiwoom mock namespace — same flag-gated pattern
         # as the KR namespace but reading exclusively from
         # ``kiwoom_mock_us_*`` settings. Each tool still fail-closes on
@@ -506,6 +508,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
+        # NH is another mock-only mirror lane; every invocation still has the
+        # independent read/order gates and broker-derived acct_type fence.
+        orders_nhplug_variants.register(mcp)
         # Intentionally NOT: register_order_tools, register_kis_live_order_tools
     elif profile is McpProfile.US_PAPER:
         from app.mcp_server.tooling.alpaca_paper_automated_orders import (

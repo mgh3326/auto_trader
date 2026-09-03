@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Read-only NHPLUG mock smoke CLI.
+"""NHPLUG mock smoke CLI for bounded reads and operator-run mirror lifecycle.
 
-Modes are deliberately closed to ``preflight``, ``account``, and ``quote``.
-There is no order-like mode.  The default preflight validates the gate, the
-dedicated minimal env file, and the code allowlists with *zero* network calls.
+``order-test`` is an offline preview. ``full`` is the only mutation mode and
+requires both NHPLUG gates, ``--confirm-read``, ``--confirm``, and has a wired
+finally-cancel before its one-share limit buy can be submitted.
 
 Examples (only after an operator has created the dedicated three-key file):
 
@@ -11,7 +11,7 @@ Examples (only after an operator has created the dedicated three-key file):
     NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_smoke \
       --mode account --confirm-read
     NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_smoke \
-      --mode quote --symbol 005930 --confirm-read
+      --mode order-test --symbol 005930 --price 1
 
 Credential values, tokens, account numbers, and broker response bodies are
 never printed.  A rejected mock quote exits non-zero rather than faking success.
@@ -37,6 +37,8 @@ from app.services.brokers.nhplug.errors import (
     NHPlugMockBrokerRejected,
     NHPlugMockDisabled,
 )
+from app.services.brokers.nhplug.inquiry import NHDomesticInquiryClient
+from app.services.brokers.nhplug.orders import NHDomesticOrderClient
 
 DEFAULT_ENV_FILE = Path(".env.nhplug-mock.native")
 REQUIRED_ENV_KEYS = (
@@ -212,6 +214,72 @@ async def run(args: argparse.Namespace) -> int:
             )
             return 0
 
+        if args.mode == "order-test":
+            _emit(
+                {
+                    "mode": "order-test",
+                    "status": "preview",
+                    "network_calls": 0,
+                    "symbol": args.symbol,
+                    "quantity": args.quantity,
+                    "price": args.price,
+                    "required_confirm_for_full": True,
+                }
+            )
+            return 0
+
+        if args.mode == "full":
+            if not args.confirm:
+                _emit(
+                    {
+                        "mode": "full",
+                        "status": "stopped",
+                        "reason": "--confirm is required; no order sent",
+                    }
+                )
+                return 0
+            order_client = NHDomesticOrderClient(
+                app_key=credentials.app_key,
+                app_secret=credentials.app_secret,
+                token_provider=auth.get_access_token,
+                account_allowlist=allowlist,
+            )
+            inquiry = NHDomesticInquiryClient(client)
+            order_no: str | None = None
+            try:
+                accepted = await order_client.place_buy_order(
+                    symbol=args.symbol, quantity=args.quantity, price=args.price
+                )
+                order_no = next(
+                    (
+                        str(accepted[key])
+                        for key in ("orr_no", "ord_no", "order_no")
+                        if accepted.get(key) not in (None, "")
+                    ),
+                    None,
+                )
+                if order_no is None:
+                    raise SmokeConfigurationError(
+                        "accepted order has no readable broker order id; manual reconcile required"
+                    )
+            finally:
+                if order_no is not None:
+                    await order_client.cancel_order(
+                        symbol=args.symbol, original_order_no=order_no
+                    )
+            evidence = await inquiry.daily_order_execution(
+                trade_date=args.trade_date, act_no=credentials.account_no
+            )
+            _emit(
+                {
+                    "mode": "full",
+                    "status": "ok",
+                    "cancel_wired": True,
+                    "reconcile": _response_summary(evidence),
+                }
+            )
+            return 0
+
         quote_payload = await client.fetch_quote(
             symbol=args.symbol,
             market=args.market,
@@ -234,7 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
     parser.add_argument(
-        "--mode", choices=("preflight", "account", "quote"), default="preflight"
+        "--mode",
+        choices=("preflight", "account", "quote", "order-test", "full"),
+        default="preflight",
     )
     parser.add_argument(
         "--confirm-read",
@@ -243,6 +313,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--symbol", default="005930")
     parser.add_argument("--market", default="KRX")
+    parser.add_argument("--quantity", type=int, default=1)
+    parser.add_argument("--price", type=int, default=1)
+    parser.add_argument(
+        "--trade-date", default=__import__("datetime").date.today().strftime("%Y%m%d")
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="required for full mock order/cancel lifecycle",
+    )
     return parser
 
 

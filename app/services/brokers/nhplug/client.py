@@ -60,8 +60,10 @@ def _assert_mock_base_url(base_url: str) -> str:
     return MOCK_BASE_URL
 
 
-def _assert_readonly_path(path: str) -> None:
-    if path not in ALLOWED_READONLY_PATHS:
+def _assert_readonly_path(
+    path: str, *, allowed_paths: frozenset[str] = ALLOWED_READONLY_PATHS
+) -> None:
+    if path not in allowed_paths:
         raise NHPlugMockReadOnlyEndpointError("NHPLUG data path is not allowlisted")
 
 
@@ -77,6 +79,26 @@ def _assert_resolved_mock_request(request: httpx.Request) -> None:
             "NHPLUG data request resolved outside the pinned mock HTTPS endpoint"
         )
     _assert_readonly_path(request.url.path)
+
+
+def assert_resolved_mock_request(
+    request: httpx.Request, *, allowed_paths: frozenset[str]
+) -> None:
+    """Shared last-moment data-host fence for Stage 2 bounded clients.
+
+    Callers must still own a closed endpoint allowlist.  This helper deliberately
+    owns no order route literals, keeping the static ownership rule meaningful.
+    """
+
+    if (
+        request.url.scheme != "https"
+        or request.url.host != MOCK_HOST
+        or request.url.port != MOCK_PORT
+        or request.url.path not in allowed_paths
+    ):
+        raise NHPlugMockEndpointError(
+            "NHPLUG request resolved outside the pinned mock endpoint or allowlist"
+        )
 
 
 class NHPlugMockClient:
@@ -174,11 +196,12 @@ class NHPlugMockClient:
         path: str,
         input_0: dict[str, Any],
         act_no: str | None = None,
+        allowed_paths: frozenset[str] = ALLOWED_READONLY_PATHS,
     ) -> dict[str, Any]:
         """Guard before token I/O, then guard resolved request before send."""
 
         _assert_mock_enabled()
-        _assert_readonly_path(path)
+        _assert_readonly_path(path, allowed_paths=allowed_paths)
         if self._base_url != MOCK_BASE_URL:
             raise NHPlugMockEndpointError(
                 "NHPLUG data base endpoint changed after construction"
@@ -188,15 +211,15 @@ class NHPlugMockClient:
         if path != ACCOUNT_INFO_PATH:
             account_allowlist = self._require_account_allowlist()
             verified_act_no = account_allowlist.configured_account_no
-            if path == BALANCE_PATH:
+            if act_no is not None:
                 if not isinstance(act_no, str) or input_0.get("act_no") != act_no:
                     raise NHPlugMockConfigurationError(
-                        "balance reads require the bound configured account"
+                        "account-scoped reads require the bound configured account"
                     )
                 verified_act_no = act_no
-            elif act_no is not None:
+            elif path == BALANCE_PATH:
                 raise NHPlugMockConfigurationError(
-                    "only balance reads may supply an account number"
+                    "balance reads require the bound configured account"
                 )
             if verified_act_no != account_allowlist.configured_account_no:
                 raise NHPlugMockAccountRejected(
@@ -227,7 +250,7 @@ class NHPlugMockClient:
             request = client.build_request(
                 "POST", path, headers=headers, json={"Input_0": input_0}
             )
-            _assert_resolved_mock_request(request)
+            assert_resolved_mock_request(request, allowed_paths=allowed_paths)
             # Second independent account check immediately before the send site.
             if account_allowlist is not None and verified_act_no is not None:
                 account_allowlist.assert_allowed(verified_act_no)
