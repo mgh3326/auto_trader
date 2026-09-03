@@ -27,6 +27,14 @@ from tests import _socket_guard as socket_guard
 EXTERNAL = ("203.0.113.1", 443)
 RECORD_PATH_ENV = "ROB1296_CHILD_POLICY_RECORD"
 
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_test_schema():
+    """Child-policy evidence is process-only and must not create a test DB."""
+
+    yield
+
+
 _CHILD_SOURCE = (
     "import json;"
     "from tests._socket_guard import is_installed, is_current_test_exempt,"

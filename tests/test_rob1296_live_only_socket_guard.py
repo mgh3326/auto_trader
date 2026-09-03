@@ -27,10 +27,26 @@ from tests import _socket_guard as socket_guard
 from tests import _socket_guard_plugin as socket_guard_plugin
 
 PROBE_PATH = Path(__file__).parent / "_socket_guard_probes" / "marker_matrix_probe.py"
+CHILD_POLICY_PROBE = (
+    Path(__file__).parent / "_socket_guard_probes" / "child_policy_probe.py"
+)
 EXTERNAL_IPV4 = ("203.0.113.1", 443)  # RFC 5737 TEST-NET-3, never routable
 EXTERNAL_HOSTNAME = "rob1296-guard-probe.invalid"  # RFC 6761 reserved TLD
 LOOPBACK_POSTGRES = ("127.0.0.1", 5432)
 LOOPBACK_REDIS = ("127.0.0.1", 6379)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_test_schema():
+    """This guard-only module uses no ORM or database fixture.
+
+    Several cases intentionally carry ``integration`` to prove that marker
+    never grants an exemption. They only exercise predicate/socket policy and
+    loopback TCP, so inheriting conftest's integration-triggered schema setup
+    would add an unrelated database lifecycle to every xdist worker.
+    """
+
+    yield
 
 
 # --------------------------------------------------------------------------
@@ -132,15 +148,22 @@ def _nested_pytest_environment(**overrides: str) -> dict[str, str]:
 
 
 def _run_probe_matrix(
-    tmp_path: Path, *extra_args: str
+    tmp_path: Path, *extra_args: str, include_child_policy: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
     record_path = tmp_path / "records.jsonl"
+    paths = [str(PROBE_PATH)]
+    environment_overrides = {"ROB1296_PROBE_RECORD": str(record_path)}
+    if include_child_policy:
+        paths.append(str(CHILD_POLICY_PROBE))
+        environment_overrides["ROB1296_CHILD_POLICY_RECORD"] = str(
+            tmp_path / "childpol"
+        )
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
-            str(PROBE_PATH),
+            *paths,
             "-q",
             "--no-cov",
             "-p",
@@ -150,7 +173,7 @@ def _run_probe_matrix(
         capture_output=True,
         text=True,
         cwd=str(socket_guard.PROJECT_ROOT),
-        env=_nested_pytest_environment(ROB1296_PROBE_RECORD=str(record_path)),
+        env=_nested_pytest_environment(**environment_overrides),
     )
     records = [
         json.loads(line)
@@ -160,8 +183,73 @@ def _run_probe_matrix(
     return result, records
 
 
-def test_default_session_exempts_nothing_and_skips_live(tmp_path: Path) -> None:
-    result, records = _run_probe_matrix(tmp_path)
+def _read_child_policy_records(tmp_path: Path) -> dict[str, dict]:
+    written = {}
+    for path in tmp_path.glob("childpol.*.json"):
+        written[path.name.split(".")[1]] = json.loads(path.read_text(encoding="utf-8"))
+    return written
+
+
+@pytest.fixture(scope="module")
+def policy_e2e_snapshots(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, dict[str, object]]:
+    """Capture real pytest policy evidence once per meaningful parent policy.
+
+    The marker and child-route probes are independent test files, so one nested
+    session can collect both without making either policy assertion less strict.
+    The no-``--run-live`` session also uses xdist: it is simultaneously the
+    default-policy evidence and the worker/controller aggregation evidence.
+    """
+
+    default_tmp_path = tmp_path_factory.mktemp("rob1296-policy-default")
+    report_path = default_tmp_path / "guard-report.json"
+    default_result, default_records = _run_probe_matrix(
+        default_tmp_path,
+        "-n",
+        "2",
+        "--dist=loadfile",
+        "--socket-guard-report",
+        str(report_path),
+        "-k",
+        "not test_child_policy_when_armed_live",
+        include_child_policy=True,
+    )
+    live_tmp_path = tmp_path_factory.mktemp("rob1296-policy-live")
+    live_result, live_records = _run_probe_matrix(
+        live_tmp_path,
+        "--run-live",
+        "-k",
+        "not test_env_tampering_cannot_exempt_a_child and "
+        "not test_a_bogus_policy_descriptor_is_a_hard_failure and "
+        "not test_guard_env_tampering_cannot_unguard_a_child and "
+        "not test_guard_env_removal_cannot_unguard_a_child and "
+        "not test_child_policy_when_not_exempt",
+        include_child_policy=True,
+    )
+    return {
+        "default": {
+            "result": default_result,
+            "records": default_records,
+            "routes": _read_child_policy_records(default_tmp_path),
+            "report_path": report_path,
+        },
+        "live": {
+            "result": live_result,
+            "records": live_records,
+            "routes": _read_child_policy_records(live_tmp_path),
+        },
+    }
+
+
+def test_default_session_exempts_nothing_and_skips_live(
+    policy_e2e_snapshots: dict[str, dict[str, object]],
+) -> None:
+    snapshot = policy_e2e_snapshots["default"]
+    result = snapshot["result"]
+    records = snapshot["records"]
+    assert isinstance(result, subprocess.CompletedProcess)
+    assert isinstance(records, list)
     by_case = {record["case"]: record for record in records}
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -177,8 +265,14 @@ def test_default_session_exempts_nothing_and_skips_live(tmp_path: Path) -> None:
         assert by_case[case]["loopback_permitted"] is True, case
 
 
-def test_run_live_arms_only_the_live_items(tmp_path: Path) -> None:
-    result, records = _run_probe_matrix(tmp_path, "--run-live")
+def test_run_live_arms_only_the_live_items(
+    policy_e2e_snapshots: dict[str, dict[str, object]],
+) -> None:
+    snapshot = policy_e2e_snapshots["live"]
+    result = snapshot["result"]
+    records = snapshot["records"]
+    assert isinstance(result, subprocess.CompletedProcess)
+    assert isinstance(records, list)
     by_case = {record["case"]: record for record in records}
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -258,17 +352,15 @@ def test_a_subtree_without_the_option_registered_stays_blocked(tmp_path: Path) -
 
 
 def test_xdist_workers_apply_the_same_policy_and_report_evidence(
-    tmp_path: Path,
+    policy_e2e_snapshots: dict[str, dict[str, object]],
 ) -> None:
-    report_path = tmp_path / "guard-report.json"
-    result, records = _run_probe_matrix(
-        tmp_path,
-        "-n",
-        "2",
-        "--dist=loadfile",
-        "--socket-guard-report",
-        str(report_path),
-    )
+    snapshot = policy_e2e_snapshots["default"]
+    result = snapshot["result"]
+    records = snapshot["records"]
+    report_path = snapshot["report_path"]
+    assert isinstance(result, subprocess.CompletedProcess)
+    assert isinstance(records, list)
+    assert isinstance(report_path, Path)
 
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -555,37 +647,6 @@ def test_a_non_python_wrapper_child_keeps_its_exact_environment() -> None:
 # Child policy is identical across every creation route
 # --------------------------------------------------------------------------
 
-CHILD_POLICY_PROBE = (
-    Path(__file__).parent / "_socket_guard_probes" / "child_policy_probe.py"
-)
-
-
-def _run_child_policy_probe(tmp_path: Path, *extra_args: str) -> dict[str, dict]:
-    record = tmp_path / "childpol"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(CHILD_POLICY_PROBE),
-            "-q",
-            "--no-cov",
-            "-p",
-            "no:cacheprovider",
-            *extra_args,
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(socket_guard.PROJECT_ROOT),
-        env=_nested_pytest_environment(ROB1296_CHILD_POLICY_RECORD=str(record)),
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
-    written = {}
-    for path in tmp_path.glob("childpol.*.json"):
-        written[path.name.split(".")[1]] = json.loads(path.read_text(encoding="utf-8"))
-    return written
-
 
 def _assert_routes_match_parent(routes: dict[str, dict], label: str) -> None:
     parent = routes["parent"]
@@ -601,24 +662,33 @@ def _assert_routes_match_parent(routes: dict[str, dict], label: str) -> None:
         assert verdict == parent, f"{label}:{name} disagrees with the parent"
 
 
-def test_every_child_route_matches_a_non_exempt_parent(tmp_path: Path) -> None:
-    routes = _run_child_policy_probe(tmp_path)
+def test_every_child_route_matches_a_non_exempt_parent(
+    policy_e2e_snapshots: dict[str, dict[str, object]],
+) -> None:
+    routes = policy_e2e_snapshots["default"]["routes"]
+    assert isinstance(routes, dict)
     _assert_routes_match_parent(routes["nonlive"], "nonlive")
     assert routes["nonlive"]["parent"]["exempt"] is False
 
 
-def test_every_child_route_matches_an_armed_live_parent(tmp_path: Path) -> None:
-    routes = _run_child_policy_probe(tmp_path, "--run-live")
+def test_every_child_route_matches_an_armed_live_parent(
+    policy_e2e_snapshots: dict[str, dict[str, object]],
+) -> None:
+    routes = policy_e2e_snapshots["live"]["routes"]
+    assert isinstance(routes, dict)
     _assert_routes_match_parent(routes["live"], "live")
     assert routes["live"]["parent"]["exempt"] is True
     assert routes["live"]["multiprocessing:spawn"]["exempt"] is True
     assert routes["live"]["subprocess:uv-wrapper"]["exempt"] is True
 
 
-def test_env_tampering_cannot_exempt_any_child_route(tmp_path: Path) -> None:
+def test_env_tampering_cannot_exempt_any_child_route(
+    policy_e2e_snapshots: dict[str, dict[str, object]],
+) -> None:
     """The general-bypass negative control, end to end."""
 
-    routes = _run_child_policy_probe(tmp_path)
+    routes = policy_e2e_snapshots["default"]["routes"]
+    assert isinstance(routes, dict)
     tampered = routes["tampered"]
     assert tampered["parent"]["exempt"] is False
     for name, verdict in tampered.items():
@@ -628,10 +698,13 @@ def test_env_tampering_cannot_exempt_any_child_route(tmp_path: Path) -> None:
         assert verdict["external_permitted"] is False, name
 
 
-def test_guard_env_tampering_cannot_unguard_any_child_route(tmp_path: Path) -> None:
+def test_guard_env_tampering_cannot_unguard_any_child_route(
+    policy_e2e_snapshots: dict[str, dict[str, object]],
+) -> None:
     """Disabling the guard switch, or stripping the startup path, must not stick."""
 
-    routes = _run_child_policy_probe(tmp_path)
+    routes = policy_e2e_snapshots["default"]["routes"]
+    assert isinstance(routes, dict)
     for label in ("guard_disabled", "guard_removed"):
         for name, verdict in routes[label].items():
             if verdict.get("blocked_by_guard"):
