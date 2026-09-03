@@ -81,6 +81,7 @@ tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
+tests/scripts/test_invest_perf_report.py
 tests/scripts/test_ncp_pg_backup.py
 tests/scripts/test_nhplug_collect_period.py
 tests/scripts/test_perf_compare_sentry.py
@@ -284,6 +285,7 @@ tests/test_invest_fx_dashboard.py
 tests/test_invest_kr_fundamentals_snapshots_repository.py
 tests/test_invest_market_dashboard.py
 tests/test_invest_momentum_events.py
+tests/test_invest_observability.py
 tests/test_invest_price_fallback_circuit_open.py
 tests/test_invest_screener_snapshot_tasks_scheduled.py
 tests/test_invest_screener_snapshots_enrichment.py
