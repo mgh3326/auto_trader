@@ -217,6 +217,7 @@ tests/services/test_analyst_consensus_cache.py
 tests/services/test_decision_history.py
 tests/services/test_decision_history_realized_r.py
 tests/services/test_downside_watch_service_no_broker_imports.py
+tests/services/test_fill_event_handoff.py
 tests/services/test_kis_mock_attribution_chain.py
 tests/services/test_krb1_p0_journal.py
 tests/services/test_live_reconcile_metrics.py
