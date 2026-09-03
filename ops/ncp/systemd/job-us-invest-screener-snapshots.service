@@ -1,0 +1,16 @@
+[Unit]
+Description=auto_trader US invest screener snapshots
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+EnvironmentFile=/root/at-secrets/.env.jobs
+ExecStart=/root/at-run/ops/ncp/bin/at-job.sh scripts.build_invest_screener_snapshots --market us --batch-size 200 --concurrency 4 --all --common-stocks-only --commit
+TimeoutStartSec=7230
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

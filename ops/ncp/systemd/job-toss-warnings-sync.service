@@ -1,0 +1,16 @@
+[Unit]
+Description=auto_trader Toss warnings sync
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+EnvironmentFile=/root/at-secrets/.env.jobs
+ExecStart=/root/at-run/ops/ncp/bin/at-job.sh scripts.sync_toss_warnings
+TimeoutStartSec=3630
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
