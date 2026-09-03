@@ -2039,6 +2039,89 @@ async def test_toss_kr_parking_notional_excludes_kis_and_other_toss_accounts(
 
 
 @pytest.mark.asyncio
+async def test_kis_and_toss_us_parking_faces_have_independent_durable_caps(
+    db_session,
+):
+    """KIS US and Toss US do not consume one another's USD 10,000 meter."""
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    account_id = "731"
+
+    async def _approved(*, account_mode, symbol, price):
+        await service.create_proposal(
+            symbol=symbol,
+            market="equity_us",
+            account_mode=account_mode,
+            broker_account_id=account_id,
+            side="buy",
+            order_type="limit",
+            proposer="parking-us-faces",
+            rungs=[RungInput(0, "buy", Decimal("100"), price, None)],
+            source_asof={
+                "auto_approved": {
+                    "policy_version": "test-policy",
+                    "approved_at": now.isoformat(),
+                    "eligibility": [],
+                    "outcomes": ["submitted_resting"],
+                }
+            },
+        )
+
+    # Same textual account label, separate account-mode faces. If the query
+    # lost its account_mode predicate, each side would incorrectly read 20k.
+    await _approved(account_mode="kis_live", symbol="SGOV", price=Decimal("100"))
+    await _approved(account_mode="toss_live", symbol="BIL", price=Decimal("100"))
+    # Same Toss account, different market, must also stay outside the US face.
+    await service.create_proposal(
+        symbol="459580",
+        market="equity_kr",
+        account_mode="toss_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="parking-us-faces",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("999999"), None)],
+        source_asof={
+            "auto_approved": {
+                "policy_version": "test-policy",
+                "approved_at": now.isoformat(),
+                "eligibility": [],
+                "outcomes": ["submitted_resting"],
+            }
+        },
+    )
+    await db_session.commit()
+
+    kis_probe = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="parking-us-faces-probe",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+    toss_probe = await service.create_proposal(
+        symbol="BIL",
+        market="equity_us",
+        account_mode="toss_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="parking-us-faces-probe",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1"), None)],
+    )
+
+    assert await service.auto_approved_parking_notional(kis_probe, now=now) == Decimal(
+        "10000"
+    )
+    assert await service.auto_approved_parking_notional(toss_probe, now=now) == Decimal(
+        "10000"
+    )
+
+
+@pytest.mark.asyncio
 async def test_daily_notional_reuses_durable_execution_price_cap_observation(
     db_session,
 ):
