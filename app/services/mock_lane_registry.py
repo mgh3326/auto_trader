@@ -1289,15 +1289,9 @@ def assert_credential_namespace(
         raise LaneGuardError("credential_namespace_mismatch", lane_id=entry.lane_id)
 
 
-def assert_entry_execution_ready(entry: LaneRegistryEntry) -> None:
-    """Require every signed binding; registry roles never imply activation."""
+def _assert_entry_bindings_ready(entry: LaneRegistryEntry) -> None:
+    """Require every execution binding other than activation/writer/auto."""
 
-    if _violates_signed_lane_restriction(entry):
-        raise LaneGuardError("lane_signed_restriction_violation", lane_id=entry.lane_id)
-    if entry.activation_status is not ActivationStatus.ENABLED:
-        raise LaneGuardError("lane_activation_not_enabled", lane_id=entry.lane_id)
-    if not entry.writer or not entry.auto:
-        raise LaneGuardError("lane_writer_not_enabled", lane_id=entry.lane_id)
     physical_account_id = entry.physical_account_id
     fingerprint_evidence_ref = entry.fingerprint_evidence_ref
     if not (
@@ -1329,6 +1323,30 @@ def assert_entry_execution_ready(entry: LaneRegistryEntry) -> None:
     )
     if not all(required_bindings):
         raise LaneGuardError("lane_binding_incomplete", lane_id=entry.lane_id)
+
+
+def assert_entry_execution_ready(entry: LaneRegistryEntry) -> None:
+    """Require every signed binding; registry roles never imply activation."""
+
+    if _violates_signed_lane_restriction(entry):
+        raise LaneGuardError("lane_signed_restriction_violation", lane_id=entry.lane_id)
+    if entry.activation_status is not ActivationStatus.ENABLED:
+        raise LaneGuardError("lane_activation_not_enabled", lane_id=entry.lane_id)
+    if not entry.writer or not entry.auto:
+        raise LaneGuardError("lane_writer_not_enabled", lane_id=entry.lane_id)
+    _assert_entry_bindings_ready(entry)
+
+
+def assert_entry_canary_scope_ready(entry: LaneRegistryEntry) -> None:
+    """Require the disjoint, non-autonomous state allowed for one sealed canary."""
+
+    if _violates_signed_lane_restriction(entry):
+        raise LaneGuardError("lane_signed_restriction_violation", lane_id=entry.lane_id)
+    if entry.activation_status is not ActivationStatus.RUNTIME_ACCEPTANCE_PENDING:
+        raise LaneGuardError("lane_not_in_canary_scope", lane_id=entry.lane_id)
+    if entry.writer is not False or entry.auto_order_enabled is not False:
+        raise LaneGuardError("canary_scope_forbids_writer", lane_id=entry.lane_id)
+    _assert_entry_bindings_ready(entry)
 
 
 def assert_recurring_authorized(
@@ -1457,6 +1475,7 @@ __all__ = [
     "RegistryIssue",
     "RegistryRole",
     "RegistryStartupError",
+    "assert_entry_canary_scope_ready",
     "assert_credential_namespace",
     "assert_entry_execution_ready",
     "assert_lane_quote_currency",
