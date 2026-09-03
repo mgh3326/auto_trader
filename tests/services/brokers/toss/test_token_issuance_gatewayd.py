@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from app.core.config import settings
 from app.services.brokers.token_issuance import TokenIssuanceUnavailable
 from app.services.brokers.toss import auth
+from app.services.brokers.toss.errors import TossLocalTokenIssuanceForbidden
 
 
 class _FakeRedis:
@@ -57,10 +58,12 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
     return redis
 
 
-def _manager() -> auth.TossOAuthTokenManager:
+def _manager(
+    *, client_secret: str = "gatewayd-client-secret"
+) -> auth.TossOAuthTokenManager:
     return auth.TossOAuthTokenManager(
         client_id="gatewayd-client-id",
-        client_secret=SecretStr("gatewayd-client-secret"),
+        client_secret=SecretStr(client_secret),
     )
 
 
@@ -90,6 +93,55 @@ async def test_gatewayd_miss_ensures_once_reloads_redis_and_never_calls_toss_oau
 
     ensure.assert_awaited_once_with("toss", settings_obj=settings)
     oauth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gatewayd_empty_secret_ensures_once_and_reloads_redis(
+    fake_redis: _FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "broker_token_issuance_mode", "gatewayd")
+    manager = _manager(client_secret="")
+    oauth = AsyncMock(side_effect=AssertionError("Toss OAuth must not run"))
+    monkeypatch.setattr(manager, "_issue_token", oauth)
+
+    async def ensure_gatewayd(provider: str, *, settings_obj: object) -> None:
+        assert provider == "toss"
+        assert settings_obj is settings
+        fake_redis.strings[manager.token_key] = json.dumps(
+            {
+                "access_token": "secretless-gatewayd-token",
+                "expires_at": time.time() + 3600,
+            }
+        )
+
+    ensure = AsyncMock(side_effect=ensure_gatewayd)
+    monkeypatch.setattr(auth, "ensure_gatewayd_token", ensure)
+
+    assert await manager.get_access_token() == "secretless-gatewayd-token"
+
+    ensure.assert_awaited_once_with("toss", settings_obj=settings)
+    oauth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gatewayd_seals_local_oauth_issuance_even_with_empty_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "broker_token_issuance_mode", "gatewayd")
+    manager = _manager(client_secret="")
+
+    with pytest.raises(TossLocalTokenIssuanceForbidden, match="forbidden"):
+        await manager._issue_token()
+
+
+def test_self_mode_rejects_empty_secret_before_local_issuance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "broker_token_issuance_mode", "self")
+
+    with pytest.raises(auth.TossMissingCredentials, match="TOSS_API_CLIENT_SECRET"):
+        _manager(client_secret="")
 
 
 @pytest.mark.asyncio

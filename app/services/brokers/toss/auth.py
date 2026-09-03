@@ -21,6 +21,7 @@ from app.services.brokers.token_issuance import (
 )
 from app.services.brokers.toss.errors import (
     TossApiDisabled,
+    TossLocalTokenIssuanceForbidden,
     TossMissingCredentials,
     TossTokenIssuanceUnavailable,
 )
@@ -80,11 +81,17 @@ class TossOAuthTokenManager:
         client_secret: SecretStr,
         base_url: str = DEFAULT_TOSS_BASE_URL,
         rate_limiter: TossRateLimiter | None = None,
+        allow_empty_secret: bool | None = None,
     ) -> None:
         if not client_id.strip():
             raise TossMissingCredentials("TOSS_API_CLIENT_ID is empty")
         secret_value = client_secret.get_secret_value()
-        if not secret_value.strip():
+        gatewayd_mode = (
+            is_gatewayd_token_issuance(settings)
+            if allow_empty_secret is None
+            else allow_empty_secret
+        )
+        if not secret_value.strip() and not gatewayd_mode:
             raise TossMissingCredentials("TOSS_API_CLIENT_SECRET is empty")
         self._client_id = client_id
         self._client_secret = client_secret
@@ -124,7 +131,7 @@ class TossOAuthTokenManager:
             )
         secret = settings_obj.toss_api_client_secret
         if not isinstance(secret, SecretStr):
-            secret = SecretStr(str(secret))
+            secret = SecretStr(str(secret or ""))
         base_url = (
             getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
         )
@@ -133,6 +140,7 @@ class TossOAuthTokenManager:
             client_secret=secret,
             base_url=str(base_url),
             rate_limiter=rate_limiter or get_shared_rate_limiter(),
+            allow_empty_secret=is_gatewayd_token_issuance(settings_obj),
         )
 
     async def get_access_token(
@@ -286,6 +294,10 @@ class TossOAuthTokenManager:
             logger.debug("Toss OAuth lock release best-effort failure: %s", exc)
 
     async def _issue_token(self) -> TossToken:
+        if is_gatewayd_token_issuance(settings):
+            raise TossLocalTokenIssuanceForbidden(
+                "local Toss OAuth issuance is forbidden in gatewayd mode"
+            )
         await self._rate_limiter.acquire(TossApiGroup.AUTH)
         async with build_toss_client(base_url=self._base_url) as client:
             response = await client.post(

@@ -19,6 +19,10 @@ class TossMissingCredentials(TossApiErrorBase):
     """Raised when Toss API credentials are missing."""
 
 
+class TossLocalTokenIssuanceForbidden(TossApiErrorBase):
+    """Raised if a gatewayd-mode process reaches local Toss OAuth issuance."""
+
+
 class TossHostBlocked(TossApiErrorBase):
     """Raised when a Toss request would leave the allowed Open API host."""
 
