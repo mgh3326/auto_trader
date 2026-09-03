@@ -16,22 +16,36 @@ def run(
     tmp_path: Path,
     *,
     api_color: str | None = None,
+    mcp_color: str | None = None,
     fail_candidate: bool = False,
     fail_mcp_port: int | None = None,
     fail_once_container: str | None = None,
+    fail_ws_container: str | None = None,
     fail_proxy: bool = False,
     existing_config: str | None = None,
+    configured_image: str = OLD,
+    missing_token: str | None = None,
+    args: tuple[str, ...] = (),
 ) -> tuple[subprocess.CompletedProcess[str], str, Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "log"
+    log.touch()
     (bindir / "docker").write_text(f"""#!/usr/bin/env bash
 echo "docker $*" >> {log}
 if [[ "$1" == run && "$*" == *"--name ${{FAIL_ONCE_CONTAINER:-none}}"* && ! -e "$FAIL_ONCE_MARKER" ]]; then touch "$FAIL_ONCE_MARKER"; exit 1; fi
 case "$1" in
- inspect) [[ "$2" == --format ]] && {{ [[ "$3" == *Config.Image* ]] && echo {OLD} || echo id; }} ;;
+ inspect)
+   [[ "$2" == --format ]] && {{
+     [[ "$3" == *Config.Image* ]] && echo "${{CONFIGURED_IMAGE}}" ||
+       {{ [[ "$3" == *RepoDigests* ]] && echo {OLD} || echo id; }}
+   }}
+   ;;
  image) echo {NEW} ;;
- logs) echo 'Listening started connected=True' ;;
+ logs)
+   [[ "$*" == *"${{FAIL_WS_CONTAINER:-never}}"* ]] && echo disconnected ||
+     echo 'Listening started connected=True'
+   ;;
  *) : ;;
 esac
 """)
@@ -51,7 +65,8 @@ esac
     (run_dir / ".env.runtime").write_text("x=y\n")
     (run_dir / ".env.secrets").write_text(
         "\n".join(
-            [
+            token
+            for token in [
                 "MCP_AUTH_TOKEN=x",
                 "MCP_ANALYSIS_READONLY_AUTH_TOKEN=x",
                 "MCP_ACCOUNT_READ_AUTH_TOKEN=x",
@@ -59,15 +74,20 @@ esac
                 "MCP_PAPER_001_AUTH_TOKEN=x",
                 "MCP_KIWOOM_AUTH_TOKEN=x",
             ]
+            if not missing_token or not token.startswith(f"{missing_token}=")
         )
     )
     (run_dir / "deployed-digest").write_text(OLD + "\n")
     if api_color:
         (run_dir / "api-active-color").write_text(api_color + "\n")
+    if mcp_color:
+        (run_dir / "mcp-active-color").write_text(mcp_color + "\n")
     if existing_config is not None:
-        (run_dir / "haproxy.cfg").write_text(existing_config)
+        config = run_dir / "haproxy.cfg"
+        config.write_text(existing_config)
+        (run_dir / "haproxy.cfg.inode-before").write_text(str(config.stat().st_ino))
     p = subprocess.run(
-        [str(DEPLOY)],
+        [str(DEPLOY), *args],
         text=True,
         capture_output=True,
         env={
@@ -80,8 +100,10 @@ esac
             "FAIL_CANDIDATE": str(fail_candidate).lower(),
             "FAIL_MCP_PORT": str(fail_mcp_port or ""),
             "FAIL_ONCE_CONTAINER": fail_once_container or "none",
+            "FAIL_WS_CONTAINER": fail_ws_container or "never",
             "FAIL_ONCE_MARKER": str(tmp_path / "fail-once"),
             "FAIL_PROXY": str(fail_proxy).lower(),
+            "CONFIGURED_IMAGE": configured_image,
             "MCP_HEALTH_ATTEMPTS": "1",
             "MCP_HEALTH_SLEEP_SECONDS": "0",
         },
@@ -112,7 +134,11 @@ def test_second_deploy_starts_inactive_green_and_drains_only_after_hup(
     assert p.returncode == 0, p.stderr
     assert "--name at-api-green" in log and "--host 127.0.0.1 --port 8002" in log
     assert log.index("--name at-api-green") < log.index("kill -s HUP at-haproxy")
-    assert log.index("kill -s HUP at-haproxy") < log.index("rm -f at-api-blue")
+    # The drain child is detached. Its actual removal is intentionally not a
+    # timing assertion; this foreground ID capture is the scheduling event.
+    assert log.index("kill -s HUP at-haproxy") < log.index(
+        "inspect --format {{.Id}} at-api-blue"
+    )
     assert run_dir.joinpath("api-active-color").read_text() == "green\n"
 
 
@@ -205,9 +231,82 @@ def test_failed_post_hup_probe_restores_the_prior_haproxy_config(
     assert run_dir.joinpath("api-active-color").read_text() == "blue\n"
 
 
-def test_source_keeps_mutants_red() -> None:
-    text = DEPLOY.read_text()
-    assert "--host 127.0.0.1 --port" in text
-    assert 'wait_health "$(api_port "$new")"' in text
-    assert 'schedule_drain "at-api-${old}" "$API_DRAIN_SECONDS"' in text
-    assert "wait_worker at-worker-new" in text
+def test_mutable_unit_tag_resolves_to_its_repo_digest_before_rollback(
+    tmp_path: Path,
+) -> None:
+    p, log, _ = run(
+        tmp_path,
+        api_color="blue",
+        fail_once_container="at-scheduler",
+        configured_image="ghcr.io/mgh3326/auto_trader:main",
+    )
+    assert p.returncode != 0
+    scheduler_runs = [
+        line for line in log.splitlines() if "--name at-scheduler" in line
+    ]
+    assert any(OLD in line for line in scheduler_runs)
+    assert not any("auto_trader:main" in line for line in scheduler_runs)
+
+
+def test_late_ws_failure_keeps_old_api_color_routable_before_drain(
+    tmp_path: Path,
+) -> None:
+    p, log, run_dir = run(
+        tmp_path,
+        api_color="blue",
+        fail_ws_container="at-upbit-ws",
+    )
+    assert p.returncode != 0
+    assert (
+        "server api_active 127.0.0.1:8001"
+        in run_dir.joinpath("haproxy.cfg").read_text()
+    )
+    assert "scheduled drain: at-api-blue" not in p.stderr
+    assert "rm -f at-api-blue\n" not in log
+
+
+def test_new_haproxy_config_is_world_readable(tmp_path: Path) -> None:
+    p, _, run_dir = run(tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert run_dir.joinpath("haproxy.cfg").stat().st_mode & 0o777 == 0o644
+
+
+def test_haproxy_render_keeps_the_existing_bind_mount_inode(tmp_path: Path) -> None:
+    p, _, run_dir = run(tmp_path, existing_config="bound-inode\n")
+    assert p.returncode == 0, p.stderr
+    config = run_dir / "haproxy.cfg"
+    assert config.stat().st_ino == int(
+        (run_dir / "haproxy.cfg.inode-before").read_text()
+    )
+
+
+def test_mcp_candidate_readiness_failure_removes_candidate_without_haproxy_hup(
+    tmp_path: Path,
+) -> None:
+    p, log, _ = run(tmp_path, fail_mcp_port=8766)
+    assert p.returncode != 0
+    candidate_start = log.index("--name at-mcp-blue")
+    assert log.rindex("rm -f at-mcp-blue") > candidate_start
+    assert "kill -s HUP at-haproxy" not in log[candidate_start:]
+
+
+def test_mcp_drain_is_scheduled_only_after_its_haproxy_switch(tmp_path: Path) -> None:
+    p, log, _ = run(tmp_path, api_color="blue", mcp_color="blue")
+    assert p.returncode == 0, p.stderr
+    assert log.rindex("kill -s HUP at-haproxy") < log.rindex(
+        "inspect --format {{.Id}} at-mcp-blue"
+    )
+
+
+def test_missing_mcp_token_fails_closed_before_image_pull(tmp_path: Path) -> None:
+    p, log, _ = run(tmp_path, missing_token="MCP_KIWOOM_AUTH_TOKEN")
+    assert p.returncode != 0
+    assert "docker pull" not in log
+
+
+def test_manual_rollback_without_previous_digest_never_falls_through_to_deploy(
+    tmp_path: Path,
+) -> None:
+    p, log, _ = run(tmp_path, args=("--rollback",))
+    assert p.returncode != 0
+    assert "docker pull" not in log
