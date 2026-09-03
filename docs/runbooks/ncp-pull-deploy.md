@@ -1,11 +1,12 @@
 # NCP GHCR pull deployment
 
 The NCP host deploys a previously built image; it does not build from a source
-checkout. `scripts/deploy-ncp-pull.sh` pulls one GHCR tag, recreates `at-api`,
-`at-scheduler`, `at-worker`, `at-upbit-ws`, and `at-kis-ws` from that same
-repo-digest reference. It verifies the API's loopback `/healthz`, bounded
-TaskIQ worker startup, and bounded WebSocket connection logs before recording
-the deployed digest. The same promotion also advances the private MCP fleet:
+checkout. `scripts/deploy-ncp-pull.sh` pulls one GHCR tag. API is blue/green:
+`at-api-blue` on loopback `:8001` and `at-api-green` on loopback `:8002`; private
+HAProxy owns stable `127.0.0.1:8000` and `100.122.100.56:8000`. It health-checks
+the inactive color before an in-place HAProxy HUP, records the active color only
+after that switch, and drains the previous API for `API_DRAIN_SECONDS` (120 by
+default). The same promotion also advances the private MCP fleet:
 an inactive blue/green default MCP color, five fixed profiles, and its
 loopback/tailnet-only HAProxy front end.
 
@@ -60,11 +61,11 @@ Run only on the NCP host:
 /root/at-run/deploy-ncp-pull.sh sha-abcdef0
 ```
 
-All five units use `--network host`, the two existing `--env-file` arguments,
+All units use `--network host`, the two existing `--env-file` arguments,
 and `--restart unless-stopped`. The image now copies `research_contracts/` and
 `config/`, so this deployment deliberately has no bind mounts for either path.
-`at-scheduler` runs the image's TaskIQ scheduler command; `at-api` uses the
-image's default API command; `at-worker` runs
+`at-scheduler` runs the image's TaskIQ scheduler command; each API color runs
+Uvicorn with `--host 127.0.0.1 --port 8001|8002`; `at-worker` runs
 `/app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1`.
 `at-upbit-ws` and `at-kis-ws` respectively run
 `/app/.venv/bin/python websocket_monitor.py --mode upbit` and
@@ -76,8 +77,8 @@ digest with profile-scoped environment policy (including the required
 approval-hash modes for TradingCodex execution). HAProxy must remain bound only
 to loopback and the configured tailnet address; it is never a public listener.
 
-The script prints the GHCR repo digest after pulling it. It retries
-`http://127.0.0.1:8000/healthz` for up to 60 seconds by default. If the new API
+The script prints the GHCR repo digest after pulling it. It retries the inactive
+API color's loopback `/healthz` for up to 60 seconds by default. If the new API
 does not return HTTP 200, the worker is not running and does not emit its
 TaskIQ startup line, or either WebSocket is not running and does not emit a
 `Unified WebSocket health ... connected=True` (or equivalent `connected=True`)
@@ -121,6 +122,16 @@ for a later return. It fails explicitly if
 bypass a failed rollback; investigate the image and container logs instead.
 
 Do not run migrations or make a live deployment from CI as part of this flow.
+
+## Expected interruption budget
+
+| Role | Expected interruption |
+| --- | --- |
+| API | 0 after the one-time first cutover; first adoption has a documented ≤2s bind handoff while legacy `at-api` releases port 8000 |
+| Worker | 0; `at-worker-new` must report ready before `docker stop -t 60 at-worker` |
+| Scheduler | a few seconds; exactly one instance is retained to prevent duplicate firing |
+| WebSocket monitors | a few seconds; broker appkeys permit only one session |
+| MCP | 0; existing blue/green HAProxy drain |
 
 ## Worker operation notes
 
