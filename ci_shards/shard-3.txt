@@ -64,6 +64,7 @@ tests/routers/test_alpaca_paper_ledger_router.py
 tests/routers/test_candidate_discovery.py
 tests/routers/test_invest_buy_plan_router.py
 tests/routers/test_invest_loss_cut_approvals.py
+tests/routers/test_invest_order_proposal_approvals.py
 tests/routers/test_investment_hermes_http_auth.py
 tests/routers/test_news_relevance_auth.py
 tests/routers/test_ops_task_kick.py
@@ -180,6 +181,7 @@ tests/services/order_proposals/test_payload.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
 tests/services/order_proposals/test_service.py
 tests/services/order_proposals/test_watch_to_order_scope.py
+tests/services/order_proposals/test_web_approvals.py
 tests/services/paper_cohort/test_lineage_constraints.py
 tests/services/paper_cohort/test_migration.py
 tests/services/paper_cohort/test_runner_concurrency.py
