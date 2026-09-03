@@ -105,3 +105,53 @@ async def test_kr_live_still_routes_to_kis_ledger():
     m_kr.assert_awaited_once()  # 기존 KR ledger 경로 유지
     m_generic.assert_not_awaited()  # 제네릭 경로로 새지 않음
     m_legacy.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_order_performance_failure_does_not_change_accepted_order(monkeypatch):
+    from app.mcp_server.tooling import kis_live_ledger
+    from app.mcp_server.tooling import order_execution as oe
+
+    expected = {"success": True, "ledger_id": 99}
+    monkeypatch.setattr(
+        oe,
+        "_execute_order",
+        AsyncMock(return_value={"rt_cd": "0", "odno": "KR-PERF-1", "output": {}}),
+    )
+    monkeypatch.setattr(oe, "_record_order_history", AsyncMock())
+    monkeypatch.setattr(
+        oe,
+        "record_order_performance",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("telemetry down")),
+    )
+    monkeypatch.setattr(
+        kis_live_ledger, "_record_kis_live_order", AsyncMock(return_value=expected)
+    )
+
+    result = await oe._execute_and_record(
+        normalized_symbol="005930",
+        side="buy",
+        order_type="limit",
+        order_quantity=1.0,
+        price=70000.0,
+        market_type="equity_kr",
+        current_price=70000.0,
+        avg_price=0.0,
+        dry_run_result={"price": 70000.0, "quantity": 1.0, "estimated_value": 70000.0},
+        order_amount=70000.0,
+        reason="performance-test",
+        exit_reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        indicators_snapshot=None,
+        defensive_trim_ctx=None,
+        order_error_fn=lambda *args, **kwargs: {},
+        is_mock=False,
+    )
+
+    assert result == expected

@@ -17,12 +17,17 @@ from types import MappingProxyType
 from typing import Final
 from weakref import WeakKeyDictionary
 
-from app.services.mock_integration.coordination import DurableSendClaimAdapter
+from app.services.mock_integration.coordination import (
+    CanaryScopeAuthority,
+    DurableSendClaimAdapter,
+    _issue_canary_scope_authority,
+    assert_canary_scope_authority_binding,
+)
 from app.services.mock_integration.lineage import MockLineageFactory
 from app.services.mock_lane_registry import (
     LaneGuardError,
     LaneRegistryEntry,
-    assert_entry_execution_ready,
+    assert_entry_canary_scope_ready,
     get_lane_registry_entry,
 )
 from scripts.b0x.kr.kiwoom_bounded_send import (
@@ -90,6 +95,7 @@ class _KiwoomOwnerConstructionProof:
     legacy_offline: bool
     bounded_send_seal: BoundedSendSeal | None
     bounded_send_seal_digest: str | None
+    canary_scope_authority: CanaryScopeAuthority | None
 
 
 _OWNER_CONSTRUCTION_PROOFS: WeakKeyDictionary[
@@ -164,6 +170,7 @@ def _register_approved_adapter(
     *,
     grant_only: bool,
     bounded_send_seal: BoundedSendSeal | None = None,
+    canary_scope_authority: CanaryScopeAuthority | None = None,
 ) -> KiwoomCoordinationAdapter:
     """Construct and register an adapter from a provenance-bearing port set."""
 
@@ -174,11 +181,18 @@ def _register_approved_adapter(
             lane_id=getattr(getattr(ports, "entry", None), "lane_id", None),
         )
     if grant_only is True:
-        bounded_send_shape_valid = bounded_send_seal is None
+        bounded_send_shape_valid = (
+            bounded_send_seal is None and canary_scope_authority is None
+        )
     elif legacy_offline is True:
-        bounded_send_shape_valid = bounded_send_seal is None
+        bounded_send_shape_valid = (
+            bounded_send_seal is None and canary_scope_authority is None
+        )
     else:
-        bounded_send_shape_valid = type(bounded_send_seal) is BoundedSendSeal
+        bounded_send_shape_valid = (
+            type(bounded_send_seal) is BoundedSendSeal
+            and type(canary_scope_authority) is CanaryScopeAuthority
+        )
     if not bounded_send_shape_valid:
         raise KiwoomCoordinationOwnerRejected(
             KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
@@ -211,6 +225,21 @@ def _register_approved_adapter(
                 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
                 lane_id=ports.entry.lane_id,
             ) from exc
+        try:
+            asserted_authority = assert_canary_scope_authority_binding(
+                ports.entry,
+                canary_scope_authority,
+            )
+        except LaneGuardError as exc:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=ports.entry.lane_id,
+            ) from exc
+        if asserted_authority.seal_digest != bounded_send_seal.seal_digest:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=ports.entry.lane_id,
+            )
         with _BOUNDED_SEND_OWNER_ASSERTION_LOCK:
             if bounded_send_seal.seal_digest in _BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS:
                 raise KiwoomCoordinationOwnerRejected(
@@ -219,7 +248,11 @@ def _register_approved_adapter(
                 )
             _BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS.add(bounded_send_seal.seal_digest)
 
-    adapter = KiwoomCoordinationAdapter(ports, grant_only=grant_only)
+    adapter = KiwoomCoordinationAdapter(
+        ports,
+        grant_only=grant_only,
+        canary_scope_authority=canary_scope_authority,
+    )
     adapter._bounded_send_seal_digest = (  # type: ignore[attr-defined]
         None if bounded_send_seal is None else bounded_send_seal.seal_digest
     )
@@ -233,6 +266,7 @@ def _register_approved_adapter(
         bounded_send_seal_digest=(
             None if bounded_send_seal is None else bounded_send_seal.seal_digest
         ),
+        canary_scope_authority=canary_scope_authority,
     )
     if bounded_send_seal is not None:
         with _BOUNDED_SEND_OWNER_ASSERTION_LOCK:
@@ -275,17 +309,35 @@ def _assert_bounded_send_owner_proof(
     """Accept one non-legacy owner assertion for one consumed sealed digest."""
 
     seal = proof.bounded_send_seal
+    canary_scope_authority = proof.canary_scope_authority
     if (
         owner.grant_only is not False
         or proof.grant_only is not False
         or proof.legacy_offline is not False
         or type(seal) is not BoundedSendSeal
+        or type(canary_scope_authority) is not CanaryScopeAuthority
         or type(proof.bounded_send_seal_digest) is not str
         or proof.bounded_send_seal_digest != seal.seal_digest
         or getattr(owner, "_bounded_send_seal_digest", None) != seal.seal_digest
+        or getattr(owner, "_canary_scope_authority", None) is not canary_scope_authority
         or seal.lane_id != entry.lane_id
         or seal.physical_account_id != entry.physical_account_id
     ):
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=entry.lane_id,
+        )
+    try:
+        asserted_authority = assert_canary_scope_authority_binding(
+            entry,
+            canary_scope_authority,
+        )
+    except LaneGuardError as exc:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=entry.lane_id,
+        ) from exc
+    if asserted_authority.seal_digest != seal.seal_digest:
         raise KiwoomCoordinationOwnerRejected(
             KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
             lane_id=entry.lane_id,
@@ -412,9 +464,10 @@ def build_bounded_send_kiwoom_coordination_factory(
     """Build the sole registered-seal path to a non-grant KR owner.
 
     The caller's mutable dict is copied and frozen here. Registration, account
-    identity, real-time expiry, durable ports, and full signed execution
-    readiness are checked again on factory invocation; only then is the
-    durable marker committed before ``grant_only=False`` construction.
+    identity, real-time expiry, durable ports, and canary-scope readiness are
+    checked again on factory invocation; only then is the durable marker
+    committed and a canary authority issued before ``grant_only=False``
+    construction.
     """
 
     sealed = snapshot_bounded_send_seal(seal)
@@ -462,10 +515,11 @@ def build_bounded_send_kiwoom_coordination_factory(
                 lane_id=entry.lane_id,
             )
         try:
-            # The coordinator applies this exact guard again before mutation.
-            # Run it before the one-shot marker commit so a lane that cannot
-            # reach that boundary does not spend its seal merely to fail later.
-            assert_entry_execution_ready(entry)
+            # The coordinator applies this exact canary-scope guard again
+            # before mutation. Run it before the one-shot marker commit so a
+            # lane that cannot reach that boundary does not spend its seal
+            # merely to fail later.
+            assert_entry_canary_scope_ready(entry)
         except LaneGuardError as exc:
             raise KiwoomCoordinationOwnerRejected(
                 exc.code, lane_id=entry.lane_id
@@ -477,10 +531,16 @@ def build_bounded_send_kiwoom_coordination_factory(
                 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
                 lane_id=entry.lane_id,
             ) from exc
+        canary_scope_authority = _issue_canary_scope_authority(
+            lane_id=sealed.lane_id,
+            physical_account_id=sealed.physical_account_id,
+            seal_digest=sealed.seal_digest,
+        )
         return _register_approved_adapter(
             ports,
             grant_only=False,
             bounded_send_seal=sealed,
+            canary_scope_authority=canary_scope_authority,
         )
 
     return _factory

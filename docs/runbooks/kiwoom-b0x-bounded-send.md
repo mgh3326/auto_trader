@@ -23,12 +23,27 @@ registry 상한으로 허용하지만 런타임 freshness는 `now < expires_at`�
 owner 구성 전 소비 마커는 `O_EXCL`, mode `0600`, 파일·디렉터리 `fsync`, exact
 readback을 모두 통과해야 한다. 기록 실패나 불확실성은 인가가 아니라 거부다.
 
-봉인 소비 직전에는 공용 coordinator가 mutation 전에 적용하는 것과 같은
-`assert_entry_execution_ready()`를 먼저 통과해야 한다. 즉 activation/writer/auto,
+봉인 소비 직전에는 canary 전용의
+`assert_entry_canary_scope_ready()`를 먼저 통과해야 한다. 이 판정이 면제하는 것은
+**정확히 세 항목뿐**이다: activation은 `RUNTIME_ACCEPTANCE_PENDING`이어야 하며
+`ENABLED`가 아니어야 하고, `writer is False` 및 `auto_order_enabled is False`여야 한다.
 physical identity, policy/execution/scheduler/cap/order-type/TIF/reconcile/credential/
-host/canary binding 전체가 준비되지 않은 lane은 해당 `LaneGuardError.code`를 cycle의
-coordination identity guard에 남기고 정지하며 소비 마커를 만들지 않는다. 이는 새 조건을
-추가하는 게 아니라 downstream의 동일 가드를 marker commit 앞으로 옮긴 순서 수리다.
+host/canary binding은 전부 계속 요구한다. 어느 하나라도 준비되지 않은 lane은 해당
+`LaneGuardError.code`를 cycle의 coordination identity guard에 남기고 정지하며 소비
+마커를 만들지 않는다.
+
+이 예외는 일반 주문 권한이 아니다. 소비가 성공한 직후에만 발급되는
+`CanaryScopeAuthority`가 `ACCEPTANCE` round trip에 전달될 때만 같은 canary-scope
+판정을 coordinator가 사용한다. `submit_coordinated`/`cancel_attributed` 및 authority가
+없는 모든 일반 경로는 기존 `assert_entry_execution_ready()`를 그대로 사용하므로
+`RUNTIME_ACCEPTANCE_PENDING` lane은 `lane_activation_not_enabled`로 닫힌다.
+
+**BACKDOOR_RISK는 0이 아니다.** 이 경로는 정의상 `ENABLED`가 아닌 lane의 단 한 번
+bounded send를 허용한다. 완화책은 pending 상태의 exact identity, writer/auto의 exact
+`False`, 소비된 one-shot seal, 그리고 full binding 검사다. 그러나 다음 두 단일 실패점이
+뚫리면 일반 우회가 된다: (1) exact pending 조건을 `READY` 등을 포함하는 집합으로 넓히는
+변경, (2) `CanaryScopeAuthority`를 봉인 소비 밖에서 발급하는 변경. 이 둘은 회귀·뮤턴트
+테스트로 유지하며, in-process 신뢰 경계 자체를 제거하지는 못한다.
 
 ### Registry 라벨은 통제가 아니다
 

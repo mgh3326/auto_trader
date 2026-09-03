@@ -6,11 +6,11 @@
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Production deployment orchestration | `scripts/deploy-native.sh`, `ops/native/` | MacBook native launchd production path |
+| Production deployment orchestration | `scripts/deploy-ncp-pull.sh`, `ops/ncp/` | NCP Docker blue/green production path |
 | Retired Docker deployment guard | `scripts/deploy.sh`, `scripts/healthcheck.sh` | Fail closed after ROB-263; cleanup guidance only |
 | Migration risk precheck | `scripts/migration-check.sh` | DB connectivity and high-risk migration pattern checks |
 | Migration execution | `scripts/migrate.sh` | Host-side Alembic execution with pre/post verification |
-| Native runtime checks | `ops/native/`, launchd services | Production MacBook native service inspection |
+| Retired native deployment guard | `scripts/deploy-native.sh` | Always exits 70; serving does not run on Mac launchd |
 | HTTPS/Caddy checks | `scripts/test-caddy-https.sh` | TLS redirect/header/certificate checks |
 | Test env bootstrap | `scripts/setup-test-env.sh` | `.env.test` generation for CI/local tests |
 | MCP startup wrapper | `scripts/mcp_server.sh` | MCP process boot wrapper with `.env.mcp` |

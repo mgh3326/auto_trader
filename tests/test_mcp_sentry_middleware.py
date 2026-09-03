@@ -30,6 +30,7 @@ from app.monitoring.sentry import (
     build_mcp_tool_observation,
     enrich_mcp_tool_call_scope,
     extract_mcp_result_envelope,
+    record_order_performance,
     resolve_mcp_funnel_stage,
     resolve_mcp_profile_tag,
     resolve_mcp_session_label_tag,
@@ -712,6 +713,46 @@ class _SpanRecorder:
 
     def set_status(self, value: str) -> None:
         self.status = value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", ["direct", "edge"])
+def test_record_order_performance_tags_scope_and_current_span(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    scope = _ScopeRecorder()
+    span = _SpanRecorder()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "get_current_scope", lambda: scope)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "get_current_span", lambda: span)
+
+    record_order_performance(
+        path=path,
+        scope="kis_mock",
+        broker_ms=12.3456,
+        total_ms=23.4567,
+        shadow=True,
+    )
+
+    expected = {
+        "order.path": path,
+        "order.scope": "kis_mock",
+        "order.shadow": "true",
+        "order.broker_ms": "12.346",
+        "order.total_ms": "23.457",
+    }
+    assert scope.tags == expected
+    assert span.tags == expected
+
+
+@pytest.mark.unit
+def test_record_order_performance_is_fail_open_when_sentry_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise() -> None:
+        raise RuntimeError("synthetic telemetry failure")
+
+    monkeypatch.setattr(sentry_module.sentry_sdk, "get_current_scope", _raise)
+    record_order_performance(path="edge", scope="kis_mock", broker_ms=1.0, total_ms=2.0)
 
 
 def _make_scope_context_manager(scope: Any) -> Mock:

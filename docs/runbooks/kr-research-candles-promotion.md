@@ -103,8 +103,9 @@ re-run with a wider window; re-collect the missing range from the providers
 
 ## 6. Applying the migration
 
-`alembic upgrade head` is run by `deploy-native.sh` at cutover. Do not run it
-against the production database by hand.
+The NCP pull-deploy script intentionally does not run migrations. Run an
+operator-reviewed migration procedure before promotion; do not improvise a
+production-database migration from this runbook.
 
 Requires the `timescaledb` extension (>= 2.8.1; production is on 2.26.3).
 

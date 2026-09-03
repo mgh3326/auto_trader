@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -43,11 +45,17 @@ from app.services.mock_lane_registry import (
     LaneRegistryEntry,
     MissingBinding,
     PolicyBinding,
+    assert_entry_canary_scope_ready,
     assert_entry_execution_ready,
 )
+from scripts.b0x.broker_truth import BrokerTruth
+from scripts.b0x.kr import kiwoom as kiwoom_lane
+from scripts.b0x.kr import kiwoom_bounded_send as bounded_send
+from scripts.b0x.kr import kiwoom_coordination
 from scripts.b0x.kr.kiwoom_coordination import (
     _entry_provenance,
     _register_approved_adapter,
+    build_bounded_send_kiwoom_coordination_factory,
 )
 from scripts.b0x.kr.kiwoom_ordering import (
     ACCOUNT_SUMMARY_FINGERPRINT_IDENTITY_REJECTED,
@@ -306,6 +314,19 @@ def bound_kiwoom_entry(**overrides: object) -> LaneRegistryEntry:
     return replace(canonical, **values)
 
 
+def canary_scope_kiwoom_entry(**overrides: object) -> LaneRegistryEntry:
+    """A fully bound, deliberately non-autonomous pending canary row."""
+
+    values: dict[str, object] = {
+        "activation_status": ActivationStatus.RUNTIME_ACCEPTANCE_PENDING,
+        "activation_reason": "test-only sealed canary scope",
+        "writer": False,
+        "auto_order_enabled": False,
+    }
+    values.update(overrides)
+    return bound_kiwoom_entry(**values)
+
+
 def bound_registry(entry: LaneRegistryEntry) -> tuple[LaneRegistryEntry, ...]:
     return tuple(
         entry if item.lane_id == entry.lane_id else item
@@ -372,7 +393,23 @@ class FakeKiwoomAccount:
                 "cancel_quantity": cancel_quantity,
             }
         )
+        for row in self.rows:
+            if row["order_id"] == original_order_no:
+                row["status"] = "cancelled"
         return {"return_code": 0, "ord_no": original_order_no}
+
+    async def read_resting_orders(self) -> tuple[kiwoom_lane.RestingOrder, ...]:
+        return tuple(
+            kiwoom_lane.RestingOrder(
+                order_id=str(row["order_id"]),
+                symbol=str(row["symbol"]),
+                status=str(row["status"]),
+                remaining_quantity=int(row["remaining_quantity"]),
+                ordered_price=70_000,
+            )
+            for row in self.rows
+            if row["status"] == "open"
+        )
 
     async def read_order_detail(
         self, *, order_date: str | None = None, symbol: str | None = None
@@ -461,6 +498,68 @@ def build_offline_adapter(
         authority_evidence=InMemoryAuthorityEvidence(),
     )
     return _register_approved_adapter(ports, grant_only=False)
+
+
+def build_sealed_canary_adapter(
+    *, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> KiwoomCoordinationAdapter:
+    """Use the real one-shot factory with only in-memory coordination ports."""
+
+    registry_path = tmp_path / "registered-seals.toml"
+    marker_root = tmp_path / "consumed-seals"
+    seal_now = datetime(2026, 8, 28, 5, 0, tzinfo=UTC)
+    canary_entry = canary_scope_kiwoom_entry()
+    assert canary_entry.physical_account_id is not None
+    expires_at = (seal_now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    seal_digest = bounded_send.compute_bounded_send_seal_digest(
+        lane_id=canary_entry.lane_id,
+        physical_account_id=canary_entry.physical_account_id,
+        expires_at=expires_at,
+    )
+    seal = {
+        "lane_id": canary_entry.lane_id,
+        "physical_account_id": canary_entry.physical_account_id,
+        "expires_at": expires_at,
+        "seal_digest": seal_digest,
+    }
+    registry_path.write_text(
+        "\n".join(
+            (
+                "schema_version = "
+                + json.dumps(bounded_send.KIWOOM_BOUNDED_SEND_REGISTRY_SCHEMA),
+                "[[registered_seals]]",
+                *(f"{key} = {json.dumps(value)}" for key, value in seal.items()),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        bounded_send, "KIWOOM_BOUNDED_SEND_SEAL_REGISTRY_PATH", registry_path
+    )
+    monkeypatch.setattr(
+        bounded_send, "KIWOOM_BOUNDED_SEND_CONSUMPTION_ROOT", marker_root
+    )
+    monkeypatch.setattr(bounded_send, "_PROCESS_CONSUMED_SEAL_DIGESTS", set())
+    monkeypatch.setattr(bounded_send, "_wall_clock_now", lambda: seal_now)
+    monkeypatch.setattr(
+        kiwoom_coordination, "_BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS", set()
+    )
+    monkeypatch.setattr(
+        kiwoom_coordination,
+        "resolve_kiwoom_lane_entry",
+        lambda _lane_id=kiwoom_coordination.KIWOOM_KR_LANE_ID: canary_entry,
+    )
+
+    def ports_factory(entry: LaneRegistryEntry) -> KiwoomCoordinationPorts:
+        ports = build_offline_adapter(entry=entry).ports
+        ports.legacy_offline = False
+        return ports
+
+    return build_bounded_send_kiwoom_coordination_factory(
+        seal=seal,
+        ports_factory=ports_factory,
+    )()
 
 
 def _scope_assert_owned_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -1436,3 +1535,167 @@ def test_execution_ready_missing_bindings_clause_fires_once_prior_clauses_pass()
     with pytest.raises(LaneGuardError) as refusal:
         assert_entry_execution_ready(entry)
     assert refusal.value.code == "lane_binding_incomplete"
+
+
+@pytest.mark.parametrize(
+    ("activation_status", "writer", "auto_order_enabled"),
+    tuple(product(tuple(ActivationStatus), (False, True), (False, True))),
+)
+def test_canary_scope_readiness_is_an_exact_disjoint_matrix(
+    activation_status: ActivationStatus,
+    writer: bool,
+    auto_order_enabled: bool,
+) -> None:
+    """Only pending + exact false/false is a canary scope; no subset widens it."""
+
+    entry = canary_scope_kiwoom_entry(
+        activation_status=activation_status,
+        writer=writer,
+        auto_order_enabled=auto_order_enabled,
+    )
+
+    if (
+        activation_status is ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+        and writer is False
+        and auto_order_enabled is False
+    ):
+        assert_entry_canary_scope_ready(entry)
+        return
+
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_canary_scope_ready(entry)
+    assert refusal.value.code == (
+        "canary_scope_forbids_writer"
+        if activation_status is ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+        else "lane_not_in_canary_scope"
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_code"),
+    (
+        (
+            {
+                "physical_account_id": None,
+                "identity_status": "UNKNOWN",
+                "fingerprint_evidence_ref": None,
+            },
+            "physical_account_identity_unknown",
+        ),
+        ({"missing_bindings": (MissingBinding.CAP,)}, "lane_binding_incomplete"),
+        ({"policy_binding": None}, "lane_binding_incomplete"),
+        ({"max_order_notional": None}, "lane_binding_incomplete"),
+        ({"allowed_order_types": ()}, "lane_binding_incomplete"),
+        ({"credential_namespace": None}, "lane_binding_incomplete"),
+        ({"allowed_hosts": ()}, "lane_binding_incomplete"),
+    ),
+)
+def test_canary_scope_keeps_every_nonactivation_binding_required(
+    changes: dict[str, object], expected_code: str
+) -> None:
+    """The only exemptions are ENABLED, writer, and auto_order_enabled."""
+
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_canary_scope_ready(canary_scope_kiwoom_entry(**changes))
+    assert refusal.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    "changes",
+    ({"writer": 0}, {"auto_order_enabled": 0}),
+)
+def test_canary_scope_requires_exact_false_for_each_autonomy_flag(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_canary_scope_ready(canary_scope_kiwoom_entry(**changes))
+    assert refusal.value.code == "canary_scope_forbids_writer"
+
+
+def test_canary_scope_refuses_ready_activation_with_an_assertion_mutant_tripwire() -> (
+    None
+):
+    """Changing exact pending identity to a multi-state set must go red."""
+
+    entry = canary_scope_kiwoom_entry(activation_status=ActivationStatus.READY)
+    try:
+        assert_entry_canary_scope_ready(entry)
+    except LaneGuardError as refusal:
+        assert refusal.code == "lane_not_in_canary_scope"
+    else:
+        raise AssertionError(
+            "READY widened the exact canary-scope activation condition"
+        )
+
+
+def test_execution_readiness_remains_closed_for_a_valid_canary_scope() -> None:
+    entry = canary_scope_kiwoom_entry()
+    assert_entry_canary_scope_ready(entry)
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_execution_ready(entry)
+    assert refusal.value.code == "lane_activation_not_enabled"
+
+
+@pytest.mark.asyncio
+async def test_canary_scope_cannot_authorize_the_general_order_path() -> None:
+    """No authority argument means the existing full readiness gate still wins."""
+
+    adapter = build_offline_adapter(entry=canary_scope_kiwoom_entry())
+    account = FakeKiwoomAccount()
+    try:
+        await adapter.submit_coordinated(
+            account,
+            planned=Planned(),
+            policy_version=POLICY_VERSION,
+            policy_version_hash=POLICY_VERSION_HASH,
+            now=datetime.now(UTC),
+        )
+    except LaneGuardError as refusal:
+        assert refusal.code == "lane_activation_not_enabled"
+    else:
+        raise AssertionError(
+            "canary scope opened submit_coordinated without a seal authority"
+        )
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_consumed_seal_authority_reaches_acceptance_but_not_general_orders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine sealed capability is consumed only by the ACCEPTANCE call site."""
+
+    adapter = build_sealed_canary_adapter(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    account = FakeKiwoomAccount()
+    journals: list[dict[str, object]] = []
+
+    def record_order_no(**kwargs: object) -> None:
+        journals.append(dict(kwargs))
+
+    accepted = await adapter.acceptance_round_trip(
+        account,
+        planned=Planned(),
+        broker_truth=BrokerTruth(position_symbols=(), own_pending=()),
+        record_order_no=record_order_no,
+        policy_version=POLICY_VERSION,
+        policy_version_hash=POLICY_VERSION_HASH,
+        now=datetime(2026, 8, 28, 5, 0, tzinfo=UTC),
+    )
+    assert accepted.round_trip.cancel_confirmed is True
+    assert len(account.buy_calls) == 1
+    assert len(account.cancel_calls) == 1
+    assert journals
+
+    try:
+        await adapter.submit_coordinated(
+            account,
+            planned=Planned(order_key="general-path-must-stay-closed"),
+            policy_version=POLICY_VERSION,
+            policy_version_hash=POLICY_VERSION_HASH,
+            now=datetime(2026, 8, 28, 5, 1, tzinfo=UTC),
+        )
+    except LaneGuardError as refusal:
+        assert refusal.code == "lane_activation_not_enabled"
+    else:
+        raise AssertionError("a sealed canary authority reached submit_coordinated")
+    assert len(account.buy_calls) == 1

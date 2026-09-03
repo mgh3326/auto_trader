@@ -76,10 +76,7 @@ tests/scripts/test_binance_demo_strategy_loop.py
 tests/scripts/test_list_recent_fill_events_cli.py
 tests/scripts/test_list_recent_watch_events_cli.py
 tests/scripts/test_mock_session_mcp.py
-tests/scripts/test_native_bluegreen_lib.py
-tests/scripts/test_native_run_wrappers.py
 tests/scripts/test_policy_table_halt_suspect.py
-tests/scripts/test_run_haproxy_wrapper.py
 tests/scripts/test_spot_smoke_report.py
 tests/services/action_report/common/test_canonicalize.py
 tests/services/action_report/common/test_generator_constraints.py

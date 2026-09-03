@@ -138,7 +138,7 @@ def test_the_guard_has_something_to_look_at() -> None:
     assert "env.example" in names
     assert "env.prod.example" in names
     assert any(name.startswith("docker-compose") for name in names)
-    assert any(name.endswith(".plist") for name in names)
+    assert "haproxy.cfg.tmpl" in names
     assert any(name.endswith(".sh") for name in names)
 
 
@@ -212,9 +212,8 @@ OMITTED_SURFACES = (
     "run_docker.sh",
     "run_api_compose.sh",
     ".github/workflows/taskiq-smoke.sh",
-    "ops/native/plists/com.robinco.auto-trader.haproxy.plist",
-    "ops/native/scripts/run-scheduler.sh",
-    "scripts/deploy/native/deploy-native.sh",
+    "ops/ncp/haproxy/haproxy.cfg.tmpl",
+    "scripts/deploy-ncp-pull.sh",
 )
 
 #: Path classes the original glob list already covered. Kept so the fix has
@@ -301,8 +300,8 @@ def test_discovery_is_anchored_on_the_real_repository() -> None:
     for relative in (
         "env.prod.example",
         ".github/workflows/taskiq-smoke.sh",
-        "ops/native/plists/com.robinco.auto-trader.haproxy.plist",
-        "ops/native/scripts/run-scheduler.sh",
+        "ops/ncp/haproxy/haproxy.cfg.tmpl",
+        "scripts/deploy-ncp-pull.sh",
     ):
         assert (_REPO / relative).is_file(), relative
 
@@ -314,8 +313,8 @@ def test_discovery_is_anchored_on_the_real_repository() -> None:
         "env.prod.example",
         "Makefile",
         ".github/workflows/taskiq-smoke.sh",
-        "ops/native/plists/com.robinco.auto-trader.haproxy.plist",
-        "ops/native/scripts/run-scheduler.sh",
+        "ops/ncp/haproxy/haproxy.cfg.tmpl",
+        "scripts/deploy-ncp-pull.sh",
     ):
         assert relative in discovered, relative
 

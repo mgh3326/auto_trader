@@ -256,6 +256,10 @@ class KISMockOrderLedger(Base):
     response_code: Mapped[str | None] = mapped_column(Text)
     response_message: Mapped[str | None] = mapped_column(Text)
     raw_response: Mapped[dict | None] = mapped_column(JSONB)
+    # Bounded, non-evidence execution telemetry.  This is separate from the
+    # broker response so latency attribution cannot be mistaken for broker
+    # evidence during reconciliation.
+    extra_metadata: Mapped[dict | None] = mapped_column(JSONB)
 
     reason: Mapped[str | None] = mapped_column(Text)
     thesis: Mapped[str | None] = mapped_column(Text)

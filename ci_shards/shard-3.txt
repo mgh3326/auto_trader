@@ -80,14 +80,10 @@ tests/scripts/b0x/test_table_gate.py
 tests/scripts/b0x/us/test_alpaca.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
-tests/scripts/test_deploy_healthcheck_ws_advisory.py
-tests/scripts/test_deploy_native_bluegreen.py
 tests/scripts/test_futures_demo_confirm_reconcile.py
-tests/scripts/test_native_bundle_completeness.py
-tests/scripts/test_native_deploy_preflight.py
-tests/scripts/test_native_plists.py
 tests/scripts/test_ncp_pg_backup.py
 tests/scripts/test_nhplug_collect_period.py
+tests/scripts/test_perf_compare_sentry.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_run_rob1040_crs24_refreeze.py
 tests/scripts/test_seed_execution_ledger_opening_lots_cli.py

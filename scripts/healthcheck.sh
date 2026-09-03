@@ -13,11 +13,10 @@ cat >&2 <<'EOF'
 The Raspberry Pi Docker production stack was decommissioned in ROB-263.
 Do not use legacy Docker container health checks for production API/worker/MCP/websocket services.
 
-Use the MacBook native launchd/service runbook instead, or inspect the native host directly.
+Use the NCP pull-deploy runbook instead, or inspect the NCP host directly.
 Helpful entrypoints:
-  - .github/workflows/deploy-macos-native.yml
-  - scripts/deploy-native.sh
-  - ops/native/
+  - scripts/deploy-ncp-pull.sh
+  - docs/runbooks/ncp-pull-deploy.md
 EOF
 
 exit 1

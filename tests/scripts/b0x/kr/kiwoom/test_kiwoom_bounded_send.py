@@ -14,7 +14,15 @@ from pathlib import Path
 import pytest
 
 from app.schemas.execution_contracts import LaneStatus, SchedulerOwner
-from app.services.mock_lane_registry import ActivationStatus, PolicyBinding
+from app.services.mock_integration.coordination import (
+    CanaryScopeAuthority,
+    assert_canary_scope_authority_binding,
+)
+from app.services.mock_lane_registry import (
+    ActivationStatus,
+    LaneGuardError,
+    PolicyBinding,
+)
 from scripts.b0x.kr import kiwoom_bounded_send as bounded_send
 from scripts.b0x.kr import kiwoom_coordination, kiwoom_cycle, kiwoom_ordering
 from scripts.b0x.kr.kiwoom_coordination import (
@@ -32,19 +40,19 @@ _VALID_EXPIRY = _REGISTRY_NOW + dt.timedelta(hours=1)
 _EXPIRED_EXPIRY = _REGISTRY_NOW - dt.timedelta(seconds=1)
 
 
-def _execution_ready_entry():  # noqa: ANN202 - test fixture value
+def _canary_scope_ready_entry():  # noqa: ANN202 - test fixture value
     entry = resolve_kiwoom_lane_entry()
     return replace(
         entry,
         lane_status=LaneStatus.AUTO_ENABLED,
-        activation_status=ActivationStatus.ENABLED,
-        activation_reason="bounded-send-test fully bound",
+        activation_status=ActivationStatus.RUNTIME_ACCEPTANCE_PENDING,
+        activation_reason="bounded-send-test canary scope fully bound",
         policy_binding=PolicyBinding("bounded-send-test.v1", "sha256:test-policy"),
         execution_mode="test-only-bounded",
         scheduler_owner=SchedulerOwner.MANUAL,
         timing_owner="test-only-timing",
-        writer=True,
-        auto_order_enabled=True,
+        writer=False,
+        auto_order_enabled=False,
         max_order_notional=Decimal("10000000"),
         max_orders_per_session=8,
         max_open_orders=8,
@@ -73,7 +81,7 @@ def isolated_seal_runtime(
         kiwoom_coordination, "_BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS", set()
     )
     monkeypatch.setattr(bounded_send, "_wall_clock_now", lambda: _REGISTRY_NOW)
-    ready_entry = _execution_ready_entry()
+    ready_entry = _canary_scope_ready_entry()
     monkeypatch.setattr(
         kiwoom_coordination,
         "resolve_kiwoom_lane_entry",
@@ -177,7 +185,7 @@ def test_execution_unready_lane_does_not_consume_one_shot_seal(
     assert owner is None
     assert record["identity_guard"] == {
         "status": "rejected",
-        "code": "lane_activation_not_enabled",
+        "code": "lane_not_in_canary_scope",
         "owner_type": None,
     }
     assert record["factory_error_type"] == "KiwoomCoordinationOwnerRejected"
@@ -306,22 +314,10 @@ def test_consumed_digest_cannot_construct_a_second_private_owner(
     registry_path, _ = isolated_seal_runtime
     seal = _seal(expires_at=_VALID_EXPIRY)
     _write_registry(registry_path, [seal])
-    sealed = bounded_send.snapshot_bounded_send_seal(seal)
-    bounded_send.consume_registered_bounded_send_seal(sealed)
-    ports = _ports(resolve_kiwoom_lane_entry())
-
-    first = kiwoom_coordination._register_approved_adapter(
-        ports,
-        grant_only=False,
-        bounded_send_seal=sealed,
-    )
+    first = _factory(seal)()
     assert first.grant_only is False
     with pytest.raises(kiwoom_coordination.KiwoomCoordinationOwnerRejected):
-        kiwoom_coordination._register_approved_adapter(
-            ports,
-            grant_only=False,
-            bounded_send_seal=sealed,
-        )
+        _factory(seal)()
 
 
 def test_factory_snapshots_seal_before_expiry_mutation(
@@ -364,6 +360,75 @@ def test_unsealed_owner_construction_paths_never_authorize_send(
 
     with pytest.raises(kiwoom_coordination.KiwoomCoordinationOwnerRejected):
         kiwoom_coordination._register_approved_adapter(ports, grant_only=False)
+
+
+def test_canary_scope_authority_cannot_be_constructed_outside_a_consumed_seal() -> None:
+    """A caller cannot turn the capability dataclass into an authority flag."""
+
+    entry = resolve_kiwoom_lane_entry()
+    assert entry.physical_account_id is not None
+
+    try:
+        CanaryScopeAuthority(
+            entry.lane_id,
+            entry.physical_account_id,
+            "a" * 64,
+        )
+    except LaneGuardError as refusal:
+        assert refusal.code == "canary_scope_authority_unissued"
+    else:
+        raise AssertionError(
+            "CanaryScopeAuthority was constructed outside a consumed seal"
+        )
+
+
+def test_bounded_factory_issues_authority_only_after_seal_consumption(
+    isolated_seal_runtime: tuple[Path, Path],
+) -> None:
+    """The real factory gives its owner the exact post-consumption capability."""
+
+    registry_path, _ = isolated_seal_runtime
+    seal = _seal(expires_at=_VALID_EXPIRY)
+    _write_registry(registry_path, [seal])
+
+    owner = _factory(seal)()
+    authority = getattr(owner, "_canary_scope_authority", None)
+    assert type(authority) is CanaryScopeAuthority
+    assert (
+        assert_canary_scope_authority_binding(owner.ports.entry, authority) is authority
+    )
+    assert authority.seal_digest == seal["seal_digest"]
+
+
+def test_canary_scope_authority_issuer_has_one_post_consumption_production_call_site() -> (
+    None
+):
+    """Moving issuance before consumption or adding another issuer is a red mutant."""
+
+    issuer_calls: list[tuple[Path, int]] = []
+    consume_calls: list[tuple[Path, int]] = []
+    for root in (REPO_ROOT / "app", REPO_ROOT / "scripts"):
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Name):
+                    called = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    called = node.func.attr
+                else:
+                    continue
+                if called == "_issue_canary_scope_authority":
+                    issuer_calls.append((path, node.lineno))
+                if called == "consume_registered_bounded_send_seal":
+                    consume_calls.append((path, node.lineno))
+
+    expected_path = REPO_ROOT / "scripts/b0x/kr/kiwoom_coordination.py"
+    assert issuer_calls and issuer_calls == [(expected_path, issuer_calls[0][1])]
+    assert issuer_calls[0][1] > min(
+        line for path, line in consume_calls if path == expected_path
+    )
 
 
 def test_matching_but_unregistered_digest_is_rejected(

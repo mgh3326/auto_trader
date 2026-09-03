@@ -1438,6 +1438,41 @@ def _set_span_data(span: Any, key: str, value: Any) -> None:
         set_data(key, value)
 
 
+def record_order_performance(
+    *,
+    path: str,
+    scope: str,
+    broker_ms: float | None,
+    total_ms: float | None,
+    shadow: bool = False,
+) -> None:
+    """Attach bounded order-path timings without affecting execution.
+
+    This deliberately owns the SDK interaction so order code never needs to
+    depend on Sentry directly.  Timing is observability only: an unavailable
+    SDK, malformed value, or mocked span must be indistinguishable from no
+    telemetry to the order path.
+    """
+    try:
+        scope_obj = sentry_sdk.get_current_scope()
+        span = sentry_sdk.get_current_span()
+        values: dict[str, str] = {
+            "order.path": path,
+            "order.scope": scope,
+            "order.shadow": str(shadow).lower(),
+        }
+        for key, value in (
+            ("order.broker_ms", broker_ms),
+            ("order.total_ms", total_ms),
+        ):
+            if isinstance(value, (int, float)) and value >= 0:
+                values[key] = f"{value:.3f}"
+        for key, value in values.items():
+            _set_scope_and_span_tag(scope_obj, span, key, value)
+    except Exception:  # noqa: BLE001 - telemetry must never alter an order
+        return
+
+
 # ROB-1232: lane/profile tags for tools/call span filtering.
 # Missing sources must record the literal "untagged" (never null/absent) so
 # Sentry span queries can partition by MCP_PROFILE / session_label after deploy.
