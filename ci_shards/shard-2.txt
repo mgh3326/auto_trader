@@ -75,6 +75,7 @@ tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
 tests/scripts/test_native_retirement.py
 tests/scripts/test_post_watch_triage_reply.py
+tests/scripts/test_postuntil_timers_check.py
 tests/scripts/test_r4_p0_readiness.py
 tests/scripts/test_record_strategy_learning_event.py
 tests/scripts/test_rob837_reconcile_upbit_proposal.py
