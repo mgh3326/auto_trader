@@ -43,8 +43,8 @@ from scripts.b0x.kr.kiwoom_bounded_send import (
     KIWOOM_BOUNDED_SEND_MARKER_WRITE_FAILED,
     MARKER_INVALID,
     MARKER_WRITE_FAILED,
-    OWNERSHIP_LOST_AFTER_CONSUMPTION,
     POST_CONSUMPTION_REJECT_REASONS,
+    UNCLASSIFIED_POST_CONSUMPTION,
     BoundedSendSeal,
     KiwoomBoundedSendPostConsumptionRejected,
     KiwoomBoundedSendSealRejected,
@@ -125,6 +125,30 @@ class _ApprovedAdapterDryValidation:
     authority_inputs: _CanaryScopeAuthorityInputs
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundedSendFactoryPreparation:
+    """Opaque, non-consuming receipt for one exact bounded-send factory."""
+
+    factory_token: object
+    entry: LaneRegistryEntry
+    sealed: BoundedSendSeal
+    ports: KiwoomCoordinationPorts
+    seal_binding_validator: Callable[[str, str, str], None]
+    authority_inputs: _CanaryScopeAuthorityInputs
+    dry_validation: _ApprovedAdapterDryValidation
+
+
+@dataclass(frozen=True, slots=True)
+class KiwoomCoordinationFactoryPreparation:
+    """A pre-consumption owner/grant result consumed by the cycle boundary."""
+
+    factory: Callable[[], object]
+    expected_entry: LaneRegistryEntry
+    owner: KiwoomCoordinationAdapter | None
+    bounded_send: _BoundedSendFactoryPreparation | None
+    grant_available: bool
+
+
 _OWNER_CONSTRUCTION_PROOFS: WeakKeyDictionary[
     KiwoomCoordinationAdapter, _KiwoomOwnerConstructionProof
 ] = WeakKeyDictionary()
@@ -133,6 +157,12 @@ _BOUNDED_SEND_OWNER_ASSERTIONS: WeakKeyDictionary[KiwoomCoordinationAdapter, boo
 )
 _BOUNDED_SEND_OWNER_ASSERTION_LOCK = threading.Lock()
 _BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS: set[str] = set()
+_BOUNDED_SEND_FACTORY_PREPARERS: WeakKeyDictionary[
+    Callable[[], object], Callable[[], _BoundedSendFactoryPreparation]
+] = WeakKeyDictionary()
+_BOUNDED_SEND_FACTORY_TOKENS: WeakKeyDictionary[Callable[[], object], object] = (
+    WeakKeyDictionary()
+)
 
 
 class KiwoomCoordinationOwnerRejected(RuntimeError):
@@ -596,7 +626,107 @@ def _closed_post_consumption_reason(error: BaseException) -> str:
             if reason is not None:
                 return reason
         cursor = cursor.__cause__ or cursor.__context__
-    return OWNERSHIP_LOST_AFTER_CONSUMPTION
+    return UNCLASSIFIED_POST_CONSUMPTION
+
+
+def prepare_kiwoom_coordination_factory(
+    factory: Callable[[], object],
+    *,
+    expected_entry: LaneRegistryEntry,
+) -> KiwoomCoordinationFactoryPreparation:
+    """Resolve every grant decision without consuming a bounded-send seal."""
+
+    preparer = _BOUNDED_SEND_FACTORY_PREPARERS.get(factory)
+    if preparer is not None:
+        bounded = preparer()
+        if bounded.entry is not expected_entry:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_ENTRY_MISMATCH,
+                lane_id=expected_entry.lane_id,
+            )
+        return KiwoomCoordinationFactoryPreparation(
+            factory=factory,
+            expected_entry=expected_entry,
+            owner=None,
+            bounded_send=bounded,
+            grant_available=True,
+        )
+
+    candidate = factory()
+    try:
+        owner = assert_kiwoom_coordination_owner(
+            candidate,
+            expected_lane_id=KIWOOM_KR_LANE_ID,
+            expected_entry=expected_entry,
+        )
+    except KiwoomCoordinationOwnerRejected as exc:
+        exc.owner_type = type(candidate).__name__
+        raise
+    return KiwoomCoordinationFactoryPreparation(
+        factory=factory,
+        expected_entry=expected_entry,
+        owner=owner,
+        bounded_send=None,
+        grant_available=owner.grant_only is False,
+    )
+
+
+def resolve_prepared_kiwoom_coordination_factory(
+    prepared: KiwoomCoordinationFactoryPreparation,
+    *,
+    expected_entry: LaneRegistryEntry,
+) -> KiwoomCoordinationAdapter:
+    """Consume, when required, only the exact preparation checked by the cycle."""
+
+    if (
+        type(prepared) is not KiwoomCoordinationFactoryPreparation
+        or prepared.expected_entry is not expected_entry
+    ):
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=expected_entry.lane_id,
+        )
+    if prepared.bounded_send is not None:
+        if prepared.owner is not None or prepared.grant_available is not True:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=expected_entry.lane_id,
+            )
+        token = _BOUNDED_SEND_FACTORY_TOKENS.get(prepared.factory)
+        if token is None or token is not prepared.bounded_send.factory_token:
+            raise KiwoomCoordinationOwnerRejected(
+                KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+                lane_id=expected_entry.lane_id,
+            )
+        return _complete_bounded_send_factory_preparation(prepared.bounded_send)
+    if prepared.owner is None:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=expected_entry.lane_id,
+        )
+    if coordination_owner_consumed_bounded_send(prepared.owner):
+        return prepared.owner
+    return assert_kiwoom_coordination_owner(
+        prepared.owner,
+        expected_lane_id=KIWOOM_KR_LANE_ID,
+        expected_entry=expected_entry,
+    )
+
+
+def coordination_owner_consumed_bounded_send(
+    owner: KiwoomCoordinationAdapter,
+) -> bool:
+    """Return true only for an approved owner backed by a consumed exact seal."""
+
+    if type(owner) is not KiwoomCoordinationAdapter:
+        return False
+    proof = _OWNER_CONSTRUCTION_PROOFS.get(owner)
+    return bool(
+        proof is not None
+        and type(proof.bounded_send_seal) is BoundedSendSeal
+        and proof.grant_only is False
+        and getattr(owner, "_bounded_send_consumption_committed", False) is True
+    )
 
 
 def build_bounded_send_kiwoom_coordination_factory(
@@ -622,7 +752,9 @@ def build_bounded_send_kiwoom_coordination_factory(
             lane_id=sealed.lane_id,
         )
 
-    def _factory() -> KiwoomCoordinationAdapter:
+    factory_token = object()
+
+    def _prepare() -> _BoundedSendFactoryPreparation:
         entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
         try:
             physical_account_id = require_j2a_physical_account_id(entry)
@@ -707,45 +839,72 @@ def build_bounded_send_kiwoom_coordination_factory(
             expected_lane_id=KIWOOM_KR_LANE_ID,
             expected_entry=entry,
         )
-        try:
-            consume_registered_bounded_send_seal(sealed)
-        except KiwoomBoundedSendPostConsumptionRejected as exc:
-            raise KiwoomPostConsumptionOwnerRejected(
-                exc.reason,
-                lane_id=entry.lane_id,
-            ) from exc
-        except KiwoomBoundedSendSealRejected as exc:
+        return _BoundedSendFactoryPreparation(
+            factory_token=factory_token,
+            entry=entry,
+            sealed=sealed,
+            ports=ports,
+            seal_binding_validator=seal_binding_validator,
+            authority_inputs=authority_inputs,
+            dry_validation=dry_validation,
+        )
+
+    def _factory() -> KiwoomCoordinationAdapter:
+        return _complete_bounded_send_factory_preparation(_prepare())
+
+    _BOUNDED_SEND_FACTORY_PREPARERS[_factory] = _prepare
+    _BOUNDED_SEND_FACTORY_TOKENS[_factory] = factory_token
+    return _factory
+
+
+def _complete_bounded_send_factory_preparation(
+    prepared: _BoundedSendFactoryPreparation,
+) -> KiwoomCoordinationAdapter:
+    """Consume one exact prepared seal, then perform only binding work."""
+
+    if type(prepared) is not _BoundedSendFactoryPreparation:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH
+        )
+    entry = prepared.entry
+    sealed = prepared.sealed
+    try:
+        consume_registered_bounded_send_seal(sealed)
+    except KiwoomBoundedSendPostConsumptionRejected as exc:
+        raise KiwoomPostConsumptionOwnerRejected(
+            exc.reason,
+            lane_id=entry.lane_id,
+        ) from exc
+    except KiwoomBoundedSendSealRejected as exc:
+        raise KiwoomCoordinationOwnerRejected(
+            KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
+            lane_id=entry.lane_id,
+        ) from exc
+    try:
+        canary_scope_authority = _issue_canary_scope_authority(
+            lane_id=sealed.lane_id,
+            physical_account_id=sealed.physical_account_id,
+            seal_digest=sealed.seal_digest,
+            seal_binding_validator=prepared.seal_binding_validator,
+        )
+        owner = _register_approved_adapter(
+            prepared.ports,
+            grant_only=False,
+            bounded_send_seal=sealed,
+            canary_scope_authority=canary_scope_authority,
+            validated=prepared.dry_validation,
+        )
+        if type(owner) is not KiwoomCoordinationAdapter:
             raise KiwoomCoordinationOwnerRejected(
                 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
                 lane_id=entry.lane_id,
-            ) from exc
-        try:
-            canary_scope_authority = _issue_canary_scope_authority(
-                lane_id=sealed.lane_id,
-                physical_account_id=sealed.physical_account_id,
-                seal_digest=sealed.seal_digest,
-                seal_binding_validator=seal_binding_validator,
             )
-            owner = _register_approved_adapter(
-                ports,
-                grant_only=False,
-                bounded_send_seal=sealed,
-                canary_scope_authority=canary_scope_authority,
-                validated=dry_validation,
-            )
-            if type(owner) is not KiwoomCoordinationAdapter:
-                raise KiwoomCoordinationOwnerRejected(
-                    KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
-                    lane_id=entry.lane_id,
-                )
-            return owner
-        except Exception as exc:
-            raise KiwoomPostConsumptionOwnerRejected(
-                _closed_post_consumption_reason(exc),
-                lane_id=entry.lane_id,
-            ) from exc
-
-    return _factory
+        return owner
+    except Exception as exc:
+        raise KiwoomPostConsumptionOwnerRejected(
+            _closed_post_consumption_reason(exc),
+            lane_id=entry.lane_id,
+        ) from exc
 
 
 def build_kiwoom_coordination_factory(
@@ -847,11 +1006,15 @@ __all__ = [
     "KIWOOM_KR_LANE_ID",
     "KIWOOM_LANE_IDS",
     "KIWOOM_US_LANE_ID",
+    "KiwoomCoordinationFactoryPreparation",
     "KiwoomCoordinationOwnerRejected",
     "assert_kiwoom_coordination_owner",
     "build_bounded_send_kiwoom_coordination_factory",
     "build_kiwoom_coordination_factory",
+    "coordination_owner_consumed_bounded_send",
     "make_grant_only_kiwoom_coordination_adapter",
+    "prepare_kiwoom_coordination_factory",
     "production_kiwoom_coordination_factory",
+    "resolve_prepared_kiwoom_coordination_factory",
     "resolve_kiwoom_lane_entry",
 ]

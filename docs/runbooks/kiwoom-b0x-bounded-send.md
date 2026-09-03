@@ -32,16 +32,30 @@ adapter shape와 provenance, current authority 부재, one-owner, seal digest �
 조건의 거부는 소비 마커를 만들기 전에 끝나며, dry/activation용 검증 구현을 두 벌로
 나누지 않는다.
 
+cycle은 bounded factory를 비소비 준비와 소비 완료의 두 단계로 사용한다. `--confirm`,
+현재 KRX RTH, 정책표 존재·freshness, env arm을 먼저 판정한다. ORDERING이면 account-keyed
+writer lease도 먼저 획득하고, factory의 비소비 준비 결과로 non-grant owner shape를
+확정한 뒤에만 최종 owner resolution이 마커를 소비한다. 소비 뒤의 lease와 owner 재단언은
+TOCTOU 재확인으로 그대로 남으며 조건을 낮추지 않는다. preview와 위 선행 게이트의 거부는
+bounded factory의 소비 완료 단계에 진입하지 않는다.
+
 소비를 시도한 뒤 허용되는 거부 사유는 코드의 닫힌
 `POST_CONSUMPTION_REJECT_REASONS`와 정확히 같다:
 `MARKER_WRITE_FAILED`, `MARKER_INVALID`, `DURABLE_WRITE_EXPIRED`,
-`ALREADY_CONSUMED`, `OWNERSHIP_LOST_AFTER_CONSUMPTION`. 앞의 네 경우에는 마커 상태가
-불확실하거나 이미 소비되었으므로 봉인을 되살리지 않는다. 마지막 경우도 소비와 cycle의
-최종 owner 재단언 사이에 소유권을 잃은 것이므로 전송하지 않고 봉인을 소비된 채로 둔다.
+`ALREADY_CONSUMED`, `OWNERSHIP_LOST_AFTER_CONSUMPTION`,
+`PRESEND_RECHECK_ACCOUNT_TRUTH_UNAVAILABLE`,
+`PRESEND_RECHECK_PREFLIGHT_NOT_CLEAN`, `PRESEND_RECHECK_WRITER_LEASE_LOST`,
+`PRESEND_RECHECK_OWN_ORDER_JOURNAL_UNREADABLE`,
+`PRESEND_RECHECK_MUTATION_BOUNDARY_READ_UNAVAILABLE`,
+`PRESEND_RECHECK_FOREIGN_SAME_DAY_ORDERS_PRESENT`,
+`PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN`. 앞의 네 경우에는 마커 상태가 불확실하거나
+이미 소비되었으므로 봉인을 되살리지 않는다. owner 상실과 일곱 presend 재확인도 소비와
+broker mutation 사이에 실패한 것이므로 전송하지 않고 봉인을 소비된 채로 둔다. 미분류
+실패는 `UNCLASSIFIED_POST_CONSUMPTION`이며 allowlist에 속하지 않아 계약 테스트가 RED다.
 이 목록 밖의 사유를 추가해 거부를 흡수하지 않는다. 새 소비 후 거부가 필요해 보이면
 코드를 고쳐 소비 전으로 옮기고, 목록 변경이 필요하면 운영 판단을 다시 받는다.
 
-다섯 경로는 모두 broker/account 호출 전에 `cycles.jsonl`에
+위 소비 후 거부 경로는 모두 notifier 호출 전에 `cycles.jsonl`에
 `SEAL_CONSUMED_NO_SEND{reason}` 즉시 snapshot을 append한 뒤 기존 Telegram notifier를
 호출한다. 알림 실패는 이미 쓴 snapshot을 되돌리지 않으며, 자동 재시도·마커 삭제·봉인
 재사용으로 이어지지 않는다.
