@@ -1,0 +1,2812 @@
+{
+  "alpaca_paper_automated_preview_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "alpaca_paper_automated_submit_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:238",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:382"
+    ]
+  },
+  "alpaca_paper_cancel_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:40",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:120",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:257"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:10"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-lab-cleanup-prep.md:47",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-dev-smoke.md:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:231",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-dual-paper-premarket-preview.md:113",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:92",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:116"
+    ]
+  },
+  "alpaca_paper_execution_preflight_check": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:23",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:171",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:172"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:183"
+    ]
+  },
+  "alpaca_paper_get_account": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:14",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:43",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:44",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:19",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:249",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:36",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:83",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:195",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:25",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:384",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:36",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:214",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:533"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/mock-alpaca-ops.md:6"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:228",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:84",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:131"
+    ]
+  },
+  "alpaca_paper_get_cash": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:15",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:49",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:50",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:257",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:259",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:37",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:93"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:85",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:132"
+    ]
+  },
+  "alpaca_paper_get_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:16",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:83",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:84",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:89",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:20",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:394",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:26",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:582"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:86",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:135",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:144"
+    ]
+  },
+  "alpaca_paper_ledger_get": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:24",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:132",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:133"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-reps-log.md:33",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:176",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:259",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:185",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:206"
+    ]
+  },
+  "alpaca_paper_ledger_get_by_correlation": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:25",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:145",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:146",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:157"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:177",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:267"
+    ]
+  },
+  "alpaca_paper_ledger_list_recent": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:26",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:107",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:110",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:118",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:41",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:217",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:536"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/mock-alpaca-ops.md:6"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:175",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:232",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:251",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:186",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:205"
+    ]
+  },
+  "alpaca_paper_list_assets": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:17",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:93",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:94"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:87",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:136"
+    ]
+  },
+  "alpaca_paper_list_fills": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:18",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:99",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:100",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:253",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:395",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:27",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:387",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:583"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:137"
+    ]
+  },
+  "alpaca_paper_list_orders": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:19",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:63",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:65",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:70",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:22",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:251",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:28",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:385",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:37",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:216",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:535"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:89",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:134"
+    ]
+  },
+  "alpaca_paper_list_positions": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:20",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:55",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:56",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:23",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:252",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:396",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:29",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:386",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:584",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:38",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:215",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/us/alpaca.py:534"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/mock-alpaca-ops.md:6"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:90",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:133"
+    ]
+  },
+  "alpaca_paper_preview_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:26",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:308",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:35",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:453"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:9"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:230",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-fill-reconcile-smoke.md:43"
+    ]
+  },
+  "alpaca_paper_reconcile_orders": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "alpaca_paper_roundtrip_report": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:27",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:150",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:151",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_readonly_smoke.py:164"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:178",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:207",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-roundtrip-report.md:57",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-roundtrip-report.md:77",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-roundtrip-report.md:135"
+    ]
+  },
+  "alpaca_paper_submit_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:25",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:309",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_fill_reconcile_smoke.py:393",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:6",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:41",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:106",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:221",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:31",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:454",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_sell_close_smoke.py:581"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:41"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-lab-cleanup-prep.md:47",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-dev-smoke.md:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:231",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:312",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:381",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-dual-paper-premarket-preview.md:107",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:162",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:189",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:92",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-readonly-smoke.md:116",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-fill-reconcile-smoke.md:17",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-fill-reconcile-smoke.md:44"
+    ]
+  },
+  "analysis_artifact_get": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:63",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:12",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:49"
+    ],
+    "runbook_refs": []
+  },
+  "analysis_artifact_list": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "analysis_artifact_save": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:130",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:90",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:84",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:112",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:90",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:87",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:63",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:109",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:154",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:70",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:82",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:62",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:60",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:166"
+    ],
+    "runbook_refs": []
+  },
+  "analysis_bundle_create": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "analysis_bundle_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "analyze_portfolio": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "analyze_stock": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:126"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:20",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:41",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:49",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:97",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:125",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:126",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:127",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:128",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/halted-suspect-data-state.md:59"
+    ]
+  },
+  "analyze_stock_batch": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:75",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:67",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:88",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:127",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:67",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:88",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:55",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:86",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:92",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:107",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:79",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:84"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:334",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/halted-suspect-data-state.md:12",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/halted-suspect-data-state.md:59",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/halted-suspect-data-state.md:77"
+    ]
+  },
+  "binance_demo_ledger_status": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-demo-strategy-loop.md:187"
+    ]
+  },
+  "buy_ladder_fill_preview": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-alert-triage.md:31"
+    ],
+    "runbook_refs": []
+  },
+  "cancel_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/binance_spot_demo_smoke.py:785",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:928",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:50",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:266",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/smoke/alpaca_paper_dev_smoke.py:274",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/cycle.py:643",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/crypto/cancel.py:167",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/b0x/kr/kiwoom.py:733"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:5"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-spot-demo-smoke.md:92",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-spot-demo-smoke.md:225",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-spot-demo-smoke.md:438",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-dev-smoke.md:13",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-dev-smoke.md:46",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-dev-smoke.md:74",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-dev-smoke.md:100",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:299",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-futures-demo-smoke.md:93",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-futures-demo-smoke.md:519",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:255",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-session-mcp.md:104",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:83"
+    ]
+  },
+  "compare_paper_accounts": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "compare_strategies": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "create_paper_account": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "delete_paper_account": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "discover_buy_candidates_fanout": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-candidate-fanout.md:3"
+    ]
+  },
+  "evaluate_buy_gate_ab_shadow": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:95"
+    ]
+  },
+  "execution_ledger_fill_events_list_recent": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "forecast_resolve": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/operator-forecast-resolve.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/operator-forecast-resolve.md:12",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:55"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/spike-attribution.md:134",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/forecast-terminal-close.md:105",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/uber-invalid-sample-eligibility.md:20",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/uber-invalid-sample-eligibility.md:231",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:122"
+    ]
+  },
+  "forecast_save": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/binance_demo_strategy_loop.py:28",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/attribute_daily_spikes.py:11",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/attribute_daily_spikes.py:12"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:131",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:91",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:49",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:85",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:59",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:152",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:171",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:91",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:110",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:49",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:11",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:83",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:62",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:87",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:167",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:39",
+      "/Users/mgh3326/services/auto_trader-operator/runners/krb1_headless.py:213",
+      "/Users/mgh3326/services/auto_trader-operator/runners/krb1_headless.py:214",
+      "/Users/mgh3326/services/auto_trader-operator/runners/__pycache__/krb1_headless.cpython-314.pyc:288"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/spike-attribution.md:62",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/spike-attribution.md:63",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/spike-attribution.md:127",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-demo-strategy-loop.md:66",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:44",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:62",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:65",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:103",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:76",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:91",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:95",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:125"
+    ]
+  },
+  "get_analyst_consensus": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_available_capital": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:42",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:54",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:60",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:54",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:60",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:71",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:79",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:7",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:31"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:99",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:116"
+    ]
+  },
+  "get_cash_balance": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:78"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:9",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/CIO_QUALITY_GATE.md:64",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/CIO_QUALITY_GATE.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/CIO_QUALITY_GATE.md:109",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:574"
+    ]
+  },
+  "get_company_profile": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:91",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:102",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:104",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:107",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:117"
+    ]
+  },
+  "get_correlation": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:38"
+    ],
+    "runbook_refs": []
+  },
+  "get_cost_basis_distribution": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:20",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:43",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:58",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:165",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:171",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:183",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:390"
+    ]
+  },
+  "get_crypto_catalysts": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/app/flows/invest_crypto_insight_snapshots_flow.py:3"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:45",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:253"
+    ]
+  },
+  "get_crypto_fear_greed": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:62",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:81",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:37"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:9"
+    ]
+  },
+  "get_crypto_funding_rate": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:38"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:7"
+    ]
+  },
+  "get_crypto_long_short_ratio": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:8"
+    ]
+  },
+  "get_crypto_market_regime": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/app/flows/invest_crypto_insight_snapshots_flow.py:3"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:44",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:252"
+    ]
+  },
+  "get_crypto_open_interest": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:7"
+    ]
+  },
+  "get_crypto_order_flow": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:46",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:178",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:254",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:407"
+    ]
+  },
+  "get_crypto_profile": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:33"
+    ],
+    "runbook_refs": []
+  },
+  "get_crypto_social": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:47",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:255"
+    ]
+  },
+  "get_crypto_top_movers": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_disclosures": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_dividends": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_earnings_calendar": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:69",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:70",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:69",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:70",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:53",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:88",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:89"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-reps-log.md:23",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:55",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:60",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:90"
+    ]
+  },
+  "get_execution_strength": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:25",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:393",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:407"
+    ]
+  },
+  "get_financials": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_forecast_calibration": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:32"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/uber-invalid-sample-eligibility.md:135"
+    ]
+  },
+  "get_forecasts": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:19"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:109"
+    ]
+  },
+  "get_fx_rate": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:37"
+    ],
+    "runbook_refs": []
+  },
+  "get_holdings": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:93",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:53",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:53",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:72",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:75",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:7",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:31",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:138"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:244",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:71",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:99",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:116"
+    ]
+  },
+  "get_holdings_news": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": []
+  },
+  "get_indicators": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:66",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:66",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:85"
+    ],
+    "runbook_refs": []
+  },
+  "get_insider_transactions": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_intraday_investor_flow": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_investment_opinions": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:64",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:64",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:83"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-candidate-fanout.md:89"
+    ]
+  },
+  "get_investor_trends": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_kimchi_premium": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:38"
+    ],
+    "runbook_refs": []
+  },
+  "get_krx_session_health": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_latest_market_brief": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:61",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:61",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:80"
+    ],
+    "runbook_refs": []
+  },
+  "get_market_index": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:59",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:59",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:77",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:78",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:68",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:79"
+    ],
+    "runbook_refs": []
+  },
+  "get_market_issues": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-issue-clustering.md:8"
+    ]
+  },
+  "get_market_news": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:61",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:61",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:80",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": []
+  },
+  "get_market_reports": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_mock_loop_retrospective": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-autonomous-loop-activation.md:34",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-autonomous-loop-activation.md:63",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-autonomous-loop-activation.md:65"
+    ]
+  },
+  "get_momentum_candidates": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:76",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:74",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:74",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:93",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": []
+  },
+  "get_news": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/news_relevance_judge_smoke.py:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/app/tasks/news_relevance_judgment_tasks.py:4"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:69",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-ingestor-kr-scheduled-push.md:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:133",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:135",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:5",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:8",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:67",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:103",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:104",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:143",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:146",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:159",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:175",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:184",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:206",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/news-relevance-judgment.md:207"
+    ]
+  },
+  "get_ohlcv": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:125",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:44"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-reps-log.md:60"
+    ]
+  },
+  "get_operating_briefing": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/diagnose_negative_class_recording.py:15"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:12",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:144",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:55",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:11",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:49",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-fill-reprice.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-alert-triage.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/kr-alert-triage.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/us-alert-triage.md:19"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:118",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:574"
+    ]
+  },
+  "get_order_history": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/policy_table/adapters/crypto.py:336"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:11",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:125",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-session-mcp.md:105"
+    ]
+  },
+  "get_orderbook": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:23",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:78",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/kr-alert-triage.md:26"
+    ],
+    "runbook_refs": []
+  },
+  "get_paper_performance": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_paper_trade_log": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_portfolio_allocation": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:78"
+    ],
+    "runbook_refs": []
+  },
+  "get_position": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/binance_futures_demo_smoke.py:790",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/binance_futures_demo_smoke.py:1048"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-demo-strategy-loop.md:169",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-demo-strategy-loop.md:260",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-demo-strategy-loop.md:314",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-futures-demo-smoke.md:534",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/binance-futures-demo-smoke.md:581"
+    ]
+  },
+  "get_quote": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kis_overseas_price_smoke.py:4",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kis_overseas_price_smoke.py:24",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kis_overseas_price_smoke.py:173",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kis_overseas_price_smoke.py:184",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kis_overseas_price_smoke.py:211",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/templates/mcp_call.sh.tmpl:35"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:77",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:43",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:125",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:59",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:77",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:92",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:96",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:23",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:78",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/us-alert-triage.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/runners/watch_alert_relay.py:246"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-reps-log.md:60",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:334",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:33",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:67",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:90",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:118",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:194",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-overseas-price-smoke.md:3",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-overseas-price-smoke.md:35",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/analysis-readonly-mcp.md:39",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-overseas-premarket-probe.md:13",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-overseas-premarket-probe.md:108"
+    ]
+  },
+  "get_retail_sentiment": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:19",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:42",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:66",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:72",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:75",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:383"
+    ]
+  },
+  "get_retrospective_aggregate": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_sector_peers": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_short_interest": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_spike_attribution": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/spike-attribution.md:60"
+    ]
+  },
+  "get_support_resistance": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:75",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:111",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:31",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:66",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:31",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:66",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:49",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:85",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:84"
+    ],
+    "runbook_refs": []
+  },
+  "get_theme_events": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kr-preopen-new-candidates-shadow.md:56"
+    ]
+  },
+  "get_top_stocks": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:39",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:126",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:51",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:92",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:70",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:46"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:107"
+    ]
+  },
+  "get_toss_ai_signal": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_toss_buy_balance": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_trade_journal": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_trade_retrospectives": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_trading_policy": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/shadow_replay.py:61"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:101",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:81",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:82",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:83",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:85",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:148",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-fill-reprice.md:28"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-auto-acceptance.md:157",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:582",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:9",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:58",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:139"
+    ]
+  },
+  "get_trading_scoreboard": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_upbit_altseason": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-381-upbit-index-altseason-recon.md:4",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-381-upbit-index-altseason-recon.md:101",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-381-upbit-index-altseason-recon.md:169"
+    ]
+  },
+  "get_upbit_index": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-381-upbit-index-altseason-recon.md:4",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-381-upbit-index-altseason-recon.md:100",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-381-upbit-index-altseason-recon.md:168"
+    ]
+  },
+  "get_user_setting": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "get_valuation": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:65",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:65",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:84"
+    ],
+    "runbook_refs": []
+  },
+  "investment_report_activate_watch": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_add_items": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_context_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_create": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/shadow-replay.md:21",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/negative-class-recording.md:36"
+    ]
+  },
+  "investment_report_create_from_hermes_composition": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_decide_item": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_delta_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_generate_from_bundle": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:33"
+    ]
+  },
+  "investment_report_get": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-alert-triage.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/kr-alert-triage.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/us-alert-triage.md:20"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-alert-claude-triage.md:166"
+    ]
+  },
+  "investment_report_get_hermes_context": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/shadow_replay_probe.py:5",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/shadow_replay.py:59"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:63"
+    ],
+    "runbook_refs": []
+  },
+  "investment_report_list": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_prepare_bundle": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/app/flows/investment_snapshots_refresh_flow.py:23"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:42",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:42",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:61"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/snapshot-reviewer-handoff.md:64",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:20",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:25",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:52",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:121",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:135",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:368"
+    ]
+  },
+  "investment_report_prepare_intraday_context": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_set_status": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_report_update": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_snapshot_bundle_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/snapshot-reviewer-handoff.md:33",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/snapshot-reviewer-handoff.md:39"
+    ]
+  },
+  "investment_snapshot_bundle_list": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/snapshot-reviewer-handoff.md:53"
+    ]
+  },
+  "investment_snapshot_list": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/snapshot-reviewer-handoff.md:46"
+    ]
+  },
+  "investment_stage_artifacts_ingest_from_hermes": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/hermes-report-generation.md:20"
+    ]
+  },
+  "investment_watch_create": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:112"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/tradingcodex-execution-mcp.md:66"
+    ]
+  },
+  "investment_watch_events_list_recent": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:132"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:115"
+    ]
+  },
+  "investment_watch_expire": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_watch_recommend": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "investment_watch_void": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "kis_live_cancel_order": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:9"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:12"
+    ]
+  },
+  "kis_live_get_order_history": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:12",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:136"
+    ]
+  },
+  "kis_live_modify_order": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:9"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:15"
+    ]
+  },
+  "kis_live_place_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/rob596_orderable_diagnostic.py:4"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:11"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-approval-hash.md:84",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/live-order-reconcile.md:12",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:218",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:4",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:26",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:136"
+    ]
+  },
+  "kis_live_reconcile_orders": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-approval-hash.md:48",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1287",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:8",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:29",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:31",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:46",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:57",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:83"
+    ]
+  },
+  "kis_mock_cancel_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-autonomous-loop-activation.md:54"
+    ]
+  },
+  "kis_mock_get_order_history": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:57"
+    ],
+    "runbook_refs": []
+  },
+  "kis_mock_mirror_execute_report": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-kr-mcp.md:30",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-session-mcp.md:108"
+    ]
+  },
+  "kis_mock_modify_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-autonomous-loop-activation.md:54"
+    ]
+  },
+  "kis_mock_place_order": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:8"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-approval-hash.md:87"
+    ]
+  },
+  "kis_mock_reconciliation_run": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kis_mock_open_order_probe.py:7"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-mock-reconciliation.md:57",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-mock-reconciliation.md:63",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-mock-reconciliation.md:69"
+    ]
+  },
+  "kiwoom_mock_cancel_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:59",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:299"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:125"
+    ]
+  },
+  "kiwoom_mock_get_order_detail": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-kr-mcp.md:28",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:191"
+    ]
+  },
+  "kiwoom_mock_get_order_history": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:266",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:279",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:317",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:684"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:117"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:121",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:126",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:138",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:165"
+    ]
+  },
+  "kiwoom_mock_get_orderable_cash": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:657",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:672"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:118"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:163",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:164"
+    ]
+  },
+  "kiwoom_mock_get_positions": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:319",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:646"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:117"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:38",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:126",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:162",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:245"
+    ]
+  },
+  "kiwoom_mock_modify_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:58",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:283"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:122"
+    ]
+  },
+  "kiwoom_mock_place_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:57",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:226",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:249"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:8"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:119",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:120"
+    ]
+  },
+  "kiwoom_mock_preview_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:208"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:130"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:118"
+    ]
+  },
+  "kiwoom_mock_us_cancel_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:642"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-kr-mcp.md:14",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:209",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:248"
+    ]
+  },
+  "kiwoom_mock_us_get_order_history": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:494"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "kiwoom_mock_us_get_orderable_cash": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:108"
+    ]
+  },
+  "kiwoom_mock_us_get_positions": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:504"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:194"
+    ]
+  },
+  "kiwoom_mock_us_modify_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:598"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-kr-mcp.md:14"
+    ]
+  },
+  "kiwoom_mock_us_place_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:476",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:522"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-kr-mcp.md:13",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:193",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:195"
+    ]
+  },
+  "kiwoom_mock_us_preview_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_us_smoke.py:448"
+    ],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-kr-mcp.md:13",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-us-smoke.md:192"
+    ]
+  },
+  "list_active_journals": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "list_active_watches": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "list_paper_accounts": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:48"
+    ],
+    "runbook_refs": []
+  },
+  "live_reconcile_orders": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:6"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob449-452-mcp-activation.md:11",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/live-order-periodic-reconcile.md:48",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/live-order-reconcile.md:5",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/live-order-reconcile.md:16",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/live-order-reconcile.md:17",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/live-order-reconcile.md:23",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1287",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:121"
+    ]
+  },
+  "market_quote_snapshot_ensure": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:157"
+    ]
+  },
+  "market_quote_snapshot_latest": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:159"
+    ]
+  },
+  "modify_journal_entry": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:185"
+    ]
+  },
+  "modify_order": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:9",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:5"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:299",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-session-mcp.md:104",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:83",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:100"
+    ]
+  },
+  "order_proposal_create": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:124",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:128",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:42",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:65",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:97",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:6",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:6",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:72",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:6",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:3",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:7",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:149",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:7",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:68",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:11",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:64",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:103",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:109",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:173",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:32",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-fill-reprice.md:39"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/support-reserve-net-consumer.md:161",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:18",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:232",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:318",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:424",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:564",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1029",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1133",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1147",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-auto-approve-expand.md:172",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:14",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:128",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:152",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:297",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:330",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:331",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:358",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:87",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:185"
+    ]
+  },
+  "order_proposal_expire_sweep": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "order_proposal_get": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:11",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:6"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:232",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:348",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:616"
+    ]
+  },
+  "order_proposal_list": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:64",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:74",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/mock-us-common.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:70",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:11",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:12",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:6",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:48"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:122",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:232",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:353",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:616"
+    ]
+  },
+  "order_proposal_list_expired_defensive": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:407"
+    ]
+  },
+  "order_proposal_redispatch": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "order_proposal_void": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:81",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:86",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:11",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:112"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:1",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:3",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:12",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:79",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:90",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-void-authorization.md:123",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:29",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:233",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:358",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:371"
+    ]
+  },
+  "paper_cancel_pending_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_cohort_kill_switch": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/paper-cohort-kill-switch.md:19"
+    ]
+  },
+  "paper_execution_cancel_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_execution_get_capabilities": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_execution_get_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_execution_preview_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_execution_reconcile": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_execution_submit_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_list_pending_orders": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:40",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:48"
+    ],
+    "runbook_refs": []
+  },
+  "paper_place_limit_order": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:48"
+    ],
+    "runbook_refs": []
+  },
+  "paper_reconcile_orders": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:40",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:48"
+    ],
+    "runbook_refs": []
+  },
+  "paper_validation_advance": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_append_hypothesis": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_append_review": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_authorize_order_submit": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_confirm_promotion": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_get_audit": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_register": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "paper_validation_reject_or_abort": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "place_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:239",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/kiwoom_mock_smoke.py:259"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:8",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:5"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-alert-claude-triage.md:349",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:350",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:79",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:82",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/alpaca-paper-ledger.md:299",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-approval-hash.md:84",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-approval-hash.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-approval-hash.md:95",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposal-auto-approve-expand.md:228",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:63",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:115",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-trigger-repricing.md:357",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/analysis-readonly-mcp.md:47",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/analysis-readonly-mcp.md:50",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-mock-attribution-chain.md:61",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kiwoom-mock-smoke.md:15",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/mock-session-mcp.md:104",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:88",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/crash-day-policy-mock-reps.md:83",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-gate-ab-shadow.md:185"
+    ]
+  },
+  "recommend_go_live": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "research_session_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:67"
+    ]
+  },
+  "research_session_list_recent": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:27",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:30",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/research-pipeline-rollout.md:125"
+    ]
+  },
+  "research_summary_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "reset_paper_account": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "route_request": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/shadow_replay.py:61"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:23",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:23",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:29",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:30",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:31",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:16",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:45",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:53",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:77",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:78",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:79",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:80",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:56",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:57",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:59",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:23",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:37",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:12",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:15",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:17",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:51",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:53",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:82"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:361",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/support-reserve-net-consumer.md:53"
+    ]
+  },
+  "save_position_intake_retrospective": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "save_trade_journal": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "save_trade_retrospective": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:88",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:60",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:45"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/kis-live-order-reconcile.md:129"
+    ]
+  },
+  "screen_stocks": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/policy_table/adapters/kr.py:5"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:76",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:75",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:125",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:75",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:22",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:92",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:94",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:24",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:28",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:48",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/halted-suspect-data-state.md:60",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-candidate-fanout.md:23",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-candidate-fanout.md:24",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/buy-candidate-fanout.md:25"
+    ]
+  },
+  "screen_stocks_enrich": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "screen_stocks_snapshot": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:47",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:76",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:32",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:73",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:25",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:35",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:126",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:34",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:92",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:38",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:26",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:46",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:86"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/screener-analyst-consensus-cache.md:3",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/invest-screener-snapshots.md:46"
+    ]
+  },
+  "search_symbol": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:334"
+    ]
+  },
+  "sell_ladder_fill_preview": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-alert-triage.md:31"
+    ],
+    "runbook_refs": []
+  },
+  "session_context_append": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md:58",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:40",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:66",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-trade.md:131",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720b:91",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:18",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:86",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-directional-forecast.md:52",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-adjust.md:114",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:3",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:3",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:59",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:49",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:145",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:159",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:171",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md.bak-0720:91",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-adjust.md:89",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/directional-lab-contract.md:125",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md.bak-0720b:50",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:3",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:44",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-report.md:110",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-directional-forecast.md:60",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-fill-triage.md:27",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:10",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/forecast-lab-weekly-retro.md:71",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-open-report.md.bak-0720:36",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-directional-forecast.md:54",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:77",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-open.md:83",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-report.md:62",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:5",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:168",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:36",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-fill-reprice.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-alert-triage.md:36",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:22",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:83",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/kr-alert-triage.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/us-alert-triage.md:41",
+      "/Users/mgh3326/services/auto_trader-operator/runners/krb1_headless.py:214",
+      "/Users/mgh3326/services/auto_trader-operator/runners/__pycache__/krb1_headless.cpython-314.pyc:288"
+    ],
+    "runbook_refs": []
+  },
+  "session_context_get_recent": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:85",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/krb1-cycle.md:145",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-watch-reprice.md:22",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-fill-reprice.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/crypto-alert-triage.md:20",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/fill-event-triage.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/kr-alert-triage.md:21",
+      "/Users/mgh3326/services/auto_trader-operator/.claude/commands/us-alert-triage.md:21"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-alert-claude-triage.md:387",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/watch-alert-claude-triage.md:442",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:527",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:574",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/fill-event-claude-triage.md:586"
+    ]
+  },
+  "set_user_setting": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "stage_analysis_get": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "suggest_order_account": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "support_reserve_net_consume": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/support-reserve-net-consumer.md:12",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/support-reserve-net-consumer.md:26"
+    ]
+  },
+  "sweep_expired_watches": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "toss_cancel_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/toss_live_smoke.py:13",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/toss_live_smoke.py:172"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:113"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:230"
+    ]
+  },
+  "toss_detect_manual_activity": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-manual-activity-sweep.md:17",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-manual-activity-sweep.md:35",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-manual-activity-sweep.md:37"
+    ]
+  },
+  "toss_get_order_history": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:231",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:13"
+    ]
+  },
+  "toss_get_orderable_cash": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:233",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:10"
+    ]
+  },
+  "toss_get_positions": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:232",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/account-read-mcp.md:8"
+    ]
+  },
+  "toss_modify_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:229"
+    ]
+  },
+  "toss_place_order": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/toss_live_smoke.py:14",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/toss_live_smoke.py:78"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:11"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:228",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:346",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:348",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-preopen-gap-scan-gate.md:218",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:159",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:186",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:188",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:196",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:900",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:933",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:11"
+    ]
+  },
+  "toss_preview_order": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:227",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:345",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:154",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:185",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:894"
+    ]
+  },
+  "toss_reconcile_orders": {
+    "code_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/scripts/toss_fill_reconcile_poller.py:4"
+    ],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:13"
+    ],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:52",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:234",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-smoke.md:297",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-fill-reconcile-poller.md:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-fill-reconcile-poller.md:26",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-fill-reconcile-poller.md:183",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-auto-acceptance.md:15",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-auto-acceptance.md:80",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-auto-acceptance.md:97",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-auto-acceptance.md:115",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-auto-acceptance.md:190",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:725",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1006",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/order-proposals.md:1293",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/rob-900-proposal-link-backfill-dry-run.md:16",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:7",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:16",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:22",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:28",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:29",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:34",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:74",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:114",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:140",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:149",
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/toss-live-order-reconcile.md:200"
+    ]
+  },
+  "trade_retrospective_pending": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/crypto-session-trade.md.bak-0720:13",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md:19",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/us-open-trade.md.bak-0720:14",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-prep.md:33",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:54"
+    ],
+    "runbook_refs": []
+  },
+  "update_manual_holdings": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "update_trade_journal": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": []
+  },
+  "us_dual_paper_account_states": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-dual-paper-premarket-preview.md:88"
+    ]
+  },
+  "us_dual_paper_capability_matrix": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-dual-paper-premarket-preview.md:87"
+    ]
+  },
+  "us_dual_paper_preview": {
+    "code_refs": [],
+    "prompt_refs": [],
+    "runbook_refs": [
+      "/Users/mgh3326/work/auto_trader.rob-977-audit/docs/runbooks/us-dual-paper-premarket-preview.md:89"
+    ]
+  },
+  "watch_downside_register_sweep": {
+    "code_refs": [],
+    "prompt_refs": [
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:156",
+      "/Users/mgh3326/services/auto_trader-operator/prompts/kr-nxt-preopen-trade.md:160"
+    ],
+    "runbook_refs": []
+  }
+}
