@@ -89,6 +89,18 @@ or exposes the server-held approval nonce. The current published binding,
 single-use nonce, commit lease, target lock, approval hash and fresh preview
 therefore remain authoritative. Do not route web requests through the Telegram
 inbox or enable any W5 gate for this feature.
+The entire adapter is default-disabled behind `INVEST_APPROVALS_ENABLED`; its
+loss-cut confirmation additionally requires `INVEST_LOSS_CUT_APPROVAL_ENABLED`.
+
+The synchronous adapter nevertheless commits an append-only, nonce-digest-only
+`handler_entered` marker immediately before its broker-capable core call.  If
+that call escapes, it appends `dead_letter`; subsequent clicks receive terminal
+status and must be escalated rather than retried.  This marker is deliberately
+not a W5 inbox generalization and retains no raw request token or exception.
+Web loss-cut step one is DB-only: it issues a principal-bound opaque browser
+confirmation token and a server-held confirmation nonce without editing a
+Telegram message.  A first-step failure rolls back atomically so the existing
+Telegram card remains executable.
 
 ---
 

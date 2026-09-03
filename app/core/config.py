@@ -945,8 +945,9 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS: Annotated[
         float, Field(gt=0.0, le=10.0, allow_inf_nan=False)
     ] = 2.0
-    # B0/B1 loss-cut web surfaces. Both are physically absent from the app
-    # unless an operator enables at least one flag after schema rollout.
+    # Web approval surfaces are default-disabled until a post-deploy operator
+    # explicitly enables them.  Loss-cut confirmation retains its own gate.
+    INVEST_APPROVALS_ENABLED: bool = False
     INVEST_LOSS_CUT_EVIDENCE_ENABLED: bool = False
     INVEST_LOSS_CUT_APPROVAL_ENABLED: bool = False
 

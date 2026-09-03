@@ -6,6 +6,7 @@ and never commits — callers own the transaction (see global-constraints.md).
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -424,6 +425,11 @@ _SUPERSEDE_INVALIDATABLE_RUNG_STATES = frozenset(
 _APPROVAL_TERMINAL_GROUP_STATES = frozenset(
     {"terminal", "rejected", "expired", "voided", "superseded"}
 )
+
+
+def _approval_secret_digest(value: str) -> str:
+    """Hash opaque browser ceremony material before it reaches durable state."""
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def proposal_approval_block_reason(group: OrderProposal) -> str | None:
@@ -1906,6 +1912,7 @@ class OrderProposalsService:
         telegram_user_id: str | None = None,
         actor_channel: str | None = None,
         actor_subject: str | None = None,
+        web_confirmation_token: str | None = None,
     ) -> OrderProposal:
         """The single nonce-consumption gate for every proposal card kind."""
         self._require_timezone_aware(now)
@@ -1927,6 +1934,7 @@ class OrderProposalsService:
                 nonce=callback.nonce,
                 actor_channel=resolved_channel,
                 actor_subject=resolved_subject,
+                web_confirmation_token=web_confirmation_token,
                 now=now,
             )
         return await self._repo.update_group(group, **fields)
@@ -1940,6 +1948,7 @@ class OrderProposalsService:
         telegram_user_id: str | None = None,
         actor_channel: str = "telegram",
         actor_subject: str | None = None,
+        web_confirmation_token: str | None = None,
         now: datetime,
         ttl_seconds: int = 90,
     ) -> OrderProposal:
@@ -1982,6 +1991,15 @@ class OrderProposalsService:
                 "nonce": first_nonce,
             },
             "second_click": None,
+            **(
+                {
+                    "web_confirmation_token_digest": _approval_secret_digest(
+                        web_confirmation_token
+                    )
+                }
+                if actor_channel == "web" and web_confirmation_token
+                else {}
+            ),
         }
         source_asof = {
             **(group.source_asof or {}),
@@ -2002,6 +2020,7 @@ class OrderProposalsService:
         telegram_user_id: str | None = None,
         actor_channel: str = "telegram",
         actor_subject: str | None = None,
+        web_confirmation_token: str | None = None,
         now: datetime,
     ) -> OrderProposal:
         """Compatibility wrapper for the common published-callback gate."""
@@ -2018,6 +2037,7 @@ class OrderProposalsService:
             telegram_user_id=telegram_user_id,
             actor_channel=actor_channel,
             actor_subject=actor_subject,
+            web_confirmation_token=web_confirmation_token,
             now=now,
         )
 
@@ -2028,6 +2048,7 @@ class OrderProposalsService:
         nonce: str,
         actor_channel: str,
         actor_subject: str,
+        web_confirmation_token: str | None,
         now: datetime,
     ) -> dict[str, Any]:
         envelope = (group.source_asof or {}).get(_LOSS_CUT_CONFIRMATION_KEY)
@@ -2051,6 +2072,17 @@ class OrderProposalsService:
         )
         if first_channel != actor_channel or first_subject != actor_subject:
             raise OrderProposalError("loss_cut_confirmation_principal_mismatch")
+        if actor_channel == "web":
+            expected_token_digest = envelope.get("web_confirmation_token_digest")
+            if expected_token_digest is not None and (
+                not isinstance(expected_token_digest, str)
+                or not web_confirmation_token
+                or not secrets.compare_digest(
+                    expected_token_digest,
+                    _approval_secret_digest(web_confirmation_token),
+                )
+            ):
+                raise OrderProposalError("loss_cut_confirmation_token_invalid")
         rungs = await self._repo.list_rungs(group.id)
         current_binding = [
             {
