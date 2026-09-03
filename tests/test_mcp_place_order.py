@@ -201,6 +201,96 @@ async def test_preview_buy_keeps_generic_above_quote_rejection_without_release()
     assert released["estimated_value"] == pytest.approx(3919.5)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quote_result", [None, RuntimeError("quote unavailable")])
+async def test_marketable_parking_buy_requires_fresh_quote_before_card_path(
+    monkeypatch, quote_result
+):
+    """A parking-card buy cannot manufacture a band anchor from its limit."""
+    if isinstance(quote_result, Exception):
+        quote = AsyncMock(side_effect=quote_result)
+    else:
+        quote = AsyncMock(return_value=quote_result)
+    monkeypatch.setattr(order_execution, "_get_current_price_for_order", quote)
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="SGOV",
+        side="buy",
+        market="equity_us",
+        order_type="limit",
+        quantity=39,
+        price=999.0,
+        dry_run=True,
+        thesis="park idle USD",
+        strategy="cash_parking",
+        proposal_flow=True,
+        proposal_account_mode="kis_live",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "quote_unavailable"
+    assert result["error_code"] == "quote_unavailable"
+    quote.assert_awaited_once_with("SGOV", "equity_us")
+
+
+@pytest.mark.asyncio
+async def test_marketable_parking_buy_keeps_real_quote_premium_band(monkeypatch):
+    quote = AsyncMock(return_value=100.405)
+    monkeypatch.setattr(order_execution, "_get_current_price_for_order", quote)
+
+    result = await order_execution._place_order_impl(
+        symbol="SGOV",
+        side="buy",
+        market="equity_us",
+        order_type="limit",
+        quantity=39,
+        price=999.0,
+        dry_run=True,
+        thesis="park idle USD",
+        strategy="cash_parking",
+        proposal_flow=True,
+        proposal_account_mode="kis_live",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == (
+        "Order preview failed: Buy price 999.0 above marketable band ceiling "
+        "102.4131 (current 100.405 * (1 + 0.02))"
+    )
+    quote.assert_awaited_once_with("SGOV", "equity_us")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quote_result", [None, RuntimeError("quote unavailable")])
+async def test_non_parking_limit_buy_keeps_quote_fallback(monkeypatch, quote_result):
+    if isinstance(quote_result, Exception):
+        quote = AsyncMock(side_effect=quote_result)
+    else:
+        quote = AsyncMock(return_value=quote_result)
+    monkeypatch.setattr(order_execution, "_get_current_price_for_order", quote)
+
+    current_price = await order_execution._fetch_current_price(
+        "SGOV",
+        "equity_us",
+        "limit",
+        999.0,
+        require_fresh_quote=False,
+    )
+
+    assert current_price == 999.0
+    quote.assert_awaited_once_with("SGOV", "equity_us")
+
+
 async def _run_parking_preview_gate_probe(monkeypatch, **overrides):
     captured: list[bool] = []
 

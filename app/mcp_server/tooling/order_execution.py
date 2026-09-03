@@ -502,19 +502,29 @@ async def _fetch_current_price(
     market_type: str,
     order_type: str,
     price: float | None,
+    *,
+    require_fresh_quote: bool = False,
 ) -> float:
-    """Fetch current price, falling back to limit price when available."""
+    """Fetch current price, falling back to limit price when available.
+
+    A marketable parking buy needs a real quote to enforce its premium band, so
+    that narrow path must fail closed rather than manufacture one from its limit.
+    """
     try:
         current_price = await _get_current_price_for_order(
             normalized_symbol, market_type
         )
     except Exception:
+        if require_fresh_quote:
+            raise ValueError("quote_unavailable") from None
         if order_type == "limit" and price is not None:
             current_price = float(price)
         else:
             raise
 
     if current_price is None:
+        if require_fresh_quote:
+            raise ValueError("quote_unavailable")
         if order_type == "limit" and price is not None:
             current_price = float(price)
         else:
@@ -1785,6 +1795,7 @@ async def _place_order_impl(
             market_type,
             order_type_lower,
             price,
+            require_fresh_quote=allow_marketable_parking_buy,
         )
 
         # Resolve amount -> quantity for buy orders
@@ -2048,6 +2059,8 @@ async def _place_order_impl(
         base_error = _order_error(describe_exception(exc))
         if isinstance(exc, BrokerEdgeNotCreated):
             base_error["error_code"] = exc.error_code
+        elif isinstance(exc, ValueError) and str(exc) == "quote_unavailable":
+            base_error["error_code"] = "quote_unavailable"
         return _augment_error_for_unknown_outcome(
             base_error, exc, market_type=market_type, is_mock=is_mock
         )
