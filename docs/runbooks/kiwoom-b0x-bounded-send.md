@@ -23,6 +23,13 @@ registry 상한으로 허용하지만 런타임 freshness는 `now < expires_at`�
 owner 구성 전 소비 마커는 `O_EXCL`, mode `0600`, 파일·디렉터리 `fsync`, exact
 readback을 모두 통과해야 한다. 기록 실패나 불확실성은 인가가 아니라 거부다.
 
+봉인 소비 직전에는 공용 coordinator가 mutation 전에 적용하는 것과 같은
+`assert_entry_execution_ready()`를 먼저 통과해야 한다. 즉 activation/writer/auto,
+physical identity, policy/execution/scheduler/cap/order-type/TIF/reconcile/credential/
+host/canary binding 전체가 준비되지 않은 lane은 해당 `LaneGuardError.code`를 cycle의
+coordination identity guard에 남기고 정지하며 소비 마커를 만들지 않는다. 이는 새 조건을
+추가하는 게 아니라 downstream의 동일 가드를 marker commit 앞으로 옮긴 순서 수리다.
+
 ### 캘린더 가용성 위험 (NICE-4)
 
 **캘린더 실패는 봉인 불성립(거부)이다.** fail-closed이므로 안전 방향은 맞지만,
