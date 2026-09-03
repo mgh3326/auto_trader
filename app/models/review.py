@@ -389,6 +389,86 @@ class KISMockSignalLedger(Base):
     )
 
 
+class NHMockSignalLedger(Base):
+    """Durable, nonblank attribution recorded before an NH mock send."""
+
+    __tablename__ = "nh_mock_signal_ledger"
+    __table_args__ = (
+        UniqueConstraint("correlation_id", name="uq_nh_mock_signal_correlation_id"),
+        CheckConstraint(
+            "account_mode = 'nh_mock'", name="ck_nh_mock_signal_account_mode"
+        ),
+        CheckConstraint(
+            "length(btrim(correlation_id)) > 0",
+            name="ck_nh_mock_signal_correlation_nonblank",
+        ),
+        CheckConstraint(
+            "length(btrim(strategy)) > 0", name="ck_nh_mock_signal_strategy_nonblank"
+        ),
+        CheckConstraint(
+            "length(btrim(signal_source)) > 0", name="ck_nh_mock_signal_source_nonblank"
+        ),
+        {"schema": "review"},
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    signal_source: Mapped[str] = mapped_column(Text, nullable=False)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="nh_mock")
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    intended_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    intended_price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    counterfactual_of: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class NHMockOrderLedger(Base):
+    """Accepted-only NH mock sends. Reconciliation is the sole fill authority."""
+
+    __tablename__ = "nh_mock_order_ledger"
+    __table_args__ = (
+        UniqueConstraint("broker_order_id", name="uq_nh_mock_ledger_broker_order_id"),
+        UniqueConstraint("client_order_id", name="uq_nh_mock_ledger_client_order_id"),
+        CheckConstraint(
+            "account_mode = 'nh_mock'", name="ck_nh_mock_ledger_account_mode"
+        ),
+        CheckConstraint(
+            "side IN ('buy','sell','cancel')", name="ck_nh_mock_ledger_side"
+        ),
+        CheckConstraint(
+            "status IN ('accepted','pending','partial','filled','cancelled','anomaly')",
+            name="ck_nh_mock_ledger_status",
+        ),
+        Index("ix_nh_mock_ledger_correlation_id", "correlation_id"),
+        Index("ix_nh_mock_ledger_status", "status"),
+        {"schema": "review"},
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+    broker_order_id: Mapped[str | None] = mapped_column(Text)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="nh_mock")
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    counterfactual_of: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="accepted")
+    response_code: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+    filled_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=0
+    )
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class KISLiveOrderLedger(Base):
     """ROB-395 — KIS live (real-money) order lifecycle ledger.
 

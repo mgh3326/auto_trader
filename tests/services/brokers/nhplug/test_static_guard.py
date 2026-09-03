@@ -56,6 +56,7 @@ _FORBIDDEN_MUTATION_FRAGMENTS = (
 _HTTPX_CLIENT_NAMES = frozenset({"AsyncClient", "Client"})
 _AUTH_OWNER_MODULE = "app.services.brokers.nhplug.auth"
 _LIVE_HOST_OWNER_FILENAMES = frozenset({"auth.py", "live_quotes.py"})
+_ORDER_OWNER_FILENAME = "orders.py"
 _LIVE_ALLOWED_LITERAL_PATHS = frozenset(
     {LIVE_TOKEN_PATH, KR_PERIOD_PATH, US_PERIOD_PATH, INDEXFX_PERIOD_PATH}
 )
@@ -344,10 +345,13 @@ def _assert_package_pins_follow_redirects(package_sources: tuple[Path, ...]) -> 
 
 def _assert_package_exposes_no_mutation_methods(
     package_sources: tuple[Path, ...],
+    *,
+    permitted_filenames: frozenset[str] = frozenset(),
 ) -> None:
     offenders = {
         f"{path.name}:{node.name}"
         for path in package_sources
+        if path.name not in permitted_filenames
         for node in ast.walk(
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         )
@@ -373,10 +377,20 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
             permits_production_host=(
                 package_dir == RUNTIME_DIR and path.name in _LIVE_HOST_OWNER_FILENAMES
             ),
+            permits_order_endpoints=(
+                package_dir == RUNTIME_DIR and path.name == _ORDER_OWNER_FILENAME
+            ),
         )
     _assert_package_has_no_oauth_imports(package_sources)
     _assert_package_pins_follow_redirects(package_sources)
-    _assert_package_exposes_no_mutation_methods(package_sources)
+    _assert_package_exposes_no_mutation_methods(
+        package_sources,
+        permitted_filenames=(
+            frozenset({_ORDER_OWNER_FILENAME, "inquiry.py", "gating.py"})
+            if package_dir == RUNTIME_DIR
+            else frozenset()
+        ),
+    )
     if package_dir == RUNTIME_DIR:
         _assert_live_quote_source_safe(
             LIVE_QUOTES_MODULE.read_text(encoding="utf-8"),
@@ -385,7 +399,11 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
 
 
 def _assert_stage_one_source_safe(
-    source: str, *, filename: str, permits_production_host: bool = False
+    source: str,
+    *,
+    filename: str,
+    permits_production_host: bool = False,
+    permits_order_endpoints: bool = False,
 ) -> None:
     """Fail with AssertionError for every unsafe source-level escape hatch.
 
@@ -406,11 +424,12 @@ def _assert_stage_one_source_safe(
         assert not any(_PRODUCTION_HOST_RE.search(literal) for literal in literals), (
             "only scoped live modules may contain the production hostname"
         )
-    assert not any(
-        forbidden.casefold() in literal.casefold()
-        for literal in literals
-        for forbidden in _FORBIDDEN_ORDER_TEXT
-    ), "stage-one source contains an out-of-scope order endpoint or TR"
+    if not permits_order_endpoints:
+        assert not any(
+            forbidden.casefold() in literal.casefold()
+            for literal in literals
+            for forbidden in _FORBIDDEN_ORDER_TEXT
+        ), "only nhplug/orders.py may contain an order endpoint or TR"
 
 
 def _imports_mock_runtime(tree: ast.AST) -> list[str]:
@@ -489,6 +508,22 @@ def test_entire_nhplug_package_obeys_every_stage_one_static_guard() -> None:
     _assert_stage_one_source_safe(
         SMOKE_SCRIPT.read_text(encoding="utf-8"), filename=SMOKE_SCRIPT.name
     )
+
+
+def test_order_endpoints_are_owned_only_by_orders_module() -> None:
+    """Stage 2 narrows, rather than deletes, the former total order ban."""
+
+    owner = RUNTIME_DIR / _ORDER_OWNER_FILENAME
+    assert owner.is_file()
+    _assert_stage_one_source_safe(
+        owner.read_text(encoding="utf-8"),
+        filename=owner.name,
+        permits_order_endpoints=True,
+    )
+    with pytest.raises(AssertionError, match="only nhplug/orders.py"):
+        _assert_stage_one_source_safe(
+            'PATH = "/krstock/order/v1/cashBuy"\n', filename="client.py"
+        )
 
 
 @pytest.mark.parametrize(
