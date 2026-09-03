@@ -411,13 +411,17 @@ def test_canary_scope_authority_issuer_has_one_post_consumption_production_call_
         for path in sorted(root.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call) or not isinstance(
-                    node.func, ast.Name
-                ):
+                if not isinstance(node, ast.Call):
                     continue
-                if node.func.id == "_issue_canary_scope_authority":
+                if isinstance(node.func, ast.Name):
+                    called = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    called = node.func.attr
+                else:
+                    continue
+                if called == "_issue_canary_scope_authority":
                     issuer_calls.append((path, node.lineno))
-                if node.func.id == "consume_registered_bounded_send_seal":
+                if called == "consume_registered_bounded_send_seal":
                     consume_calls.append((path, node.lineno))
 
     expected_path = REPO_ROOT / "scripts/b0x/kr/kiwoom_coordination.py"
