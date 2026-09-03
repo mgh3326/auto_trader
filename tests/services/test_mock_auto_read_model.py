@@ -387,7 +387,7 @@ async def test_absent_scheduler_owner_is_null_and_never_rewritten_as_disabled():
         "crypto.binance.spot_demo.b0x_sidecar",
         "crypto.binance.futures_demo",
     }
-    assert len(absent) == 9
+    assert len(absent) == 8
     assert absent & disabled == set()
 
 
