@@ -3,6 +3,13 @@
 Pure record-keeping only. Must not import or call broker mutation services,
 KIS, Upbit, watch alerts, order intents, or scheduler code.
 All writes receive already-produced payload data and persist state only.
+
+Timestamp contract: the legacy ``submitted_at`` and ``canceled_at`` ledger
+columns are stamped with local consumer record time. They are not Alpaca,
+broker-receipt, or execution-partner clock observations and must not be used
+as latency/SLA/clock-comparison inputs. Do not estimate or backfill historical
+rows from these values. Future source-qualified evidence must use additive
+fields and preserve these legacy columns unchanged.
 """
 
 from __future__ import annotations
