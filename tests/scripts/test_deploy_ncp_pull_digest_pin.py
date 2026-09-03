@@ -13,13 +13,21 @@ NEW = "ghcr.io/mgh3326/auto_trader@sha256:" + "2" * 64
 
 
 def run(
-    tmp_path: Path, *, api_color: str | None = None, fail_candidate: bool = False
+    tmp_path: Path,
+    *,
+    api_color: str | None = None,
+    fail_candidate: bool = False,
+    fail_mcp_port: int | None = None,
+    fail_once_container: str | None = None,
+    fail_proxy: bool = False,
+    existing_config: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str, Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "log"
     (bindir / "docker").write_text(f"""#!/usr/bin/env bash
 echo "docker $*" >> {log}
+if [[ "$1" == run && "$*" == *"--name ${{FAIL_ONCE_CONTAINER:-none}}"* && ! -e "$FAIL_ONCE_MARKER" ]]; then touch "$FAIL_ONCE_MARKER"; exit 1; fi
 case "$1" in
  inspect) [[ "$2" == --format ]] && {{ [[ "$3" == *Config.Image* ]] && echo {OLD} || echo id; }} ;;
  image) echo {NEW} ;;
@@ -29,7 +37,10 @@ esac
 """)
     (bindir / "curl").write_text(
         "#!/usr/bin/env bash\n"
-        'if [[ "${FAIL_CANDIDATE:-}" == true && "${!#}" == *":8001/healthz" ]]; then echo 500; exit 0; fi\n'
+        'url="${!#}"\n'
+        'if [[ "${FAIL_CANDIDATE:-}" == true && "$url" == *":8001/healthz" ]]; then echo 500; exit 0; fi\n'
+        'if [[ -n "${FAIL_MCP_PORT:-}" && "$url" == *":${FAIL_MCP_PORT}/health" ]]; then echo 500; exit 0; fi\n'
+        'if [[ "${FAIL_PROXY:-}" == true && "$url" == *":8000/healthz" ]]; then echo 500; exit 22; fi\n'
         "echo 200\n"
     )
     (bindir / "sleep").write_text("#!/usr/bin/env bash\n:")
@@ -53,6 +64,8 @@ esac
     (run_dir / "deployed-digest").write_text(OLD + "\n")
     if api_color:
         (run_dir / "api-active-color").write_text(api_color + "\n")
+    if existing_config is not None:
+        (run_dir / "haproxy.cfg").write_text(existing_config)
     p = subprocess.run(
         [str(DEPLOY)],
         text=True,
@@ -64,6 +77,12 @@ esac
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
             "FAIL_CANDIDATE": str(fail_candidate).lower(),
+            "FAIL_MCP_PORT": str(fail_mcp_port or ""),
+            "FAIL_ONCE_CONTAINER": fail_once_container or "none",
+            "FAIL_ONCE_MARKER": str(tmp_path / "fail-once"),
+            "FAIL_PROXY": str(fail_proxy).lower(),
+            "MCP_HEALTH_ATTEMPTS": "1",
+            "MCP_HEALTH_SLEEP_SECONDS": "0",
         },
     )
     return p, log.read_text(), run_dir
@@ -128,6 +147,44 @@ def test_tradingcodex_only_gets_required_policy_and_heartbeat_mount(
         if line.startswith("docker run") and "at-mcp-paper-001" in line
     )
     assert "ORDER_APPROVAL_HASH_MODE=required" not in paper
+
+
+def test_mcp_profile_failure_restores_captured_profile_images(tmp_path: Path) -> None:
+    p, log, _ = run(tmp_path, fail_mcp_port=8770)
+    assert p.returncode != 0
+    tradingcodex_runs = [
+        line
+        for line in log.splitlines()
+        if line.startswith("docker run") and "at-mcp-tradingcodex-execution" in line
+    ]
+    assert any(NEW in line for line in tradingcodex_runs)
+    assert any(OLD in line for line in tradingcodex_runs)
+
+
+def test_scheduler_failure_restores_its_previous_image(tmp_path: Path) -> None:
+    p, log, _ = run(tmp_path, api_color="blue", fail_once_container="at-scheduler")
+    assert p.returncode != 0
+    scheduler_runs = [
+        line
+        for line in log.splitlines()
+        if line.startswith("docker run") and "--name at-scheduler" in line
+    ]
+    assert any(NEW in line for line in scheduler_runs)
+    assert any(OLD in line for line in scheduler_runs)
+
+
+def test_failed_post_hup_probe_restores_the_prior_haproxy_config(
+    tmp_path: Path,
+) -> None:
+    p, _, run_dir = run(
+        tmp_path,
+        api_color="blue",
+        fail_proxy=True,
+        existing_config="old-haproxy-config\n",
+    )
+    assert p.returncode != 0
+    assert run_dir.joinpath("haproxy.cfg").read_text() == "old-haproxy-config\n"
+    assert run_dir.joinpath("api-active-color").read_text() == "blue\n"
 
 
 def test_source_keeps_mutants_red() -> None:
