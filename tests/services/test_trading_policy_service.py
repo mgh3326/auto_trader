@@ -6,6 +6,19 @@ import yaml
 from app.services import trading_policy_service as svc
 
 
+def _policy_key_references(value: object) -> list[str]:
+    references: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key.endswith("_policy_key") and isinstance(child, str):
+                references.append(child)
+            references.extend(_policy_key_references(child))
+    elif isinstance(value, list):
+        for child in value:
+            references.extend(_policy_key_references(child))
+    return references
+
+
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
     assert stamp["version"] == svc.load_trading_policy().version
@@ -54,6 +67,78 @@ def test_get_policy_for_sell_lane_filters_thresholds():
 
     assert thresholds["sell.rsi_place_min"]["value"] == 58
     assert "screen.rsi_max" not in thresholds
+
+
+@pytest.mark.parametrize("market", ["kr", "us", "crypto"])
+def test_sell_projection_reads_order_proposal_values_without_changing_other_lanes(
+    market,
+):
+    policy = svc.load_trading_policy()
+    auto_approve = policy.order_proposals.auto_approve
+    source = "projected from order_proposals.auto_approve (§40차/§142차)"
+
+    sell_thresholds = svc.get_policy_for(market, "sell")["thresholds"]
+    assert sell_thresholds["order_proposals.auto_approve.breakeven_band_pct"] == {
+        "value": auto_approve.breakeven_band_pct,
+        "unit": "percent",
+        "semantics": (
+            "the ±% band around avg_buy_price inside which a sell is treated as a "
+            "break-even boundary case and must go to a human, whatever the sign "
+            "of the P&L. §40차 fixes this at 1%."
+        ),
+        "of": None,
+        "one_share_exception": None,
+        "source": source,
+    }
+    assert sell_thresholds["order_proposals.auto_approve.round_trip_cost_bps"] == {
+        "value": auto_approve.round_trip_cost_bps[market],
+        "unit": "bps",
+        "semantics": (
+            "total both-leg cost (commission + transaction tax + FX spread where "
+            'applicable), used to net down expected realized P&L before the "> 0" '
+            "test."
+        ),
+        "of": None,
+        "one_share_exception": None,
+        "source": source,
+    }
+
+    for lane in ("buy", "discovery"):
+        thresholds = svc.get_policy_for(market, lane)["thresholds"]
+        assert "order_proposals.auto_approve.breakeven_band_pct" not in thresholds
+        assert "order_proposals.auto_approve.round_trip_cost_bps" not in thresholds
+
+
+def test_all_policy_key_references_bind_to_thresholds_for_every_market_lane():
+    """Every exposed policy-key reference must resolve in its lane view.
+
+    ``phase25.10_single_share_exit_choice`` is a decision-rule id, not a
+    threshold key, so it is intentionally excluded from the threshold check.
+    The assertion is membership-based so removing the projection produces a
+    genuine ``AssertionError`` rather than a lookup/fixture failure.
+    """
+
+    policy = svc.load_trading_policy()
+    rule_ids = set(policy.decision_rules)
+    all_references: set[str] = set()
+    missing: list[tuple[str, str, str]] = []
+
+    for market in ("kr", "us", "crypto"):
+        for lane in ("buy", "sell", "discovery"):
+            view = svc.get_policy_for(market, lane)
+            references = _policy_key_references(
+                {
+                    "decision_rules": view["decision_rules"],
+                    "market_rules": view["market_rules"],
+                }
+            )
+            all_references.update(references)
+            for reference in set(references) - rule_ids:
+                if reference not in view["thresholds"]:
+                    missing.append((market, lane, reference))
+
+    assert len(all_references) == 10
+    assert missing == []
 
 
 def test_get_policy_for_filters_crypto_market_rules_by_lane():

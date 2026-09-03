@@ -44,6 +44,18 @@ _SINGLE_SHARE_EXIT_APPROVAL: Literal["telegram_manual"] = "telegram_manual"
 _SINGLE_SHARE_EXIT_EXECUTION: Literal["proposal_only"] = "proposal_only"
 _SINGLE_SHARE_EXIT_LOSS_GUARD_KEY = "sell.loss_guard_min_multiple"
 _SINGLE_SHARE_EXIT_CODE_LOSS_FLOOR = Decimal("1.01")
+_ORDER_PROPOSALS_AUTO_APPROVE_PROJECTION_SOURCE = (
+    "projected from order_proposals.auto_approve (§40차/§142차)"
+)
+_BREAKEVEN_BAND_PROJECTION_SEMANTICS = (
+    "the ±% band around avg_buy_price inside which a sell is treated as a "
+    "break-even boundary case and must go to a human, whatever the sign of the "
+    "P&L. §40차 fixes this at 1%."
+)
+_ROUND_TRIP_COST_PROJECTION_SEMANTICS = (
+    "total both-leg cost (commission + transaction tax + FX spread where "
+    'applicable), used to net down expected realized P&L before the "> 0" test.'
+)
 
 
 class TradingPolicyKeyError(ValueError):
@@ -168,6 +180,25 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
                 else None
             ),
             "source": source,
+        }
+    if lane == "sell":
+        auto_approve = doc.order_proposals.auto_approve
+        projection_source = _ORDER_PROPOSALS_AUTO_APPROVE_PROJECTION_SOURCE
+        thresholds["order_proposals.auto_approve.breakeven_band_pct"] = {
+            "value": auto_approve.breakeven_band_pct,
+            "unit": "percent",
+            "semantics": _BREAKEVEN_BAND_PROJECTION_SEMANTICS,
+            "of": None,
+            "one_share_exception": None,
+            "source": projection_source,
+        }
+        thresholds["order_proposals.auto_approve.round_trip_cost_bps"] = {
+            "value": auto_approve.round_trip_cost_bps[market],
+            "unit": "bps",
+            "semantics": _ROUND_TRIP_COST_PROJECTION_SEMANTICS,
+            "of": None,
+            "one_share_exception": None,
+            "source": projection_source,
         }
     decision_rules: dict[str, Any] = {}
     for key, spec in doc.decision_rules.items():
