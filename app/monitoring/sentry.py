@@ -504,7 +504,9 @@ def init_sentry(
         LoggingIntegration(level=logging.INFO, event_level=log_event_level)
     ]
     if effective_flags["fastapi"]:
-        integrations.append(FastApiIntegration())
+        # Endpoint style avoids URL/query cardinality.  InvestTimingMiddleware
+        # refines authenticated invest routes to ``METHOD /route-template``.
+        integrations.append(FastApiIntegration(transaction_style="endpoint"))
     if effective_flags["sqlalchemy"]:
         integrations.append(SqlalchemyIntegration())
     if effective_flags["httpx"]:

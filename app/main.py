@@ -21,6 +21,7 @@ from app.core.logging_config import configure_dependency_log_levels
 from app.core.taskiq_broker import broker
 from app.middleware.auth import AuthMiddleware
 from app.middleware.csrf import TemplateFormCSRFMiddleware
+from app.middleware.invest_timing import InvestTimingMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier.runtime import (
     configure_trade_notifier_from_settings,
@@ -288,6 +289,9 @@ def create_app() -> FastAPI:
             *deprecated_pages.legacy_exempt_url_patterns(),
         ],
     )
+    # Last-added middleware executes first.  Keep timing outside auth/CSRF so
+    # an authenticated API request includes their fixed overhead too.
+    app.add_middleware(InvestTimingMiddleware)
 
     taskiq_fastapi.init(broker, "app.main:api")
 

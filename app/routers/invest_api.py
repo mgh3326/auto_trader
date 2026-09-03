@@ -6,10 +6,14 @@ import 하지 않는다. order / watch / scheduler / mutation 경로 import 금�
 
 from __future__ import annotations
 
+import time as monotonic_time
+from collections import OrderedDict
 from datetime import UTC, date, datetime, time
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import sentry_sdk
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -153,6 +157,76 @@ def _parse_paper_sources(value: str | None) -> frozenset[str] | None:
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
 
+_RUM_MAX_BODY_BYTES = 2_048
+_RUM_RATE_WINDOW_SECONDS = 5.0
+_RUM_RATE_CAPACITY = 1_024
+
+
+class InvestRumPayload(BaseModel):
+    """Small, low-cardinality navigation summary emitted by the invest SPA."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: str = Field(pattern=r"^/[A-Za-z0-9_/-]{0,119}$")
+    n_requests: int = Field(ge=0, le=200)
+    wall_ms: float = Field(ge=0, le=300_000)
+    slowest: str = Field(pattern=r"^/invest/api/[A-Za-z0-9_/-]{0,119}$")
+
+
+class _InvestRumRateGate:
+    """Bounded, per-process per-user gate; telemetry must never amplify load."""
+
+    def __init__(self) -> None:
+        self._last_seen: OrderedDict[int, float] = OrderedDict()
+
+    def allow(self, user_id: int, now: float) -> bool:
+        previous = self._last_seen.get(user_id)
+        if previous is not None and now - previous < _RUM_RATE_WINDOW_SECONDS:
+            return False
+        self._last_seen[user_id] = now
+        self._last_seen.move_to_end(user_id)
+        while len(self._last_seen) > _RUM_RATE_CAPACITY:
+            self._last_seen.popitem(last=False)
+        return True
+
+
+_rum_rate_gate = _InvestRumRateGate()
+
+
+async def _read_invest_rum_payload(request: Request) -> InvestRumPayload:
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        raise HTTPException(
+            status_code=status.HTTP_411_LENGTH_REQUIRED,
+            detail="Content-Length required",
+        )
+    try:
+        declared_size = int(content_length)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Content-Length",
+        ) from exc
+    if declared_size < 0 or declared_size > _RUM_MAX_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="RUM payload too large",
+        )
+
+    body = await request.body()
+    if len(body) > _RUM_MAX_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="RUM payload too large",
+        )
+    try:
+        return InvestRumPayload.model_validate_json(body)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid RUM payload",
+        ) from exc
+
 
 def get_invest_home_service(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -222,6 +296,33 @@ async def get_home(
                 "manual_pairs_available": bool(exc.manual_pairs),
             },
         ) from exc
+
+
+@router.post("/rum", status_code=status.HTTP_204_NO_CONTENT)
+async def record_invest_rum(
+    request: Request,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+) -> Response:
+    """Record a bounded, authenticated browser navigation summary.
+
+    This is deliberately not persisted: Sentry aggregates the low-cardinality
+    tags and the endpoint has a strict per-user process-local throttle.
+    """
+    payload = await _read_invest_rum_payload(request)
+    user_id = int(user.id)
+    if not _rum_rate_gate.allow(user_id, monotonic_time.monotonic()):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="RUM rate limit exceeded",
+        )
+
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("route", payload.route)
+        scope.set_tag("n_requests", str(payload.n_requests))
+        scope.set_tag("wall_ms", f"{payload.wall_ms:.1f}")
+        scope.set_tag("slowest", payload.slowest)
+        sentry_sdk.capture_message("invest.rum", level="info")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/market")
