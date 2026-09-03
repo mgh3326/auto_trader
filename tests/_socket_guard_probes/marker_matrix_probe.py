@@ -29,6 +29,13 @@ LOOPBACK_ADDRESS = ("127.0.0.1", 5432)
 RECORD_PATH_ENV = "ROB1296_PROBE_RECORD"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_test_schema():
+    """The marker matrix exercises guard predicates only, never a database."""
+
+    yield
+
+
 def _record(case: str) -> None:
     payload = {
         "case": case,

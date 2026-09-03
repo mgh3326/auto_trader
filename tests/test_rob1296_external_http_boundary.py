@@ -34,6 +34,13 @@ COUNTER_PROBE_PATH = (
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_test_schema():
+    """The HTTP-boundary contract never uses ORM or database fixtures."""
+
+    yield
+
+
 # --------------------------------------------------------------------------
 # (a) the real network transports are blocked, sync and async
 # --------------------------------------------------------------------------
