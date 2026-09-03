@@ -1973,6 +1973,82 @@ async def test_web_deny_records_web_channel(monkeypatch, db_session):
 
 
 @pytest.mark.asyncio
+async def test_web_core_nonce_gate_is_single_use(monkeypatch, db_session):
+    """Mutation guard: bypassing nonce consumption must make this RED."""
+    group = await _seed_proposal(db_session, nonce="web-core-nonce")
+    proposal_id = group.proposal_id
+    service = OrderProposalsService(db_session)
+    callback = await service.current_callback_envelope(proposal_id, action="op")
+    calls: list[object] = []
+
+    async def revalidate(**kwargs):
+        calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    kwargs = {
+        "session": db_session,
+        "service": service,
+        "proposal_id": proposal_id,
+        "callback": callback,
+        "now": datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        "notifier": None,
+        "chat_id": None,
+        "message_id": None,
+        "callback_query_id": None,
+        "telegram_user_id": "user:9",
+        "actor_channel": "web",
+        "actor_subject": "user:9",
+        "revalidate_fn": revalidate,
+        "window_evaluator": allow_known_session,
+        "now_fn": lambda: datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+    }
+    first = await callback_module._handle_approve(**kwargs)
+    second = await callback_module._handle_approve(**kwargs)
+
+    assert first["reason"] == "approved"
+    assert second["reason"] == "nonce_replay"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_web_core_respects_commit_lease(monkeypatch, db_session):
+    """Mutation guard: bypassing the lease must make this RED."""
+    group = await _seed_proposal(db_session, nonce="web-core-lease")
+    proposal_id = group.proposal_id
+    service = OrderProposalsService(db_session)
+    callback = await service.current_callback_envelope(proposal_id, action="op")
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    assert await service.acquire_commit_lease(proposal_id, now=now) is True
+    await db_session.commit()
+    calls: list[object] = []
+
+    async def revalidate(**kwargs):
+        calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    result = await callback_module._handle_approve(
+        session=db_session,
+        service=service,
+        proposal_id=proposal_id,
+        callback=callback,
+        now=now,
+        notifier=None,
+        chat_id=None,
+        message_id=None,
+        callback_query_id=None,
+        telegram_user_id="user:9",
+        actor_channel="web",
+        actor_subject="user:9",
+        revalidate_fn=revalidate,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: now,
+    )
+
+    assert result["reason"] == "lease_held"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_loss_cut_second_nonce_replay_is_rejected(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_loss_cut_proposal(db_session, monkeypatch)
