@@ -570,3 +570,38 @@ def test_forged_authority_without_consumed_seal_fails_runtime_binding() -> None:
         raise AssertionError(
             "forged canary authority without a consumed seal passed runtime binding"
         )
+
+
+def test_registered_validator_rejects_unconsumed_seal_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1343: a registered validator still requires its exact marker."""
+
+    entry, seal, _, _factory = _install_isolated_runtime(
+        monkeypatch,
+        root=tmp_path,
+        expiry_minutes=35,
+    )
+    snapshotted = bounded_send.snapshot_bounded_send_seal(seal)
+    authority = core_coordination._issue_canary_scope_authority(
+        lane_id=snapshotted.lane_id,
+        physical_account_id=snapshotted.physical_account_id,
+        seal_digest=snapshotted.seal_digest,
+        seal_binding_validator=lambda lane_id, physical_account_id, seal_digest: (
+            bounded_send.assert_consumed_bounded_send_seal_binding(
+                snapshotted,
+                lane_id,
+                physical_account_id,
+                seal_digest,
+            )
+        ),
+    )
+
+    with pytest.raises(LaneGuardError) as captured:
+        core_coordination.assert_canary_scope_authority_binding(entry, authority)
+
+    assert captured.value.code == "canary_scope_authority_seal_unbound"
+    assert not bounded_send.bounded_send_consumption_marker_path(
+        snapshotted.seal_digest
+    ).exists()
