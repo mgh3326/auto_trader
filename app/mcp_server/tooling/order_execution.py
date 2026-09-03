@@ -85,6 +85,7 @@ from app.services.kis_mock_attribution import (
 )
 from app.services.kis_mock_runner.singleton import run_kis_mock_send
 from app.services.kr_symbol_universe_service import get_kr_security_type
+from app.services.order_proposals.parking_allowlist import parking_scope
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -503,19 +504,29 @@ async def _fetch_current_price(
     market_type: str,
     order_type: str,
     price: float | None,
+    *,
+    require_fresh_quote: bool = False,
 ) -> float:
-    """Fetch current price, falling back to limit price when available."""
+    """Fetch current price, falling back to limit price when available.
+
+    A marketable parking buy needs a real quote to enforce its premium band, so
+    that narrow path must fail closed rather than manufacture one from its limit.
+    """
     try:
         current_price = await _get_current_price_for_order(
             normalized_symbol, market_type
         )
     except Exception:
+        if require_fresh_quote:
+            raise ValueError("quote_unavailable") from None
         if order_type == "limit" and price is not None:
             current_price = float(price)
         else:
             raise
 
     if current_price is None:
+        if require_fresh_quote:
+            raise ValueError("quote_unavailable")
         if order_type == "limit" and price is not None:
             current_price = float(price)
         else:
@@ -537,6 +548,7 @@ async def _build_preview(
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: ov.LossCutContext | None = None,
+    allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
     dry_run_result = await _preview_order(
@@ -551,6 +563,7 @@ async def _build_preview(
         is_mock=is_mock,
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
+        allow_marketable_parking_buy=allow_marketable_parking_buy,
     )
     if not isinstance(dry_run_result, dict):
         raise ValueError("Order preview returned invalid result")
@@ -1683,6 +1696,7 @@ async def _place_order_impl(
     correlation_id: str | None = None,
     report_item_uuid: str | None = None,
     proposal_flow: bool = False,
+    proposal_account_mode: str | None = None,
     approval_hash: str | None = None,
     rung: str | int | None = None,
     mirror_cohort: str | None = None,
@@ -1703,6 +1717,25 @@ async def _place_order_impl(
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
+
+    # The classifier bounds the exact parking tuple's notional with its caps;
+    # preview bounds the marketable limit price with its fixed premium band.
+    # Keep those dimensions independently bounded, and carry the price-side
+    # allowance into preview only when the proposal revalidation binding has
+    # supplied the pinned account mode. Direct order tools and every other
+    # proposal continue to reject a buy limit above the fresh quote here.
+    allow_marketable_parking_buy = (
+        proposal_flow
+        and not is_mock
+        and side_lower == "buy"
+        and order_type_lower == "limit"
+        and parking_scope(
+            symbol=normalized_symbol,
+            account_mode=proposal_account_mode,
+            market=market_type,
+        )
+        is not None
+    )
 
     def _order_error(message: str) -> dict[str, Any]:
         return _build_order_error(message, source, normalized_symbol, market_type)
@@ -1803,6 +1836,7 @@ async def _place_order_impl(
             market_type,
             order_type_lower,
             price,
+            require_fresh_quote=allow_marketable_parking_buy,
         )
 
         # Resolve amount -> quantity for buy orders
@@ -1853,6 +1887,7 @@ async def _place_order_impl(
                 is_mock=is_mock,
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
+                allow_marketable_parking_buy=allow_marketable_parking_buy,
             )
         except ValueError as preview_exc:
             preview_error = str(preview_exc) or preview_exc.__class__.__name__
@@ -2065,6 +2100,8 @@ async def _place_order_impl(
         base_error = _order_error(describe_exception(exc))
         if isinstance(exc, BrokerEdgeNotCreated):
             base_error["error_code"] = exc.error_code
+        elif isinstance(exc, ValueError) and str(exc) == "quote_unavailable":
+            base_error["error_code"] = "quote_unavailable"
         return _augment_error_for_unknown_outcome(
             base_error, exc, market_type=market_type, is_mock=is_mock
         )
