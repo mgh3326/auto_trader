@@ -1066,6 +1066,14 @@ class OrderProposalsService:
         rungs = await self._repo.list_rungs(group.id)
         return group, rungs
 
+    async def list_web_approval_card_rows(
+        self, *, proposal_id: uuid.UUID | None = None, limit: int = 100
+    ) -> list[tuple[OrderProposal, OrderProposalRung | None]]:
+        """Return the hub projection source in one repository query."""
+        return await self._repo.list_web_approval_card_rows(
+            proposal_id=proposal_id, limit=limit
+        )
+
     async def link_funding_advisory_provenance(
         self,
         *,

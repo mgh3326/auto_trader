@@ -78,6 +78,18 @@ executes a stored envelope.
 Published-binding preflight, single-use nonce, commit lease, target-mutation
 lock, approval hash, and fresh preview remain downstream gates.
 
+### Web approval boundary
+
+`/invest/api/approvals/*` is an authenticated, CSRF-protected web adapter for
+the same execution core. It is **not** a W5 consumer: W5's durable envelope
+and terminal-scrub contract are Telegram-specific, so web approval remains
+synchronous until a separately reviewed generalization exists. A web request
+uses its required `Idempotency-Key` only as request admission; it never accepts
+or exposes the server-held approval nonce. The current published binding,
+single-use nonce, commit lease, target lock, approval hash and fresh preview
+therefore remain authoritative. Do not route web requests through the Telegram
+inbox or enable any W5 gate for this feature.
+
 ---
 
 ## 3. Flow

@@ -681,6 +681,8 @@ async def _handle_approve(
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
     loss_cut_confirmation: bool = False,
+    actor_channel: str = "telegram",
+    actor_subject: str | None = None,
     service_factory: ServiceFactory = AsyncSessionLocal,
 ) -> dict[str, Any]:
     window_evaluator = window_evaluator or evaluate_approval_window
@@ -744,6 +746,8 @@ async def _handle_approve(
                 proposal_id,
                 callback=callback,
                 telegram_user_id=telegram_user_id,
+                actor_channel=actor_channel,
+                actor_subject=actor_subject,
                 now=approval_now,
             )
         else:
@@ -768,9 +772,17 @@ async def _handle_approve(
             "proposal_id": str(proposal_id),
         }
 
-    await service.record_approval(
-        proposal_id, telegram_user_id=telegram_user_id, now=approval_now
-    )
+    if actor_channel == "telegram":
+        await service.record_approval(
+            proposal_id, telegram_user_id=telegram_user_id, now=approval_now
+        )
+    else:
+        await service.record_channel_approval(
+            proposal_id,
+            channel=actor_channel,
+            actor_subject=actor_subject or telegram_user_id,
+            now=approval_now,
+        )
 
     # A rung that came back `needs_reconfirm` on a previous approve click is
     # NOT `pending_approval` -- `revalidate_and_submit` only re-enters rungs
@@ -1417,6 +1429,8 @@ async def _handle_loss_cut_first_click(
     message_id: int | None,
     callback_query_id: str | None = None,
     telegram_user_id: str,
+    actor_channel: str = "telegram",
+    actor_subject: str | None = None,
     loss_cut_preview_fn: RevalidateFn,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
@@ -1545,6 +1559,8 @@ async def _handle_loss_cut_first_click(
         first_nonce=callback.nonce,
         confirmation_nonce=confirmation_nonce,
         telegram_user_id=telegram_user_id,
+        actor_channel=actor_channel,
+        actor_subject=actor_subject,
         now=post_preview_now,
     )
     group, rungs = await service.get_proposal(proposal_id)
@@ -1707,6 +1723,117 @@ class CallbackNotNormalizable(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+async def handle_web_approval(
+    proposal_id: uuid.UUID,
+    *,
+    action: str,
+    actor_subject: str,
+    now: datetime,
+    service_factory: ServiceFactory = AsyncSessionLocal,
+    revalidate_fn: RevalidateFn = revalidate_and_submit,
+    loss_cut_preview_fn: RevalidateFn | None = None,
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> dict[str, Any]:
+    """Run the Telegram approval execution core for an authenticated web actor.
+
+    The browser never receives the approval nonce or a dispatch binding.  This
+    adapter reconstructs both from the current server-side published snapshot,
+    then calls the exact approve/deny/loss-cut handlers used by
+    :func:`handle_normalized_callback`.  Consequently the published-binding
+    preflight, window checks, nonce consumption, commit lease, target lock,
+    approval hash and fresh preview remain in their original order.
+
+    ``Idempotency-Key`` is an HTTP admission requirement owned by the router;
+    it deliberately is not substituted for the secret, single-use approval
+    nonce held by the server.
+    """
+    if action not in {"approve", "deny", "loss-cut-confirm"}:
+        return {"handled": False, "reason": "invalid_web_approval_action"}
+    if not actor_subject:
+        return {"handled": False, "reason": "approval_actor_invalid"}
+
+    evaluate_window = window_evaluator or evaluate_approval_window
+    clock = now_fn or (lambda: now)
+    try:
+        async with service_factory() as session:
+            service = OrderProposalsService(session)
+            callback_action = {
+                "approve": "op",
+                "deny": "dn",
+                "loss-cut-confirm": "lc",
+            }[action]
+            callback = await service.current_callback_envelope(
+                proposal_id, action=callback_action
+            )
+            group, _rungs = await service.get_proposal(proposal_id)
+
+            if action == "deny":
+                return await _handle_deny(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    callback=callback,
+                    now=now,
+                    notifier=None,
+                    chat_id=None,
+                    message_id=None,
+                    callback_query_id=None,
+                )
+
+            if action == "approve" and group.exit_intent == "loss_cut":
+                if loss_cut_preview_fn is None:
+                    from app.services.order_proposals.revalidation import (
+                        preview_loss_cut_confirmation,
+                    )
+
+                    loss_cut_preview_fn = preview_loss_cut_confirmation
+                return await _handle_loss_cut_first_click(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    callback=callback,
+                    now=now,
+                    notifier=None,
+                    chat_id=None,
+                    message_id=None,
+                    callback_query_id=None,
+                    telegram_user_id=actor_subject,
+                    actor_channel="web",
+                    actor_subject=actor_subject,
+                    loss_cut_preview_fn=loss_cut_preview_fn,
+                    window_evaluator=evaluate_window,
+                    now_fn=clock,
+                    service_factory=service_factory,
+                )
+
+            return await _handle_approve(
+                session=session,
+                service=service,
+                proposal_id=proposal_id,
+                callback=callback,
+                now=now,
+                notifier=None,
+                chat_id=None,
+                message_id=None,
+                callback_query_id=None,
+                telegram_user_id=actor_subject,
+                actor_channel="web",
+                actor_subject=actor_subject,
+                revalidate_fn=revalidate_fn,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
+                loss_cut_confirmation=action == "loss-cut-confirm",
+                service_factory=service_factory,
+            )
+    except Exception as exc:  # noqa: BLE001 - keep the web result fail-closed
+        logger.error(
+            "order_proposals.web_approval.failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        return {"handled": False, "reason": "internal_error"}
 
 
 def normalize_callback_update(update: dict[str, Any]) -> NormalizedCallback:
