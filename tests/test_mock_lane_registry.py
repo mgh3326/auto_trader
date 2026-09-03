@@ -642,6 +642,20 @@ def test_j2a_binance_demo_identity_amendment_is_verbatim_and_additive() -> None:
         "fingerprint_evidence_ref",
         "missing_bindings",
     }
+    kiwoom_binding_fields = binding_fields | {
+        "activation_status",
+        "policy_binding",
+        "execution_mode",
+        "scheduler_owner",
+        "timing_owner",
+        "max_order_notional",
+        "max_orders_per_session",
+        "max_open_orders",
+        "allowed_order_types",
+        "allowed_time_in_force",
+        "reconcile_required",
+        "canary_binding",
+    }
     expected_activation_statuses = {
         "crypto.binance.spot_demo.canonical": registry.ActivationStatus.BLOCKED,
         "crypto.binance.spot_demo.b0x_sidecar": registry.ActivationStatus.DISABLED,
@@ -661,7 +675,17 @@ def test_j2a_binance_demo_identity_amendment_is_verbatim_and_additive() -> None:
         }
         if lane_id not in lane_ids:
             if lane_id == "kr.kiwoom.mock":
-                assert changed_fields == binding_fields
+                assert changed_fields == kiwoom_binding_fields
+                assert effective.missing_bindings == ()
+                assert (
+                    effective.activation_status
+                    is registry.ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+                )
+                assert (
+                    effective.activation_status is not registry.ActivationStatus.ENABLED
+                )
+                assert effective.writer is base.writer is False
+                assert effective.auto_order_enabled is base.auto_order_enabled is False
                 continue
             assert changed_fields == set()
             continue
@@ -683,7 +707,7 @@ def test_j2a_binance_demo_identity_amendment_is_verbatim_and_additive() -> None:
 
 
 def test_j2a_kiwoom_mock_identity_amendment_is_verbatim_and_additive() -> None:
-    """The approved KR binding changes identity fields only and never enables execution."""
+    """The approved KR amendment changes only bindings and never enables execution."""
 
     lane_id = "kr.kiwoom.mock"
     physical_account_id = (
@@ -709,9 +733,21 @@ def test_j2a_kiwoom_mock_identity_amendment_is_verbatim_and_additive() -> None:
     assert base.auto_order_enabled is False
 
     binding_fields = {
+        "activation_status",
+        "policy_binding",
+        "execution_mode",
+        "scheduler_owner",
+        "timing_owner",
+        "max_order_notional",
+        "max_orders_per_session",
+        "max_open_orders",
+        "allowed_order_types",
+        "allowed_time_in_force",
+        "reconcile_required",
         "physical_account_id",
         "identity_status",
         "fingerprint_evidence_ref",
+        "canary_binding",
         "missing_bindings",
     }
     changed_fields = {
@@ -723,14 +759,33 @@ def test_j2a_kiwoom_mock_identity_amendment_is_verbatim_and_additive() -> None:
     assert effective.physical_account_id == physical_account_id
     assert effective.identity_status == "KNOWN"
     assert effective.fingerprint_evidence_ref == fingerprint_evidence_ref
-    assert effective.missing_bindings == (
-        registry.MissingBinding.POLICY,
-        registry.MissingBinding.CAP,
-        registry.MissingBinding.OWNER,
-        registry.MissingBinding.CANARY,
+    assert effective.policy_binding == registry.PolicyBinding(
+        policy_version="b0x-kr-v1.8",
+        policy_version_hash=(
+            "7d2729bc4197dd167d40e3e881b64f30a778b1b1a7158acf81fd0c7d38d008c0"
+        ),
     )
-    assert effective.writer is False
-    assert effective.auto_order_enabled is False
+    assert effective.execution_mode == "acceptance"
+    assert effective.scheduler_owner is SchedulerOwner.MANUAL
+    assert (
+        effective.timing_owner
+        == "scripts.b0x.kr.kiwoom_ordering.KiwoomCoordinationAdapter"
+    )
+    assert effective.max_order_notional == Decimal("300000")
+    assert effective.max_orders_per_session == 3
+    assert effective.max_open_orders == 10
+    assert effective.allowed_order_types == ("limit",)
+    assert effective.allowed_time_in_force == ("day",)
+    assert effective.reconcile_required is True
+    assert effective.canary_binding == "kiwoom-bounded-send-seal-registry.v1"
+    assert effective.missing_bindings == ()
+    assert (
+        effective.activation_status
+        is registry.ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    )
+    assert effective.activation_status is not registry.ActivationStatus.ENABLED
+    assert effective.writer is base.writer is False
+    assert effective.auto_order_enabled is base.auto_order_enabled is False
 
     us_kiwoom = effective_by_id["us.kiwoom.mock"]
     us_kiwoom_base = base_by_id["us.kiwoom.mock"]
@@ -798,10 +853,24 @@ def test_missing_bindings_keep_rows_blocked_or_disabled_with_reasons() -> None:
         tuple(entry.lane_id for entry in registry.CANONICAL_LANE_REGISTRY)
         == registry.CANONICAL_LANE_IDS
     )
+    other_lane_count = 0
     for entry in registry.CANONICAL_LANE_REGISTRY:
+        if entry.lane_id == "kr.kiwoom.mock":
+            assert entry.missing_bindings == ()
+            assert (
+                entry.activation_status
+                is registry.ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+            )
+            assert isinstance(entry.policy_binding, registry.PolicyBinding)
+            assert entry.max_order_notional == Decimal("300000")
+            assert entry.canary_binding == "kiwoom-bounded-send-seal-registry.v1"
+            assert entry.writer is False
+            assert entry.auto_order_enabled is False
+            continue
+
+        other_lane_count += 1
         expected_missing = required_missing
         if entry.lane_id in {
-            "kr.kiwoom.mock",
             "crypto.binance.spot_demo.canonical",
             "crypto.binance.spot_demo.b0x_sidecar",
             "crypto.binance.futures_demo",
@@ -818,6 +887,7 @@ def test_missing_bindings_keep_rows_blocked_or_disabled_with_reasons() -> None:
         assert entry.policy_binding is None
         assert entry.max_order_notional is None
         assert entry.canary_binding is None
+    assert other_lane_count == len(registry.CANONICAL_LANE_IDS) - 1 == 11
 
 
 def test_missing_binding_reason_is_required_once() -> None:
@@ -1123,12 +1193,63 @@ async def test_lineage_policy_mismatch_rejects_both_boundaries(
 
 @pytest.mark.asyncio
 async def test_absent_policy_binding_keeps_existing_incomplete_reason() -> None:
-    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    _, envelope = _lineage_envelope("us.kiwoom.mock")
 
     await _assert_both_boundaries_reject(
         envelope,
         registry.CANONICAL_LANE_REGISTRY,
         reason="lane_binding_incomplete",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_US_*",
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_kiwoom_policy_mismatch_rejects_both_boundaries() -> None:
+    """A policy envelope different from the canonical binding is rejected."""
+
+    entry = _by_id()["kr.kiwoom.mock"]
+    assert entry.policy_binding != registry.PolicyBinding(
+        "test-policy-v1", "test-policy-hash-v1"
+    )
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        registry.CANONICAL_LANE_REGISTRY,
+        reason="lane_policy_binding_mismatch",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_kiwoom_matching_policy_still_rejects_activation() -> None:
+    """A matching policy passes binding checks but pending activation stays closed."""
+
+    entry = _by_id()["kr.kiwoom.mock"]
+    assert isinstance(entry.policy_binding, registry.PolicyBinding)
+    assert (
+        entry.activation_status is registry.ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    )
+    assert entry.writer is False
+    assert entry.auto_order_enabled is False
+    _, envelope = _lineage_envelope(
+        entry.lane_id,
+        intent_overrides={
+            "policy_version": entry.policy_binding.policy_version,
+            "policy_version_hash": entry.policy_binding.policy_version_hash,
+        },
+    )
+    resolved = registry.assert_lineage_registry_binding(
+        envelope, registry.CANONICAL_LANE_REGISTRY
+    )
+    assert resolved is entry
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        registry.CANONICAL_LANE_REGISTRY,
+        reason="lane_activation_not_enabled",
         endpoint_url="https://mockapi.kiwoom.com",
         credential_namespace="KIWOOM_MOCK_*",
     )
