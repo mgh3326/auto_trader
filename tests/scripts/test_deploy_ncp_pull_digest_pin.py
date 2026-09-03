@@ -13,7 +13,7 @@ NEW = "ghcr.io/mgh3326/auto_trader@sha256:" + "2" * 64
 
 
 def run(
-    tmp_path: Path, *, api_color: str | None = None
+    tmp_path: Path, *, api_color: str | None = None, fail_candidate: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], str, Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -27,7 +27,11 @@ case "$1" in
  *) : ;;
 esac
 """)
-    (bindir / "curl").write_text("#!/usr/bin/env bash\necho 200\n")
+    (bindir / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${FAIL_CANDIDATE:-}" == true && "${!#}" == *":8001/healthz" ]]; then echo 500; exit 0; fi\n'
+        "echo 200\n"
+    )
     (bindir / "sleep").write_text("#!/usr/bin/env bash\n:")
     for path in bindir.iterdir():
         path.chmod(0o755)
@@ -59,6 +63,7 @@ esac
             "AT_RUN_DIRECTORY": str(run_dir),
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
+            "FAIL_CANDIDATE": str(fail_candidate).lower(),
         },
     )
     return p, log.read_text(), run_dir
@@ -95,6 +100,34 @@ def test_worker_is_ready_before_old_worker_is_stopped(tmp_path: Path) -> None:
     p, log, _ = run(tmp_path, api_color="blue")
     assert p.returncode == 0, p.stderr
     assert log.index("--name at-worker-new") < log.index("stop -t 60 at-worker")
+
+
+def test_unhealthy_candidate_keeps_legacy_api_and_exits_nonzero(tmp_path: Path) -> None:
+    p, log, run_dir = run(tmp_path, fail_candidate=True)
+    assert p.returncode != 0
+    assert "docker rm -f at-api\n" not in log
+    assert not run_dir.joinpath("api-active-color").exists()
+
+
+def test_tradingcodex_only_gets_required_policy_and_heartbeat_mount(
+    tmp_path: Path,
+) -> None:
+    p, log, _ = run(tmp_path)
+    assert p.returncode == 0, p.stderr
+    tradingcodex = next(
+        line
+        for line in log.splitlines()
+        if line.startswith("docker run") and "at-mcp-tradingcodex-execution" in line
+    )
+    assert "ORDER_APPROVAL_HASH_MODE=required" in tradingcodex
+    assert "TOSS_APPROVAL_HASH_MODE=required" in tradingcodex
+    assert "MCP_HEARTBEAT_PATH=" in tradingcodex
+    paper = next(
+        line
+        for line in log.splitlines()
+        if line.startswith("docker run") and "at-mcp-paper-001" in line
+    )
+    assert "ORDER_APPROVAL_HASH_MODE=required" not in paper
 
 
 def test_source_keeps_mutants_red() -> None:
