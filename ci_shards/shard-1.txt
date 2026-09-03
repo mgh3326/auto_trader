@@ -85,11 +85,9 @@ tests/scripts/test_binance_public_smoke.py
 tests/scripts/test_binance_spot_demo_smoke.py
 tests/scripts/test_build_policy_table_out_dir.py
 tests/scripts/test_forecast_legacy_rule_migration.py
-tests/scripts/test_healthcheck_native.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
 tests/scripts/test_invest_reports_us_schedule_cli.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
-tests/scripts/test_native_haproxy_first_cutover.py
 tests/scripts/test_news_relevance_judge_smoke.py
 tests/scripts/test_nhplug_mock_smoke.py
 tests/scripts/test_policy_table_us.py

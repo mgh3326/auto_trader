@@ -11,7 +11,7 @@ def test_deploy_script_is_retired_fail_closed() -> None:
 
     assert "scripts/deploy.sh is retired" in content
     assert "Raspberry Pi Docker production deploy path was decommissioned" in content
-    assert "scripts/deploy-native.sh" in content
+    assert "scripts/deploy-ncp-pull.sh" in content
     assert "exit 1" in content
     assert 'curl -sf "$HEALTH_URL" > /dev/null 2>&1' not in content
     assert (
@@ -26,4 +26,4 @@ def test_legacy_deploy_workflow_no_longer_ssh_deploys_to_pi() -> None:
     assert "Build GHCR images" in content
     assert "DEPLOY_SSH_HOST" not in content
     assert "cd /home/mgh3326/auto_trader && ./scripts/deploy.sh" not in content
-    assert "scripts/deploy-native.sh" in content
+    assert "scripts/deploy-ncp-pull.sh" in content

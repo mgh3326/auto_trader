@@ -123,6 +123,8 @@ chain.strategy
 `20260803_kis_mock_signal` — `review.kis_mock_signal_ledger` **생성만**.
 기존 테이블/컬럼/제약/인덱스 변경 0.
 
+`20260903_order_path_metadata` 배포 뒤에는 operator가 `alembic upgrade head`를 실행해야 `review.kis_mock_order_ledger.extra_metadata`가 추가된다.
+
 scratch DB 실측(2026-08-03, 로컬 postgres 17.9):
 
 ```

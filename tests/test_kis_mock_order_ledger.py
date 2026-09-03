@@ -1873,6 +1873,80 @@ async def test_record_kis_mock_order_threads_mirror_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_record_kis_mock_order_threads_performance_metadata(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=123)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+
+    metadata = {"submit_path": "edge", "broker_ms": 12.3, "total_ms": 15.4}
+    await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result={"price": 70000, "quantity": 1, "estimated_value": 70000},
+        execution_result={"rt_cd": "0", "odno": "ROB-PERF-1"},
+        reason="performance-test",
+        thesis=None,
+        strategy="performance_test",
+        notes=None,
+        correlation_id="performance-test-1",
+        target_price=None,
+        min_hold_days=None,
+        extra_metadata=metadata,
+    )
+
+    assert save.await_args.kwargs["extra_metadata"] == metadata
+
+
+@pytest.mark.asyncio
+async def test_save_kis_mock_order_ledger_persists_performance_metadata(db_session):
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
+    from app.models.review import KISMockOrderLedger
+
+    metadata = {"submit_path": "direct", "broker_ms": 8.1, "total_ms": 10.2}
+    order_no = "ROB-PERF-METADATA-1"
+    ledger_id = await _save_kis_mock_order_ledger(
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=70000,
+        amount=70000,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message="ok",
+        raw_response={"rt_cd": "0"},
+        reason="performance-test",
+        thesis=None,
+        strategy="performance_test",
+        notes=None,
+        extra_metadata=metadata,
+    )
+
+    assert ledger_id is not None
+    row = (
+        await db_session.execute(
+            select(KISMockOrderLedger).where(KISMockOrderLedger.order_no == order_no)
+        )
+    ).scalar_one()
+    assert row.extra_metadata == metadata
+
+
+@pytest.mark.asyncio
 async def test_record_kis_mock_order_does_not_publish_forecast_without_ledger_id(
     monkeypatch,
 ):

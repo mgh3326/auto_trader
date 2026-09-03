@@ -600,11 +600,11 @@ def _adapt_live_submit_response(
 async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     """Production binding — delegates to the real order-execution impl.
 
-    Not exercised by this task's test suite (every test injects a fake
-    ``place_order_fn``; real broker/httpx calls are always mocked in tests
-    per the ROB-816 global constraints). The dry-run preview response is
-    passed through unchanged — ``_revalidate_rung`` already reads its real
-    top-level keys (``price``/``quantity``/``success``/``approval_hash``).
+    Tests exercise the dry-run preview chain with local seams; real
+    broker/httpx calls are always mocked in tests per the ROB-816 global
+    constraints. The dry-run preview response is passed through unchanged —
+    ``_revalidate_rung`` already reads its real top-level keys
+    (``price``/``quantity``/``success``/``approval_hash``).
     The live-submit (``dry_run=False``) response is translated via
     ``_adapt_live_submit_response`` before being handed to
     ``_classify_submit`` — see that helper's docstring and Task 13 report
@@ -690,7 +690,11 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     if proposal_client_order_id is not None:
         kwargs["client_order_id"] = str(proposal_client_order_id)
 
-    submit = await _place_order_impl(**kwargs, proposal_flow=True)
+    submit = await _place_order_impl(
+        **kwargs,
+        proposal_flow=True,
+        proposal_account_mode=account_mode,
+    )
     if kwargs.get("dry_run") is False:
         return _adapt_live_submit_response(
             submit, order_type=str(kwargs.get("order_type"))

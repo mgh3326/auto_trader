@@ -2,25 +2,22 @@
 
 > **상태:** 폐기됨 / 사용 금지  
 > **이유:** ROB-263에서 Raspberry Pi Docker production deploy 경로를 제거했습니다.  
-> **현재 production 경로:** MacBook native launchd 배포만 사용합니다.
+> **현재 production 경로:** NCP pull deployment만 사용합니다.
 
 ## 현재 운영 원칙
 
-- Auto Trader production은 MacBook native 서비스(`launchd`)가 단일 owner입니다.
-- 특히 KIS websocket은 **MacBook native single-owner**로만 운영해야 합니다.
+- Auto Trader production은 NCP Docker 서비스가 단일 owner입니다.
+- 특히 KIS websocket은 **NCP single-owner**로만 운영해야 합니다.
 - Raspberry Pi에서 `docker-compose.prod.yml`로 production stack을 다시 올리면 KIS websocket appkey/session 점유 충돌(`OPSP8996 ALREADY IN USE appkey`)을 재발시킬 수 있습니다.
 
 ## 사용해야 하는 배포 경로
 
 ```bash
-# GitHub Actions
-.github/workflows/deploy-macos-native.yml
-
-# 원격 MacBook native 배포 스크립트
-scripts/deploy-native.sh
+# NCP operator pull deployment
+scripts/deploy-ncp-pull.sh
 ```
 
-수동 배포가 필요하면 `Deploy MacBook Native Production` workflow를 사용하거나, 운영 runbook에 따라 `scripts/deploy-native.sh`를 통해 MacBook native 서비스를 갱신하세요.
+수동 배포가 필요하면 [NCP pull-deploy runbook](docs/runbooks/ncp-pull-deploy.md)에 따라 NCP 호스트에서 실행하세요. `scripts/deploy-native.sh`는 항상 exit 70으로 종료합니다.
 
 ## 과거 Raspberry Pi stack 정리 명령
 
