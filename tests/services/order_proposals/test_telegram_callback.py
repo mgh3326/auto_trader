@@ -1921,6 +1921,53 @@ async def test_web_loss_cut_first_step_failure_preserves_telegram_card(
 
 
 @pytest.mark.asyncio
+async def test_web_loss_cut_dispatch_failure_rolls_back_nonce_for_telegram(
+    monkeypatch, db_session
+):
+    """The post-consumption web dispatch failure is still one transaction."""
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    proposal_id = group.proposal_id
+    original_finish = OrderProposalsService.finish_web_approval_dispatch
+
+    async def failed_web_dispatch(self, *args, **kwargs):
+        raise RuntimeError("web confirmation dispatch unavailable")
+
+    monkeypatch.setattr(
+        OrderProposalsService, "finish_web_approval_dispatch", failed_web_dispatch
+    )
+    failed = await handle_web_approval(
+        proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert failed["reason"] == "internal_error"
+    # The second call must exercise Telegram's normal dispatch, not the fault
+    # injector used only to prove the web transaction rolled back.
+    monkeypatch.setattr(
+        OrderProposalsService, "finish_web_approval_dispatch", original_finish
+    )
+    fresh_group, _ = await OrderProposalsService(db_session).get_proposal(proposal_id)
+
+    telegram = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(
+                fresh_group, action="op", nonce="loss-cut-first"
+            )
+        ),
+        now=datetime(2026, 7, 13, 10, 0, 1, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=_FakeNotifier(),
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert telegram["reason"] == "loss_cut_confirmation_required"
+
+
+@pytest.mark.asyncio
 async def test_web_core_exception_dead_letters_before_retry(monkeypatch, db_session):
     """A rollback after entry cannot make the browser submit a second time."""
     group = await _seed_proposal(db_session, nonce="web-marker")
