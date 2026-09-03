@@ -23,6 +23,48 @@ registry 상한으로 허용하지만 런타임 freshness는 `now < expires_at`�
 owner 구성 전 소비 마커는 `O_EXCL`, mode `0600`, 파일·디렉터리 `fsync`, exact
 readback을 모두 통과해야 한다. 기록 실패나 불확실성은 인가가 아니라 거부다.
 
+### 봉인 소비 마지막 게이트 (ROB-1345)
+
+봉인 소비 전에는 `_register_approved_adapter(validate_only=True)`의 단일 검증 경로가
+adapter shape와 provenance, current authority 부재, one-owner, seal digest 자체 일관성을
+검사한다. 같은 durable ports로 만든 grant-only 후보는 cycle이 사용하는
+`assert_kiwoom_coordination_owner()`도 한 번 통과해야 한다. 따라서 readiness나 소유권
+조건의 거부는 소비 마커를 만들기 전에 끝나며, dry/activation용 검증 구현을 두 벌로
+나누지 않는다.
+
+cycle은 bounded factory를 비소비 준비와 소비 완료의 두 단계로 사용한다. `--confirm`,
+현재 KRX RTH, 정책표 존재·freshness, env arm을 먼저 판정한다. ORDERING이면 account-keyed
+writer lease도 먼저 획득하고, factory의 비소비 준비 결과로 non-grant owner shape를
+확정한 뒤에만 최종 owner resolution이 마커를 소비한다. 소비 뒤의 lease와 owner 재단언은
+TOCTOU 재확인으로 그대로 남으며 조건을 낮추지 않는다. preview와 위 선행 게이트의 거부는
+bounded factory의 소비 완료 단계에 진입하지 않는다.
+
+소비를 시도한 뒤 허용되는 거부 사유는 코드의 닫힌
+`POST_CONSUMPTION_REJECT_REASONS`와 정확히 같다:
+`MARKER_WRITE_FAILED`, `MARKER_INVALID`, `DURABLE_WRITE_EXPIRED`,
+`ALREADY_CONSUMED`, `OWNERSHIP_LOST_AFTER_CONSUMPTION`,
+`PRESEND_RECHECK_ACCOUNT_TRUTH_UNAVAILABLE`,
+`PRESEND_RECHECK_PREFLIGHT_NOT_CLEAN`, `PRESEND_RECHECK_WRITER_LEASE_LOST`,
+`PRESEND_RECHECK_OWN_ORDER_JOURNAL_UNREADABLE`,
+`PRESEND_RECHECK_MUTATION_BOUNDARY_READ_UNAVAILABLE`,
+`PRESEND_RECHECK_FOREIGN_SAME_DAY_ORDERS_PRESENT`,
+`PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN`. 앞의 네 경우에는 마커 상태가 불확실하거나
+이미 소비되었으므로 봉인을 되살리지 않는다. owner 상실과 일곱 presend 재확인도 소비와
+broker mutation 사이에 실패한 것이므로 전송하지 않고 봉인을 소비된 채로 둔다. 미분류
+실패는 `UNCLASSIFIED_POST_CONSUMPTION`이며 allowlist에 속하지 않아 계약 테스트가 RED다.
+이 목록 밖의 사유를 추가해 거부를 흡수하지 않는다. 새 소비 후 거부가 필요해 보이면
+코드를 고쳐 소비 전으로 옮기고, 목록 변경이 필요하면 운영 판단을 다시 받는다.
+
+위 소비 후 거부 경로는 모두 notifier 호출 전에 `cycles.jsonl`에
+`SEAL_CONSUMED_NO_SEND{reason}` 즉시 snapshot을 append한 뒤 기존 Telegram notifier를
+호출한다. 알림 실패는 이미 쓴 snapshot을 되돌리지 않으며, 자동 재시도·마커 삭제·봉인
+재사용으로 이어지지 않는다.
+
+`CanaryScopeAuthority`는 발급됐다는 사실만으로 충분하지 않다. runtime binding 시 같은
+lane, physical account, seal digest가 현재 프로세스의 소비 집합과 exact durable marker에
+함께 결속돼야 한다. 소비 마커가 없는 forged digest로 발급된 authority는
+`canary_scope_authority_seal_unbound`로 fail-closed한다(ROB-1343).
+
 봉인 소비 직전에는 canary 전용의
 `assert_entry_canary_scope_ready()`를 먼저 통과해야 한다. 이 판정이 면제하는 것은
 **정확히 세 항목뿐**이다: activation은 `RUNTIME_ACCEPTANCE_PENDING`이어야 하며

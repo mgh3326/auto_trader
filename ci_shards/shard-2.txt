@@ -61,6 +61,7 @@ tests/scripts/b0x/kr/kiwoom/test_kiwoom_bounded_send.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_cli.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_coordination_wiring.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_envelope_session_and_semantics.py
+tests/scripts/b0x/kr/kiwoom/test_kiwoom_seal_last_gate.py
 tests/scripts/b0x/kr/test_attribution_gate.py
 tests/scripts/b0x/kr/test_mock_account_binding.py
 tests/scripts/b0x/test_broker_truth_envelope.py
