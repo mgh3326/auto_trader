@@ -33,6 +33,7 @@ from app.services.mock_integration.authority_cessation import (
 )
 from app.services.mock_integration.coordination import (
     AccountUncertaintyGatePort,
+    CanaryScopeAuthority,
     ClaimFollowupRequest,
     CoordinatedMutationResult,
     CoordinationReasonCode,
@@ -734,7 +735,11 @@ class KiwoomCoordinationAdapter:
     blocked_state: Final[str] = KIWOOM_LIFECYCLE_STATUS
 
     def __init__(
-        self, ports: KiwoomCoordinationPorts, *, grant_only: bool = False
+        self,
+        ports: KiwoomCoordinationPorts,
+        *,
+        grant_only: bool = False,
+        canary_scope_authority: CanaryScopeAuthority | None = None,
     ) -> None:
         self._class_assignment_tainted = False
         self.ports = ports
@@ -743,6 +748,7 @@ class KiwoomCoordinationAdapter:
         # grant-only adapter is an owner canary and must never be handed to the
         # ORDERING mutation path; G3 owns any future send enablement.
         self._grant_only = grant_only
+        self._canary_scope_authority = canary_scope_authority
         self.fence_rechecks: list[str] = []
         self.transport_calls: list[str] = []
         self.ordered_events: list[str] = []
@@ -948,6 +954,7 @@ class KiwoomCoordinationAdapter:
             mutation=_callback,
             registry=self.ports.registry,
             lineage_factory=self.ports.lineage_factory,
+            canary_authority=self._canary_scope_authority,
             authority_evidence=authority_evidence,
         )
         self.last_result = coordinated

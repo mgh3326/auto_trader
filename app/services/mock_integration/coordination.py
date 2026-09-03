@@ -51,12 +51,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import secrets
+import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Final, Protocol, runtime_checkable
+from weakref import ReferenceType, ref
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -85,6 +87,7 @@ from app.services.mock_lane_registry import (
     LaneGuardError,
     LaneRegistryEntry,
     RegistrySource,
+    assert_entry_canary_scope_ready,
     assert_entry_execution_ready,
     assert_lineage_registry_binding,
 )
@@ -145,6 +148,115 @@ class CoordinationError(RuntimeError):
         if hold_id is not None:
             parts.append(f"hold={hold_id}")
         super().__init__(": ".join(parts))
+
+
+# This is deliberately a process-local construction capability.  It does not
+# replace the durable bounded-send marker: the Kiwoom factory must attest that
+# marker before it calls the private issuer below.  The additional issued-object
+# registry rejects direct construction and forged ``object.__new__`` instances.
+_CANARY_SCOPE_AUTHORITY_ISSUER: Final[object] = object()
+
+
+@dataclass(frozen=True, slots=True, init=False, weakref_slot=True)
+class CanaryScopeAuthority:
+    """One in-process capability derived immediately after a consumed seal.
+
+    This is intentionally not a caller flag.  Its constructor is closed and
+    the coordinator accepts only an instance issued by the module-private
+    factory, which is called by the Kiwoom bounded-send factory after durable
+    one-shot consumption succeeds.
+    """
+
+    lane_id: str
+    physical_account_id: str = field(repr=False)
+    seal_digest: str
+
+    def __init__(
+        self,
+        lane_id: str,
+        physical_account_id: str,
+        seal_digest: str,
+        *,
+        _issuer: object | None = None,
+    ) -> None:
+        if _issuer is not _CANARY_SCOPE_AUTHORITY_ISSUER:
+            raise LaneGuardError(
+                "canary_scope_authority_unissued",
+                lane_id=lane_id if type(lane_id) is str else None,
+            )
+        values = (lane_id, physical_account_id, seal_digest)
+        if not all(
+            type(value) is str and bool(value.strip()) and value == value.strip()
+            for value in values
+        ):
+            raise LaneGuardError(
+                "canary_scope_authority_unissued",
+                lane_id=lane_id if type(lane_id) is str else None,
+            )
+        object.__setattr__(self, "lane_id", lane_id)
+        object.__setattr__(self, "physical_account_id", physical_account_id)
+        object.__setattr__(self, "seal_digest", seal_digest)
+
+
+_CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK = threading.Lock()
+_ISSUED_CANARY_SCOPE_AUTHORITIES: dict[int, ReferenceType[CanaryScopeAuthority]] = {}
+
+
+def _issue_canary_scope_authority(
+    *, lane_id: str, physical_account_id: str, seal_digest: str
+) -> CanaryScopeAuthority:
+    """Issue a capability for the sole post-consumption Kiwoom call site."""
+
+    authority = CanaryScopeAuthority(
+        lane_id,
+        physical_account_id,
+        seal_digest,
+        _issuer=_CANARY_SCOPE_AUTHORITY_ISSUER,
+    )
+    identity = id(authority)
+
+    def _discard_issuance(released: ReferenceType[CanaryScopeAuthority]) -> None:
+        with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
+            if _ISSUED_CANARY_SCOPE_AUTHORITIES.get(identity) is released:
+                _ISSUED_CANARY_SCOPE_AUTHORITIES.pop(identity, None)
+
+    issuance = ref(authority, _discard_issuance)
+    with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
+        _ISSUED_CANARY_SCOPE_AUTHORITIES[identity] = issuance
+    return authority
+
+
+def _is_issued_canary_scope_authority(authority: CanaryScopeAuthority) -> bool:
+    with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
+        issuance = _ISSUED_CANARY_SCOPE_AUTHORITIES.get(id(authority))
+        return issuance is not None and issuance() is authority
+
+
+def assert_canary_scope_authority_binding(
+    entry: LaneRegistryEntry, authority: object
+) -> CanaryScopeAuthority:
+    """Require an issued capability bound to this exact lane/account pair."""
+
+    if type(authority) is not CanaryScopeAuthority:
+        raise LaneGuardError("canary_scope_authority_required", lane_id=entry.lane_id)
+    if not _is_issued_canary_scope_authority(authority):
+        raise LaneGuardError("canary_scope_authority_unissued", lane_id=entry.lane_id)
+    values = (
+        authority.lane_id,
+        authority.physical_account_id,
+        authority.seal_digest,
+    )
+    if not all(
+        type(value) is str and bool(value.strip()) and value == value.strip()
+        for value in values
+    ):
+        raise LaneGuardError("canary_scope_authority_unissued", lane_id=entry.lane_id)
+    if (
+        authority.lane_id != entry.lane_id
+        or authority.physical_account_id != entry.physical_account_id
+    ):
+        raise LaneGuardError("canary_scope_authority_mismatch", lane_id=entry.lane_id)
+    return authority
 
 
 class BackendSessionTerminationUnproven(RuntimeError):
@@ -2759,6 +2871,8 @@ def _require_pinned_entry(
     envelope: LineageEnvelope,
     registry: RegistrySource | None,
     pinned: LaneRegistryEntry,
+    *,
+    canary_authority: CanaryScopeAuthority | None,
 ) -> LaneRegistryEntry:
     """Re-validate, then require the *same* entry that authority was derived from.
 
@@ -2769,17 +2883,28 @@ def _require_pinned_entry(
     conservative comparison: any authority-relevant drift fails.
     """
 
-    entry = _validated_entry(envelope, registry)
+    entry = _validated_entry(
+        envelope,
+        registry,
+        canary_authority=canary_authority,
+    )
     if entry != pinned:
         raise LaneGuardError("canonical_lane_identity_mismatch", lane_id=pinned.lane_id)
     return entry
 
 
 def _validated_entry(
-    envelope: LineageEnvelope, registry: RegistrySource | None
+    envelope: LineageEnvelope,
+    registry: RegistrySource | None,
+    *,
+    canary_authority: CanaryScopeAuthority | None,
 ) -> LaneRegistryEntry:
     entry = assert_lineage_registry_binding(envelope, registry)
-    assert_entry_execution_ready(entry)
+    if canary_authority is None:
+        assert_entry_execution_ready(entry)
+    else:
+        assert_canary_scope_authority_binding(entry, canary_authority)
+        assert_entry_canary_scope_ready(entry)
     if envelope.order_attempt is None:
         raise LaneGuardError("lane_binding_incomplete", lane_id=entry.lane_id)
     return entry
@@ -2836,13 +2961,15 @@ async def coordinate_mock_order_mutation(
     registry: RegistrySource | None = None,
     lineage_factory: MockLineageFactory | None = None,
     additional_advisory_keys: Sequence[int] = (),
+    canary_authority: CanaryScopeAuthority | None = None,
     authority_evidence: AuthorityCessationEvidencePort | None = None,
 ) -> CoordinatedMutationResult:
     """Run one mutation behind the full J3A coordination order.
 
     The order is load-bearing, not stylistic::
 
-        1. canonical J2A lane/identity/policy validation
+        1. canonical J2A lane/identity/policy validation plus either ordinary
+           execution readiness or the sealed canary-scope readiness
         2. require BOTH lane-supplied durable write ports
         3. persist the immutable envelope — and abort here if the caller was
            cancelled, rather than proceeding to a lease, a claim, and a send
@@ -2868,7 +2995,11 @@ async def coordinate_mock_order_mutation(
     extra keys (for example a legacy compatibility key).  J3A never chooses them.
     """
 
-    entry = _validated_entry(envelope, registry)
+    entry = _validated_entry(
+        envelope,
+        registry,
+        canary_authority=canary_authority,
+    )
     # Both are proven present by ``_validated_entry`` above.
     order_attempt = envelope.order_attempt
     execution_plan = envelope.execution_plan
@@ -2939,7 +3070,12 @@ async def coordinate_mock_order_mutation(
         if grant.authority_started is not None:
             lease._bind_authority_claim(claim.row_id)
         await lease.assert_owned(grant)
-        _require_pinned_entry(envelope, registry, entry)
+        _require_pinned_entry(
+            envelope,
+            registry,
+            entry,
+            canary_authority=canary_authority,
+        )
         # Strong handle first, callback second: between these two lines there is
         # no order in flight, and after them nothing can drop the authority
         # implicitly.
@@ -2973,7 +3109,12 @@ async def coordinate_mock_order_mutation(
                 CoordinationReasonCode.LEASE_LOST, lane_id=entry.lane_id
             )
         await lease.assert_owned(grant)
-        _require_pinned_entry(envelope, registry, entry)
+        _require_pinned_entry(
+            envelope,
+            registry,
+            entry,
+            canary_authority=canary_authority,
+        )
 
     async def _drive_callback(awaited: Awaitable[Any]) -> Any:
         # The public contract accepts any ``Awaitable``. ``ensure_future`` would
@@ -3194,6 +3335,7 @@ __all__ = [
     "AdvisoryLockRow",
     "BackendSessionTerminationUnproven",
     "BackendTerminationReceipt",
+    "CanaryScopeAuthority",
     "ClaimFollowupCapability",
     "ClaimFollowupRequest",
     "CoordinatedMutationResult",
@@ -3227,6 +3369,7 @@ __all__ = [
     "split_advisory_key",
     "supports_backend_session_termination",
     "authority_hold_history",
+    "assert_canary_scope_authority_binding",
     "unreleased_authority_holds",
     "unreleased_authority_holds_for_cycle",
 ]
