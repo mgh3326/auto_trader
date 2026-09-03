@@ -20,7 +20,13 @@ SessionContextEntryTypeLiteral = Literal[
     "next_action",
     "handoff_note",
 ]
-SessionContextCreatedByLiteral = Literal["claude", "operator", "system", "codex"]
+SessionContextCreatedByLiteral = Literal[
+    "claude",
+    "operator",
+    "system",
+    "codex",
+    "fill-event-handoff",
+]
 
 
 class SessionContextRefs(BaseModel):
@@ -30,6 +36,14 @@ class SessionContextRefs(BaseModel):
     order_id: str | None = None
     journal_id: int | None = None
     symbols: list[str] = Field(default_factory=list)
+    event_key: str | None = None
+    ledger_id: int | None = None
+    correlation_id: str | None = None
+    broker_order_id: str | None = None
+    side: str | None = None
+    filled_notional: str | None = None
+    currency: str | None = None
+    fill_handoff: Literal["v1"] | None = None
 
     model_config = ConfigDict(extra="forbid")
 

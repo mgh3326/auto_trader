@@ -66,7 +66,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260903_order_path_metadata"
+HEAD_REVISION = "20260903_fill_event_handoff"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -518,6 +518,45 @@ async def _other_parent_tables_exist(database_url: str) -> bool:
             ):
                 return False
         return True
+    finally:
+        await connection.close()
+
+
+async def _insert_fill_handoff_context(database_url: str) -> uuid.UUID:
+    """Put a real v1 provenance row through the migration rollback boundary."""
+    import asyncpg
+
+    url = make_url(database_url)
+    entry_uuid = uuid.uuid4()
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        await connection.execute(
+            "INSERT INTO review.operator_session_context "
+            "(entry_uuid, kst_date, market, entry_type, title, body, refs, created_by) "
+            "VALUES ($1, current_date, 'crypto', 'open_question', 'rollback probe', "
+            "'rollback probe', '{}'::jsonb, 'fill-event-handoff')",
+            entry_uuid,
+        )
+    finally:
+        await connection.close()
+    return entry_uuid
+
+
+async def _context_created_by(database_url: str, entry_uuid: uuid.UUID) -> str | None:
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        value = await connection.fetchval(
+            "SELECT created_by FROM review.operator_session_context WHERE entry_uuid = $1",
+            entry_uuid,
+        )
+        return str(value) if value is not None else None
     finally:
         await connection.close()
 
@@ -989,9 +1028,15 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     # -- upgrade -------------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
     await _check_head_state()
+    handoff_entry = await _insert_fill_handoff_context(scratch_database)
+    assert (
+        await _context_created_by(scratch_database, handoff_entry)
+        == "fill-event-handoff"
+    )
 
     # -- downgrade back to the exact parent ----------------------------------
     _alembic("downgrade", PARENT_REVISION, database_url=scratch_database)
+    assert await _context_created_by(scratch_database, handoff_entry) == "system"
     assert await _stamped_revision(scratch_database) == PARENT_REVISION
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
@@ -1002,3 +1047,4 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     # -- and up again --------------------------------------------------------
     _alembic("upgrade", "head", database_url=scratch_database)
     await _check_head_state()
+    assert await _context_created_by(scratch_database, handoff_entry) == "system"

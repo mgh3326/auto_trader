@@ -1,0 +1,9 @@
+# tool	basis (prompt|sentry|both)
+alpaca_paper_get_account	prompt
+alpaca_paper_ledger_list_recent	prompt
+alpaca_paper_list_positions	prompt
+analysis_artifact_save	prompt
+get_operating_briefing	prompt
+order_proposal_create	prompt
+order_proposal_list	prompt
+route_request	prompt

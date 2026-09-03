@@ -48,7 +48,7 @@ class OperatorSessionContext(Base):
             name="entry_type",
         ),
         CheckConstraint(
-            "created_by IN ('claude','operator','system','codex')",
+            "created_by IN ('claude','operator','system','codex','fill-event-handoff')",
             name="created_by",
         ),
         CheckConstraint(
