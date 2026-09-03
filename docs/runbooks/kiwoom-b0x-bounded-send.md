@@ -23,6 +23,34 @@ registry 상한으로 허용하지만 런타임 freshness는 `now < expires_at`�
 owner 구성 전 소비 마커는 `O_EXCL`, mode `0600`, 파일·디렉터리 `fsync`, exact
 readback을 모두 통과해야 한다. 기록 실패나 불확실성은 인가가 아니라 거부다.
 
+### 봉인 소비 마지막 게이트 (ROB-1345)
+
+봉인 소비 전에는 `_register_approved_adapter(validate_only=True)`의 단일 검증 경로가
+adapter shape와 provenance, current authority 부재, one-owner, seal digest 자체 일관성을
+검사한다. 같은 durable ports로 만든 grant-only 후보는 cycle이 사용하는
+`assert_kiwoom_coordination_owner()`도 한 번 통과해야 한다. 따라서 readiness나 소유권
+조건의 거부는 소비 마커를 만들기 전에 끝나며, dry/activation용 검증 구현을 두 벌로
+나누지 않는다.
+
+소비를 시도한 뒤 허용되는 거부 사유는 코드의 닫힌
+`POST_CONSUMPTION_REJECT_REASONS`와 정확히 같다:
+`MARKER_WRITE_FAILED`, `MARKER_INVALID`, `DURABLE_WRITE_EXPIRED`,
+`ALREADY_CONSUMED`, `OWNERSHIP_LOST_AFTER_CONSUMPTION`. 앞의 네 경우에는 마커 상태가
+불확실하거나 이미 소비되었으므로 봉인을 되살리지 않는다. 마지막 경우도 소비와 cycle의
+최종 owner 재단언 사이에 소유권을 잃은 것이므로 전송하지 않고 봉인을 소비된 채로 둔다.
+이 목록 밖의 사유를 추가해 거부를 흡수하지 않는다. 새 소비 후 거부가 필요해 보이면
+코드를 고쳐 소비 전으로 옮기고, 목록 변경이 필요하면 운영 판단을 다시 받는다.
+
+다섯 경로는 모두 broker/account 호출 전에 `cycles.jsonl`에
+`SEAL_CONSUMED_NO_SEND{reason}` 즉시 snapshot을 append한 뒤 기존 Telegram notifier를
+호출한다. 알림 실패는 이미 쓴 snapshot을 되돌리지 않으며, 자동 재시도·마커 삭제·봉인
+재사용으로 이어지지 않는다.
+
+`CanaryScopeAuthority`는 발급됐다는 사실만으로 충분하지 않다. runtime binding 시 같은
+lane, physical account, seal digest가 현재 프로세스의 소비 집합과 exact durable marker에
+함께 결속돼야 한다. 소비 마커가 없는 forged digest로 발급된 authority는
+`canary_scope_authority_seal_unbound`로 fail-closed한다(ROB-1343).
+
 봉인 소비 직전에는 canary 전용의
 `assert_entry_canary_scope_ready()`를 먼저 통과해야 한다. 이 판정이 면제하는 것은
 **정확히 세 항목뿐**이다: activation은 `RUNTIME_ACCEPTANCE_PENDING`이어야 하며

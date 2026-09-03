@@ -45,6 +45,21 @@ KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED: Final[str] = "bounded_send_seal_already_co
 KIWOOM_BOUNDED_SEND_MARKER_WRITE_FAILED: Final[str] = "bounded_send_marker_write_failed"
 KIWOOM_BOUNDED_SEND_MARKER_INVALID: Final[str] = "bounded_send_marker_invalid"
 
+MARKER_WRITE_FAILED: Final[str] = "MARKER_WRITE_FAILED"
+MARKER_INVALID: Final[str] = "MARKER_INVALID"
+DURABLE_WRITE_EXPIRED: Final[str] = "DURABLE_WRITE_EXPIRED"
+ALREADY_CONSUMED: Final[str] = "ALREADY_CONSUMED"
+OWNERSHIP_LOST_AFTER_CONSUMPTION: Final[str] = "OWNERSHIP_LOST_AFTER_CONSUMPTION"
+POST_CONSUMPTION_REJECT_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        MARKER_WRITE_FAILED,
+        MARKER_INVALID,
+        DURABLE_WRITE_EXPIRED,
+        ALREADY_CONSUMED,
+        OWNERSHIP_LOST_AFTER_CONSUMPTION,
+    }
+)
+
 _SEAL_KEYS: Final[frozenset[str]] = frozenset(
     {"lane_id", "physical_account_id", "expires_at", "seal_digest"}
 )
@@ -82,8 +97,27 @@ class KiwoomBoundedSendSealRejected(RuntimeError):
         super().__init__(code)
 
 
+class KiwoomBoundedSendPostConsumptionRejected(KiwoomBoundedSendSealRejected):
+    """A closed reason for a seal that is consumed or durably uncertain."""
+
+    def __init__(self, code: str, *, reason: str) -> None:
+        if reason not in POST_CONSUMPTION_REJECT_REASONS:
+            raise AssertionError("post-consumption rejection reason is not sealed")
+        self.reason = reason
+        super().__init__(code)
+
+
 def _reject(code: str) -> Never:
     raise KiwoomBoundedSendSealRejected(code)
+
+
+def _reject_after_consumption(
+    seal: BoundedSendSeal, *, code: str, reason: str
+) -> Never:
+    """Burn process authority and expose only the closed incident vocabulary."""
+
+    _PROCESS_CONSUMED_SEAL_DIGESTS.add(seal.seal_digest)
+    raise KiwoomBoundedSendPostConsumptionRejected(code, reason=reason)
 
 
 def _parse_canonical_utc(raw: object, *, code: str) -> dt.datetime:
@@ -182,6 +216,17 @@ def snapshot_bounded_send_seal(raw: object) -> BoundedSendSeal:
         expires_at=expires_at,
         seal_digest=seal_digest,
     )
+
+
+def assert_bounded_send_seal_self_consistent(seal: object) -> BoundedSendSeal:
+    """Recompute one exact seal without consulting registry or marker state."""
+
+    if type(seal) is not BoundedSendSeal:
+        _reject(KIWOOM_BOUNDED_SEND_INVALID_SEAL)
+    validated = snapshot_bounded_send_seal(seal.canonical())
+    if validated != seal:
+        _reject(KIWOOM_BOUNDED_SEND_INVALID_SEAL)
+    return seal
 
 
 def _registered_seals() -> dict[str, BoundedSendSeal]:
@@ -369,13 +414,38 @@ def _load_exact_marker(seal: BoundedSendSeal) -> dict[str, str]:
     return payload
 
 
+def assert_consumed_bounded_send_seal_binding(
+    seal: BoundedSendSeal,
+    lane_id: str,
+    physical_account_id: str,
+    seal_digest: str,
+) -> bool:
+    """Bind a runtime authority to this exact process and durable marker."""
+
+    if (
+        lane_id != seal.lane_id
+        or physical_account_id != seal.physical_account_id
+        or seal_digest != seal.seal_digest
+    ):
+        _reject(KIWOOM_BOUNDED_SEND_MARKER_INVALID)
+    with _PROCESS_CONSUMPTION_LOCK:
+        if seal.seal_digest not in _PROCESS_CONSUMED_SEAL_DIGESTS:
+            _reject(KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED)
+        _load_exact_marker(seal)
+    return True
+
+
 def consume_registered_bounded_send_seal(seal: BoundedSendSeal) -> Path:
     """Atomically spend the process and durable one-shot authority."""
 
     with _PROCESS_CONSUMPTION_LOCK:
         assert_bounded_send_seal_registered_and_current(seal)
         if seal.seal_digest in _PROCESS_CONSUMED_SEAL_DIGESTS:
-            _reject(KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED)
+            _reject_after_consumption(
+                seal,
+                code=KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED,
+                reason=ALREADY_CONSUMED,
+            )
 
         consumed_at = _checked_wall_clock_now()
         _assert_unexpired(seal, now=consumed_at)
@@ -384,19 +454,43 @@ def consume_registered_bounded_send_seal(seal: BoundedSendSeal) -> Path:
         try:
             _write_consumption_marker(marker_path, marker_bytes)
         except FileExistsError:
-            _reject(KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED)
+            _reject_after_consumption(
+                seal,
+                code=KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED,
+                reason=ALREADY_CONSUMED,
+            )
         except OSError:
-            _reject(KIWOOM_BOUNDED_SEND_MARKER_WRITE_FAILED)
+            _reject_after_consumption(
+                seal,
+                code=KIWOOM_BOUNDED_SEND_MARKER_WRITE_FAILED,
+                reason=MARKER_WRITE_FAILED,
+            )
 
         try:
             if marker_path.read_bytes() != marker_bytes:
-                _reject(KIWOOM_BOUNDED_SEND_MARKER_INVALID)
+                _reject_after_consumption(
+                    seal,
+                    code=KIWOOM_BOUNDED_SEND_MARKER_INVALID,
+                    reason=MARKER_INVALID,
+                )
         except OSError:
-            _reject(KIWOOM_BOUNDED_SEND_MARKER_INVALID)
+            _reject_after_consumption(
+                seal,
+                code=KIWOOM_BOUNDED_SEND_MARKER_INVALID,
+                reason=MARKER_INVALID,
+            )
 
         # A seal that expires while the durable write is being committed stays
-        # consumed but never creates an owner.
-        _assert_unexpired(seal, now=_checked_wall_clock_now())
+        # consumed but never creates an owner. Failure to obtain a valid final
+        # clock reading likewise cannot prove freshness after the durable write.
+        try:
+            _assert_unexpired(seal, now=_checked_wall_clock_now())
+        except KiwoomBoundedSendSealRejected as exc:
+            _reject_after_consumption(
+                seal,
+                code=exc.code,
+                reason=DURABLE_WRITE_EXPIRED,
+            )
         _PROCESS_CONSUMED_SEAL_DIGESTS.add(seal.seal_digest)
         return marker_path
 
@@ -413,7 +507,9 @@ def assert_consumed_bounded_send_seal_current(seal: BoundedSendSeal) -> None:
 
 
 __all__ = [
+    "ALREADY_CONSUMED",
     "BoundedSendSeal",
+    "DURABLE_WRITE_EXPIRED",
     "KIWOOM_BOUNDED_SEND_ALREADY_CONSUMED",
     "KIWOOM_BOUNDED_SEND_CONSUMPTION_ROOT",
     "KIWOOM_BOUNDED_SEND_EXPIRED",
@@ -425,8 +521,15 @@ __all__ = [
     "KIWOOM_BOUNDED_SEND_REGISTRY_UNAVAILABLE",
     "KIWOOM_BOUNDED_SEND_SEAL_REGISTRY_PATH",
     "KIWOOM_BOUNDED_SEND_UNREGISTERED",
+    "KiwoomBoundedSendPostConsumptionRejected",
     "KiwoomBoundedSendSealRejected",
+    "MARKER_INVALID",
+    "MARKER_WRITE_FAILED",
+    "OWNERSHIP_LOST_AFTER_CONSUMPTION",
+    "POST_CONSUMPTION_REJECT_REASONS",
+    "assert_bounded_send_seal_self_consistent",
     "assert_bounded_send_seal_registered_and_current",
+    "assert_consumed_bounded_send_seal_binding",
     "assert_consumed_bounded_send_seal_current",
     "bounded_send_consumption_marker_path",
     "compute_bounded_send_seal_digest",

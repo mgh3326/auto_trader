@@ -156,6 +156,49 @@ class CoordinationError(RuntimeError):
 # registry rejects direct construction and forged ``object.__new__`` instances.
 _CANARY_SCOPE_AUTHORITY_ISSUER: Final[object] = object()
 
+type CanaryScopeSealBindingValidator = Callable[[str, str, str], bool]
+
+
+@dataclass(frozen=True, slots=True)
+class _CanaryScopeAuthorityInputs:
+    """Validated inputs shared by dry validation and actual issuance."""
+
+    lane_id: str
+    physical_account_id: str
+    seal_digest: str
+    seal_binding_validator: CanaryScopeSealBindingValidator | None
+
+
+def _validate_canary_scope_authority_inputs(
+    *,
+    lane_id: object,
+    physical_account_id: object,
+    seal_digest: object,
+    seal_binding_validator: object = None,
+) -> _CanaryScopeAuthorityInputs:
+    """Validate an intended authority without issuing process capability."""
+
+    values = (lane_id, physical_account_id, seal_digest)
+    if not all(
+        type(value) is str and bool(value.strip()) and value == value.strip()
+        for value in values
+    ):
+        raise LaneGuardError(
+            "canary_scope_authority_unissued",
+            lane_id=lane_id if type(lane_id) is str else None,
+        )
+    if seal_binding_validator is not None and not callable(seal_binding_validator):
+        raise LaneGuardError(
+            "canary_scope_authority_unissued",
+            lane_id=lane_id,
+        )
+    return _CanaryScopeAuthorityInputs(
+        lane_id=lane_id,
+        physical_account_id=physical_account_id,
+        seal_digest=seal_digest,
+        seal_binding_validator=seal_binding_validator,
+    )
+
 
 @dataclass(frozen=True, slots=True, init=False, weakref_slot=True)
 class CanaryScopeAuthority:
@@ -184,33 +227,43 @@ class CanaryScopeAuthority:
                 "canary_scope_authority_unissued",
                 lane_id=lane_id if type(lane_id) is str else None,
             )
-        values = (lane_id, physical_account_id, seal_digest)
-        if not all(
-            type(value) is str and bool(value.strip()) and value == value.strip()
-            for value in values
-        ):
-            raise LaneGuardError(
-                "canary_scope_authority_unissued",
-                lane_id=lane_id if type(lane_id) is str else None,
-            )
-        object.__setattr__(self, "lane_id", lane_id)
-        object.__setattr__(self, "physical_account_id", physical_account_id)
-        object.__setattr__(self, "seal_digest", seal_digest)
+        inputs = _validate_canary_scope_authority_inputs(
+            lane_id=lane_id,
+            physical_account_id=physical_account_id,
+            seal_digest=seal_digest,
+        )
+        object.__setattr__(self, "lane_id", inputs.lane_id)
+        object.__setattr__(self, "physical_account_id", inputs.physical_account_id)
+        object.__setattr__(self, "seal_digest", inputs.seal_digest)
 
 
 _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK = threading.Lock()
 _ISSUED_CANARY_SCOPE_AUTHORITIES: dict[int, ReferenceType[CanaryScopeAuthority]] = {}
+_CANARY_SCOPE_SEAL_BINDING_VALIDATORS: dict[int, CanaryScopeSealBindingValidator] = {}
+_SEAL_BOUND_CANARY_SCOPE_AUTHORITIES: dict[
+    int, ReferenceType[CanaryScopeAuthority]
+] = {}
 
 
 def _issue_canary_scope_authority(
-    *, lane_id: str, physical_account_id: str, seal_digest: str
+    *,
+    lane_id: str,
+    physical_account_id: str,
+    seal_digest: str,
+    seal_binding_validator: CanaryScopeSealBindingValidator | None = None,
 ) -> CanaryScopeAuthority:
     """Issue a capability for the sole post-consumption Kiwoom call site."""
 
+    inputs = _validate_canary_scope_authority_inputs(
+        lane_id=lane_id,
+        physical_account_id=physical_account_id,
+        seal_digest=seal_digest,
+        seal_binding_validator=seal_binding_validator,
+    )
     authority = CanaryScopeAuthority(
-        lane_id,
-        physical_account_id,
-        seal_digest,
+        inputs.lane_id,
+        inputs.physical_account_id,
+        inputs.seal_digest,
         _issuer=_CANARY_SCOPE_AUTHORITY_ISSUER,
     )
     identity = id(authority)
@@ -219,10 +272,16 @@ def _issue_canary_scope_authority(
         with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
             if _ISSUED_CANARY_SCOPE_AUTHORITIES.get(identity) is released:
                 _ISSUED_CANARY_SCOPE_AUTHORITIES.pop(identity, None)
+                _CANARY_SCOPE_SEAL_BINDING_VALIDATORS.pop(identity, None)
+                _SEAL_BOUND_CANARY_SCOPE_AUTHORITIES.pop(identity, None)
 
     issuance = ref(authority, _discard_issuance)
     with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
         _ISSUED_CANARY_SCOPE_AUTHORITIES[identity] = issuance
+        if inputs.seal_binding_validator is not None:
+            _CANARY_SCOPE_SEAL_BINDING_VALIDATORS[identity] = (
+                inputs.seal_binding_validator
+            )
     return authority
 
 
@@ -230,6 +289,63 @@ def _is_issued_canary_scope_authority(authority: CanaryScopeAuthority) -> bool:
     with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
         issuance = _ISSUED_CANARY_SCOPE_AUTHORITIES.get(id(authority))
         return issuance is not None and issuance() is authority
+
+
+def _has_current_canary_scope_authority(
+    inputs: _CanaryScopeAuthorityInputs,
+) -> bool:
+    """Report whether the same lane/account/seal capability is still live."""
+
+    with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
+        for issuance in _ISSUED_CANARY_SCOPE_AUTHORITIES.values():
+            authority = issuance()
+            if authority is None:
+                continue
+            if (
+                authority.lane_id == inputs.lane_id
+                and authority.physical_account_id == inputs.physical_account_id
+                and authority.seal_digest == inputs.seal_digest
+            ):
+                return True
+    return False
+
+
+def _assert_canary_scope_authority_seal_bound(
+    authority: CanaryScopeAuthority,
+) -> None:
+    """Bind an issued authority once to its durable consumption evidence."""
+
+    identity = id(authority)
+    with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
+        bound = _SEAL_BOUND_CANARY_SCOPE_AUTHORITIES.get(identity)
+        if bound is not None and bound() is authority:
+            return
+        validator = _CANARY_SCOPE_SEAL_BINDING_VALIDATORS.get(identity)
+    if validator is None:
+        raise LaneGuardError(
+            "canary_scope_authority_seal_unbound", lane_id=authority.lane_id
+        )
+    try:
+        validated = validator(
+            authority.lane_id,
+            authority.physical_account_id,
+            authority.seal_digest,
+        )
+    except Exception as exc:
+        raise LaneGuardError(
+            "canary_scope_authority_seal_unbound", lane_id=authority.lane_id
+        ) from exc
+    if validated is not True:
+        raise LaneGuardError(
+            "canary_scope_authority_seal_unbound", lane_id=authority.lane_id
+        )
+    with _CANARY_SCOPE_AUTHORITY_ISSUANCE_LOCK:
+        issuance = _ISSUED_CANARY_SCOPE_AUTHORITIES.get(identity)
+        if issuance is None or issuance() is not authority:
+            raise LaneGuardError(
+                "canary_scope_authority_unissued", lane_id=authority.lane_id
+            )
+        _SEAL_BOUND_CANARY_SCOPE_AUTHORITIES[identity] = issuance
 
 
 def assert_canary_scope_authority_binding(
@@ -241,21 +357,17 @@ def assert_canary_scope_authority_binding(
         raise LaneGuardError("canary_scope_authority_required", lane_id=entry.lane_id)
     if not _is_issued_canary_scope_authority(authority):
         raise LaneGuardError("canary_scope_authority_unissued", lane_id=entry.lane_id)
-    values = (
-        authority.lane_id,
-        authority.physical_account_id,
-        authority.seal_digest,
+    _validate_canary_scope_authority_inputs(
+        lane_id=authority.lane_id,
+        physical_account_id=authority.physical_account_id,
+        seal_digest=authority.seal_digest,
     )
-    if not all(
-        type(value) is str and bool(value.strip()) and value == value.strip()
-        for value in values
-    ):
-        raise LaneGuardError("canary_scope_authority_unissued", lane_id=entry.lane_id)
     if (
         authority.lane_id != entry.lane_id
         or authority.physical_account_id != entry.physical_account_id
     ):
         raise LaneGuardError("canary_scope_authority_mismatch", lane_id=entry.lane_id)
+    _assert_canary_scope_authority_seal_bound(authority)
     return authority
 
 

@@ -607,7 +607,7 @@ def test_production_registry_exact_seal_set_is_pinned() -> None:
 
 
 def test_nonlegacy_false_registration_has_one_production_call_site() -> None:
-    false_calls: list[tuple[str, int]] = []
+    false_calls: list[tuple[str, int, bool, bool]] = []
     true_calls: list[tuple[str, int]] = []
     for path in sorted((REPO_ROOT / "scripts" / "b0x" / "kr").glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -622,12 +622,31 @@ def test_nonlegacy_false_registration_has_one_production_call_site() -> None:
                 (kw.value for kw in node.keywords if kw.arg == "grant_only"), None
             )
             if isinstance(grant_only, ast.Constant) and grant_only.value is False:
-                false_calls.append((path.name, node.lineno))
+                validate_only = next(
+                    (kw.value for kw in node.keywords if kw.arg == "validate_only"),
+                    None,
+                )
+                validated = next(
+                    (kw.value for kw in node.keywords if kw.arg == "validated"), None
+                )
+                false_calls.append(
+                    (
+                        path.name,
+                        node.lineno,
+                        isinstance(validate_only, ast.Constant)
+                        and validate_only.value is True,
+                        validated is not None,
+                    )
+                )
             if isinstance(grant_only, ast.Constant) and grant_only.value is True:
                 true_calls.append((path.name, node.lineno))
 
-    assert [name for name, _ in false_calls] == ["kiwoom_coordination.py"]
+    assert [(name, dry, activating) for name, _, dry, activating in false_calls] == [
+        ("kiwoom_coordination.py", True, False),
+        ("kiwoom_coordination.py", False, True),
+    ]
     assert [name for name, _ in true_calls] == [
+        "kiwoom_coordination.py",
         "kiwoom_coordination.py",
         "kiwoom_coordination.py",
     ]

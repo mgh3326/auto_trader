@@ -64,7 +64,10 @@ from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from scripts.b0x.kr import kiwoom_ordering as ordering_support
 from scripts.b0x.kr.kiwoom_coordination import (
     KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+    SEAL_CONSUMED_NO_SEND,
     KiwoomCoordinationOwnerRejected,
+    KiwoomPostConsumptionOwnerRejected,
+    _closed_post_consumption_reason,
     assert_kiwoom_coordination_owner,
 )
 from scripts.b0x.labels import account_history_labels, header_labels
@@ -249,6 +252,26 @@ async def _notify_mandatory_cancel_risk(risk: dict[str, Any]) -> None:
 
     from app.monitoring.trade_notifier import get_trade_notifier
 
+    if risk["status"] == SEAL_CONSUMED_NO_SEND:
+        lines = [
+            "🚨 Kiwoom bounded-send seal consumed with no send",
+            f"status={risk['status']}",
+            f"reason={risk['reason']}",
+            f"lane={risk['lane_id']}",
+            f"at={risk['at']}",
+        ]
+        correlation_id = f"{risk['lane_id']}:{risk['reason']}:{risk['at']}"
+        delivered = await get_trade_notifier().notify_agent_message(
+            "\n".join(lines),
+            parse_mode=None,
+            correlation_id=correlation_id,
+            skip_discord=True,
+            mirror_telegram=True,
+        )
+        if delivered is not True:
+            raise RuntimeError("existing Telegram notifier did not confirm delivery")
+        return
+
     lines = [
         "🚨 Kiwoom ACCEPTANCE live resting-order risk",
         f"status={risk['status']}",
@@ -291,6 +314,7 @@ _LIFECYCLE_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
     {
         REALIZED_PNL_UNAVAILABLE_REASON,
         COORDINATION_GRANT_UNAVAILABLE_REASON,
+        SEAL_CONSUMED_NO_SEND,
         "unknown_pending_reconcile",
     }
 )
@@ -499,6 +523,46 @@ def _finish_zero_order(
     outcome.zero_order_reason = reason
     return _persist_outcome(
         outcome=outcome, ledger=ledger, record=record, labels=labels
+    )
+
+
+async def _finish_seal_consumed_no_send(
+    *,
+    outcome: KiwoomCycleOutcome,
+    ledger: ObservationLedger,
+    record: dict[str, Any],
+    labels: tuple[str, ...],
+    reason: str,
+    notifier: AuthorityRiskNotifier,
+) -> KiwoomCycleOutcome:
+    """Durably append a burned-seal incident before notifying the operator."""
+
+    incident = {
+        "status": SEAL_CONSUMED_NO_SEND,
+        "reason": reason,
+        "lane_id": LANE,
+        "at": dt.datetime.now(dt.UTC).isoformat(),
+        "operator_notification": "pending",
+    }
+    record["seal_consumed_no_send"] = incident
+    immediate = dict(record)
+    immediate["cycle_record_phase"] = "seal_consumed_no_send_immediate"
+    ledger.record_cycle(immediate)
+    try:
+        await notifier(dict(incident))
+    except Exception as exc:  # noqa: BLE001 — durable record already committed
+        incident["operator_notification"] = "failed"
+        incident["notification_error_type"] = type(exc).__name__
+    else:
+        incident["operator_notification"] = "sent"
+    outcome.exit_code = 2
+    return _finish_zero_order(
+        outcome=outcome,
+        ledger=ledger,
+        record=record,
+        labels=labels,
+        reason=SEAL_CONSUMED_NO_SEND,
+        detail=reason,
     )
 
 
@@ -2380,6 +2444,15 @@ def _resolve_coordination_owner(
 
     try:
         candidate = coordination_factory()
+    except KiwoomPostConsumptionOwnerRejected as exc:
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": SEAL_CONSUMED_NO_SEND,
+            "owner_type": None,
+        }
+        base["post_consumption_reject_reason"] = exc.reason
+        base["factory_error_type"] = type(exc).__name__
+        return None, base
     except Exception as exc:  # noqa: BLE001 — owner construction is fail-closed
         base["identity_guard"] = {
             "status": "rejected",
@@ -2404,6 +2477,19 @@ def _resolve_coordination_owner(
             expected_entry=expected_entry,
         )
     except KiwoomCoordinationOwnerRejected as exc:
+        if (
+            type(candidate) is ordering_support.KiwoomCoordinationAdapter
+            and getattr(candidate, "_bounded_send_consumption_committed", False) is True
+        ):
+            base["identity_guard"] = {
+                "status": "rejected",
+                "code": SEAL_CONSUMED_NO_SEND,
+                "owner_type": type(candidate).__name__,
+            }
+            base["post_consumption_reject_reason"] = _closed_post_consumption_reason(
+                exc
+            )
+            return None, base
         base["identity_guard"] = {
             "status": "rejected",
             "code": exc.code,
@@ -2411,6 +2497,19 @@ def _resolve_coordination_owner(
         }
         return None, base
     except Exception as exc:  # noqa: BLE001 — malformed owner is fail-closed
+        if (
+            type(candidate) is ordering_support.KiwoomCoordinationAdapter
+            and getattr(candidate, "_bounded_send_consumption_committed", False) is True
+        ):
+            base["identity_guard"] = {
+                "status": "rejected",
+                "code": SEAL_CONSUMED_NO_SEND,
+                "owner_type": type(candidate).__name__,
+            }
+            base["post_consumption_reject_reason"] = _closed_post_consumption_reason(
+                exc
+            )
+            return None, base
         base["identity_guard"] = {
             "status": "rejected",
             "code": _coordination_error_code(exc),
@@ -2513,6 +2612,18 @@ async def run_kiwoom_cycle(
             expected_entry=coordination_entry,
         )
         record["coordination"] = coordination_record
+        post_consumption_reason = coordination_record.get(
+            "post_consumption_reject_reason"
+        )
+        if type(post_consumption_reason) is str:
+            return await _finish_seal_consumed_no_send(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason=post_consumption_reason,
+                notifier=risk_notifier,
+            )
 
         if ordering and not confirm:
             return _finish_zero_order(
