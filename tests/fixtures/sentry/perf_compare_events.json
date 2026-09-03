@@ -1,0 +1,14 @@
+{
+  "before": {
+    "data": [
+      {"transaction": "tools/call get_quote", "server_name": "mbp-server", "count()": 3, "p50(span.duration)": 249, "p95(span.duration)": 310},
+      {"transaction": "tools/call analyze_stock_batch", "server_name": "mbp-server", "count()": 8, "p50(span.duration)": 6100, "p95(span.duration)": 7300}
+    ]
+  },
+  "after": {
+    "data": [
+      {"transaction": "tools/call get_quote", "server_name": "vm-naver-20260820095006", "count()": 3, "p50(span.duration)": 566, "p95(span.duration)": 620},
+      {"transaction": "tools/call analyze_stock_batch", "server_name": "vm-naver-20260820095006", "count()": 9, "p50(span.duration)": 2600, "p95(span.duration)": 3400}
+    ]
+  }
+}
