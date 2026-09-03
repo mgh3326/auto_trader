@@ -116,7 +116,7 @@ def test_current_registry_binds_kr_identity_but_keeps_execution_fail_closed() ->
     assert kr.identity_status == "KNOWN"
     assert kr.writer is False
     assert kr.auto_order_enabled is False
-    assert kr.activation_status.value == "BLOCKED"
+    assert kr.activation_status.value == "RUNTIME_ACCEPTANCE_PENDING"
     assert us.physical_account_id is None
     assert us.identity_status == "UNKNOWN"
     assert us.lane_status is LaneStatus.NOT_READY

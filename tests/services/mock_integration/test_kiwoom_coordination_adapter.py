@@ -1361,14 +1361,15 @@ def canonical_unknown_kiwoom_entry() -> LaneRegistryEntry:
 
 
 def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
-    """The signed row remains blocked even after identity is known."""
+    """The signed row remains non-executable after its bindings are known."""
 
     entry = canonical_kiwoom_entry()
-    assert entry.activation_status is ActivationStatus.BLOCKED
+    assert entry.activation_status is ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    assert entry.activation_status is not ActivationStatus.ENABLED
     assert entry.lane_status is LaneStatus.NOT_READY
     assert entry.writer is False
     assert entry.auto is False
-    assert entry.scheduler_owner is None
+    assert entry.scheduler_owner is SchedulerOwner.MANUAL
     physical_account_id = entry.physical_account_id
     assert physical_account_id == _KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID
     assert physical_account_id.startswith(
@@ -1377,15 +1378,15 @@ def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
     assert physical_account_id.endswith(":kr_kiwoom_mock_domain")
     assert entry.identity_status == "KNOWN"
     assert entry.fingerprint_evidence_ref
-    assert entry.missing_bindings
+    assert entry.missing_bindings == ()
 
     with pytest.raises(LaneGuardError) as refusal:
         assert_entry_execution_ready(entry)
     assert "lane_activation_not_enabled" in str(refusal.value)
 
 
-def test_signed_kiwoom_lane_fails_every_execution_ready_clause() -> None:
-    """Identity is bound, but activation and remaining grants are absent.
+def test_signed_kiwoom_lane_keeps_execution_enablement_clauses_closed() -> None:
+    """Bindings are complete, but all three execution grants remain absent.
 
     Recorded so nobody reads the single ``lane_activation_not_enabled`` string
     above as "flip one boolean and the grant flows".
@@ -1397,7 +1398,16 @@ def test_signed_kiwoom_lane_fails_every_execution_ready_clause() -> None:
     assert entry.physical_account_id == _KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID
     assert entry.identity_status == "KNOWN"
     assert entry.fingerprint_evidence_ref
-    assert entry.missing_bindings != ()
+    assert entry.missing_bindings == ()
+    assert isinstance(entry.policy_binding, PolicyBinding)
+    assert entry.max_order_notional == Decimal("300000")
+    assert entry.max_orders_per_session == 3
+    assert entry.max_open_orders == 10
+    assert entry.canary_binding == "kiwoom-bounded-send-seal-registry.v1"
+
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_execution_ready(entry)
+    assert refusal.value.code == "lane_activation_not_enabled"
 
 
 def test_unknown_us_kiwoom_lane_cannot_construct_the_coordination_adapter() -> None:
@@ -1495,8 +1505,8 @@ def test_execution_ready_missing_bindings_clause_fires_once_prior_clauses_pass()
 
     Filling policy/caps/canary makes ``required_bindings`` (:1198-1214)
     pass, so deleting only 1197 cannot hide behind the same
-    ``lane_binding_incomplete`` code. ``missing_bindings`` stays the
-    signed 5-tuple. Still not ``bound_kiwoom_entry()``.
+    ``lane_binding_incomplete`` code. The now-complete signed row is replaced
+    with one synthetic missing label. Still not ``bound_kiwoom_entry()``.
     """
 
     signed = canonical_kiwoom_entry()
@@ -1518,9 +1528,10 @@ def test_execution_ready_missing_bindings_clause_fires_once_prior_clauses_pass()
         allowed_time_in_force=("day",),
         reconcile_required=True,
         canary_binding="test-only-clause-independence",
+        missing_bindings=(MissingBinding.POLICY,),
     )
-    assert entry.missing_bindings == signed.missing_bindings
-    assert entry.missing_bindings
+    assert signed.missing_bindings == ()
+    assert entry.missing_bindings == (MissingBinding.POLICY,)
     with pytest.raises(LaneGuardError) as refusal:
         assert_entry_execution_ready(entry)
     assert refusal.value.code == "lane_binding_incomplete"

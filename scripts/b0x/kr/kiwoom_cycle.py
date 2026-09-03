@@ -62,10 +62,29 @@ from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from scripts.b0x.kr import kiwoom_ordering as ordering_support
+from scripts.b0x.kr.kiwoom_bounded_send import (
+    OWNERSHIP_LOST_AFTER_CONSUMPTION,
+    POST_CONSUMPTION_REJECT_REASONS,
+    PRESEND_RECHECK_ACCOUNT_TRUTH_UNAVAILABLE,
+    PRESEND_RECHECK_FOREIGN_SAME_DAY_ORDERS_PRESENT,
+    PRESEND_RECHECK_MUTATION_BOUNDARY_READ_UNAVAILABLE,
+    PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN,
+    PRESEND_RECHECK_OWN_ORDER_JOURNAL_UNREADABLE,
+    PRESEND_RECHECK_PREFLIGHT_NOT_CLEAN,
+    PRESEND_RECHECK_WRITER_LEASE_LOST,
+    UNCLASSIFIED_POST_CONSUMPTION,
+)
 from scripts.b0x.kr.kiwoom_coordination import (
     KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+    SEAL_CONSUMED_NO_SEND,
+    KiwoomCoordinationFactoryPreparation,
     KiwoomCoordinationOwnerRejected,
+    KiwoomPostConsumptionOwnerRejected,
+    _closed_post_consumption_reason,
     assert_kiwoom_coordination_owner,
+    coordination_owner_consumed_bounded_send,
+    prepare_kiwoom_coordination_factory,
+    resolve_prepared_kiwoom_coordination_factory,
 )
 from scripts.b0x.labels import account_history_labels, header_labels
 from scripts.b0x.ledger import (
@@ -242,12 +261,33 @@ COORDINATION_GRANT_UNAVAILABLE_REASON: Final[str] = "coordination_grant_unavaila
 LIVE_ORDER_RISK_FLAG: Final[str] = "live_order_risk"
 
 type AuthorityRiskNotifier = Callable[[dict[str, Any]], Awaitable[None]]
+type PostCoordinationRejector = Callable[[str, str, str], Awaitable[KiwoomCycleOutcome]]
 
 
 async def _notify_mandatory_cancel_risk(risk: dict[str, Any]) -> None:
     """Reuse the existing notifier's Telegram transport; create no send surface."""
 
     from app.monitoring.trade_notifier import get_trade_notifier
+
+    if risk["status"] == SEAL_CONSUMED_NO_SEND:
+        lines = [
+            "🚨 Kiwoom bounded-send seal consumed with no send",
+            f"status={risk['status']}",
+            f"reason={risk['reason']}",
+            f"lane={risk['lane_id']}",
+            f"at={risk['at']}",
+        ]
+        correlation_id = f"{risk['lane_id']}:{risk['reason']}:{risk['at']}"
+        delivered = await get_trade_notifier().notify_agent_message(
+            "\n".join(lines),
+            parse_mode=None,
+            correlation_id=correlation_id,
+            skip_discord=True,
+            mirror_telegram=True,
+        )
+        if delivered is not True:
+            raise RuntimeError("existing Telegram notifier did not confirm delivery")
+        return
 
     lines = [
         "🚨 Kiwoom ACCEPTANCE live resting-order risk",
@@ -291,6 +331,7 @@ _LIFECYCLE_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
     {
         REALIZED_PNL_UNAVAILABLE_REASON,
         COORDINATION_GRANT_UNAVAILABLE_REASON,
+        SEAL_CONSUMED_NO_SEND,
         "unknown_pending_reconcile",
     }
 )
@@ -499,6 +540,81 @@ def _finish_zero_order(
     outcome.zero_order_reason = reason
     return _persist_outcome(
         outcome=outcome, ledger=ledger, record=record, labels=labels
+    )
+
+
+async def _finish_seal_consumed_no_send(
+    *,
+    outcome: KiwoomCycleOutcome,
+    ledger: ObservationLedger,
+    record: dict[str, Any],
+    labels: tuple[str, ...],
+    reason: str,
+    notifier: AuthorityRiskNotifier,
+) -> KiwoomCycleOutcome:
+    """Durably append a burned-seal incident before notifying the operator."""
+
+    incident = {
+        "status": SEAL_CONSUMED_NO_SEND,
+        "reason": reason,
+        "lane_id": LANE,
+        "at": dt.datetime.now(dt.UTC).isoformat(),
+        "operator_notification": "pending",
+    }
+    record["seal_consumed_no_send"] = incident
+    immediate = dict(record)
+    immediate["cycle_record_phase"] = "seal_consumed_no_send_immediate"
+    ledger.record_cycle(immediate)
+    try:
+        await notifier(dict(incident))
+    except Exception as exc:  # noqa: BLE001 — durable record already committed
+        incident["operator_notification"] = "failed"
+        incident["notification_error_type"] = type(exc).__name__
+    else:
+        incident["operator_notification"] = "sent"
+    outcome.exit_code = 2
+    return _finish_zero_order(
+        outcome=outcome,
+        ledger=ledger,
+        record=record,
+        labels=labels,
+        reason=SEAL_CONSUMED_NO_SEND,
+        detail=reason,
+    )
+
+
+async def _finish_post_coordination_reject(
+    *,
+    outcome: KiwoomCycleOutcome,
+    ledger: ObservationLedger,
+    record: dict[str, Any],
+    labels: tuple[str, ...],
+    reason: str,
+    detail: str,
+    post_consumption_reason: str,
+    seal_consumed: bool,
+    notifier: AuthorityRiskNotifier,
+) -> KiwoomCycleOutcome:
+    """Separate ordinary zero-order exits from exact consumed-seal incidents."""
+
+    if post_consumption_reason not in POST_CONSUMPTION_REJECT_REASONS:
+        raise AssertionError("post-consumption cycle reason is not sealed")
+    if seal_consumed:
+        return await _finish_seal_consumed_no_send(
+            outcome=outcome,
+            ledger=ledger,
+            record=record,
+            labels=labels,
+            reason=post_consumption_reason,
+            notifier=notifier,
+        )
+    return _finish_zero_order(
+        outcome=outcome,
+        ledger=ledger,
+        record=record,
+        labels=labels,
+        reason=reason,
+        detail=detail,
     )
 
 
@@ -732,6 +848,7 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
     account_identity: dict[str, str] | None,
     coordination: ordering_support.KiwoomCoordinationAdapter | None,
     authority_risk_notifier: AuthorityRiskNotifier,
+    rejector: PostCoordinationRejector,
 ) -> KiwoomCycleOutcome:
     """Preserved ``ACCEPTANCE_ONLY`` submit → cancel → reconcile lever.
 
@@ -757,13 +874,10 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             account_identity=account_identity,
             error=exc,
         )
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason="preflight_not_clean",
-            detail="account_truth_unavailable",
+        return await rejector(
+            "preflight_not_clean",
+            "account_truth_unavailable",
+            PRESEND_RECHECK_ACCOUNT_TRUTH_UNAVAILABLE,
         )
 
     try:
@@ -820,13 +934,10 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
         )
         record["preflight"] = preflight
         if not preflight["passed"]:
-            return _finish_zero_order(
-                outcome=outcome,
-                ledger=ledger,
-                record=record,
-                labels=labels,
-                reason="preflight_not_clean",
-                detail=", ".join(preflight["reasons"]),
+            return await rejector(
+                "preflight_not_clean",
+                ", ".join(preflight["reasons"]),
+                PRESEND_RECHECK_PREFLIGHT_NOT_CLEAN,
             )
 
     state = broker_state(fresh=fresh, pending=pending, attribution=attribution)
@@ -879,13 +990,10 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
         )
 
     if coordination is None or coordination.grant_only:
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
-            detail="confirmed ACCEPTANCE requires a non-grant coordination owner",
+        return await rejector(
+            COORDINATION_GRANT_UNAVAILABLE_REASON,
+            "confirmed ACCEPTANCE requires a non-grant coordination owner",
+            OWNERSHIP_LOST_AFTER_CONSUMPTION,
         )
 
     record["round_trip_policy"] = ROUND_TRIP_MANDATORY_NOTE
@@ -907,7 +1015,11 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
             > PREFLIGHT_MAX_AGE_SECONDS
         ):
             record["submission_stopped"] = "preflight_expired"
-            break
+            return await rejector(
+                "preflight_not_clean",
+                "preflight_expired",
+                PRESEND_RECHECK_PREFLIGHT_NOT_CLEAN,
+            )
         if order.side == "sell":
             record.setdefault("submission_blocked", []).append(
                 {
@@ -1228,6 +1340,21 @@ async def _read_mutation_boundary(
     )
 
 
+def _presend_recheck_reason(boundary: MutationBoundary) -> str:
+    """Map every closed mutation-boundary refusal to one named sealed reason."""
+
+    return {
+        "writer_lease_lost": PRESEND_RECHECK_WRITER_LEASE_LOST,
+        "own_order_journal_unreadable": (PRESEND_RECHECK_OWN_ORDER_JOURNAL_UNREADABLE),
+        "mutation_boundary_read_unavailable": (
+            PRESEND_RECHECK_MUTATION_BOUNDARY_READ_UNAVAILABLE
+        ),
+        "foreign_same_day_orders_present": (
+            PRESEND_RECHECK_FOREIGN_SAME_DAY_ORDERS_PRESENT
+        ),
+    }.get(boundary.blocking_reason, UNCLASSIFIED_POST_CONSUMPTION)
+
+
 def _append_ordering_event(
     *,
     journal: ordering_support.OrderingEventJournal,
@@ -1240,7 +1367,7 @@ def _append_ordering_event(
     record.setdefault("fidelity_events", []).append(event)
 
 
-def _finish_ordering_stopped(
+async def _finish_ordering_stopped(
     *,
     outcome: KiwoomCycleOutcome,
     ledger: ObservationLedger,
@@ -1248,6 +1375,9 @@ def _finish_ordering_stopped(
     labels: tuple[str, ...],
     reason: str,
     detail: str,
+    rejector: PostCoordinationRejector,
+    seal_consumed: bool,
+    post_consumption_reason: str | None = None,
 ) -> KiwoomCycleOutcome:
     """Stop further mutations without erasing already broker-acknowledged work."""
 
@@ -1257,6 +1387,15 @@ def _finish_ordering_stopped(
         {"reason": reason, "detail": detail}
     )
     if record.get("submitted"):
+        outcome.exit_code = 2
+        return _persist_outcome(
+            outcome=outcome, ledger=ledger, record=record, labels=labels
+        )
+    if post_consumption_reason is not None:
+        return await rejector(reason, detail, post_consumption_reason)
+    if seal_consumed:
+        # A send attempt without a committed acknowledgement is not proof of
+        # no send. Preserve the failure without claiming a zero-order incident.
         outcome.exit_code = 2
         return _persist_outcome(
             outcome=outcome, ledger=ledger, record=record, labels=labels
@@ -1632,6 +1771,8 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
     ledger: ObservationLedger,
     record: dict[str, Any],
     labels: tuple[str, ...],
+    rejector: PostCoordinationRejector,
+    seal_consumed: bool,
 ) -> KiwoomCycleOutcome:
     """Cancel every currently-own resting order and prove the result by re-read."""
 
@@ -1646,23 +1787,29 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
     )
     if not initial.clean:
         outcome.exit_code = 2
-        return _finish_ordering_stopped(
+        return await _finish_ordering_stopped(
             outcome=outcome,
             ledger=ledger,
             record=record,
             labels=labels,
             reason="kill_cancel_boundary_not_clean",
             detail=initial.blocking_reason or "unknown_boundary_failure",
+            rejector=rejector,
+            seal_consumed=seal_consumed,
+            post_consumption_reason=_presend_recheck_reason(initial),
         )
     if coordination is None:
         outcome.exit_code = 2
-        return _finish_ordering_stopped(
+        return await _finish_ordering_stopped(
             outcome=outcome,
             ledger=ledger,
             record=record,
             labels=labels,
             reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
             detail=ordering_support.LOCAL_FLOCK_CANNOT_AUTHORIZE_SEND,
+            rejector=rejector,
+            seal_consumed=seal_consumed,
+            post_consumption_reason=OWNERSHIP_LOST_AFTER_CONSUMPTION,
         )
     assert isinstance(initial.pending, kiwoom_lane.BrokerPending)
     record["kill_cancellation"] = {
@@ -1684,13 +1831,16 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
         )
         if not boundary.clean:
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="kill_cancel_boundary_not_clean",
                 detail=boundary.blocking_reason or "unknown_boundary_failure",
+                rejector=rejector,
+                seal_consumed=seal_consumed,
+                post_consumption_reason=_presend_recheck_reason(boundary),
             )
         assert isinstance(boundary.pending, kiwoom_lane.BrokerPending)
         current = next(
@@ -1709,13 +1859,15 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
             )
         except Exception as exc:  # noqa: BLE001 — cannot prove cancel ownership
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="kill_cancel_ownership_unreadable",
                 detail=type(exc).__name__,
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
         attempt: dict[str, Any] = {
             "at": dt.datetime.now(dt.UTC).isoformat(),
@@ -1726,13 +1878,15 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
         }
         if current.remaining_quantity is None:
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="kill_cancel_remainder_unknown",
                 detail=f"order_no={current.order_id}",
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
         try:
             planned = kiwoom_lane.PlannedOrder(
@@ -1767,13 +1921,15 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
                 event={"at": attempt["at"], "event": "cancel_failure", **attempt},
             )
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="kill_cancel_failed",
                 detail=type(exc).__name__,
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
         attempt["cancel_response"] = dict(response)
         raw_cancel_no = str(response.get("ord_no") or "").strip()
@@ -1812,26 +1968,30 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
         )
         if not reconciled.clean:
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="kill_cancel_reconcile_unreadable",
                 detail=reconciled.blocking_reason or "unknown_boundary_failure",
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
         assert isinstance(reconciled.pending, kiwoom_lane.BrokerPending)
         if any(
             item.order_id == current.order_id for item in reconciled.pending.own_orders
         ):
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="kill_cancel_not_confirmed",
                 detail=f"order_no={current.order_id}",
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
 
     final = await _read_mutation_boundary(
@@ -1845,23 +2005,27 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
     )
     if not final.clean or not isinstance(final.pending, kiwoom_lane.BrokerPending):
         outcome.exit_code = 2
-        return _finish_ordering_stopped(
+        return await _finish_ordering_stopped(
             outcome=outcome,
             ledger=ledger,
             record=record,
             labels=labels,
             reason="kill_final_reconcile_unreadable",
             detail=final.blocking_reason or "pending_unreadable",
+            rejector=rejector,
+            seal_consumed=seal_consumed,
         )
     if final.pending.own_orders:
         outcome.exit_code = 2
-        return _finish_ordering_stopped(
+        return await _finish_ordering_stopped(
             outcome=outcome,
             ledger=ledger,
             record=record,
             labels=labels,
             reason="kill_own_pending_remains",
             detail=f"remaining_own_orders={len(final.pending.own_orders)}",
+            rejector=rejector,
+            seal_consumed=seal_consumed,
         )
     record["kill_cancellation"]["confirmed"] = True
     record["planned"] = []
@@ -1886,6 +2050,8 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
     lease: ordering_support.WriterLease,
     coordination: ordering_support.KiwoomCoordinationAdapter | None,
     realized_pnl_reader: Callable[..., kiwoom_attr.RealizedPnlInput],
+    rejector: PostCoordinationRejector,
+    seal_consumed: bool,
 ) -> KiwoomCycleOutcome:
     """Independent ORDERING mode; it cannot fall through to acceptance cancel."""
 
@@ -1908,26 +2074,20 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
     try:
         prior_events = fidelity.read_all()
     except Exception as exc:  # noqa: BLE001 — corrupted lifecycle is no lifecycle
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason="ordering_fidelity_journal_unreadable",
-            detail=type(exc).__name__,
+        return await rejector(
+            "ordering_fidelity_journal_unreadable",
+            type(exc).__name__,
+            PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN,
         )
     record["fidelity_artifact"]["prior_event_count"] = len(prior_events)
     record["writer_lease"] = lease.canonical()
     try:
         fresh = await kiwoom_lane.read_fresh_truth(account)
     except Exception as exc:  # noqa: BLE001
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason="ordering_account_truth_unavailable",
-            detail=type(exc).__name__,
+        return await rejector(
+            "ordering_account_truth_unavailable",
+            type(exc).__name__,
+            PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN,
         )
     attribution = await kiwoom_attr.read_own_attribution(
         journal=journal, read_order_detail=account.read_order_detail
@@ -1957,45 +2117,33 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
     }
     record["own_pending_source"] = kiwoom_lane.OWN_PENDING_SOURCE
     record["own_pending_basis"] = kiwoom_lane.OWN_PENDING_BASIS
+    if not boundary.clean:
+        return await rejector(
+            "ordering_preflight_not_clean",
+            boundary.blocking_reason or "mutation_boundary_not_clean",
+            _presend_recheck_reason(boundary),
+        )
     if fresh.cash <= 0:
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason="ordering_preflight_not_clean",
-            detail="cash_not_positive",
+        return await rejector(
+            "ordering_preflight_not_clean",
+            "cash_not_positive",
+            PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN,
         )
     if scoped.unreadable is not None:
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason="ordering_preflight_not_clean",
-            detail="attribution_unreadable",
-        )
-    if not boundary.clean:
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason="ordering_preflight_not_clean",
-            detail=boundary.blocking_reason or "mutation_boundary_not_clean",
+        return await rejector(
+            "ordering_preflight_not_clean",
+            "attribution_unreadable",
+            PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN,
         )
 
     pnl_input = realized_pnl_reader(journal=journal, now=now)
     record["realized_pnl_input"] = pnl_input.canonical()
     record["realized_pnl_source"] = pnl_input.source
     if not pnl_input.readable:
-        return _finish_zero_order(
-            outcome=outcome,
-            ledger=ledger,
-            record=record,
-            labels=labels,
-            reason=REALIZED_PNL_UNAVAILABLE_REASON,
-            detail=pnl_input.reason or "realized_pnl_input_unreadable",
+        return await rejector(
+            REALIZED_PNL_UNAVAILABLE_REASON,
+            pnl_input.reason or "realized_pnl_input_unreadable",
+            PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN,
         )
     assert pnl_input.value is not None
     state = broker_state(
@@ -2045,6 +2193,8 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
             ledger=ledger,
             record=record,
             labels=labels,
+            rejector=rejector,
+            seal_consumed=seal_consumed,
         )
 
     held = {pos.symbol: pos.quantity for pos in state.positions}
@@ -2094,13 +2244,18 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
                 reason, detail, force_exit_two = stop
                 if force_exit_two:
                     outcome.exit_code = 2
-                return _finish_ordering_stopped(
+                return await _finish_ordering_stopped(
                     outcome=outcome,
                     ledger=ledger,
                     record=record,
                     labels=labels,
                     reason=reason,
                     detail=detail,
+                    rejector=rejector,
+                    seal_consumed=seal_consumed,
+                    post_consumption_reason=(
+                        PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN
+                    ),
                 )
             continue
 
@@ -2124,25 +2279,35 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
                     journal=journal, read_order_detail=account.read_order_detail
                 )
             except Exception as exc:  # noqa: BLE001 — failed fresh truth is closed
-                return _finish_ordering_stopped(
+                return await _finish_ordering_stopped(
                     outcome=outcome,
                     ledger=ledger,
                     record=record,
                     labels=labels,
                     reason="fresh_sell_attribution_unavailable",
                     detail=type(exc).__name__,
+                    rejector=rejector,
+                    seal_consumed=seal_consumed,
+                    post_consumption_reason=(
+                        PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN
+                    ),
                 )
             sell_scope = scoped_positions(
                 fresh=sell_fresh, attribution=sell_attribution
             )
             if sell_scope.unreadable is not None:
-                return _finish_ordering_stopped(
+                return await _finish_ordering_stopped(
                     outcome=outcome,
                     ledger=ledger,
                     record=record,
                     labels=labels,
                     reason="fresh_sell_attribution_unavailable",
                     detail="attribution_unreadable",
+                    rejector=rejector,
+                    seal_consumed=seal_consumed,
+                    post_consumption_reason=(
+                        PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN
+                    ),
                 )
             try:
                 kr_attribution.assert_sell_is_own(
@@ -2162,13 +2327,18 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
                 )
                 continue
             except Exception as exc:  # noqa: BLE001 — unknown sell proof is closed
-                return _finish_ordering_stopped(
+                return await _finish_ordering_stopped(
                     outcome=outcome,
                     ledger=ledger,
                     record=record,
                     labels=labels,
                     reason="fresh_sell_attribution_unavailable",
                     detail=type(exc).__name__,
+                    rejector=rejector,
+                    seal_consumed=seal_consumed,
+                    post_consumption_reason=(
+                        PRESEND_RECHECK_ORDERING_PREFLIGHT_NOT_CLEAN
+                    ),
                 )
         boundary = await _read_mutation_boundary(
             account=account,
@@ -2183,26 +2353,32 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
             record=record,
         )
         if not boundary.clean:
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="mutation_boundary_not_clean",
                 detail=boundary.blocking_reason or "unknown_boundary_failure",
+                rejector=rejector,
+                seal_consumed=seal_consumed,
+                post_consumption_reason=_presend_recheck_reason(boundary),
             )
         current_truth = kiwoom_lane.broker_truth_from(
             position_symbols=sell_scope.cap_position_symbols,
             pending=boundary.pending,
         )
         if coordination is None:
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
                 detail=ordering_support.LOCAL_FLOCK_CANNOT_AUTHORIZE_SEND,
+                rejector=rejector,
+                seal_consumed=seal_consumed,
+                post_consumption_reason=OWNERSHIP_LOST_AFTER_CONSUMPTION,
             )
         try:
             kiwoom_lane.assert_resubmit_allowed(
@@ -2244,13 +2420,15 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
         ) as exc:
             outcome.exit_code = 2
             record.setdefault("day_order_failures", []).append(str(exc))
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason="day_order_submission_unverified",
                 detail=type(exc).__name__,
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
         lifecycle_failure = await _record_day_order_lifecycle(
             account=account,
@@ -2265,13 +2443,15 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
         if lifecycle_failure is not None:
             reason, detail = lifecycle_failure
             outcome.exit_code = 2
-            return _finish_ordering_stopped(
+            return await _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
                 reason=reason,
                 detail=detail,
+                rejector=rejector,
+                seal_consumed=seal_consumed,
             )
 
     record["fidelity_artifact"]["event_count_after_cycle"] = len(fidelity.read_all())
@@ -2351,14 +2531,8 @@ def _coordination_error_code(error: BaseException) -> str:
     return type(error).__name__
 
 
-def _resolve_coordination_owner(
-    *,
-    coordination_factory: Callable[[], object] | None,
-    expected_entry: LaneRegistryEntry | None,
-) -> tuple[ordering_support.KiwoomCoordinationAdapter | None, dict[str, Any]]:
-    """Resolve and pin the nominated owner without silently downgrading it."""
-
-    base = {
+def _coordination_base_record() -> dict[str, Any]:
+    return {
         "present": False,
         "recovery_owner": None,
         "authorizes_send": False,
@@ -2367,64 +2541,18 @@ def _resolve_coordination_owner(
         "recovery_contract": dict(ordering_support.KIWOOM_LANE_RECOVERY_CONTRACT),
         "identity_guard": {"status": "not_configured"},
     }
-    if coordination_factory is None:
-        return None, base
 
-    if expected_entry is None:
-        base["identity_guard"] = {
-            "status": "rejected",
-            "code": KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
-            "owner_type": None,
-        }
-        return None, base
 
-    try:
-        candidate = coordination_factory()
-    except Exception as exc:  # noqa: BLE001 — owner construction is fail-closed
-        base["identity_guard"] = {
-            "status": "rejected",
-            "code": _coordination_error_code(exc),
-            "owner_type": None,
-        }
-        base["factory_error_type"] = type(exc).__name__
-        return None, base
-
-    if candidate is None:
-        base["identity_guard"] = {
-            "status": "rejected",
-            "code": "coordination_factory_returned_none",
-            "owner_type": "NoneType",
-        }
-        return None, base
-
-    try:
-        owner = assert_kiwoom_coordination_owner(
-            candidate,
-            expected_lane_id=ordering_support.KIWOOM_CANONICAL_LANE_ID,
-            expected_entry=expected_entry,
-        )
-    except KiwoomCoordinationOwnerRejected as exc:
-        base["identity_guard"] = {
-            "status": "rejected",
-            "code": exc.code,
-            "owner_type": type(candidate).__name__,
-        }
-        return None, base
-    except Exception as exc:  # noqa: BLE001 — malformed owner is fail-closed
-        base["identity_guard"] = {
-            "status": "rejected",
-            "code": _coordination_error_code(exc),
-            "owner_type": type(candidate).__name__,
-        }
-        return None, base
-
-    base.update(
+def _coordination_record_for_owner(
+    owner: ordering_support.KiwoomCoordinationAdapter,
+) -> dict[str, Any]:
+    record = _coordination_base_record()
+    record.update(
         {
             "present": True,
             "recovery_owner": owner.recovery_owner,
-            # G1/G2 records owner presence only.  A grant-only adapter never
-            # opens send; a future non-canary adapter may expose this field to
-            # the later bounded-send stage.
+            # G1/G2 records owner presence only. A grant-only adapter never
+            # opens send; legacy-offline remains test-only evidence.
             "authorizes_send": (
                 not owner.grant_only
                 and getattr(owner.ports, "legacy_offline", False) is not True
@@ -2438,7 +2566,154 @@ def _resolve_coordination_owner(
             },
         }
     )
-    return owner, base
+    return record
+
+
+def _prepare_coordination_owner(
+    *,
+    coordination_factory: Callable[[], object] | None,
+    expected_entry: LaneRegistryEntry | None,
+) -> tuple[KiwoomCoordinationFactoryPreparation | None, dict[str, Any]]:
+    """Resolve grant availability while a bounded seal is still unconsumed."""
+
+    base = _coordination_base_record()
+    if coordination_factory is None:
+        return None, base
+
+    if expected_entry is None:
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": KIWOOM_COORDINATION_OWNER_ENTRY_REQUIRED,
+            "owner_type": None,
+        }
+        return None, base
+
+    try:
+        prepared = prepare_kiwoom_coordination_factory(
+            coordination_factory,
+            expected_entry=expected_entry,
+        )
+    except AssertionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — owner construction is fail-closed
+        owner_type = getattr(exc, "owner_type", None)
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": _coordination_error_code(exc),
+            "owner_type": owner_type if type(owner_type) is str else None,
+        }
+        base["factory_error_type"] = type(exc).__name__
+        return None, base
+
+    if prepared.owner is not None:
+        base = _coordination_record_for_owner(prepared.owner)
+    else:
+        base["identity_guard"] = {
+            "status": "prepared",
+            "code": "bounded_send_non_grant_prevalidated",
+            "owner_type": ordering_support.KiwoomCoordinationAdapter.__name__,
+        }
+    return prepared, base
+
+
+def _owner_reassertion_post_consumption_reason(error: BaseException) -> str:
+    reason = _closed_post_consumption_reason(error)
+    if reason == UNCLASSIFIED_POST_CONSUMPTION:
+        return OWNERSHIP_LOST_AFTER_CONSUMPTION
+    return reason
+
+
+def _resolve_coordination_owner(
+    *,
+    coordination_factory: Callable[[], object] | None,
+    expected_entry: LaneRegistryEntry | None,
+    prepared: KiwoomCoordinationFactoryPreparation | None = None,
+) -> tuple[ordering_support.KiwoomCoordinationAdapter | None, dict[str, Any]]:
+    """Resolve and reassert the nominated owner at the consumption boundary."""
+
+    if prepared is None:
+        prepared, base = _prepare_coordination_owner(
+            coordination_factory=coordination_factory,
+            expected_entry=expected_entry,
+        )
+        if prepared is None:
+            return None, base
+    else:
+        base = _coordination_base_record()
+    assert expected_entry is not None
+
+    try:
+        candidate = resolve_prepared_kiwoom_coordination_factory(
+            prepared,
+            expected_entry=expected_entry,
+        )
+    except KiwoomPostConsumptionOwnerRejected as exc:
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": SEAL_CONSUMED_NO_SEND,
+            "owner_type": None,
+        }
+        base["post_consumption_reject_reason"] = exc.reason
+        base["factory_error_type"] = type(exc).__name__
+        return None, base
+    except AssertionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — owner construction is fail-closed
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": _coordination_error_code(exc),
+            "owner_type": None,
+        }
+        base["factory_error_type"] = type(exc).__name__
+        return None, base
+
+    if prepared.bounded_send is None:
+        return candidate, _coordination_record_for_owner(candidate)
+
+    try:
+        owner = assert_kiwoom_coordination_owner(
+            candidate,
+            expected_lane_id=ordering_support.KIWOOM_CANONICAL_LANE_ID,
+            expected_entry=expected_entry,
+        )
+    except KiwoomCoordinationOwnerRejected as exc:
+        if coordination_owner_consumed_bounded_send(candidate):
+            base["identity_guard"] = {
+                "status": "rejected",
+                "code": SEAL_CONSUMED_NO_SEND,
+                "owner_type": type(candidate).__name__,
+            }
+            base["post_consumption_reject_reason"] = (
+                _owner_reassertion_post_consumption_reason(exc)
+            )
+            return None, base
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": exc.code,
+            "owner_type": type(candidate).__name__,
+        }
+        return None, base
+    except AssertionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — malformed owner is fail-closed
+        if coordination_owner_consumed_bounded_send(candidate):
+            base["identity_guard"] = {
+                "status": "rejected",
+                "code": SEAL_CONSUMED_NO_SEND,
+                "owner_type": type(candidate).__name__,
+            }
+            base["post_consumption_reject_reason"] = (
+                _owner_reassertion_post_consumption_reason(exc)
+            )
+            return None, base
+        base["identity_guard"] = {
+            "status": "rejected",
+            "code": _coordination_error_code(exc),
+            "owner_type": type(candidate).__name__,
+        }
+        return None, base
+
+    return owner, _coordination_record_for_owner(owner)
 
 
 async def run_kiwoom_cycle(
@@ -2507,12 +2782,9 @@ async def run_kiwoom_cycle(
             if mode == ACCEPTANCE_MODE
             else "pending_ordering_preflight"
         )
-
-        coordination, coordination_record = _resolve_coordination_owner(
-            coordination_factory=coordination_factory,
-            expected_entry=coordination_entry,
-        )
-        record["coordination"] = coordination_record
+        # Reserve the historical insertion position. The value is replaced by
+        # the exact prepared/resolved record without moving the audit field.
+        record["coordination"] = _coordination_base_record()
 
         if ordering and not confirm:
             return _finish_zero_order(
@@ -2565,6 +2837,27 @@ async def run_kiwoom_cycle(
         record["policy_table_age_seconds"] = int(table.age.total_seconds())
 
         if not confirm:
+            prepared_preview, preview_coordination_record = _prepare_coordination_owner(
+                coordination_factory=coordination_factory,
+                expected_entry=coordination_entry,
+            )
+            record["coordination"] = preview_coordination_record
+
+            async def preview_rejector(
+                reason: str, detail: str, post_consumption_reason: str
+            ) -> KiwoomCycleOutcome:
+                return await _finish_post_coordination_reject(
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    labels=labels,
+                    reason=reason,
+                    detail=detail,
+                    post_consumption_reason=post_consumption_reason,
+                    seal_consumed=False,
+                    notifier=risk_notifier,
+                )
+
             return await _run_prepared_cycle(
                 now=now,
                 table=table,
@@ -2577,8 +2870,11 @@ async def run_kiwoom_cycle(
                 account=account,
                 journal=lane_journal,
                 account_identity=None,
-                coordination=coordination,
+                coordination=(
+                    None if prepared_preview is None else prepared_preview.owner
+                ),
                 authority_risk_notifier=risk_notifier,
+                rejector=preview_rejector,
             )
 
         try:
@@ -2594,63 +2890,119 @@ async def run_kiwoom_cycle(
                 detail=str(exc),
             )
 
-        if mode == ACCEPTANCE_MODE:
-            return await _run_prepared_cycle(
-                now=now,
-                table=table,
-                envelope=envelope,
-                labels=labels,
-                outcome=outcome,
-                ledger=ledger,
-                record=record,
-                confirm=True,
-                account=account,
-                journal=lane_journal,
-                account_identity=account_identity,
-                coordination=coordination,
-                authority_risk_notifier=risk_notifier,
+        lease: ordering_support.WriterLease | None = None
+        if mode == ORDERING_MODE:
+            make_lease = (
+                ordering_support.AccountWriterLease
+                if lease_factory is None
+                else lease_factory
             )
+            lease = make_lease(root, LANE, account_identity["fingerprint"])
+            try:
+                lease.acquire()
+            except Exception as exc:  # noqa: BLE001 — no writer authority, no order
+                record["writer_lease"] = {
+                    "acquired": False,
+                    "authority": "account_keyed_ordering_lease",
+                    "error_type": type(exc).__name__,
+                }
+                return _finish_zero_order(
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    labels=labels,
+                    reason="writer_lease_unavailable",
+                    detail=type(exc).__name__,
+                )
 
-        # Cheap/session/account gates above remain diagnostically observable,
-        # but no ORDERING mutation may proceed without the effective owner.
-        if coordination is None or coordination.grant_only:
-            return _finish_zero_order(
-                outcome=outcome,
-                ledger=ledger,
-                record=record,
-                labels=labels,
-                reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
-                detail="confirmed mutation requires a non-grant coordination owner",
+        try:
+            prepared, prepared_record = _prepare_coordination_owner(
+                coordination_factory=coordination_factory,
+                expected_entry=coordination_entry,
             )
+            record["coordination"] = prepared_record
+            if mode == ORDERING_MODE and (
+                prepared is None or prepared.grant_available is not True
+            ):
+                return _finish_zero_order(
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    labels=labels,
+                    reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+                    detail="confirmed mutation requires a non-grant coordination owner",
+                )
 
-        make_lease = (
-            ordering_support.AccountWriterLease
-            if lease_factory is None
-            else lease_factory
-        )
-        lease = make_lease(root, LANE, account_identity["fingerprint"])
-        try:
-            lease.acquire()
-        except Exception as exc:  # noqa: BLE001 — no writer authority, no order
-            record["writer_lease"] = {
-                "acquired": False,
-                "authority": "account_keyed_ordering_lease",
-                "error_type": type(exc).__name__,
-            }
-            return _finish_zero_order(
-                outcome=outcome,
-                ledger=ledger,
-                record=record,
-                labels=labels,
-                reason="writer_lease_unavailable",
-                detail=type(exc).__name__,
-            )
-        mutation_coordination = (
-            None
-            if coordination is not None and coordination.grant_only
-            else coordination
-        )
-        try:
+            coordination = None if prepared is None else prepared.owner
+            seal_consumed = False
+            if prepared is not None and prepared.grant_available is True:
+                coordination, coordination_record = _resolve_coordination_owner(
+                    coordination_factory=coordination_factory,
+                    expected_entry=coordination_entry,
+                    prepared=prepared,
+                )
+                record["coordination"] = coordination_record
+                post_consumption_reason = coordination_record.get(
+                    "post_consumption_reject_reason"
+                )
+                if type(post_consumption_reason) is str:
+                    return await _finish_seal_consumed_no_send(
+                        outcome=outcome,
+                        ledger=ledger,
+                        record=record,
+                        labels=labels,
+                        reason=post_consumption_reason,
+                        notifier=risk_notifier,
+                    )
+                if coordination is None or coordination.grant_only:
+                    return await _finish_post_coordination_reject(
+                        outcome=outcome,
+                        ledger=ledger,
+                        record=record,
+                        labels=labels,
+                        reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+                        detail="prepared coordination owner was not retained",
+                        post_consumption_reason=OWNERSHIP_LOST_AFTER_CONSUMPTION,
+                        seal_consumed=False,
+                        notifier=risk_notifier,
+                    )
+                seal_consumed = coordination_owner_consumed_bounded_send(coordination)
+
+            async def post_coordination_rejector(
+                reason: str, detail: str, classified_reason: str
+            ) -> KiwoomCycleOutcome:
+                return await _finish_post_coordination_reject(
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    labels=labels,
+                    reason=reason,
+                    detail=detail,
+                    post_consumption_reason=classified_reason,
+                    seal_consumed=seal_consumed,
+                    notifier=risk_notifier,
+                )
+
+            if mode == ACCEPTANCE_MODE:
+                return await _run_prepared_cycle(
+                    now=now,
+                    table=table,
+                    envelope=envelope,
+                    labels=labels,
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    confirm=True,
+                    account=account,
+                    journal=lane_journal,
+                    account_identity=account_identity,
+                    coordination=coordination,
+                    authority_risk_notifier=risk_notifier,
+                    rejector=post_coordination_rejector,
+                )
+
+            assert lease is not None
+            assert coordination is not None
             return await _run_ordering_cycle(
                 now=now,
                 table=table,
@@ -2662,15 +3014,18 @@ async def run_kiwoom_cycle(
                 account=account,
                 journal=lane_journal,
                 lease=lease,
-                coordination=mutation_coordination,
+                coordination=coordination,
                 realized_pnl_reader=(
                     kiwoom_attr.realized_pnl_input_today
                     if realized_pnl_reader is None
                     else realized_pnl_reader
                 ),
+                rejector=post_coordination_rejector,
+                seal_consumed=seal_consumed,
             )
         finally:
-            lease.release()
+            if lease is not None:
+                lease.release()
 
 
 __all__ = [

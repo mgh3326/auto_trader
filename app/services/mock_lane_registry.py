@@ -536,6 +536,58 @@ _KIWOOM_MOCK_FINGERPRINT_EVIDENCE_REF: Final[str] = (
     "sha256:55973f8c33f1d3f14c4b9cc379e8bab8ca40a7ef7dd41b6f63aad335bb90fef4;"
     "verify=NOT_AVAILABLE(verification_pending)"
 )
+_KIWOOM_MOCK_POLICY_BINDING: Final[PolicyBinding] = PolicyBinding(
+    policy_version="b0x-kr-v1.8",
+    policy_version_hash=(
+        "7d2729bc4197dd167d40e3e881b64f30a778b1b1a7158acf81fd0c7d38d008c0"
+    ),
+)
+# LABEL ONLY (§179 / contract §4 KR envelope): per-symbol KRW 300,000,
+# concurrent positions 10, daily new entries 3, and daily-loss kill -2.5% NAV.
+# These registry values describe the approved envelope; they do not enforce it.
+_KIWOOM_MOCK_MAX_ORDER_NOTIONAL: Final[Decimal] = Decimal("300000")
+_KIWOOM_MOCK_MAX_ORDERS_PER_SESSION: Final[int] = 3
+_KIWOOM_MOCK_MAX_OPEN_ORDERS: Final[int] = 10
+_KIWOOM_MOCK_TIMING_OWNER: Final[str] = (
+    "scripts.b0x.kr.kiwoom_ordering.KiwoomCoordinationAdapter"
+)
+_KIWOOM_MOCK_CANARY_BINDING: Final[str] = "kiwoom-bounded-send-seal-registry.v1"
+
+
+def _kiwoom_mock_missing_bindings(
+    entry: LaneRegistryEntry,
+) -> tuple[MissingBinding, ...]:
+    """Derive the five labels so a partial amendment remains fail-closed."""
+
+    missing: list[MissingBinding] = []
+    if not (
+        isinstance(entry.physical_account_id, str)
+        and entry.physical_account_id.strip()
+        and isinstance(entry.fingerprint_evidence_ref, str)
+        and entry.fingerprint_evidence_ref.strip()
+        and entry.identity_status == "KNOWN"
+    ):
+        missing.append(MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT)
+    if not isinstance(entry.policy_binding, PolicyBinding):
+        missing.append(MissingBinding.POLICY)
+    if not (
+        entry.max_order_notional is not None
+        and entry.max_order_notional > 0
+        and entry.max_orders_per_session is not None
+        and entry.max_orders_per_session > 0
+        and entry.max_open_orders is not None
+        and entry.max_open_orders > 0
+    ):
+        missing.append(MissingBinding.CAP)
+    if not (
+        entry.scheduler_owner is SchedulerOwner.MANUAL
+        and isinstance(entry.timing_owner, str)
+        and entry.timing_owner.strip()
+    ):
+        missing.append(MissingBinding.OWNER)
+    if not (isinstance(entry.canary_binding, str) and entry.canary_binding.strip()):
+        missing.append(MissingBinding.CANARY)
+    return tuple(missing)
 
 
 def _apply_binance_demo_identity_amendment(
@@ -581,7 +633,7 @@ def _apply_binance_demo_identity_amendment(
 def _apply_kiwoom_mock_identity_amendment(
     entries: tuple[LaneRegistryEntry, ...],
 ) -> tuple[LaneRegistryEntry, ...]:
-    """Apply the approved single-lane Kiwoom mock identity binding."""
+    """Apply the approved single-lane Kiwoom mock binding amendment."""
 
     if tuple(entry.lane_id for entry in entries) != CANONICAL_LANE_IDS:
         raise RuntimeError("kiwoom_mock_identity_base_registry_mismatch")
@@ -596,28 +648,59 @@ def _apply_kiwoom_mock_identity_amendment(
             entry.physical_account_id is not None
             or entry.identity_status != "UNKNOWN"
             or entry.fingerprint_evidence_ref is not None
-            or MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT not in entry.missing_bindings
+            or entry.activation_status is not ActivationStatus.BLOCKED
+            or entry.policy_binding is not None
+            or entry.execution_mode is not None
+            or entry.scheduler_owner is not None
+            or entry.timing_owner is not None
+            or entry.max_order_notional is not None
+            or entry.max_orders_per_session is not None
+            or entry.max_open_orders is not None
+            or entry.allowed_order_types
+            or entry.allowed_time_in_force
+            or entry.reconcile_required is not None
+            or entry.canary_binding is not None
+            or entry.missing_bindings != _MISSING_REQUIRED_BINDINGS
             or entry.writer is not False
             or entry.auto_order_enabled is not False
         ):
             raise RuntimeError("kiwoom_mock_identity_base_binding_mismatch")
 
-    return tuple(
-        replace(
+    amended_entries: list[LaneRegistryEntry] = []
+    for entry in entries:
+        if entry.lane_id not in _KIWOOM_MOCK_IDENTITY_LANE_IDS:
+            amended_entries.append(entry)
+            continue
+        candidate = replace(
             entry,
             physical_account_id=_KIWOOM_MOCK_PHYSICAL_ACCOUNT_ID,
             identity_status="KNOWN",
             fingerprint_evidence_ref=_KIWOOM_MOCK_FINGERPRINT_EVIDENCE_REF,
-            missing_bindings=tuple(
-                binding
-                for binding in entry.missing_bindings
-                if binding is not MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT
-            ),
+            policy_binding=_KIWOOM_MOCK_POLICY_BINDING,
+            execution_mode="acceptance",
+            scheduler_owner=SchedulerOwner.MANUAL,
+            timing_owner=_KIWOOM_MOCK_TIMING_OWNER,
+            max_order_notional=_KIWOOM_MOCK_MAX_ORDER_NOTIONAL,
+            max_orders_per_session=_KIWOOM_MOCK_MAX_ORDERS_PER_SESSION,
+            max_open_orders=_KIWOOM_MOCK_MAX_OPEN_ORDERS,
+            allowed_order_types=("limit",),
+            allowed_time_in_force=("day",),
+            reconcile_required=True,
+            canary_binding=_KIWOOM_MOCK_CANARY_BINDING,
         )
-        if entry.lane_id in _KIWOOM_MOCK_IDENTITY_LANE_IDS
-        else entry
-        for entry in entries
-    )
+        missing_bindings = _kiwoom_mock_missing_bindings(candidate)
+        amended_entries.append(
+            replace(
+                candidate,
+                activation_status=(
+                    ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+                    if not missing_bindings
+                    else entry.activation_status
+                ),
+                missing_bindings=missing_bindings,
+            )
+        )
+    return tuple(amended_entries)
 
 
 CANONICAL_LANE_REGISTRY: Final[tuple[LaneRegistryEntry, ...]] = (

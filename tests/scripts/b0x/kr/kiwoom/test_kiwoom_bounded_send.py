@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import gc
 import inspect
 import json
 import tomllib
+from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -21,7 +23,10 @@ from app.services.mock_integration.coordination import (
 from app.services.mock_lane_registry import (
     ActivationStatus,
     LaneGuardError,
+    MissingBinding,
     PolicyBinding,
+    assert_entry_canary_scope_ready,
+    assert_entry_execution_ready,
 )
 from scripts.b0x.kr import kiwoom_bounded_send as bounded_send
 from scripts.b0x.kr import kiwoom_coordination, kiwoom_cycle, kiwoom_ordering
@@ -64,10 +69,45 @@ def _canary_scope_ready_entry():  # noqa: ANN202 - test fixture value
     )
 
 
+def _execution_unready_entry():  # noqa: ANN202 - test fixture value
+    """A KR row whose bindings are still absent, so canary scope stays closed.
+
+    ROB-1340 binds the canonical ``kr.kiwoom.mock`` row, so that row is no
+    longer an execution-unready fixture. The contract under test is unchanged
+    -- an execution-unready lane must not spend its one-shot seal -- so the
+    fixture moves to a row that is still unready instead of the expected
+    rejection code moving. Identity fields are kept verbatim so the seal below
+    still matches the account this lane would send from.
+    """
+
+    entry = resolve_kiwoom_lane_entry()
+    return replace(
+        entry,
+        activation_status=ActivationStatus.BLOCKED,
+        policy_binding=None,
+        execution_mode=None,
+        scheduler_owner=None,
+        timing_owner=None,
+        max_order_notional=None,
+        max_orders_per_session=None,
+        max_open_orders=None,
+        allowed_order_types=(),
+        allowed_time_in_force=(),
+        reconcile_required=None,
+        canary_binding=None,
+        missing_bindings=(
+            MissingBinding.POLICY,
+            MissingBinding.CAP,
+            MissingBinding.OWNER,
+            MissingBinding.CANARY,
+        ),
+    )
+
+
 @pytest.fixture
 def isolated_seal_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, Path]:
+) -> Iterator[tuple[Path, Path]]:
     registry_path = tmp_path / "registered-seals.toml"
     marker_root = tmp_path / "consumed"
     monkeypatch.setattr(
@@ -87,7 +127,13 @@ def isolated_seal_runtime(
         "resolve_kiwoom_lane_entry",
         lambda _lane_id=kiwoom_coordination.KIWOOM_KR_LANE_ID: ready_entry,
     )
-    return registry_path, marker_root
+    yield registry_path, marker_root
+    # A ``CanaryScopeAuthority`` stays "current" while its owner is reachable,
+    # and an owner reached through a reference cycle (a kept adapter, or a
+    # ``pytest.raises`` traceback that points back at the test frame) outlives
+    # the test that issued it. Collect here so a test that legitimately spends
+    # a seal never hands the next test a live capability.
+    gc.collect()
 
 
 def _expires_at(instant: dt.datetime) -> str:
@@ -166,7 +212,14 @@ def test_execution_unready_lane_does_not_consume_one_shot_seal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry_path, marker_root = isolated_seal_runtime
-    unready_entry = resolve_kiwoom_lane_entry()
+    unready_entry = _execution_unready_entry()
+    assert unready_entry.activation_status is not (
+        ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    )
+    assert unready_entry.missing_bindings
+    with pytest.raises(LaneGuardError) as unready_refusal:
+        assert_entry_canary_scope_ready(unready_entry)
+    assert unready_refusal.value.code == "lane_not_in_canary_scope"
     monkeypatch.setattr(
         kiwoom_coordination,
         "resolve_kiwoom_lane_entry",
@@ -189,6 +242,93 @@ def test_execution_unready_lane_does_not_consume_one_shot_seal(
         "owner_type": None,
     }
     assert record["factory_error_type"] == "KiwoomCoordinationOwnerRejected"
+
+
+def test_canary_eligible_lane_passes_every_gate_consumes_seal_and_proceeds(
+    isolated_seal_runtime: tuple[Path, Path],
+) -> None:
+    """Positive mirror: a fully bound canary row spends its seal and proceeds.
+
+    Without this the unready test above could pass for the wrong reason -- a
+    path that never reaches consumption at all would satisfy it too.
+    """
+
+    registry_path, marker_root = isolated_seal_runtime
+    # The canonical ROB-1340 row must itself be canary-eligible, so a partial
+    # amendment cannot hide behind the test-only ready fixture below.
+    canonical = resolve_kiwoom_lane_entry()
+    assert canonical.activation_status is ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    assert canonical.missing_bindings == ()
+    assert canonical.canary_binding == "kiwoom-bounded-send-seal-registry.v1"
+    assert assert_entry_canary_scope_ready(canonical) is None
+    entry = kiwoom_coordination.resolve_kiwoom_lane_entry()
+    assert entry.activation_status is ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    assert entry.missing_bindings == ()
+    assert assert_entry_canary_scope_ready(entry) is None
+
+    seal = _seal(expires_at=_VALID_EXPIRY)
+    _write_registry(registry_path, [seal])
+    marker_path = bounded_send.bounded_send_consumption_marker_path(seal["seal_digest"])
+    assert not marker_path.exists()
+    assert list(marker_root.glob("*")) == []
+
+    owner, record = _resolve(_factory(seal))
+
+    assert owner is not None
+    assert owner.grant_only is False
+    assert record["present"] is True
+    assert record["authorizes_send"] is True
+    assert record["identity_guard"]["status"] == "accepted"
+    assert record["identity_guard"]["lane_id"] == kiwoom_coordination.KIWOOM_KR_LANE_ID
+    assert marker_path.exists()
+    assert seal["seal_digest"] in bounded_send._PROCESS_CONSUMED_SEAL_DIGESTS
+
+    authority = getattr(owner, "_canary_scope_authority", None)
+    assert type(authority) is CanaryScopeAuthority
+    assert authority.seal_digest == seal["seal_digest"]
+    assert (
+        assert_canary_scope_authority_binding(owner.ports.entry, authority) is authority
+    )
+
+
+def test_canary_scope_never_opens_ordinary_orders_while_activation_is_not_enabled(
+    isolated_seal_runtime: tuple[Path, Path],
+) -> None:
+    """The machine proof that the bound KR lane is still not executable.
+
+    ``RUNTIME_ACCEPTANCE_PENDING`` opens exactly one sealed canary and nothing
+    else. Ordinary execution keeps refusing with ``lane_activation_not_enabled``
+    both before and after the seal is spent, so a successful canary round trip
+    is not a back door into the general order path.
+    """
+
+    registry_path, _ = isolated_seal_runtime
+    canonical = resolve_kiwoom_lane_entry()
+    assert canonical.activation_status is ActivationStatus.RUNTIME_ACCEPTANCE_PENDING
+    assert canonical.activation_status is not ActivationStatus.ENABLED
+    assert canonical.writer is False
+    assert canonical.auto_order_enabled is False
+    assert assert_entry_canary_scope_ready(canonical) is None
+    with pytest.raises(LaneGuardError) as before:
+        assert_entry_execution_ready(canonical)
+    assert before.value.code == "lane_activation_not_enabled"
+
+    seal = _seal(expires_at=_VALID_EXPIRY)
+    _write_registry(registry_path, [seal])
+    owner, record = _resolve(_factory(seal))
+    assert owner is not None
+    assert record["authorizes_send"] is True
+
+    consumed_entry = owner.ports.entry
+    assert consumed_entry.activation_status is not ActivationStatus.ENABLED
+    assert consumed_entry.writer is False
+    assert consumed_entry.auto_order_enabled is False
+    with pytest.raises(LaneGuardError) as after:
+        assert_entry_execution_ready(consumed_entry)
+    assert after.value.code == "lane_activation_not_enabled"
+    with pytest.raises(LaneGuardError) as canonical_after:
+        assert_entry_execution_ready(resolve_kiwoom_lane_entry())
+    assert canonical_after.value.code == "lane_activation_not_enabled"
 
 
 def test_consumption_root_is_xdg_state_outside_b0x_observation_tree() -> None:
@@ -607,7 +747,7 @@ def test_production_registry_exact_seal_set_is_pinned() -> None:
 
 
 def test_nonlegacy_false_registration_has_one_production_call_site() -> None:
-    false_calls: list[tuple[str, int]] = []
+    false_calls: list[tuple[str, int, bool, bool]] = []
     true_calls: list[tuple[str, int]] = []
     for path in sorted((REPO_ROOT / "scripts" / "b0x" / "kr").glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -622,12 +762,31 @@ def test_nonlegacy_false_registration_has_one_production_call_site() -> None:
                 (kw.value for kw in node.keywords if kw.arg == "grant_only"), None
             )
             if isinstance(grant_only, ast.Constant) and grant_only.value is False:
-                false_calls.append((path.name, node.lineno))
+                validate_only = next(
+                    (kw.value for kw in node.keywords if kw.arg == "validate_only"),
+                    None,
+                )
+                validated = next(
+                    (kw.value for kw in node.keywords if kw.arg == "validated"), None
+                )
+                false_calls.append(
+                    (
+                        path.name,
+                        node.lineno,
+                        isinstance(validate_only, ast.Constant)
+                        and validate_only.value is True,
+                        validated is not None,
+                    )
+                )
             if isinstance(grant_only, ast.Constant) and grant_only.value is True:
                 true_calls.append((path.name, node.lineno))
 
-    assert [name for name, _ in false_calls] == ["kiwoom_coordination.py"]
+    assert [(name, dry, activating) for name, _, dry, activating in false_calls] == [
+        ("kiwoom_coordination.py", True, False),
+        ("kiwoom_coordination.py", False, True),
+    ]
     assert [name for name, _ in true_calls] == [
+        "kiwoom_coordination.py",
         "kiwoom_coordination.py",
         "kiwoom_coordination.py",
     ]

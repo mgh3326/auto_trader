@@ -46,7 +46,12 @@ from app.services.mock_integration.coordination import (
     physical_account_scope_for_entry,
 )
 from app.services.mock_integration.lineage import MockLineageFactory
-from app.services.mock_lane_registry import CANONICAL_LANE_REGISTRY, LaneGuardError
+from app.services.mock_lane_registry import (
+    CANONICAL_LANE_REGISTRY,
+    ActivationStatus,
+    LaneGuardError,
+    MissingBinding,
+)
 from scripts.b0x.kr import kiwoom_durable_ports
 from scripts.b0x.kr.kiwoom_coordination import (
     KIWOOM_KR_LANE_ID,
@@ -255,11 +260,20 @@ def test_default_grant_only_factory_never_selects_durable_ports(
 async def test_factory_ports_preserve_signed_execution_gate_before_fake_ack(
     db_session,
 ) -> None:
-    """Durable ports do not turn the current NOT_READY registry row into authority."""
+    """Durable ports do not turn an incomplete registry row into authority."""
 
     del db_session
-    entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
-    ports = kiwoom_durable_ports.build_ports(entry)
+    signed_entry = resolve_kiwoom_lane_entry(KIWOOM_KR_LANE_ID)
+    entry = replace(
+        signed_entry,
+        activation_status=ActivationStatus.BLOCKED,
+        missing_bindings=(MissingBinding.POLICY,),
+    )
+    registry = tuple(
+        entry if candidate.lane_id == entry.lane_id else candidate
+        for candidate in CANONICAL_LANE_REGISTRY
+    )
+    ports = replace(kiwoom_durable_ports.build_ports(entry), registry=registry)
     envelope = _attempt(ports)
     callbacks: list[str] = []
     broker_order_id = f"rob1338-{uuid.uuid4().hex[:16]}"
