@@ -31,6 +31,13 @@ def test_telegram_flags_default_off_and_allowlist_parses():
 
 
 @pytest.mark.unit
+def test_invest_approval_link_and_inline_callback_defaults():
+    settings = Settings(_env_file=None)
+    assert settings.INVEST_PUBLIC_BASE_URL == ""
+    assert settings.TELEGRAM_INLINE_APPROVAL_ENABLED is True
+
+
+@pytest.mark.unit
 def test_durable_callback_enqueue_timeout_is_finite_positive_and_capped() -> None:
     """R33: an ACK deadline must never become zero, infinite, or unbounded."""
     baseline = Settings(_env_file=None)

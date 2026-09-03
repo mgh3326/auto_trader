@@ -23,7 +23,7 @@ async function responseJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function mutationHeaders(): HeadersInit {
+export function mutationHeaders(): HeadersInit {
   const csrf = readCookie("csrftoken");
   return {
     "Content-Type": "application/json",

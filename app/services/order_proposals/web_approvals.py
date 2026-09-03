@@ -75,6 +75,7 @@ class WebApprovalService:
                     "symbol": group.symbol,
                     "side": group.side,
                     "action": group.action or "place",
+                    "exit_intent": getattr(group, "exit_intent", None),
                     "rung_summary": [],
                     "preview": [],
                     "valid_until": _timestamp(group.valid_until),

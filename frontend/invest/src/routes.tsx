@@ -62,6 +62,7 @@ import {
   LossCutEvidenceRoute,
 } from "./pages/LossCutApprovalRoute";
 import { FundingRoute } from "./pages/FundingRoute";
+import { ApprovalDetailRoute, ApprovalsListRoute } from "./pages/ApprovalsRoute";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
 // from the source URL so market-scoped or anchor-scoped bookmarks
@@ -115,6 +116,8 @@ export const router = createBrowserRouter(
     { path: "/watches", element: <WatchesRoute /> },
     { path: "/buy-plan", element: <BuyPlanRoute /> },
     { path: "/orders/:broker/:market/:ledgerId", element: <OrderDetailRoute /> },
+    { path: "/approvals", element: <ApprovalsListRoute /> },
+    { path: "/approvals/:proposalId", element: <ApprovalDetailRoute /> },
     {
       path: "/approvals/loss-cut/evidence/:symbol",
       element: <LossCutEvidenceRoute />,

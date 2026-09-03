@@ -875,3 +875,29 @@ def test_message_requires_group_approval_nonce():
 
     with pytest.raises(ValueError, match="approval_nonce"):
         build_approval_message(group=group, rungs=[])
+
+
+def test_approval_card_adds_opt_in_invest_link_and_can_disable_inline_callbacks(
+    monkeypatch,
+):
+    from app.core.config import settings
+
+    group = _group(proposal_id=uuid.UUID("11111111-2222-4333-8444-555555555555"))
+    monkeypatch.setattr(settings, "INVEST_PUBLIC_BASE_URL", "https://invest.example")
+    monkeypatch.setattr(settings, "TELEGRAM_INLINE_APPROVAL_ENABLED", True)
+    _text, keyboard = build_approval_message(group=group, rungs=[_rung()])
+    assert keyboard["inline_keyboard"][-1] == [
+        {
+            "text": "🔗 /invest에서 승인",
+            "url": "https://invest.example/invest/approvals/11111111-2222-4333-8444-555555555555",
+        }
+    ]
+    assert "callback_data" in keyboard["inline_keyboard"][0][0]
+
+    monkeypatch.setattr(settings, "TELEGRAM_INLINE_APPROVAL_ENABLED", False)
+    _text, link_only_keyboard = build_approval_message(group=group, rungs=[_rung()])
+    assert link_only_keyboard["inline_keyboard"] == [keyboard["inline_keyboard"][-1]]
+
+    monkeypatch.setattr(settings, "INVEST_PUBLIC_BASE_URL", "")
+    _text, no_link_keyboard = build_approval_message(group=group, rungs=[_rung()])
+    assert no_link_keyboard["inline_keyboard"] == []
