@@ -1,7 +1,7 @@
 """allow durable fill-event handoff provenance
 
 Revision ID: 20260903_fill_event_handoff
-Revises: 20260902_rob1340_authority
+Revises: 20260903_order_path_metadata
 """
 
 from sqlalchemy import inspect
@@ -57,6 +57,13 @@ def downgrade() -> None:
     existing = _created_by_constraint()
     if existing is None or "fill-event-handoff" not in existing[1]:
         return
+    # The prior CHECK cannot accept a handoff row.  Preserve the durable row
+    # while returning it to a provenance label valid at the parent revision.
+    op.execute(
+        "UPDATE review.operator_session_context "
+        "SET created_by = 'system' "
+        "WHERE created_by = 'fill-event-handoff'"
+    )
     op.drop_constraint(
         op.f(existing[0]),
         "operator_session_context",

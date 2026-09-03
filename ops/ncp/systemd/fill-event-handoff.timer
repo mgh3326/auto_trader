@@ -2,6 +2,7 @@
 Description=Run auto_trader fill-event handoff every 60 seconds
 
 [Timer]
+OnBootSec=2min
 OnUnitActiveSec=60s
 Persistent=false
 Unit=fill-event-handoff.service

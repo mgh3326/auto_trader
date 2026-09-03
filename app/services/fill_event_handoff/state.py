@@ -15,12 +15,14 @@ class HandoffState:
         self.path = directory / "state.json"
         self._lock: Any | None = None
         self.data: dict[str, Any] = {}
+        self.is_new = False
 
     def __enter__(self) -> HandoffState:
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = (self.directory / "poller.lock").open("a+", encoding="utf-8")
         fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX)
-        if self.path.exists():
+        self.is_new = not self.path.exists()
+        if not self.is_new:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
                 raise ValueError("fill handoff state must be an object")

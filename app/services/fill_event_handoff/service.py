@@ -54,6 +54,8 @@ class HandoffConfig:
     kick_deployments: Mapping[str, str] | None = None
     prefect_api_url: str | None = None
     discord_webhook: str | None = None
+    since_ledger_id: int | None = None
+    dry_run: bool = False
 
 
 def dedupe_key(fill: Mapping[str, Any]) -> str:
@@ -274,6 +276,18 @@ class FillHandoffRunner:
         repo = ExecutionLedgerRepository(db)
         with HandoffState(self.config.state_dir) as locked:
             state = locked.data
+            outcome = {"durable": 0, "pushed": 0, "kicked": 0}
+            if locked.is_new:
+                if self.config.since_ledger_id is None:
+                    # An empty state directory is an installation, not an
+                    # instruction to replay the historical ledger.  Seed to
+                    # its high-water mark and let the next fill be the first
+                    # operator handoff.
+                    state["watermark"] = await repo.max_ledger_id()
+                    if not self.config.dry_run:
+                        locked.save()
+                    return outcome
+                state["watermark"] = self.config.since_ledger_id
             now_epoch = self.now().timestamp()
             state["seen"] = {
                 key: value
@@ -284,7 +298,6 @@ class FillHandoffRunner:
             rows = await repo.list_recent_fills_for_triage(
                 after_id=int(state["watermark"]), source=None, limit=500
             )
-            outcome = {"durable": 0, "pushed": 0, "kicked": 0}
             for row in rows:
                 fill = sanitize_fill(row)
                 key, now = dedupe_key(fill), self.now()
@@ -319,9 +332,14 @@ class FillHandoffRunner:
                         created_by="fill-event-handoff",
                         session_label="fill-handoff",
                     )
-                    context_row = (await service.append_entries([entry]))[0]
-                    await db.commit()
-                    outcome["durable"] += 1
+                    if self.config.dry_run:
+                        context_row = None
+                    else:
+                        context_row = (await service.append_entries([entry]))[0]
+                        await db.commit()
+                        outcome["durable"] += 1
+                if self.config.dry_run:
+                    continue
                 state["seen"][key] = now.timestamp()
                 pushed = 0
                 prompt = f"체결 인계: {fill['symbol']} {fill['side']} {fill['filled_qty']}@{fill['filled_price']} ({fill['currency']} {fill['filled_notional']}). briefing.session_context의 fill_handoff=v1 open_question을 같은 refs의 decision으로 닫아라."

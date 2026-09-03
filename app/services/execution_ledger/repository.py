@@ -232,6 +232,12 @@ class ExecutionLedgerRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
+    async def max_ledger_id(self) -> int:
+        """Return the current ledger high-water mark without reading fills."""
+        result = await self.db.execute(select(func.max(ExecutionLedger.id)))
+        value = result.scalar_one()
+        return int(value or 0)
+
     async def net_quantity_by_match_key_since(
         self, *, cutover: datetime
     ) -> dict[tuple[str, str, str, str, str, str], Decimal]:

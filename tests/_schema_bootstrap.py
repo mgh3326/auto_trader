@@ -1940,7 +1940,7 @@ async def _ensure_analysis_artifacts_created_by_constraint(conn) -> None:
         )
     )
     rows = list(constraints)
-    if rows and "fill-event-handoff" in (rows[0][1] or ""):
+    if rows and "codex" in (rows[0][1] or ""):
         return
 
     await conn.execute(
@@ -1953,7 +1953,7 @@ async def _ensure_analysis_artifacts_created_by_constraint(conn) -> None:
         text(
             "ALTER TABLE review.analysis_artifacts "
             "ADD CONSTRAINT ck_analysis_artifacts_created_by "
-            "CHECK (created_by IN ('claude', 'operator', 'system', 'codex', 'fill-event-handoff'))"
+            "CHECK (created_by IN ('claude', 'operator', 'system', 'codex'))"
         )
     )
 
@@ -1969,7 +1969,7 @@ async def _ensure_operator_session_context_created_by_constraint(conn) -> None:
         )
     )
     rows = list(constraints)
-    if rows and "codex" in (rows[0][1] or ""):
+    if rows and "fill-event-handoff" in (rows[0][1] or ""):
         return
 
     await conn.execute(
@@ -1982,7 +1982,7 @@ async def _ensure_operator_session_context_created_by_constraint(conn) -> None:
         text(
             "ALTER TABLE review.operator_session_context "
             "ADD CONSTRAINT ck_operator_session_context_created_by "
-            "CHECK (created_by IN ('claude', 'operator', 'system', 'codex'))"
+            "CHECK (created_by IN ('claude', 'operator', 'system', 'codex', 'fill-event-handoff'))"
         )
     )
 

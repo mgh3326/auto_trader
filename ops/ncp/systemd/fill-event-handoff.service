@@ -7,8 +7,9 @@ Requires=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/root/at-run
+EnvironmentFile=/root/at-secrets/.env.api
 EnvironmentFile=/root/at-secrets/.env.fill-handoff
-ExecStart=/bin/sh -ec 'image="$$(cat /root/at-run/deployed-digest)"; exec /usr/bin/docker run --rm --network host --env-file /root/at-secrets/.env.fill-handoff -v "$${FILL_HANDOFF_STATE_DIR:-/var/lib/fill-event-handoff}:$${FILL_HANDOFF_STATE_DIR:-/var/lib/fill-event-handoff}" "$$image" /app/.venv/bin/python -m scripts.fill_event_handoff'
+ExecStart=/bin/sh -ec 'image="$$(cat /root/at-run/deployed-digest)"; exec /usr/bin/docker run --rm --network host --env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.fill-handoff -v "$${FILL_HANDOFF_STATE_DIR:-/var/lib/fill-event-handoff}:$${FILL_HANDOFF_STATE_DIR:-/var/lib/fill-event-handoff}" "$$image" /app/.venv/bin/python -m scripts.fill_event_handoff --once'
 User=root
 UMask=0077
 NoNewPrivileges=true
