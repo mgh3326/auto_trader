@@ -39,6 +39,7 @@ export type ApprovalAction = "approve" | "deny" | "loss-cut-confirm";
 export interface ApprovalMutationResult {
   handled: boolean;
   reason: string;
+  confirmation_token?: string;
   proposal_id?: string;
   results?: string[];
   rung_results?: Array<{ rung_index: number; result: string }>;

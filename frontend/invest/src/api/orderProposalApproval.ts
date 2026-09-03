@@ -15,18 +15,32 @@ export class ApprovalProcessingError extends Error {
   }
 }
 
+export class ApprovalTerminalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApprovalTerminalError";
+  }
+}
+
 async function responseJson<T>(response: Response): Promise<T> {
+  const payload = (await response.json().catch(() => null)) as {
+    detail?: string | { error?: string; reason?: string; operator_message?: string };
+  } | null;
   if (response.status === 409) {
-    const payload = (await response.json().catch(() => null)) as {
-      detail?: { error?: string };
-    } | null;
-    if (payload?.detail?.error === "processing") throw new ApprovalProcessingError();
+    const detail = typeof payload?.detail === "object" ? payload.detail : undefined;
+    if (detail?.error === "processing") throw new ApprovalProcessingError();
+    if (detail?.error === "terminal") {
+      throw new ApprovalTerminalError(
+        detail.operator_message ?? detail.reason ?? "승인은 운영자 확인이 필요합니다.",
+      );
+    }
   }
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(payload?.detail ?? `approval request ${response.status}`);
+    throw new Error(
+      typeof payload?.detail === "string" ? payload.detail : `approval request ${response.status}`,
+    );
   }
-  return response.json() as Promise<T>;
+  return payload as T;
 }
 
 export async function fetchOrderProposalApprovals(
@@ -55,12 +69,15 @@ function idempotencyKey(): string {
 export async function mutateOrderProposalApproval(
   proposalId: string,
   action: ApprovalAction,
+  confirmationToken?: string,
 ): Promise<ApprovalMutationResult> {
   const response = await fetch(`${BASE}/${encodeURIComponent(proposalId)}/${action}`, {
     method: "POST",
     credentials: "include",
     headers: { ...mutationHeaders(), "Idempotency-Key": idempotencyKey() },
-    body: JSON.stringify({}),
+    body: JSON.stringify(
+      action === "loss-cut-confirm" ? { confirmation_token: confirmationToken } : {},
+    ),
   });
   return responseJson(response);
 }

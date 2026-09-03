@@ -75,6 +75,21 @@ describe("ApprovalsRoute", () => {
     expect(await screen.findByText("처리 결과: approved")).toBeInTheDocument();
   });
 
+  it("accepts only one same-tick click while an approval request is in flight", async () => {
+    let resolve!: (value: { handled: boolean; reason: string }) => void;
+    vi.mocked(api.mutateOrderProposalApproval).mockReturnValue(
+      new Promise((done) => { resolve = done; }),
+    );
+    renderDetail();
+    const approve = await screen.findByRole("button", { name: "승인" });
+    await act(async () => {
+      fireEvent.click(approve);
+      fireEvent.click(approve);
+    });
+    expect(api.mutateOrderProposalApproval).toHaveBeenCalledTimes(1);
+    resolve({ handled: true, reason: "approved" });
+  });
+
   it("polls the detail every two seconds after a processing response", async () => {
     vi.mocked(api.mutateOrderProposalApproval).mockRejectedValue(
       new api.ApprovalProcessingError(),

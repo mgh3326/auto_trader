@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ApprovalProcessingError,
+  ApprovalTerminalError,
   fetchOrderProposalApproval,
   fetchOrderProposalApprovals,
   mutateOrderProposalApproval,
@@ -101,7 +102,10 @@ export function ApprovalDetailRoute() {
   const [result, setResult] = useState<ApprovalMutationResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [confirmationToken, setConfirmationToken] = useState<string | null>(null);
+  const [terminal, setTerminal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -119,7 +123,10 @@ export function ApprovalDetailRoute() {
       fetchOrderProposalApproval(proposalId)
         .then((next) => {
           setCard(next);
-          if (next.status !== "processing") setPolling(false);
+          if (next.status === "terminal") {
+            setPolling(false);
+            setResult((current) => current ?? { handled: true, reason: "terminal" });
+          }
         })
         .catch((reason: unknown) => setError(String(reason)));
     }, 2_000);
@@ -127,23 +134,34 @@ export function ApprovalDetailRoute() {
   }, [polling, proposalId]);
 
   async function mutate(action: ApprovalAction) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
-      const next = await mutateOrderProposalApproval(proposalId, action);
+      const next = await mutateOrderProposalApproval(
+        proposalId,
+        action,
+        confirmationToken ?? undefined,
+      );
       setResult(next);
+      if (next.confirmation_token) setConfirmationToken(next.confirmation_token);
     } catch (reason) {
       if (reason instanceof ApprovalProcessingError) {
         setPolling(true);
+      } else if (reason instanceof ApprovalTerminalError) {
+        setTerminal(true);
+        setError(reason.message);
       } else {
         setError(String(reason));
       }
     } finally {
       setBusy(false);
+      inFlight.current = false;
     }
   }
 
-  const disabled = busy || polling || !card || card.status === "terminal";
+  const disabled = busy || polling || terminal || !card || card.status === "terminal";
   const needsLossCutConfirm = result?.reason === "loss_cut_confirmation_required";
   return (
     <ApprovalFrame>
