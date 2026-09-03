@@ -133,8 +133,14 @@ async def test_web_approval_maps_the_core_nonce_replay_vocabulary(monkeypatch) -
 @pytest.mark.asyncio
 async def test_web_approval_endpoints_default_disabled(monkeypatch) -> None:
     from app.core.config import settings
+    from app.routers import invest_loss_cut_approvals as module
 
     monkeypatch.setattr(settings, "INVEST_APPROVALS_ENABLED", False)
+
+    async def must_not_reach_cards(*args, **kwargs):
+        pytest.fail("disabled approval endpoint reached its card reader")
+
+    monkeypatch.setattr(module.WebApprovalService, "list_cards", must_not_reach_cards)
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(
@@ -151,9 +157,15 @@ async def test_web_approval_endpoints_default_disabled(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_web_loss_cut_confirm_respects_legacy_kill_switch(monkeypatch) -> None:
     from app.core.config import settings
+    from app.routers import invest_loss_cut_approvals as module
 
     monkeypatch.setattr(settings, "INVEST_APPROVALS_ENABLED", True)
     monkeypatch.setattr(settings, "INVEST_LOSS_CUT_APPROVAL_ENABLED", False)
+
+    async def must_not_reach_core(*args, **kwargs):
+        pytest.fail("loss-cut confirmation bypassed its legacy kill switch")
+
+    monkeypatch.setattr(module, "handle_web_approval", must_not_reach_core)
     app = FastAPI()
 
     @app.get("/csrf-seed")

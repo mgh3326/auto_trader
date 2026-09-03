@@ -1924,6 +1924,7 @@ async def test_web_loss_cut_first_step_failure_preserves_telegram_card(
 async def test_web_core_exception_dead_letters_before_retry(monkeypatch, db_session):
     """A rollback after entry cannot make the browser submit a second time."""
     group = await _seed_proposal(db_session, nonce="web-marker")
+    proposal_id = group.proposal_id
     calls = 0
 
     async def post_submit_exception(**kwargs):
@@ -1932,7 +1933,7 @@ async def test_web_core_exception_dead_letters_before_retry(monkeypatch, db_sess
         raise RuntimeError("post-submit transport uncertainty")
 
     first = await handle_web_approval(
-        group.proposal_id,
+        proposal_id,
         action="approve",
         actor_subject="user:9",
         now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
@@ -1940,7 +1941,7 @@ async def test_web_core_exception_dead_letters_before_retry(monkeypatch, db_sess
         revalidate_fn=post_submit_exception,
     )
     second = await handle_web_approval(
-        group.proposal_id,
+        proposal_id,
         action="approve",
         actor_subject="user:9",
         now=datetime(2026, 7, 13, 10, 0, 1, tzinfo=UTC),
