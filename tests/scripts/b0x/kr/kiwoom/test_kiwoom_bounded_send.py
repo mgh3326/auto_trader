@@ -7,10 +7,14 @@ import datetime as dt
 import inspect
 import json
 import tomllib
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from app.schemas.execution_contracts import LaneStatus, SchedulerOwner
+from app.services.mock_lane_registry import ActivationStatus, PolicyBinding
 from scripts.b0x.kr import kiwoom_bounded_send as bounded_send
 from scripts.b0x.kr import kiwoom_coordination, kiwoom_cycle, kiwoom_ordering
 from scripts.b0x.kr.kiwoom_coordination import (
@@ -26,6 +30,30 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 _REGISTRY_NOW = dt.datetime(2026, 8, 28, 5, 0, tzinfo=dt.UTC)
 _VALID_EXPIRY = _REGISTRY_NOW + dt.timedelta(hours=1)
 _EXPIRED_EXPIRY = _REGISTRY_NOW - dt.timedelta(seconds=1)
+
+
+def _execution_ready_entry():  # noqa: ANN202 - test fixture value
+    entry = resolve_kiwoom_lane_entry()
+    return replace(
+        entry,
+        lane_status=LaneStatus.AUTO_ENABLED,
+        activation_status=ActivationStatus.ENABLED,
+        activation_reason="bounded-send-test fully bound",
+        policy_binding=PolicyBinding("bounded-send-test.v1", "sha256:test-policy"),
+        execution_mode="test-only-bounded",
+        scheduler_owner=SchedulerOwner.MANUAL,
+        timing_owner="test-only-timing",
+        writer=True,
+        auto_order_enabled=True,
+        max_order_notional=Decimal("10000000"),
+        max_orders_per_session=8,
+        max_open_orders=8,
+        allowed_order_types=("limit",),
+        allowed_time_in_force=("day",),
+        reconcile_required=True,
+        canary_binding="test-only-bounded-canary",
+        missing_bindings=(),
+    )
 
 
 @pytest.fixture
@@ -45,6 +73,12 @@ def isolated_seal_runtime(
         kiwoom_coordination, "_BOUNDED_SEND_CONSTRUCTED_SEAL_DIGESTS", set()
     )
     monkeypatch.setattr(bounded_send, "_wall_clock_now", lambda: _REGISTRY_NOW)
+    ready_entry = _execution_ready_entry()
+    monkeypatch.setattr(
+        kiwoom_coordination,
+        "resolve_kiwoom_lane_entry",
+        lambda _lane_id=kiwoom_coordination.KIWOOM_KR_LANE_ID: ready_entry,
+    )
     return registry_path, marker_root
 
 
@@ -112,11 +146,41 @@ def _factory(seal: dict[str, str]):  # noqa: ANN202 - test helper
 
 
 def _resolve(factory):  # noqa: ANN001, ANN202 - test helper
-    entry = resolve_kiwoom_lane_entry()
+    entry = kiwoom_coordination.resolve_kiwoom_lane_entry()
     return kiwoom_cycle._resolve_coordination_owner(
         coordination_factory=factory,
         expected_entry=entry,
     )
+
+
+def test_execution_unready_lane_does_not_consume_one_shot_seal(
+    isolated_seal_runtime: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_path, marker_root = isolated_seal_runtime
+    unready_entry = resolve_kiwoom_lane_entry()
+    monkeypatch.setattr(
+        kiwoom_coordination,
+        "resolve_kiwoom_lane_entry",
+        lambda _lane_id=kiwoom_coordination.KIWOOM_KR_LANE_ID: unready_entry,
+    )
+    seal = _seal(expires_at=_VALID_EXPIRY)
+    _write_registry(registry_path, [seal])
+
+    owner, record = _resolve(_factory(seal))
+
+    marker_path = bounded_send.bounded_send_consumption_marker_path(seal["seal_digest"])
+    assert not marker_path.exists(), (
+        "execution-unready lane consumed its one-shot seal before readiness rejection"
+    )
+    assert list(marker_root.glob("*")) == []
+    assert owner is None
+    assert record["identity_guard"] == {
+        "status": "rejected",
+        "code": "lane_activation_not_enabled",
+        "owner_type": None,
+    }
+    assert record["factory_error_type"] == "KiwoomCoordinationOwnerRejected"
 
 
 def test_consumption_root_is_xdg_state_outside_b0x_observation_tree() -> None:

@@ -22,6 +22,7 @@ from app.services.mock_integration.lineage import MockLineageFactory
 from app.services.mock_lane_registry import (
     LaneGuardError,
     LaneRegistryEntry,
+    assert_entry_execution_ready,
     get_lane_registry_entry,
 )
 from scripts.b0x.kr.kiwoom_bounded_send import (
@@ -411,8 +412,9 @@ def build_bounded_send_kiwoom_coordination_factory(
     """Build the sole registered-seal path to a non-grant KR owner.
 
     The caller's mutable dict is copied and frozen here. Registration, account
-    identity, and the real-time expiry are checked again on factory invocation;
-    the durable marker is committed before ``grant_only=False`` construction.
+    identity, real-time expiry, durable ports, and full signed execution
+    readiness are checked again on factory invocation; only then is the
+    durable marker committed before ``grant_only=False`` construction.
     """
 
     sealed = snapshot_bounded_send_seal(seal)
@@ -459,6 +461,15 @@ def build_bounded_send_kiwoom_coordination_factory(
                 KIWOOM_COORDINATION_OWNER_CONTRACT_MISMATCH,
                 lane_id=entry.lane_id,
             )
+        try:
+            # The coordinator applies this exact guard again before mutation.
+            # Run it before the one-shot marker commit so a lane that cannot
+            # reach that boundary does not spend its seal merely to fail later.
+            assert_entry_execution_ready(entry)
+        except LaneGuardError as exc:
+            raise KiwoomCoordinationOwnerRejected(
+                exc.code, lane_id=entry.lane_id
+            ) from exc
         try:
             consume_registered_bounded_send_seal(sealed)
         except KiwoomBoundedSendSealRejected as exc:
