@@ -106,6 +106,7 @@ async def test_parking_proposal_preview_allows_only_exact_scoped_marketable_buy(
     exact parking tuple to be marketable, while the generic preview rejected
     the same limit before eligibility ran.  Every direct path and every
     out-of-scope tuple must retain the generic price-above-quote rejection.
+    #2019 also authorizes the exact ``toss_live``/``SGOV``/``equity_us`` tuple.
     """
 
     captured: list[bool] = []
@@ -159,21 +160,27 @@ async def test_parking_proposal_preview_allows_only_exact_scoped_marketable_buy(
     wrong_account = await order_execution._place_order_impl(
         **base,
         proposal_flow=True,
-        proposal_account_mode="toss_live",
+        proposal_account_mode="kiwoom_mock_us",
     )
     wrong_symbol = await order_execution._place_order_impl(
         **{**base, "symbol": "AAPL"},
         proposal_flow=True,
         proposal_account_mode="kis_live",
     )
+    toss_us = await order_execution._place_order_impl(
+        **base,
+        proposal_flow=True,
+        proposal_account_mode="toss_live",
+    )
 
     assert allowed["preview_allow_marketable_parking_buy"] is True
     assert direct["preview_allow_marketable_parking_buy"] is False
     assert wrong_account["preview_allow_marketable_parking_buy"] is False
     assert wrong_symbol["preview_allow_marketable_parking_buy"] is False
+    assert toss_us["preview_allow_marketable_parking_buy"] is True
     # This exact sequence is the mutation anchor: weakening any tuple, account,
     # or proposal-flow predicate turns this assertion red.
-    assert captured == [True, False, False, False], "PARKING_PREVIEW_SCOPE_MUTANT"
+    assert captured == [True, False, False, False, True], "PARKING_PREVIEW_SCOPE_MUTANT"
 
 
 @pytest.mark.asyncio
