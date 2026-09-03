@@ -30,6 +30,21 @@ host/canary binding 전체가 준비되지 않은 lane은 해당 `LaneGuardError
 coordination identity guard에 남기고 정지하며 소비 마커를 만들지 않는다. 이는 새 조건을
 추가하는 게 아니라 downstream의 동일 가드를 marker commit 앞으로 옮긴 순서 수리다.
 
+### Registry 라벨은 통제가 아니다
+
+`policy_binding` 대조(`app/services/mock_lane_registry.py:1244`,
+`assert_lineage_registry_binding`)는 registry 값을 복사해 만든 lineage intent를 다시 같은
+registry 값과 비교하는 자기참조다. 따라서 일치하는 아무 두 비공백 문자열도 이 대조를
+통과하며, policy 내용 자체를 검증하거나 주문을 통제하지 않는다.
+
+`MissingBinding.CAP`·`OWNER`·`CANARY`는 각각을 읽는 소비 코드가 0건인 선언 라벨이다.
+특히 registry의 `max_order_notional`은 실제 주문 금액과 대조되지 않으며 주문 금액을 전혀
+막지 않는다. 이 값들이 채워졌다는 사실을 실통제가 설치됐다는 뜻으로 읽으면 안 된다.
+
+실제 집행 통제는 등록·만료·내구 소비를 확인하는 bounded-send one-shot 봉인과
+`scripts/b0x/kr/kiwoom_cycle.py`가 그대로 재사용하는 계약 §4 KR envelope 코드 캡에서
+온다. registry 라벨은 그 통제를 대신하지 않는다.
+
 ### 캘린더 가용성 위험 (NICE-4)
 
 **캘린더 실패는 봉인 불성립(거부)이다.** fail-closed이므로 안전 방향은 맞지만,
