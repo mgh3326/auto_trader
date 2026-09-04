@@ -329,6 +329,12 @@ class LossCutApprovalService:
             confirmation_nonce=confirmation_nonce,
             actor_channel="web",
             actor_subject=actor_subject,
+            # The legacy B1 web ceremony already returns this opaque,
+            # server-verified capability to the authenticated browser.  Bind
+            # it into the common web confirmation-token gate too, so direct
+            # callers cannot turn token validation off through an envelope
+            # that predates the dedicated /approvals route.
+            web_confirmation_token=ceremony_id,
             now=now,
             ttl_seconds=_CONFIRMATION_TTL_SECONDS,
         )
@@ -475,6 +481,7 @@ class LossCutApprovalService:
             now=now,
             actor_channel="web",
             actor_subject=actor_subject,
+            web_confirmation_token=ceremony_id,
         )
         try:
             fresh = await self._build_proposal_bundle(proposal_id, now=now)
