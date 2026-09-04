@@ -12,6 +12,12 @@ def test_order_proposals_disabled_by_default():
 
 
 @pytest.mark.unit
+def test_invest_approval_execution_is_default_disabled() -> None:
+    s = Settings(_env_file=None)
+    assert s.INVEST_APPROVALS_ENABLED is False
+
+
+@pytest.mark.unit
 def test_telegram_flags_default_off_and_allowlist_parses():
     s = Settings(_env_file=None)
     assert s.ORDER_PROPOSALS_TELEGRAM_ENABLED is False
@@ -22,6 +28,13 @@ def test_telegram_flags_default_off_and_allowlist_parses():
         _env_file=None, ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR="111, 222"
     )
     assert s2.order_proposals_telegram_chat_allowlist == ["111", "222"]
+
+
+@pytest.mark.unit
+def test_invest_approval_link_and_inline_callback_defaults():
+    settings = Settings(_env_file=None)
+    assert settings.INVEST_PUBLIC_BASE_URL == ""
+    assert settings.TELEGRAM_INLINE_APPROVAL_ENABLED is True
 
 
 @pytest.mark.unit

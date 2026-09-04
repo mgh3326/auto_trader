@@ -20,6 +20,20 @@ from urllib.parse import quote
 from app.core.config import settings
 
 
+def build_order_proposal_approval_url(*, proposal_id: object) -> str | None:
+    """Build the optional authenticated /invest approval deep link.
+
+    The configuration is intentionally opt-in.  A Telegram card remains fully
+    usable through its existing callback controls when a public phone-safe host
+    has not been configured.
+    """
+    base = settings.INVEST_PUBLIC_BASE_URL.strip().rstrip("/")
+    proposal = quote(str(proposal_id).strip(), safe="")
+    if not base or not proposal:
+        return None
+    return f"{base}/invest/approvals/{proposal}"
+
+
 def build_loss_cut_approval_url(*, proposal_id: object) -> str:
     """URL to the authenticated evidence and two-step loss-cut page."""
     proposal = quote(str(proposal_id).strip(), safe="")

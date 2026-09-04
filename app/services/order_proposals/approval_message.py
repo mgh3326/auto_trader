@@ -11,7 +11,11 @@ from datetime import datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
-from app.core.invest_deep_links import build_loss_cut_approval_url
+from app.core.config import settings
+from app.core.invest_deep_links import (
+    build_loss_cut_approval_url,
+    build_order_proposal_approval_url,
+)
 from app.core.portfolio_links import build_position_detail_url
 from app.core.timezone import KST
 from app.services.order_proposals.dispatch_contract import (
@@ -529,15 +533,18 @@ def build_approval_message(
             text = text.replace(_escape_markdown(secret), "[비공개]")
             text = text.replace(str(secret), "[비공개]")
 
-    inline_keyboard = {
-        "inline_keyboard": [
+    inline_keyboard: dict[str, list[list[dict[str, str]]]] = {"inline_keyboard": []}
+    if settings.TELEGRAM_INLINE_APPROVAL_ENABLED:
+        inline_keyboard["inline_keyboard"].append(
             [
                 {"text": "✅ 승인", "callback_data": approve_data},
                 {"text": "❌ 거부", "callback_data": deny_data},
             ]
-        ]
-    }
-    if getattr(group, "exit_intent", None) == "loss_cut":
+        )
+    if (
+        getattr(group, "exit_intent", None) == "loss_cut"
+        and settings.TELEGRAM_INLINE_APPROVAL_ENABLED
+    ):
         inline_keyboard["inline_keyboard"].append(
             [
                 {
@@ -548,9 +555,14 @@ def build_approval_message(
                 }
             ]
         )
-    if detail_url is not None:
+    if detail_url is not None and settings.TELEGRAM_INLINE_APPROVAL_ENABLED:
         inline_keyboard["inline_keyboard"].append(
             [{"text": "🔎 /invest 상세", "url": detail_url}]
+        )
+    approval_url = build_order_proposal_approval_url(proposal_id=proposal_id)
+    if approval_url is not None:
+        inline_keyboard["inline_keyboard"].append(
+            [{"text": "🔗 /invest에서 승인", "url": approval_url}]
         )
     return text, inline_keyboard
 

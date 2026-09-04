@@ -37,6 +37,7 @@ from app.services.order_proposals.telegram_callback import (
     _build_result_summary,
     _resolve_proposal_id,
     handle_callback_update,
+    handle_web_approval,
 )
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
 from tests.services.order_proposals.window_fakes import allow_known_session
@@ -120,7 +121,15 @@ class _FailedSendNotifier(_FakeNotifier):
 def _session_factory(db_session):
     @contextlib.asynccontextmanager
     async def _factory():
-        yield db_session
+        try:
+            yield db_session
+        except BaseException:
+            # Match AsyncSessionLocal's rollback-on-exit contract.  Web
+            # execution-marker tests intentionally inject exceptions after
+            # nonce consumption and must not accidentally commit that work
+            # through the marker's later transaction.
+            await db_session.rollback()
+            raise
 
     return _factory
 
@@ -1830,6 +1839,311 @@ async def test_loss_cut_requires_second_click_before_submit(monkeypatch, db_sess
     audit = refreshed.source_asof["loss_cut_confirmation"]
     assert audit["second_click"]["telegram_user_id"] == str(USER_ID)
     assert audit["second_click"]["nonce"] == second_nonce
+
+
+@pytest.mark.asyncio
+async def test_web_loss_cut_uses_session_token_then_submits_once(
+    monkeypatch, db_session
+):
+    """The web ceremony never tries to edit a Telegram message."""
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    submits: list[object] = []
+
+    async def fake_revalidate(**kwargs):
+        submits.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    first = await handle_web_approval(
+        group.proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert first["reason"] == "loss_cut_confirmation_required"
+    token = first["confirmation_token"]
+    assert isinstance(token, str)
+    assert submits == []
+
+    second = await handle_web_approval(
+        group.proposal_id,
+        action="loss-cut-confirm",
+        actor_subject="user:9",
+        confirmation_token=token,
+        now=datetime(2026, 7, 13, 10, 0, 30, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert second["reason"] == "approved"
+    assert len(submits) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_digest", [None, "not-a-sha256-digest"])
+async def test_web_loss_cut_rejects_missing_or_malformed_confirmation_digest(
+    monkeypatch, db_session, invalid_digest
+):
+    """A partial web ceremony can never turn its token verification off."""
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    submits: list[object] = []
+
+    async def fake_revalidate(**kwargs):
+        submits.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    first = await handle_web_approval(
+        group.proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert first["reason"] == "loss_cut_confirmation_required"
+
+    service = OrderProposalsService(db_session)
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    source_asof = dict(refreshed.source_asof or {})
+    confirmation = dict(source_asof["loss_cut_confirmation"])
+    if invalid_digest is None:
+        confirmation.pop("web_confirmation_token_digest", None)
+    else:
+        confirmation["web_confirmation_token_digest"] = invalid_digest
+    source_asof["loss_cut_confirmation"] = confirmation
+    await service._repo.update_group(refreshed, source_asof=source_asof)
+    await db_session.commit()
+
+    second = await handle_web_approval(
+        group.proposal_id,
+        action="loss-cut-confirm",
+        actor_subject="user:9",
+        confirmation_token="wrong-web-confirmation-token",
+        now=datetime(2026, 7, 13, 10, 0, 30, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert second["reason"] == "loss_cut_confirmation_token_invalid"
+    assert submits == []
+
+
+@pytest.mark.asyncio
+async def test_web_loss_cut_first_step_failure_preserves_telegram_card(
+    monkeypatch, db_session
+):
+    """A failed web preview rolls back before consuming the shared nonce."""
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    proposal_id = group.proposal_id
+
+    async def failed_preview(**kwargs):
+        raise RuntimeError("preview unavailable")
+
+    failed = await handle_web_approval(
+        proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        loss_cut_preview_fn=failed_preview,
+    )
+    assert failed["reason"] == "internal_error"
+    fresh_group, _ = await OrderProposalsService(db_session).get_proposal(proposal_id)
+
+    telegram = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(
+                fresh_group, action="op", nonce="loss-cut-first"
+            )
+        ),
+        now=datetime(2026, 7, 13, 10, 0, 1, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=_FakeNotifier(),
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert telegram["reason"] == "loss_cut_confirmation_required"
+
+
+@pytest.mark.asyncio
+async def test_web_loss_cut_dispatch_failure_rolls_back_nonce_for_telegram(
+    monkeypatch, db_session
+):
+    """The post-consumption web dispatch failure is still one transaction."""
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    proposal_id = group.proposal_id
+    original_finish = OrderProposalsService.finish_web_approval_dispatch
+
+    async def failed_web_dispatch(self, *args, **kwargs):
+        raise RuntimeError("web confirmation dispatch unavailable")
+
+    monkeypatch.setattr(
+        OrderProposalsService, "finish_web_approval_dispatch", failed_web_dispatch
+    )
+    failed = await handle_web_approval(
+        proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert failed["reason"] == "internal_error"
+    # The second call must exercise Telegram's normal dispatch, not the fault
+    # injector used only to prove the web transaction rolled back.
+    monkeypatch.setattr(
+        OrderProposalsService, "finish_web_approval_dispatch", original_finish
+    )
+    fresh_group, _ = await OrderProposalsService(db_session).get_proposal(proposal_id)
+
+    telegram = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(
+                fresh_group, action="op", nonce="loss-cut-first"
+            )
+        ),
+        now=datetime(2026, 7, 13, 10, 0, 1, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=_FakeNotifier(),
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert telegram["reason"] == "loss_cut_confirmation_required"
+
+
+@pytest.mark.asyncio
+async def test_web_core_exception_dead_letters_before_retry(monkeypatch, db_session):
+    """A rollback after entry cannot make the browser submit a second time."""
+    group = await _seed_proposal(db_session, nonce="web-marker")
+    proposal_id = group.proposal_id
+    calls = 0
+
+    async def post_submit_exception(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("post-submit transport uncertainty")
+
+    first = await handle_web_approval(
+        proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=post_submit_exception,
+    )
+    second = await handle_web_approval(
+        proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, 1, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=post_submit_exception,
+    )
+
+    assert first["reason"] == "web_approval_dead_letter"
+    assert second["reason"] == "web_approval_dead_letter"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_web_deny_records_web_channel(monkeypatch, db_session):
+    group = await _seed_proposal(db_session, nonce="web-deny")
+    proposal_id = group.proposal_id
+
+    result = await handle_web_approval(
+        proposal_id,
+        action="deny",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+    )
+
+    refreshed, _ = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    assert result["reason"] == "denied"
+    assert refreshed.approved_by_channel == "web"
+    assert refreshed.approved_by_subject == "user:9"
+
+
+@pytest.mark.asyncio
+async def test_web_core_nonce_gate_is_single_use(monkeypatch, db_session):
+    """Mutation guard: bypassing nonce consumption must make this RED."""
+    group = await _seed_proposal(db_session, nonce="web-core-nonce")
+    proposal_id = group.proposal_id
+    service = OrderProposalsService(db_session)
+    callback = await service.current_callback_envelope(proposal_id, action="op")
+    calls: list[object] = []
+
+    async def revalidate(**kwargs):
+        calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    kwargs = {
+        "session": db_session,
+        "service": service,
+        "proposal_id": proposal_id,
+        "callback": callback,
+        "now": datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        "notifier": None,
+        "chat_id": None,
+        "message_id": None,
+        "callback_query_id": None,
+        "telegram_user_id": "user:9",
+        "actor_channel": "web",
+        "actor_subject": "user:9",
+        "revalidate_fn": revalidate,
+        "window_evaluator": allow_known_session,
+        "now_fn": lambda: datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+    }
+    first = await callback_module._handle_approve(**kwargs)
+    second = await callback_module._handle_approve(**kwargs)
+
+    assert first["reason"] == "approved"
+    assert second["reason"] == "nonce_replay"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_web_core_respects_commit_lease(monkeypatch, db_session):
+    """Mutation guard: bypassing the lease must make this RED."""
+    group = await _seed_proposal(db_session, nonce="web-core-lease")
+    proposal_id = group.proposal_id
+    service = OrderProposalsService(db_session)
+    callback = await service.current_callback_envelope(proposal_id, action="op")
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    assert await service.acquire_commit_lease(proposal_id, now=now) is True
+    await db_session.commit()
+    calls: list[object] = []
+
+    async def revalidate(**kwargs):
+        calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    result = await callback_module._handle_approve(
+        session=db_session,
+        service=service,
+        proposal_id=proposal_id,
+        callback=callback,
+        now=now,
+        notifier=None,
+        chat_id=None,
+        message_id=None,
+        callback_query_id=None,
+        telegram_user_id="user:9",
+        actor_channel="web",
+        actor_subject="user:9",
+        revalidate_fn=revalidate,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: now,
+    )
+
+    assert result["reason"] == "lease_held"
+    assert calls == []
 
 
 @pytest.mark.asyncio

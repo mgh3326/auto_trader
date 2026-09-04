@@ -5,12 +5,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.role_hierarchy import has_min_role
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.timezone import now_kst
 from app.models.trading import User, UserRole
 from app.routers.dependencies import get_authenticated_user
 from app.routers.invest_api import get_invest_home_service
@@ -30,6 +32,9 @@ from app.services.order_proposals.loss_cut_approval import (
     LossCutApprovalRejected,
     LossCutApprovalService,
 )
+from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.telegram_callback import handle_web_approval
+from app.services.order_proposals.web_approvals import WebApprovalService
 
 router = APIRouter(prefix="/invest/api", tags=["invest-loss-cut-approvals"])
 
@@ -63,9 +68,181 @@ def _require_approval_enabled() -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
+def _require_invest_approvals_enabled() -> None:
+    """Keep the new live-account web execution surface default-disabled."""
+    if not settings.INVEST_APPROVALS_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+
+def _require_web_loss_cut_confirmation_enabled() -> None:
+    """The generic web gate must not bypass the legacy loss-cut kill switch."""
+    _require_invest_approvals_enabled()
+    _require_approval_enabled()
+
+
+class WebLossCutConfirmationRequest(BaseModel):
+    """Opaque, session-bound token returned by the first web loss-cut click."""
+
+    confirmation_token: str = Field(min_length=16, max_length=256)
+
+
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
+
+
+def _require_idempotency_key(value: str | None) -> str:
+    """Require a bounded request key without exposing the server nonce.
+
+    The request key gives clients a stable per-click identity.  The actual
+    single-use approval nonce stays server-side and is checked by the shared
+    execution core, never taken from a browser header or body.
+    """
+    normalized = (value or "").strip()
+    if not normalized or len(normalized) > 128:
+        raise HTTPException(status_code=400, detail="idempotency_key_required")
+    return normalized
+
+
+def _web_processing_response(result: dict) -> HTTPException | None:
+    """Turn an in-flight/replayed core result into the polling contract."""
+    reason = str(result.get("reason") or "")
+    # These are the concrete contention reasons emitted by the shared core:
+    # ``nonce_replay`` from ``_proposal_callback_block_reason`` in service.py
+    # and ``lease_held`` from ``_handle_approve``.  Do not invent aliases here:
+    # this is the browser's 409 polling contract.
+    if reason in {"nonce_replay", "lease_held", "web_approval_in_progress"}:
+        return HTTPException(status_code=409, detail={"error": "processing"})
+    if reason == "web_approval_dead_letter":
+        return HTTPException(
+            status_code=409,
+            detail={
+                "error": "terminal",
+                "reason": "web_approval_dead_letter",
+                "operator_message": "승인 실행 상태를 확인할 수 없습니다. 운영자에게 문의하세요.",
+            },
+        )
+    return None
+
+
+async def _execute_web_approval(
+    *,
+    proposal_id: uuid.UUID,
+    action: str,
+    user: User,
+    idempotency_key: str,
+    confirmation_token: str | None = None,
+) -> dict:
+    """Invoke the shared execution core as a web principal.
+
+    ``idempotency_key`` is deliberately admitted here but not forwarded as an
+    approval nonce; substituting browser input for the server nonce would
+    weaken the published-binding gate.
+    """
+    del idempotency_key
+    result = await handle_web_approval(
+        proposal_id,
+        action=action,
+        actor_subject=f"user:{user.id}",
+        now=now_kst(),
+        confirmation_token=confirmation_token,
+    )
+    processing = _web_processing_response(result)
+    if processing is not None:
+        raise processing
+    return result
+
+
+@router.get("/approvals", dependencies=[Depends(_require_invest_approvals_enabled)])
+async def list_web_approvals(
+    response: Response,
+    _user: Annotated[User, Depends(require_loss_cut_operator)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Return card previews with one joined DB query and no broker reads."""
+    _no_store(response)
+    cards = await WebApprovalService(
+        OrderProposalsService(db), now=now_kst()
+    ).list_cards()
+    return {"items": cards}
+
+
+@router.get(
+    "/approvals/{proposal_id}",
+    dependencies=[Depends(_require_invest_approvals_enabled)],
+)
+async def get_web_approval(
+    proposal_id: uuid.UUID,
+    response: Response,
+    _user: Annotated[User, Depends(require_loss_cut_operator)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    _no_store(response)
+    try:
+        return await WebApprovalService(
+            OrderProposalsService(db), now=now_kst()
+        ).get_card(proposal_id)
+    except OrderProposalNotFound as exc:
+        raise HTTPException(status_code=404, detail="proposal_not_found") from exc
+
+
+@router.post(
+    "/approvals/{proposal_id}/approve",
+    dependencies=[Depends(_require_invest_approvals_enabled)],
+)
+async def approve_web_approval(
+    proposal_id: uuid.UUID,
+    response: Response,
+    user: Annotated[User, Depends(require_loss_cut_operator)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict:
+    _no_store(response)
+    return await _execute_web_approval(
+        proposal_id=proposal_id,
+        action="approve",
+        user=user,
+        idempotency_key=_require_idempotency_key(idempotency_key),
+    )
+
+
+@router.post(
+    "/approvals/{proposal_id}/deny",
+    dependencies=[Depends(_require_invest_approvals_enabled)],
+)
+async def deny_web_approval(
+    proposal_id: uuid.UUID,
+    response: Response,
+    user: Annotated[User, Depends(require_loss_cut_operator)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict:
+    _no_store(response)
+    return await _execute_web_approval(
+        proposal_id=proposal_id,
+        action="deny",
+        user=user,
+        idempotency_key=_require_idempotency_key(idempotency_key),
+    )
+
+
+@router.post(
+    "/approvals/{proposal_id}/loss-cut-confirm",
+    dependencies=[Depends(_require_web_loss_cut_confirmation_enabled)],
+)
+async def confirm_web_loss_cut(
+    proposal_id: uuid.UUID,
+    body: WebLossCutConfirmationRequest,
+    response: Response,
+    user: Annotated[User, Depends(require_loss_cut_operator)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict:
+    _no_store(response)
+    return await _execute_web_approval(
+        proposal_id=proposal_id,
+        action="loss-cut-confirm",
+        user=user,
+        idempotency_key=_require_idempotency_key(idempotency_key),
+        confirmation_token=body.confirmation_token,
+    )
 
 
 @router.get(
