@@ -36,7 +36,7 @@ class _TransactionTransport(Transport):
                 self.transactions.append(item.payload.json)
 
 
-def test_real_app_invest_transactions_name_authenticated_and_pre_auth_requests(
+def test_real_app_invest_transactions_name_authenticated_and_pre_route_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The complete middleware stack must never emit an auth-class transaction."""
@@ -107,15 +107,56 @@ def test_real_app_invest_transactions_name_authenticated_and_pre_auth_requests(
     }
 
     transport.transactions.clear()
+    csrf_denied = client.post(
+        "/invest/api/rum",
+        json={
+            "route": "/invest",
+            "n_requests": 1,
+            "wall_ms": 10,
+            "slowest": "/invest/api/home",
+        },
+    )
+    sentry_sdk.flush()
+
+    assert csrf_denied.status_code == 403
+    pre_route = next(item for item in transport.transactions if item["transaction"])
+    assert pre_route["transaction"] == "POST /invest/api/* (pre-auth)"
+    assert pre_route["transaction_info"]["source"] == "custom"
+
+    # pagehide beacons have no custom header, so this endpoint alone accepts
+    # the signed CSRF token from its bounded JSON body.
+    beacon = client.post(
+        "/invest/api/rum",
+        json={
+            "route": "/invest",
+            "n_requests": 1,
+            "wall_ms": 10,
+            "slowest": "/invest/api/home",
+            "truncated": True,
+            "csrf_token": client.cookies["csrftoken"],
+        },
+    )
+    assert beacon.status_code == 204
+
+    transport.transactions.clear()
     monkeypatch.setattr(
         AuthMiddleware, "_load_user", staticmethod(unauthenticated_user)
     )
-    unauthorized = client.get("/invest/api/home")
+    anonymous_client = TestClient(app)
+    unauthorized = anonymous_client.post(
+        "/invest/api/rum",
+        json={
+            "route": "/invest",
+            "n_requests": 1,
+            "wall_ms": 10,
+            "slowest": "/invest/api/home",
+        },
+    )
     sentry_sdk.flush()
 
     assert unauthorized.status_code == 401
     pre_auth = next(item for item in transport.transactions if item["transaction"])
-    assert pre_auth["transaction"] == "GET /invest/api/* (pre-auth)"
+    assert pre_auth["transaction"] == "POST /invest/api/* (pre-auth)"
     assert pre_auth["transaction_info"]["source"] == "custom"
 
 

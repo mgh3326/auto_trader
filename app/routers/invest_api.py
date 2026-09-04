@@ -213,6 +213,11 @@ class InvestRumPayload(BaseModel):
     n_requests: int = Field(ge=0, le=200)
     wall_ms: float = Field(ge=0, le=300_000)
     slowest: str
+    pending_requests: int = Field(default=0, ge=0, le=200)
+    truncated: bool = False
+    # Only pagehide beacon and keepalive fallback submissions include this.
+    # It is accepted solely for CSRF validation and is never tagged or logged.
+    csrf_token: str | None = Field(default=None, min_length=1, max_length=512)
 
     @field_validator("route", "slowest")
     @classmethod
@@ -375,6 +380,9 @@ async def record_invest_rum(
         scope.set_tag("n_requests", str(payload.n_requests))
         scope.set_tag("wall_ms", f"{payload.wall_ms:.1f}")
         scope.set_tag("slowest", payload.slowest)
+        if payload.truncated:
+            scope.set_tag("truncated", "true")
+            scope.set_tag("pending_requests", str(payload.pending_requests))
         sentry_sdk.capture_message("invest.rum", level="info")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

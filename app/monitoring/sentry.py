@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 _BUILD_VCS_REF_PATH = Path("/app/.build-vcs-ref")
 _INVEST_API_PREFIX = "/invest/api/"
-_AUTH_MIDDLEWARE_TRANSACTION = "app.middleware.auth.AuthMiddleware"
 
 _initialized = False
 _enabled_integration_flags: dict[str, bool] = {
@@ -408,16 +407,19 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     # just mcp.server) are covered by the same pass.
     event = _sanitize_in_place(event)
 
-    # AuthMiddleware may return a 401 before FastAPI resolves a route. Sentry
-    # consequently names the transaction after middleware rather than the
-    # endpoint. Preserve the API family without copying the raw URL (which can
-    # contain report IDs, ledger IDs, or symbols) into a transaction tag.
+    # A middleware may return before FastAPI resolves a route (for example,
+    # auth returns 401 and CSRF returns 403). Sentry consequently names the
+    # transaction after that middleware rather than the endpoint. Preserve the
+    # API family without copying the raw URL (which can contain report IDs,
+    # ledger IDs, or symbols) into a transaction tag.  Deliberately recognize
+    # the middleware naming shape rather than enumerating middleware classes:
+    # adding another early-rejecting middleware must not leak its class name.
     request = event.get("request")
     request_url = request.get("url") if isinstance(request, dict) else None
     request_method = request.get("method") if isinstance(request, dict) else None
     request_path = urlsplit(request_url).path if isinstance(request_url, str) else ""
     if (
-        transaction_name == _AUTH_MIDDLEWARE_TRANSACTION
+        transaction_name.rsplit(".", maxsplit=1)[-1].endswith("Middleware")
         and request_path.startswith(_INVEST_API_PREFIX)
         and isinstance(request_method, str)
     ):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.cookies
+import json
 import secrets
 from typing import cast
 
@@ -9,6 +10,8 @@ from starlette.formparsers import MultiPartParser
 from starlette.requests import Request
 from starlette.types import Message, Receive, Scope, Send
 from starlette_csrf import CSRFMiddleware
+
+_RUM_BEACON_PATH = "/invest/api/rum"
 
 
 class TemplateFormCSRFMiddleware(CSRFMiddleware):
@@ -22,6 +25,20 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
         # 1. Setup CSRF token in state for templates
         state = scope.setdefault("state", {})
         request = Request(scope)
+        # A pagehide beacon cannot attach the normal CSRF header.  Keep this
+        # narrow exception at the CSRF boundary: only the RUM endpoint may
+        # provide its signed token in a JSON body, and a request without either
+        # session or CSRF cookie proceeds only far enough for AuthMiddleware to
+        # return its normal 401 response.
+        if self._is_rum_beacon_request(request) and not request.cookies.get(
+            self.cookie_name
+        ):
+            if request.cookies.get("session"):
+                response = self._get_error_response(request)
+                await response(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
         # We get the token from cookie or generate a new one
         csrf_cookie = request.cookies.get(self.cookie_name)
         if csrf_cookie:
@@ -92,6 +109,17 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
         if header_token:
             return header_token
 
+        if self._is_rum_beacon_request(request):
+            body = request.scope.get("_csrf_body", b"")
+            if not isinstance(body, bytes):
+                return None
+            try:
+                payload = json.loads(body)
+            except (TypeError, ValueError, UnicodeDecodeError):
+                return None
+            token = payload.get("csrf_token") if isinstance(payload, dict) else None
+            return token if isinstance(token, str) else None
+
         content_type = request.headers.get("content-type", "")
         if (
             "application/x-www-form-urlencoded" in content_type
@@ -117,3 +145,12 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
             return token if isinstance(token, str) else None
 
         return None
+
+    @staticmethod
+    def _is_rum_beacon_request(request: Request) -> bool:
+        content_type = request.headers.get("content-type", "")
+        return (
+            request.method == "POST"
+            and request.url.path == _RUM_BEACON_PATH
+            and "application/json" in content_type
+        )
