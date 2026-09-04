@@ -1,0 +1,13 @@
+[Unit]
+Description=Run auto_trader US invest screener snapshots at the Prefect schedule
+
+[Timer]
+# PrefectCron: 10 6 * * 2-6
+# PrefectTimezone: Asia/Seoul
+OnCalendar=Tue..Sat *-*-* 06:10:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-us-invest-screener-snapshots.service
+
+[Install]
+WantedBy=timers.target
