@@ -12,6 +12,12 @@ def test_order_proposals_disabled_by_default():
 
 
 @pytest.mark.unit
+def test_invest_approval_execution_is_default_disabled() -> None:
+    s = Settings(_env_file=None)
+    assert s.INVEST_APPROVALS_ENABLED is False
+
+
+@pytest.mark.unit
 def test_telegram_flags_default_off_and_allowlist_parses():
     s = Settings(_env_file=None)
     assert s.ORDER_PROPOSALS_TELEGRAM_ENABLED is False

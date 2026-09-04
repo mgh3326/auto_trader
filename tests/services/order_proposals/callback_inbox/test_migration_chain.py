@@ -66,7 +66,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260903_fill_event_handoff"
+HEAD_REVISION = "20260904_web_approval_marker"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
