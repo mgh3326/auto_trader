@@ -47,6 +47,37 @@ class SessionContextService:
             await self._session.refresh(row)
         return rows
 
+    async def has_open_question_for_event_key(self, event_key: str) -> bool:
+        """Return whether the durable fill-handoff question already exists."""
+        return await self.get_open_question_for_event_key(event_key) is not None
+
+    async def get_open_question_for_event_key(
+        self, event_key: str
+    ) -> OperatorSessionContext | None:
+        """Load the canonical handoff row for narrowly scoped receipt enrichment."""
+        stmt = sa.select(OperatorSessionContext).where(
+            OperatorSessionContext.entry_type == "open_question",
+            OperatorSessionContext.refs.contains({"event_key": event_key}),
+        )
+        return await self._session.scalar(stmt.limit(1))
+
+    async def append_fill_handoff_kick_result(
+        self, *, entry_id: int, flow_run_id: str
+    ) -> None:
+        """Attach a bounded kickoff receipt to its just-created handoff row.
+
+        This is deliberately not a general edit API: the handoff is durable
+        before the best-effort kickoff and the receipt belongs in that same
+        operator-visible question.
+        """
+        row = await self._session.get(OperatorSessionContext, entry_id)
+        if row is None or row.created_by != "fill-event-handoff":
+            raise ValueError("fill handoff context row unavailable")
+        suffix = f"\nPrefect kickoff flow_run_id: {flow_run_id}"
+        if suffix not in row.body:
+            row.body += suffix
+            await self._session.flush()
+
     async def get_recent(
         self,
         *,

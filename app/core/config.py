@@ -917,6 +917,10 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_TOKEN: str = ""
     ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
+    # Keep the current callback buttons by default.  Operators may retire
+    # Telegram mutation buttons only after the authenticated /invest route has
+    # been deployed and verified; the URL entrypoint remains separate.
+    TELEGRAM_INLINE_APPROVAL_ENABLED: bool = True
     ORDER_PROPOSALS_SUBMIT_AGENT_ID: str = ""
     # W5 — durable Telegram callback inbox. Three INDEPENDENT default-off
     # gates, armed in a fixed order (worker -> recovery schedule + process
@@ -945,8 +949,9 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_CALLBACK_ENQUEUE_TIMEOUT_SECONDS: Annotated[
         float, Field(gt=0.0, le=10.0, allow_inf_nan=False)
     ] = 2.0
-    # B0/B1 loss-cut web surfaces. Both are physically absent from the app
-    # unless an operator enables at least one flag after schema rollout.
+    # Web approval surfaces are default-disabled until a post-deploy operator
+    # explicitly enables them. Loss-cut confirmation retains its own gate.
+    INVEST_APPROVALS_ENABLED: bool = False
     INVEST_LOSS_CUT_EVIDENCE_ENABLED: bool = False
     INVEST_LOSS_CUT_APPROVAL_ENABLED: bool = False
 
@@ -972,6 +977,10 @@ class Settings(BaseSettings):
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
     public_base_url: str = "https://mgh3326.duckdns.org"
+    # Explicit public host for approval deep links.  Unlike the historic
+    # public_base_url, this has no default: an absent value omits the button
+    # rather than sending an operator to an assumed deployment host.
+    INVEST_PUBLIC_BASE_URL: str = ""
 
     # Alpaca paper-trading broker adapter (ROB-57)
     # Only paper credentials/endpoint — no live trading support.

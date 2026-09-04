@@ -1,0 +1,13 @@
+[Unit]
+Description=Run auto_trader KR investor-flow snapshots at the Prefect schedule
+
+[Timer]
+# PrefectCron: 10 18 * * 1-5
+# PrefectTimezone: Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 18:10:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kr-investor-flow-snapshots.service
+
+[Install]
+WantedBy=timers.target

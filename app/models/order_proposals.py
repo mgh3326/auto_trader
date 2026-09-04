@@ -379,11 +379,13 @@ class OrderProposalApprovalEvent(Base):
             name="order_proposal_approval_events_channel",
         ),
         CheckConstraint(
-            "step IN ('begin','confirm')",
+            "step IN ('begin','confirm','handler_entered','terminal')",
             name="order_proposal_approval_events_step",
         ),
         CheckConstraint(
-            "outcome IN ('accepted','rejected','needs_reconfirm','expired')",
+            "outcome IN "
+            "('accepted','rejected','needs_reconfirm','expired','entered',"
+            "'completed','dead_letter')",
             name="order_proposal_approval_events_outcome",
         ),
         CheckConstraint(

@@ -9,6 +9,7 @@ from app.core.invest_deep_links import (
     build_funding_declaration_url,
     build_loss_cut_approval_url,
     build_order_detail_url,
+    build_order_proposal_approval_url,
     build_watches_url,
 )
 
@@ -47,6 +48,20 @@ def test_build_loss_cut_approval_url_contains_only_proposal_id(monkeypatch):
     assert url == f"https://example.test/invest/approvals/loss-cut/{proposal_id}"
     assert "nonce" not in url
     assert "quantity" not in url
+
+
+@pytest.mark.unit
+def test_order_proposal_approval_url_is_opt_in(monkeypatch):
+    from app.core.config import settings
+
+    proposal_id = "11111111-2222-4333-8444-555555555555"
+    monkeypatch.setattr(settings, "INVEST_PUBLIC_BASE_URL", "")
+    assert build_order_proposal_approval_url(proposal_id=proposal_id) is None
+    monkeypatch.setattr(settings, "INVEST_PUBLIC_BASE_URL", "https://invest.example/")
+    assert (
+        build_order_proposal_approval_url(proposal_id=proposal_id)
+        == f"https://invest.example/invest/approvals/{proposal_id}"
+    )
 
 
 @pytest.mark.unit

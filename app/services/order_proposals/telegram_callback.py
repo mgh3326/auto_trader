@@ -43,6 +43,7 @@ an invalid callback causes no external Telegram/provider/broker side effect.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 import uuid
@@ -51,6 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -496,6 +498,8 @@ async def _handle_deny(
     chat_id: Any,
     message_id: int | None,
     callback_query_id: str | None,
+    actor_channel: str = "telegram",
+    actor_subject: str | None = None,
 ) -> dict[str, Any]:
     preflight_failure = await _preflight_proposal_callback(
         session=session,
@@ -526,6 +530,17 @@ async def _handle_deny(
                 proposal_id, rung.rung_index, reason="telegram_deny", now=now
             )
             rejected_rungs.append(rung.rung_index)
+
+    if actor_channel != "telegram":
+        # Keep the cross-channel audit projection explicit even for a deny.
+        # The group-level audit fields are intentionally the shared reviewer
+        # provenance fields used by the existing approval ledger.
+        await service.record_channel_approval(
+            proposal_id,
+            channel=actor_channel,
+            actor_subject=actor_subject or "web:unknown",
+            now=now,
+        )
 
     # Commit the reject transitions before any Telegram call -- a notify
     # failure below must never roll back an already-recorded deny.
@@ -681,6 +696,9 @@ async def _handle_approve(
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
     loss_cut_confirmation: bool = False,
+    actor_channel: str = "telegram",
+    actor_subject: str | None = None,
+    web_confirmation_token: str | None = None,
     service_factory: ServiceFactory = AsyncSessionLocal,
 ) -> dict[str, Any]:
     window_evaluator = window_evaluator or evaluate_approval_window
@@ -744,6 +762,9 @@ async def _handle_approve(
                 proposal_id,
                 callback=callback,
                 telegram_user_id=telegram_user_id,
+                actor_channel=actor_channel,
+                actor_subject=actor_subject,
+                web_confirmation_token=web_confirmation_token,
                 now=approval_now,
             )
         else:
@@ -768,9 +789,17 @@ async def _handle_approve(
             "proposal_id": str(proposal_id),
         }
 
-    await service.record_approval(
-        proposal_id, telegram_user_id=telegram_user_id, now=approval_now
-    )
+    if actor_channel == "telegram":
+        await service.record_approval(
+            proposal_id, telegram_user_id=telegram_user_id, now=approval_now
+        )
+    else:
+        await service.record_channel_approval(
+            proposal_id,
+            channel=actor_channel,
+            actor_subject=actor_subject or telegram_user_id,
+            now=approval_now,
+        )
 
     # A rung that came back `needs_reconfirm` on a previous approve click is
     # NOT `pending_approval` -- `revalidate_and_submit` only re-enters rungs
@@ -1417,6 +1446,8 @@ async def _handle_loss_cut_first_click(
     message_id: int | None,
     callback_query_id: str | None = None,
     telegram_user_id: str,
+    actor_channel: str = "telegram",
+    actor_subject: str | None = None,
     loss_cut_preview_fn: RevalidateFn,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
@@ -1540,13 +1571,55 @@ async def _handle_loss_cut_first_click(
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
     confirmation_nonce = _generate_nonce()
+    web_confirmation_token = (
+        secrets.token_urlsafe(32) if actor_channel == "web" else None
+    )
     await service.issue_loss_cut_confirmation(
         proposal_id,
         first_nonce=callback.nonce,
         confirmation_nonce=confirmation_nonce,
         telegram_user_id=telegram_user_id,
+        actor_channel=actor_channel,
+        actor_subject=actor_subject,
+        web_confirmation_token=web_confirmation_token,
         now=post_preview_now,
     )
+    if actor_channel == "web":
+        # A web ceremony has no Telegram message to edit.  Its second-step
+        # capability is a browser-only opaque token, while the real callback
+        # nonce stays server-side.  This commit is intentionally the complete
+        # first step: a failure before it rolls back nonce consumption and
+        # leaves the original Telegram card executable.
+        group, _rungs = await service.get_proposal(proposal_id)
+        dispatch_attempt_id = uuid.uuid4()
+        binding = build_proposal_dispatch_binding(
+            proposal_id=group.proposal_id,
+            nonce=confirmation_nonce,
+            attempt_id=dispatch_attempt_id,
+            card_kind=ApprovalCardKind.LOSS_CUT_CONFIRMATION,
+            current_membership_revision=group.approval_dispatch_membership_revision,
+        )
+        await service.start_approval_dispatch(
+            proposal_id,
+            attempt_id=dispatch_attempt_id,
+            binding=binding,
+            now=post_preview_now,
+            payload_chars=0,
+            context_message_count=0,
+            channel="web",
+        )
+        await service.finish_web_approval_dispatch(
+            proposal_id,
+            attempt_id=dispatch_attempt_id,
+            now=post_preview_now,
+        )
+        await session.commit()
+        return {
+            "handled": True,
+            "reason": "loss_cut_confirmation_required",
+            "proposal_id": str(proposal_id),
+            "confirmation_token": web_confirmation_token,
+        }
     group, rungs = await service.get_proposal(proposal_id)
     dispatch_attempt_id = uuid.uuid4()
     binding = build_proposal_dispatch_binding(
@@ -1707,6 +1780,295 @@ class CallbackNotNormalizable(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def _web_execution_digest(nonce: str) -> str:
+    """Return the opaque durable identity for one web core entry."""
+    return hashlib.sha256(nonce.encode()).hexdigest()
+
+
+async def _web_execution_marker_state(
+    *,
+    proposal_id: uuid.UUID,
+    callback: CallbackEnvelope,
+    actor_subject: str,
+    action: str,
+    now: datetime,
+    service_factory: ServiceFactory,
+) -> str:
+    """Commit the web core-entry fact before a broker-capable handler runs.
+
+    ``handler_entered`` and its terminal companion are append-only approval
+    events keyed by the opaque nonce digest.  A session rollback inside the
+    shared execution core therefore cannot make a subsequent browser click
+    look safe to retry.
+    """
+    digest = _web_execution_digest(callback.nonce)
+    try:
+        async with service_factory() as marker_session:
+            marker_service = OrderProposalsService(marker_session)
+            group, _ = await marker_service.get_proposal(proposal_id)
+            entered = await marker_service.get_approval_event(
+                proposal_pk=group.id,
+                ceremony_digest=digest,
+                step="handler_entered",
+            )
+            if entered is not None:
+                terminal = await marker_service.get_approval_event(
+                    proposal_pk=group.id,
+                    ceremony_digest=digest,
+                    step="terminal",
+                )
+                await marker_session.commit()
+                return (
+                    "web_approval_dead_letter"
+                    if terminal is not None and terminal.outcome == "dead_letter"
+                    else "web_approval_in_progress"
+                )
+            await marker_service.append_approval_event(
+                event_id=uuid.uuid4(),
+                proposal_pk=group.id,
+                ceremony_digest=digest,
+                channel="web",
+                step="handler_entered",
+                outcome="entered",
+                actor_kind="user",
+                actor_subject=actor_subject,
+                actor_role=None,
+                dispatch_attempt_id=callback.attempt_id,
+                membership_revision=callback.membership_revision,
+                membership_digest=callback.membership_digest,
+                nonce_digest=digest,
+                proposal_payload_hash=group.payload_hash,
+                scope_hash=None,
+                evidence_hash=None,
+                evidence_snapshot=None,
+                reason_code=action,
+                expires_at=None,
+                observed_at=now,
+            )
+            await marker_session.commit()
+            return "entered"
+    except IntegrityError:
+        # A concurrent entry won the unique append-only event.  Treat the
+        # loser as in-flight; it must never reach the broker-capable core.
+        return "web_approval_in_progress"
+
+
+async def _record_web_execution_terminal(
+    *,
+    proposal_id: uuid.UUID,
+    callback: CallbackEnvelope,
+    actor_subject: str,
+    outcome: str,
+    now: datetime,
+    service_factory: ServiceFactory,
+) -> None:
+    """Append a bounded terminal result after a marked web core invocation."""
+    digest = _web_execution_digest(callback.nonce)
+    async with service_factory() as terminal_session:
+        terminal_service = OrderProposalsService(terminal_session)
+        group, _ = await terminal_service.get_proposal(proposal_id)
+        existing = await terminal_service.get_approval_event(
+            proposal_pk=group.id,
+            ceremony_digest=digest,
+            step="terminal",
+        )
+        if existing is None:
+            await terminal_service.append_approval_event(
+                event_id=uuid.uuid4(),
+                proposal_pk=group.id,
+                ceremony_digest=digest,
+                channel="web",
+                step="terminal",
+                outcome=outcome,
+                actor_kind="user",
+                actor_subject=actor_subject,
+                actor_role=None,
+                dispatch_attempt_id=callback.attempt_id,
+                membership_revision=callback.membership_revision,
+                membership_digest=callback.membership_digest,
+                nonce_digest=digest,
+                proposal_payload_hash=group.payload_hash,
+                scope_hash=None,
+                evidence_hash=None,
+                evidence_snapshot=None,
+                reason_code=None,
+                expires_at=None,
+                observed_at=now,
+            )
+        await terminal_session.commit()
+
+
+async def handle_web_approval(
+    proposal_id: uuid.UUID,
+    *,
+    action: str,
+    actor_subject: str,
+    now: datetime,
+    confirmation_token: str | None = None,
+    service_factory: ServiceFactory = AsyncSessionLocal,
+    revalidate_fn: RevalidateFn = revalidate_and_submit,
+    loss_cut_preview_fn: RevalidateFn | None = None,
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> dict[str, Any]:
+    """Run the Telegram approval execution core for an authenticated web actor.
+
+    The browser never receives the approval nonce or a dispatch binding.  This
+    adapter reconstructs both from the current server-side published snapshot,
+    then calls the exact approve/deny/loss-cut handlers used by
+    :func:`handle_normalized_callback`.  Consequently the published-binding
+    preflight, window checks, nonce consumption, commit lease, target lock,
+    approval hash and fresh preview remain in their original order.
+
+    ``Idempotency-Key`` is an HTTP admission requirement owned by the router;
+    it deliberately is not substituted for the secret, single-use approval
+    nonce held by the server.
+    """
+    if action not in {"approve", "deny", "loss-cut-confirm"}:
+        return {"handled": False, "reason": "invalid_web_approval_action"}
+    if not actor_subject:
+        return {"handled": False, "reason": "approval_actor_invalid"}
+
+    evaluate_window = window_evaluator or evaluate_approval_window
+    clock = now_fn or (lambda: now)
+    callback_action = {
+        "approve": "op",
+        "deny": "dn",
+        "loss-cut-confirm": "lc",
+    }[action]
+    marker_callback: CallbackEnvelope | None = None
+    marker_started = False
+    try:
+        # Deny and loss-cut step one are DB-only paths.  In particular, the
+        # first loss-cut step must remain one transaction so a local failure
+        # rolls back its nonce consumption and leaves Telegram usable.
+        async with service_factory() as session:
+            service = OrderProposalsService(session)
+            callback = await service.current_callback_envelope(
+                proposal_id, action=callback_action
+            )
+            group, _rungs = await service.get_proposal(proposal_id)
+            if action == "deny":
+                return await _handle_deny(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    callback=callback,
+                    now=now,
+                    notifier=None,
+                    chat_id=None,
+                    message_id=None,
+                    callback_query_id=None,
+                    actor_channel="web",
+                    actor_subject=actor_subject,
+                )
+            if action == "approve" and group.exit_intent == "loss_cut":
+                if loss_cut_preview_fn is None:
+                    from app.services.order_proposals.revalidation import (
+                        preview_loss_cut_confirmation,
+                    )
+
+                    loss_cut_preview_fn = preview_loss_cut_confirmation
+                return await _handle_loss_cut_first_click(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    callback=callback,
+                    now=now,
+                    notifier=None,
+                    chat_id=None,
+                    message_id=None,
+                    callback_query_id=None,
+                    telegram_user_id=actor_subject,
+                    actor_channel="web",
+                    actor_subject=actor_subject,
+                    loss_cut_preview_fn=loss_cut_preview_fn,
+                    window_evaluator=evaluate_window,
+                    now_fn=clock,
+                    service_factory=service_factory,
+                )
+            marker_callback = callback
+            await session.commit()
+
+        marker_state = await _web_execution_marker_state(
+            proposal_id=proposal_id,
+            callback=marker_callback,
+            actor_subject=actor_subject,
+            action=action,
+            now=now,
+            service_factory=service_factory,
+        )
+        if marker_state != "entered":
+            return {
+                "handled": False,
+                "reason": marker_state,
+                "proposal_id": str(proposal_id),
+            }
+        marker_started = True
+
+        async with service_factory() as session:
+            service = OrderProposalsService(session)
+            callback = await service.current_callback_envelope(
+                proposal_id, action=callback_action
+            )
+            result = await _handle_approve(
+                session=session,
+                service=service,
+                proposal_id=proposal_id,
+                callback=callback,
+                now=now,
+                notifier=None,
+                chat_id=None,
+                message_id=None,
+                callback_query_id=None,
+                telegram_user_id=actor_subject,
+                actor_channel="web",
+                actor_subject=actor_subject,
+                web_confirmation_token=confirmation_token,
+                revalidate_fn=revalidate_fn,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
+                loss_cut_confirmation=action == "loss-cut-confirm",
+                service_factory=service_factory,
+            )
+        await _record_web_execution_terminal(
+            proposal_id=proposal_id,
+            callback=marker_callback,
+            actor_subject=actor_subject,
+            outcome="completed",
+            now=now,
+            service_factory=service_factory,
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001 - durable failure boundary
+        if marker_started and marker_callback is not None:
+            try:
+                await _record_web_execution_terminal(
+                    proposal_id=proposal_id,
+                    callback=marker_callback,
+                    actor_subject=actor_subject,
+                    outcome="dead_letter",
+                    now=now,
+                    service_factory=service_factory,
+                )
+            except Exception as marker_exc:  # noqa: BLE001 - fail closed
+                logger.error(
+                    "order_proposals.web_approval.marker_terminal_failed",
+                    extra={"exception_type": type(marker_exc).__name__},
+                )
+        logger.error(
+            "order_proposals.web_approval.failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        return {
+            "handled": False,
+            "reason": (
+                "web_approval_dead_letter" if marker_started else "internal_error"
+            ),
+            "proposal_id": str(proposal_id),
+        }
 
 
 def normalize_callback_update(update: dict[str, Any]) -> NormalizedCallback:

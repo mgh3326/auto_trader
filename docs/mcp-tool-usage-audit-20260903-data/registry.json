@@ -1,0 +1,3164 @@
+{
+  "alpaca_paper_automated_preview_order": {
+    "module": "app.mcp_server.tooling.alpaca_paper_automated_orders",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_automated_submit_order": {
+    "module": "app.mcp_server.tooling.alpaca_paper_automated_orders",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_cancel_order": {
+    "module": "app.mcp_server.tooling.alpaca_paper_orders",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_execution_preflight_check": {
+    "module": "app.mcp_server.tooling.alpaca_paper_ledger_read",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_get_account": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_get_cash": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_get_order": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_ledger_get": {
+    "module": "app.mcp_server.tooling.alpaca_paper_ledger_read",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_ledger_get_by_correlation": {
+    "module": "app.mcp_server.tooling.alpaca_paper_ledger_read",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_ledger_list_recent": {
+    "module": "app.mcp_server.tooling.alpaca_paper_ledger_read",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_list_assets": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_list_fills": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_list_orders": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_list_positions": {
+    "module": "app.mcp_server.tooling.alpaca_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_preview_order": {
+    "module": "app.mcp_server.tooling.alpaca_paper_preview",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_reconcile_orders": {
+    "module": "app.mcp_server.tooling.alpaca_paper_orders",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_roundtrip_report": {
+    "module": "app.mcp_server.tooling.alpaca_paper_ledger_read",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "alpaca-paper-clean",
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "alpaca_paper_submit_order": {
+    "module": "app.mcp_server.tooling.alpaca_paper_orders",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analysis_artifact_get": {
+    "module": "app.mcp_server.tooling.analysis_artifact_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analysis_artifact_list": {
+    "module": "app.mcp_server.tooling.analysis_artifact_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analysis_artifact_save": {
+    "module": "multiple",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analysis_bundle_create": {
+    "module": "app.mcp_server.tooling.analysis_bundle_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analysis_bundle_get": {
+    "module": "app.mcp_server.tooling.analysis_bundle_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analyze_portfolio": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analyze_stock": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "analyze_stock_batch": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "binance_demo_ledger_status": {
+    "module": "app.mcp_server.tooling.binance_demo_ledger_status_read",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "buy_ladder_fill_preview": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "cancel_order": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "crypto",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "compare_paper_accounts": {
+    "module": "app.mcp_server.tooling.paper_analytics_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "compare_strategies": {
+    "module": "app.mcp_server.tooling.paper_journal_bridge",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "create_paper_account": {
+    "module": "app.mcp_server.tooling.paper_account_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "delete_paper_account": {
+    "module": "app.mcp_server.tooling.paper_account_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "discover_buy_candidates_fanout": {
+    "module": "app.mcp_server.tooling.buy_candidate_fanout_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "evaluate_buy_gate_ab_shadow": {
+    "module": "app.mcp_server.tooling.buy_gate_ab_shadow_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "execution_ledger_fill_events_list_recent": {
+    "module": "app.mcp_server.tooling.execution_ledger_events",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "forecast_resolve": {
+    "module": "app.mcp_server.tooling.forecast_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "forecast_save": {
+    "module": "multiple",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_analyst_consensus": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_available_capital": {
+    "module": "app.mcp_server.tooling.portfolio_holdings",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_cash_balance": {
+    "module": "app.mcp_server.tooling.portfolio_holdings",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_company_profile": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_correlation": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_cost_basis_distribution": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_catalysts": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_fear_greed": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_funding_rate": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_long_short_ratio": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_market_regime": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_open_interest": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_order_flow": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_profile": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_social": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_crypto_top_movers": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_disclosures": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_dividends": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_earnings_calendar": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_execution_strength": {
+    "module": "app.mcp_server.tooling.market_data_quotes",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_financials": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_forecast_calibration": {
+    "module": "app.mcp_server.tooling.forecast_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_forecasts": {
+    "module": "app.mcp_server.tooling.forecast_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_fx_rate": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_holdings": {
+    "module": "app.mcp_server.tooling.portfolio_holdings",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_holdings_news": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_indicators": {
+    "module": "app.mcp_server.tooling.market_data_quotes",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_insider_transactions": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_intraday_investor_flow": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_investment_opinions": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_investor_trends": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_kimchi_premium": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_krx_session_health": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_latest_market_brief": {
+    "module": "app.mcp_server.tooling.market_brief_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_market_index": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_market_issues": {
+    "module": "app.mcp_server.tooling.news_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_market_news": {
+    "module": "app.mcp_server.tooling.news_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_market_reports": {
+    "module": "app.mcp_server.tooling.market_brief_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_mock_loop_retrospective": {
+    "module": "app.mcp_server.tooling.mock_loop_retro_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_momentum_candidates": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_news": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_ohlcv": {
+    "module": "app.mcp_server.tooling.market_data_quotes",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_operating_briefing": {
+    "module": "app.mcp_server.tooling.operating_briefing",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_order_history": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "crypto",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_orderbook": {
+    "module": "app.mcp_server.tooling.market_data_quotes",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_paper_performance": {
+    "module": "app.mcp_server.tooling.paper_analytics_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_paper_trade_log": {
+    "module": "app.mcp_server.tooling.paper_analytics_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_portfolio_allocation": {
+    "module": "app.mcp_server.tooling.portfolio_allocation",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_position": {
+    "module": "app.mcp_server.tooling.portfolio_holdings",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_quote": {
+    "module": "app.mcp_server.tooling.market_data_quotes",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_retail_sentiment": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_retrospective_aggregate": {
+    "module": "app.mcp_server.tooling.trade_retrospective_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_sector_peers": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_short_interest": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_spike_attribution": {
+    "module": "app.mcp_server.tooling.spike_attribution_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_support_resistance": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_theme_events": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_top_stocks": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_toss_ai_signal": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_toss_buy_balance": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_trade_journal": {
+    "module": "app.mcp_server.tooling.trade_journal_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_trade_retrospectives": {
+    "module": "app.mcp_server.tooling.trade_retrospective_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_trading_policy": {
+    "module": "app.mcp_server.tooling.trading_policy_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "shadow-replay",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_trading_scoreboard": {
+    "module": "app.mcp_server.tooling.trading_scoreboard_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_upbit_altseason": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_upbit_index": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_user_setting": {
+    "module": "app.mcp_server.tooling.user_settings_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "get_valuation": {
+    "module": "app.mcp_server.tooling.fundamentals_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_activate_watch": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "watch"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_add_items": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_context_get": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_create": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_create_from_hermes_composition": {
+    "module": "app.mcp_server.tooling.investment_hermes_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_decide_item": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_delta_get": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_generate_from_bundle": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_get": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_get_hermes_context": {
+    "module": "app.mcp_server.tooling.investment_hermes_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "shadow-replay",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_list": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_prepare_bundle": {
+    "module": "app.mcp_server.tooling.investment_hermes_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_prepare_intraday_context": {
+    "module": "app.mcp_server.tooling.investment_hermes_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_set_status": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_report_update": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_snapshot_bundle_get": {
+    "module": "app.mcp_server.tooling.investment_snapshots_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_snapshot_bundle_list": {
+    "module": "app.mcp_server.tooling.investment_snapshots_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_snapshot_list": {
+    "module": "app.mcp_server.tooling.investment_snapshots_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_stage_artifacts_ingest_from_hermes": {
+    "module": "app.mcp_server.tooling.investment_hermes_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "report"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_watch_create": {
+    "module": "multiple",
+    "mutation": true,
+    "mutation_kinds": [
+      "watch"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_watch_events_list_recent": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_watch_expire": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "watch"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_watch_recommend": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "investment_watch_void": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": true,
+    "mutation_kinds": [
+      "watch"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_live_cancel_order": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_live_get_order_history": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_live_modify_order": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_live_place_order": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_live_reconcile_orders": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_mock_cancel_order": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "hermes-paper-kis"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_mock_get_order_history": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "hermes-paper-kis"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_mock_mirror_execute_report": {
+    "module": "app.mcp_server.tooling.mirror_counterfactual_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_mock_modify_order": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "hermes-paper-kis"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_mock_place_order": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "hermes-paper-kis"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kis_mock_reconciliation_run": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_cancel_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_get_order_detail": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "kiwoom",
+      "kiwoom_kr"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_get_order_history": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_get_orderable_cash": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_get_positions": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_modify_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_place_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_preview_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_cancel_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_get_order_history": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_get_orderable_cash": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_get_positions": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_modify_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_place_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "kiwoom_mock_us_preview_order": {
+    "module": "app.mcp_server.tooling.orders_kiwoom_us_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "kiwoom"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "list_active_journals": {
+    "module": "app.mcp_server.tooling.trade_journal_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "list_active_watches": {
+    "module": "app.mcp_server.tooling.operating_briefing",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "list_paper_accounts": {
+    "module": "app.mcp_server.tooling.paper_account_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "live_reconcile_orders": {
+    "module": "app.mcp_server.tooling.orders_kis_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "crypto",
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "market_quote_snapshot_ensure": {
+    "module": "app.mcp_server.tooling.market_quote_snapshot_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "market_quote_snapshot_latest": {
+    "module": "app.mcp_server.tooling.market_quote_snapshot_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "modify_journal_entry": {
+    "module": "app.mcp_server.tooling.trade_journal_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "modify_order": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "crypto",
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_create": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "order",
+      "proposal"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_expire_sweep": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "order",
+      "proposal"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_get": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_list": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_list_expired_defensive": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_redispatch": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "order_proposal_void": {
+    "module": "app.mcp_server.tooling.order_proposal_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "order",
+      "proposal"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_cancel_pending_order": {
+    "module": "app.mcp_server.tooling.paper_limit_order_handler",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_cohort_kill_switch": {
+    "module": "app.mcp_server.tooling.paper_cohort_control_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_execution_cancel_order": {
+    "module": "app.mcp_server.tooling.paper_execution_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_execution_get_capabilities": {
+    "module": "app.mcp_server.tooling.paper_execution_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_execution_get_order": {
+    "module": "app.mcp_server.tooling.paper_execution_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_execution_preview_order": {
+    "module": "app.mcp_server.tooling.paper_execution_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_execution_reconcile": {
+    "module": "app.mcp_server.tooling.paper_execution_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_execution_submit_order": {
+    "module": "app.mcp_server.tooling.paper_execution_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_list_pending_orders": {
+    "module": "app.mcp_server.tooling.paper_limit_order_handler",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_place_limit_order": {
+    "module": "app.mcp_server.tooling.paper_limit_order_handler",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_reconcile_orders": {
+    "module": "app.mcp_server.tooling.paper_limit_order_handler",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_advance": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_append_hypothesis": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_append_review": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_authorize_order_submit": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_confirm_promotion": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_get_audit": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_register": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "paper_validation_reject_or_abort": {
+    "module": "app.mcp_server.tooling.paper_validation_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "paper_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "place_order": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "crypto",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "recommend_go_live": {
+    "module": "app.mcp_server.tooling.paper_journal_bridge",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "research_session_get": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "research_session_list_recent": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "research_summary_get": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "reset_paper_account": {
+    "module": "app.mcp_server.tooling.paper_account_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "db-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "route_request": {
+    "module": "app.mcp_server.tooling.route_request_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "shadow-replay",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "save_position_intake_retrospective": {
+    "module": "app.mcp_server.tooling.trade_retrospective_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "save_trade_journal": {
+    "module": "app.mcp_server.tooling.trade_journal_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "save_trade_retrospective": {
+    "module": "multiple",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "screen_stocks": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "screen_stocks_enrich": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "screen_stocks_snapshot": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "search_symbol": {
+    "module": "app.mcp_server.tooling.market_data_quotes",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "sell_ladder_fill_preview": {
+    "module": "app.mcp_server.tooling.orders_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "session_context_append": {
+    "module": "multiple",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "session_context_get_recent": {
+    "module": "app.mcp_server.tooling.session_context_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "set_user_setting": {
+    "module": "app.mcp_server.tooling.user_settings_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "stage_analysis_get": {
+    "module": "app.mcp_server.tooling.analysis_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "suggest_order_account": {
+    "module": "app.mcp_server.tooling.account_routing_registration",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "analysis_readonly",
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper",
+      "watch_repricing"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "support_reserve_net_consume": {
+    "module": "app.mcp_server.tooling.support_reserve_net_consumer_tool",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "sweep_expired_watches": {
+    "module": "app.mcp_server.tooling.investment_reports_handlers",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_cancel_order": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_detect_manual_activity": {
+    "module": "app.mcp_server.tooling.toss_manual_activity_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_get_order_history": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_get_orderable_cash": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_get_positions": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "account_read",
+      "analysis_readonly",
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_modify_order": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_place_order": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_preview_order": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "tradingcodex_execution"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "toss_reconcile_orders": {
+    "module": "app.mcp_server.tooling.orders_toss_variants",
+    "mutation": true,
+    "mutation_kinds": [
+      "order"
+    ],
+    "profiles": [
+      "default"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "trade_retrospective_pending": {
+    "module": "app.mcp_server.tooling.trade_retrospective_tools",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "tradingcodex_execution",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "update_manual_holdings": {
+    "module": "app.mcp_server.tooling.portfolio_holdings",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "update_trade_journal": {
+    "module": "app.mcp_server.tooling.trade_journal_tools",
+    "mutation": true,
+    "mutation_kinds": [
+      "persistence"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "us_dual_paper_account_states": {
+    "module": "app.mcp_server.tooling.us_dual_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "us_dual_paper_capability_matrix": {
+    "module": "app.mcp_server.tooling.us_dual_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "us_dual_paper_preview": {
+    "module": "app.mcp_server.tooling.us_dual_paper",
+    "mutation": false,
+    "mutation_kinds": [],
+    "profiles": [
+      "default",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  },
+  "watch_downside_register_sweep": {
+    "module": "app.mcp_server.tooling.downside_watch_registration",
+    "mutation": true,
+    "mutation_kinds": [
+      "watch"
+    ],
+    "profiles": [
+      "crypto",
+      "db-paper",
+      "default",
+      "hermes-paper-kis",
+      "kiwoom",
+      "kiwoom_kr",
+      "us-paper"
+    ],
+    "registration_method": "mcp.tool decorator"
+  }
+}

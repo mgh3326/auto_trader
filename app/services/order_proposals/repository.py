@@ -204,6 +204,35 @@ class OrderProposalRepository:
             stmt = stmt.where(OrderProposal.lifecycle_state == lifecycle_state)
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def list_web_approval_card_rows(
+        self, *, proposal_id: uuid.UUID | None = None, limit: int = 100
+    ) -> list[tuple[OrderProposal, OrderProposalRung | None]]:
+        """Load approval cards and all rung previews in one joined query.
+
+        This is intentionally not an ORM relationship load: the /invest
+        approval hub must stay bounded to one database query rather than grow
+        one rung query per visible proposal.
+        """
+        group_ids = (
+            select(OrderProposal.id)
+            .where(OrderProposal.approval_dispatch_attempt_id.is_not(None))
+            .order_by(OrderProposal.id.desc())
+            .limit(limit)
+        )
+        if proposal_id is not None:
+            group_ids = group_ids.where(OrderProposal.proposal_id == proposal_id)
+        group_ids_subquery = group_ids.subquery()
+        stmt = (
+            select(OrderProposal, OrderProposalRung)
+            .join(group_ids_subquery, group_ids_subquery.c.id == OrderProposal.id)
+            .outerjoin(
+                OrderProposalRung,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .order_by(OrderProposal.id.desc(), OrderProposalRung.rung_index.asc())
+        )
+        return list((await self._session.execute(stmt)).all())
+
     async def _auto_approved_rung_rows(
         self,
         *,
