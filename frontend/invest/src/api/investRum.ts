@@ -12,7 +12,30 @@ interface ResourceTimingLike {
 }
 
 const INVEST_API_PREFIX = "/invest/api/";
-const RUM_IDLE_FLUSH_MS = 750;
+const RUM_COLLECTION_WINDOW_MS = 10_000;
+const UUID_SEGMENT = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const NUMERIC_SEGMENT = /^\d+$/;
+const SYMBOL_PARENTS = new Set(["symbol", "symbols", "ticker", "tickers", "instrument", "instruments"]);
+
+/**
+ * Keep browser RUM tags bounded. This intentionally mirrors
+ * ``normalize_invest_rum_path`` in the API router: dynamic IDs and symbols
+ * must never become Sentry tag values.
+ */
+export function normalizeInvestRumPath(path: string): string | null {
+  if (!path.startsWith("/")) return null;
+  const segments = path.split("/");
+  const normalized = segments.map((segment, index) => {
+    const parent = segments[index - 1]?.toLowerCase();
+    if (UUID_SEGMENT.test(segment)) return ":id";
+    if (SYMBOL_PARENTS.has(parent ?? "") && segment) {
+      return ":symbol";
+    }
+    if (NUMERIC_SEGMENT.test(segment)) return ":id";
+    return segment;
+  });
+  return normalized.join("/");
+}
 
 // Keep this aligned with lossCutApproval.ts: the API is session-authenticated
 // and its POST is protected by the existing CSRF middleware.
@@ -30,7 +53,7 @@ function mutationHeaders(): HeadersInit {
 function apiPath(name: string): string | null {
   try {
     const path = new URL(name, window.location.origin).pathname;
-    return path.startsWith(INVEST_API_PREFIX) ? path : null;
+    return path.startsWith(INVEST_API_PREFIX) ? normalizeInvestRumPath(path) : null;
   } catch {
     return null;
   }
@@ -41,6 +64,7 @@ export function buildInvestRumPayload(
   routeStartedAt: number,
   entries: readonly ResourceTimingLike[],
 ): InvestRumPayload {
+  const normalizedRoute = normalizeInvestRumPath(route) ?? "/invest";
   const requests = entries
     .map((entry) => ({ entry, path: apiPath(entry.name) }))
     .filter(
@@ -59,7 +83,7 @@ export function buildInvestRumPayload(
     null,
   );
   return {
-    route,
+    route: normalizedRoute,
     n_requests: requests.length,
     wall_ms: Math.max(0, lastResponseAt - routeStartedAt),
     slowest: slowest?.path ?? "/invest/api/none",
@@ -80,7 +104,8 @@ export class InvestRumReporter {
   private observer: PerformanceObserver | null = null;
   private route = "/invest";
   private routeStartedAt = 0;
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private collectionWindowTimer: ReturnType<typeof setTimeout> | null = null;
+  private active = false;
   private sent = false;
 
   begin(route: string): void {
@@ -89,6 +114,7 @@ export class InvestRumReporter {
     this.entries = [];
     this.route = route;
     this.routeStartedAt = performance.now();
+    this.active = true;
     this.sent = false;
     if (typeof PerformanceObserver === "undefined") {
       return;
@@ -99,31 +125,31 @@ export class InvestRumReporter {
           this.entries.push(entry as unknown as ResourceTimingLike);
         }
       }
-      this.scheduleFlush();
     });
     this.observer.observe({ type: "resource", buffered: true });
-    this.scheduleFlush();
+    // Resource timing entries are published only once a request completes and
+    // do not expose in-flight requests. Keep the collection window open until
+    // its hard cap so a slow fan-out response cannot be omitted behind an
+    // earlier completed request. The cap keeps every navigation bounded.
+    this.collectionWindowTimer = setTimeout(
+      () => this.flush(),
+      RUM_COLLECTION_WINDOW_MS,
+    );
   }
 
   stop(): void {
     this.flush();
+    this.active = false;
     this.observer?.disconnect();
     this.observer = null;
   }
 
-  private scheduleFlush(): void {
-    if (this.flushTimer !== null) {
-      clearTimeout(this.flushTimer);
-    }
-    this.flushTimer = setTimeout(() => this.flush(), RUM_IDLE_FLUSH_MS);
-  }
-
   private flush(): void {
-    if (this.flushTimer !== null) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
+    if (this.collectionWindowTimer !== null) {
+      clearTimeout(this.collectionWindowTimer);
+      this.collectionWindowTimer = null;
     }
-    if (this.sent || this.routeStartedAt === 0) {
+    if (this.sent || !this.active) {
       return;
     }
     this.sent = true;

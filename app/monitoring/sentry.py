@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import sentry_sdk
@@ -38,6 +39,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _BUILD_VCS_REF_PATH = Path("/app/.build-vcs-ref")
+_INVEST_API_PREFIX = "/invest/api/"
+_AUTH_MIDDLEWARE_TRANSACTION = "app.middleware.auth.AuthMiddleware"
 
 _initialized = False
 _enabled_integration_flags: dict[str, bool] = {
@@ -404,6 +407,22 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     # through unchanged; span descriptions/data for spans of every op (not
     # just mcp.server) are covered by the same pass.
     event = _sanitize_in_place(event)
+
+    # AuthMiddleware may return a 401 before FastAPI resolves a route. Sentry
+    # consequently names the transaction after middleware rather than the
+    # endpoint. Preserve the API family without copying the raw URL (which can
+    # contain report IDs, ledger IDs, or symbols) into a transaction tag.
+    request = event.get("request")
+    request_url = request.get("url") if isinstance(request, dict) else None
+    request_method = request.get("method") if isinstance(request, dict) else None
+    request_path = urlsplit(request_url).path if isinstance(request_url, str) else ""
+    if (
+        transaction_name == _AUTH_MIDDLEWARE_TRANSACTION
+        and request_path.startswith(_INVEST_API_PREFIX)
+        and isinstance(request_method, str)
+    ):
+        event["transaction"] = f"{request_method.upper()} /invest/api/* (pre-auth)"
+        event["transaction_info"] = {"source": "custom"}
 
     spans = event.get("spans", [])
     if not isinstance(spans, list):

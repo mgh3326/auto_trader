@@ -14,14 +14,15 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from sentry_sdk.transport import Transport
 
+import app.monitoring.sentry as sentry_module
 from app.middleware.invest_timing import (
-    InvestTimingMiddleware,
     _server_timing_header,
     _span_metrics,
 )
 from app.routers.dependencies import get_authenticated_user
-from app.routers.invest_api import _rum_rate_gate
+from app.routers.invest_api import _rum_rate_gate, get_invest_home_service
 from app.routers.invest_api import router as invest_router
+from app.schemas.invest_home import HomeSummary, InvestHomeResponse
 
 
 class _TransactionTransport(Transport):
@@ -35,44 +36,87 @@ class _TransactionTransport(Transport):
                 self.transactions.append(item.payload.json)
 
 
-def test_invest_transaction_has_route_name_and_db_http_children() -> None:
+def test_real_app_invest_transactions_name_authenticated_and_pre_auth_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The complete middleware stack must never emit an auth-class transaction."""
+    import app.main as app_main
+    from app.middleware.auth import AuthMiddleware
+
     transport = _TransactionTransport({})
-    sentry_sdk.init(
-        dsn="https://public@example.ingest.sentry.io/1",
-        integrations=[
-            StarletteIntegration(transaction_style="endpoint"),
-            FastApiIntegration(transaction_style="endpoint"),
-        ],
-        traces_sample_rate=1.0,
-        transport=transport,
-        default_integrations=False,
-    )
-    app = FastAPI()
-    app.add_middleware(InvestTimingMiddleware)
 
-    @app.get("/invest/api/home")
-    async def home() -> dict[str, bool]:
-        with sentry_sdk.start_span(op="db.query", name="load home"):
-            pass
-        with sentry_sdk.start_span(op="http.client", name="quote provider"):
-            pass
-        return {"ok": True}
+    def init_test_sentry(**_: object) -> bool:
+        sentry_sdk.init(
+            dsn="https://public@example.ingest.sentry.io/1",
+            integrations=[
+                StarletteIntegration(transaction_style="endpoint"),
+                FastApiIntegration(transaction_style="endpoint"),
+            ],
+            traces_sample_rate=1.0,
+            transport=transport,
+            before_send_transaction=sentry_module._before_send_transaction,
+            default_integrations=False,
+        )
+        return True
 
-    with TestClient(app) as client:
-        response = client.get("/invest/api/home")
+    class HomeService:
+        async def get_home(self, **_: object) -> InvestHomeResponse:
+            with sentry_sdk.start_span(op="db.query", name="load home"):
+                pass
+            with sentry_sdk.start_span(op="http.client", name="quote provider"):
+                pass
+            return InvestHomeResponse(
+                homeSummary=HomeSummary(
+                    includedSources=[], excludedSources=[], totalValueKrw=0
+                ),
+                accounts=[],
+                holdings=[],
+                groupedHoldings=[],
+            )
+
+    async def authenticated_user(_: object) -> SimpleNamespace:
+        return SimpleNamespace(id=7)
+
+    async def unauthenticated_user(_: object) -> None:
+        return None
+
+    monkeypatch.setattr(app_main, "init_sentry", init_test_sentry)
+    monkeypatch.setattr(AuthMiddleware, "_load_user", staticmethod(authenticated_user))
+    app = app_main.create_app()
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=7)
+    app.dependency_overrides[get_invest_home_service] = HomeService
+
+    client = TestClient(app)
+    response = client.get("/invest/api/home")
 
     sentry_sdk.flush()
     assert response.status_code == 200
     assert "total;dur=" in response.headers["server-timing"]
     assert "db;dur=" in response.headers["server-timing"]
     assert "ext;dur=" in response.headers["server-timing"]
-    assert len(transport.transactions) == 1
-    transaction = transport.transactions[0]
+    transaction = next(
+        item
+        for item in transport.transactions
+        if item["transaction"] == "GET /invest/api/home"
+    )
     assert transaction["transaction"] == "GET /invest/api/home"
+    assert transaction["transaction_info"]["source"] == "route"
     assert {span["op"] for span in transaction["spans"]} >= {
         "db.query",
         "http.client",
     }
+
+    transport.transactions.clear()
+    monkeypatch.setattr(
+        AuthMiddleware, "_load_user", staticmethod(unauthenticated_user)
+    )
+    unauthorized = client.get("/invest/api/home")
+    sentry_sdk.flush()
+
+    assert unauthorized.status_code == 401
+    pre_auth = next(item for item in transport.transactions if item["transaction"])
+    assert pre_auth["transaction"] == "GET /invest/api/* (pre-auth)"
+    assert pre_auth["transaction_info"]["source"] == "custom"
 
 
 def test_server_timing_sums_db_and_each_external_span() -> None:
@@ -138,3 +182,22 @@ def test_rum_requires_small_body_and_one_request_per_five_seconds(
     assert rate_limited.status_code == 429
     assert too_large.status_code == 413
     capture.assert_called_once_with("invest.rum", level="info")
+
+
+def test_rum_rejects_untemplated_identifiers_before_sentry_tags(
+    rum_client: TestClient,
+) -> None:
+    raw = {
+        "route": "/invest/reports/550e8400-e29b-41d4-a716-446655440000",
+        "n_requests": 1,
+        "wall_ms": 10,
+        "slowest": "/invest/api/symbols/005930/quote",
+    }
+    normalized = {
+        **raw,
+        "route": "/invest/reports/:id",
+        "slowest": "/invest/api/symbols/:symbol/quote",
+    }
+
+    assert rum_client.post("/invest/api/rum", json=raw).status_code == 422
+    assert rum_client.post("/invest/api/rum", json=normalized).status_code == 204

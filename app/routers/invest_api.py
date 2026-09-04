@@ -6,6 +6,7 @@ import 하지 않는다. order / watch / scheduler / mutation 경로 import 금�
 
 from __future__ import annotations
 
+import re
 import time as monotonic_time
 from collections import OrderedDict
 from datetime import UTC, date, datetime, time
@@ -13,7 +14,7 @@ from typing import Annotated, Any, Literal
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -160,6 +161,47 @@ router = APIRouter(prefix="/invest/api", tags=["invest"])
 _RUM_MAX_BODY_BYTES = 2_048
 _RUM_RATE_WINDOW_SECONDS = 5.0
 _RUM_RATE_CAPACITY = 1_024
+_RUM_PATH_MAX_LENGTH = 120
+_RUM_PATH_RE = re.compile(r"^/[A-Za-z0-9_/:.-]*$")
+_RUM_UUID_SEGMENT_RE = re.compile(
+    r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.IGNORECASE
+)
+_RUM_NUMERIC_SEGMENT_RE = re.compile(r"^\d+$")
+_RUM_SYMBOL_PARENTS = frozenset(
+    {"symbol", "symbols", "ticker", "tickers", "instrument", "instruments"}
+)
+
+
+def normalize_invest_rum_path(path: str) -> str | None:
+    """Template dynamic path segments before they reach Sentry tags.
+
+    This mirrors the SPA normalizer. Returning ``None`` deliberately makes an
+    unknown or malformed value invalid rather than accepting a raw identifier.
+    """
+    if not path.startswith("/"):
+        return None
+    segments = path.split("/")
+    normalized: list[str] = []
+    for index, segment in enumerate(segments):
+        parent = segments[index - 1].lower() if index else ""
+        if _RUM_UUID_SEGMENT_RE.fullmatch(segment):
+            normalized.append(":id")
+        elif parent in _RUM_SYMBOL_PARENTS and segment:
+            normalized.append(":symbol")
+        elif _RUM_NUMERIC_SEGMENT_RE.fullmatch(segment):
+            normalized.append(":id")
+        else:
+            normalized.append(segment)
+    return "/".join(normalized)
+
+
+def _require_normalized_rum_path(value: str) -> str:
+    normalized = normalize_invest_rum_path(value)
+    if normalized != value:
+        raise ValueError("RUM paths must use bounded templates")
+    if len(value) > _RUM_PATH_MAX_LENGTH or not _RUM_PATH_RE.fullmatch(value):
+        raise ValueError("RUM paths must be bounded")
+    return value
 
 
 class InvestRumPayload(BaseModel):
@@ -167,10 +209,22 @@ class InvestRumPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    route: str = Field(pattern=r"^/[A-Za-z0-9_/-]{0,119}$")
+    route: str
     n_requests: int = Field(ge=0, le=200)
     wall_ms: float = Field(ge=0, le=300_000)
-    slowest: str = Field(pattern=r"^/invest/api/[A-Za-z0-9_/-]{0,119}$")
+    slowest: str
+
+    @field_validator("route", "slowest")
+    @classmethod
+    def require_normalized_paths(cls, value: str) -> str:
+        return _require_normalized_rum_path(value)
+
+    @field_validator("slowest")
+    @classmethod
+    def require_invest_api_slowest(cls, value: str) -> str:
+        if not value.startswith("/invest/api/"):
+            raise ValueError("RUM slowest path must be an invest API route")
+        return value
 
 
 class _InvestRumRateGate:
