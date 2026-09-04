@@ -6,10 +6,15 @@ import 하지 않는다. order / watch / scheduler / mutation 경로 import 금�
 
 from __future__ import annotations
 
+import re
+import time as monotonic_time
+from collections import OrderedDict
 from datetime import UTC, date, datetime, time
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import sentry_sdk
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -153,6 +158,134 @@ def _parse_paper_sources(value: str | None) -> frozenset[str] | None:
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
 
+_RUM_MAX_BODY_BYTES = 2_048
+_RUM_RATE_WINDOW_SECONDS = 5.0
+_RUM_RATE_CAPACITY = 1_024
+_RUM_PATH_MAX_LENGTH = 120
+_RUM_PATH_RE = re.compile(r"^/[A-Za-z0-9_/:.-]*$")
+_RUM_UUID_SEGMENT_RE = re.compile(
+    r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.IGNORECASE
+)
+_RUM_NUMERIC_SEGMENT_RE = re.compile(r"^\d+$")
+_RUM_SYMBOL_PARENTS = frozenset(
+    {"symbol", "symbols", "ticker", "tickers", "instrument", "instruments"}
+)
+
+
+def normalize_invest_rum_path(path: str) -> str | None:
+    """Template dynamic path segments before they reach Sentry tags.
+
+    This mirrors the SPA normalizer. Returning ``None`` deliberately makes an
+    unknown or malformed value invalid rather than accepting a raw identifier.
+    """
+    if not path.startswith("/"):
+        return None
+    segments = path.split("/")
+    normalized: list[str] = []
+    for index, segment in enumerate(segments):
+        parent = segments[index - 1].lower() if index else ""
+        if _RUM_UUID_SEGMENT_RE.fullmatch(segment):
+            normalized.append(":id")
+        elif parent in _RUM_SYMBOL_PARENTS and segment:
+            normalized.append(":symbol")
+        elif _RUM_NUMERIC_SEGMENT_RE.fullmatch(segment):
+            normalized.append(":id")
+        else:
+            normalized.append(segment)
+    return "/".join(normalized)
+
+
+def _require_normalized_rum_path(value: str) -> str:
+    normalized = normalize_invest_rum_path(value)
+    if normalized != value:
+        raise ValueError("RUM paths must use bounded templates")
+    if len(value) > _RUM_PATH_MAX_LENGTH or not _RUM_PATH_RE.fullmatch(value):
+        raise ValueError("RUM paths must be bounded")
+    return value
+
+
+class InvestRumPayload(BaseModel):
+    """Small, low-cardinality navigation summary emitted by the invest SPA."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: str
+    n_requests: int = Field(ge=0, le=200)
+    wall_ms: float = Field(ge=0, le=300_000)
+    slowest: str
+    pending_requests: int = Field(default=0, ge=0, le=200)
+    truncated: bool = False
+    # Only pagehide beacon and keepalive fallback submissions include this.
+    # It is accepted solely for CSRF validation and is never tagged or logged.
+    csrf_token: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("route", "slowest")
+    @classmethod
+    def require_normalized_paths(cls, value: str) -> str:
+        return _require_normalized_rum_path(value)
+
+    @field_validator("slowest")
+    @classmethod
+    def require_invest_api_slowest(cls, value: str) -> str:
+        if not value.startswith("/invest/api/"):
+            raise ValueError("RUM slowest path must be an invest API route")
+        return value
+
+
+class _InvestRumRateGate:
+    """Bounded, per-process per-user gate; telemetry must never amplify load."""
+
+    def __init__(self) -> None:
+        self._last_seen: OrderedDict[int, float] = OrderedDict()
+
+    def allow(self, user_id: int, now: float) -> bool:
+        previous = self._last_seen.get(user_id)
+        if previous is not None and now - previous < _RUM_RATE_WINDOW_SECONDS:
+            return False
+        self._last_seen[user_id] = now
+        self._last_seen.move_to_end(user_id)
+        while len(self._last_seen) > _RUM_RATE_CAPACITY:
+            self._last_seen.popitem(last=False)
+        return True
+
+
+_rum_rate_gate = _InvestRumRateGate()
+
+
+async def _read_invest_rum_payload(request: Request) -> InvestRumPayload:
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        raise HTTPException(
+            status_code=status.HTTP_411_LENGTH_REQUIRED,
+            detail="Content-Length required",
+        )
+    try:
+        declared_size = int(content_length)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Content-Length",
+        ) from exc
+    if declared_size < 0 or declared_size > _RUM_MAX_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="RUM payload too large",
+        )
+
+    body = await request.body()
+    if len(body) > _RUM_MAX_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="RUM payload too large",
+        )
+    try:
+        return InvestRumPayload.model_validate_json(body)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid RUM payload",
+        ) from exc
+
 
 def get_invest_home_service(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -222,6 +355,36 @@ async def get_home(
                 "manual_pairs_available": bool(exc.manual_pairs),
             },
         ) from exc
+
+
+@router.post("/rum", status_code=status.HTTP_204_NO_CONTENT)
+async def record_invest_rum(
+    request: Request,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+) -> Response:
+    """Record a bounded, authenticated browser navigation summary.
+
+    This is deliberately not persisted: Sentry aggregates the low-cardinality
+    tags and the endpoint has a strict per-user process-local throttle.
+    """
+    payload = await _read_invest_rum_payload(request)
+    user_id = int(user.id)
+    if not _rum_rate_gate.allow(user_id, monotonic_time.monotonic()):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="RUM rate limit exceeded",
+        )
+
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("route", payload.route)
+        scope.set_tag("n_requests", str(payload.n_requests))
+        scope.set_tag("wall_ms", f"{payload.wall_ms:.1f}")
+        scope.set_tag("slowest", payload.slowest)
+        if payload.truncated:
+            scope.set_tag("truncated", "true")
+            scope.set_tag("pending_requests", str(payload.pending_requests))
+        sentry_sdk.capture_message("invest.rum", level="info")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/market")

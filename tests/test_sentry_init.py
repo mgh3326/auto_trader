@@ -91,6 +91,12 @@ def test_init_sentry_uses_build_vcs_ref_release_with_fastapi(monkeypatch):
     }
     assert "LoggingIntegration" in integration_names
     assert "FastApiIntegration" in integration_names
+    fastapi = next(
+        integration
+        for integration in kwargs["integrations"]
+        if type(integration).__name__ == "FastApiIntegration"
+    )
+    assert fastapi.transaction_style == "endpoint"
 
     mock_set_tag.assert_any_call("service", "auto-trader-api")
     mock_set_tag.assert_any_call("runtime", "python")
