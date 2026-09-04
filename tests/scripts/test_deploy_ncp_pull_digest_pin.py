@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -22,10 +23,12 @@ def run(
     fail_once_container: str | None = None,
     fail_ws_container: str | None = None,
     fail_proxy: bool = False,
+    haproxy_ready_failures: int = 0,
     existing_config: str | None = None,
     configured_image: str = OLD,
     missing_token: str | None = None,
     args: tuple[str, ...] = (),
+    deploy: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str, Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -33,6 +36,7 @@ def run(
     log.touch()
     (bindir / "docker").write_text(f"""#!/usr/bin/env bash
 echo "docker $*" >> {log}
+if [[ "$1" == kill && "$*" == *"-s HUP at-haproxy"* ]]; then touch "$HAPROXY_RELOAD_MARKER"; fi
 if [[ "$1" == run && "$*" == *"--name ${{FAIL_ONCE_CONTAINER:-none}}"* && ! -e "$FAIL_ONCE_MARKER" ]]; then touch "$FAIL_ONCE_MARKER"; exit 1; fi
 case "$1" in
  inspect)
@@ -54,6 +58,10 @@ esac
         'url="${!#}"\n'
         'if [[ "${FAIL_CANDIDATE:-}" == true && "$url" == *":8001/healthz" ]]; then echo 500; exit 0; fi\n'
         'if [[ -n "${FAIL_MCP_PORT:-}" && "$url" == *":${FAIL_MCP_PORT}/health" ]]; then echo 500; exit 0; fi\n'
+        'if [[ -e "$HAPROXY_RELOAD_MARKER" && ( "$url" == "http://127.0.0.1:8000/healthz" || "$url" == "http://127.0.0.1:8765/health" ) ]]; then\n'
+        '  count=0; [[ -f "$HAPROXY_READY_COUNT" ]] && count="$(<"$HAPROXY_READY_COUNT")"; count=$((count + 1)); printf "%s\\n" "$count" >"$HAPROXY_READY_COUNT"\n'
+        "  if ((count <= HAPROXY_READY_FAILURES)); then exit 7; fi\n"
+        "fi\n"
         'if [[ "${FAIL_PROXY:-}" == true && "$url" == *":8000/healthz" ]]; then echo 500; exit 22; fi\n'
         "echo 200\n"
     )
@@ -87,7 +95,7 @@ esac
         config.write_text(existing_config)
         (run_dir / "haproxy.cfg.inode-before").write_text(str(config.stat().st_ino))
     p = subprocess.run(
-        [str(DEPLOY), *args],
+        [str(deploy or DEPLOY), *args],
         text=True,
         capture_output=True,
         env={
@@ -103,9 +111,14 @@ esac
             "FAIL_WS_CONTAINER": fail_ws_container or "never",
             "FAIL_ONCE_MARKER": str(tmp_path / "fail-once"),
             "FAIL_PROXY": str(fail_proxy).lower(),
+            "HAPROXY_READY_FAILURES": str(haproxy_ready_failures),
+            "HAPROXY_READY_COUNT": str(tmp_path / "haproxy-ready-count"),
+            "HAPROXY_RELOAD_MARKER": str(tmp_path / "haproxy-reloaded"),
             "CONFIGURED_IMAGE": configured_image,
             "MCP_HEALTH_ATTEMPTS": "1",
             "MCP_HEALTH_SLEEP_SECONDS": "0",
+            "HAPROXY_READY_ATTEMPTS": "20",
+            "HAPROXY_READY_INTERVAL": "0",
         },
     )
     return p, log.read_text(), run_dir
@@ -229,6 +242,68 @@ def test_failed_post_hup_probe_restores_the_prior_haproxy_config(
     assert p.returncode != 0
     assert run_dir.joinpath("haproxy.cfg").read_text() == "old-haproxy-config\n"
     assert run_dir.joinpath("api-active-color").read_text() == "blue\n"
+
+
+def _legacy_api_runs(log: str) -> list[str]:
+    return [
+        line
+        for line in log.splitlines()
+        if line.startswith("docker run") and "--name at-api " in line
+    ]
+
+
+def test_haproxy_reload_retries_connection_refused_until_both_routes_are_ready(
+    tmp_path: Path,
+) -> None:
+    """The first three post-HUP probes refuse connections; no rollback is needed."""
+    p, log, _ = run(tmp_path, haproxy_ready_failures=3)
+
+    assert p.returncode == 0, p.stderr
+    # API then MCP each reload HAProxy. The first reload consumes three
+    # refused probes and two successful route checks; the second consumes two.
+    assert (tmp_path / "haproxy-ready-count").read_text() == "7\n"
+    assert _legacy_api_runs(log) == []
+
+
+def test_haproxy_reload_exhaustion_restores_legacy_api_with_its_original_args(
+    tmp_path: Path,
+) -> None:
+    """A bounded readiness failure restores the legacy API rather than stranding :8000."""
+    p, log, _ = run(tmp_path, haproxy_ready_failures=25)
+
+    assert p.returncode != 0
+    assert "haproxy routes not ready after reload" in p.stderr
+    legacy_runs = _legacy_api_runs(log)
+    assert len(legacy_runs) == 1
+    assert "--name at-api --restart unless-stopped --network host" in legacy_runs[0]
+    assert OLD in legacy_runs[0]
+
+
+def test_single_probe_mutant_is_red_by_connection_refused_sequence(
+    tmp_path: Path,
+) -> None:
+    """Replacing polling with one probe makes the success fixture roll back."""
+    mutant = tmp_path / "deploy-ncp-pull-single-probe.sh"
+    source = DEPLOY.read_text(encoding="utf-8")
+    mutant_source, replacements = re.subn(
+        r"wait_haproxy_ready\(\) \{.*?\n}\n",
+        "wait_haproxy_ready() { curl --fail --silent --max-time 3 http://127.0.0.1:8000/healthz >/dev/null && curl --fail --silent --max-time 3 http://127.0.0.1:8765/health >/dev/null; }\n\n",
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    assert replacements == 1
+    mutant.write_text(mutant_source, encoding="utf-8")
+    mutant.chmod(0o755)
+
+    p, log, _ = run(
+        tmp_path,
+        haproxy_ready_failures=3,
+        deploy=mutant,
+    )
+
+    assert p.returncode != 0
+    assert len(_legacy_api_runs(log)) == 1
 
 
 def test_mutable_unit_tag_resolves_to_its_repo_digest_before_rollback(

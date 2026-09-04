@@ -127,7 +127,7 @@ Do not run migrations or make a live deployment from CI as part of this flow.
 
 | Role | Expected interruption |
 | --- | --- |
-| API | 0 after the one-time first cutover; first adoption has a documented ≤2s bind handoff while legacy `at-api` releases port 8000 |
+| API | 0 after the one-time first cutover; first adoption has a documented ≤2s bind handoff while legacy `at-api` releases port 8000; HAProxy then polls both routes for at most `HAPROXY_READY_ATTEMPTS` × `HAPROXY_READY_INTERVAL` (default 20 × 0.5s = 10s) |
 | Worker | 0; `at-worker-new` must report ready before `docker stop -t 60 at-worker` |
 | Scheduler | a few seconds; exactly one instance is retained to prevent duplicate firing |
 | WebSocket monitors | a few seconds; broker appkeys permit only one session |
