@@ -6,28 +6,28 @@ a Prefect deployment. It does not access NCP during development.
 
 ## Contract
 
-`ops/ncp/bin/at-job.sh` reads `at-api`'s configured image with `docker
-inspect`, rejects anything other than `ghcr.io/mgh3326/auto_trader@sha256:…`,
-and uses that exact digest for the transient job container. It has no tag
-fallback. Each service uses both root-owned deployment environment files:
-`/root/at-secrets/.env.api` and `/root/at-secrets/.env.scheduler`.
-
-The unit itself names only `/root/at-secrets/.env.jobs`. Define optional
-healthcheck endpoints there by module-derived uppercase key, for example:
-
-```
-HC_PING_URL_BUILD_INVESTOR_FLOW_SNAPSHOTS=https://hc-ping.example/uuid
-```
+`ops/ncp/bin/at-job.sh` reads only `/root/at-run/deployed-digest`, which the
+pull deploy writes after the blue/green API health check. It rejects anything
+other than `ghcr.io/mgh3326/auto_trader@sha256:…` and has no tag fallback. It
+does not inspect an `at-api` container. Each service explicitly sets
+`AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api`; the wrapper has no default and
+passes exactly that one file to Docker.
 
 The wrapper holds a non-blocking `flock` for its module, preserves the child
 exit code (including timeout), and always emits one final JSON summary:
 `{"module", "rc", "elapsed_s", "image_digest"}`. A duplicate exits `75`;
-an unresolved/non-digest serving image exits `78`.
+an unresolved/non-digest deployed image or missing runtime env file exits `78`.
 
-`scripts/ncp_job_timers_check.py` parses every checked-in `job-*` pair. It
-proves the `ExecStart` argv captured from the source flow, module import,
-timeout inheritance, five next KST occurrences, timer no-catchup/no-jitter,
-and absence of duplicate schedules. It makes no network calls.
+`tests/fixtures/ncp_job_timers_prefect_argv.json` is the verbatim Docker argv
+golden from Prefect's `auto_trader_execution.py` helper for the three eligible
+deployments. The wrapper test captures fake-Docker arguments and compares each
+token to that golden. `scripts/ncp_job_timers_check.py` parses every checked-in
+`job-*` pair and proves its `ExecStart`, environment contract, timeout,
+five next KST occurrences, no-catchup/no-jitter, and absence of duplicate
+schedules. Its default mode makes no network calls. `--check-cutover` is
+read-only: it reads the three named deployments from `PREFECT_API_URL` and the
+three local timer states via `systemctl is-enabled`, and exits 1 with the unit
+name if an enabled timer's deployment is unpaused.
 
 ## Included static jobs
 
@@ -67,13 +67,16 @@ scope.
 For each included unit, in this order: Toss warnings → US screener freshness →
 KR investor freshness. Do not batch or overlap the change.
 
-1. Install the committed unit files and run `systemctl daemon-reload`.
-2. Run `systemctl enable --now job-<name>.timer`.
-3. Wait for the first service execution; inspect its final JSON summary and
+1. Pause the matching Prefect deployment in Prefect. Do not enable the timer
+   until that pause has completed.
+2. Install the committed unit files and run `systemctl daemon-reload`.
+3. Run `systemctl enable --now job-<name>.timer`, then immediately repeat the
+   read-only checker: `PREFECT_API_URL=... uv run python -m
+   scripts.ncp_job_timers_check --check-cutover`. It must remain green before
+   waiting for execution; a green result proves no enabled timer is paired
+   with an unpaused deployment.
+4. Wait for the first service execution; inspect its final JSON summary and
    proceed only when `rc=0` and the digest is a `sha256` image.
-4. Pause the matching Prefect deployment only after that successful run.
-5. Add the corresponding `HC_PING_URL_<MODULE>` value to the root-owned jobs
-   environment file and reload/restart only the timer as appropriate.
 
 The write-capable snapshot jobs are intentionally after Toss warnings. The
 Prefect deployment is paused one unit at a time, never deleted.

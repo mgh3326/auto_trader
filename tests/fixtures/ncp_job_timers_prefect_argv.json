@@ -1,0 +1,34 @@
+{
+  "provenance": {
+    "helper": "/Users/mgh3326/services/prefect/src/robin_automation/auto_trader_execution.py:auto_trader_command",
+    "mode": "docker",
+    "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "container_env_file": "/root/at-secrets/.env.api"
+  },
+  "jobs": [
+    {
+      "unit": "kr-investor-flow-snapshots",
+      "flow": "KR Investor Flow Snapshots",
+      "deployment": "daily-freshness",
+      "cron": "10 18 * * 1-5",
+      "timeout_seconds": 1800,
+      "argv": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_investor_flow_snapshots", "--market", "kr", "--days", "5", "--batch-size", "100", "--concurrency", "4", "--all", "--commit"]
+    },
+    {
+      "unit": "toss-warnings-sync",
+      "flow": "Toss Warnings Sync",
+      "deployment": "daily-preopen",
+      "cron": "30 7 * * *",
+      "timeout_seconds": 3600,
+      "argv": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.sync_toss_warnings"]
+    },
+    {
+      "unit": "us-invest-screener-snapshots",
+      "flow": "US Invest Screener Snapshots",
+      "deployment": "post-us-close-freshness",
+      "cron": "10 6 * * 2-6",
+      "timeout_seconds": 7200,
+      "argv": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_invest_screener_snapshots", "--market", "us", "--batch-size", "200", "--concurrency", "4", "--all", "--common-stocks-only", "--commit"]
+    }
+  ]
+}

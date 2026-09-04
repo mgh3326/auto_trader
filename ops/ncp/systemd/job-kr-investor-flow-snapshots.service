@@ -7,7 +7,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/root/at-run
-EnvironmentFile=/root/at-secrets/.env.jobs
+Environment=AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api
 ExecStart=/root/at-run/ops/ncp/bin/at-job.sh scripts.build_investor_flow_snapshots --market kr --days 5 --batch-size 100 --concurrency 4 --all --commit
 TimeoutStartSec=1830
 User=root

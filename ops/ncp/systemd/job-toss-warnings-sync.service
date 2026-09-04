@@ -7,7 +7,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/root/at-run
-EnvironmentFile=/root/at-secrets/.env.jobs
+Environment=AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api
 ExecStart=/root/at-run/ops/ncp/bin/at-job.sh scripts.sync_toss_warnings
 TimeoutStartSec=3630
 User=root

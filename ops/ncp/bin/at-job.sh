@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Run one statically-audited auto_trader CLI from the image used by at-api.
+# Run one statically-audited auto_trader CLI from the deployed image digest.
 # This wrapper deliberately refuses a tag or a missing/foreign digest: jobs
 # must never silently run a different revision from the serving deployment.
 set -Eeuo pipefail
 
-readonly API_CONTAINER="at-api"
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
-readonly API_ENV_FILE="/root/at-secrets/.env.api"
-readonly SCHEDULER_ENV_FILE="/root/at-secrets/.env.scheduler"
+readonly DEPLOYED_DIGEST_FILE="/root/at-run/deployed-digest"
 # The production default is root-owned /run/lock.  The override is solely for
 # hermetic tests and does not alter the lock key or enable concurrent runs.
 readonly LOCK_DIRECTORY="${AT_JOB_LOCK_DIRECTORY:-/run/lock}"
@@ -41,14 +39,17 @@ if ! flock -n 9; then
   exit 75
 fi
 
-image_digest="$(docker inspect --format '{{.Config.Image}}' "$API_CONTAINER" 2>/dev/null || true)"
+image_digest=""
+if [[ -f "$DEPLOYED_DIGEST_FILE" ]]; then
+  IFS= read -r image_digest <"$DEPLOYED_DIGEST_FILE" || true
+fi
 if [[ ! "$image_digest" =~ ^${IMAGE_REPOSITORY}@sha256:[[:xdigit:]]{64}$ ]]; then
-  printf 'at-job refuses unresolved or non-digest at-api image\n' >&2
+  printf 'at-job refuses unresolved or non-digest deployed image\n' >&2
   printf '{"module":"%s","rc":78,"elapsed_s":0,"image_digest":"unresolved"}\n' "$module"
   exit 78
 fi
-[[ -f "$API_ENV_FILE" && -f "$SCHEDULER_ENV_FILE" ]] || {
-  printf 'at-job requires configured environment files\n' >&2
+[[ -n "${AT_RUNTIME_ENV_FILE:-}" && -f "$AT_RUNTIME_ENV_FILE" ]] || {
+  printf 'at-job requires AT_RUNTIME_ENV_FILE to name an existing environment file\n' >&2
   printf '{"module":"%s","rc":78,"elapsed_s":0,"image_digest":"%s"}\n' "$module" "$image_digest"
   exit 78
 }
@@ -56,27 +57,12 @@ fi
 start_seconds="$SECONDS"
 set +e
 timeout --preserve-status "${timeout_seconds}s" \
-  docker run --rm --network host \
-  --env-file "$API_ENV_FILE" --env-file "$SCHEDULER_ENV_FILE" \
-  --name "at-job-${unit}" "$image_digest" \
-  uv run python -m "$module" "$@"
+  docker run --rm --network host --workdir /app \
+  --env-file "$AT_RUNTIME_ENV_FILE" "$image_digest" \
+  /app/.venv/bin/python -m "$module" "$@"
 rc=$?
 set -e
 elapsed_seconds=$((SECONDS - start_seconds))
-
-# Healthchecks pings are intentionally best-effort and do not mask the job's
-# exit status. Values stay in the root-owned environment file and are never
-# printed. Unit identifiers are module-derived, so no service-side environment
-# assignment can change the selected endpoint.
-hc_variable="HC_PING_URL_${unit^^}"
-hc_url="${!hc_variable:-}"
-if [[ -n "$hc_url" ]]; then
-  if (( rc == 0 )); then
-    curl --fail --silent --show-error --max-time 10 --output /dev/null "$hc_url" || true
-  else
-    curl --fail --silent --show-error --max-time 10 --output /dev/null "${hc_url%/}/fail" || true
-  fi
-fi
 
 printf '{"module":"%s","rc":%d,"elapsed_s":%d,"image_digest":"%s"}\n' \
   "$module" "$rc" "$elapsed_seconds" "$image_digest"

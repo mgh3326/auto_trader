@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
-"""Validate the static, safe subset of Prefect B-class script timers.
-
-The Prefect source lives in a separate deployment repository, so its exact
-subprocess argv is captured here as a reviewable provenance contract.  The
-source file and line references in ``ncp-job-timers.md`` are the authority.
-Only flows whose deployment parameters make the argv static appear below.
-"""
+"""Validate static timer contracts and read-only Prefect cutover state."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD_DIR = ROOT / "ops/ncp/systemd"
 RUNNER = "/root/at-run/ops/ncp/bin/at-job.sh"
-JOBS_ENV_FILE = "/root/at-secrets/.env.jobs"
+PREFECT_GOLDEN = ROOT / "tests/fixtures/ncp_job_timers_prefect_argv.json"
+RUNTIME_ENV_FILE = "/root/at-secrets/.env.api"
 _DIRECTIVE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9]*)=(?P<value>.*)$")
+_IMAGE = re.compile(r"^ghcr\.io/mgh3326/auto_trader@sha256:[0-9a-f]{64}$")
 _WEEKDAYS = {"Sun": 0, "Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6}
 _IMPORT_ONLY_ENV = {
     "KIS_APP_KEY": "check-only",
@@ -40,60 +40,47 @@ _IMPORT_ONLY_ENV = {
 @dataclass(frozen=True)
 class Job:
     name: str
-    module: str
-    argv: tuple[str, ...]
+    flow: str
+    deployment: str
     cron: str
     timeout_seconds: int
+    prefect_argv: tuple[str, ...]
 
 
-# These are the Docker-mode argv captured from the Prefect flow functions with
-# their deployed parameters.  Keep their order byte-for-byte: no shell parser
-# or argument normalizer is allowed between the source flow and the unit.
-JOBS = (
-    Job(
-        "kr-investor-flow-snapshots",
-        "scripts.build_investor_flow_snapshots",
-        (
-            "--market",
-            "kr",
-            "--days",
-            "5",
-            "--batch-size",
-            "100",
-            "--concurrency",
-            "4",
-            "--all",
-            "--commit",
-        ),
-        "10 18 * * 1-5",
-        1800,
-    ),
-    Job("toss-warnings-sync", "scripts.sync_toss_warnings", (), "30 7 * * *", 3600),
-    Job(
-        "us-invest-screener-snapshots",
-        "scripts.build_invest_screener_snapshots",
-        (
-            "--market",
-            "us",
-            "--batch-size",
-            "200",
-            "--concurrency",
-            "4",
-            "--all",
-            "--common-stocks-only",
-            "--commit",
-        ),
-        "10 6 * * 2-6",
-        7200,
-    ),
-)
+def _load_jobs() -> tuple[Job, ...]:
+    payload = json.loads(PREFECT_GOLDEN.read_text())
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("jobs"), list):
+        raise ValueError(f"{PREFECT_GOLDEN}: malformed Prefect argv golden")
+    jobs: list[Job] = []
+    for raw in payload["jobs"]:
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{PREFECT_GOLDEN}: malformed job entry")
+        values = ("unit", "flow", "deployment", "cron", "timeout_seconds", "argv")
+        if any(key not in raw for key in values) or not all(
+            isinstance(raw[key], str) for key in values[:4]
+        ):
+            raise ValueError(f"{PREFECT_GOLDEN}: malformed job metadata")
+        argv = raw["argv"]
+        if (
+            type(raw["timeout_seconds"]) is not int
+            or not isinstance(argv, list)
+            or not all(isinstance(token, str) for token in argv)
+        ):
+            raise ValueError(f"{PREFECT_GOLDEN}: malformed job argv")
+        jobs.append(
+            Job(
+                raw["unit"],
+                raw["flow"],
+                raw["deployment"],
+                raw["cron"],
+                raw["timeout_seconds"],
+                tuple(argv),
+            )
+        )
+    return tuple(jobs)
 
 
-def captured_prefect_argv(job: Job, run: object) -> None:
-    """Call a fake ``_run`` exactly as the eligible flow's Docker path does."""
-    callback = run
-    assert callable(callback)
-    callback(["uv", "run", "python", "-m", job.module, *job.argv])
+JOBS = _load_jobs()
 
 
 def _directives(path: Path) -> dict[str, list[str]]:
@@ -174,7 +161,27 @@ def next_runs(
 
 
 def expected_execstart(job: Job) -> list[str]:
-    return [RUNNER, job.module, *job.argv]
+    argv = job.prefect_argv
+    prefix = (
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "--workdir",
+        "/app",
+        "--env-file",
+        RUNTIME_ENV_FILE,
+    )
+    if argv[: len(prefix)] != prefix or len(argv) < len(prefix) + 4:
+        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has an invalid Docker prefix")
+    image_index = len(prefix)
+    if not _IMAGE.fullmatch(argv[image_index]):
+        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has a non-digest image")
+    command = argv[image_index + 1 :]
+    if command[:2] != ("/app/.venv/bin/python", "-m") or len(command) < 3:
+        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has an invalid Python command")
+    return [RUNNER, *command[2:]]
 
 
 def check_job(job: Job, *, check_imports: bool) -> None:
@@ -182,9 +189,13 @@ def check_job(job: Job, *, check_imports: bool) -> None:
     timer_path = SYSTEMD_DIR / f"job-{job.name}.timer"
     service = _directives(service_path)
     timer = _directives(timer_path)
-    if service.get("EnvironmentFile") != [JOBS_ENV_FILE]:
+    if service.get("Environment") != [f"AT_RUNTIME_ENV_FILE={RUNTIME_ENV_FILE}"]:
         raise ValueError(
-            f"{service_path}: only {JOBS_ENV_FILE} may provide job environment"
+            f"{service_path}: must set AT_RUNTIME_ENV_FILE to {RUNTIME_ENV_FILE}"
+        )
+    if "EnvironmentFile" in service:
+        raise ValueError(
+            f"{service_path}: must not inject an additional environment file"
         )
     actual_argv = shlex.split(service.get("ExecStart", [""])[0])
     if actual_argv != expected_execstart(job):
@@ -200,22 +211,17 @@ def check_job(job: Job, *, check_imports: bool) -> None:
         raise ValueError(
             f"{timer_path}: OnCalendar differs from Prefect cron {job.cron}"
         )
-    captured: list[list[str]] = []
-    captured_prefect_argv(job, captured.append)
-    if captured != [["uv", "run", "python", "-m", job.module, *job.argv]]:
-        raise ValueError(
-            f"{service_path}: fake Prefect _run did not capture expected argv"
-        )
     if check_imports:
+        module = expected_execstart(job)[1]
         result = subprocess.run(
-            ["uv", "run", "python", "-c", f"import {job.module}"],
+            ["uv", "run", "python", "-c", f"import {module}"],
             capture_output=True,
             text=True,
             check=False,
             env={**os.environ, **_IMPORT_ONLY_ENV},
         )
         if result.returncode:
-            raise ValueError(f"{job.module}: import failed: {result.stderr.strip()}")
+            raise ValueError(f"{module}: import failed: {result.stderr.strip()}")
 
 
 def check_all(*, check_imports: bool) -> None:
@@ -236,20 +242,84 @@ def check_all(*, check_imports: bool) -> None:
         seen[occurrences] = job.name
 
 
+def deployment_paused(api_url: str, job: Job) -> bool:
+    """Read one deployment through Prefect's named-deployment API endpoint."""
+    endpoint = (
+        f"{api_url.rstrip('/')}/deployments/name/"
+        f"{quote(job.flow, safe='')}/{quote(job.deployment, safe='')}"
+    )
+    with urlopen(endpoint, timeout=10) as response:  # noqa: S310 - operator URL
+        payload = json.load(response)
+    if not isinstance(payload, Mapping) or type(payload.get("paused")) is not bool:
+        raise ValueError(f"{endpoint}: deployment response lacks boolean paused")
+    return payload["paused"]
+
+
+def timer_is_enabled(job: Job) -> bool:
+    result = subprocess.run(
+        ["systemctl", "is-enabled", f"job-{job.name}.timer"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout.strip() == "enabled":
+        return True
+    if result.returncode == 0:
+        raise ValueError(
+            f"job-{job.name}.timer: unexpected is-enabled result {result.stdout.strip()!r}"
+        )
+    return False
+
+
+def dual_active_units(api_url: str) -> list[str]:
+    """Return the unsafe timer/deployment pairs; this function never mutates either."""
+    active: list[str] = []
+    for job in JOBS:
+        # Read both authorities for every unit.  Apart from making the operator
+        # report complete, this avoids a disabled timer hiding malformed Prefect
+        # state until a later enable operation.
+        paused = deployment_paused(api_url, job)
+        enabled = timer_is_enabled(job)
+        if enabled and not paused:
+            active.append(f"job-{job.name}.timer")
+    return active
+
+
+def check_cutover() -> None:
+    api_url = os.environ.get("PREFECT_API_URL", "").strip()
+    if not api_url:
+        raise ValueError("PREFECT_API_URL is required for --check-cutover")
+    active = dual_active_units(api_url)
+    if active:
+        raise ValueError(f"dual-active NCP timer(s): {', '.join(active)}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--skip-imports", action="store_true", help="for structural tests only"
     )
+    parser.add_argument(
+        "--check-cutover",
+        action="store_true",
+        help="read Prefect deployment pause state and local systemd timer enablement",
+    )
     args = parser.parse_args(argv)
     check_all(check_imports=not args.skip_imports)
-    print(f"checked {len(JOBS)} NCP job timer(s); network calls: 0")
+    if args.check_cutover:
+        check_cutover()
+    network_calls = len(JOBS) if args.check_cutover else 0
+    print(f"checked {len(JOBS)} NCP job timer(s); network calls: {network_calls}")
     return 0
 
 
-if __name__ == "__main__":
+def run_cli(argv: list[str] | None = None) -> int:
     try:
-        raise SystemExit(main())
+        return main(argv)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"ncp job timer check failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_cli())
