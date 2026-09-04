@@ -1561,7 +1561,11 @@ Response sections:
 - `pending_orders`: pending-order snapshot with `expected_expiry` when factually derivable.
 - `active_watches`: same active watch rows as `list_active_watches`.
 - `latest_report`: latest report summary and item status counts, or `null`.
-- `session_context`: recent ROB-516 handoff entries.
+- `session_context`: recent ROB-516 handoff entries. Its additive `constraints`
+  subsection is `{count, entries}` for `entry_type="constraint"` rows from the
+  current KST date plus the prior two KST dates, newest first. It is queried
+  independently of `session_context_limit`; the original `count`/`entries`
+  window remains unchanged.
 - `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
 - `trading_scoreboards`: trading scoreboard or counterfactual delta metrics, depending on `include_counterfactual_delta` parameter.
 
