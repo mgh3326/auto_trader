@@ -1883,6 +1883,56 @@ async def test_web_loss_cut_uses_session_token_then_submits_once(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_digest", [None, "not-a-sha256-digest"])
+async def test_web_loss_cut_rejects_missing_or_malformed_confirmation_digest(
+    monkeypatch, db_session, invalid_digest
+):
+    """A partial web ceremony can never turn its token verification off."""
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    submits: list[object] = []
+
+    async def fake_revalidate(**kwargs):
+        submits.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    first = await handle_web_approval(
+        group.proposal_id,
+        action="approve",
+        actor_subject="user:9",
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert first["reason"] == "loss_cut_confirmation_required"
+
+    service = OrderProposalsService(db_session)
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    source_asof = dict(refreshed.source_asof or {})
+    confirmation = dict(source_asof["loss_cut_confirmation"])
+    if invalid_digest is None:
+        confirmation.pop("web_confirmation_token_digest", None)
+    else:
+        confirmation["web_confirmation_token_digest"] = invalid_digest
+    source_asof["loss_cut_confirmation"] = confirmation
+    await service._repo.update_group(refreshed, source_asof=source_asof)
+    await db_session.commit()
+
+    second = await handle_web_approval(
+        group.proposal_id,
+        action="loss-cut-confirm",
+        actor_subject="user:9",
+        confirmation_token="wrong-web-confirmation-token",
+        now=datetime(2026, 7, 13, 10, 0, 30, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert second["reason"] == "loss_cut_confirmation_token_invalid"
+    assert submits == []
+
+
+@pytest.mark.asyncio
 async def test_web_loss_cut_first_step_failure_preserves_telegram_card(
     monkeypatch, db_session
 ):

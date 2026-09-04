@@ -2074,8 +2074,14 @@ class OrderProposalsService:
             raise OrderProposalError("loss_cut_confirmation_principal_mismatch")
         if actor_channel == "web":
             expected_token_digest = envelope.get("web_confirmation_token_digest")
-            if expected_token_digest is not None and (
+            # The browser confirmation capability is mandatory for a web
+            # ceremony.  A partially persisted envelope is not evidence that
+            # the token check may be skipped: reject absent and malformed
+            # digests before comparing, then reject a missing/wrong token.
+            if (
                 not isinstance(expected_token_digest, str)
+                or len(expected_token_digest) != 64
+                or any(char not in "0123456789abcdef" for char in expected_token_digest)
                 or not web_confirmation_token
                 or not secrets.compare_digest(
                     expected_token_digest,

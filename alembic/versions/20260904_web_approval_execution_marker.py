@@ -48,13 +48,17 @@ def downgrade() -> None:
     # narrower checks cannot represent marker rows, so only permit this schema
     # reversal when none exists (the isolated migration-chain test exercises
     # that empty path).
-    count = op.get_bind().execute(
-        sa.text(
-            "SELECT count(*) FROM review.order_proposal_approval_events "
-            "WHERE step IN ('handler_entered', 'terminal') "
-            "OR outcome IN ('entered', 'completed', 'dead_letter')"
+    count = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT count(*) FROM review.order_proposal_approval_events "
+                "WHERE step IN ('handler_entered', 'terminal') "
+                "OR outcome IN ('entered', 'completed', 'dead_letter')"
+            )
         )
-    ).scalar_one()
+        .scalar_one()
+    )
     if count:
         raise RuntimeError("web approval execution marker rows are append-only")
     op.drop_constraint(
