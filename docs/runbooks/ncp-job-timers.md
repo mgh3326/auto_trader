@@ -29,6 +29,15 @@ read-only: it reads the three named deployments from `PREFECT_API_URL` and the
 three local timer states via `systemctl is-enabled`, and exits 1 with the unit
 name if an enabled timer's deployment is unpaused.
 
+### Golden regeneration
+
+When a Prefect flow or helper changes, first check for drift with `uv run python
+-m scripts.ncp_job_timers_golden --check`. Then regenerate with `uv run python
+-m scripts.ncp_job_timers_golden --write` and include the fixture and provenance
+change in the PR. The command reads the Prefect checkout selected by
+`ROBIN_PREFECT_REPO` (or `--prefect-repo`), imports the real helper and three
+flow tasks, and never calls Prefect or NCP.
+
 ## Included static jobs
 
 | unit | Prefect evidence | Prefect cron (KST) | argv after `python -m` |

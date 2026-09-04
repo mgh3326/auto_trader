@@ -3,7 +3,9 @@
     "helper": "/Users/mgh3326/services/prefect/src/robin_automation/auto_trader_execution.py:auto_trader_command",
     "mode": "docker",
     "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "container_env_file": "/root/at-secrets/.env.api"
+    "container_env_file": "/root/at-secrets/.env.api",
+    "command": "uv run python -m scripts.ncp_job_timers_golden --write",
+    "prefect_repo_head": "bcfcd6c42b079ab64d59cf3b6876d8a864e9cef8"
   },
   "jobs": [
     {
