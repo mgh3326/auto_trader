@@ -166,6 +166,24 @@ async def test_cache_returns_isolated_copies(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_hit_returns_isolated_copy(db_session, monkeypatch):
+    async def empty_load_fills(*a, **k):
+        return []
+
+    monkeypatch.setattr(agg, "load_fills", empty_load_fills)
+    stamp = datetime(2026, 7, 6, tzinfo=UTC)
+
+    await agg.build_trading_scoreboard(db_session, now=stamp)  # populate
+    cached = await agg.build_trading_scoreboard(db_session, now=stamp)  # hit
+    cached["groups"].append({"tag": "MUTANT"})
+    cached["count"] = 999
+
+    later = await agg.build_trading_scoreboard(db_session, now=stamp)  # hit again
+    assert later["groups"] == []
+    assert later["count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_counterfactual_delta_loads_fills_once(db_session, monkeypatch):
     calls = []
 
