@@ -404,6 +404,105 @@ class InvestMomentumEventSnapshotsRepository:
             grouped.setdefault(row.theme_snapshot_id, []).append(row)
         return grouped
 
+    async def list_recent_trading_dates(
+        self,
+        *,
+        before_date: dt.date,
+        limit: int = 5,
+    ) -> list[dt.date]:
+        """Distinct KR trading dates strictly before ``before_date``, most recent first."""
+        result = await self._session.execute(
+            select(InvestMomentumEventSnapshot.trading_date)
+            .where(
+                InvestMomentumEventSnapshot.market == "kr",
+                InvestMomentumEventSnapshot.trading_date < before_date,
+            )
+            .distinct()
+            .order_by(InvestMomentumEventSnapshot.trading_date.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_symbol_trade_value_near_time(
+        self,
+        *,
+        symbol: str,
+        trading_date: dt.date,
+        target_at: dt.datetime,
+        tolerance: dt.timedelta,
+    ) -> object | None:
+        """Closest-in-time ``trade_value`` observation for ``symbol`` on
+        ``trading_date`` within ``tolerance`` of ``target_at``.
+
+        Multiple surfaces (order_type) can be captured a few seconds apart
+        under the same 10-minute snapshot_at bucket; the max trade_value
+        among rows at the chosen closest snapshot_at is used since trade
+        value is cumulative-for-the-day and should not decrease.
+        """
+        result = await self._session.execute(
+            select(
+                InvestMomentumEventSnapshot.snapshot_at,
+                InvestMomentumEventSnapshot.trade_value,
+            ).where(
+                InvestMomentumEventSnapshot.market == "kr",
+                InvestMomentumEventSnapshot.symbol == symbol,
+                InvestMomentumEventSnapshot.trading_date == trading_date,
+                InvestMomentumEventSnapshot.snapshot_at >= target_at - tolerance,
+                InvestMomentumEventSnapshot.snapshot_at <= target_at + tolerance,
+            )
+        )
+        rows = result.all()
+        if not rows:
+            return None
+
+        closest_at = min(
+            (row.snapshot_at for row in rows), key=lambda at: abs(at - target_at)
+        )
+        values_at_closest = [
+            row.trade_value
+            for row in rows
+            if row.snapshot_at == closest_at and row.trade_value is not None
+        ]
+        if not values_at_closest:
+            return None
+        return max(values_at_closest)
+
+    async def list_historical_trade_values_near_time(
+        self,
+        *,
+        symbol: str,
+        before_date: dt.date,
+        target_time_of_day: dt.time,
+        lookback_days: int = 5,
+        tolerance: dt.timedelta = dt.timedelta(minutes=10),
+    ) -> list[object | None]:
+        """Same-time-of-day ``trade_value`` for ``symbol`` on the
+        ``lookback_days`` most recent trading dates before ``before_date``,
+        most-recent-first. ``target_time_of_day`` is UTC (i.e. already
+        converted from KST by the caller) since snapshots are stored in UTC.
+        A day with no near-time observation yields ``None`` at that position
+        -- positions are aligned with the trading dates, gaps are not
+        collapsed, so callers can tell "no data that day" apart from "fewer
+        days exist".
+        """
+        trading_dates = await self.list_recent_trading_dates(
+            before_date=before_date, limit=lookback_days
+        )
+        values: list[object | None] = []
+        for trading_date in trading_dates:
+            target_at = dt.datetime.combine(
+                trading_date, target_time_of_day, tzinfo=dt.UTC
+            )
+            values.append(
+                await self.get_symbol_trade_value_near_time(
+                    symbol=symbol,
+                    trading_date=trading_date,
+                    target_at=target_at,
+                    tolerance=tolerance,
+                )
+            )
+        return values
+
     async def coverage(self, *, as_of: dt.date) -> SnapshotCoverage:
         momentum_result = await self._session.execute(
             select(
