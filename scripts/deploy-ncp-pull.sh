@@ -23,6 +23,8 @@ readonly MCP_DRAIN_SECONDS="${MCP_DRAIN_SECONDS:-3600}"
 readonly MCP_HEARTBEAT_DIRECTORY="${RUN_DIRECTORY}/mcp-heartbeat"
 readonly MCP_HEALTH_ATTEMPTS="${MCP_HEALTH_ATTEMPTS:-30}"
 readonly MCP_HEALTH_SLEEP_SECONDS="${MCP_HEALTH_SLEEP_SECONDS:-2}"
+readonly HAPROXY_READY_ATTEMPTS="${HAPROXY_READY_ATTEMPTS:-20}"
+readonly HAPROXY_READY_INTERVAL="${HAPROXY_READY_INTERVAL:-0.5}"
 readonly MCP_UNITS_SKIP="${MCP_UNITS_SKIP:-}"
 readonly HEALTHZ_ATTEMPTS="${AT_HEALTHZ_ATTEMPTS:-30}"
 readonly HEALTHZ_SLEEP_SECONDS="${AT_HEALTHZ_SLEEP_SECONDS:-2}"
@@ -91,8 +93,33 @@ render_haproxy() {
   chmod 0644 "$tmp"
   if [[ -e "$HAPROXY_CONFIG" ]]; then cp "$HAPROXY_CONFIG" "$HAPROXY_CONFIG_PREVIOUS"; cat "$tmp" >"$HAPROXY_CONFIG" && rm -f "$tmp"; else mv -f "$tmp" "$HAPROXY_CONFIG"; fi
 }
-reload_haproxy() { if container_exists "$HAPROXY_CONTAINER"; then docker kill -s HUP "$HAPROXY_CONTAINER" >/dev/null; else docker run -d --name "$HAPROXY_CONTAINER" --restart unless-stopped --network host -v "${HAPROXY_CONFIG}:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" -W -db -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null; fi; curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8000/healthz >/dev/null && curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8765/health >/dev/null; }
-restore_haproxy_config() { [[ -f "$HAPROXY_CONFIG_PREVIOUS" ]] || return 0; cat "$HAPROXY_CONFIG_PREVIOUS" >"$HAPROXY_CONFIG"; reload_haproxy || true; }
+wait_haproxy_ready() {
+  local attempt
+  for ((attempt=1; attempt<=HAPROXY_READY_ATTEMPTS; attempt++)); do
+    if curl --fail --silent --max-time 3 http://127.0.0.1:8000/healthz >/dev/null \
+      && curl --fail --silent --max-time 3 http://127.0.0.1:8765/health >/dev/null; then
+      return 0
+    fi
+    sleep "$HAPROXY_READY_INTERVAL"
+  done
+  printf 'haproxy routes not ready after reload\n' >&2
+  return 1
+}
+
+reload_haproxy() {
+  if container_exists "$HAPROXY_CONTAINER"; then docker kill -s HUP "$HAPROXY_CONTAINER" >/dev/null
+  else docker run -d --name "$HAPROXY_CONTAINER" --restart unless-stopped --network host -v "${HAPROXY_CONFIG}:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" -W -db -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null
+  fi
+  wait_haproxy_ready
+}
+
+restore_haproxy_config() {
+  [[ -f "$HAPROXY_CONFIG_PREVIOUS" ]] || return 0
+  cat "$HAPROXY_CONFIG_PREVIOUS" >"$HAPROXY_CONFIG"
+  # Best effort: this may wait up to HAPROXY_READY_ATTEMPTS ×
+  # HAPROXY_READY_INTERVAL (10s by default) before returning.
+  reload_haproxy || true
+}
 
 # The foreground inspect is a deterministic scheduling record; the detached
 # child removes only the ID captured before a later replacement can occur.
