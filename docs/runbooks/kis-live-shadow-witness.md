@@ -1,7 +1,7 @@
 # KIS live shadow witness (Phase 1)
 
 Phase 1 is an audit-only, no-broker-egress witness. It is disabled by default:
-`KIS_LIVE_SHADOW_WITNESS_ENABLED=false`. When fable separately deploys and arms
+`KIS_LIVE_SHADOW_WITNESS_ENABLED=false`. When the operator separately deploys and arms
 it, the client sends immutable KIS live limit-order observations only to the
 loopback `EDGE_WITNESS_URL` (default `http://127.0.0.1:8080`). No credential or
 authorization header is used. This PR does not deploy, activate, or contact it.
