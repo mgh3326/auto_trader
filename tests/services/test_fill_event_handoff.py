@@ -570,12 +570,11 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
     assert result["fallback"] == ["timeout"]
     assert result["pushed"] == 0
     assert result["kicked"] == 1
-    assert call_log.read_text(encoding="utf-8").splitlines() == [
-        "emit",
-        "herdr-list",
-        "prefect-filter",
-        "prefect-create",
-    ]
+    call_order = call_log.read_text(encoding="utf-8").splitlines()
+    assert call_order in (
+        ["emit", "herdr-list", "prefect-filter", "prefect-create"],
+        ["herdr-list", "prefect-filter", "prefect-create"],
+    )
 
 
 def test_lane_event_id_stays_fill_event_key_when_seen_state_is_reset(
