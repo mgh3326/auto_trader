@@ -40,6 +40,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     LANE_SEQUENCES,
     MUTATION_TOOLS,
     ORDER_PROPOSAL_READ_TOOLS,
+    PERSISTENCE_TOOLS,
     PREVIEW_REVALIDATION_TOOLS,
     PROPOSAL_LED_TOOLS,
     PROPOSAL_LIFECYCLE_TOOLS,
@@ -102,6 +103,9 @@ def test_buckets_are_disjoint():
     assert "evaluate_buy_gate_ab_shadow" not in MUTATION_TOOLS
     assert "decision_table_validate" in READ_ONLY_ADVISORY_TOOLS
     assert "decision_table_validate" not in MUTATION_TOOLS
+    assert "decision_table_apply" in PERSISTENCE_TOOLS
+    assert "decision_table_apply" in MUTATION_TOOLS
+    assert "decision_table_apply" not in READ_ONLY_ADVISORY_TOOLS
 
 
 def test_mutation_action_taxonomy_is_disjoint_and_total():
@@ -110,6 +114,7 @@ def test_mutation_action_taxonomy_is_disjoint_and_total():
         PROPOSAL_LED_TOOLS,
         PROPOSAL_LIFECYCLE_TOOLS,
         RESERVE_NET_CONSUMER_TOOLS,
+        PERSISTENCE_TOOLS,
         PREVIEW_REVALIDATION_TOOLS,
         RECONCILE_TOOLS,
         STATUS_HELPER_TOOLS,

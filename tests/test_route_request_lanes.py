@@ -77,6 +77,7 @@ def test_action_taxonomy_is_disjoint_and_total():
         L.PROPOSAL_LED_TOOLS,
         L.PROPOSAL_LIFECYCLE_TOOLS,
         L.RESERVE_NET_CONSUMER_TOOLS,
+        L.PERSISTENCE_TOOLS,
         L.PREVIEW_REVALIDATION_TOOLS,
         L.RECONCILE_TOOLS,
         L.STATUS_HELPER_TOOLS,
@@ -88,6 +89,7 @@ def test_action_taxonomy_is_disjoint_and_total():
     assert L.ALL_KNOWN_TOOLS == L.READ_ONLY_ADVISORY_TOOLS | L.MUTATION_TOOLS
     assert L.ORDER_PROPOSAL_READ_TOOLS <= L.READ_ONLY_ADVISORY_TOOLS
     assert L.PROPOSAL_LED_TOOLS == {"order_proposal_create"}
+    assert L.PERSISTENCE_TOOLS == {"decision_table_apply"}
 
 
 def test_account_cleanup_route_allows_only_preflighted_alpaca_submit():

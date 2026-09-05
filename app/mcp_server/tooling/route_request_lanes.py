@@ -276,6 +276,11 @@ PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
     }
 )
 RESERVE_NET_CONSUMER_TOOLS: frozenset[str] = frozenset({"support_reserve_net_consume"})
+# Local persistence coordinators are mutations, but unlike proposal-led tools
+# they are not a route_request ordered lane step.  A table apply is explicitly
+# invoked by an operator after artifact validation; adding it to a buy/sell
+# sequence would turn route planning into unintended application automation.
+PERSISTENCE_TOOLS: frozenset[str] = frozenset({"decision_table_apply"})
 ORDER_PROPOSAL_READ_TOOLS: frozenset[str] = frozenset(
     {
         "order_proposal_get",
@@ -371,6 +376,7 @@ MUTATION_TOOLS: frozenset[str] = (
     | PROPOSAL_LED_TOOLS
     | PROPOSAL_LIFECYCLE_TOOLS
     | RESERVE_NET_CONSUMER_TOOLS
+    | PERSISTENCE_TOOLS
 )
 
 # ROB-658's market-aware direct execution mapping remains only for discovery,
@@ -896,6 +902,7 @@ __all__ = [
     "PROPOSAL_LED_TOOLS",
     "PROPOSAL_LIFECYCLE_TOOLS",
     "RESERVE_NET_CONSUMER_TOOLS",
+    "PERSISTENCE_TOOLS",
     "LANE_PROPOSAL_LIFECYCLE_ALLOWED",
     "LANE_RESERVE_NET_CONSUMER_ALLOWED",
     "ORDER_PROPOSAL_READ_TOOLS",

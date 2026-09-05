@@ -127,6 +127,9 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.dead_tools import without_dead_tools
+from app.mcp_server.tooling.decision_table_apply_registration import (
+    register_decision_table_apply_tools,
+)
 from app.mcp_server.tooling.downside_watch_registration import (
     register_downside_watch_tools,
 )
@@ -355,6 +358,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     )
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
+    # ROB-1349: the KR NXT helmsman/navigator consumer reaches the deployed
+    # default operator surface. Other broad profiles are not evidence of this
+    # role binding, so the persistence coordinator stays fail-closed here.
+    if profile is McpProfile.DEFAULT:
+        register_decision_table_apply_tools(mcp)
     register_operating_briefing_tools(mcp)
     # ROB-646 — read-only policy thresholds + version stamp; always registered
     # so every profile can cite the stamp when recording a verdict.
