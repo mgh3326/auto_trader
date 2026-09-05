@@ -9,7 +9,6 @@ import argparse
 import asyncio
 import json
 import os
-import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,11 @@ import httpx
 
 from app.core.db import AsyncSessionLocal
 from app.services.fill_event_handoff import FillHandoffRunner, HandoffConfig
-from app.services.lane_events import LANE_PATTERN, LaneEventConfig
+from app.services.lane_events import (
+    LANE_PATTERN,
+    LaneEventConfig,
+    lane_event_config_from_env,
+)
 
 
 def _enabled(value: str | None) -> bool:
@@ -50,18 +53,8 @@ def _lanes(value: str | None) -> dict[str, str]:
 
 
 def _lane_event_config() -> LaneEventConfig:
-    timeout_s = float(os.getenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "3"))
-    if timeout_s <= 1:
-        raise ValueError("FILL_HANDOFF_EMIT_TIMEOUT_S must be greater than 1")
-    return LaneEventConfig(
-        binary=os.getenv("FILL_HANDOFF_EMIT_BIN", "panewire"),
-        host=os.getenv("FILL_HANDOFF_EMIT_HOST", socket.gethostname()),
-        pane=os.getenv("FILL_HANDOFF_EMIT_PANE", ""),
-        inbox_root=os.getenv(
-            "FILL_HANDOFF_EMIT_INBOX_ROOT",
-            str(Path("~/work/herdr-inbox").expanduser()),
-        ),
-        timeout_s=timeout_s,
+    return lane_event_config_from_env(
+        prefix_fallbacks=("FILL_HANDOFF_EMIT", "LANE_EVENT_EMIT"),
     )
 
 

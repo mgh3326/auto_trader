@@ -1,0 +1,12 @@
+[Unit]
+Description=Run auto_trader kickoff lane event us-2235
+
+[Timer]
+# Persistent=false: a missed kickoff must never be replayed after its market window.
+OnCalendar=Mon..Fri *-*-* 22:35:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kickoff-us-2235.service
+
+[Install]
+WantedBy=timers.target
