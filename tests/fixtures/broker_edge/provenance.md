@@ -1,5 +1,5 @@
 # Witness fixture provenance
-Source: captain-4, independent preparation, 2026-09-05 KST.
+Source: independent fixture preparation, 2026-09-05 KST.
 Source repository: https://github.com/mgh3326/broker-edge
 Exact source commit: ec20a949c0a4d15aa62f8501067e0237fd41c212 (merged PR #23).
 Worktree: /Users/mgh3326/work/broker-edge.c4-fixtures, detached, clean after capture.
