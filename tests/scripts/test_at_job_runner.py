@@ -319,3 +319,31 @@ def test_multi_step_runs_all_steps_and_propagates_first_failure(tmp_path: Path) 
     assert '"step":1,"steps_total":2' in result.stdout
     assert '"step":2,"steps_total":2' in result.stdout
     assert '{"steps_total":2,"steps_failed":[1]}' in result.stdout
+
+
+def test_multi_step_all_success_emits_empty_failure_aggregate(tmp_path: Path) -> None:
+    capture = tmp_path / "docker.argv"
+    result = _run(
+        tmp_path,
+        'printf "%s\\0" "$@" >> "$AT_JOB_DOCKER_CAPTURE"; '
+        'printf "\\n" >> "$AT_JOB_DOCKER_CAPTURE"; exit 0',
+        module_args=[
+            "scripts.sync_toss_symbol_master",
+            "--market",
+            "kr",
+            "--all",
+            "--commit",
+            "--at-job-step",
+            "scripts.sync_toss_symbol_master",
+            "--market",
+            "us",
+            "--all",
+            "--commit",
+        ],
+        bypass_runtime_file_check=True,
+        extra_env={"AT_JOB_STEPS": "2"},
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [line for line in capture.read_bytes().split(b"\n") if line]
+    assert len(calls) == 2
+    assert '{"steps_total":2,"steps_failed":[]}' in result.stdout

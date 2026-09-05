@@ -198,7 +198,7 @@ done
 
 if (( steps_total > 1 )); then
   printf '{"steps_total":%d,"steps_failed":[' "$steps_total"
-  (IFS=,; printf '%s' "${failed_steps[*]}")
+  (IFS=,; printf '%s' "${failed_steps[*]-}")
   printf ']}\n'
 fi
 exit "$first_failure"
