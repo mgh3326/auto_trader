@@ -58,7 +58,6 @@ def _validate_profile_auth_token(
     token_required_profiles = {
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
-        McpProfile.PAPER_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
     }
     if profile in token_required_profiles and not (token or "").strip():
@@ -101,12 +100,6 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
             raise RuntimeError(
                 f"MCP_PROFILE={profile.value} has incomplete Alpaca clean config: "
                 + ", ".join(missing)
-            )
-        return
-    if profile is McpProfile.PAPER_EXECUTION:
-        if not settings.PAPER_EXECUTION_ENABLED:
-            raise RuntimeError(
-                "MCP_PROFILE=paper_execution requires PAPER_EXECUTION_ENABLED=true"
             )
         return
 

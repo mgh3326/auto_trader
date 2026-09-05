@@ -9,20 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 from fastmcp import FastMCP
 
-from app.core.config import Settings, settings
-from app.mcp_server.profiles import McpProfile
-from app.mcp_server.tooling.paper_cohort_control_registration import (
-    PAPER_COHORT_CONTROL_TOOL_NAMES,
-)
+from app.core.config import Settings
 from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
     PaperOrderToolInput,
     register_paper_execution_tools,
 )
-from app.mcp_server.tooling.paper_validation_registration import (
-    PAPER_VALIDATION_TOOL_NAMES,
-)
-from app.mcp_server.tooling.registry import register_all_tools
 from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
 from app.services.brokers.binance.paper_adapter import BinanceSpotDemoPaperAdapter
 from app.services.brokers.capabilities import Broker
@@ -102,48 +93,6 @@ def _request_json() -> dict[str, object]:
 @pytest.mark.unit
 def test_config_gate_defaults_off() -> None:
     assert Settings.model_fields["PAPER_EXECUTION_ENABLED"].default is False
-
-
-@pytest.mark.unit
-def test_direct_registry_flag_off_registers_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", False)
-    mcp = DummyMCP()
-
-    register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-
-    assert mcp.tools == {}
-
-
-@pytest.mark.unit
-def test_direct_registry_flag_on_registers_exact_profile_union(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
-    mcp = DummyMCP()
-
-    register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-
-    assert PAPER_EXECUTION_TOOL_NAMES == EXPECTED_TOOLS
-    assert set(mcp.tools) == (
-        EXPECTED_TOOLS | PAPER_VALIDATION_TOOL_NAMES | PAPER_COHORT_CONTROL_TOOL_NAMES
-    )
-    forbidden_fragments = {
-        "alpaca_paper",
-        "binance_demo",
-        "kis_live",
-        "kiwoom",
-        "upbit",
-        "toss",
-        "place_order",
-        "link_native",
-    }
-    assert not {
-        name
-        for name in mcp.tools
-        if any(fragment in name for fragment in forbidden_fragments)
-    }
 
 
 @pytest.mark.unit

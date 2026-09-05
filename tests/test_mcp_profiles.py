@@ -481,7 +481,6 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     },
     # Default-off profile: the direct registry exposes zero tools until the
     # dedicated feature flag is explicitly enabled.
-    McpProfile.PAPER_EXECUTION: set(),
     McpProfile.ALPACA_PAPER_CLEAN: set(),
     # ROB-1286 — the watch-fire repricing session. It may create an order
     # *proposal*; it holds no order-mutation tool at all, so this row is the
@@ -536,7 +535,6 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ANALYSIS_READONLY,
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
-        McpProfile.PAPER_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
         # ROB-1286 — allowlist-only and early-returns before the "Always"
         # research block, like the other closed-world profiles above.
@@ -1064,8 +1062,9 @@ class TestResolveMcpProfile:
             is McpProfile.TRADINGCODEX_EXECUTION
         )
 
-    def test_paper_execution(self) -> None:
-        assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
+    def test_removed_paper_execution_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
+            resolve_mcp_profile("paper_execution")
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

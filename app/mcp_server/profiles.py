@@ -28,7 +28,6 @@ class McpProfile(StrEnum):
     ANALYSIS_READONLY = "analysis_readonly"
     ACCOUNT_READ = "account_read"
     TRADINGCODEX_EXECUTION = "tradingcodex_execution"
-    PAPER_EXECUTION = "paper_execution"
     # Canonical physical-account routing surface. The name is a route label;
     # strategy/universe admission is governed by separate contracts.
     ALPACA_PAPER_CLEAN = "alpaca-paper-clean"

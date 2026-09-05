@@ -96,22 +96,9 @@ async def test_missing_server_actor_fails_closed_before_application(
 
 
 @pytest.mark.unit
-def test_control_tool_is_default_off_and_paper_execution_profile_only(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", False)
-    disabled = DummyMCP()
-    register_all_tools(disabled, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-    assert PAPER_COHORT_CONTROL_TOOL_NAMES.isdisjoint(disabled.tools)
-
+def test_preserved_control_tool_is_not_moved_to_another_profile(monkeypatch) -> None:
     monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
-    enabled = DummyMCP()
-    register_all_tools(enabled, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-    assert PAPER_COHORT_CONTROL_TOOL_NAMES <= enabled.tools.keys()
-
     for profile in McpProfile:
-        if profile is McpProfile.PAPER_EXECUTION:
-            continue
         other = DummyMCP()
         register_all_tools(other, profile=profile)  # type: ignore[arg-type]
         assert PAPER_COHORT_CONTROL_TOOL_NAMES.isdisjoint(other.tools)
