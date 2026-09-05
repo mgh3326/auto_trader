@@ -18,11 +18,13 @@ optional `compact`. The fixed section order is `briefing`, `holdings`, `cash`,
 | `policy` | `get_trading_policy` (`buy`, `sell`, and `discovery`) |
 | `recent_context` | `session_context_get_recent` |
 
-Every populated section is a subset of its source tool response: the pack adds
-no fields and does not rename fields inside it. Call the individual source tool
-when a detailed field is needed. Section failure is fail-open for the pack: a
-source fault produces that section's `missing` state while the rest of the pack
-continues.
+The non-composite sections preserve their source tool response without adding
+or renaming fields. `resting` combines the two `order_proposal_list` responses
+with the pending-order snapshot, and `policy` combines the three lane responses;
+both retain those original responses without loss. Call the individual source
+tool when a detailed field is needed. Section failure is fail-open for the pack:
+a source fault produces that section's `missing` state while the rest of the
+pack continues.
 
 The states are `fresh` (the source returned normally), `stale` (the source
 reported stale or degraded data), `missing` (a source fault or exception), and

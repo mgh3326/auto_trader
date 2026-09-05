@@ -427,14 +427,16 @@ async def session_bootstrap_pack_impl(
     market: str,
     include: list[str] | None = None,
     compact: bool = False,
+    *,
+    registered_tool_names: Callable[[], set[str] | Awaitable[set[str]]],
 ) -> dict[str, Any]:
-    """Compose the read-only pack for direct/internal callers."""
+    """Compose the pack for a caller that supplies its served tool inventory."""
 
     return await _session_bootstrap_pack(
         market,
         include,
         compact,
-        registered_tool_names=None,
+        registered_tool_names=registered_tool_names,
     )
 
 

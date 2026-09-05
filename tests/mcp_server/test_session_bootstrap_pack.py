@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import inspect
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling import session_bootstrap_pack as pack
 from app.mcp_server.tooling.session_bootstrap_registration import (
     register_session_bootstrap_tools,
 )
+from app.models.review import KISLiveOrderLedger, TradeForecast
 from app.models.session_context import OperatorSessionContext
 from tests.mcp_server._registration_recorder import RegistrationRecorder
 
@@ -123,23 +126,157 @@ def source_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return calls
 
 
+def _json(value: object) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
 @pytest.mark.asyncio
-async def test_sections_preserve_source_values(source_stubs: dict[str, Any]) -> None:
+async def test_default_include_uses_every_fixed_section(
+    source_stubs: dict[str, Any],
+) -> None:
     result = await pack._session_bootstrap_pack(
         "kr", None, False, registered_tool_names=_registered
     )
 
-    assert result["success"] is True
     assert tuple(result["sections"]) == EXPECTED_DEFAULT_SECTIONS
-    assert result["sections"]["briefing"] == _source_response("briefing")
-    assert result["sections"]["holdings"] == _source_response("holdings")
-    assert result["sections"]["cash"] == _source_response("cash")
-    assert result["sections"]["pending_retros"] == _source_response("pending_retros")
-    assert result["sections"]["due_forecasts"] == _source_response("due_forecasts")
-    assert result["sections"]["recent_context"] == _source_response("recent_context")
-    assert result["sections"]["policy"]["version"] == "v1"
-    assert result["sections"]["policy"]["content_hash"] == "h1"
-    assert source_stubs["resting"] == 1
+    assert source_stubs["cash"] == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_preserves_each_real_lane_response() -> None:
+    sources = {
+        lane: await pack.trading_policy_tools.get_trading_policy(market="kr", lane=lane)
+        for lane in ("buy", "sell", "discovery")
+    }
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["policy"],
+        False,
+        registered_tool_names=lambda: {"get_trading_policy"},
+    )
+
+    for lane, source in sources.items():
+        assert _json(result["sections"]["policy"]["policies"][lane]) == _json(source)
+
+
+@pytest.mark.asyncio
+async def test_briefing_real_source_uses_the_default_account_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_scopes: list[str] = []
+
+    async def summary(**kwargs: Any) -> dict[str, Any]:
+        return {"accounts": [], "errors": [], "kwargs": kwargs}
+
+    async def pending(_db: object, *, market: str, account_scope: str) -> Any:
+        assert market == "kr"
+        observed_scopes.append(account_scope)
+        return SimpleNamespace(orders=[], unavailable_reason=None, as_of=None)
+
+    async def recent_context(*args: object, **kwargs: object) -> dict[str, Any]:
+        return {"count": 0, "entries": []}
+
+    async def artifacts(*args: object, **kwargs: object) -> dict[str, Any]:
+        return {"count": 0, "artifacts": []}
+
+    async def watches(*args: object, **kwargs: object) -> dict[str, Any]:
+        return {"count": 0, "active_watches": []}
+
+    monkeypatch.setattr(pack.operating_briefing, "_get_portfolio_summary_impl", summary)
+    monkeypatch.setattr(
+        pack.operating_briefing, "collect_pending_orders_snapshot", pending
+    )
+    monkeypatch.setattr(
+        pack.operating_briefing, "_recent_session_context", recent_context
+    )
+    monkeypatch.setattr(
+        pack.operating_briefing, "_recent_analysis_artifacts", artifacts
+    )
+    monkeypatch.setattr(pack.operating_briefing, "list_active_watches_impl", watches)
+    monkeypatch.setattr(
+        pack.operating_briefing,
+        "load_negative_class_health",
+        lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        pack.operating_briefing, "get_account_costs_setting", lambda: None
+    )
+
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["briefing"],
+        False,
+        registered_tool_names=lambda: {"get_operating_briefing"},
+    )
+
+    assert result["success"] is True
+    assert observed_scopes == [
+        pack.operating_briefing._default_account_scope("kr", None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_holdings_and_cash_match_real_registered_closures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the routing wrappers on both the pack and registered tools."""
+
+    async def holdings_source(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["include_current_price"] is True
+        return {
+            "success": True,
+            "accounts": [
+                {
+                    "account": "paper",
+                    "broker": "paper",
+                    "positions": [
+                        {
+                            "symbol": f"00{index:04d}",
+                            "quantity": index + 1,
+                            "current_price": 70_000 + index,
+                            "currency": "KRW",
+                        }
+                        for index in range(3)
+                    ],
+                }
+            ],
+            "errors": [],
+        }
+
+    async def capital_source(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs.get("include_manual", True) is True
+        return {
+            "success": True,
+            "accounts": [
+                {
+                    "account": f"paper:{index}",
+                    "currency": "KRW",
+                    "balance": 1_000_000 + index,
+                    "orderable": 900_000 + index,
+                }
+                for index in range(3)
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(pack.portfolio_holdings, "_get_holdings_impl", holdings_source)
+    monkeypatch.setattr(
+        pack.portfolio_holdings, "_get_available_capital_impl", capital_source
+    )
+    recorder = RegistrationRecorder()
+    pack.portfolio_holdings._register_portfolio_tools_impl(recorder)  # type: ignore[arg-type]
+
+    source_holdings = await recorder.tools["get_holdings"](market="kr")
+    source_cash = await recorder.tools["get_available_capital"]()
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["holdings", "cash"],
+        False,
+        registered_tool_names=lambda: {"get_holdings", "get_available_capital"},
+    )
+
+    assert _json(result["sections"]["holdings"]) == _json(source_holdings)
+    assert _json(result["sections"]["cash"]) == _json(source_cash)
 
 
 @pytest.mark.asyncio
@@ -185,9 +322,125 @@ async def test_recent_context_preserves_actual_source_response_subset(
         registered_tool_names=lambda: {"session_context_get_recent"},
     )
 
+    assert source["success"] is True
     assert source["count"] >= 3
     assert json.dumps(result["sections"]["recent_context"], sort_keys=True) == (
         json.dumps(source, sort_keys=True)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
+async def test_pending_retros_preserves_real_seeded_source_response(
+    db_session: AsyncSession,
+) -> None:
+    await db_session.execute(delete(KISLiveOrderLedger))
+    db_session.add_all(
+        [
+            KISLiveOrderLedger(
+                trade_date=pack.now_kst() - timedelta(days=index),
+                symbol=f"00{index:04d}",
+                instrument_type="equity_kr",
+                side="buy",
+                order_type="limit",
+                quantity=index + 1,
+                price=70_000 + index,
+                amount=(index + 1) * (70_000 + index),
+                currency="KRW",
+                account_mode="kis_live",
+                broker="kis",
+                status="filled",
+                lifecycle_state="filled",
+                order_no=f"ROB1347-RETRO-{index}",
+            )
+            for index in range(3)
+        ]
+    )
+    await db_session.commit()
+
+    source = await pack.trade_retrospective_tools.trade_retrospective_pending(limit=20)
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["pending_retros"],
+        False,
+        registered_tool_names=lambda: {"trade_retrospective_pending"},
+    )
+
+    assert source["success"] is True, source
+    assert source["returned"] >= 3
+    assert _json(result["sections"]["pending_retros"]) == _json(source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
+async def test_due_forecasts_preserve_real_seeded_source_response(
+    db_session: AsyncSession,
+) -> None:
+    await db_session.execute(delete(TradeForecast))
+    await db_session.commit()
+    for index in range(3):
+        seeded = await pack.forecast_tools.forecast_save(
+            created_by="codex",
+            symbol=f"FCAST{index}",
+            instrument_type="equity_kr",
+            forecast_target={"kind": "no_resolvable_forecast"},
+            probability=0.2 + (index / 10),
+            review_date=f"2020-01-0{index + 1}",
+            session_label=f"bootstrap-{index}",
+        )
+        assert seeded["success"] is True
+
+    source = await pack.forecast_tools.forecast_resolve(dry_run=True)
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["due_forecasts"],
+        False,
+        registered_tool_names=lambda: {"forecast_resolve"},
+    )
+
+    assert source["due_count"] >= 3
+    assert _json(result["sections"]["due_forecasts"]) == _json(source)
+
+
+@pytest.mark.asyncio
+async def test_resting_proposals_preserve_real_source_responses() -> None:
+    for index in range(3):
+        seeded = await pack.order_proposal_tools.order_proposal_create(
+            symbol=f"REST{index}",
+            market="equity_kr",
+            account_mode="kis_live",
+            side="buy",
+            order_type="limit",
+            proposer="operator:bootstrap",
+            thesis=f"seeded proposal {index}",
+            strategy="ladder",
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "buy",
+                    "quantity": str(index + 1),
+                    "limit_price": str(70_000 + index),
+                    "notional": None,
+                }
+            ],
+        )
+        assert seeded["success"] is True
+
+    pending = await pack.order_proposal_tools.order_proposal_list(
+        lifecycle_state="pending"
+    )
+    resting = await pack.order_proposal_tools.order_proposal_list(
+        lifecycle_state="resting"
+    )
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["resting"],
+        False,
+        registered_tool_names=lambda: {"order_proposal_list"},
+    )
+
+    assert _json(result["sections"]["resting"]["proposals"]) == _json(
+        [*pending["proposals"], *resting["proposals"]]
     )
 
 
@@ -239,7 +492,9 @@ async def test_include_only_calls_requested_sections(
 
 @pytest.mark.asyncio
 async def test_unknown_section_is_fail_closed() -> None:
-    assert await pack.session_bootstrap_pack_impl("kr", ["nope"]) == {
+    assert await pack._session_bootstrap_pack(
+        "kr", ["nope"], False, registered_tool_names=_registered
+    ) == {
         "success": False,
         "error": "unknown_section",
         "unknown": ["nope"],
@@ -248,7 +503,9 @@ async def test_unknown_section_is_fail_closed() -> None:
 
 @pytest.mark.asyncio
 async def test_missing_resolver_denies_every_section() -> None:
-    result = await pack.session_bootstrap_pack_impl("kr")
+    result = await pack._session_bootstrap_pack(
+        "kr", None, False, registered_tool_names=None
+    )
 
     assert result["meta"]["resolver_unavailable"] is True
     for section, tool in pack.SECTION_SOURCE_TOOLS.items():
@@ -297,6 +554,37 @@ async def test_compact_records_truncation(source_stubs: dict[str, Any]) -> None:
     assert result["meta"]["compact_downgraded"] is True
     assert len(result["sections"]["holdings"]["positions"]) == 20
     assert result["meta"]["sections"]["holdings"]["truncated_from"] == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
+async def test_compact_truncates_seeded_due_forecasts(
+    db_session: AsyncSession,
+) -> None:
+    await db_session.execute(delete(TradeForecast))
+    await db_session.commit()
+    for index in range(21):
+        seeded = await pack.forecast_tools.forecast_save(
+            created_by="codex",
+            symbol=f"DUE{index:02d}",
+            instrument_type="equity_kr",
+            forecast_target={"kind": "no_resolvable_forecast"},
+            probability=0.1 + (index / 100),
+            review_date="2020-01-01",
+            session_label=f"compact-{index}",
+        )
+        assert seeded["success"] is True
+
+    result = await pack._session_bootstrap_pack(
+        "kr",
+        ["due_forecasts"],
+        True,
+        registered_tool_names=lambda: {"forecast_resolve"},
+    )
+
+    assert result["success"] is True
+    assert len(result["sections"]["due_forecasts"]["results"]) == 20
+    assert result["meta"]["sections"]["due_forecasts"]["truncated_from"] == 21
 
 
 @pytest.mark.asyncio
@@ -393,3 +681,19 @@ def test_registration_keeps_public_signature() -> None:
     register_session_bootstrap_tools(recorder, registered_tool_names=_registered)  # type: ignore[arg-type]
     tool = recorder.tools["session_bootstrap_pack"]
     assert tool.__name__ == "session_bootstrap_pack"
+
+
+@pytest.mark.asyncio
+async def test_public_impl_requires_a_registration_resolver() -> None:
+    signature = inspect.signature(pack.session_bootstrap_pack_impl)
+    assert (
+        signature.parameters["registered_tool_names"].default is inspect.Parameter.empty
+    )
+
+    result = await pack.session_bootstrap_pack_impl(
+        "kr",
+        ["policy"],
+        registered_tool_names=lambda: {"get_trading_policy"},
+    )
+
+    assert result["meta"]["sections"]["policy"]["state"] in {"fresh", "stale"}
