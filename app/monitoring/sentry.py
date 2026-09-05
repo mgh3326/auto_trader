@@ -691,8 +691,6 @@ _FUNNEL_TOOL_STAGES: dict[str, frozenset[str]] = {
     "lane": frozenset({"route_request", "get_trading_policy"}),
     "evidence": frozenset(
         {
-            "analysis_bundle_create",
-            "analysis_bundle_get",
             "analysis_artifact_get",
             "analysis_artifact_list",
             "analyze_portfolio",

@@ -26,7 +26,6 @@ tests/core/test_normalizers.py
 tests/integration/test_paper_positions_market_filter.py
 tests/integration/test_rob279_staged_pipeline_e2e.py
 tests/jobs/test_kis_mock_reconciliation_job.py
-tests/mcp_server/test_analysis_bundle_tools.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py
 tests/mcp_server/test_kis_live_expired_docs.py

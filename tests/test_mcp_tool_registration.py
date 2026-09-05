@@ -11,7 +11,7 @@ This module tests:
 
 import pytest
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.mcp_server.tooling import market_data_indicators
 from tests._mcp_tooling_support import build_tools
 
@@ -129,19 +129,17 @@ async def test_snapshot_report_generator_tools_are_flag_registered(
 
 
 @pytest.mark.asyncio
-async def test_analysis_bundle_tools_are_default_off_and_flag_registered(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gated = {"analysis_bundle_create", "analysis_bundle_get"}
-    monkeypatch.setattr(
-        settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", False, raising=False
-    )
-    assert gated.isdisjoint(build_tools())
+async def test_analysis_bundle_tools_are_retired() -> None:
+    """MCP surface audit 2026-09-03: both bundle tools were class D.
 
-    monkeypatch.setattr(
-        settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
-    )
-    assert gated <= set(build_tools())
+    ``analysis_bundle_create`` / ``analysis_bundle_get`` had zero calls in 90
+    days and zero prompt/runbook/code references, so their registrar module and
+    the ``ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED`` gate are gone. The
+    ``app/services/analysis_snapshot_bundle`` package is untouched.
+    """
+    retired = {"analysis_bundle_create", "analysis_bundle_get"}
+    assert retired.isdisjoint(build_tools())
+    assert "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED" not in Settings.model_fields
 
 
 @pytest.mark.asyncio
