@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ import httpx
 
 from app.core.db import AsyncSessionLocal
 from app.services.fill_event_handoff import FillHandoffRunner, HandoffConfig
+from app.services.lane_events import LANE_PATTERN, LaneEventConfig
 
 
 def _enabled(value: str | None) -> bool:
@@ -27,15 +29,40 @@ def _targets(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in (value or "").split(",") if item.strip())
 
 
-def _mapping(value: str | None) -> dict[str, str]:
+def _mapping(value: str | None, env_name: str) -> dict[str, str]:
     if not value:
         return {}
     parsed = json.loads(value)
     if not isinstance(parsed, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
     ):
-        raise ValueError("FILL_HANDOFF_KICK_DEPLOYMENTS must be a string map")
+        raise ValueError(f"{env_name} must be a string map")
     return parsed
+
+
+def _lanes(value: str | None) -> dict[str, str]:
+    lanes = _mapping(value, "FILL_HANDOFF_LANES")
+    if not set(lanes).issubset({"crypto", "kr", "us"}) or not all(
+        LANE_PATTERN.fullmatch(lane) for lane in lanes.values()
+    ):
+        raise ValueError("FILL_HANDOFF_LANES must map crypto, kr, or us to valid lanes")
+    return lanes
+
+
+def _lane_event_config() -> LaneEventConfig:
+    timeout_s = float(os.getenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "3"))
+    if timeout_s <= 1:
+        raise ValueError("FILL_HANDOFF_EMIT_TIMEOUT_S must be greater than 1")
+    return LaneEventConfig(
+        binary=os.getenv("FILL_HANDOFF_EMIT_BIN", "panewire"),
+        host=os.getenv("FILL_HANDOFF_EMIT_HOST", socket.gethostname()),
+        pane=os.getenv("FILL_HANDOFF_EMIT_PANE", ""),
+        inbox_root=os.getenv(
+            "FILL_HANDOFF_EMIT_INBOX_ROOT",
+            str(Path("~/work/herdr-inbox").expanduser()),
+        ),
+        timeout_s=timeout_s,
+    )
 
 
 async def _post(url: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -77,7 +104,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def main_async(
     *, since_ledger_id: int | None = None, dry_run: bool = False
-) -> dict[str, int]:
+) -> dict[str, Any]:
     config = HandoffConfig(
         state_dir=Path(
             os.getenv("FILL_HANDOFF_STATE_DIR", "/var/lib/fill-event-handoff")
@@ -85,11 +112,16 @@ async def main_async(
         herdr_targets=_targets(os.getenv("FILL_HANDOFF_HERDR_TARGETS")),
         kick_enabled=_enabled(os.getenv("FILL_HANDOFF_KICK_ENABLED")),
         kick_cooldown_seconds=int(os.getenv("FILL_HANDOFF_KICK_COOLDOWN_S", "3600")),
-        kick_deployments=_mapping(os.getenv("FILL_HANDOFF_KICK_DEPLOYMENTS")),
+        kick_deployments=_mapping(
+            os.getenv("FILL_HANDOFF_KICK_DEPLOYMENTS"),
+            "FILL_HANDOFF_KICK_DEPLOYMENTS",
+        ),
         prefect_api_url=os.getenv("PREFECT_API_URL"),
         discord_webhook=os.getenv("DISCORD_FILL_HANDOFF_WEBHOOK"),
         since_ledger_id=since_ledger_id,
         dry_run=dry_run,
+        lane_events=_lanes(os.getenv("FILL_HANDOFF_LANES")),
+        lane_event=_lane_event_config(),
     )
     async with AsyncSessionLocal() as db:
         return await FillHandoffRunner(config, http_post=_post).run(db)
