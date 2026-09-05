@@ -161,6 +161,7 @@ from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
 from app.mcp_server.tooling.news_registration import register_news_tools
+from app.mcp_server.tooling.niche_tools import NicheTaggingMCP
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
@@ -268,6 +269,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
+    # ROB — MCP surface audit 2026-09-03. Applied before every profile branch,
+    # including the allowlist profiles that return early, so a class-C tool is
+    # observed no matter which surface serves it. Registration/telemetry only:
+    # arguments, return values and exceptions pass through untouched.
+    mcp = NicheTaggingMCP(mcp)
+
     if profile is McpProfile.SHADOW_REPLAY:
         # ROB-697 M1 — frozen-context replay ONLY: read the bundle + policy +
         # lane procedure. Deliberately NO live-fetch (market_data/analysis/
