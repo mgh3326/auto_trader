@@ -135,9 +135,10 @@ async def test_get_market_reports_returns_symbol_history(monkeypatch) -> None:
         "_session_factory",
         lambda: _DummySessionFactory(db),
     )
-    tools = build_tools()
 
-    result = await tools["get_market_reports"](symbol="005930", days=3)
+    # The MCP tool was class D (audit 2026-09-03); the brief-side handler it
+    # wrapped is unchanged and still backs get_latest_market_brief's module.
+    result = await market_brief_tools.get_market_reports(symbol="005930", days=3)
 
     assert result["success"] is True
     assert result["symbol"] == "005930"

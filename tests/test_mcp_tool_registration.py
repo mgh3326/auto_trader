@@ -111,7 +111,8 @@ async def test_snapshot_report_generator_tools_are_flag_registered(
         "investment_report_get_hermes_context",
         "investment_report_create_from_hermes_composition",
         "investment_stage_artifacts_ingest_from_hermes",
-        "investment_report_prepare_intraday_context",
+        # investment_report_prepare_intraday_context was class D in the
+        # 2026-09-03 MCP surface audit and no longer registers on any profile.
     }
 
     monkeypatch.setattr(

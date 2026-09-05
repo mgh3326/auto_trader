@@ -60,6 +60,13 @@ async def test_handle_get_analyst_consensus_validation():
 
 
 def test_tool_collision_prevention():
+    """The two handlers stay distinct even though only one is still a tool.
+
+    MCP surface audit 2026-09-03: get_analyst_consensus was class D and was
+    deregistered; handle_get_analyst_consensus is kept (listed as orphaned in
+    docs/runbooks/mcp-surface-cleanup-20260905.md) and must still not collapse
+    onto the live get_investment_opinions handler.
+    """
     assert "get_investment_opinions" in FUNDAMENTALS_TOOL_NAMES
-    assert "get_analyst_consensus" in FUNDAMENTALS_TOOL_NAMES
+    assert "get_analyst_consensus" not in FUNDAMENTALS_TOOL_NAMES
     assert mod.handle_get_analyst_consensus is not handle_get_investment_opinions

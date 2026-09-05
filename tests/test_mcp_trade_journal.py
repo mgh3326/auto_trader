@@ -716,13 +716,25 @@ class TestUpdateTradeJournal:
 
 
 class TestTradeJournalRegistration:
-    def test_tools_are_registered(self) -> None:
+    """MCP surface audit 2026-09-03 dropped 3 of the 5 journal tools.
+
+    ``save_trade_journal``, ``update_trade_journal`` and ``list_active_journals``
+    were class D (0 calls/90d, 0 prompt/runbook/code refs). The journal service
+    and the two surviving read/modify tools are unchanged.
+    """
+
+    def test_only_the_surviving_tools_are_registered(self) -> None:
         from tests._mcp_tooling_support import build_tools
 
         tools = build_tools()
-        assert "save_trade_journal" in tools
         assert "get_trade_journal" in tools
-        assert "update_trade_journal" in tools
+        assert "modify_journal_entry" in tools
+        for retired in (
+            "save_trade_journal",
+            "update_trade_journal",
+            "list_active_journals",
+        ):
+            assert retired not in tools, f"{retired} is still registered"
 
     def test_tool_names_set(self) -> None:
         from app.mcp_server.tooling.trade_journal_registration import (
@@ -730,10 +742,7 @@ class TestTradeJournalRegistration:
         )
 
         assert TRADE_JOURNAL_TOOL_NAMES == {
-            "save_trade_journal",
             "get_trade_journal",
-            "update_trade_journal",
-            "list_active_journals",
             "modify_journal_entry",
         }
 

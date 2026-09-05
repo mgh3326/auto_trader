@@ -29,15 +29,15 @@ def test_register_all_tools_no_duplicate_names(profile: McpProfile) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_get_market_reports_is_the_brief_surface() -> None:
-    # ROB-447: with the report판 registration dropped, get_market_reports must resolve
-    # to the brief판 (per-symbol analysis history: params include 'symbol'), NOT the
-    # old report판 (params included 'report_type').
+async def test_get_market_reports_is_retired_and_the_brief_surface_remains() -> None:
+    # ROB-447 dropped the report판 registration so get_market_reports resolved to
+    # the brief판. The 2026-09-03 MCP surface audit then found even that brief판
+    # tool was class D and removed it, so the name resolves to nothing at all.
+    # get_latest_market_brief -- the tool the brief판 module actually serves -- is
+    # class C and stays, which is what keeps the ROB-447 collision impossible.
     mcp = FastMCP(name="auto_trader-mcp-boot-test", on_duplicate="error")
     register_all_tools(mcp, profile=McpProfile.DEFAULT)
 
-    tool = await mcp.get_tool("get_market_reports")
-    schema = tool.parameters or {}
-    props = set((schema.get("properties") or {}).keys())
-    assert "symbol" in props  # brief판 signature
-    assert "report_type" not in props  # report판 signature is gone
+    names = {tool.name for tool in await mcp.list_tools()}
+    assert "get_market_reports" not in names
+    assert "get_latest_market_brief" in names

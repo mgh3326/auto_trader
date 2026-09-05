@@ -1574,7 +1574,9 @@ async def test_get_quote_market_us_rejects_crypto_prefix():
 
 @pytest.mark.asyncio
 async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
-    tools = build_tools()
+    """The MCP tool was class D (audit 2026-09-03); the impl is unchanged."""
+    from app.mcp_server.tooling.analysis_tool_handlers import get_dividends_impl
+
     captured: dict[str, object] = {}
 
     class MockTicker:
@@ -1595,7 +1597,7 @@ async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
 
     monkeypatch.setattr("yfinance.Ticker", ticker_factory)
 
-    result = await tools["get_dividends"]("aapl")
+    result = await get_dividends_impl("aapl")
 
     assert result["success"] is True
     assert result["symbol"] == "AAPL"

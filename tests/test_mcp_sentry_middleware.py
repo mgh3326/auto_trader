@@ -440,7 +440,10 @@ class TestBuildMcpToolObservation:
         assert resolve_mcp_funnel_stage("analyze_stock") == "evidence"
         assert resolve_mcp_funnel_stage("session_context_get_recent") == "evidence"
         assert resolve_mcp_funnel_stage("toss_get_positions") == "evidence"
-        assert resolve_mcp_funnel_stage("investment_report_decide_item") == "verdict"
+        # investment_report_decide_item was removed by the 2026-09-03 MCP
+        # surface audit; investment_report_create still carries the verdict stage.
+        assert resolve_mcp_funnel_stage("investment_report_create") == "verdict"
+        assert resolve_mcp_funnel_stage("investment_report_decide_item") == "other"
         assert resolve_mcp_funnel_stage("analysis_artifact_save") == "artifact"
         assert resolve_mcp_funnel_stage("order_proposal_create") == "proposal"
         assert resolve_mcp_funnel_stage("toss_reconcile_orders") == "fill"

@@ -147,10 +147,17 @@ async def test_get_user_setting_returns_json_value() -> None:
     assert result == {"amount": 10000000}
 
 
-def test_user_settings_tool_names_are_registered() -> None:
-    """Verify that user_settings tools are properly registered."""
-    from app.mcp_server.tooling.user_settings_registration import (
-        USER_SETTINGS_TOOL_NAMES,
-    )
+def test_user_settings_tools_are_deregistered_but_the_name_set_survives() -> None:
+    """MCP surface audit 2026-09-03: both tools were class D.
+
+    ``user_settings_registration`` was deleted, but ``USER_SETTINGS_TOOL_NAMES``
+    moved to ``user_settings_tools`` -- the module that survives because
+    ``portfolio_cash`` and ``account_routing_tools`` import ``get_user_setting``
+    directly -- so the closed-world profiles that list these names as forbidden
+    keep firing if a registrar is ever re-added.
+    """
+    from app.mcp_server.tooling.user_settings_tools import USER_SETTINGS_TOOL_NAMES
+    from tests._mcp_tooling_support import build_tools
 
     assert USER_SETTINGS_TOOL_NAMES == {"get_user_setting", "set_user_setting"}
+    assert USER_SETTINGS_TOOL_NAMES.isdisjoint(build_tools())

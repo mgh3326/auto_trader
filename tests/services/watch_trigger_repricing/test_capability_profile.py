@@ -86,14 +86,19 @@ def test_profile_shares_only_non_mutating_tools_with_the_execution_profile() -> 
 
 
 def test_profile_excludes_the_dangerous_proposal_tools() -> None:
-    """order_proposals is not wholesale-safe; three of its tools are not."""
-    for tool in (
-        "order_proposal_redispatch",
-        "order_proposal_void",
-        "support_reserve_net_consume",
-    ):
+    """order_proposals is not wholesale-safe; some of its tools are not.
+
+    ``order_proposal_redispatch`` was class D in the 2026-09-03 MCP surface
+    audit and is no longer registered anywhere, so its exclusion here is now
+    structural. The two that remain registered must still be excluded by the
+    allowlist, which is what this asserts.
+    """
+    for tool in ("order_proposal_void", "support_reserve_net_consume"):
         assert tool in ORDER_PROPOSAL_TOOL_NAMES, f"{tool} vanished from the registry"
         assert tool not in PROPOSAL_ONLY_TOOLS
+
+    assert "order_proposal_redispatch" not in ORDER_PROPOSAL_TOOL_NAMES
+    assert "order_proposal_redispatch" not in PROPOSAL_ONLY_TOOLS
 
 
 def test_profile_contains_the_boundary() -> None:
