@@ -322,8 +322,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # and returns before the broad "Always" block, so every broker order
         # tool, watch mutation, reconcile and preview surface is physically
         # absent. The session may create a proposal; it may not submit one.
-        register_watch_repricing_tools(mcp)
-        register_bootstrap_pack()
+        register_watch_repricing_tools(
+            mcp,
+            registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
+        )
         return
 
     if profile is McpProfile.TRADINGCODEX_EXECUTION:

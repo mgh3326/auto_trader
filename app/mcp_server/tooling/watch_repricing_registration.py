@@ -42,7 +42,7 @@ Wiring a live spawner onto them is a separate change.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from app.mcp_server.tooling.account_routing_registration import (
@@ -61,6 +61,10 @@ from app.mcp_server.tooling.order_proposal_tools import register_order_proposal_
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
+)
+from app.mcp_server.tooling.session_bootstrap_registration import (
+    register_session_bootstrap_tools,
+    registered_tool_names_for,
 )
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
@@ -110,7 +114,11 @@ class _AllowlistedMCP:
         return [] if lister is None else lister()
 
 
-def register_watch_repricing_tools(mcp: FastMCP) -> None:
+def register_watch_repricing_tools(
+    mcp: FastMCP,
+    *,
+    registered_tool_names: Callable[[], set[str] | Awaitable[set[str]]] | None = None,
+) -> None:
     """Register exactly the proposal-only surface."""
     filtered = cast("FastMCP", _AllowlistedMCP(mcp, WATCH_REPRICING_TOOL_NAMES))
     register_market_data_tools(filtered)
@@ -123,6 +131,14 @@ def register_watch_repricing_tools(mcp: FastMCP) -> None:
     register_operating_briefing_tools(filtered)
     register_investment_report_tools(filtered, include_snapshot_generator=False)
     register_order_proposal_tools(filtered)
+    register_session_bootstrap_tools(
+        filtered,
+        registered_tool_names=(
+            registered_tool_names
+            if registered_tool_names is not None
+            else lambda: registered_tool_names_for(mcp)
+        ),
+    )
 
 
 def watch_repricing_tool_names(mcp: Any) -> frozenset[str]:
