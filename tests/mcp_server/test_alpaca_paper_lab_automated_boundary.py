@@ -305,49 +305,7 @@ async def test_coordinator_normalizes_its_expected_mode_rather_than_widening_it(
         )
 
 
-@pytest.mark.asyncio
-async def test_lab_reconcile_tool_pins_both_ledger_and_broker_to_the_lab_lane(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`alpaca_paper_reconcile_orders` may not hand a default service to the lab."""
-    seen: dict[str, Any] = {}
-
-    class _Session:
-        async def __aenter__(self) -> _Session:
-            return self
-
-        async def __aexit__(self, *exc: Any) -> None:
-            return None
-
-    monkeypatch.setattr(orders_mod, "_session_factory", lambda: _Session)
-
-    def _ledger(db: Any, account_mode: str = ALPACA_PAPER_ACCOUNT_MODE) -> str:
-        seen["ledger_mode"] = account_mode
-        return f"ledger:{account_mode}"
-
-    def _service(account_mode: str) -> str:
-        seen.setdefault("service_modes", []).append(account_mode)
-        return f"broker:{account_mode}"
-
-    class _Reconcile:
-        def __init__(self, ledger: Any, broker: Any) -> None:
-            seen["pair"] = (ledger, broker)
-
-        async def reconcile(self, **kwargs: Any) -> dict[str, Any]:
-            return {"success": True, "dry_run": True, "reconciled": [], "count": 0}
-
-    monkeypatch.setattr(orders_mod, "AlpacaPaperLedgerService", _ledger)
-    monkeypatch.setattr(orders_mod, "_service_for_account_mode", _service)
-    monkeypatch.setattr(orders_mod, "AlpacaPaperReconcileService", _Reconcile)
-
-    result = await orders_mod.alpaca_paper_reconcile_orders(
-        account_mode=ALPACA_PAPER_LAB_ACCOUNT_MODE, dry_run=True
-    )
-
-    assert result["account_mode"] == ALPACA_PAPER_LAB_ACCOUNT_MODE
-    assert seen["ledger_mode"] == ALPACA_PAPER_LAB_ACCOUNT_MODE
-    assert set(seen["service_modes"]) == {ALPACA_PAPER_LAB_ACCOUNT_MODE}
-    assert seen["pair"] == (
-        f"ledger:{ALPACA_PAPER_LAB_ACCOUNT_MODE}",
-        f"broker:{ALPACA_PAPER_LAB_ACCOUNT_MODE}",
-    )
+# MCP surface audit 2026-09-03: the lab-lane pinning test for
+# `alpaca_paper_reconcile_orders` was removed with the tool itself (class D:
+# 0 calls/90d, 0 prompt/runbook/code refs). Submit/cancel lane pinning above is
+# unchanged.
