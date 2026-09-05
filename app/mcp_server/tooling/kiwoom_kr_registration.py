@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, cast
 from app.core.config import settings
 from app.mcp_server.tooling.analysis_bundle_handlers import ANALYSIS_BUNDLE_TOOL_NAMES
 from app.mcp_server.tooling.analysis_readonly_registration import _AllowlistedMCP
+from app.mcp_server.tooling.dead_tools import PROFILE_DEAD_TOOLS
 from app.mcp_server.tooling.investment_hermes_handlers import (
     INVESTMENT_HERMES_TOOL_NAMES,
 )
@@ -228,7 +229,7 @@ def kiwoom_kr_profile_tool_names() -> set[str]:
         names.update(INVESTMENT_SNAPSHOTS_TOOL_NAMES)
     if settings.ORDER_PROPOSALS_ENABLED:
         names.update(ORDER_PROPOSAL_TOOL_NAMES)
-    return names
+    return names - PROFILE_DEAD_TOOLS["kiwoom_kr"]
 
 
 def restrict_kiwoom_kr_profile_tools(mcp: FastMCP) -> FastMCP:
