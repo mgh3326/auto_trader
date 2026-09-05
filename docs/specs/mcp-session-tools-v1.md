@@ -15,12 +15,12 @@
 - 출력: `{valid, violations:[{row, rule, expected, actual, severity∈{block,advisory}}], recomputed:{hash, rows:[{scenario_id, price, qty}]}, policy:{version,content_hash}}`. block 1개라도 있으면 `valid=false`.
 - 테스트: 실 결정표 artifact 픽스처(최근 prep artifact 3개 verbatim) + 뮤턴트(price 1tick 어긋남·hash 1바이트·loss guard 위반) 전부 block. 부작용 0 정적 가드(DB write 호출 없음).
 
-## 3. `decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` — 검증된 행을 한 트랜잭션으로 집행
-- 전제: `analysis_artifact_get(artifact_id)`의 표와 `table_hash` 일치 + `decision_table_validate` valid(내부 재호출). 불일치/invalid → fail-closed, 아무것도 안 씀.
-- 동작(행 단위, 순서 보존): `order_proposal_create`(기존 함수 호출, 기존 가드·approval_hash·clientOrderId 규칙 그대로) · `investment_watch_create`(watch 행) · `forecast_save`(forecast 행) · `session_context_append`(1건 요약) · artifact에 `applied:{hash, at, proposal_ids}` 마킹.
-- 멱등: `(artifact_id, table_hash)` 키 — 이미 applied면 no-op + 기존 id 반환(`already_applied=true`). 부분 실패 시 롤백(단일 DB 트랜잭션; proposal_create가 외부 부작용을 갖지 않는 한 — 브로커 전송은 proposal 승인 경로에 남으므로 이 도구는 브로커에 닿지 않는다 = **주문 전송 0**).
-- `dry_run=true` 기본: 생성될 proposal/watch/forecast 미리보기만. `dry_run=false`는 `confirm=true` 필수(기존 mutation 도구 관례).
-- 테스트: 실 artifact 픽스처 → dry_run 미리보기가 실제 apply 결과와 동일 · 멱등 2회 호출 · 중간 실패 롤백 · 브로커 클라이언트 호출 0 정적 가드. allowlist: execution 레인만.
+## 3. `decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` — 검증된 행을 멱등 재개로 집행
+- 전제: `analysis_artifact_get(artifact_id)`의 표와 인자 `table_hash`, payload hash, canonical 재계산 hash가 모두 일치하고 `decision_table_validate` 내부 재호출이 `valid=true`여야 한다. 이 중 하나라도 다르거나 `dry_run=false, confirm!=true`이면 fail-closed이며 아무것도 쓰지 않는다.
+- 동작(행 단위, 순서 보존): 각 행은 기존 `order_proposal_create`(기존 가드·approval_hash·clientOrderId 규칙 그대로), `investment_watch_create`, 또는 `forecast_save`를 호출하고 마지막에 `session_context_append` 1건 요약을 남긴다. 제안 rungs는 v1.1 `{rung,price_min,price_max,qty,tick}`에서 proposal `{rung_index,side,quantity,limit_price,notional}`으로 명시 매핑하며, pinned 가격만 `limit_price`로 쓴다. 직접 브로커 호출은 없고 주문 전송은 기존 승인 경로에만 남는다.
+- 멱등 재개: prep artifact는 UUID/version/payload 불변이다. 별도 `kr-nxt-apply-<date>` artifact에 `schema="kr-nxt-apply-record/v1"`, `parent_artifact_uuid`, `table_hash`, `rows:{scenario_id:{proposal_id|watch_id|forecast_id,at}}`, `complete`, `at`를 저장한다. `(parent_artifact_uuid, table_hash)`가 같은 최신 apply record만 재개 대상으로 삼으며, 이미 마킹된 행은 skip하고 나머지만 다시 시도한다. 행 실패는 뒤 행을 막지 않고 `failed`로 남으며 재호출로 재시도한다. 모든 행과 요약이 끝나야 `complete=true`; 그 뒤 호출은 `already_applied=true` no-op이다.
+- `dry_run=true` 기본: writer, summary, apply record 모두 쓰지 않는 미리보기다. `dry_run=false`는 `confirm=true` 필수(기존 mutation 도구 관례).
+- 테스트: 실 artifact 응답 모양 픽스처 → dry_run 무쓰기 · 멱등 2회 호출 · 부분 실패 뒤 재개 · prep artifact 불변 · rung 매핑 · 브로커 클라이언트 import/적재 0 정적·동적 가드. allowlist: helmsman/navigator의 default operator surface만(읽기 전용·자동 스폰 닫힌 세계·외부 BrokerAdapter 표면 제외).
 
 ## 4. `proposal_revalidate(market, proposal_ids?: list, dry_run=true)` — 기존 제안 재판정 라벨링
 - 목적: crypto §0 "제안 11건 전수 재평가"의 결정론 부분. 각 제안을 라이브가·정책·보유/현금·원장 상태 대비 재판정.
@@ -34,7 +34,7 @@
 - 기대: 하루 Opus 세션 9~10 → 3, Opus 컨텍스트 내 도구 응답 50%↓, tick/사이징 결정론 오류 0.
 
 ## 구현 순서·이슈
-ROB-A `session_bootstrap_pack`(1주, 위험 최소) → ROB-B `decision_table_validate` → ROB-C `decision_table_apply` → ROB-D `proposal_revalidate`. 각 이슈 = 캡틴 1건, 검증자 Opus high, 실 artifact/응답 픽스처 필수. 스키마 변경 = C의 artifact `applied` 마킹(기존 JSON payload 내 필드, 마이그레이션 0).
+ROB-A `session_bootstrap_pack`(1주, 위험 최소) → ROB-B `decision_table_validate` → ROB-C `decision_table_apply` → ROB-D `proposal_revalidate`. 각 이슈 = 캡틴 1건, 검증자 Opus high, 실 artifact/응답 픽스처 필수. C의 재개 상태는 prep payload가 아닌 별도 apply artifact에만 기록하며, 마이그레이션은 0이다.
 
 ## Canonical decision-table shape v1.1
 

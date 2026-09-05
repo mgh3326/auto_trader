@@ -63,4 +63,69 @@ required three-way procedural comparison: report-header hash,
 must all be the same table. This tool does not access artifact storage or compare
 those external records.
 
-## 3. Reserved for ROB-1349
+## 3. Applying a validated table (ROB-1349)
+
+이 도구는 원자적이지 않다. 부분 적용은 정상 상태이며 재호출로 완주한다. 텔레그램 승인 카드는 되돌릴 수 없다.
+
+`decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` is
+a default-profile helmsman/navigator persistence coordinator, not a broker
+tool. It creates only proposals, watches, forecasts, and one session-context
+summary through their existing writers. It is deliberately absent from
+read-only, auto-spawned closed-world, and external BrokerAdapter profiles. A
+proposal writer can independently commit and then perform post-commit Telegram
+work, so this tool must never promise a cross-writer rollback.
+
+Before any write it performs this fail-closed sequence:
+
+1. Fetch the artifact with `analysis_artifact_get`; a missing artifact returns
+   `artifact_not_found`.
+2. Require a decision-table envelope in its payload; otherwise it returns
+   `not_a_decision_table`.
+3. Require the argument hash, payload `decision_table_hash`, and canonical
+   recomputation to match; otherwise it returns `table_hash_mismatch` with all
+   three values.
+4. Re-run `decision_table_validate(payload, market)`; a non-valid result returns
+   `table_invalid` and its violations unchanged.
+5. For real application require literal `confirm=true`; otherwise return
+   `confirm_required`.
+6. Read the newest apply record for the date. An exact completed
+   `(parent_artifact_uuid, table_hash)` match returns `already_applied=true`
+   without invoking any writer.
+
+The prep artifact is immutable. The resume state is a separate analysis
+artifact with `correlation_id="kr-nxt-apply-<YYYY-MM-DD>"` and this payload:
+
+```json
+{
+  "schema": "kr-nxt-apply-record/v1",
+  "parent_artifact_uuid": "...",
+  "table_hash": "...",
+  "rows": {
+    "scenario-id": {"proposal_id": "...", "at": "..."}
+  },
+  "complete": false,
+  "at": "..."
+}
+```
+
+`rows` may instead hold `watch_id` or `forecast_id`. The tool lists metadata
+for that correlation ID newest-first, gets the newest payload, and resumes only
+when both parent UUID and hash match. A changed hash is a new table and starts
+with no row markers. After every successful row it updates the separate record;
+failed rows remain unmarked, while later rows continue in original table order.
+
+The v1.1 action keeps its machine-validated proposal fields and rungs. The
+apply discriminator is `action.apply_kind` (`proposal`, `watch`, or
+`forecast`; `kind`, `action_type`, and `type` are compatibility aliases).
+Watch and forecast rows place their target-writer input in `action.watch` or
+`action.forecast` respectively (`watch_config` and `forecast_config` are
+compatibility aliases). This keeps the validator as the sole admission gate
+while making the selected existing persistence writer explicit.
+
+Operators should first use the default `dry_run=true` and review the row
+statuses. For an accepted table call again with `dry_run=false, confirm=true`.
+If any row reports `failed` or `complete=false`, correct only the external
+writer problem and repeat the identical artifact ID and table hash: durable
+markers cause completed rows to be reported as `skipped`, and only unmarked
+rows are attempted again. Do not edit or resave the prep artifact to force a
+retry.

@@ -1302,6 +1302,8 @@ async def seed_holding_aapl(db_session, user):
 @pytest_asyncio.fixture
 async def seed_active_journal_005930(db_session):
     """Seed an active trade journal for 005930."""
+    from sqlalchemy import delete
+
     from app.models.trade_journal import TradeJournal
     from app.models.trading import InstrumentType
 
@@ -1317,7 +1319,17 @@ async def seed_active_journal_005930(db_session):
     )
     db_session.add(j)
     await db_session.flush()
-    return j
+    journal_id = j.id
+    try:
+        yield j
+    finally:
+        # The router test commits through its dependency-overridden session.
+        # Keep this fixture's intentionally fixed symbol from leaking into a
+        # later service module assigned to the same xdist worker.
+        await db_session.execute(
+            delete(TradeJournal).where(TradeJournal.id == journal_id)
+        )
+        await db_session.commit()
 
 
 @pytest_asyncio.fixture
