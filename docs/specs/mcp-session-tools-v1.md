@@ -5,7 +5,7 @@
 ## 1. `session_bootstrap_pack(market, lanes?: list[str], include?: list[str])` — 읽기 전용
 - 목적: 세션 시작 고정 5~8콜을 1콜로. 응답 크기 상한(기본 64KB, `compact=true`로 요약형).
 - 입력: `market ∈ {kr,us,crypto}`; `include` 기본 = `["briefing","holdings","cash","resting","pending_retros","due_forecasts","policy","recent_context"]`.
-- 출력(각 섹션 = 기존 도구 응답의 **부분집합**, 새 필드 추가 없음): `briefing`(get_operating_briefing) · `holdings`(get_holdings include_current_price=true) · `cash`(get_available_capital/get_cash_balance) · `resting`(order_proposal_list state∈{pending,resting} + 라이브 원장 미체결) · `pending_retros`(trade_retrospective_pending, count+상위 20) · `due_forecasts`(forecast_resolve dry_run=true) · `policy`(get_trading_policy market×lane 요약 + version/hash) · `recent_context`(session_context_get_recent limit=10) · `meta`(생성시각·각 섹션 소스·데이터 상태 fresh/stale/missing·소요 ms).
+- 출력(각 섹션 = 기존 도구 응답의 **부분집합**, 새 필드 추가 없음): `briefing`(get_operating_briefing) · `holdings`(get_holdings include_current_price=true) · `cash`(get_available_capital/get_cash_balance) · `resting`(order_proposal_list 의 비종결 lifecycle 상태 proposed/approved/partially_submitted/submitted 를 상태별 카운트+항목으로 + 라이브 원장 미체결) · `pending_retros`(trade_retrospective_pending, count+상위 20) · `due_forecasts`(forecast_resolve dry_run=true) · `policy`(get_trading_policy market×lane 요약 + version/hash) · `recent_context`(session_context_get_recent limit=10) · `meta`(생성시각·각 섹션 소스·데이터 상태 fresh/stale/missing·소요 ms).
 - 실패 처리: 섹션별 fail-open — 한 소스 실패는 그 섹션만 `{"error":..., "state":"missing"}`; 전체 실패 아님. 브로커 호출은 기존 도구와 동일 경로(새 HTTP 표면 0).
 - 테스트: 각 섹션이 원 도구 결과와 **바이트 동일 부분집합**(fixture = 실제 도구 응답 캡처), 상한 초과 시 compact 강등, 부분 실패 격리. allowlist: 전 레인(analysis_readonly 포함).
 

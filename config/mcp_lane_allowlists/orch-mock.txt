@@ -7,3 +7,4 @@ get_operating_briefing	prompt
 order_proposal_create	prompt
 order_proposal_list	prompt
 route_request	prompt
+session_bootstrap_pack	spec:mcp-session-tools-v1

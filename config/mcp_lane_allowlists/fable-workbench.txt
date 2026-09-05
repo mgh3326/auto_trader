@@ -24,5 +24,6 @@ screen_stocks_enrich	prompt
 screen_stocks_snapshot	both
 session_context_append	both
 session_context_get_recent	both
+session_bootstrap_pack	spec:mcp-session-tools-v1
 suggest_order_account	prompt
 toss_get_positions	both

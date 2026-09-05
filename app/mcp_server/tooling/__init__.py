@@ -26,12 +26,14 @@ __all__ = [
     "INVESTMENT_HERMES_TOOL_NAMES",
     "INVESTMENT_SNAPSHOTS_TOOL_NAMES",
     "NEWS_TOOL_NAMES",
+    "SESSION_BOOTSTRAP_TOOL_NAMES",
     "TRADE_JOURNAL_TOOL_NAMES",
     "register_all_tools",
     "register_investment_hermes_tools",
     "register_investment_snapshots_tools",
     "register_trade_journal_tools",
     "register_news_tools",
+    "register_session_bootstrap_tools",
     "register_analysis_artifact_tools",
     "register_session_context_tools",
 ]
@@ -57,9 +59,17 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
         "app.mcp_server.tooling.news_registration",
         "NEWS_TOOL_NAMES",
     ),
+    "SESSION_BOOTSTRAP_TOOL_NAMES": (
+        "app.mcp_server.tooling.session_bootstrap_registration",
+        "SESSION_BOOTSTRAP_TOOL_NAMES",
+    ),
     "register_news_tools": (
         "app.mcp_server.tooling.news_registration",
         "register_news_tools",
+    ),
+    "register_session_bootstrap_tools": (
+        "app.mcp_server.tooling.session_bootstrap_registration",
+        "register_session_bootstrap_tools",
     ),
     "register_all_tools": (
         "app.mcp_server.tooling.registry",

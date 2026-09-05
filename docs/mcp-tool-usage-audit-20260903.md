@@ -49,6 +49,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 
 | Tool | Profiles | Module | Mutation | Class | 90d | 30d | Prompt refs | Runbook refs | Code refs |
 |---|---|---|---|---|---:|---:|---:|---:|---:|
+| session_bootstrap_pack | account_read, alpaca-paper-clean, analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, shadow-replay, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.session_bootstrap_registration | no | C | 0 | 0 | 0 | 1 | 1 |
 | alpaca_paper_automated_preview_order | us-paper | app.mcp_server.tooling.alpaca_paper_automated_orders | no | D | 0 | 0 | 0 | 0 | 0 |
 | alpaca_paper_automated_submit_order | us-paper | app.mcp_server.tooling.alpaca_paper_automated_orders | order | C | 0 | 0 | 0 | 2 | 0 |
 | alpaca_paper_cancel_order | default, us-paper | app.mcp_server.tooling.alpaca_paper_orders | order | C | 0 | 0 | 5 | 6 | 4 |
