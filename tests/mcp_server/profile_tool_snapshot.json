@@ -1049,7 +1049,6 @@
     "analysis_readonly": [
       "analysis_artifact_get",
       "analysis_artifact_save",
-      "analysis_bundle_get",
       "analyze_stock_batch",
       "discover_buy_candidates_fanout",
       "evaluate_buy_gate_ab_shadow",

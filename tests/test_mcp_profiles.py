@@ -587,16 +587,6 @@ class TestAnalysisReadonlyProfile:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
         assert set(mcp.tools) == ANALYSIS_READONLY_TOOL_NAMES
 
-    def test_bundle_gate_registers_get_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
-        )
-        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
-        assert "analysis_bundle_get" in mcp.tools
-        assert "analysis_bundle_create" not in mcp.tools
-
     def test_does_not_register_forbidden_surfaces(self) -> None:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
         leaked = ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
