@@ -77,9 +77,7 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_get",
     "order_proposal_list",
     "order_proposal_void",
-    "order_proposal_expire_sweep",
     "order_proposal_list_expired_defensive",
-    "order_proposal_redispatch",
     "support_reserve_net_consume",
 }
 
@@ -1189,16 +1187,6 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
         ),
     )(order_proposal_void)
     _ = mcp.tool(
-        name="order_proposal_expire_sweep",
-        description=(
-            "List (dry_run=True, default) or expire (dry_run=False) all "
-            "non-terminal proposals whose valid_until has passed. A group with "
-            "any rung outside the voidable states (e.g. submitting/resting/"
-            "filled) is skipped, not force-expired. NOT a broker mutation; "
-            "cleans up the Telegram approval message for each expired group."
-        ),
-    )(order_proposal_expire_sweep)
-    _ = mcp.tool(
         name="order_proposal_list_expired_defensive",
         description=(
             "Read-only handoff list of loss_cut/defensive_trim proposals that "
@@ -1209,16 +1197,6 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "re-judgment (needs_reassessment=true) -- NOT a broker mutation."
         ),
     )(order_proposal_list_expired_defensive)
-    _ = mcp.tool(
-        name="order_proposal_redispatch",
-        description=(
-            "Revalidate and optionally re-send one failed/missing Telegram approval "
-            "card. dry_run=True is the default and performs only fresh session, "
-            "validity, state, nonce, holdings/guard, price, and quantity checks. "
-            "dry_run=False sends a new Telegram approval card only; it never approves "
-            "or submits an order. Active/current/pending/acted proposals fail closed."
-        ),
-    )(order_proposal_redispatch)
 
 
 __all__ = [

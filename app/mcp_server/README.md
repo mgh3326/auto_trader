@@ -912,7 +912,15 @@ order mutation.
   - It is a conditional buy helper, not a scheduler or a generic route step.
     Missing/stale evidence, a freeze, an unavailable seam, or an active legacy
     or concrete scope creates zero proposals.
-- `order_proposal_redispatch(proposal_id, dry_run=true)`
+- `order_proposal_redispatch(proposal_id, dry_run=true)` — **MCP tool removed**
+  (class D in `docs/mcp-tool-usage-audit-20260903.md`: 0 calls/90d, 0
+  prompt/runbook/code references). The coroutine and all its fail-closed checks
+  below still exist in `order_proposal_tools.py`, but no profile registers it.
+  Operator alert copy in `app/services/order_proposals/alerts.py` still names it
+  and needs a follow-up decision — see
+  `docs/runbooks/mcp-surface-cleanup-20260905.md`.
+  `order_proposal_expire_sweep` was removed the same way; its shared
+  `run_order_proposal_expire_sweep` entry point remains for the TaskIQ task.
   - This is a single-proposal manual lever; there is no automatic redispatch
     sweep. `dry_run=true` is read-only and must be reviewed before execution.
   - Only active `limit` + `place` proposals whose prior dispatch is failed (or
