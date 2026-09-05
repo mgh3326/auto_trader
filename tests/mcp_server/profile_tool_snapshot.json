@@ -8,11 +8,14 @@
       "kiwoom_mock_get_order_history",
       "kiwoom_mock_get_orderable_cash",
       "kiwoom_mock_get_positions",
+      "session_bootstrap_pack",
       "toss_get_order_history",
       "toss_get_orderable_cash",
       "toss_get_positions"
     ],
-    "alpaca-paper-clean": [],
+    "alpaca-paper-clean": [
+      "session_bootstrap_pack"
+    ],
     "analysis_readonly": [
       "analysis_artifact_get",
       "analysis_artifact_save",
@@ -37,6 +40,7 @@
       "screen_stocks",
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "suggest_order_account",
@@ -156,6 +160,7 @@
       "screen_stocks_snapshot",
       "search_symbol",
       "sell_ladder_fill_preview",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -277,6 +282,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -416,6 +422,7 @@
       "screen_stocks_snapshot",
       "search_symbol",
       "sell_ladder_fill_preview",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -546,6 +553,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -678,6 +686,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -802,6 +811,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -816,7 +826,8 @@
     "shadow-replay": [
       "get_trading_policy",
       "investment_report_get_hermes_context",
-      "route_request"
+      "route_request",
+      "session_bootstrap_pack"
     ],
     "tradingcodex_execution": [
       "buy_ladder_fill_preview",
@@ -846,6 +857,7 @@
       "route_request",
       "save_trade_retrospective",
       "sell_ladder_fill_preview",
+      "session_bootstrap_pack",
       "suggest_order_account",
       "toss_cancel_order",
       "toss_get_order_history",
@@ -981,6 +993,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1010,6 +1023,7 @@
       "order_proposal_get",
       "order_proposal_list",
       "route_request",
+      "session_bootstrap_pack",
       "suggest_order_account"
     ]
   },
@@ -1022,6 +1036,7 @@
       "kiwoom_mock_get_order_history",
       "kiwoom_mock_get_orderable_cash",
       "kiwoom_mock_get_positions",
+      "session_bootstrap_pack",
       "toss_get_order_history",
       "toss_get_orderable_cash",
       "toss_get_positions"
@@ -1039,7 +1054,8 @@
       "alpaca_paper_list_orders",
       "alpaca_paper_list_positions",
       "alpaca_paper_preview_order",
-      "alpaca_paper_roundtrip_report"
+      "alpaca_paper_roundtrip_report",
+      "session_bootstrap_pack"
     ],
     "analysis_readonly": [
       "analysis_artifact_get",
@@ -1065,6 +1081,7 @@
       "screen_stocks",
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "suggest_order_account",
@@ -1200,6 +1217,7 @@
       "screen_stocks_snapshot",
       "search_symbol",
       "sell_ladder_fill_preview",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1338,6 +1356,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1528,6 +1547,7 @@
       "screen_stocks_snapshot",
       "search_symbol",
       "sell_ladder_fill_preview",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1678,6 +1698,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1827,6 +1848,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1968,6 +1990,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -1983,7 +2006,8 @@
     "shadow-replay": [
       "get_trading_policy",
       "investment_report_get_hermes_context",
-      "route_request"
+      "route_request",
+      "session_bootstrap_pack"
     ],
     "tradingcodex_execution": [
       "buy_ladder_fill_preview",
@@ -2020,6 +2044,7 @@
       "route_request",
       "save_trade_retrospective",
       "sell_ladder_fill_preview",
+      "session_bootstrap_pack",
       "suggest_order_account",
       "support_reserve_net_consume",
       "toss_cancel_order",
@@ -2172,6 +2197,7 @@
       "screen_stocks_enrich",
       "screen_stocks_snapshot",
       "search_symbol",
+      "session_bootstrap_pack",
       "session_context_append",
       "session_context_get_recent",
       "set_user_setting",
@@ -2202,6 +2228,7 @@
       "order_proposal_get",
       "order_proposal_list",
       "route_request",
+      "session_bootstrap_pack",
       "suggest_order_account"
     ]
   }

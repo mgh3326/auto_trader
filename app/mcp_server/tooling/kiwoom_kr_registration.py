@@ -199,6 +199,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "screen_stocks_snapshot",
         "screen_stocks_enrich",
         "search_symbol",
+        "session_bootstrap_pack",
         "session_context_append",
         "session_context_get_recent",
         "set_user_setting",
