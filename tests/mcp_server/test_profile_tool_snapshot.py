@@ -46,6 +46,20 @@ def test_profile_tool_snapshot(
 
 # Explicit PROMPT defaults: lane conflicts and mixed regression contracts.
 _RETAINED_DEAD_TOOL_NAMES = {
+    "get_dividends",
+    "get_financials",
+    "get_insider_transactions",
+    "get_investor_trends",
+    "get_market_reports",
+    "get_sector_peers",
+    "get_short_interest",
+    "get_trading_scoreboard",
+    "get_user_setting",
+    "research_summary_get",
+    "set_user_setting",
+    "stage_analysis_get",
+    "update_manual_holdings",
+    "paper_cancel_pending_order",
     "investment_report_prepare_intraday_context",
     "investment_watch_void",
     "investment_watch_expire",
@@ -80,15 +94,11 @@ _RETAINED_DEAD_TOOL_NAMES = {
 
 _DELETED_MODULE_PATHS = (
     "app/mcp_server/tooling/analysis_bundle_handlers.py",
-    "app/mcp_server/tooling/fundamentals/_sector_peers.py",
     "app/mcp_server/tooling/paper_analytics_registration.py",
     "app/mcp_server/tooling/paper_execution_registration.py",
     "app/mcp_server/tooling/paper_journal_bridge.py",
     "app/mcp_server/tooling/paper_journal_registration.py",
     "app/mcp_server/tooling/paper_validation_registration.py",
-    "app/mcp_server/tooling/trading_scoreboard_registration.py",
-    "app/mcp_server/tooling/trading_scoreboard_tools.py",
-    "app/mcp_server/tooling/user_settings_registration.py",
 )
 
 

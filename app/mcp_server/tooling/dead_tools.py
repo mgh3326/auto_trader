@@ -2,7 +2,7 @@
 
 The audit is frozen evidence, not a runtime config dependency. This proxy only
 removes reviewed names; existing feature gates and profile allowlists still run.
-Three audited D tool names remain for the promoted lane contracts.
+Audited D exceptions remain for the promoted lanes and mixed regression contracts.
 """
 
 from __future__ import annotations
@@ -16,19 +16,6 @@ _SHARED_DEAD_TOOLS = frozenset(
     {
         "analysis_bundle_create",
         "analysis_bundle_get",
-        "get_dividends",
-        "get_financials",
-        "get_insider_transactions",
-        "get_investor_trends",
-        "get_market_reports",
-        "get_sector_peers",
-        "get_short_interest",
-        "get_trading_scoreboard",
-        "get_user_setting",
-        "research_summary_get",
-        "set_user_setting",
-        "stage_analysis_get",
-        "update_manual_holdings",
     }
 )
 
@@ -48,12 +35,7 @@ PROFILE_DEAD_TOOLS: dict[str, frozenset[str]] = {
     "kiwoom": _SHARED_DEAD_TOOLS,
     "kiwoom_kr": _SHARED_DEAD_TOOLS,
     "hermes-paper-kis": _SHARED_DEAD_TOOLS,
-    "default": _SHARED_DEAD_TOOLS
-    | frozenset(
-        {
-            "paper_cancel_pending_order",
-        }
-    ),
+    "default": _SHARED_DEAD_TOOLS,
 }
 
 

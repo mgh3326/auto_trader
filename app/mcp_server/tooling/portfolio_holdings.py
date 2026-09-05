@@ -10,6 +10,7 @@ import pandas as pd
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings, validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
     normalize_account_mode,
@@ -111,6 +112,7 @@ from app.services.portfolio_snapshot import (
 from app.services.portfolio_snapshot_cache import (
     get_shared_portfolio_snapshot_cache,
 )
+from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
     TossPortfolioPosition,
     fetch_toss_portfolio_snapshot,
@@ -128,10 +130,11 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 PORTFOLIO_TOOL_NAMES: set[str] = {
-    "get_available_capital",
-    "get_cash_balance",
     "get_holdings",
     "get_position",
+    "get_cash_balance",
+    "get_available_capital",
+    "update_manual_holdings",
 }
 
 # Phase 2 strategy constants for crypto exit signals
@@ -1728,6 +1731,43 @@ async def _get_position_impl(
     )
 
 
+async def _update_manual_holdings_impl(
+    *,
+    holdings: list[dict[str, Any]],
+    broker: str = "toss",
+    account_name: str = "기본 계좌",
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Implementation for update_manual_holdings tool."""
+    if not holdings:
+        return {
+            "success": False,
+            "error": "holdings list is required",
+            "dry_run": dry_run,
+        }
+
+    try:
+        async with AsyncSessionLocal() as db:
+            service = ScreenshotHoldingsService(db)
+            user_id = _env_int("MCP_USER_ID", 1)
+            result = await service.resolve_and_update(
+                user_id=user_id,
+                holdings_data=holdings,
+                broker=broker,
+                account_name=account_name,
+                dry_run=dry_run,
+            )
+            return result
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "dry_run": dry_run,
+            "broker": broker,
+            "account_name": account_name,
+        }
+
+
 def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_holdings",
@@ -1833,6 +1873,26 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         )
 
     @mcp.tool(
+        name="update_manual_holdings",
+        description=(
+            "Update manual holdings from parsed securities app screenshot data. "
+            "Uses upsert by default and supports action='remove' for sold holdings."
+        ),
+    )
+    async def update_manual_holdings(
+        holdings: list[dict[str, Any]],
+        broker: str = "toss",
+        account_name: str = "기본 계좌",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        return await _update_manual_holdings_impl(
+            holdings=holdings,
+            broker=broker,
+            account_name=account_name,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool(
         name="get_cash_balance",
         description=(
             "Query available cash balances from all accounts. "
@@ -1922,4 +1982,5 @@ __all__ = [
     "_get_holdings_impl",
     "_get_portfolio_summary_impl",
     "_get_position_impl",
+    "_update_manual_holdings_impl",
 ]

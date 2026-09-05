@@ -126,6 +126,30 @@ async def test_get_latest_market_brief_returns_latest_analysis(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_get_market_reports_returns_symbol_history(monkeypatch) -> None:
+    from app.mcp_server.tooling import market_brief_tools
+
+    db = _DummyDb(rows=[(_analysis(id=9, decision="hold"), _stock_info())])
+    monkeypatch.setattr(
+        market_brief_tools,
+        "_session_factory",
+        lambda: _DummySessionFactory(db),
+    )
+    tools = build_tools()
+
+    result = await tools["get_market_reports"](symbol="005930", days=3)
+
+    assert result["success"] is True
+    assert result["symbol"] == "005930"
+    assert result["reports"][0]["id"] == 9
+    assert result["reports"][0]["price_analysis"]["sell_target"] == {
+        "min": 83000.0,
+        "max": 85000.0,
+    }
+    assert result["trend"]["latest_decision"] == "hold"
+
+
+@pytest.mark.asyncio
 async def test_get_trade_journal_filters_by_paperclip_issue_id(monkeypatch) -> None:
     from app.mcp_server.tooling import trade_journal_tools
 

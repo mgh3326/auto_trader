@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.shared import error_payload as _error_payload
-from app.models.research_pipeline import ResearchSession, ResearchSummary
+from app.models.research_pipeline import ResearchSession, ResearchSummary, StageAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -138,4 +138,90 @@ async def research_session_list_recent_impl(limit: int = 10) -> dict[str, Any]:
             return {"sessions": items}
     except Exception as exc:
         logger.error(f"research_session_list_recent failed: {exc}")
+        return _error_payload(message=str(exc), source="research_pipeline_read")
+
+
+async def stage_analysis_get_impl(stage_id: int) -> dict[str, Any]:
+    """Returns one stage row by id."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(StageAnalysis).where(StageAnalysis.id == stage_id)
+            )
+            stage = result.scalar_one_or_none()
+            if not stage:
+                return _error_payload(
+                    message=f"Stage analysis {stage_id} not found",
+                    source="research_pipeline_read",
+                    error_type="not_found",
+                )
+
+            return {
+                "id": stage.id,
+                "session_id": stage.session_id,
+                "stage_type": stage.stage_type,
+                "verdict": stage.verdict,
+                "confidence": stage.confidence,
+                "signals": stage.signals,
+                "raw_payload": stage.raw_payload,
+                "source_freshness": stage.source_freshness,
+                "model_name": stage.model_name,
+                "prompt_version": stage.prompt_version,
+                "snapshot_at": stage.snapshot_at.isoformat()
+                if stage.snapshot_at
+                else None,
+                "executed_at": stage.executed_at.isoformat()
+                if stage.executed_at
+                else None,
+            }
+    except Exception as exc:
+        logger.error(f"stage_analysis_get failed: {exc}")
+        return _error_payload(message=str(exc), source="research_pipeline_read")
+
+
+async def research_summary_get_impl(summary_id: int) -> dict[str, Any]:
+    """Returns one summary + linked stage rows by summary id."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(ResearchSummary)
+                .where(ResearchSummary.id == summary_id)
+                .options(selectinload(ResearchSummary.stage_links))
+            )
+            summary = result.scalar_one_or_none()
+            if not summary:
+                return _error_payload(
+                    message=f"Research summary {summary_id} not found",
+                    source="research_pipeline_read",
+                    error_type="not_found",
+                )
+
+            return {
+                "id": summary.id,
+                "session_id": summary.session_id,
+                "decision": summary.decision,
+                "confidence": summary.confidence,
+                "bull_arguments": summary.bull_arguments,
+                "bear_arguments": summary.bear_arguments,
+                "price_analysis": summary.price_analysis,
+                "reasons": summary.reasons,
+                "detailed_text": summary.detailed_text,
+                "warnings": summary.warnings,
+                "model_name": summary.model_name,
+                "prompt_version": summary.prompt_version,
+                "executed_at": summary.executed_at.isoformat()
+                if summary.executed_at
+                else None,
+                "links": [
+                    {
+                        "stage_analysis_id": link.stage_analysis_id,
+                        "weight": link.weight,
+                        "direction": link.direction,
+                        "rationale": link.rationale,
+                    }
+                    for link in summary.stage_links
+                ],
+            }
+    except Exception as exc:
+        logger.error(f"research_summary_get failed: {exc}")
         return _error_payload(message=str(exc), source="research_pipeline_read")

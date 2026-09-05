@@ -8,10 +8,19 @@ from typing import Any
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.fundamentals._helpers import (
+    normalize_equity_market,
     normalize_market_with_crypto,
 )
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_earnings_calendar_finnhub,
+    _fetch_financials_finnhub,
+    _fetch_insider_transactions_finnhub,
+)
+from app.mcp_server.tooling.fundamentals_sources_naver import (
+    _fetch_financials_naver,
+)
+from app.mcp_server.tooling.fundamentals_sources_yfinance import (
+    _fetch_financials_yfinance,
 )
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
@@ -19,7 +28,139 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
 )
+from app.mcp_server.tooling.shared import (
+    is_korean_equity_code as _is_korean_equity_code,
+)
 from app.services.market_events.query_service import MarketEventsQueryService
+
+
+def _has_financial_values(payload: dict[str, Any]) -> bool:
+    """Return true only when a provider supplied at least one real metric value."""
+
+    def _has_value(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(_has_value(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(_has_value(item) for item in value)
+        return value is not None
+
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict) and _has_value(metrics):
+        return True
+
+    reports = payload.get("reports")
+    if isinstance(reports, (list, tuple)):
+        return any(
+            isinstance(report, dict) and _has_value(report.get("data"))
+            for report in reports
+        )
+
+    data = payload.get("data")
+    return isinstance(data, dict) and _has_value(data)
+
+
+def _financial_period_count(payload: dict[str, Any]) -> int:
+    for key in ("periods", "reports", "data"):
+        value = payload.get(key)
+        if isinstance(value, (dict, list, tuple)):
+            return len(value)
+    return 0
+
+
+def _annotate_financial_availability(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    if _has_financial_values(result):
+        result["status"] = "available"
+        result["scoreable"] = True
+        result.pop("reason", None)
+        result.pop("evidence", None)
+        return result
+
+    result["status"] = "unavailable"
+    result["scoreable"] = False
+    result["reason"] = "financial_metrics_unavailable"
+    result["evidence"] = {
+        "source": result.get("source"),
+        "statement": result.get("statement"),
+        "freq": result.get("freq"),
+        "period_count": _financial_period_count(result),
+    }
+    return result
+
+
+async def handle_get_financials(
+    symbol: str,
+    statement: str = "income",
+    freq: str = "annual",
+    market: str | None = None,
+) -> dict[str, Any]:
+    symbol = (symbol or "").strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+
+    statement = (statement or "income").strip().lower()
+    if statement not in ("income", "balance", "cashflow"):
+        raise ValueError("statement must be 'income', 'balance', or 'cashflow'")
+
+    freq = (freq or "annual").strip().lower()
+    if freq not in ("annual", "quarterly"):
+        raise ValueError("freq must be 'annual' or 'quarterly'")
+
+    if _is_crypto_market(symbol):
+        raise ValueError("Financial statements are not available for cryptocurrencies")
+
+    if market is None:
+        if _is_korean_equity_code(symbol):
+            market = "kr"
+        else:
+            market = "us"
+
+    normalized_market = normalize_equity_market(market)
+
+    try:
+        if normalized_market == "kr":
+            payload = await _fetch_financials_naver(symbol, statement, freq)
+            return _annotate_financial_availability(payload)
+        try:
+            payload = await _fetch_financials_finnhub(symbol, statement, freq)
+        except (ValueError, Exception):
+            payload = await _fetch_financials_yfinance(symbol, statement, freq)
+        return _annotate_financial_availability(payload)
+    except Exception as exc:
+        source = "naver" if normalized_market == "kr" else "yfinance"
+        instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"
+        return _error_payload(
+            source=source,
+            message=str(exc),
+            symbol=symbol,
+            instrument_type=instrument_type,
+        )
+
+
+async def handle_get_insider_transactions(
+    symbol: str,
+    limit: int = 20,
+) -> dict[str, Any]:
+    symbol = (symbol or "").strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+
+    capped_limit = min(max(limit, 1), 100)
+
+    if _is_crypto_market(symbol):
+        raise ValueError("Insider transactions are only available for US stocks")
+    if _is_korean_equity_code(symbol):
+        raise ValueError("Insider transactions are only available for US stocks")
+
+    try:
+        return await _fetch_insider_transactions_finnhub(symbol, capped_limit)
+    except Exception as exc:
+        return _error_payload(
+            source="finnhub",
+            message=str(exc),
+            symbol=symbol,
+            instrument_type="equity_us",
+        )
 
 
 def _parse_iso_date(value: str | None, *, field_name: str) -> datetime.date | None:

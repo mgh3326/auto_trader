@@ -1573,6 +1573,43 @@ async def test_get_quote_market_us_rejects_crypto_prefix():
 
 
 @pytest.mark.asyncio
+async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
+    tools = build_tools()
+    captured: dict[str, object] = {}
+
+    class MockTicker:
+        info = {
+            "dividendYield": 0.01234,
+            "dividendRate": 1.11,
+            "exDividendDate": 1704067200,
+        }
+        dividends = pd.Series(
+            [1.0, 1.2],
+            index=pd.to_datetime(["2024-01-01", "2024-04-01"]),
+        )
+
+    def ticker_factory(symbol, session=None):
+        captured["symbol"] = symbol
+        captured["session"] = session
+        return MockTicker()
+
+    monkeypatch.setattr("yfinance.Ticker", ticker_factory)
+
+    result = await tools["get_dividends"]("aapl")
+
+    assert result["success"] is True
+    assert result["symbol"] == "AAPL"
+    assert result["dividend_yield"] == pytest.approx(0.0123)
+    assert result["dividend_rate"] == pytest.approx(1.11)
+    assert result["ex_dividend_date"] == "2024-01-01"
+    assert result["last_dividend"] == pytest.approx(
+        {"date": "2024-04-01", "amount": 1.2}
+    )
+    assert captured["symbol"] == "AAPL"
+    assert captured["session"] is not None
+
+
+@pytest.mark.asyncio
 async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
     import datetime as dt
 

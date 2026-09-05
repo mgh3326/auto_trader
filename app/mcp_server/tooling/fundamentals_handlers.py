@@ -29,6 +29,8 @@ from app.mcp_server.tooling.fundamentals._crypto_regime import (
 )
 from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_earnings_calendar,
+    handle_get_financials,
+    handle_get_insider_transactions,
 )
 from app.mcp_server.tooling.fundamentals._fx_rates import handle_get_fx_rate
 from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
@@ -48,6 +50,9 @@ from app.mcp_server.tooling.fundamentals._profiles import (
 from app.mcp_server.tooling.fundamentals._retail_sentiment import (
     handle_get_retail_sentiment,
 )
+from app.mcp_server.tooling.fundamentals._sector_peers import (
+    handle_get_sector_peers,
+)
 from app.mcp_server.tooling.fundamentals._support_resistance import (
     _DEFAULT_GET_SUPPORT_RESISTANCE_IMPL,
 )
@@ -64,6 +69,8 @@ from app.mcp_server.tooling.fundamentals._upbit_index import (
 )
 from app.mcp_server.tooling.fundamentals._valuation import (
     handle_get_investment_opinions,
+    handle_get_investor_trends,
+    handle_get_short_interest,
     handle_get_valuation,
 )
 
@@ -73,32 +80,37 @@ if TYPE_CHECKING:
 # Full fundamentals tool namespace. Crypto research tools register on every
 # profile (ROB-503 restored them from the ROB-488 crypto-profile gate).
 FUNDAMENTALS_TOOL_NAMES: set[str] = {
-    "get_analyst_consensus",
-    "get_company_profile",
-    "get_cost_basis_distribution",
-    "get_crypto_catalysts",
-    "get_crypto_funding_rate",
-    "get_crypto_long_short_ratio",
-    "get_crypto_market_regime",
-    "get_crypto_open_interest",
-    "get_crypto_order_flow",
-    "get_crypto_profile",
-    "get_crypto_social",
-    "get_earnings_calendar",
-    "get_fx_rate",
+    "get_news",
     "get_holdings_news",
+    "get_company_profile",
+    "get_crypto_profile",
+    "get_financials",
+    "get_insider_transactions",
+    "get_earnings_calendar",
+    "get_investor_trends",
     "get_intraday_investor_flow",
     "get_investment_opinions",
-    "get_kimchi_premium",
-    "get_market_index",
-    "get_news",
-    "get_retail_sentiment",
-    "get_support_resistance",
-    "get_toss_ai_signal",
-    "get_toss_buy_balance",
-    "get_upbit_altseason",
-    "get_upbit_index",
+    "get_analyst_consensus",
     "get_valuation",
+    "get_short_interest",
+    "get_kimchi_premium",
+    "get_crypto_funding_rate",
+    "get_crypto_open_interest",
+    "get_crypto_long_short_ratio",
+    "get_crypto_market_regime",
+    "get_crypto_catalysts",
+    "get_crypto_order_flow",
+    "get_crypto_social",
+    "get_retail_sentiment",
+    "get_toss_buy_balance",
+    "get_toss_ai_signal",
+    "get_fx_rate",
+    "get_market_index",
+    "get_upbit_index",
+    "get_upbit_altseason",
+    "get_support_resistance",
+    "get_cost_basis_distribution",
+    "get_sector_peers",
 }
 
 # Crypto research subset (registered on all profiles; kept as metadata for
@@ -184,6 +196,34 @@ def _register_fundamentals_tools_impl(
         return await handle_get_crypto_profile(symbol)
 
     @mcp.tool(
+        name="get_financials",
+        description=(
+            "Get financial statements for a US or Korean stock. Supports income "
+            "statement, balance sheet, and cash flow."
+        ),
+    )
+    async def get_financials(
+        symbol: str,
+        statement: str = "income",
+        freq: str = "annual",
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        return await handle_get_financials(symbol, statement, freq, market)
+
+    @mcp.tool(
+        name="get_insider_transactions",
+        description=(
+            "Get insider transactions for a US stock. Returns name, transaction "
+            "type, shares, price, date. US stocks only."
+        ),
+    )
+    async def get_insider_transactions(
+        symbol: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return await handle_get_insider_transactions(symbol, limit)
+
+    @mcp.tool(
         name="get_earnings_calendar",
         description=(
             "Get earnings calendar for a US or Korean stock/date range. "
@@ -200,6 +240,21 @@ def _register_fundamentals_tools_impl(
         market: str | None = None,
     ) -> dict[str, Any]:
         return await handle_get_earnings_calendar(symbol, from_date, to_date, market)
+
+    @mcp.tool(
+        name="get_investor_trends",
+        description=(
+            "Get foreign, institutional, and individual investor trading trends "
+            "for a Korean stock. Returns net buy/sell data by investor type. "
+            "Supports daily/weekly/monthly aggregation. Korean stocks only."
+        ),
+    )
+    async def get_investor_trends(
+        symbol: str,
+        days: int = 20,
+        period: str = "day",
+    ) -> dict[str, Any]:
+        return await handle_get_investor_trends(symbol, days, period)
 
     @mcp.tool(
         name="get_intraday_investor_flow",
@@ -291,6 +346,20 @@ def _register_fundamentals_tools_impl(
         market: str | None = None,
     ) -> dict[str, Any]:
         return await handle_get_valuation(symbol, market)
+
+    @mcp.tool(
+        name="get_short_interest",
+        description=(
+            "Get short selling data for a Korean stock. Accepts only 6-digit "
+            "Korean equity codes like '005930'. US tickers and crypto symbols "
+            "are not supported."
+        ),
+    )
+    async def get_short_interest(
+        symbol: str,
+        days: int = 20,
+    ) -> dict[str, Any]:
+        return await handle_get_short_interest(symbol, days)
 
     @mcp.tool(
         name="get_kimchi_premium",
@@ -556,6 +625,21 @@ def _register_fundamentals_tools_impl(
         if not callable(impl):
             impl = _DEFAULT_GET_COST_BASIS_DISTRIBUTION_IMPL
         return await impl(symbol, market, buckets)
+
+    @mcp.tool(
+        name="get_sector_peers",
+        description=(
+            "Get sector peer stocks for comparison. Supports Korean and US stocks. "
+            "Not available for cryptocurrencies."
+        ),
+    )
+    async def get_sector_peers(
+        symbol: str,
+        market: str = "",
+        limit: int = 5,
+        manual_peers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return await handle_get_sector_peers(symbol, market, limit, manual_peers)
 
 
 __all__ = [

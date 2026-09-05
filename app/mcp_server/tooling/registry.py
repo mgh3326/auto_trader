@@ -198,10 +198,16 @@ from app.mcp_server.tooling.trade_retrospective_registration import (
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
 )
+from app.mcp_server.tooling.trading_scoreboard_registration import (
+    register_trading_scoreboard_tools,
+)
 from app.mcp_server.tooling.tradingcodex_execution_registration import (
     register_tradingcodex_execution_tools,
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
+from app.mcp_server.tooling.user_settings_registration import (
+    register_user_settings_tools,
+)
 from app.mcp_server.tooling.watch_repricing_registration import (
     register_watch_repricing_tools,
 )
@@ -364,6 +370,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # (per-symbol AI analysis history) is the operator-observed surface. The report판
     # SERVICE (app/services/market_report_service.py) stays — it is the n8n write path
     # + weekly_summary consumer; only its dead MCP tool registration is dropped.
+    register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_market_brief_tools(mcp)
 
@@ -382,6 +389,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         include_position_intake=profile is McpProfile.DEFAULT,
     )
     register_forecast_tools(mcp)
+    register_trading_scoreboard_tools(mcp)
     # ROB-1173: this is a direct KIS mock broker mutation despite its report
     # name. The KR-only Kiwoom profile must not inherit it from the broad shared
     # block; its only broker mutation surface is the typed Kiwoom KR namespace.
