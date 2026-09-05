@@ -128,7 +128,8 @@ async def _resting(
     market: str,
     account_scope: str,
     briefing: dict[str, Any] | None,
-    briefing_available: bool,
+    briefing_requested: bool,
+    briefing_tool_registered: bool,
 ) -> dict[str, Any]:
     pending, resting = await _proposal_lists()
     live_orders: dict[str, Any]
@@ -137,7 +138,11 @@ async def _resting(
         live_orders = (
             dict(pending_orders) if isinstance(pending_orders, Mapping) else {}
         )
-    elif not briefing_available:
+    elif briefing_requested:
+        # The requested briefing owns this fan-out.  If it failed, do not
+        # recreate its pending-order read while preparing another section.
+        live_orders = {}
+    elif not briefing_tool_registered:
         live_orders = _denied("get_operating_briefing")
     else:
         async with AsyncSessionLocal() as db:
@@ -193,7 +198,8 @@ async def _section_source(
     market: str,
     account_scope: str,
     briefing: dict[str, Any] | None,
-    briefing_available: bool,
+    briefing_requested: bool,
+    briefing_tool_registered: bool,
 ) -> dict[str, Any]:
     if section == "briefing":
         return await operating_briefing.get_operating_briefing_impl(market=market)
@@ -206,7 +212,8 @@ async def _section_source(
             market=market,
             account_scope=account_scope,
             briefing=briefing,
-            briefing_available=briefing_available,
+            briefing_requested=briefing_requested,
+            briefing_tool_registered=briefing_tool_registered,
         )
     if section == "pending_retros":
         return await trade_retrospective_tools.trade_retrospective_pending(limit=20)
@@ -351,7 +358,8 @@ async def _session_bootstrap_pack(
                 market=market,
                 account_scope=account_scope,
                 briefing=briefing,
-                briefing_available="get_operating_briefing" in registered,
+                briefing_requested="briefing" in requested,
+                briefing_tool_registered="get_operating_briefing" in registered,
             )
             logger.info("session_bootstrap_pack section=%s", section)
             elapsed = _elapsed_ms(section_started)
