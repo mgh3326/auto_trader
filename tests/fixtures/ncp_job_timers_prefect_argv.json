@@ -31,6 +31,64 @@
       "cron": "10 6 * * 2-6",
       "timeout_seconds": 7200,
       "argv": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_invest_screener_snapshots", "--market", "us", "--batch-size", "200", "--concurrency", "4", "--all", "--common-stocks-only", "--commit"]
+    },
+    {
+      "unit": "crypto-invest-screener-snapshots",
+      "flow": "Invest Crypto Screener Snapshots",
+      "deployment": "daily-kst",
+      "cron": "20 9 * * *",
+      "timeout_seconds": 3600,
+      "commit_env": "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED",
+      "argv_commit_off": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_invest_crypto_screener_snapshots", "--all"],
+      "argv_commit_on": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_invest_crypto_screener_snapshots", "--all", "--commit"]
+    },
+    {
+      "unit": "kr-fundamentals-snapshots",
+      "flow": "invest_kr_fundamentals_snapshots",
+      "deployment": "daily-kst",
+      "cron": "0 18 * * *",
+      "timeout_seconds": 7200,
+      "commit_env": "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED",
+      "argv_commit_off": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_invest_kr_fundamentals_snapshots", "--all"],
+      "argv_commit_on": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_invest_kr_fundamentals_snapshots", "--all", "--commit"]
+    },
+    {
+      "unit": "us-market-valuation-snapshots",
+      "flow": "US Market Valuation Snapshots",
+      "deployment": "daily-post-us-close",
+      "cron": "30 8 * * 2-6",
+      "timeout_seconds": 10800,
+      "commit_env": "MARKET_VALUATION_SNAPSHOTS_COMMIT_ENABLED",
+      "argv_commit_off": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_market_valuation_snapshots", "--market", "us", "--batch-size", "100", "--concurrency", "4", "--all", "--common-stocks-only"],
+      "argv_commit_on": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_market_valuation_snapshots", "--market", "us", "--batch-size", "100", "--concurrency", "4", "--all", "--common-stocks-only", "--commit"]
+    },
+    {
+      "unit": "us-fundamentals-snapshots",
+      "flow": "US Financial Fundamentals Snapshots",
+      "deployment": "weekly-sunday",
+      "cron": "0 9 * * 0",
+      "timeout_seconds": 10800,
+      "commit_env": "MARKET_VALUATION_SNAPSHOTS_COMMIT_ENABLED",
+      "argv_commit_off": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_us_fundamentals_snapshots", "--concurrency", "4", "--all", "--with-dividends"],
+      "argv_commit_on": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.build_us_fundamentals_snapshots", "--concurrency", "4", "--all", "--with-dividends", "--commit"]
+    },
+    {
+      "unit": "toss-symbol-master-sync",
+      "flow": "Toss Symbol Master Sync",
+      "deployment": "weekday-preopen",
+      "cron": "20 7 * * 1-5",
+      "timeout_seconds": 1800,
+      "steps": [{"argv": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.sync_toss_symbol_master", "--market", "kr", "--all", "--commit"], "timeout_seconds": 900}, {"argv": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-m", "scripts.sync_toss_symbol_master", "--market", "us", "--all", "--commit"], "timeout_seconds": 900}]
+    },
+    {
+      "unit": "crypto-invest-insight-snapshots",
+      "flow": "Invest Crypto Insight Snapshots",
+      "deployment": "daily-kst",
+      "cron": "20 9 * * *",
+      "timeout_seconds": 3600,
+      "argv_prefect": ["docker", "run", "--rm", "--network", "host", "--workdir", "/app", "--env-file", "/root/at-secrets/.env.api", "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/app/.venv/bin/python", "-c", "\nfrom __future__ import annotations\n\nimport asyncio\nimport json\nimport os\n\nfrom app.jobs.crypto_insight_snapshots import refresh_crypto_insight_snapshots\nfrom app.services.crypto_insight_snapshots.builder import DEFAULT_PROVIDERS\n\nDEFAULT_FLOW_PROVIDERS = [*DEFAULT_PROVIDERS, \"defillama\", \"tradingview\"]\n\n\ndef _json_env(name: str):\n    value = os.getenv(name)\n    if not value:\n        return None\n    return json.loads(value)\n\n\ndef _sample_payload(sample) -> dict[str, object]:\n    return {\n        \"metric\": sample.metric,\n        \"provider\": sample.provider,\n        \"symbol\": sample.symbol,\n        \"value\": str(sample.value) if sample.value is not None else None,\n        \"unit\": sample.unit,\n        \"snapshot_at\": sample.snapshot_at.isoformat(),\n    }\n\n\nasync def main() -> None:\n    providers = _json_env(\"CRYPTO_INSIGHT_PROVIDERS_JSON\")\n    symbols = _json_env(\"CRYPTO_INSIGHT_SYMBOLS_JSON\")\n    limit_value = os.getenv(\"CRYPTO_INSIGHT_LIMIT\")\n    limit = int(limit_value) if limit_value else None\n    commit_enabled = os.getenv(\"CRYPTO_INSIGHT_COMMIT_ENABLED\", \"\").lower() in {\n        \"1\",\n        \"true\",\n        \"yes\",\n        \"on\",\n    }\n    effective_providers = providers or list(DEFAULT_FLOW_PROVIDERS)\n    result = await refresh_crypto_insight_snapshots(\n        dry_run=not commit_enabled,\n        confirm=commit_enabled,\n        providers=effective_providers,\n        symbols=symbols,\n        limit=limit,\n    )\n    payload = {\n        \"snapshots_built\": result.snapshots_built,\n        \"committed\": result.committed,\n        \"started_at\": result.started_at.isoformat(),\n        \"finished_at\": result.finished_at.isoformat(),\n        \"providers\": list(result.providers),\n        \"snapshot_at_distribution\": result.snapshot_at_distribution,\n        \"warnings\": list(result.warnings),\n        \"samples\": [_sample_payload(sample) for sample in result.samples],\n    }\n    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))\n\n\nasyncio.run(main())\n"],
+      "runner_code_sha256": "fe143011f5c1a773b7c272fdb62f60d2ed7644f9d7276080e486503a4399a6e9",
+      "module": "scripts.build_crypto_insight_snapshots"
     }
   ]
 }

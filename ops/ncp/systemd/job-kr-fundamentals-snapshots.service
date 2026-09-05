@@ -1,0 +1,17 @@
+[Unit]
+Description=auto_trader KR fundamentals snapshots
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+Environment=AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api
+Environment=AT_JOB_COMMIT_ENV=INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED
+ExecStart=/root/at-run/ops/ncp/bin/at-job.sh scripts.build_invest_kr_fundamentals_snapshots --all
+TimeoutStartSec=7230
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

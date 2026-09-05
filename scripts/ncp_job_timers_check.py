@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD_DIR = ROOT / "ops/ncp/systemd"
 RUNNER = "/root/at-run/ops/ncp/bin/at-job.sh"
 PREFECT_GOLDEN = ROOT / "tests/fixtures/ncp_job_timers_prefect_argv.json"
+FROZEN_INSIGHT_MODULE = ROOT / "scripts/build_crypto_insight_snapshots.py"
 RUNTIME_ENV_FILE = "/root/at-secrets/.env.api"
 _DIRECTIVE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9]*)=(?P<value>.*)$")
 _IMAGE = re.compile(r"^ghcr\.io/mgh3326/auto_trader@sha256:[0-9a-f]{64}$")
@@ -38,13 +40,62 @@ _IMPORT_ONLY_ENV = {
 
 
 @dataclass(frozen=True)
+class Step:
+    argv: tuple[str, ...]
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class Job:
     name: str
     flow: str
     deployment: str
     cron: str
     timeout_seconds: int
-    prefect_argv: tuple[str, ...]
+    argv: tuple[str, ...] | None = None
+    commit_env: str | None = None
+    argv_commit_on: tuple[str, ...] | None = None
+    steps: tuple[Step, ...] = ()
+    module: str | None = None
+    runner_code_sha256: str | None = None
+
+    @property
+    def is_gate(self) -> bool:
+        return self.commit_env is not None
+
+    @property
+    def is_multi_step(self) -> bool:
+        return bool(self.steps)
+
+    @property
+    def is_insight(self) -> bool:
+        return self.module is not None
+
+
+def _string_argv(value: object, *, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(
+        isinstance(token, str) for token in value
+    ):
+        raise ValueError(f"{PREFECT_GOLDEN}: {context} must be a string argv")
+    return tuple(value)
+
+
+def _metadata(raw: Mapping[str, object]) -> tuple[str, str, str, str, int]:
+    values = ("unit", "flow", "deployment", "cron", "timeout_seconds")
+    if any(key not in raw for key in values) or not all(
+        isinstance(raw[key], str) for key in values[:4]
+    ):
+        raise ValueError(f"{PREFECT_GOLDEN}: malformed job metadata")
+    timeout = raw["timeout_seconds"]
+    if type(timeout) is not int:
+        raise ValueError(f"{PREFECT_GOLDEN}: malformed job timeout")
+    return (
+        str(raw["unit"]),
+        str(raw["flow"]),
+        str(raw["deployment"]),
+        str(raw["cron"]),
+        timeout,
+    )
 
 
 def _load_jobs() -> tuple[Job, ...]:
@@ -55,28 +106,85 @@ def _load_jobs() -> tuple[Job, ...]:
     for raw in payload["jobs"]:
         if not isinstance(raw, Mapping):
             raise ValueError(f"{PREFECT_GOLDEN}: malformed job entry")
-        values = ("unit", "flow", "deployment", "cron", "timeout_seconds", "argv")
-        if any(key not in raw for key in values) or not all(
-            isinstance(raw[key], str) for key in values[:4]
-        ):
-            raise ValueError(f"{PREFECT_GOLDEN}: malformed job metadata")
-        argv = raw["argv"]
-        if (
-            type(raw["timeout_seconds"]) is not int
-            or not isinstance(argv, list)
-            or not all(isinstance(token, str) for token in argv)
-        ):
-            raise ValueError(f"{PREFECT_GOLDEN}: malformed job argv")
-        jobs.append(
-            Job(
-                raw["unit"],
-                raw["flow"],
-                raw["deployment"],
-                raw["cron"],
-                raw["timeout_seconds"],
-                tuple(argv),
+        name, flow, deployment, cron, timeout = _metadata(raw)
+        if "argv" in raw:
+            jobs.append(
+                Job(
+                    name,
+                    flow,
+                    deployment,
+                    cron,
+                    timeout,
+                    argv=_string_argv(raw["argv"], context=name),
+                )
             )
-        )
+        elif "argv_commit_off" in raw:
+            commit_env = raw.get("commit_env")
+            if not isinstance(commit_env, str) or not re.fullmatch(
+                r"[A-Z][A-Z0-9_]*", commit_env
+            ):
+                raise ValueError(f"{PREFECT_GOLDEN}: {name} has invalid commit_env")
+            jobs.append(
+                Job(
+                    name,
+                    flow,
+                    deployment,
+                    cron,
+                    timeout,
+                    argv=_string_argv(raw["argv_commit_off"], context=name),
+                    commit_env=commit_env,
+                    argv_commit_on=_string_argv(
+                        raw.get("argv_commit_on"), context=name
+                    ),
+                )
+            )
+        elif "steps" in raw:
+            raw_steps = raw["steps"]
+            if not isinstance(raw_steps, list) or not raw_steps:
+                raise ValueError(f"{PREFECT_GOLDEN}: {name} has invalid steps")
+            steps: list[Step] = []
+            for index, raw_step in enumerate(raw_steps):
+                if (
+                    not isinstance(raw_step, Mapping)
+                    or type(raw_step.get("timeout_seconds")) is not int
+                ):
+                    raise ValueError(
+                        f"{PREFECT_GOLDEN}: {name} has invalid step {index}"
+                    )
+                steps.append(
+                    Step(
+                        _string_argv(
+                            raw_step.get("argv"), context=f"{name} step {index}"
+                        ),
+                        int(raw_step["timeout_seconds"]),
+                    )
+                )
+            if timeout != sum(step.timeout_seconds for step in steps):
+                raise ValueError(
+                    f"{PREFECT_GOLDEN}: {name} timeout is not its step sum"
+                )
+            jobs.append(Job(name, flow, deployment, cron, timeout, steps=tuple(steps)))
+        elif "argv_prefect" in raw:
+            module = raw.get("module")
+            runner_sha = raw.get("runner_code_sha256")
+            if not isinstance(module, str) or not isinstance(runner_sha, str):
+                raise ValueError(
+                    f"{PREFECT_GOLDEN}: {name} has invalid insight metadata"
+                )
+            jobs.append(
+                Job(
+                    name,
+                    flow,
+                    deployment,
+                    cron,
+                    timeout,
+                    argv=_string_argv(raw["argv_prefect"], context=name),
+                    module=module,
+                    runner_code_sha256=runner_sha,
+                )
+            )
+        else:
+            raise ValueError(f"{PREFECT_GOLDEN}: {name} has no supported argv form")
     return tuple(jobs)
 
 
@@ -160,8 +268,7 @@ def next_runs(
     return result
 
 
-def expected_execstart(job: Job) -> list[str]:
-    argv = job.prefect_argv
+def _python_args(argv: tuple[str, ...], *, module: str | None = None) -> list[str]:
     prefix = (
         "docker",
         "run",
@@ -174,14 +281,65 @@ def expected_execstart(job: Job) -> list[str]:
         RUNTIME_ENV_FILE,
     )
     if argv[: len(prefix)] != prefix or len(argv) < len(prefix) + 4:
-        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has an invalid Docker prefix")
+        raise ValueError(f"{PREFECT_GOLDEN}: invalid Docker prefix")
     image_index = len(prefix)
     if not _IMAGE.fullmatch(argv[image_index]):
-        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has a non-digest image")
+        raise ValueError(f"{PREFECT_GOLDEN}: non-digest image")
     command = argv[image_index + 1 :]
-    if command[:2] != ("/app/.venv/bin/python", "-m") or len(command) < 3:
-        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has an invalid Python command")
-    return [RUNNER, *command[2:]]
+    if command[:2] != ("/app/.venv/bin/python", "-m"):
+        if command[:2] == ("/app/.venv/bin/python", "-c") and module is not None:
+            return [module]
+        raise ValueError(f"{PREFECT_GOLDEN}: invalid Python command")
+    if len(command) < 3:
+        raise ValueError(f"{PREFECT_GOLDEN}: incomplete Python module command")
+    return list(command[2:])
+
+
+def expected_execstart(job: Job) -> list[str]:
+    if job.is_multi_step:
+        result: list[str] = [RUNNER]
+        for index, step in enumerate(job.steps):
+            if index:
+                result.append("--at-job-step")
+            result.extend(_python_args(step.argv))
+        return result
+    if job.argv is None:
+        raise ValueError(f"{PREFECT_GOLDEN}: {job.name} has no argv")
+    return [RUNNER, *_python_args(job.argv, module=job.module)]
+
+
+def _expected_environment(job: Job) -> set[str]:
+    expected = {f"AT_RUNTIME_ENV_FILE={RUNTIME_ENV_FILE}"}
+    if job.commit_env is not None:
+        expected.add(f"AT_JOB_COMMIT_ENV={job.commit_env}")
+    if job.is_multi_step:
+        expected.add(f"AT_JOB_STEPS={len(job.steps)}")
+    return expected
+
+
+def _check_environment(
+    service_path: Path, service: Mapping[str, list[str]], job: Job
+) -> None:
+    actual = service.get("Environment", [])
+    expected = _expected_environment(job)
+    if len(actual) != len(set(actual)) or set(actual) != expected:
+        raise ValueError(f"{service_path}: environment differs from exact expected set")
+    if "EnvironmentFile" in service:
+        raise ValueError(
+            f"{service_path}: must not inject an additional environment file"
+        )
+
+
+def _check_insight_hash(job: Job) -> None:
+    if not job.is_insight or job.runner_code_sha256 is None:
+        return
+    if not FROZEN_INSIGHT_MODULE.is_file():
+        raise ValueError(
+            f"{FROZEN_INSIGHT_MODULE}: missing frozen crypto insight module"
+        )
+    actual = hashlib.sha256(FROZEN_INSIGHT_MODULE.read_bytes()).hexdigest()
+    if actual != job.runner_code_sha256:
+        raise ValueError(f"{FROZEN_INSIGHT_MODULE}: SHA-256 differs from golden")
 
 
 def check_job(job: Job, *, check_imports: bool) -> None:
@@ -189,17 +347,13 @@ def check_job(job: Job, *, check_imports: bool) -> None:
     timer_path = SYSTEMD_DIR / f"job-{job.name}.timer"
     service = _directives(service_path)
     timer = _directives(timer_path)
-    if service.get("Environment") != [f"AT_RUNTIME_ENV_FILE={RUNTIME_ENV_FILE}"]:
-        raise ValueError(
-            f"{service_path}: must set AT_RUNTIME_ENV_FILE to {RUNTIME_ENV_FILE}"
-        )
-    if "EnvironmentFile" in service:
-        raise ValueError(
-            f"{service_path}: must not inject an additional environment file"
-        )
+    _check_environment(service_path, service, job)
     actual_argv = shlex.split(service.get("ExecStart", [""])[0])
-    if actual_argv != expected_execstart(job):
+    expected_argv = expected_execstart(job)
+    if actual_argv != expected_argv:
         raise ValueError(f"{service_path}: argv differs from Prefect capture")
+    if job.is_gate and "--commit" in actual_argv:
+        raise ValueError(f"{service_path}: gate ExecStart must be commit-off")
     if service.get("TimeoutStartSec") != [str(job.timeout_seconds + 30)]:
         raise ValueError(f"{service_path}: timeout does not inherit flow timeout")
     if timer.get("Persistent") != ["false"] or timer.get("RandomizedDelaySec") != ["0"]:
@@ -211,8 +365,9 @@ def check_job(job: Job, *, check_imports: bool) -> None:
         raise ValueError(
             f"{timer_path}: OnCalendar differs from Prefect cron {job.cron}"
         )
-    if check_imports:
-        module = expected_execstart(job)[1]
+    _check_insight_hash(job)
+    if check_imports and not job.is_insight:
+        module = expected_argv[1]
         result = subprocess.run(
             ["uv", "run", "python", "-c", f"import {module}"],
             capture_output=True,
@@ -233,13 +388,13 @@ def check_all(*, check_imports: bool) -> None:
         raise ValueError(
             "job unit inventory is unpaired or contains an unreviewed unit"
         )
-    seen: dict[tuple[datetime, ...], str] = {}
+    seen: dict[tuple[tuple[datetime, ...], tuple[str, ...]], str] = {}
     for job in JOBS:
         check_job(job, check_imports=check_imports)
-        occurrences = tuple(next_runs(parse_cron(job.cron)))
-        if occurrences in seen:
-            raise ValueError(f"duplicate schedule: {job.name} and {seen[occurrences]}")
-        seen[occurrences] = job.name
+        key = (tuple(next_runs(parse_cron(job.cron))), tuple(expected_execstart(job)))
+        if key in seen:
+            raise ValueError(f"duplicate schedule: {job.name} and {seen[key]}")
+        seen[key] = job.name
 
 
 def deployment_paused(api_url: str, job: Job) -> bool:
@@ -272,12 +427,9 @@ def timer_is_enabled(job: Job) -> bool:
 
 
 def dual_active_units(api_url: str) -> list[str]:
-    """Return the unsafe timer/deployment pairs; this function never mutates either."""
+    """Return unsafe timer/deployment pairs without mutating either authority."""
     active: list[str] = []
     for job in JOBS:
-        # Read both authorities for every unit.  Apart from making the operator
-        # report complete, this avoids a disabled timer hiding malformed Prefect
-        # state until a later enable operation.
         paused = deployment_paused(api_url, job)
         enabled = timer_is_enabled(job)
         if enabled and not paused:

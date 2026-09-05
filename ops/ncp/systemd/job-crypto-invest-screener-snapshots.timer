@@ -1,0 +1,13 @@
+[Unit]
+Description=Run auto_trader crypto invest screener snapshots at the Prefect schedule
+
+[Timer]
+# PrefectCron: 20 9 * * *
+# PrefectTimezone: Asia/Seoul
+OnCalendar=*-*-* 09:20:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-crypto-invest-screener-snapshots.service
+
+[Install]
+WantedBy=timers.target
