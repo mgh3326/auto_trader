@@ -56,8 +56,8 @@ def test_all_checked_units_match_fake_prefect_run(
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
-    check.check_all(check_imports=True)
     assert check.run_cli(["--skip-imports"]) == 0
+    check.check_all(check_imports=True)
 
 
 def _copy_systemd_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
