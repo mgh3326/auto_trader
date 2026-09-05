@@ -81,6 +81,21 @@ PROFILE_DEAD_TOOLS: dict[str, frozenset[str]] = {
     "kiwoom": _SHARED_DEAD_TOOLS,
     "kiwoom_kr": _SHARED_DEAD_TOOLS,
     "hermes-paper-kis": _SHARED_DEAD_TOOLS,
+    "default": _SHARED_DEAD_TOOLS
+    - frozenset(
+        {
+            "get_toss_ai_signal",
+            "get_toss_buy_balance",
+            "investment_report_create_from_hermes_composition",
+        }
+    )
+    | frozenset(
+        {
+            "alpaca_paper_reconcile_orders",
+            "paper_cancel_pending_order",
+            "save_position_intake_retrospective",
+        }
+    ),
 }
 
 
