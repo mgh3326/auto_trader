@@ -84,6 +84,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",
+        "decision_table_validate",
         "discover_buy_candidates_fanout",
         # ROB-1301: KR-priority, observation-only shadow evaluator. This is a
         # read-only advisory tool, so including it preserves the KIWOOM ↔
