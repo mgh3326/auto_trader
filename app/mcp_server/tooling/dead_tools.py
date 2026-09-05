@@ -77,6 +77,7 @@ PROFILE_DEAD_TOOLS: dict[str, frozenset[str]] = {
             "reset_paper_account",
         }
     ),
+    "crypto": _SHARED_DEAD_TOOLS,
 }
 
 
