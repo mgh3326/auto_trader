@@ -348,7 +348,11 @@ provider to fill it.
 
 ### Paper execution validation boundary (ROB-848)
 
-The default-off `paper_execution` profile is one exact union under
+Historical contract: the `paper_execution` profile was removed on 2026-09-05.
+The following describes its former validation boundary; it is not a startup
+instruction. See [the cleanup runbook](../../docs/runbooks/mcp-surface-cleanup-20260905.md).
+
+The former default-off `paper_execution` profile was one exact union under
 `PAPER_EXECUTION_ENABLED`: the unchanged six names in
 `PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
 `PAPER_VALIDATION_TOOL_NAMES` and the operator-only
@@ -379,9 +383,8 @@ prepared native order without POST, then performs cohort-owned cleanup. See
 Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
 existing audit/fence rows remain immutable.
 
-The `analysis_readonly` Codex/headless profile exposes
-`analysis_bundle_get` only when the gate is enabled. It never exposes
-`analysis_bundle_create`, preserving the consumer's get-only boundary.
+The `analysis_readonly` profile no longer registers either analysis bundle tool.
+Their service implementations remain available to internal callers.
 
 The ROB-833 runner handoff is exactly:
 
@@ -2429,7 +2432,6 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
-| Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
 
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
@@ -2437,50 +2439,12 @@ Only explicit broker cancellation evidence returns `cancelled`; its dry-run
 action is `would_mark_cancelled`, while an applied reconcile reports
 `marked_cancelled`.
 
-### Profile: `paper_execution` (ROB-845)
+### Removed profile: `paper_execution` (audit 2026-09-03)
 
-This isolated profile is the canonical experiment-to-paper-broker boundary. It
-must be enabled explicitly with all of:
-
-- `MCP_PROFILE=paper_execution`
-- `PAPER_EXECUTION_ENABLED=true`
-- a non-empty `MCP_AUTH_TOKEN`
-
-The process fails before FastMCP registration when either the feature flag or
-authentication is missing. A direct registry call with the feature flag off
-registers zero tools.
-
-Exact tool allowlist:
-
-- `paper_execution_get_capabilities`
-- `paper_execution_preview_order`
-- `paper_execution_submit_order`
-- `paper_execution_cancel_order`
-- `paper_execution_get_order`
-- `paper_execution_reconcile`
-- `paper_cohort_kill_switch` (server-bound operator/system identity only)
-
-The request DTO contains the claimed experiment/run/cohort/strategy identity,
-canonical snapshot evidence, and order intent. It does not accept caller-owned
-`origin`, `idempotency_key`, broker `client_order_id`, or native order ID. Those
-identities are derived and verified server-side.
-
-V1 capability scope is deliberately narrow:
-
-- Binance Spot Demo: `BTCUSDT`/`ETHUSDT`, BUY MARKET, notional sizing; the
-  guarded native executor performs one open/close round trip. External cancel
-  and reconcile are unsupported.
-- Alpaca Crypto Paper: `BTC/USD`/`ETH/USD`, BUY/SELL LIMIT, quantity sizing,
-  GTC/IOC, through the approval-packet/coordinator boundary.
-
-No KIS, Kiwoom, Toss, Upbit, live broker, legacy order, or venue-native mutation
-tool is registered. Broker-native ledgers remain the lifecycle/fill/P&L source;
-the façade adds no common order ledger or migration.
-
-ROB-849 will provide the concrete immutable cohort/snapshot provenance verifier.
-Until that composition is installed, capability reads work but every experiment
-operation fails closed with `provenance_verifier_unavailable` before adapter,
-native-ledger, client, or broker activity.
+This profile is no longer accepted by `MCP_PROFILE`; its dedicated execution and
+validation tools were unused. The cohort kill-switch handler and service remain
+available to internal code; no replacement MCP surface is registered.
+See [the cleanup runbook](../../docs/runbooks/mcp-surface-cleanup-20260905.md).
 
 ### Profile: `hermes-paper-kis`
 

@@ -55,13 +55,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL_NAMES
-from app.mcp_server.tooling.paper_analytics_registration import (
-    PAPER_ANALYTICS_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
@@ -74,6 +67,16 @@ from app.mcp_server.tooling.tradingcodex_execution_registration import (
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
 
+PAPER_EXECUTION_TOOL_NAMES = {
+    "paper_execution_get_order",
+    "paper_execution_preview_order",
+    "paper_execution_get_capabilities",
+    "paper_execution_reconcile",
+    "paper_execution_submit_order",
+    "paper_execution_cancel_order",
+}
+
+
 _LEGACY_ORDER_TOOL_NAMES = ORDER_TOOL_NAMES  # {place_order, cancel_order, ...}
 _ALPACA_PAPER_TOOL_NAMES = (
     ALPACA_PAPER_READONLY_TOOL_NAMES
@@ -82,9 +85,7 @@ _ALPACA_PAPER_TOOL_NAMES = (
     | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
-_DB_PAPER_TOOL_NAMES = (
-    PAPER_ACCOUNT_TOOL_NAMES | PAPER_ANALYTICS_TOOL_NAMES | PAPER_JOURNAL_TOOL_NAMES
-)
+_DB_PAPER_TOOL_NAMES = PAPER_ACCOUNT_TOOL_NAMES
 _CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_crypto_profile",
     "get_kimchi_premium",
@@ -481,7 +482,6 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     },
     # Default-off profile: the direct registry exposes zero tools until the
     # dedicated feature flag is explicitly enabled.
-    McpProfile.PAPER_EXECUTION: set(),
     McpProfile.ALPACA_PAPER_CLEAN: set(),
     # ROB-1286 — the watch-fire repricing session. It may create an order
     # *proposal*; it holds no order-mutation tool at all, so this row is the
@@ -536,7 +536,6 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ANALYSIS_READONLY,
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
-        McpProfile.PAPER_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
         # ROB-1286 — allowlist-only and early-returns before the "Always"
         # research block, like the other closed-world profiles above.
@@ -588,16 +587,6 @@ class TestAnalysisReadonlyProfile:
         )
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
         assert set(mcp.tools) == ANALYSIS_READONLY_TOOL_NAMES
-
-    def test_bundle_gate_registers_get_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
-        )
-        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
-        assert "analysis_bundle_get" in mcp.tools
-        assert "analysis_bundle_create" not in mcp.tools
 
     def test_does_not_register_forbidden_surfaces(self) -> None:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
@@ -1064,8 +1053,9 @@ class TestResolveMcpProfile:
             is McpProfile.TRADINGCODEX_EXECUTION
         )
 
-    def test_paper_execution(self) -> None:
-        assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
+    def test_removed_paper_execution_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
+            resolve_mcp_profile("paper_execution")
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

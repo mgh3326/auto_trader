@@ -17,7 +17,7 @@ class DummyMCP:
     def __init__(self) -> None:
         self.tools: dict[str, Callable[..., Any]] = {}
 
-    def tool(self, *, name: str, description: str):
+    def tool(self, *, name: str, description: str, **_options):
         assert description
 
         def decorator(fn):
@@ -54,7 +54,6 @@ _READ_PROFILES = [
     not in (
         McpProfile.SHADOW_REPLAY,
         McpProfile.ACCOUNT_READ,
-        McpProfile.PAPER_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
     )
 ]

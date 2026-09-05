@@ -91,11 +91,6 @@ Profile → tool surface mapping
   No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
   report-write, KIS mock, Alpaca, or paper simulator tools are registered.
 
-"paper_execution" (McpProfile.PAPER_EXECUTION):
-  ROB-845 canonical experiment paper-execution façade ONLY. The profile is
-  default-off, bearer-authenticated at process startup, and returns before the
-  normal "Always" block. It exposes no venue-native, generic, or live tool.
-
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -103,7 +98,7 @@ from __future__ import annotations
 
 import inspect
 from functools import wraps
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
@@ -127,13 +122,11 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
 from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
 )
-from app.mcp_server.tooling.analysis_bundle_handlers import (
-    register_analysis_bundle_tools,
-)
 from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.dead_tools import without_dead_tools
 from app.mcp_server.tooling.downside_watch_registration import (
     register_downside_watch_tools,
 )
@@ -166,6 +159,7 @@ from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
 from app.mcp_server.tooling.news_registration import register_news_tools
+from app.mcp_server.tooling.niche import NicheMCP
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
@@ -182,23 +176,8 @@ from app.mcp_server.tooling.orders_toss_variants import (
 from app.mcp_server.tooling.paper_account_registration import (
     register_paper_account_tools,
 )
-from app.mcp_server.tooling.paper_analytics_registration import (
-    register_paper_analytics_tools,
-)
-from app.mcp_server.tooling.paper_cohort_control_registration import (
-    register_paper_cohort_control_tools,
-)
-from app.mcp_server.tooling.paper_execution_registration import (
-    register_paper_execution_tools,
-)
-from app.mcp_server.tooling.paper_journal_registration import (
-    register_paper_journal_tools,
-)
 from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
-)
-from app.mcp_server.tooling.paper_validation_registration import (
-    register_paper_validation_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.route_request_registration import (
@@ -294,6 +273,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
+    mcp = cast("FastMCP", NicheMCP(mcp, profile=profile.value))
+    mcp = without_dead_tools(mcp, profile.value)
+
     if profile is McpProfile.SHADOW_REPLAY:
         # ROB-697 M1 — frozen-context replay ONLY: read the bundle + policy +
         # lane procedure. Deliberately NO live-fetch (market_data/analysis/
@@ -332,17 +314,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal default block so broad research, settings,
         # watch, modify, reconcile, and persistence tools are physically absent.
         register_tradingcodex_execution_tools(mcp)
-        return
-
-    if profile is McpProfile.PAPER_EXECUTION:
-        # ROB-845 — exact façade allowlist. Direct callers of the registry do
-        # not receive any tools while the feature is disabled; production
-        # startup fails even earlier in main.py. This branch must remain above
-        # the broad "Always" registrations below.
-        if settings.PAPER_EXECUTION_ENABLED:
-            register_paper_execution_tools(mcp)
-            register_paper_validation_tools(mcp)
-            register_paper_cohort_control_tools(mcp)
         return
 
     if profile is McpProfile.ALPACA_PAPER_CLEAN:
@@ -384,8 +355,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     )
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
-    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
-        register_analysis_bundle_tools(mcp)
     register_operating_briefing_tools(mcp)
     # ROB-646 — read-only policy thresholds + version stamp; always registered
     # so every profile can cite the stamp when recording a verdict.
@@ -521,8 +490,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_market_quote_snapshot_tools(mcp)
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)
-        register_paper_analytics_tools(mcp)
-        register_paper_journal_tools(mcp)
     elif profile is McpProfile.KIWOOM:
         orders_kiwoom_variants.register(mcp)
         from app.mcp_server.tooling.orders_kiwoom_us_variants import (

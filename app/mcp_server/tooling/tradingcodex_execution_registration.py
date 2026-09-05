@@ -81,7 +81,6 @@ from app.mcp_server.tooling.trade_retrospective_tools import (
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
 )
-from app.mcp_server.tooling.user_settings_registration import USER_SETTINGS_TOOL_NAMES
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -142,7 +141,9 @@ _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES: set[str] = {
 
 # ROB-816 — order_proposals SOT ledger read/create surface. No approve/submit
 # tool is included — approval is Telegram-only (PR 2).
-_TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = ORDER_PROPOSAL_TOOL_NAMES
+_TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = (
+    ORDER_PROPOSAL_TOOL_NAMES - set()
+)
 
 TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
     ACCOUNT_READ_TOOL_NAMES
@@ -182,7 +183,7 @@ TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES: set[str] = (
     | (FORECAST_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
     | (TRADE_RETROSPECTIVE_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
     | SESSION_CONTEXT_TOOL_NAMES
-    | USER_SETTINGS_TOOL_NAMES
+    | {"get_user_setting", "set_user_setting"}
     | (OPERATING_BRIEFING_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
     | (_INVESTMENT_REPORT_REGISTERED_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
     | {

@@ -38,7 +38,7 @@ class _RecorderMcp:
 
     registered: list[_RecordedTool] = field(default_factory=list)
 
-    def tool(self, *, name: str, description: str):
+    def tool(self, *, name: str, description: str, **_options):
         def _decorator(func):
             self.registered.append(
                 _RecordedTool(name=name, description=description, func=func)

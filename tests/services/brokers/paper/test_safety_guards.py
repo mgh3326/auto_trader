@@ -6,20 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from app.core.config import settings
-from app.mcp_server.profiles import McpProfile
-from app.mcp_server.tooling.paper_cohort_control_registration import (
-    PAPER_COHORT_CONTROL_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_validation_registration import (
-    PAPER_VALIDATION_TOOL_NAMES,
-)
-from app.mcp_server.tooling.registry import register_all_tools
-from tests._mcp_tooling_support import DummyMCP
-
 _ROOT = Path(__file__).resolve().parents[4]
 _ADAPTER_PATHS = (
     _ROOT / "app/services/brokers/binance/paper_adapter.py",
@@ -30,7 +16,6 @@ _ROB845_BOUNDARY_PATHS = (
     *_ADAPTER_PATHS,
     *_COMMON_PATHS,
     _ROOT / "app/services/alpaca_paper_order_application.py",
-    _ROOT / "app/mcp_server/tooling/paper_execution_registration.py",
 )
 _EXPECTED_PROFILE_TOOLS = {
     "paper_execution_get_capabilities",
@@ -151,7 +136,6 @@ def test_rob845_boundary_imports_no_rob848_or_rob849_implementation() -> None:
 @pytest.mark.parametrize(
     ("target_name", "expected_path"),
     [
-        ("PAPER_EXECUTION", "app/mcp_server/profiles.py"),
         ("PAPER_BROKER_CAPABILITIES", "app/services/brokers/capabilities.py"),
     ],
 )
@@ -168,38 +152,3 @@ def test_profile_and_capability_registry_have_one_source_of_truth(
             definitions.append(str(path.relative_to(_ROOT)))
 
     assert definitions == [expected_path]
-
-
-def test_paper_execution_broker_facade_remains_exactly_six() -> None:
-    assert PAPER_EXECUTION_TOOL_NAMES == _EXPECTED_PROFILE_TOOLS
-    assert len(PAPER_EXECUTION_TOOL_NAMES) == 6
-
-
-def test_paper_execution_profile_is_exact_composed_allowlist(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
-    mcp = DummyMCP()
-
-    register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-
-    assert set(mcp.tools) == (
-        _EXPECTED_PROFILE_TOOLS
-        | PAPER_VALIDATION_TOOL_NAMES
-        | PAPER_COHORT_CONTROL_TOOL_NAMES
-    )
-    forbidden_fragments = {
-        "alpaca_paper",
-        "binance_demo",
-        "kis",
-        "kiwoom",
-        "upbit",
-        "toss",
-        "live",
-        "link_native",
-    }
-    assert not {
-        name
-        for name in mcp.tools
-        if any(fragment in name for fragment in forbidden_fragments)
-    }

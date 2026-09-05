@@ -12,11 +12,9 @@ from app.services.paper_validation.contracts import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
-REGISTRATION = REPO / "app/mcp_server/tooling/paper_validation_registration.py"
 HANDLERS = REPO / "app/mcp_server/tooling/paper_validation_handlers.py"
 SOURCES = [
     *sorted((REPO / "app/services/paper_validation").glob("*.py")),
-    REGISTRATION,
     *([HANDLERS] if HANDLERS.exists() else []),
 ]
 FORBIDDEN_IMPORT_FRAGMENTS = {
@@ -142,25 +140,6 @@ def test_migration_check_names_bypass_double_prefix_convention() -> None:
         isinstance(name, ast.Call) and _qualified_name(name.func) == "op.f"
         for name in check_names
     )
-
-
-def test_registration_keeps_application_logic_in_handlers_module() -> None:
-    assert HANDLERS.is_file(), "paper validation handler module is missing"
-
-    registration = ast.parse(
-        REGISTRATION.read_text(encoding="utf-8"), filename=str(REGISTRATION)
-    )
-    class_names = {
-        node.name for node in registration.body if isinstance(node, ast.ClassDef)
-    }
-    imports = {
-        node.module
-        for node in registration.body
-        if isinstance(node, ast.ImportFrom) and node.module is not None
-    }
-
-    assert class_names == set()
-    assert "app.mcp_server.tooling.paper_validation_handlers" in imports
 
 
 @pytest.mark.parametrize(
