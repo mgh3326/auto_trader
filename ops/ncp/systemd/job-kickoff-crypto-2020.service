@@ -9,7 +9,7 @@ Type=oneshot
 WorkingDirectory=/root/at-run
 EnvironmentFile=/root/at-secrets/.env.api
 EnvironmentFile=/root/at-secrets/.env.lane-kickoff
-Environment=PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock
+Environment="PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock"
 Environment=LANE_EVENT_EMIT_BIN=/root/pw-s2pilot/bin/panewire
 Environment=LANE_EVENT_EMIT_INBOX_ROOT=/root/pw-s2pilot/inbox
 Environment=LANE_EVENT_EMIT_HOST=ncp

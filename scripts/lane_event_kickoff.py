@@ -122,6 +122,7 @@ def _output(
 def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
     args = parse_args(argv)
     trading_date = args.date or kst_trading_date(now or datetime.now(KST))
+    enabled = os.getenv("LANE_EVENT_KICKOFF_ENABLED", "").strip().lower() == "true"
     raw_text = f"[kickoff] {args.slot} {args.playbook} date={trading_date}"
     text = sanitize_lane_event_text(raw_text)
     if (
@@ -133,7 +134,7 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
             slot=args.slot,
             playbook=args.playbook,
             trading_date=trading_date,
-            enabled=False,
+            enabled=enabled,
             dry_run=False,
             emitted=False,
             duplicate=False,
@@ -141,7 +142,6 @@ def main(argv: list[str] | None = None, *, now: datetime | None = None) -> int:
         )
         return 2
 
-    enabled = os.getenv("LANE_EVENT_KICKOFF_ENABLED", "").strip().lower() == "true"
     effective_dry_run = args.dry_run or not enabled
     if effective_dry_run:
         _output(

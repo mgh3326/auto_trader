@@ -74,6 +74,17 @@ The service sets `PANEWIRE_SOCKET`, `LANE_EVENT_EMIT_BIN`,
 producer has no pane. Giving a different inbox root is a trap: the daemon
 namespace guard rejects it, leaving only a file that cannot be injected.
 
+### Environment-file warning
+
+Do not put `LANE_EVENT_EMIT_*` in `/root/at-secrets/.env.api`. The unit's
+`docker run` places its pinned `--env LANE_EVENT_EMIT_*` arguments before that
+`--env-file`, so a same-named API-file value overrides the pinned value. In
+particular, a changed `LANE_EVENT_EMIT_INBOX_ROOT` is rejected by the daemon
+namespace guard and silently degrades the kickoff to file-only delivery.
+`fill-event-handoff.service` also reads `.env.api`; shared `LANE_EVENT_EMIT_*`
+values leak into its path unless that deployment supplies the corresponding
+`FILL_HANDOFF_EMIT_*` override.
+
 Timers use KST `OnCalendar`, zero randomized delay, and `Persistent=false`.
 A system started after a slot must not replay a stale kickoff after the market
 window; its resident session could otherwise execute a past cycle. The units
@@ -89,8 +100,9 @@ pause the relevant Prefect kickoff deployments, enable the NCP timers, and
 observe the next slot. To reverse the change, disable the NCP timers first,
 then unpause Prefect.
 
-The retirement checklist is admiral-only: pause then delete the nine `KR Live
-Session Kickoff` Prefect deployments; create a separate removal PR for
+The retirement checklist is admiral-only: pause then delete the eleven `KR Live
+Session Kickoff` Prefect deployments, and handle its paused `manual-smoke`
+deployment too; create a separate removal PR for
 `krb1_headless`, `cycle_runner`, and the B0-X slot runner; and remove no timer
 until the associated resident-lane cutover is accepted.
 

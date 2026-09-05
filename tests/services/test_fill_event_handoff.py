@@ -560,7 +560,7 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
                 prefect_api_url="http://prefect",
                 kick_deployments={"crypto": "crypto-deployment"},
                 lane_events={"crypto": "lane-a"},
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary), timeout_s=3.0),
+                lane_event=LaneEventConfig(binary=str(lane_emit_binary), timeout_s=1.0),
             ),
             command=command,
             now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),

@@ -411,6 +411,25 @@ def _check_kickoff_timer(slot_name: str, slot: KickoffSlot) -> None:
         raise ValueError(f"{timer_path}: must install under timers.target")
 
 
+def _environment_assignments(
+    service_path: Path, service: Mapping[str, list[str]]
+) -> list[str]:
+    assignments: list[str] = []
+    for value in service.get("Environment", []):
+        try:
+            tokens = shlex.split(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"{service_path}: malformed Environment directive"
+            ) from exc
+        if not tokens or any(
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token) for token in tokens
+        ):
+            raise ValueError(f"{service_path}: Environment has a non-assignment token")
+        assignments.extend(tokens)
+    return assignments
+
+
 def _check_kickoff_service(slot_name: str, slot: KickoffSlot) -> None:
     service_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.service"
     if not service_path.read_text(encoding="utf-8").startswith("[Unit]\n"):
@@ -422,7 +441,8 @@ def _check_kickoff_service(slot_name: str, slot: KickoffSlot) -> None:
         "LANE_EVENT_EMIT_INBOX_ROOT=/root/pw-s2pilot/inbox",
         "LANE_EVENT_EMIT_HOST=ncp",
     }
-    if set(service.get("Environment", [])) != expected_env:
+    actual_env = _environment_assignments(service_path, service)
+    if len(actual_env) != len(expected_env) or set(actual_env) != expected_env:
         raise ValueError(f"{service_path}: kickoff environment differs from exact set")
     if service.get("EnvironmentFile") != [
         "/root/at-secrets/.env.api",

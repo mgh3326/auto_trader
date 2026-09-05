@@ -56,6 +56,7 @@ def test_all_checked_units_match_fake_prefect_run(
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
+    check.check_all(check_imports=True)
     assert check.run_cli(["--skip-imports"]) == 0
 
 
@@ -96,6 +97,21 @@ def test_kickoff_literal_lane_is_red(
     service.write_text(
         service.read_text(encoding="utf-8").replace(
             '--lane "$$LANE_EVENT_KICKOFF_LANE_KR"', "--lane lane-a"
+        ),
+        encoding="utf-8",
+    )
+    assert check.run_cli(["--skip-imports"]) == 1
+
+
+def test_kickoff_unquoted_socket_environment_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    systemd_dir = _copy_systemd_dir(tmp_path, monkeypatch)
+    service = systemd_dir / "job-kickoff-0905.service"
+    service.write_text(
+        service.read_text(encoding="utf-8").replace(
+            'Environment="PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock"',
+            "Environment=PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock",
         ),
         encoding="utf-8",
     )

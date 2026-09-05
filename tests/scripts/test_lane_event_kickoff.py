@@ -263,7 +263,9 @@ def test_invalid_operational_inputs_fail_closed_without_emitting(
         )
         == 2
     )
-    assert _payload(capsys)["reason"] == "text_too_long"
+    payload = _payload(capsys)
+    assert payload["reason"] == "text_too_long"
+    assert payload["enabled"] is True
     assert not argv_path.exists()
 
 
