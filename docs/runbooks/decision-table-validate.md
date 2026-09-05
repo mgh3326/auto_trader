@@ -9,6 +9,12 @@ passed to an execution consumer.
 
 ## 2. Operator use
 
+The v1.1 enum intentionally excludes `binance_demo` and
+`binance_futures_demo` account modes. This is a KR decision-table contract and
+there is no crypto decision-table variant; such input therefore fails closed as
+`invalid_enum_value`. A future crypto contract may add them in its own PR
+without changing the ROB-285 Binance audit guard.
+
 Submit the complete prep envelope, including
 `schema_version="kr-nxt-decision-table/v1.1"`, `market`, `decision_table`,
 and the SHA-256 `decision_table_hash`; the tool hashes only the nested

@@ -81,8 +81,8 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | compare_paper_accounts | db-paper | app.mcp_server.tooling.paper_analytics_registration | no | D | 0 | 0 | 0 | 0 | 0 |
 | compare_strategies | db-paper | app.mcp_server.tooling.paper_journal_bridge | no | D | 0 | 0 | 0 | 0 | 0 |
 | create_paper_account | db-paper | app.mcp_server.tooling.paper_account_registration | persistence | D | 0 | 0 | 0 | 0 | 0 |
-| delete_paper_account | db-paper | app.mcp_server.tooling.paper_account_registration | persistence | D | 0 | 0 | 0 | 0 | 0 |
 | decision_table_validate | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.decision_table_registration | no | U | 0 | 0 | 0 | 1 | 10 |
+| delete_paper_account | db-paper | app.mcp_server.tooling.paper_account_registration | persistence | D | 0 | 0 | 0 | 0 | 0 |
 | discover_buy_candidates_fanout | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_candidate_fanout_registration | no | C | 0 | 0 | 0 | 1 | 0 |
 | evaluate_buy_gate_ab_shadow | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_gate_ab_shadow_registration | no | A | 0 | 6 | 0 | 2 | 0 |
 | execution_ledger_fill_events_list_recent | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.execution_ledger_events | no | A | 1512 | 328 | 0 | 0 | 0 |

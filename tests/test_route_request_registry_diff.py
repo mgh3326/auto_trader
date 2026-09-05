@@ -100,6 +100,8 @@ def test_buckets_are_disjoint():
     assert "discover_buy_candidates_fanout" not in MUTATION_TOOLS
     assert "evaluate_buy_gate_ab_shadow" in READ_ONLY_ADVISORY_TOOLS
     assert "evaluate_buy_gate_ab_shadow" not in MUTATION_TOOLS
+    assert "decision_table_validate" in READ_ONLY_ADVISORY_TOOLS
+    assert "decision_table_validate" not in MUTATION_TOOLS
 
 
 def test_mutation_action_taxonomy_is_disjoint_and_total():

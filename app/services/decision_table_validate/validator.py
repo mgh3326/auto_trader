@@ -33,8 +33,6 @@ _VALID_ACCOUNT_MODES = frozenset(
     {
         "alpaca_paper",
         "alpaca_paper_lab",
-        "binance_demo",
-        "binance_futures_demo",
         "db_simulated",
         "kis_live",
         "kis_mock",
