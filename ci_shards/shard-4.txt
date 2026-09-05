@@ -31,7 +31,6 @@ tests/mcp_server/tooling/test_get_holdings_news.py
 tests/mcp_server/tooling/test_live_order_evidence_upbit.py
 tests/mcp_server/tooling/test_loss_cut_place_order.py
 tests/mcp_server/tooling/test_order_proposal_create_post_commit.py
-tests/mcp_server/tooling/test_paper_validation_registration.py
 tests/mcp_server/tooling/test_screen_stocks_snapshot_docs.py
 tests/mcp_server/tooling/test_support_reserve_net_consumer_tool.py
 tests/mcp_server/tooling/test_toss_live_evidence.py

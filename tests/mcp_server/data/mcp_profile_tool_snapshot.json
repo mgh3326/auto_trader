@@ -983,23 +983,6 @@
     "update_trade_journal",
     "watch_downside_register_sweep"
   ],
-  "paper_execution": [
-    "paper_cohort_kill_switch",
-    "paper_execution_cancel_order",
-    "paper_execution_get_capabilities",
-    "paper_execution_get_order",
-    "paper_execution_preview_order",
-    "paper_execution_reconcile",
-    "paper_execution_submit_order",
-    "paper_validation_advance",
-    "paper_validation_append_hypothesis",
-    "paper_validation_append_review",
-    "paper_validation_authorize_order_submit",
-    "paper_validation_confirm_promotion",
-    "paper_validation_get_audit",
-    "paper_validation_register",
-    "paper_validation_reject_or_abort"
-  ],
   "shadow-replay": [
     "get_trading_policy",
     "investment_report_get_hermes_context",

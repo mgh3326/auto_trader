@@ -38,9 +38,6 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import KIWOOM_MOCK_US_TOOL
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
-from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
-)
 from app.mcp_server.tooling.watch_repricing_registration import (
     WATCH_REPRICING_TOOL_NAMES,
     assert_provisioned_surface,
@@ -81,7 +78,6 @@ ORDER_REGISTRY_NAMES = frozenset(
     | set(KIWOOM_MOCK_TOOL_NAMES)
     | set(KIWOOM_MOCK_US_TOOL_NAMES)
     | set(TOSS_LIVE_ORDER_TOOL_NAMES)
-    | set(PAPER_EXECUTION_TOOL_NAMES)
 )
 
 

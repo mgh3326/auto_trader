@@ -41,7 +41,6 @@ tests/mcp_server/tooling/test_crypto_live_routing.py
 tests/mcp_server/tooling/test_get_holdings_n1_residuals.py
 tests/mcp_server/tooling/test_live_order_evidence_us.py
 tests/mcp_server/tooling/test_order_execution_live_routing.py
-tests/mcp_server/tooling/test_paper_execution_registration.py
 tests/mcp_server/tooling/test_toss_batch_evidence_source.py
 tests/mcp_server/tooling/test_toss_loss_cut.py
 tests/mcp_server/tooling/test_trade_retrospective_registration_docs.py

@@ -12,11 +12,16 @@ from app.services.paper_validation.contracts import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
+# MCP surface audit 2026-09-03: the paper_validation MCP registrar was dead
+# (8/8 tools class D) and was deleted with the paper_execution profile. The
+# service package it guarded is untouched, so this import-boundary guard still
+# runs over it and over the shared handlers module the cohort-control tool
+# still imports.
 REGISTRATION = REPO / "app/mcp_server/tooling/paper_validation_registration.py"
 HANDLERS = REPO / "app/mcp_server/tooling/paper_validation_handlers.py"
 SOURCES = [
     *sorted((REPO / "app/services/paper_validation").glob("*.py")),
-    REGISTRATION,
+    *([REGISTRATION] if REGISTRATION.exists() else []),
     *([HANDLERS] if HANDLERS.exists() else []),
 ]
 FORBIDDEN_IMPORT_FRAGMENTS = {
@@ -144,23 +149,27 @@ def test_migration_check_names_bypass_double_prefix_convention() -> None:
     )
 
 
-def test_registration_keeps_application_logic_in_handlers_module() -> None:
+def test_registration_is_retired_and_handlers_module_survives() -> None:
+    """MCP surface audit 2026-09-03 deleted the registrar, not the handlers.
+
+    All eight ``paper_validation_*`` MCP tools were class D (dead), so
+    ``paper_validation_registration.py`` went with the ``paper_execution``
+    profile. ``paper_validation_handlers`` stays: ``paper_cohort_control_*``
+    still imports it, and the guarded service package is untouched.
+    """
+    assert not REGISTRATION.exists(), (
+        "paper_validation_registration.py was retired with the paper_execution "
+        "profile; re-adding it needs a fresh review of the MCP surface"
+    )
     assert HANDLERS.is_file(), "paper validation handler module is missing"
 
-    registration = ast.parse(
-        REGISTRATION.read_text(encoding="utf-8"), filename=str(REGISTRATION)
-    )
-    class_names = {
-        node.name for node in registration.body if isinstance(node, ast.ClassDef)
-    }
-    imports = {
+    consumer = REPO / "app/mcp_server/tooling/paper_cohort_control_registration.py"
+    consumer_imports = {
         node.module
-        for node in registration.body
+        for node in ast.parse(consumer.read_text(encoding="utf-8")).body
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
-
-    assert class_names == set()
-    assert "app.mcp_server.tooling.paper_validation_handlers" in imports
+    assert "app.mcp_server.tooling.paper_validation_handlers" in consumer_imports
 
 
 @pytest.mark.parametrize(

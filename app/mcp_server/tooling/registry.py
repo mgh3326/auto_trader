@@ -91,11 +91,6 @@ Profile → tool surface mapping
   No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
   report-write, KIS mock, Alpaca, or paper simulator tools are registered.
 
-"paper_execution" (McpProfile.PAPER_EXECUTION):
-  ROB-845 canonical experiment paper-execution façade ONLY. The profile is
-  default-off, bearer-authenticated at process startup, and returns before the
-  normal "Always" block. It exposes no venue-native, generic, or live tool.
-
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -185,20 +180,11 @@ from app.mcp_server.tooling.paper_account_registration import (
 from app.mcp_server.tooling.paper_analytics_registration import (
     register_paper_analytics_tools,
 )
-from app.mcp_server.tooling.paper_cohort_control_registration import (
-    register_paper_cohort_control_tools,
-)
-from app.mcp_server.tooling.paper_execution_registration import (
-    register_paper_execution_tools,
-)
 from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
 from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
-)
-from app.mcp_server.tooling.paper_validation_registration import (
-    register_paper_validation_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.route_request_registration import (
@@ -332,17 +318,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal default block so broad research, settings,
         # watch, modify, reconcile, and persistence tools are physically absent.
         register_tradingcodex_execution_tools(mcp)
-        return
-
-    if profile is McpProfile.PAPER_EXECUTION:
-        # ROB-845 — exact façade allowlist. Direct callers of the registry do
-        # not receive any tools while the feature is disabled; production
-        # startup fails even earlier in main.py. This branch must remain above
-        # the broad "Always" registrations below.
-        if settings.PAPER_EXECUTION_ENABLED:
-            register_paper_execution_tools(mcp)
-            register_paper_validation_tools(mcp)
-            register_paper_cohort_control_tools(mcp)
         return
 
     if profile is McpProfile.ALPACA_PAPER_CLEAN:

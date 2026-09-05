@@ -346,38 +346,30 @@ without refreshing it. Likewise, a provider failure captured as an unavailable
 section retains its original error and remains unavailable; get never calls a
 provider to fill it.
 
-### Paper execution validation boundary (ROB-848)
+### Paper execution validation boundary (ROB-848) — RETIRED
 
-The default-off `paper_execution` profile is one exact union under
-`PAPER_EXECUTION_ENABLED`: the unchanged six names in
-`PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
-`PAPER_VALIDATION_TOOL_NAMES` and the operator-only
-`PAPER_COHORT_CONTROL_TOOL_NAMES`. The three registrars meet only in the
-profile registry composition branch.
+The `paper_execution` profile was removed by the MCP tool usage audit
+(`docs/mcp-tool-usage-audit-20260903.md`): 14 of its 15 registered tools were
+class D (zero calls in 90 days, zero prompt/runbook/code references). The six
+`paper_execution_*` and eight `paper_validation_*` MCP registrations and their
+two registrar modules are gone, and `MCP_PROFILE=paper_execution` now fails
+closed with `Unknown MCP_PROFILE`.
 
-Validation caller identity is bound server-side to the authenticated profile
-token through `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`; caller headers are not
-trusted for validation authorization. `PAPER_VALIDATION_ACTOR_ROLES` maps that
-server-derived ID to `researcher`, `reviewer`, `operator`, or `system`; both
-settings default empty and every absent, unmapped, or invalid role fails closed.
-Actor ID and role are absent from all tool payloads.
-Frozen-input and policy providers are injected contracts. Until their production
-composition is supplied by their owning follow-ups, evidence-requiring mutations
-return `evidence_stamp_unavailable` and never reach a broker, adapter, or ledger.
+What is deliberately **kept**:
 
-Researchers may append only fixed-shape hypothesis drafts, reviewers may append
-only narrative postmortems, and operators/systems own registration, state
-transitions, order-submit authorization, promotion, rejection, and abort. Order
-authorization returns an exact-bound frozen contract; it does not submit an
-order. Promotion requires a separate explicit confirmation against the current
-experiment/cohort/strategy/config/policy/input hashes.
+- `PAPER_EXECUTION_ENABLED` — still read by `app/jobs/paper_cohort.py` and
+  `app/services/paper_cohort/runner.py`; it is no longer an MCP profile gate.
+- `PAPER_VALIDATION_ACTOR_ROLES` / `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`
+  and the whole `app/services/paper_validation` package.
+- `app/mcp_server/tooling/paper_validation_handlers.py`, still imported by
+  `paper_cohort_control_*`.
+- `paper_cohort_kill_switch` (class C) and its registrar — retained but now
+  registered by no profile, because `paper_execution` was its only carrier.
+  Re-exposing it needs a deliberate profile assignment, not a revert.
 
-For an active ROB-849 cohort, use `paper_cohort_kill_switch` before disabling
-the profile. It commits an immutable terminal fence, recovery-links any
-prepared native order without POST, then performs cohort-owned cleanup. See
-[`docs/runbooks/paper-cohort-kill-switch.md`](../../docs/runbooks/paper-cohort-kill-switch.md).
-Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
-existing audit/fence rows remain immutable.
+Existing audit/fence rows remain immutable. See
+[`docs/runbooks/mcp-surface-cleanup-20260905.md`](../../docs/runbooks/mcp-surface-cleanup-20260905.md)
+and [`docs/runbooks/paper-cohort-kill-switch.md`](../../docs/runbooks/paper-cohort-kill-switch.md).
 
 The `analysis_readonly` Codex/headless profile exposes
 `analysis_bundle_get` only when the gate is enabled. It never exposes
@@ -2429,7 +2421,6 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
-| Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
 
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
@@ -2437,50 +2428,13 @@ Only explicit broker cancellation evidence returns `cancelled`; its dry-run
 action is `would_mark_cancelled`, while an applied reconcile reports
 `marked_cancelled`.
 
-### Profile: `paper_execution` (ROB-845)
+### Profile: `paper_execution` (ROB-845) — REMOVED
 
-This isolated profile is the canonical experiment-to-paper-broker boundary. It
-must be enabled explicitly with all of:
-
-- `MCP_PROFILE=paper_execution`
-- `PAPER_EXECUTION_ENABLED=true`
-- a non-empty `MCP_AUTH_TOKEN`
-
-The process fails before FastMCP registration when either the feature flag or
-authentication is missing. A direct registry call with the feature flag off
-registers zero tools.
-
-Exact tool allowlist:
-
-- `paper_execution_get_capabilities`
-- `paper_execution_preview_order`
-- `paper_execution_submit_order`
-- `paper_execution_cancel_order`
-- `paper_execution_get_order`
-- `paper_execution_reconcile`
-- `paper_cohort_kill_switch` (server-bound operator/system identity only)
-
-The request DTO contains the claimed experiment/run/cohort/strategy identity,
-canonical snapshot evidence, and order intent. It does not accept caller-owned
-`origin`, `idempotency_key`, broker `client_order_id`, or native order ID. Those
-identities are derived and verified server-side.
-
-V1 capability scope is deliberately narrow:
-
-- Binance Spot Demo: `BTCUSDT`/`ETHUSDT`, BUY MARKET, notional sizing; the
-  guarded native executor performs one open/close round trip. External cancel
-  and reconcile are unsupported.
-- Alpaca Crypto Paper: `BTC/USD`/`ETH/USD`, BUY/SELL LIMIT, quantity sizing,
-  GTC/IOC, through the approval-packet/coordinator boundary.
-
-No KIS, Kiwoom, Toss, Upbit, live broker, legacy order, or venue-native mutation
-tool is registered. Broker-native ledgers remain the lifecycle/fill/P&L source;
-the façade adds no common order ledger or migration.
-
-ROB-849 will provide the concrete immutable cohort/snapshot provenance verifier.
-Until that composition is installed, capability reads work but every experiment
-operation fails closed with `provenance_verifier_unavailable` before adapter,
-native-ledger, client, or broker activity.
+Retired by the MCP tool usage audit (2026-09-03). `MCP_PROFILE=paper_execution`
+is no longer a valid value and raises `Unknown MCP_PROFILE` at startup. See the
+"Paper execution validation boundary (ROB-848) — RETIRED" section above for what
+was kept, and `docs/runbooks/mcp-surface-cleanup-20260905.md` for the audit
+evidence.
 
 ### Profile: `hermes-paper-kis`
 
