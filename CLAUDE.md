@@ -88,6 +88,12 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 
 ## 아키텍처
 
+### MCP 표면 계약
+
+레인 allowlist 정본: `config/mcp_lane_allowlists/` (`tool<TAB>basis` 보존).
+계약 테스트: `tests/mcp_server/test_lane_allowlist_contract.py` — 레인별 배정 프로필의 실제 등록 합집합 검증.
+등록 스냅샷: `tests/mcp_server/test_profile_tool_snapshot.py`; D 제거·C niche 관측: `docs/runbooks/mcp-surface-cleanup-20260905.md`.
+
 ### Runtime LLM ownership boundary
 
 auto_trader runtime code must not import or instantiate in-process LLM providers

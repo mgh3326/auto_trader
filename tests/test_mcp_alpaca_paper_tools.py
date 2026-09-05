@@ -374,7 +374,7 @@ def test_preview_tool_description_documents_dry_run_and_no_submit() -> None:
         def __init__(self) -> None:
             self.descriptions: dict[str, str] = {}
 
-        def tool(self, name: str, description: str):
+        def tool(self, name: str, description: str, **_options):
             self.descriptions[name] = description
 
             def decorator(func):

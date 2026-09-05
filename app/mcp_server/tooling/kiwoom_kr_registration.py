@@ -41,7 +41,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
-from app.mcp_server.tooling.analysis_bundle_handlers import ANALYSIS_BUNDLE_TOOL_NAMES
 from app.mcp_server.tooling.analysis_readonly_registration import _AllowlistedMCP
 from app.mcp_server.tooling.investment_hermes_handlers import (
     INVESTMENT_HERMES_TOOL_NAMES,
@@ -219,8 +218,6 @@ _SNAPSHOT_GENERATOR_TOOL_NAMES = {"investment_report_generate_from_bundle"}
 def kiwoom_kr_profile_tool_names() -> set[str]:
     """Return the exact active profile inventory for the current feature gates."""
     names = set(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES)
-    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
-        names.update(ANALYSIS_BUNDLE_TOOL_NAMES)
     if settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
         names.update(_SNAPSHOT_GENERATOR_TOOL_NAMES)
         names.update(INVESTMENT_HERMES_TOOL_NAMES)

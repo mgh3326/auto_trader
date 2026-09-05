@@ -134,7 +134,6 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # These files mention Binance only as a capability/signal venue and
         # delegate to the isolated in-package Demo adapter. They contain no
         # Binance HTTP, signing, or API-key implementation.
-        "app/mcp_server/tooling/paper_execution_registration.py",
         "app/services/alpaca_paper_order_application.py",
         "app/services/brokers/alpaca/paper_adapter.py",
         "app/services/brokers/capabilities.py",

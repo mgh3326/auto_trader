@@ -38,9 +38,6 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import KIWOOM_MOCK_US_TOOL
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
-from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
-)
 from app.mcp_server.tooling.watch_repricing_registration import (
     WATCH_REPRICING_TOOL_NAMES,
     assert_provisioned_surface,
@@ -52,6 +49,15 @@ from app.services.watch_trigger_repricing.capability import (
     PROPOSAL_ONLY_TOOLS,
     CapabilityBoundaryViolation,
 )
+
+PAPER_EXECUTION_TOOL_NAMES = {
+    "paper_execution_get_order",
+    "paper_execution_preview_order",
+    "paper_execution_get_capabilities",
+    "paper_execution_reconcile",
+    "paper_execution_submit_order",
+    "paper_execution_cancel_order",
+}
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 

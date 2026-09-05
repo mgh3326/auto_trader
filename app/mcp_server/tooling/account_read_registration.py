@@ -39,7 +39,6 @@ from app.mcp_server.tooling.portfolio_registration import register_portfolio_too
 from app.mcp_server.tooling.session_context_registration import (
     SESSION_CONTEXT_TOOL_NAMES,
 )
-from app.mcp_server.tooling.user_settings_registration import USER_SETTINGS_TOOL_NAMES
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -90,7 +89,7 @@ ACCOUNT_READ_FORBIDDEN_TOOL_NAMES: set[str] = (
     | ANALYSIS_ARTIFACT_TOOL_NAMES
     | FORECAST_TOOL_NAMES
     | SESSION_CONTEXT_TOOL_NAMES
-    | USER_SETTINGS_TOOL_NAMES
+    | {"get_user_setting", "set_user_setting"}
     | {
         "get_position",
         "get_available_capital",
