@@ -32,6 +32,7 @@ tests/mcp_server/test_kis_live_expired_docs.py
 tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_reconcile_window.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
+tests/mcp_server/test_niche_tools.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_profile_tool_snapshot.py
 tests/mcp_server/test_rob1311_r2_blockers.py
@@ -442,4 +443,3 @@ tests/unit/services/daily_candles/test_toss_daily_fetcher.py
 tests/unit/services/daily_candles/test_toss_ohlcv_daily_adjusted.py
 tests/upbit_public_read_model/test_candles_cache.py
 tests/upbit_public_read_model/test_read_model_facade.py
-tests/mcp_server/test_niche_tools.py
