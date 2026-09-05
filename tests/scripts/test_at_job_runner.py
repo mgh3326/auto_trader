@@ -35,6 +35,8 @@ def _run(
     module_args: list[str] | None = None,
     runtime_env: bool = True,
     runtime_env_value: str | None = None,
+    runtime_env_contents: str = "SAFE_TEST_VALUE=1\n",
+    extra_env: dict[str, str] | None = None,
     bypass_runtime_file_check: bool = False,
     deployed_digest: str
     | None = "ghcr.io/mgh3326/auto_trader@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -53,7 +55,7 @@ def _run(
         digest_file.write_text(deployed_digest)
     env_file = tmp_path / "runtime.env"
     if runtime_env:
-        env_file.write_text("SAFE_TEST_VALUE=1\n")
+        env_file.write_text(runtime_env_contents)
     env = {
         "PATH": f"{fakebin}:/usr/bin:/bin",
         "AT_JOB_LOCK_DIRECTORY": str(tmp_path / "locks"),
@@ -61,6 +63,7 @@ def _run(
     }
     if runtime_env:
         env["AT_RUNTIME_ENV_FILE"] = runtime_env_value or str(env_file)
+    env.update(extra_env or {})
     return subprocess.run(
         [
             "/bin/bash",
@@ -82,6 +85,14 @@ def _run(
 
 def _golden_jobs() -> list[dict[str, object]]:
     return json.loads(GOLDEN.read_text())["jobs"]
+
+
+def _captured_argv(capture: Path) -> list[str]:
+    return [token.decode() for token in capture.read_bytes().split(b"\0")[:-1]]
+
+
+def _module_args(argv: list[object]) -> list[str]:
+    return [str(token) for token in argv[argv.index("-m") + 1 :]]
 
 
 def test_digest_failure_does_not_fall_back_to_tag(tmp_path: Path) -> None:
@@ -119,21 +130,127 @@ def test_flock_duplicate_is_refused(tmp_path: Path) -> None:
     assert '"rc":75' in result.stdout
 
 
-@pytest.mark.parametrize("job", _golden_jobs(), ids=lambda job: str(job["unit"]))
+@pytest.mark.parametrize(
+    "job",
+    [job for job in _golden_jobs() if "argv" in job],
+    ids=lambda job: str(job["unit"]),
+)
 def test_wrapper_argv_matches_prefect_golden(
     tmp_path: Path, job: dict[str, object]
 ) -> None:
     argv = job["argv"]
     assert isinstance(argv, list)
-    module_index = argv.index("-m") + 1
     capture = tmp_path / "docker.argv"
     result = _run(
         tmp_path,
         'printf "%s\\0" "$@" > "$AT_JOB_DOCKER_CAPTURE"',
-        module_args=[str(token) for token in argv[module_index:]],
+        module_args=_module_args(argv),
         runtime_env_value="/root/at-secrets/.env.api",
         bypass_runtime_file_check=True,
     )
     assert result.returncode == 0, result.stderr
-    captured = capture.read_bytes().split(b"\0")[:-1]
-    assert ["docker", *(token.decode() for token in captured)] == argv
+    assert ["docker", *_captured_argv(capture)] == argv
+
+
+@pytest.mark.parametrize(
+    "job",
+    [job for job in _golden_jobs() if "argv_commit_off" in job],
+    ids=lambda job: str(job["unit"]),
+)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_commit_gate_argv_matches_prefect_golden(
+    tmp_path: Path, job: dict[str, object], enabled: bool
+) -> None:
+    commit_env = job["commit_env"]
+    assert isinstance(commit_env, str)
+    golden_key = "argv_commit_on" if enabled else "argv_commit_off"
+    argv = job[golden_key]
+    assert isinstance(argv, list)
+    service_argv = job["argv_commit_off"]
+    assert isinstance(service_argv, list)
+    capture = tmp_path / "docker.argv"
+    result = _run(
+        tmp_path,
+        'printf "%s\\0" "$@" > "$AT_JOB_DOCKER_CAPTURE"',
+        module_args=_module_args(service_argv),
+        runtime_env_value="/root/at-secrets/.env.api",
+        bypass_runtime_file_check=True,
+        extra_env={
+            commit_env: "true" if enabled else "false",
+            "AT_JOB_COMMIT_ENV": commit_env,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert ["docker", *_captured_argv(capture)] == argv
+    assert f'"commit":{str(enabled).lower()}' in result.stdout
+    assert f'"commit_env":"{commit_env}"' in result.stdout
+
+
+def test_commit_gate_uses_runtime_env_file_without_sourcing(tmp_path: Path) -> None:
+    marker = tmp_path / "must-not-exist"
+    capture = tmp_path / "docker.argv"
+    result = _run(
+        tmp_path,
+        'printf "%s\\0" "$@" > "$AT_JOB_DOCKER_CAPTURE"',
+        module_args=["scripts.build_invest_crypto_screener_snapshots", "--all"],
+        runtime_env_contents=(
+            f'UNTRUSTED=$(touch "{marker}")\n'
+            "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED=on\n"
+        ),
+        bypass_runtime_file_check=True,
+        extra_env={"AT_JOB_COMMIT_ENV": "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert _captured_argv(capture)[-1] == "--commit"
+
+
+def test_process_env_empty_value_overrides_runtime_env_file(tmp_path: Path) -> None:
+    capture = tmp_path / "docker.argv"
+    result = _run(
+        tmp_path,
+        'printf "%s\\0" "$@" > "$AT_JOB_DOCKER_CAPTURE"',
+        module_args=["scripts.build_invest_crypto_screener_snapshots", "--all"],
+        runtime_env_contents="INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED=on\n",
+        bypass_runtime_file_check=True,
+        extra_env={
+            "AT_JOB_COMMIT_ENV": "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED",
+            "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED": "",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert _captured_argv(capture)[-1] == "--all"
+    assert '"commit":false' in result.stdout
+
+
+def test_multi_step_runs_all_steps_and_propagates_first_failure(tmp_path: Path) -> None:
+    capture = tmp_path / "docker.argv"
+    result = _run(
+        tmp_path,
+        'printf "%s\\0" "$@" >> "$AT_JOB_DOCKER_CAPTURE"; '
+        'printf "\\n" >> "$AT_JOB_DOCKER_CAPTURE"; '
+        'case "$*" in *"--market kr"*) exit 17 ;; *) exit 0 ;; esac',
+        module_args=[
+            "scripts.sync_toss_symbol_master",
+            "--market",
+            "kr",
+            "--all",
+            "--commit",
+            "--at-job-step",
+            "scripts.sync_toss_symbol_master",
+            "--market",
+            "us",
+            "--all",
+            "--commit",
+        ],
+        bypass_runtime_file_check=True,
+        extra_env={"AT_JOB_STEPS": "2"},
+    )
+    assert result.returncode == 17
+    calls = [line for line in capture.read_bytes().split(b"\n") if line]
+    assert len(calls) == 2
+    assert b"--market\0kr\0" in calls[0]
+    assert b"--market\0us\0" in calls[1]
+    assert '"step":1,"steps_total":2' in result.stdout
+    assert '"step":2,"steps_total":2' in result.stdout
+    assert '{"steps_total":2,"steps_failed":[1]}' in result.stdout

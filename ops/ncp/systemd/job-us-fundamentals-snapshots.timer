@@ -1,0 +1,13 @@
+[Unit]
+Description=Run auto_trader US fundamentals snapshots at the Prefect schedule
+
+[Timer]
+# PrefectCron: 0 9 * * 0
+# PrefectTimezone: Asia/Seoul
+OnCalendar=Sun *-*-* 09:00:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-us-fundamentals-snapshots.service
+
+[Install]
+WantedBy=timers.target

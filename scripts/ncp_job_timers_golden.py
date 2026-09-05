@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import importlib.util
 import json
 import os
@@ -12,12 +13,14 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/ncp_job_timers_prefect_argv.json"
+FROZEN_INSIGHT_MODULE = ROOT / "scripts/build_crypto_insight_snapshots.py"
 HELPER_RELATIVE = Path("src/robin_automation/auto_trader_execution.py")
 FLOW_RELATIVE = Path("flows/auto_trader")
 IMAGE_DIGEST = "sha256:" + "a" * 64
@@ -43,12 +46,7 @@ def _load_module(name: str, path: Path) -> ModuleType:
 
 
 def _install_prefect_import_shim() -> None:
-    """Supply only the decorator surface when this repo has no Prefect extra.
-
-    The imported files and their task bodies remain the Prefect checkout's real
-    source.  This lets the deliberately lightweight auto_trader environment
-    capture task argv without installing or contacting a Prefect server.
-    """
+    """Supply only decorators; task bodies remain the real Prefect source."""
     try:
         import prefect  # noqa: F401
     except ModuleNotFoundError:
@@ -57,13 +55,18 @@ def _install_prefect_import_shim() -> None:
             def __init__(self, fn: Callable[..., object]) -> None:
                 self.fn = fn
 
-        def task(**_: object) -> Callable[[Callable[..., object]], _Task]:
-            return _Task
+        def task(
+            fn: Callable[..., object] | None = None, **_: object
+        ) -> _Task | Callable[[Callable[..., object]], _Task]:
+            return _Task(fn) if fn is not None else _Task
 
         def flow(
-            **_: object,
-        ) -> Callable[[Callable[..., object]], Callable[..., object]]:
-            return lambda fn: fn
+            fn: Callable[..., object] | None = None, **_: object
+        ) -> (
+            Callable[..., object]
+            | Callable[[Callable[..., object]], Callable[..., object]]
+        ):
+            return fn if fn is not None else lambda wrapped: wrapped
 
         class _Logger:
             def info(self, *_: object, **__: object) -> None:
@@ -85,6 +88,20 @@ def _install_prefect_import_shim() -> None:
         )
 
 
+@contextmanager
+def _temporary_environ(values: Mapping[str, str]) -> Iterator[None]:
+    original = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, old_value in original.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
+
 def _prefect_head(repo: Path) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -104,6 +121,8 @@ def _capture_task(
     helper: ModuleType,
     *,
     parameters: Mapping[str, object],
+    capture_module: ModuleType | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[list[str], int]:
     captured: dict[str, object] = {}
 
@@ -114,12 +133,12 @@ def _capture_task(
         timeout: float | None = None,
         **_: object,
     ) -> subprocess.CompletedProcess[str]:
-        env = {
+        helper_env = {
             "AUTO_TRADER_EXEC_MODE": "docker",
             "AUTO_TRADER_IMAGE_DIGEST_FILE": digest_path,
         }
         captured["argv"] = helper.auto_trader_command(
-            docker_command or local_command, env=env
+            docker_command or local_command, env=helper_env
         )
         captured["timeout"] = timeout
         return subprocess.CompletedProcess([], 0, "", "")
@@ -128,13 +147,15 @@ def _capture_task(
         digest_file = Path(temp_dir) / "deployed-digest"
         digest_file.write_text(f"{IMAGE_DIGEST}\n")
         digest_path = str(digest_file)
-        module = sys.modules[task.fn.__module__]  # type: ignore[attr-defined]
-        original = module.run_auto_trader_command
-        module.run_auto_trader_command = capture
+        task_module = sys.modules[task.fn.__module__]  # type: ignore[attr-defined]
+        patch_module = capture_module or task_module
+        original = patch_module.run_auto_trader_command
+        patch_module.run_auto_trader_command = capture
         try:
-            task.fn(**parameters)  # type: ignore[attr-defined]
+            with _temporary_environ(env or {}):
+                task.fn(**parameters)  # type: ignore[attr-defined]
         finally:
-            module.run_auto_trader_command = original
+            patch_module.run_auto_trader_command = original
     argv = captured.get("argv")
     timeout = captured.get("timeout")
     if not isinstance(argv, list) or not all(isinstance(value, str) for value in argv):
@@ -144,7 +165,26 @@ def _capture_task(
     return argv, int(timeout)
 
 
-def generate(repo: Path) -> dict[str, object]:
+def _job(
+    *,
+    unit: str,
+    flow: str,
+    deployment: str,
+    cron: str,
+    timeout_seconds: int,
+    argv: list[str],
+) -> dict[str, object]:
+    return {
+        "unit": unit,
+        "flow": flow,
+        "deployment": deployment,
+        "cron": cron,
+        "timeout_seconds": timeout_seconds,
+        "argv": argv,
+    }
+
+
+def generate(repo: Path) -> tuple[dict[str, object], str]:
     if not repo.is_dir():
         raise MissingPrefectRepo(f"Prefect repo is unavailable: {repo}")
     helper_path = repo / HELPER_RELATIVE
@@ -156,82 +196,262 @@ def generate(repo: Path) -> dict[str, object]:
     _install_prefect_import_shim()
     helper = _load_module("robin_automation.auto_trader_execution", helper_path)
     jobs: list[dict[str, object]] = []
-    definitions: tuple[tuple[str, str, str, str, str, dict[str, object]], ...] = (
-        (
-            "kr-investor-flow-snapshots",
-            "KR Investor Flow Snapshots",
-            "daily-freshness",
-            "investor_flow_snapshots.py",
-            "run_investor_flow_snapshot_build",
-            {
-                "dry_run": False,
-                "all_symbols": True,
-                "limit": None,
-                "days": 5,
-                "batch_size": 100,
-                "concurrency": 4,
-                "timeout_seconds": 1800,
-            },
-        ),
-        (
-            "toss-warnings-sync",
-            "Toss Warnings Sync",
-            "daily-preopen",
-            "toss_warnings_sync.py",
-            "run_toss_warnings_sync",
-            {"timeout_seconds": 3600},
-        ),
-        (
-            "us-invest-screener-snapshots",
-            "US Invest Screener Snapshots",
-            "post-us-close-freshness",
-            "invest_screener_snapshots_us.py",
-            "run_us_invest_screener_snapshot_build",
-            {
-                "dry_run": False,
-                "all_symbols": True,
-                "limit": None,
-                "batch_size": 200,
-                "concurrency": 4,
-                "common_stocks_only": True,
-                "timeout_seconds": 7200,
-            },
-        ),
-    )
-    for index, (unit, flow, deployment, filename, task_name, parameters) in enumerate(
-        definitions
-    ):
-        module = _load_module(
-            f"_ncp_job_timer_flow_{index}", repo / FLOW_RELATIVE / filename
+
+    with _temporary_environ({"AUTO_TRADER_EXEC_MODE": "docker"}):
+        legacy_definitions: tuple[
+            tuple[str, str, str, str, str, Mapping[str, object]], ...
+        ] = (
+            (
+                "kr-investor-flow-snapshots",
+                "KR Investor Flow Snapshots",
+                "daily-freshness",
+                "10 18 * * 1-5",
+                "investor_flow_snapshots.py",
+                {
+                    "task": "run_investor_flow_snapshot_build",
+                    "parameters": {
+                        "dry_run": False,
+                        "all_symbols": True,
+                        "limit": None,
+                        "days": 5,
+                        "batch_size": 100,
+                        "concurrency": 4,
+                        "timeout_seconds": 1800,
+                    },
+                },
+            ),
+            (
+                "toss-warnings-sync",
+                "Toss Warnings Sync",
+                "daily-preopen",
+                "30 7 * * *",
+                "toss_warnings_sync.py",
+                {
+                    "task": "run_toss_warnings_sync",
+                    "parameters": {"timeout_seconds": 3600},
+                },
+            ),
+            (
+                "us-invest-screener-snapshots",
+                "US Invest Screener Snapshots",
+                "post-us-close-freshness",
+                "10 6 * * 2-6",
+                "invest_screener_snapshots_us.py",
+                {
+                    "task": "run_us_invest_screener_snapshot_build",
+                    "parameters": {
+                        "dry_run": False,
+                        "all_symbols": True,
+                        "limit": None,
+                        "batch_size": 200,
+                        "concurrency": 4,
+                        "common_stocks_only": True,
+                        "timeout_seconds": 7200,
+                    },
+                },
+            ),
         )
-        argv, timeout = _capture_task(
-            getattr(module, task_name), helper, parameters=parameters
+        for index, (unit, flow, deployment, cron, filename, task_spec) in enumerate(
+            legacy_definitions
+        ):
+            module = _load_module(
+                f"_ncp_job_timer_legacy_{index}", repo / FLOW_RELATIVE / filename
+            )
+            task = getattr(module, str(task_spec["task"]))
+            parameters = task_spec["parameters"]
+            if not isinstance(parameters, Mapping):
+                raise GoldenError(f"{unit}: invalid task parameters")
+            argv, timeout = _capture_task(task, helper, parameters=parameters)
+            jobs.append(
+                _job(
+                    unit=unit,
+                    flow=flow,
+                    deployment=deployment,
+                    cron=cron,
+                    timeout_seconds=timeout,
+                    argv=argv,
+                )
+            )
+
+        gate_definitions: tuple[
+            tuple[str, str, str, str, str, str, str, Mapping[str, object]], ...
+        ] = (
+            (
+                "crypto-invest-screener-snapshots",
+                "Invest Crypto Screener Snapshots",
+                "daily-kst",
+                "20 9 * * *",
+                "invest_crypto_screener_snapshots.py",
+                "run_invest_crypto_screener_snapshot_build",
+                "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED",
+                {
+                    "all_markets": True,
+                    "limit": None,
+                    "commit_with_gate": True,
+                    "timeout_seconds": 3600,
+                },
+            ),
+            (
+                "kr-fundamentals-snapshots",
+                "invest_kr_fundamentals_snapshots",
+                "daily-kst",
+                "0 18 * * *",
+                "invest_kr_fundamentals_snapshots.py",
+                "run_kr_fundamentals_snapshot_build",
+                "INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED",
+                {
+                    "all_symbols": True,
+                    "limit": None,
+                    "commit_with_gate": True,
+                    "allow_partial": False,
+                    "timeout_seconds": 7200,
+                },
+            ),
+            (
+                "us-market-valuation-snapshots",
+                "US Market Valuation Snapshots",
+                "daily-post-us-close",
+                "30 8 * * 2-6",
+                "market_valuation_snapshots_us.py",
+                "run_us_market_valuation_snapshot_build",
+                "MARKET_VALUATION_SNAPSHOTS_COMMIT_ENABLED",
+                {
+                    "all_symbols": True,
+                    "limit": None,
+                    "batch_size": 100,
+                    "concurrency": 4,
+                    "common_stocks_only": True,
+                    "with_high_52w_date": False,
+                    "commit_with_gate": True,
+                    "timeout_seconds": 10800,
+                },
+            ),
+            (
+                "us-fundamentals-snapshots",
+                "US Financial Fundamentals Snapshots",
+                "weekly-sunday",
+                "0 9 * * 0",
+                "us_fundamentals_snapshots.py",
+                "run_us_fundamentals_snapshot_build",
+                "MARKET_VALUATION_SNAPSHOTS_COMMIT_ENABLED",
+                {
+                    "all_symbols": True,
+                    "limit": None,
+                    "concurrency": 4,
+                    "include_dividends": True,
+                    "commit_with_gate": True,
+                    "timeout_seconds": 10800,
+                },
+            ),
         )
+        for index, (
+            unit,
+            flow,
+            deployment,
+            cron,
+            filename,
+            task_name,
+            commit_env,
+            parameters,
+        ) in enumerate(gate_definitions):
+            module = _load_module(
+                f"_ncp_job_timer_gate_{index}", repo / FLOW_RELATIVE / filename
+            )
+            task = getattr(module, task_name)
+            argv_off, timeout_off = _capture_task(
+                task, helper, parameters=parameters, env={commit_env: "false"}
+            )
+            argv_on, timeout_on = _capture_task(
+                task, helper, parameters=parameters, env={commit_env: "true"}
+            )
+            if timeout_off != timeout_on:
+                raise GoldenError(f"{unit}: commit gate changed timeout")
+            jobs.append(
+                {
+                    "unit": unit,
+                    "flow": flow,
+                    "deployment": deployment,
+                    "cron": cron,
+                    "timeout_seconds": timeout_off,
+                    "commit_env": commit_env,
+                    "argv_commit_off": argv_off,
+                    "argv_commit_on": argv_on,
+                }
+            )
+
+        toss_module = _load_module(
+            "_ncp_job_timer_toss", repo / FLOW_RELATIVE / "toss_symbol_master_sync.py"
+        )
+        toss_capture_module = sys.modules.get("robin_automation.toss_symbol_master")
+        if not isinstance(toss_capture_module, ModuleType):
+            raise GoldenError("Toss symbol master capture module was not imported")
+        toss_steps: list[dict[str, object]] = []
+        for market in ("kr", "us"):
+            argv, timeout = _capture_task(
+                toss_module.sync_market,
+                helper,
+                parameters={"market": market, "dry_run": False},
+                capture_module=toss_capture_module,
+            )
+            toss_steps.append({"argv": argv, "timeout_seconds": timeout})
         jobs.append(
             {
-                "unit": unit,
-                "flow": flow,
-                "deployment": deployment,
-                "cron": {
-                    "kr-investor-flow-snapshots": "10 18 * * 1-5",
-                    "toss-warnings-sync": "30 7 * * *",
-                    "us-invest-screener-snapshots": "10 6 * * 2-6",
-                }[unit],
-                "timeout_seconds": timeout,
-                "argv": argv,
+                "unit": "toss-symbol-master-sync",
+                "flow": "Toss Symbol Master Sync",
+                "deployment": "weekday-preopen",
+                "cron": "20 7 * * 1-5",
+                "timeout_seconds": sum(
+                    int(step["timeout_seconds"]) for step in toss_steps
+                ),
+                "steps": toss_steps,
             }
         )
-    return {
-        "provenance": {
-            "helper": f"{helper_path}:auto_trader_command",
-            "mode": "docker",
-            "image_digest": IMAGE_DIGEST,
-            "container_env_file": "/root/at-secrets/.env.api",
-            "command": "uv run python -m scripts.ncp_job_timers_golden --write",
-            "prefect_repo_head": _prefect_head(repo),
+
+        insight_module = _load_module(
+            "_ncp_job_timer_insight",
+            repo / FLOW_RELATIVE / "invest_crypto_insight_snapshots.py",
+        )
+        insight_argv, insight_timeout = _capture_task(
+            insight_module.run_invest_crypto_insight_snapshot_build,
+            helper,
+            parameters={
+                "providers": None,
+                "symbols": None,
+                "limit": None,
+                "commit_with_gate": True,
+                "timeout_seconds": 3600,
+            },
+        )
+        runner_code = insight_module.RUNNER_CODE
+        if not isinstance(runner_code, str):
+            raise GoldenError("crypto insight RUNNER_CODE is not a string")
+        jobs.append(
+            {
+                "unit": "crypto-invest-insight-snapshots",
+                "flow": "Invest Crypto Insight Snapshots",
+                "deployment": "daily-kst",
+                "cron": "20 9 * * *",
+                "timeout_seconds": insight_timeout,
+                "argv_prefect": insight_argv,
+                "runner_code_sha256": hashlib.sha256(runner_code.encode()).hexdigest(),
+                "module": "scripts.build_crypto_insight_snapshots",
+            }
+        )
+
+    return (
+        {
+            "provenance": {
+                "helper": f"{helper_path}:auto_trader_command",
+                "mode": "docker",
+                "image_digest": IMAGE_DIGEST,
+                "container_env_file": "/root/at-secrets/.env.api",
+                "command": "uv run python -m scripts.ncp_job_timers_golden --write",
+                "prefect_repo_head": _prefect_head(repo),
+            },
+            "jobs": jobs,
         },
-        "jobs": jobs,
-    }
+        runner_code,
+    )
 
 
 def _render(payload: Mapping[str, object]) -> str:
@@ -284,15 +504,27 @@ def main(argv: list[str] | None = None) -> int:
         raise MissingPrefectRepo(
             "Prefect repo is required: use --prefect-repo or ROBIN_PREFECT_REPO"
         )
-    rendered = _render(generate(Path(args.prefect_repo).expanduser()))
+    payload, runner_code = generate(Path(args.prefect_repo).expanduser())
+    rendered = _render(payload)
     if args.write:
         FIXTURE.write_text(rendered)
+        FROZEN_INSIGHT_MODULE.write_text(runner_code)
         print(f"wrote {FIXTURE}")
+        print(f"wrote {FROZEN_INSIGHT_MODULE}")
         return 0
     current = FIXTURE.read_text()
     if current != rendered:
         print("NCP timer golden drift detected (token diff):", file=sys.stderr)
         print(_token_diff(current, rendered), file=sys.stderr)
+        return 1
+    if (
+        not FROZEN_INSIGHT_MODULE.is_file()
+        or FROZEN_INSIGHT_MODULE.read_text() != runner_code
+    ):
+        print(
+            "crypto insight frozen module drifts from Prefect RUNNER_CODE",
+            file=sys.stderr,
+        )
         return 1
     print("NCP timer golden matches Prefect generation")
     return 0

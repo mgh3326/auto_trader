@@ -136,6 +136,9 @@ exclude = [
     # Immutable upstream provenance input; formatting it would break its
     # registry-bound SHA-256 and static golden reproducibility.
     "tests/fixtures/kr_a0_golden_v6/reference_generator_v4.py",
+    # Frozen upstream provenance input; formatting it would break the
+    # RUNNER_CODE SHA-256 equivalence captured by the NCP timer golden.
+    "scripts/build_crypto_insight_snapshots.py",
 ]
 
 [tool.ruff.lint]

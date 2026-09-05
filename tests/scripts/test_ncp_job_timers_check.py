@@ -102,6 +102,12 @@ def test_cutover_dual_active_uses_prefect_named_deployment_api(
         "http://prefect.test/api/deployments/name/KR%20Investor%20Flow%20Snapshots/daily-freshness",
         "http://prefect.test/api/deployments/name/Toss%20Warnings%20Sync/daily-preopen",
         "http://prefect.test/api/deployments/name/US%20Invest%20Screener%20Snapshots/post-us-close-freshness",
+        "http://prefect.test/api/deployments/name/Invest%20Crypto%20Screener%20Snapshots/daily-kst",
+        "http://prefect.test/api/deployments/name/invest_kr_fundamentals_snapshots/daily-kst",
+        "http://prefect.test/api/deployments/name/US%20Market%20Valuation%20Snapshots/daily-post-us-close",
+        "http://prefect.test/api/deployments/name/US%20Financial%20Fundamentals%20Snapshots/weekly-sunday",
+        "http://prefect.test/api/deployments/name/Toss%20Symbol%20Master%20Sync/weekday-preopen",
+        "http://prefect.test/api/deployments/name/Invest%20Crypto%20Insight%20Snapshots/daily-kst",
     ]
     assert "job-kr-investor-flow-snapshots.timer" in capsys.readouterr().err
 
@@ -109,7 +115,7 @@ def test_cutover_dual_active_uses_prefect_named_deployment_api(
 def test_cutover_all_paused_is_green(monkeypatch: pytest.MonkeyPatch) -> None:
     endpoints = _stub_cutover(monkeypatch, paused=True)
     assert check.run_cli(["--skip-imports", "--check-cutover"]) == 0
-    assert len(endpoints) == 3
+    assert len(endpoints) == 9
 
 
 def test_cutover_detector_removal_mutant_is_red(

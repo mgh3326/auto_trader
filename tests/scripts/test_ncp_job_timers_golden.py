@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -104,16 +106,31 @@ def _fake_prefect_repo(tmp_path: Path) -> Path:
 def test_check_matches_generated_fixture_and_detects_one_token_mutant(
     tmp_path: Path, monkeypatch
 ) -> None:
-    repo = _fake_prefect_repo(tmp_path)
     fixture = tmp_path / "ncp_job_timers_prefect_argv.json"
+    frozen_module = tmp_path / "build_crypto_insight_snapshots.py"
     monkeypatch.setattr(golden, "FIXTURE", fixture)
+    monkeypatch.setattr(golden, "FROZEN_INSIGHT_MODULE", frozen_module)
 
-    assert golden.run_cli(["--prefect-repo", str(repo), "--write"]) == 0
-    assert golden.run_cli(["--prefect-repo", str(repo), "--check"]) == 0
+    assert golden.run_cli(["--prefect-repo", str(PREFECT_REPO), "--write"]) == 0
+    assert golden.run_cli(["--prefect-repo", str(PREFECT_REPO), "--check"]) == 0
 
     fixture.write_text(fixture.read_text().replace("--commit", "--mutant", 1))
     # Assertion mutant: removing the diff check makes this assertion red.
-    assert golden.run_cli(["--prefect-repo", str(repo), "--check"]) == 1
+    assert golden.run_cli(["--prefect-repo", str(PREFECT_REPO), "--check"]) == 1
+
+
+def test_frozen_crypto_insight_runner_matches_golden_sha_and_module_contract() -> None:
+    payload = json.loads(golden.FIXTURE.read_text())
+    insight = next(
+        job
+        for job in payload["jobs"]
+        if job["unit"] == "crypto-invest-insight-snapshots"
+    )
+    source = golden.FROZEN_INSIGHT_MODULE.read_bytes()
+    assert hashlib.sha256(source).hexdigest() == insight["runner_code_sha256"]
+    text = source.decode()
+    assert "__file__" not in text
+    assert "sys.argv" not in text
 
 
 def test_missing_prefect_repo_is_explicit_exit_two(tmp_path: Path, capsys) -> None:

@@ -1,0 +1,17 @@
+[Unit]
+Description=auto_trader Toss symbol master sync
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+Environment=AT_RUNTIME_ENV_FILE=/root/at-secrets/.env.api
+Environment=AT_JOB_STEPS=2
+ExecStart=/root/at-run/ops/ncp/bin/at-job.sh scripts.sync_toss_symbol_master --market kr --all --commit --at-job-step scripts.sync_toss_symbol_master --market us --all --commit
+TimeoutStartSec=1830
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run auto_trader Toss symbol master sync at the Prefect schedule
+
+[Timer]
+# PrefectCron: 20 7 * * 1-5
+# PrefectTimezone: Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 07:20:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-toss-symbol-master-sync.service
+
+[Install]
+WantedBy=timers.target
