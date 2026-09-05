@@ -35,3 +35,61 @@
 
 ## 구현 순서·이슈
 ROB-A `session_bootstrap_pack`(1주, 위험 최소) → ROB-B `decision_table_validate` → ROB-C `decision_table_apply` → ROB-D `proposal_revalidate`. 각 이슈 = 캡틴 1건, 검증자 Opus high, 실 artifact/응답 픽스처 필수. 스키마 변경 = C의 artifact `applied` 마킹(기존 JSON payload 내 필드, 마이그레이션 0).
+
+## Canonical decision-table shape v1.1
+
+Source: merged operator contract
+`auto_trader-operator e86d0c1` (and `ebd4b41`), the v1.1 sections of
+`prompts/kr-nxt-prep.md`.
+
+The only complete-validation encoding for `action.rungs` is:
+
+```json
+"rungs": [{
+  "rung": 1,
+  "price_min": "<int KRW, tick-aligned>",
+  "price_max": "<int KRW, tick-aligned, >= price_min>",
+  "qty": "<int shares>",
+  "tick": "<int KRW tick size>",
+  "formula": "<optional text: input path, rounding direction, bounds>"
+}]
+```
+
+### 결정표 정규형 강제 — v1.1 (2026-09-05, admiral/ROB-1348 검증기 전제)
+
+2026-09-02~04 실 산출물이 날마다 다른 4가지 모양(columnar+템플릿 / rungs 리스트 / rungs 한국어 산문 / rungs 스칼라)으로 나왔고, 09-04에는 `analysis_artifact_save`에 저장된 표와 audit-evidence의 표가 **서로 다른 표**(hash 상이)였다. 아래를 지키지 않은 결정표는 기계검증(`decision_table_validate`, ROB-1348)에서 `valid=false`(block)가 되며 open이 소비하지 못한다.
+1. `decision_table.rows`는 **행 객체의 배열만** 허용한다. `columns`+행배열, `tier_condition_template`, `action_contract` 같은 columnar/템플릿 전개형은 금지한다. 전개가 필요하면 prep 안에서 전개한 **결과 행**을 적는다.
+2. `action.rungs`는 위 스키마의 **객체 배열만** 허용한다. 산문 문자열·스칼라 필드(`price_min: 318000` 단독)·`prices:[...]` 병렬 리스트 금지. `price_min`/`price_max`/`qty`/`tick`은 숫자(정수)이고 `formula`만 텍스트다. rung 수는 배열 길이다.
+3. **동일 표 3자 일치**: report 머리말의 `decision_table_hash`, `analysis_artifact_save` payload의 `decision_table`+`decision_table_hash`, audit-evidence의 `decision_table`+`decision_table_hash`는 **같은 객체·같은 hash**여야 한다. 저장 후 artifact를 `analysis_artifact_get`으로 다시 읽어 hash를 대조하고, 다르면 prep 실패로 취급해 재저장한다(축약본·요약본 저장 금지).
+4. 상위 확장 키(`row_match_unit`, `condition_evaluation`, `common_conditions`, `common_invalidation` 등)는 허용하되 `decision_table.extensions: ["<key>", ...]`에 이름을 열거한다. 열거되지 않은 상위 키는 검증기가 advisory로 보고한다.
+5. 저장 전 자체 검사: 모든 행의 `rungs[*].price_min/price_max/qty/tick`이 정수인지, `price_min <= price_max`, tick 배수인지 확인한다. `decision_table_validate` 도구가 배포되면(ROB-1348) 저장 전에 호출해 `valid=true`일 때만 저장한다 — 도구 부재 시 이 자체 검사가 대체한다.
+
+### Validator contract
+
+| Scope | Required fields |
+| --- | --- |
+| Envelope | `schema_version="kr-nxt-decision-table/v1.1"`, `market`, `decision_table`, `decision_table_hash` |
+| Decision table | `rows`; core keys are `no_match_action`, `rows`, and `extensions` |
+| Row | `scenario_id`, `symbols`, `conditions`, `action`, `invalidation` |
+| Condition | `source`, `operator`, `value`, `max_age_seconds` for a live input |
+| Action | `proposal_action`, `account_mode`, `side`, `order_type`, `rungs` |
+| Rung | `rung`, integer `price_min`, `price_max`, `qty`, `tick`; optional text `formula` |
+
+`priority`, `matched_tier`, `derivation`, `time_in_force`,
+`required_thesis_fields`, `reference_price`, `minimum_order_amount`, and
+`sector_concentration` are optional row/action values used by the relevant
+deterministic guard. Top-level extensions are optional only when their key is
+also named by `decision_table.extensions`.
+
+`kr-nxt-decision-table/v1` is temporarily accepted only with the advisory
+`schema_version_deprecated_v1` until 2026-09-12. Every other version blocks
+with `schema_version_mismatch`; v1 receives the same shape checks as v1.1.
+The prohibited prose, scalar, and parallel-list rungs block respectively with
+`price_qty_not_machine_recomputable` or `unsupported_rungs_encoding`.
+Missing fields, non-integer core rung fields, inverted bounds, and a declared
+tick mismatch block with `rungs_missing_field`, `rungs_field_not_integer`,
+`rungs_price_bounds_inverted`, and `rungs_price_not_tick_aligned`.
+`extensions` is core. A non-core top-level key absent from that list is an
+`unknown_top_level_key` advisory; a listed-but-absent key is
+`extensions_entry_absent` advisory. Every violation includes this section as
+`canonical_shape_ref`.
