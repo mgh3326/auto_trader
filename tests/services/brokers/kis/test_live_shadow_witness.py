@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
 from app.mcp_server.tooling import order_execution
+from app.services.brokers.kis import domestic_orders
 from app.services.brokers.kis import live_shadow_witness as witness
 from scripts import kis_live_witness_reconcile as reconcile
 
@@ -60,6 +62,42 @@ def _transport(requests: list[httpx.Request]) -> httpx.MockTransport:
         return httpx.Response(200, json={"ok": True})
 
     return httpx.MockTransport(handler)
+
+
+class _DomesticSettings:
+    kis_account_no = "1234567890"
+    kis_access_token = "test-token"
+
+
+class _DomesticTokenManager:
+    async def clear_token(self) -> None:
+        return None
+
+
+class _DomesticParent:
+    _settings = _DomesticSettings()
+    _hdr_base: dict[str, str] = {}
+    _token_manager = _DomesticTokenManager()
+
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.bodies: list[dict[str, object]] = []
+
+    async def _ensure_token(self) -> None:
+        return None
+
+    def _kis_url(self, path: str) -> str:
+        return f"http://kis.invalid{path}"
+
+    async def _request_with_rate_limit(
+        self, *_: object, **kwargs: object
+    ) -> dict[str, object]:
+        self.bodies.append(kwargs["json_body"])
+        return self.response
+
+
+def _witness() -> witness.LiveShadowWitness:
+    return witness.LiveShadowWitness("http://127.0.0.1:8080", _intent())
 
 
 @pytest.mark.asyncio
@@ -313,6 +351,154 @@ async def test_witness_setup_failure_does_not_block_live_broker_call(
         price=70000,
         idempotency_key="command-1",
     )
+    assert result == {"rt_cd": "0", "odno": "KIS-1"}
+    broker.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_raising_witness_logging_filter_preserves_provider_rejection(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    parent = _DomesticParent(
+        {"rt_cd": "1", "msg_cd": "40240000", "msg1": "주문가능금액을 초과"}
+    )
+
+    class RaisingFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            raise RuntimeError("logging filter exploded")
+
+    raising_filter = RaisingFilter()
+    witness.logger.addFilter(raising_filter)
+    token = witness.activate(_witness())
+    try:
+        with pytest.raises(RuntimeError, match="40240000 주문가능금액을 초과"):
+            await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+                "005930", "buy", 2, 70000, is_mock=False
+            )
+    finally:
+        witness.deactivate(token)
+        witness.logger.removeFilter(raising_filter)
+    assert len(parent.bodies) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_and_sentry_failure_preserve_accepted_domestic_response(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        witness.sentry_sdk,
+        "add_breadcrumb",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("sentry unavailable")),
+    )
+
+    def no_task(coroutine: object) -> object:
+        coroutine.close()  # type: ignore[attr-defined]
+        raise RuntimeError("no task slots")
+
+    monkeypatch.setattr(asyncio, "create_task", no_task)
+    active = _witness()
+    active.start()
+    parent = _DomesticParent(
+        {
+            "rt_cd": "0",
+            "msg_cd": "MCA00000",
+            "msg1": "ok",
+            "output": {"ODNO": "9", "ORD_TMD": "1"},
+        }
+    )
+    token = witness.activate(active)
+    try:
+        result = await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+            "005930", "buy", 2, 70000, is_mock=False
+        )
+    finally:
+        witness.deactivate(token)
+    assert result == {
+        "odno": "9",
+        "ord_tmd": "1",
+        "msg": "ok",
+        "rt_cd": "0",
+        "msg_cd": "MCA00000",
+    }
+    assert len(parent.bodies) == 1
+
+
+@pytest.mark.asyncio
+async def test_raw_echo_capture_failure_preserves_accepted_domestic_response(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        domestic_orders, "is_nxt_eligible", AsyncMock(return_value=False)
+    )
+
+    class RaisingWitness:
+        def capture_raw_echo(self, _: dict[str, object]) -> None:
+            raise RuntimeError("raw echo capture failed")
+
+    parent = _DomesticParent(
+        {
+            "rt_cd": "0",
+            "msg_cd": "MCA00000",
+            "msg1": "ok",
+            "output": {"ODNO": "10", "ORD_TMD": "2"},
+        }
+    )
+    token = witness.activate(RaisingWitness())
+    try:
+        result = await domestic_orders.DomesticOrderClient(parent).order_korea_stock(
+            "005930", "buy", 2, 70000, is_mock=False
+        )
+    finally:
+        witness.deactivate(token)
+    assert result == {
+        "odno": "10",
+        "ord_tmd": "2",
+        "msg": "ok",
+        "rt_cd": "0",
+        "msg_cd": "MCA00000",
+    }
+    assert len(parent.bodies) == 1
+
+
+@pytest.mark.asyncio
+async def test_setup_failure_with_raising_witness_logger_still_calls_broker(
+    monkeypatch,
+) -> None:
+    broker = AsyncMock(return_value={"rt_cd": "0", "odno": "KIS-1"})
+    fake_kis = type("FakeKIS", (), {"order_korea_stock": broker})()
+    monkeypatch.setattr(order_execution, "_create_kis_client", lambda **_: fake_kis)
+    monkeypatch.setattr(
+        order_execution, "get_kr_security_type", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "start_kis_live_shadow_witness",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("witness unavailable")),
+    )
+
+    class RaisingFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            raise RuntimeError("logging filter exploded")
+
+    raising_filter = RaisingFilter()
+    witness.logger.addFilter(raising_filter)
+    try:
+        result = await order_execution._execute_kr_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity=2,
+            price=70000,
+            idempotency_key="command-1",
+        )
+    finally:
+        witness.logger.removeFilter(raising_filter)
     assert result == {"rt_cd": "0", "odno": "KIS-1"}
     broker.assert_awaited_once()
 

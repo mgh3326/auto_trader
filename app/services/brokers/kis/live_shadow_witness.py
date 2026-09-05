@@ -42,14 +42,29 @@ def _utc_now() -> str:
 
 
 def _breadcrumb(category: str, data: Mapping[str, str] | None = None) -> None:
-    sentry_sdk.add_breadcrumb(
-        category="kis_live_shadow_witness", message=category, data=data
-    )
+    try:
+        sentry_sdk.add_breadcrumb(
+            category="kis_live_shadow_witness", message=category, data=data
+        )
+    except Exception:
+        # Observation must never change the broker outcome, even if Sentry's
+        # own hook/transport is unavailable.
+        pass
 
 
 def _warning(event: str, **safe_data: str) -> None:
-    logger.warning(event, extra=safe_data or None)
+    try:
+        logger.warning(event, extra=safe_data or None)
+    except Exception:
+        # A logging filter/handler may fail; still attempt the independent
+        # breadcrumb channel below, without letting it affect an order.
+        pass
     _breadcrumb(event, safe_data or None)
+
+
+def report_observation_failure(event: str) -> None:
+    """Safely record a witness-only failure at a live broker boundary."""
+    _warning(event)
 
 
 def _validate(section: str, value: Mapping[str, object]) -> bool:
@@ -154,8 +169,11 @@ class LiveShadowWitness:
     def _track(self, coroutine: Any) -> asyncio.Task[object] | None:
         try:
             task = asyncio.create_task(coroutine)
-        except RuntimeError:
-            coroutine.close()
+        except Exception:
+            try:
+                coroutine.close()
+            except Exception:
+                pass
             _warning("kis_live_witness_task_schedule_failed")
             return None
         self._tasks.add(task)

@@ -11,7 +11,12 @@ from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
 from .base import _log_kis_api_failure
-from .live_shadow_witness import current as current_live_shadow_witness
+from .live_shadow_witness import (
+    current as current_live_shadow_witness,
+)
+from .live_shadow_witness import (
+    report_observation_failure,
+)
 from .order_throttle import (
     MAX_THROTTLE_RESUBMITS,
     is_provider_throttle_reject,
@@ -450,7 +455,10 @@ class DomesticOrderClient:
 
         witness = current_live_shadow_witness()
         if witness is not None:
-            witness.capture_raw_echo(js)
+            try:
+                witness.capture_raw_echo(js)
+            except Exception:
+                report_observation_failure("kis_live_witness_echo_capture_failed")
 
         if js.get("rt_cd") != "0":
             outcome.mark_provider_rejected()

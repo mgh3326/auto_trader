@@ -77,6 +77,7 @@ from app.services.brokers.kis.live_shadow_witness import (
     deactivate as deactivate_live_shadow_witness,
 )
 from app.services.brokers.kis.live_shadow_witness import (
+    report_observation_failure,
     start_kis_live_shadow_witness,
 )
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
@@ -379,7 +380,7 @@ async def _execute_kr_order(
                 kis_order_code="00" if order_price != 0 else "01",
             )
         except Exception:  # Witness observation never changes broker authority.
-            logger.warning("kis_live_witness_setup_failed")
+            report_observation_failure("kis_live_witness_setup_failed")
     witness_token = activate_live_shadow_witness(witness)
     try:
         if side == "buy":
