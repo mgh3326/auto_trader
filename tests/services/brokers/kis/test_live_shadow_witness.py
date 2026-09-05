@@ -114,6 +114,19 @@ async def test_invalid_receipt_skips_echo_without_raising() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invalid_intent_schema_never_reaches_transport() -> None:
+    requests: list[httpx.Request] = []
+    invalid = _intent()
+    invalid["side"] = "hold"
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", invalid, transport=_transport(requests)
+    )
+    client.start()
+    await _settle(client)
+    assert requests == []
+
+
+@pytest.mark.asyncio
 async def test_background_timeout_is_bounded_and_fail_open() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         await asyncio.sleep(5)
@@ -127,6 +140,33 @@ async def test_background_timeout_is_bounded_and_fail_open() -> None:
     assert time.perf_counter() - started < 0.01
     await _settle(client)
     assert time.perf_counter() - started < 0.8
+
+
+@pytest.mark.asyncio
+async def test_slow_default_client_construction_cannot_delay_yielding_broker(
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    original = witness.LiveShadowWitness._make_client
+
+    def slow_constructor(client: witness.LiveShadowWitness) -> httpx.AsyncClient:
+        time.sleep(0.05)
+        return original(client)
+
+    monkeypatch.setattr(witness.LiveShadowWitness, "_make_client", slow_constructor)
+    client = witness.LiveShadowWitness(
+        "http://127.0.0.1:8080", _intent(), transport=_transport(requests)
+    )
+
+    async def yielding_broker() -> None:
+        await asyncio.sleep(0)
+
+    started = time.perf_counter()
+    client.start()
+    await yielding_broker()
+    assert time.perf_counter() - started < 0.01
+    await _settle(client)
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
@@ -193,17 +233,6 @@ def test_default_off_invalid_config_and_non_limit_never_schedule(monkeypatch) ->
         is None
     )
     monkeypatch.setenv("EDGE_WITNESS_URL", "http://127.0.0.1:8080")
-    assert (
-        witness.start_kis_live_shadow_witness(
-            command_id="command-1",
-            side="hold",
-            stock_code="005930",
-            quantity=2,
-            price=70000,
-            kis_order_code="00",
-        )
-        is None
-    )
     assert (
         witness.start_kis_live_shadow_witness(
             command_id="command-1",

@@ -176,25 +176,35 @@ class LiveShadowWitness:
     def start(self) -> None:
         self._intent_task = self._track(self._post_intent())
 
-    async def _post_json(self, path: str, payload: Mapping[str, str]) -> object:
-        timeout = httpx.Timeout(_IO_TIMEOUT_SECONDS)
-        async with httpx.AsyncClient(
-            timeout=timeout,
+    def _make_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(_IO_TIMEOUT_SECONDS),
             follow_redirects=False,
             trust_env=False,
             transport=self.transport,
-        ) as client:
+        )
+
+    async def _post_json(self, path: str, payload: Mapping[str, str]) -> object:
+        client = await asyncio.to_thread(self._make_client)
+        try:
             response = await asyncio.wait_for(
                 client.post(f"{self.base_url}{path}", json=dict(payload)),
                 timeout=_IO_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             return response.json()
+        finally:
+            await client.aclose()
 
     async def _post_intent(self) -> object | None:
         try:
+            if not await asyncio.to_thread(_validate, "intent", self.intent):
+                _warning("kis_live_witness_intent_invalid")
+                return None
             response = await self._post_json("/v1/commands", self.intent)
-            if not isinstance(response, dict) or not _validate("receipt", response):
+            if not isinstance(response, dict) or not await asyncio.to_thread(
+                _validate, "receipt", response
+            ):
                 _warning("kis_live_witness_receipt_invalid")
                 return None
             if response["command_id"] != self.intent["command_id"]:
@@ -221,9 +231,7 @@ class LiveShadowWitness:
             "msg1": response.get("msg1"),
             "received_at": _utc_now(),
         }
-        if not all(isinstance(value, str) for value in echo.values()) or not _validate(
-            "echo", echo
-        ):
+        if not all(isinstance(value, str) for value in echo.values()):
             _warning("kis_live_witness_echo_invalid")
             return
         self._track(self._post_echo(echo))
@@ -245,6 +253,9 @@ class LiveShadowWitness:
             return
         if not isinstance(receipt, dict):
             _warning("kis_live_witness_echo_missing_receipt")
+            return
+        if not await asyncio.to_thread(_validate, "echo", echo):
+            _warning("kis_live_witness_echo_invalid")
             return
         try:
             command_id = receipt["command_id"]
@@ -290,12 +301,7 @@ def start_kis_live_shadow_witness(
         "order_type": "limit",
         "issued_at": _utc_now(),
     }
-    if not (
-        stock_code.isascii()
-        and stock_code.isdecimal()
-        and len(stock_code) == 6
-        and _validate("intent", intent)
-    ):
+    if not (stock_code.isascii() and stock_code.isdecimal() and len(stock_code) == 6):
         _warning("kis_live_witness_skipped", order_type=kis_order_code)
         return None
     witness = LiveShadowWitness(base_url=base_url, intent=intent)
