@@ -1,12 +1,14 @@
-"""
-Screenshot Holdings Service Tests
+"""Screenshot holdings service tests.
 
-Tests for screenshot-based holdings update service and MCP tool.
+The MCP tool ``update_manual_holdings`` was class D in the 2026-09-03 surface
+audit and was deregistered, so these tests call its implementation directly.
+The behavior under test -- alias/master resolution, remove actions, dry-run,
+per-broker routing, error payloads -- is service behavior and is unchanged.
 """
 
 import pytest
 
-from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.portfolio_holdings import _update_manual_holdings_impl
 from app.models.manual_holdings import MarketType
 from app.services.kr_symbol_universe_service import KRSymbolUniverseLookupError
 from app.services.manual_holdings_service import ManualHoldingsService
@@ -14,36 +16,9 @@ from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
 
 
-class DummyMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self, name: str, description: str):
-        def decorator(func):
-            self.tools[name] = func
-            return func
-
-        return decorator
-
-
-class DummySessionManager:
-    async def __aenter__(self):
-        return object()
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
-
-
-def build_tools() -> dict[str, object]:
-    mcp = DummyMCP()
-    register_all_tools(mcp)
-    return mcp.tools
-
-
 @pytest.mark.asyncio
 async def test_update_manual_holdings_dry_run(monkeypatch):
     """Test dry_run mode - should not modify DB."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -88,7 +63,7 @@ async def test_update_manual_holdings_dry_run(monkeypatch):
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -101,7 +76,6 @@ async def test_update_manual_holdings_dry_run(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_manual_holdings_with_alias_resolution(monkeypatch):
     """Test symbol resolution through stock alias."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -153,7 +127,7 @@ async def test_update_manual_holdings_with_alias_resolution(monkeypatch):
         ScreenshotHoldingsService, "resolve_and_update", mock_resolve_and_update
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -190,7 +164,6 @@ async def test_update_manual_holdings_calculate_avg_buy_price_zero_quantity():
 @pytest.mark.asyncio
 async def test_update_manual_holdings_remove_action(monkeypatch):
     """Test action='remove' to delete holdings."""
-    tools = build_tools()
 
     holdings = [{"stock_name": "삼성전자", "market_section": "kr", "action": "remove"}]
 
@@ -243,7 +216,7 @@ async def test_update_manual_holdings_remove_action(monkeypatch):
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=False
     )
 
@@ -254,9 +227,8 @@ async def test_update_manual_holdings_remove_action(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_manual_holdings_empty_list():
     """Test with empty holdings list."""
-    tools = build_tools()
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=[], broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -267,7 +239,6 @@ async def test_update_manual_holdings_empty_list():
 @pytest.mark.asyncio
 async def test_update_manual_holdings_different_accounts(monkeypatch):
     """Test with different account types (기본 계좌, 퇴직연금, ISA)."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -303,7 +274,7 @@ async def test_update_manual_holdings_different_accounts(monkeypatch):
 
     # Test different account types
     for account in ["기본 계좌", "퇴직연금", "ISA"]:
-        result = await tools["update_manual_holdings"](
+        result = await _update_manual_holdings_impl(
             holdings=holdings, broker="samsung", account_name=account, dry_run=True
         )
         assert result["success"] is True
@@ -319,7 +290,6 @@ async def test_update_manual_holdings_different_accounts(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_manual_holdings_krx_master_resolution(monkeypatch):
     """Test symbol resolution through KRX master data."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -363,7 +333,7 @@ async def test_update_manual_holdings_krx_master_resolution(monkeypatch):
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -376,7 +346,6 @@ async def test_update_manual_holdings_krx_master_resolution(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_manual_holdings_us_master_resolution(monkeypatch):
     """Test US stock symbol resolution through master data."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -420,7 +389,7 @@ async def test_update_manual_holdings_us_master_resolution(monkeypatch):
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -432,7 +401,6 @@ async def test_update_manual_holdings_us_master_resolution(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_update_manual_holdings_kr_lookup_error(monkeypatch):
-    tools = build_tools()
 
     holdings = [
         {
@@ -454,7 +422,7 @@ async def test_update_manual_holdings_kr_lookup_error(monkeypatch):
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -465,7 +433,6 @@ async def test_update_manual_holdings_kr_lookup_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_manual_holdings_error_handling(monkeypatch):
     """Test error handling when service throws exception."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -488,7 +455,7 @@ async def test_update_manual_holdings_error_handling(monkeypatch):
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
@@ -499,7 +466,6 @@ async def test_update_manual_holdings_error_handling(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_manual_holdings_multiple_brokers(monkeypatch):
     """Test with different broker types (toss, samsung, kis)."""
-    tools = build_tools()
 
     holdings = [
         {
@@ -533,7 +499,7 @@ async def test_update_manual_holdings_multiple_brokers(monkeypatch):
     )
 
     for broker in ["toss", "samsung", "kis"]:
-        result = await tools["update_manual_holdings"](
+        result = await _update_manual_holdings_impl(
             holdings=holdings, broker=broker, account_name="기본 계좌", dry_run=True
         )
         assert result["success"] is True
@@ -547,7 +513,6 @@ async def test_update_manual_holdings_returns_error_payload_on_validation_error(
     monkeypatch,
 ):
     """Test wrapper returns error payload on validation error."""
-    tools = build_tools()
 
     async def mock_resolve_and_update(self, **kwargs):
         raise ValueError("USD 단위로 입력해주세요 (현재 값: 14966.0, KRW로 의심됩니다)")
@@ -558,7 +523,7 @@ async def test_update_manual_holdings_returns_error_payload_on_validation_error(
         mock_resolve_and_update,
     )
 
-    result = await tools["update_manual_holdings"](
+    result = await _update_manual_holdings_impl(
         holdings=[{"symbol": "BRK.B", "quantity": 1, "market_section": "us"}],
         broker="samsung",
         dry_run=True,

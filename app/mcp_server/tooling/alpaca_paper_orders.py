@@ -43,7 +43,6 @@ from app.services.alpaca_paper_market_evidence import (
     MarketEvidenceError,
     load_market_evidence,
 )
-from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
 from app.services.alpaca_paper_submit_service import (
     AlpacaPaperSubmitCoordinator,
     build_canonical_payload,
@@ -61,7 +60,6 @@ if TYPE_CHECKING:
 ALPACA_PAPER_MUTATING_TOOL_NAMES: set[str] = {
     "alpaca_paper_submit_order",
     "alpaca_paper_cancel_order",
-    "alpaca_paper_reconcile_orders",
 }
 
 SUBMIT_MAX_QTY: Decimal = Decimal("5")
@@ -483,55 +481,6 @@ async def alpaca_paper_cancel_order(
     }
 
 
-async def alpaca_paper_reconcile_orders(
-    *,
-    symbol: str | None = None,
-    client_order_id: str | None = None,
-    dry_run: bool = True,
-    confirm: bool = False,
-    limit: int = 100,
-    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
-) -> dict[str, Any]:
-    """Book broker-confirmed Alpaca paper fills into non-terminal ledger rows.
-
-    This only performs read-only broker evidence lookups plus existing ledger
-    writes. It never submits, replaces, or cancels a broker order.
-    """
-    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
-    if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
-        _service_for_account_mode(selected_account_mode)
-    if limit < 1:
-        raise ValueError("limit must be >= 1")
-    if not dry_run and not confirm:
-        return {
-            "success": False,
-            "dry_run": False,
-            "blocked_reason": "confirmation_required",
-        }
-    clean_symbol = symbol.strip().upper() if symbol and symbol.strip() else None
-    clean_order_id = (
-        client_order_id.strip() if client_order_id and client_order_id.strip() else None
-    )
-    async with _session_factory()() as db:
-        reconcile = AlpacaPaperReconcileService(
-            AlpacaPaperLedgerService(db, account_mode=selected_account_mode),
-            _service_for_account_mode(selected_account_mode),
-        )
-        result = await reconcile.reconcile(
-            symbol=clean_symbol,
-            client_order_id=clean_order_id,
-            dry_run=dry_run,
-            limit=min(limit, 200),
-        )
-    return {
-        "account_mode": selected_account_mode,
-        "source": "alpaca_paper_reconcile_orders",
-        "symbol": clean_symbol,
-        "client_order_id": clean_order_id,
-        **result,
-    }
-
-
 def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="alpaca_paper_submit_order",
@@ -561,15 +510,6 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
             "No bulk/all/by-symbol/by-status options. Paper endpoint only."
         ),
     )(alpaca_paper_cancel_order)
-    _ = mcp.tool(
-        name="alpaca_paper_reconcile_orders",
-        description=(
-            "Evidence-first reconcile for submitted Alpaca PAPER ledger rows. "
-            "Defaults to dry_run=True and returns transition plans with no DB writes. "
-            "Set dry_run=False and confirm=True to book only broker-confirmed fills. "
-            "Missing broker evidence remains unchanged and requires manual review."
-        ),
-    )(alpaca_paper_reconcile_orders)
 
 
 __all__ = [
@@ -578,7 +518,6 @@ __all__ = [
     "SUBMIT_MAX_QTY",
     "ORDER_ID_SAFE_SEGMENT_RE",
     "alpaca_paper_cancel_order",
-    "alpaca_paper_reconcile_orders",
     "alpaca_paper_submit_order",
     "register_alpaca_paper_orders_tools",
     "reset_alpaca_paper_orders_service_factory",

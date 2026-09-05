@@ -22,14 +22,15 @@ tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_intraday_support_resistance_recompute.py
 tests/mcp_server/test_investment_report_delta_tool.py
 tests/mcp_server/test_investment_report_generate_from_bundle_handler.py
+tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_market_normalization.py
+tests/mcp_server/test_profile_tool_snapshot.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
 tests/mcp_server/tooling/test_fx_pnl.py
 tests/mcp_server/tooling/test_get_holdings_news.py
 tests/mcp_server/tooling/test_live_order_evidence_upbit.py
 tests/mcp_server/tooling/test_loss_cut_place_order.py
 tests/mcp_server/tooling/test_order_proposal_create_post_commit.py
-tests/mcp_server/tooling/test_paper_validation_registration.py
 tests/mcp_server/tooling/test_screen_stocks_snapshot_docs.py
 tests/mcp_server/tooling/test_support_reserve_net_consumer_tool.py
 tests/mcp_server/tooling/test_toss_live_evidence.py
@@ -364,7 +365,6 @@ tests/test_nxt_preflight_order_tools.py
 tests/test_ohlcv_cache_common.py
 tests/test_order_brief_formatting.py
 tests/test_orders_history_summary_rob657.py
-tests/test_paper_journal_bridge.py
 tests/test_paper_trading_model.py
 tests/test_portfolio_links.py
 tests/test_portfolio_rotation_service.py

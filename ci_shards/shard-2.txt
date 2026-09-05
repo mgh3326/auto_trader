@@ -362,7 +362,6 @@ tests/test_mcp_screen_stocks_filters_and_rsi.py
 tests/test_mcp_screen_stocks_tvscreener_contract.py
 tests/test_mcp_shared_utils.py
 tests/test_mcp_toss_order_variants_rob561.py
-tests/test_mcp_trading_scoreboard.py
 tests/test_middleware_auth_research_reports_ingest.py
 tests/test_mock_lane_registry.py
 tests/test_mock_roundtrip_journal_task.py
@@ -376,7 +375,6 @@ tests/test_number_utils.py
 tests/test_order_approval_config.py
 tests/test_order_estimation_service.py
 tests/test_order_live_precheck_reservation.py
-tests/test_paper_analytics_tools.py
 tests/test_paper_trading_service.py
 tests/test_partition_health.py
 tests/test_partition_health_loader_wiring.py

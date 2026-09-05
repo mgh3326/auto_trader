@@ -31,9 +31,10 @@ def test_paper_limit_tools_absent_on_shadow_replay() -> None:
 @pytest.mark.unit
 def test_paper_limit_tools_nameset_matches_handler() -> None:
     """Pin the exact tool name set so the profile-matrix guard stays aligned."""
+    # paper_cancel_pending_order was class D in the 2026-09-03 MCP surface
+    # audit and no longer registers.
     assert PAPER_LIMIT_ORDER_TOOL_NAMES == {
         "paper_place_limit_order",
         "paper_reconcile_orders",
-        "paper_cancel_pending_order",
         "paper_list_pending_orders",
     }

@@ -96,22 +96,22 @@ async def test_missing_server_actor_fails_closed_before_application(
 
 
 @pytest.mark.unit
-def test_control_tool_is_default_off_and_paper_execution_profile_only(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", False)
-    disabled = DummyMCP()
-    register_all_tools(disabled, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-    assert PAPER_COHORT_CONTROL_TOOL_NAMES.isdisjoint(disabled.tools)
+def test_control_tool_is_registered_by_no_profile(monkeypatch) -> None:
+    """MCP surface audit 2026-09-03: its only carrier profile was retired.
 
+    ``paper_cohort_kill_switch`` was reachable exclusively through
+    ``MCP_PROFILE=paper_execution``, whose other 14 tools were all dead. The
+    profile is gone, so the tool must now be registered by nothing at all --
+    including with the old feature flag forced on. The handler and its
+    registrar are deliberately kept (class C, referenced-unused), so this
+    asserts non-registration, not non-existence.
+    """
     monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
-    enabled = DummyMCP()
-    register_all_tools(enabled, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
-    assert PAPER_COHORT_CONTROL_TOOL_NAMES <= enabled.tools.keys()
-
     for profile in McpProfile:
-        if profile is McpProfile.PAPER_EXECUTION:
-            continue
-        other = DummyMCP()
-        register_all_tools(other, profile=profile)  # type: ignore[arg-type]
-        assert PAPER_COHORT_CONTROL_TOOL_NAMES.isdisjoint(other.tools)
+        registered = DummyMCP()
+        register_all_tools(registered, profile=profile)  # type: ignore[arg-type]
+        leaked = PAPER_COHORT_CONTROL_TOOL_NAMES & registered.tools.keys()
+        assert not leaked, (
+            f"profile={profile.value} registers retired paper-cohort control "
+            f"tool(s) {sorted(leaked)}"
+        )

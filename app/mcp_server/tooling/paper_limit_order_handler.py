@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 PAPER_LIMIT_ORDER_TOOL_NAMES: set[str] = {
     "paper_place_limit_order",
     "paper_reconcile_orders",
-    "paper_cancel_pending_order",
     "paper_list_pending_orders",
 }
 
@@ -223,26 +222,6 @@ def register_paper_limit_order_tools(mcp: FastMCP) -> None:
             async with _session_factory()() as db:
                 svc = PaperLimitOrderService(db)
                 return await svc.reconcile_pending_orders(account_id=account_id)
-        except Exception as exc:  # noqa: BLE001
-            return {"success": False, "error": f"unexpected error: {exc}"}
-
-    @mcp.tool(
-        name="paper_cancel_pending_order",
-        description=(
-            "Cancel a pending paper resting-limit order and release its "
-            "reserved cash back to cash_krw. No-op if the order is already "
-            "filled or cancelled."
-        ),
-    )
-    async def paper_cancel_pending_order(
-        account_id: int, order_id: int
-    ) -> dict[str, Any]:
-        try:
-            async with _session_factory()() as db:
-                svc = PaperLimitOrderService(db)
-                return await svc.cancel_pending_order(
-                    account_id=account_id, order_id=order_id
-                )
         except Exception as exc:  # noqa: BLE001
             return {"success": False, "error": f"unexpected error: {exc}"}
 

@@ -258,7 +258,6 @@ DIRECT_BROKER_MUTATION_TOOLS: frozenset[str] = frozenset(
         "kiwoom_mock_us_modify_order",
         "kiwoom_mock_us_place_order",
         "modify_order",
-        "paper_cancel_pending_order",
         "paper_place_limit_order",
         "place_order",
         "toss_cancel_order",
@@ -268,13 +267,7 @@ DIRECT_BROKER_MUTATION_TOOLS: frozenset[str] = frozenset(
 )
 
 PROPOSAL_LED_TOOLS: frozenset[str] = frozenset({PROPOSAL_TOOL})
-PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
-    {
-        "order_proposal_expire_sweep",
-        "order_proposal_redispatch",
-        "order_proposal_void",
-    }
-)
+PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset({"order_proposal_void"})
 RESERVE_NET_CONSUMER_TOOLS: frozenset[str] = frozenset({"support_reserve_net_consume"})
 ORDER_PROPOSAL_READ_TOOLS: frozenset[str] = frozenset(
     {
@@ -297,7 +290,6 @@ PREVIEW_REVALIDATION_TOOLS: frozenset[str] = frozenset(
 
 RECONCILE_TOOLS: frozenset[str] = frozenset(
     {
-        "alpaca_paper_reconcile_orders",
         "kis_live_reconcile_orders",
         "kis_mock_reconciliation_run",
         "live_reconcile_orders",
@@ -325,9 +317,6 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "toss_get_positions",
         # ROB-971: lifecycle writes for direct investment watches (local DB state
         # mutation only, no direct broker order placement).
-        "investment_watch_void",
-        "investment_watch_expire",
-        "sweep_expired_watches",
     }
 )
 
@@ -341,9 +330,9 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
-    # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
-    # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES
-    # lifecycle state to review.alpaca_paper_order_ledger. Flag-
+    # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel.
+    # (alpaca_paper_reconcile_orders was class D in the 2026-09-03 MCP surface
+    # audit and no longer registers.) Flag-
     # gated in DEFAULT (settings.alpaca_paper_default_tools_enabled, default off);
     # the read/preview/us_dual/ledger surface is read-only and lives in
     # READ_ONLY_ADVISORY_TOOLS. The automated preview/submit pair is US_PAPER-
@@ -356,12 +345,8 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
             # no live/Upbit broker mutation). paper_list_pending_orders is read-only
             # and lives in READ_ONLY_ADVISORY_TOOLS.
             "paper_place_limit_order",
-            "paper_cancel_pending_order",
             "paper_reconcile_orders",
             # ROB-971: lifecycle writes for direct investment watches.
-            "investment_watch_void",
-            "investment_watch_expire",
-            "sweep_expired_watches",
         }
     )
 )
@@ -432,8 +417,8 @@ LANE_RECONCILE_ALLOWED: dict[str, frozenset[str]] = {
 # created the proposal or the server itself confirmed expiry / a loss-guard
 # violation (see void_authorization.py). Widening this map cannot widen that.
 LANE_PROPOSAL_LIFECYCLE_ALLOWED: dict[str, frozenset[str]] = {
-    "buy": frozenset({"order_proposal_void", "order_proposal_expire_sweep"}),
-    "sell": frozenset({"order_proposal_void", "order_proposal_expire_sweep"}),
+    "buy": frozenset({"order_proposal_void"}),
+    "sell": frozenset({"order_proposal_void"}),
 }
 
 # The reserve-net consumer is a conditional buy helper, not a standard lane
@@ -464,8 +449,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # (ALPACA_PAPER_PREVIEW_TOOL_NAMES — no side effects, does not submit),
         # and the read-only us_dual capability/state/preview trio
         # (US_DUAL_PAPER_TOOL_NAMES, submit_enabled always False). The
-        # confirm-gated submit/cancel mutations and the DB-writing
-        # alpaca_paper_reconcile_orders live in MUTATION_TOOLS.
+        # confirm-gated submit/cancel mutations live in MUTATION_TOOLS.
         *ALPACA_PAPER_READONLY_TOOL_NAMES,
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
@@ -475,9 +459,6 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "analysis_artifact_get",
         "analysis_artifact_list",
         "analysis_artifact_save",
-        "analysis_bundle_create",
-        "analysis_bundle_get",
-        "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",
         # Bounded observation-only discovery. It cannot create a proposal or
@@ -497,7 +478,6 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",
-        "get_analyst_consensus",
         "get_available_capital",
         "get_cash_balance",
         "get_company_profile",
@@ -514,27 +494,22 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_crypto_social",
         "get_crypto_top_movers",
         "get_disclosures",
-        "get_dividends",
         "get_earnings_calendar",
         "get_execution_strength",
-        "get_financials",
         "get_forecast_calibration",
         "get_forecasts",
         "get_fx_rate",
         "get_holdings",
         "get_holdings_news",
         "get_indicators",
-        "get_insider_transactions",
         "get_intraday_investor_flow",
         "get_investment_opinions",
-        "get_investor_trends",
         "get_kimchi_premium",
         "get_krx_session_health",
         "get_latest_market_brief",
         "get_market_index",
         "get_market_issues",
         "get_market_news",
-        "get_market_reports",
         "get_mock_loop_retrospective",
         "get_momentum_candidates",
         "get_news",
@@ -545,9 +520,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_position",
         "get_quote",
         "get_retail_sentiment",
-        "get_retrospective_aggregate",
         "get_sector_peers",
-        "get_short_interest",
         "get_support_resistance",
         "get_theme_events",
         "get_top_stocks",
@@ -556,33 +529,18 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_trade_journal",
         "get_trade_retrospectives",
         "get_trading_policy",
-        "get_trading_scoreboard",
         "get_upbit_altseason",
         "get_upbit_index",
-        "get_user_setting",
         "get_valuation",
-        "investment_report_activate_watch",
-        "investment_report_add_items",
-        "investment_report_context_get",
         "investment_report_create",
-        "investment_report_decide_item",
-        "investment_report_delta_get",
         "investment_report_get",
-        "investment_report_list",
-        "investment_report_set_status",
-        "investment_report_update",
         "investment_watch_create",
-        "investment_watch_recommend",
-        "list_active_journals",
         "list_active_watches",
         "investment_watch_events_list_recent",
         "modify_journal_entry",
         "paper_list_pending_orders",
         "research_session_get",
         "research_session_list_recent",
-        "research_summary_get",
-        "save_position_intake_retrospective",
-        "save_trade_journal",
         "save_trade_retrospective",
         "screen_stocks",
         "screen_stocks_snapshot",
@@ -590,15 +548,11 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "search_symbol",
         "session_context_append",
         "session_context_get_recent",
-        "set_user_setting",
-        "stage_analysis_get",
         "suggest_order_account",
         # ROB-866: detection sweep (no broker order mutation; alert-only side effect
         # like session_context_append, which is likewise advisory-classified).
         "toss_detect_manual_activity",
         "trade_retrospective_pending",
-        "update_manual_holdings",
-        "update_trade_journal",
         # ROB-928: notify-only downside watch sweep (dry_run default; only
         # mutation is an investment_watch_alerts INSERT, no broker/order path).
         "watch_downside_register_sweep",

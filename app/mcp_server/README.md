@@ -2,6 +2,44 @@
 
 MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
+> **2026-09-03 MCP surface audit — removed tools.** The tools listed below were
+> class D (zero `tools/call` spans in 90 days, zero prompt/runbook/code
+> references) and no longer register on any profile. Sections further down this
+> file that still describe them are historical: the registration is gone, the
+> prose was left in place deliberately rather than rewritten wholesale. The
+> canonical list, the service functions each one orphaned, and every remaining
+> doc reference are in
+> [`docs/runbooks/mcp-surface-cleanup-20260905.md`](../../docs/runbooks/mcp-surface-cleanup-20260905.md).
+>
+> `analysis_bundle_create`, `analysis_bundle_get`, `analyze_portfolio`,
+> `alpaca_paper_reconcile_orders`, `compare_paper_accounts`,
+> `compare_strategies`, `create_paper_account`, `delete_paper_account`,
+> `get_analyst_consensus`, `get_dividends`, `get_financials`,
+> `get_insider_transactions`, `get_investor_trends`, `get_market_reports`,
+> `get_paper_performance`, `get_paper_trade_log`, `get_retrospective_aggregate`,
+> `get_short_interest`, `get_trading_scoreboard`, `get_user_setting`,
+> `investment_report_activate_watch`, `investment_report_add_items`,
+> `investment_report_context_get`, `investment_report_decide_item`,
+> `investment_report_delta_get`, `investment_report_list`,
+> `investment_report_prepare_intraday_context`, `investment_report_set_status`,
+> `investment_report_update`, `investment_watch_expire`,
+> `investment_watch_recommend`, `investment_watch_void`, `list_active_journals`,
+> `order_proposal_expire_sweep`, `order_proposal_redispatch`,
+> `paper_cancel_pending_order`, `paper_execution_*` (6),
+> `paper_validation_*` (8), `recommend_go_live`, `research_summary_get`,
+> `reset_paper_account`, `save_position_intake_retrospective`,
+> `save_trade_journal`, `set_user_setting`, `stage_analysis_get`,
+> `sweep_expired_watches`, `update_manual_holdings`, `update_trade_journal`.
+>
+> Two class-D tools were **kept** on purpose:
+> `alpaca_paper_automated_preview_order` (its class-C partner
+> `alpaca_paper_automated_submit_order` accepts only a token this tool mints)
+> and `get_sector_peers` (named by the machine-checked discovery lane in
+> `docs/playbooks/trading-decision-playbook.md`). Three more —
+> `get_toss_ai_signal`, `get_toss_buy_balance`,
+> `investment_report_create_from_hermes_composition` — are named by live lane
+> allowlists in `config/mcp_lane_allowlists/`.
+
 ## Observability (Sentry MCP)
 - MCP tracing uses `sentry_sdk.integrations.mcp.MCPIntegration` when enabled.
 - Recommended trace filter:
@@ -307,81 +345,43 @@ disabled no-op payloads:
 - `investment_stage_artifacts_ingest_from_hermes`
 - `investment_report_prepare_intraday_context`
 
-### Frozen analysis snapshot bundles (ROB-838)
+### Frozen analysis snapshot bundles (ROB-838) — MCP SURFACE RETIRED
 
-The `analysis_bundle_create` and `analysis_bundle_get` tools are gated by
-`ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED`, whose default is `false`. When the gate
-is false, both tools are physically absent from the default MCP surface.
+`analysis_bundle_create` and `analysis_bundle_get` were both class D in the MCP
+tool usage audit (`docs/mcp-tool-usage-audit-20260903.md`): zero calls in 90
+days, zero prompt/runbook/code references. Their registrar module
+(`analysis_bundle_handlers.py`) and the `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED`
+gate — whose only consumers were those registrations — are removed.
 
-`analysis_bundle_create(market, account_scope, symbols, user_id=None,
-market_session=None)` captures a fixed, append-only input document. `market` is
-`kr`, `us`, or `crypto`; `account_scope` is optional and, when present, is
-`kis_live`, `kis_mock`, `alpaca_paper`, or `upbit_live`; `symbols` contains 1–10
-symbols; and `user_id` and `market_session` are optional capture context. A
-successful call returns `success`, `bundle_id`, the canonical SHA-256
-`content_hash`, `captured_at`, and completeness fields: `status` (`complete` or
-`partial`), `unavailable_sections`, and `partial_sections`. Capture has no order
-or proposal mutation side effect.
+The capture/read services (`app/services/analysis_snapshot_bundle/**`,
+`app/schemas/analysis_snapshot_bundle.py`) are untouched; they simply have no
+MCP entry point. Re-exposing them needs a new registrar and a lane that names
+the tools, not a revert.
 
-`analysis_bundle_get(bundle_id, sections=None)` accepts the bundle UUID and an
-optional list drawn from `portfolio`, `quotes_orderbooks`,
-`indicators_support_resistance`, `market_gate_inputs`, `investor_flow`, and
-`decision_history`. Omitting `sections` returns the complete stored document.
-Supplying it only projects the named stored sections; it does not recapture,
-recompute, refresh, backfill, or otherwise change any stored value. The result
-includes `success`, `bundle_id`, `content_hash`, `integrity_verified`, creation,
-capture, and read timestamps, bundle `age_seconds`, `status`, `completeness`,
-`stale_warning`, per-section `section_freshness`, and the stored `document`.
+### Paper execution validation boundary (ROB-848) — RETIRED
 
-Bundles are write-once evidence. To correct or update input, create a new bundle
-and hand off its new `bundle_id`; never patch an old bundle. Every get recomputes
-the canonical SHA-256 hash and compares it with the stored hash before returning
-the document. A mismatch, malformed frozen document, wrong bundle purpose/kind,
-or invalid item cardinality returns `error="analysis_bundle_integrity_error"`
-instead of unverified evidence.
+The `paper_execution` profile was removed by the MCP tool usage audit
+(`docs/mcp-tool-usage-audit-20260903.md`): 14 of its 15 registered tools were
+class D (zero calls in 90 days, zero prompt/runbook/code references). The six
+`paper_execution_*` and eight `paper_validation_*` MCP registrations and their
+two registrar modules are gone, and `MCP_PROFILE=paper_execution` now fails
+closed with `Unknown MCP_PROFILE`.
 
-Freshness is read-time metadata only. `age_seconds`, `stale_warning`, and each
-section's `as_of`, age, and freshness status describe the frozen evidence
-without refreshing it. Likewise, a provider failure captured as an unavailable
-section retains its original error and remains unavailable; get never calls a
-provider to fill it.
+What is deliberately **kept**:
 
-### Paper execution validation boundary (ROB-848)
+- `PAPER_EXECUTION_ENABLED` — still read by `app/jobs/paper_cohort.py` and
+  `app/services/paper_cohort/runner.py`; it is no longer an MCP profile gate.
+- `PAPER_VALIDATION_ACTOR_ROLES` / `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`
+  and the whole `app/services/paper_validation` package.
+- `app/mcp_server/tooling/paper_validation_handlers.py`, still imported by
+  `paper_cohort_control_*`.
+- `paper_cohort_kill_switch` (class C) and its registrar — retained but now
+  registered by no profile, because `paper_execution` was its only carrier.
+  Re-exposing it needs a deliberate profile assignment, not a revert.
 
-The default-off `paper_execution` profile is one exact union under
-`PAPER_EXECUTION_ENABLED`: the unchanged six names in
-`PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
-`PAPER_VALIDATION_TOOL_NAMES` and the operator-only
-`PAPER_COHORT_CONTROL_TOOL_NAMES`. The three registrars meet only in the
-profile registry composition branch.
-
-Validation caller identity is bound server-side to the authenticated profile
-token through `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`; caller headers are not
-trusted for validation authorization. `PAPER_VALIDATION_ACTOR_ROLES` maps that
-server-derived ID to `researcher`, `reviewer`, `operator`, or `system`; both
-settings default empty and every absent, unmapped, or invalid role fails closed.
-Actor ID and role are absent from all tool payloads.
-Frozen-input and policy providers are injected contracts. Until their production
-composition is supplied by their owning follow-ups, evidence-requiring mutations
-return `evidence_stamp_unavailable` and never reach a broker, adapter, or ledger.
-
-Researchers may append only fixed-shape hypothesis drafts, reviewers may append
-only narrative postmortems, and operators/systems own registration, state
-transitions, order-submit authorization, promotion, rejection, and abort. Order
-authorization returns an exact-bound frozen contract; it does not submit an
-order. Promotion requires a separate explicit confirmation against the current
-experiment/cohort/strategy/config/policy/input hashes.
-
-For an active ROB-849 cohort, use `paper_cohort_kill_switch` before disabling
-the profile. It commits an immutable terminal fence, recovery-links any
-prepared native order without POST, then performs cohort-owned cleanup. See
-[`docs/runbooks/paper-cohort-kill-switch.md`](../../docs/runbooks/paper-cohort-kill-switch.md).
-Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
-existing audit/fence rows remain immutable.
-
-The `analysis_readonly` Codex/headless profile exposes
-`analysis_bundle_get` only when the gate is enabled. It never exposes
-`analysis_bundle_create`, preserving the consumer's get-only boundary.
+Existing audit/fence rows remain immutable. See
+[`docs/runbooks/mcp-surface-cleanup-20260905.md`](../../docs/runbooks/mcp-surface-cleanup-20260905.md)
+and [`docs/runbooks/paper-cohort-kill-switch.md`](../../docs/runbooks/paper-cohort-kill-switch.md).
 
 The ROB-833 runner handoff is exactly:
 
@@ -520,208 +520,18 @@ to `asset_class="us_equity"`; Alpaca crypto paper remains on the existing
 account only. Ledger, preflight, roundtrip, cancel status sync, and reconcile
 lookups are scoped to the selected account mode.
 
-### Alpaca paper fill reconcile (DB-writing mutation, ROB-953)
+### Alpaca paper fill reconcile (ROB-953) — REMOVED
 
-`alpaca_paper_reconcile_orders(symbol=None, client_order_id=None, dry_run=True,
-confirm=False, limit=100, account_mode="alpaca_paper")` is **not** part of the
-read-only surface above. It is
-a **DB-writing mutation** classified in `MUTATION_TOOLS`, denied by the
-read-only settings profile, and exposed on the **DEFAULT** profile behind
-`settings.alpaca_paper_default_tools_enabled` (default off) — not `us-paper`
-only. Broker access is read-only (it never submits, replaces, or cancels), but
-it writes lifecycle state to `review.alpaca_paper_order_ledger`.
+`alpaca_paper_reconcile_orders` was class D in the MCP tool usage audit
+(`docs/mcp-tool-usage-audit-20260903.md`): 0 calls in 90 days, 0
+prompt/runbook/code references. The tool and its handler are removed; it is
+gone from `MUTATION_TOOLS` and `RECONCILE_TOOLS`.
 
-It is the confirm-gated, evidence-first fill-booking tool for manually
-submitted Alpaca paper orders. It queries the broker by the ledger
-`client_order_id`, normalizes the order/fill evidence through the shared fill
-classifier, and only books confirmed cumulative fills. `dry_run=True` returns
-transition plans without ledger writes; `dry_run=False` requires `confirm=True`.
-
-Evidence handling is fail-closed. For `status=filled`, the tool always walks the
-complete FILL activity feed with Alpaca `page_token` pagination, even when the
-order already includes `filled_qty` and `filled_avg_price`. The row is left
-unchanged and returned with `requires_manual_review=true` when the broker read
-fails, the order is missing, or the observed fills are empty, incomplete, or do
-not sum to the order's cumulative `filled_qty`. The reported `action` and the
-persisted `lifecycle_state` are derived from the confirmed write result, so they
-cannot disagree. The tool books to `filled` / `partial` / `anomaly` / `canceled`
-only; it deliberately does not infer position or final reconciliation without
-independent evidence.
-
-`alpaca_paper_execution_preflight_check` is a read-only runner gate for the
-later automated paper cycle. It reads recent ledger rows and accepts
-caller-supplied read-only `open_orders`, `positions`, and `approval_packet`
-snapshots, then returns severity-classified anomalies plus `should_block`. Scoped
-callers may pass `lifecycle_correlation_id`, `client_order_id`, `candidate_uuid`,
-`briefing_artifact_run_uuid`, or an `approval_packet` containing those keys; the
-tool then reads only matching ledger rows and returns `scoped_by` so decision
-sessions do not get blocked by unrelated recent ETH/SOL/BTC rows. Calls without
-scope keep the broad recent-ledger safety behavior for global runners. Passing
-`legacy_cycle_blockers_as_warnings=True` is an explicit Alpaca Paper execution
-flow test-mode: residual positions and stale preview/approval packets are
-returned as warnings instead of blockers so operators can test buy/sell/order
-adjust/close flows on a used paper account. That test-mode flag by itself does
-not weaken open-order
-conflicts, duplicate `client_order_id`, ledger/order/fill anomalies, missing
-linked sells, unclosed sell snapshots, unverified broker snapshots, or symbol
-mismatches; those remain
-blocking. ROB-93
-checks include unexpected open orders, residual positions, duplicate
-`client_order_id`, filled buys without linked sells, filled sells without a zero
-final position snapshot, ledger/order/fill mismatches, stale previews/approval
-packets, and signal/execution symbol mismatches. Stale same-scope preview
-findings return the dry-run action hint
-`recommended_action="mark_stale_preview_cleanup_required"` and
-`lifecycle_state="stale_preview_cleanup_required"`; operators can use this to
-surface an explicit cleanup-required state before any separately approved repair
-write. The preflight itself performs no broker mutation, no repair writes, and
-no direct DB backfill.
-
-ROB-1209 adds optional `candidate_order` context for an account-maintenance
-sell. It does **not** skip preflight or trust a `purpose`/`reduce_only` label.
-The report treats a candidate as reduce-only only when all of the following are
-true: `side="sell"`, an execution symbol is present, `qty` (or packet-style
-`max_qty`) is finite and positive, the positions snapshot is fresh/attested for
-the selected account, and the requested quantity is no greater than that exact
-live position. Notional-only, unknown-symbol, oversized, or buy candidates do
-not qualify. If an `approval_packet` supplies order fields, the candidate must
-also match its side, execution symbol, and any `max_qty`; a sell context cannot
-clear a buy packet. Under that narrow condition, `residual_position_exists`,
-`sell_source_evidence_invalid`, and `previous_buy_filled_sell_missing` remain
-visible as warnings rather than blocking the reducing sell. All other evidence
-gates remain unchanged: missing/stale snapshots, open orders, duplicate IDs,
-ledger/fill inconsistencies, unclosed prior sells, stale packets, and symbol
-mismatches still block. The submit boundary separately re-reads live available
-quantity before any broker POST.
-
-The broker snapshot is fail-closed (ROB-1130). `open_orders` and `positions` must
-both be supplied together with `broker_snapshot_fetched_at`, the time the
-snapshot was read from the broker, and `broker_snapshot_account_mode`, the
-account those reads were taken from:
-
-```python
-positions = await alpaca_paper_list_positions(account_mode="alpaca_paper")
-open_orders = await alpaca_paper_list_orders(status="open", account_mode="alpaca_paper")
-report = await alpaca_paper_execution_preflight_check(
-    account_mode="alpaca_paper",
-    positions=positions["positions"],
-    open_orders=open_orders["orders"],
-    broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
-    broker_snapshot_account_mode=positions["account_mode"],
-)
-```
-
-A snapshot that is missing, empty without an attestation, older than
-`snapshot_max_age_minutes` (default 5), or carries an unparseable/future
-timestamp is reported as a `broker_snapshot_unverified` blocker. Previously an
-omitted snapshot silently became `positions=0` and passed the gate while the
-account held positions. `counts.positions` and `counts.open_orders` are now
-omitted rather than reported as `0` when the snapshot cannot be verified, and
-`broker_snapshot` carries the per-kind `provided` / `verified` / `reason` state.
-This blocker is never downgraded by `legacy_cycle_blockers_as_warnings`.
-
-Two further shapes of "empty means flat" are also blocked rather than passed:
-
-- Passing the whole MCP response envelope (or any mapping/string) instead of the
-  row list — `positions={...}` normalizes to an empty list and would otherwise
-  read as a flat account. Reason: `snapshot_container_not_a_row_list`.
-- A snapshot read from the other paper account. `alpaca_paper` and
-  `alpaca_paper_lab` use different credentials and hold different inventory, so
-  an unattested or mismatched `broker_snapshot_account_mode` blocks with reason
-  `snapshot_account_unattested` / `snapshot_account_mismatch`, and
-  `broker_snapshot.account` reports `expected` vs `attested`.
-
-Buy legs that hold an open position are no longer reported as missing sell legs
-(ROB-1129). A filled/reconciled buy with no linked sell row is classified against
-the verified position snapshot: still-held symbols produce the informational
-`open_position_without_sell_leg` finding, while symbols the broker no longer
-holds, buys already in `closed`/`final_reconciled`, and rows with no verified
-snapshot keep blocking under `previous_buy_filled_sell_missing` with a per-row
-`reason`. The only exception is the ROB-1209 candidate context above: a verified,
-snapshot-bounded reducing sell may continue while retaining that historical
-lifecycle discrepancy as a warning; it never releases a buy or unbounded sell.
-
-The broker inspection tools instantiate `AlpacaPaperBrokerService`, so they
-inherit the
-service-level endpoint guard: the trading base URL must be exactly
-`https://paper-api.alpaca.markets`. The Alpaca dashboard may display
-`https://paper-api.alpaca.markets/v2`, but runtime env should **not** include
-`/v2`; service methods append `/v2/...` paths internally, and setting the env to
-`.../v2` would produce duplicated `/v2/v2/...` requests.
-
-Safety boundary: there are no Alpaca live MCP tools. ROB-73 adds explicit
-paper-only, confirm-gated `alpaca_paper_submit_order` and
-`alpaca_paper_cancel_order` tools for dev-owned smoke, with no runtime live
-switch and no bulk/by-symbol cancel. ROB-74 extends those explicit paper-only
-surfaces to a narrow crypto contract; ROB-86 permits guarded paper sell/close
-smokes through the same explicit Alpaca Paper submit surface. Crypto remains
-buy/sell limit-only, allowlisted to `BTC/USD`, `ETH/USD`, and `SOL/USD`,
-`time_in_force` limited to `gtc`/`ioc`, and capped at $50 max notional or
-estimated cost.
-There is still no Alpaca paper `place_order`, `replace_order`, `modify_order`,
-`cancel_all`, close-position/liquidate, or generic Alpaca order-routing surface.
-
-#### Unified submit boundary (ROB-842)
-
-Every real Alpaca Paper broker POST — manual and automated — passes through a
-single server-side boundary: **server-owned approval packet → existing
-`review.alpaca_paper_order_ledger` atomic claim → broker POST → stored-result
-replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
-
-- **Roles.** `alpaca_paper_submit_order` is the **manual operator** tool
-  (confirm-gated $10-scale smoke). `alpaca_paper_automated_preview_order` +
-  `alpaca_paper_automated_submit_order` are the **automated cohort** tools —
-  registered only under `MCP_PROFILE=us-paper` and **default-off** behind
-  `ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED` (fail-closed when unset).
-- **Server-observed market evidence for every submit.** Both tools require an
-  opaque, server-issued `quote_snapshot_id` (a trusted `market_quote_snapshots`
-  row) at `confirm=True` — there is no origin-based bypass of market/freshness
-  checks. The caller never supplies correlation, snapshot, market-data as-of/
-  source, ceiling, `origin`, or `client_order_id`: the server loads identity,
-  market provenance and the trusted reference price from that row, and the ceiling
-  is the server **hard-cap** policy ($1,000 equity / $50 crypto). A market/qty
-  order's implied notional (trusted price × qty) is bounded by the same cap. A
-  missing / stale / symbol-mismatched / non-finite-priced snapshot fails closed
-  before any packet is built. Packet + policy hashes are recorded in the ledger
-  preview evidence.
-- **Snapshot retrieval & build lever (ROB-913).** Two MCP tools are provided to manage market quote evidence:
-  - `market_quote_snapshot_latest(market: "kr"|"us"|"crypto", symbol: str)` reads the latest snapshot row and exposes its metadata along with `age_seconds`, `is_fresh` (within 5 minutes: `0 <= age <= 300`), and `submit_ready` (indicating whether it passes the server-side submit gates).
-  - `market_quote_snapshot_ensure(market: "kr"|"us"|"crypto", symbol: str)` ensures a fresh snapshot exists. If the latest row is fresh and submit-ready, it reuses it (`reused: true`). Otherwise, it builds a new snapshot for the symbol (`reused: false`) and validates it. Price injection is strictly forbidden; price is only fetched from the trusted server-side quote sources.
-- **Replay before freshness.** Immutable token/key/hash/account binding is checked
-  first; a completed or terminally-failed order then replays its original result
-  even after the packet's freshness window has elapsed. Freshness / market-data /
-  live-position checks apply only to a not-yet-claimed new submit.
-- **Exactly once.** Duplicate intents (sequential or concurrent) produce exactly
-  one broker HTTP submit; every other caller replays the winner's result.
-- **Live sell eligibility + no oversell.** A sell is verified against the
-  **current** Alpaca paper position re-read right before the POST, with
-  `qty_available` required as a broker-owned upper bound. Position evidence,
-  lifecycle reconciliation, local reservations, and the atomic claim are bound
-  under one account+symbol advisory lock. Every sell claim stores its `qty` /
-  `qty_available` baseline in the existing `position_snapshot` JSONB; a later
-  immediate or crash-recovered open/partial, `filled`, and unknown/unparseable
-  statuses retain `submitted`; a `filled` status releases the hold only after the
-  position response proves the fill is reflected. Unknown statuses retain their
-  reservation, and ambiguous/stale fill evidence returns
-  `position_reconciliation_pending`, so two *different* sell intents cannot consume
-  the same shares. Cancel read-back syncs known broker truth while retaining the
-  hold for open/partial/filled. Automated sell is **explicitly disabled**
-  (reason `automated_sell_disabled`) until ROB-845 wires an opaque buy/position
-  source; manual sell is supported.
-- **Public success contract.** `success` is true only for
-  `submitted` / `replayed` / `recovered`; `failed`, `rejected` and
-  `idempotency_in_progress` are `success=false`.
-- **Deterministic failure vs uncertainty.** An HTTP 4xx/422 rejection is booked
-  as a terminal outcome and replayed on retry (no re-POST). A 5xx/timeout/
-  crash-after-send is reconciled via `get_order_by_client_order_id` — recovered
-  if the order exists, otherwise left in-flight — never re-POSTed.
-- **Paper only.** The only broker built is `AlpacaPaperBrokerService`
-  (paper-host-pinned); no live endpoint or live-credential path is imported.
-
-Read-only operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
-Read-only smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
-Dev submit/cancel smoke runbook: [`docs/runbooks/alpaca-paper-dev-smoke.md`](../../docs/runbooks/alpaca-paper-dev-smoke.md)
-Dev submit/cancel smoke helper: `scripts/smoke/alpaca_paper_dev_smoke.py` (preview-only by default, side effects require dual explicit gates)
+`review.alpaca_paper_order_ledger` is not left without a settle path —
+`scripts/smoke/alpaca_paper_sell_close_smoke.py` reconciles its own submitted
+order id, and the ledger read tools (`alpaca_paper_ledger_list_recent`,
+`alpaca_paper_ledger_get_by_correlation`,
+`alpaca_paper_execution_preflight_check`) are class A and unchanged.
 
 ### Execution Ledger Fill Event Tools (ROB-755)
 
@@ -950,7 +760,15 @@ order mutation.
   - It is a conditional buy helper, not a scheduler or a generic route step.
     Missing/stale evidence, a freeze, an unavailable seam, or an active legacy
     or concrete scope creates zero proposals.
-- `order_proposal_redispatch(proposal_id, dry_run=true)`
+- `order_proposal_redispatch(proposal_id, dry_run=true)` — **MCP tool removed**
+  (class D in `docs/mcp-tool-usage-audit-20260903.md`: 0 calls/90d, 0
+  prompt/runbook/code references). The coroutine and all its fail-closed checks
+  below still exist in `order_proposal_tools.py`, but no profile registers it.
+  Operator alert copy in `app/services/order_proposals/alerts.py` still names it
+  and needs a follow-up decision — see
+  `docs/runbooks/mcp-surface-cleanup-20260905.md`.
+  `order_proposal_expire_sweep` was removed the same way; its shared
+  `run_order_proposal_expire_sweep` entry point remains for the TaskIQ task.
   - This is a single-proposal manual lever; there is no automatic redispatch
     sweep. `dry_run=true` is read-only and must be reviewed before execution.
   - Only active `limit` + `place` proposals whose prior dispatch is failed (or
@@ -2423,13 +2241,12 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
-| DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
+| DB paper simulator | `db-paper` | Default read-only/research surface plus the internal `paper.paper_*` simulator account read (`list_paper_accounts`); no KIS/generic order tools. Its create/reset/delete, analytics (`get_paper_performance`, `get_paper_trade_log`, `compare_paper_accounts`) and journal-bridge (`compare_strategies`, `recommend_go_live`) tools were class D in the 2026-09-03 MCP surface audit and were removed. |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus **both** typed Kiwoom mock namespaces (no KIS/generic order tools): the eight KR `kiwoom_mock_*` tools and — unconditionally, unlike DEFAULT's `KIWOOM_MOCK_US_ENABLED` gate — the seven US `kiwoom_mock_us_*` tools, four of which are mutations. Prefer `kiwoom_kr` for a KR-only session (ROB-1159). |
 | Kiwoom mock KR-only | `kiwoom_kr` | ROB-1159/1173 least-privilege split of `kiwoom`: default read-only/research surface plus **exactly** the eight KR `kiwoom_mock_*` tools (`kiwoom_mock_get_order_detail` included). The whole profile runs through an independent closed-world exact-set registration proxy (118 base names plus explicitly gated optional sets), and the KR registrar has a nested eight-name proxy. Thus the `kiwoom_mock_us_*` namespace, `kis_mock_mirror_execute_report`, and even a new alias missing from central mutation-name lists are physically absent. Requires `MCP_AUTH_TOKEN` on network transports, and (when `KIWOOM_MOCK_ENABLED=true`) complete mock credentials plus the exact `https://mockapi.kiwoom.com` base URL at startup. |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
-| Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
 
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
@@ -2437,50 +2254,13 @@ Only explicit broker cancellation evidence returns `cancelled`; its dry-run
 action is `would_mark_cancelled`, while an applied reconcile reports
 `marked_cancelled`.
 
-### Profile: `paper_execution` (ROB-845)
+### Profile: `paper_execution` (ROB-845) — REMOVED
 
-This isolated profile is the canonical experiment-to-paper-broker boundary. It
-must be enabled explicitly with all of:
-
-- `MCP_PROFILE=paper_execution`
-- `PAPER_EXECUTION_ENABLED=true`
-- a non-empty `MCP_AUTH_TOKEN`
-
-The process fails before FastMCP registration when either the feature flag or
-authentication is missing. A direct registry call with the feature flag off
-registers zero tools.
-
-Exact tool allowlist:
-
-- `paper_execution_get_capabilities`
-- `paper_execution_preview_order`
-- `paper_execution_submit_order`
-- `paper_execution_cancel_order`
-- `paper_execution_get_order`
-- `paper_execution_reconcile`
-- `paper_cohort_kill_switch` (server-bound operator/system identity only)
-
-The request DTO contains the claimed experiment/run/cohort/strategy identity,
-canonical snapshot evidence, and order intent. It does not accept caller-owned
-`origin`, `idempotency_key`, broker `client_order_id`, or native order ID. Those
-identities are derived and verified server-side.
-
-V1 capability scope is deliberately narrow:
-
-- Binance Spot Demo: `BTCUSDT`/`ETHUSDT`, BUY MARKET, notional sizing; the
-  guarded native executor performs one open/close round trip. External cancel
-  and reconcile are unsupported.
-- Alpaca Crypto Paper: `BTC/USD`/`ETH/USD`, BUY/SELL LIMIT, quantity sizing,
-  GTC/IOC, through the approval-packet/coordinator boundary.
-
-No KIS, Kiwoom, Toss, Upbit, live broker, legacy order, or venue-native mutation
-tool is registered. Broker-native ledgers remain the lifecycle/fill/P&L source;
-the façade adds no common order ledger or migration.
-
-ROB-849 will provide the concrete immutable cohort/snapshot provenance verifier.
-Until that composition is installed, capability reads work but every experiment
-operation fails closed with `provenance_verifier_unavailable` before adapter,
-native-ledger, client, or broker activity.
+Retired by the MCP tool usage audit (2026-09-03). `MCP_PROFILE=paper_execution`
+is no longer a valid value and raises `Unknown MCP_PROFILE` at startup. See the
+"Paper execution validation boundary (ROB-848) — RETIRED" section above for what
+was kept, and `docs/runbooks/mcp-surface-cleanup-20260905.md` for the audit
+evidence.
 
 ### Profile: `hermes-paper-kis`
 
@@ -2518,7 +2298,6 @@ Allowed tools:
 - `get_intraday_investor_flow`
 - `analysis_artifact_save`
 - `analysis_artifact_get`
-- `analysis_bundle_get` (only when `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED=true`)
 - `forecast_save`
 - `session_context_append`
 - `session_context_get_recent`

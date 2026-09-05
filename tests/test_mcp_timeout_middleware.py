@@ -88,7 +88,7 @@ def test_budget_resolution_default_and_overrides() -> None:
     assert mw._budget_for("a_tool_with_no_override") == 45.0
     assert mw._budget_for("investment_report_generate_from_bundle") == 240.0
     assert mw._budget_for("get_holdings") == 120.0
-    assert ELEVATED_TOOL_TIMEOUTS_S["analysis_bundle_create"] == 240.0
+    assert "analysis_bundle_create" not in ELEVATED_TOOL_TIMEOUTS_S
 
 
 @pytest.mark.unit

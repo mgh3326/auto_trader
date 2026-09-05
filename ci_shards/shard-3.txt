@@ -26,13 +26,13 @@ tests/core/test_normalizers.py
 tests/integration/test_paper_positions_market_filter.py
 tests/integration/test_rob279_staged_pipeline_e2e.py
 tests/jobs/test_kis_mock_reconciliation_job.py
-tests/mcp_server/test_analysis_bundle_tools.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py
 tests/mcp_server/test_kis_live_expired_docs.py
 tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_kis_live_reconcile_window.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
+tests/mcp_server/test_niche_tool_isolation.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_rob1311_r2_blockers.py
 tests/mcp_server/test_shadow_replay_profile.py
@@ -41,7 +41,6 @@ tests/mcp_server/tooling/test_crypto_live_routing.py
 tests/mcp_server/tooling/test_get_holdings_n1_residuals.py
 tests/mcp_server/tooling/test_live_order_evidence_us.py
 tests/mcp_server/tooling/test_order_execution_live_routing.py
-tests/mcp_server/tooling/test_paper_execution_registration.py
 tests/mcp_server/tooling/test_toss_batch_evidence_source.py
 tests/mcp_server/tooling/test_toss_loss_cut.py
 tests/mcp_server/tooling/test_trade_retrospective_registration_docs.py

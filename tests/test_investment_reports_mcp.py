@@ -163,26 +163,18 @@ def _review_watch_item_dict(client_item_key: str = "review-watch-1") -> dict:
 
 
 def test_tool_names_match_registered_set() -> None:
+    # MCP surface audit 2026-09-03: 12 of the 17 report/watch tools were class
+    # D (0 calls/90d, 0 prompt/runbook/code refs) and were deregistered. Nothing
+    # is stranded -- investment_report_create takes the same items list inline,
+    # investment_watch_create is class A, and the TaskIQ expiry sweep calls the
+    # shared run_expired_watches_sweep directly.
     assert INVESTMENT_REPORT_TOOL_NAMES == {
         "investment_report_create",
-        "investment_report_list",
         "investment_report_get",
-        "investment_report_decide_item",
-        "investment_report_activate_watch",
-        "investment_report_context_get",
         # ROB-273 — opt-in snapshot-backed advisory generator.
         "investment_report_generate_from_bundle",
-        "investment_watch_recommend",
-        "investment_report_delta_get",
-        # ROB-455 — report status lifecycle transition writer.
-        "investment_report_set_status",
-        "investment_report_add_items",
-        "investment_report_update",
         # ROB-768 — direct watch create (independent of report flow).
         "investment_watch_create",
-        "investment_watch_void",
-        "investment_watch_expire",
-        "sweep_expired_watches",
     }
 
 

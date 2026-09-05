@@ -70,23 +70,11 @@ if TYPE_CHECKING:
 
 INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_create",
-    "investment_report_list",
     "investment_report_get",
-    "investment_report_decide_item",
-    "investment_report_activate_watch",
-    "investment_report_context_get",
-    "investment_report_delta_get",
     "investment_report_generate_from_bundle",
-    "investment_watch_recommend",
-    "investment_report_set_status",
-    "investment_report_add_items",
-    "investment_report_update",
     # ROB-768 — direct watch create (independent of report flow).
     "investment_watch_create",
     # ROB-971 — explicit lifecycle controls for operational watch cleanup.
-    "investment_watch_void",
-    "investment_watch_expire",
-    "sweep_expired_watches",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -1500,106 +1488,17 @@ def register_investment_report_tools(
         description=CREATE_DESCRIPTION,
     )(investment_report_create_impl)
     mcp.tool(
-        name="investment_report_add_items",
-        description=ADD_ITEMS_DESCRIPTION,
-    )(investment_report_add_items_impl)
-    mcp.tool(
-        name="investment_report_update",
-        description=UPDATE_DESCRIPTION,
-    )(investment_report_update_impl)
-    mcp.tool(
-        name="investment_report_list",
-        description=(
-            "List investment_reports filtered by market / market_session / "
-            "account_scope / status / report_type. Returns lightweight summaries "
-            "(report_uuid/title/status/kst_date + filter context) — NOT full "
-            "report bodies; fetch detail via investment_report_get. limit clamped "
-            "to 1..100 (default 20); paginate with offset using "
-            "pagination.next_offset (null when no more)."
-        ),
-    )(investment_report_list_impl)
-    mcp.tool(
         name="investment_report_get",
         description=(
             "Return one investment_report bundle by report_uuid — report + "
             "items + decisions_by_item_uuid + alerts + recent events."
         ),
     )(investment_report_get_impl)
-    mcp.tool(
-        name="investment_report_decide_item",
-        description=(
-            "Record an operator decision on one investment_report_item. Verbs: "
-            "approve | deny | defer | skip | partial_approve | cancel | reprice "
-            "(ROB-455 order-lifecycle verbs: cancel = withdraw a tranche, "
-            "reprice = adjust levels). Idempotent per (item_uuid, verb, actor) by "
-            "default; pass idempotency_key to override. partial_approve and "
-            "reprice both require a non-empty approved_payload_snapshot (the "
-            "scoped/adjusted params). item.status projection: approve/reprice -> "
-            "approved, deny/cancel -> denied, defer -> deferred, skip -> "
-            "unchanged (the exact verb is preserved in the decision audit row)."
-        ),
-    )(investment_report_decide_item_impl)
-    mcp.tool(
-        name="investment_report_activate_watch",
-        description=(
-            "Activate an approved watch item into investment_watch_alerts "
-            "as an immutable activation snapshot. Idempotent per source item. "
-            "For operation='review' watches created without a condition, pass "
-            "watch_condition (metric/operator/threshold) and valid_until to arm "
-            "them; activating such a watch without a condition fails with an "
-            "actionable error rather than 'corrupt state'."
-        ),
-    )(investment_report_activate_watch_impl)
-    mcp.tool(
-        name="investment_report_context_get",
-        description=CONTEXT_GET_DESCRIPTION,
-    )(investment_report_context_get_impl)
-    mcp.tool(
-        name="investment_report_delta_get",
-        description=(
-            "Read-only intraday delta vs a baseline report. Given report_uuid "
-            "(the open/prior report), returns three deterministic deltas for Hermes "
-            "to compose: levels_delta (journal target/stop touch x live), "
-            "holdings_pnl_delta (per-symbol live P/L vs the baseline P/L from the "
-            "snapshot bundle, or the create-time portfolio_snapshot JSON when no "
-            "bundle is present), and index_delta (live index vs the report's "
-            "frozen market_snapshot baseline). Per-signal fail-open: a degraded "
-            "signal is "
-            "null with a reason under 'unavailable'; missing data is never coerced "
-            "to zero. No broker/order/watch mutation."
-        ),
-    )(investment_report_delta_get_impl)
     if include_snapshot_generator:
         mcp.tool(
             name="investment_report_generate_from_bundle",
             description=GENERATE_FROM_BUNDLE_DESCRIPTION,
         )(investment_report_generate_from_bundle_impl)
-    mcp.tool(
-        name="investment_watch_recommend",
-        description=(
-            "ROB-337 — compute advisory buy-review price thresholds "
-            "(entry_review_below_price, suggested_limit_price_range, "
-            "max_chase_price, invalidation) for a symbol from deterministic "
-            "market evidence. Read-only by default; commit=True persists onto "
-            "an item's watch_recommendation (gated on action_verdict in "
-            "{watch_only, limit_wait}, refused on data_gap). Advisory only — "
-            "no order is created or submitted."
-        ),
-    )(investment_watch_recommend_impl)
-    mcp.tool(
-        name="investment_report_set_status",
-        description=(
-            "ROB-455 — transition a report's lifecycle status to superseded | "
-            "decided | expired (draft/published are entry states set at create, "
-            "not transition targets here). Idempotent: setting the current status "
-            "is a no-op success. Records the transition (reason/actor) in "
-            "report_metadata.status_transitions for traceability. Use this to "
-            "mark a report explicitly superseded instead of relying on a "
-            "created_at heuristic — note that chaining a new report via "
-            "previous_report_uuid already auto-supersedes its predecessor. "
-            "No broker / order / watch mutation."
-        ),
-    )(investment_report_set_status_impl)
     mcp.tool(
         name="investment_watch_events_list_recent",
         description=(
@@ -1619,36 +1518,6 @@ def register_investment_report_tools(
             "watch only and never submits orders."
         ),
     )(investment_watch_create_impl)
-    mcp.tool(
-        name="investment_watch_void",
-        description=(
-            "ROB-971 — cancel one active investment watch by alert_uuid with a "
-            "required operator reason. Use for invalid, orphaned, duplicate, or "
-            "zombie watches; see investment_watch_expire for time-based cleanup "
-            "and sweep_expired_watches for all overdue active watches. Never "
-            "touches any broker or order path."
-        ),
-    )(investment_watch_void_impl)
-    mcp.tool(
-        name="investment_watch_expire",
-        description=(
-            "ROB-971 — explicitly expire one active investment watch by alert_uuid. "
-            "Use for a known stale watch; for valid_until-based bulk cleanup use "
-            "sweep_expired_watches (dry_run=True first). Never touches any broker "
-            "or order path."
-        ),
-    )(investment_watch_expire_impl)
-    mcp.tool(
-        name="sweep_expired_watches",
-        description=(
-            "ROB-971 — list (dry_run=True, default) or expire (dry_run=False) "
-            "every active investment watch whose valid_until has passed. This is "
-            "the manual operator lever; scheduleless TaskIQ recurrence is separately "
-            "env-gated. See investment_watch_expire for one explicit watch, and "
-            "investment_watch_void for invalid/orphaned/duplicate watches. Never "
-            "touches any broker or order path."
-        ),
-    )(sweep_expired_watches_impl)
 
 
 __all__ = [

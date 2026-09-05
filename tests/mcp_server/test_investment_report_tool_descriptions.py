@@ -43,17 +43,15 @@ def test_create_from_hermes_description_advertises_alpaca_paper():
     assert "alpaca_paper" in desc
 
 
-def test_draft_mutation_descriptions_state_draft_only_and_no_broker_mutation():
+def test_draft_mutation_tools_are_deregistered():
+    """MCP surface audit 2026-09-03: both draft-mutation tools were class D.
+
+    investment_report_add_items and investment_report_update had zero calls in
+    90 days and zero prompt/runbook/code references. Nothing is stranded:
+    investment_report_create (class C) takes the same `items` list inline, so a
+    report can still be created with its items in one call.
+    """
     captured = _capture(handlers.register_investment_report_tools)
-
     for name in ("investment_report_add_items", "investment_report_update"):
-        desc = captured[name]
-        assert "Draft-only" in desc
-        assert "No broker / order / watch mutation" in desc
-
-
-def test_add_items_description_mentions_duplicate_client_item_key():
-    desc = _capture(handlers.register_investment_report_tools)[
-        "investment_report_add_items"
-    ]
-    assert "duplicate client_item_key" in desc
+        assert name not in captured, f"{name} is still registered"
+    assert "items" in handlers.CREATE_DESCRIPTION

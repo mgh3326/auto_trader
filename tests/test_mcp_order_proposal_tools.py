@@ -1251,9 +1251,7 @@ def test_tools_registered_and_names_exported():
         "order_proposal_get",
         "order_proposal_list",
         "order_proposal_void",
-        "order_proposal_expire_sweep",
         "order_proposal_list_expired_defensive",
-        "order_proposal_redispatch",
         "support_reserve_net_consume",
     }
 
@@ -1533,8 +1531,18 @@ async def test_expire_sweep_confirm_skips_non_voidable_and_does_not_edit_telegra
     assert got["rungs"][0]["state"] == "submitting"
 
 
-def test_expire_sweep_registered_in_tool_names():
-    assert "order_proposal_expire_sweep" in opt.ORDER_PROPOSAL_TOOL_NAMES
+def test_expire_sweep_and_redispatch_are_deregistered():
+    """MCP surface audit 2026-09-03: both were class D and lost their tools.
+
+    ``run_order_proposal_expire_sweep`` stays -- the TaskIQ task in
+    ``app/tasks/order_proposal_expiry_tasks.py`` calls it directly -- and the
+    two module-level coroutines stay because operator alert copy in
+    ``app/services/order_proposals/alerts.py`` still names redispatch. Only the
+    MCP registrations are gone.
+    """
+    assert "order_proposal_expire_sweep" not in opt.ORDER_PROPOSAL_TOOL_NAMES
+    assert "order_proposal_redispatch" not in opt.ORDER_PROPOSAL_TOOL_NAMES
+    assert callable(opt.run_order_proposal_expire_sweep)
 
 
 # -- ROB-929: order_proposal_list_expired_defensive MCP tool ----------------

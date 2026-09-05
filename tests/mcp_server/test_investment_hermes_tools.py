@@ -75,12 +75,14 @@ def test_register_investment_hermes_tools_adds_expected_names() -> None:
 
 def test_investment_hermes_tool_names_lock() -> None:
     # Locked surface — adding/renaming a tool here should be a deliberate change.
+    # investment_report_prepare_intraday_context was class D in the 2026-09-03
+    # MCP surface audit (0 calls/90d, 0 prompt/runbook/code refs) and no longer
+    # registers.
     assert INVESTMENT_HERMES_TOOL_NAMES == {
         "investment_report_prepare_bundle",
         "investment_report_get_hermes_context",
         "investment_report_create_from_hermes_composition",
         "investment_stage_artifacts_ingest_from_hermes",
-        "investment_report_prepare_intraday_context",
     }
 
 

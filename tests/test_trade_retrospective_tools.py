@@ -272,11 +272,12 @@ def test_tool_names_set_complete():
         TRADE_RETROSPECTIVE_TOOL_NAMES,
     )
 
+    # MCP surface audit 2026-09-03: save_position_intake_retrospective and
+    # get_retrospective_aggregate were class D and were deregistered. The
+    # service-side save_position_intake_retrospective is untouched.
     assert TRADE_RETROSPECTIVE_TOOL_NAMES == {
-        "save_position_intake_retrospective",
         "save_trade_retrospective",
         "get_trade_retrospectives",
-        "get_retrospective_aggregate",
         "trade_retrospective_pending",
     }
 
@@ -285,13 +286,16 @@ def test_tools_in_available_surface():
     from app.mcp_server import AVAILABLE_TOOL_NAMES
 
     for name in (
-        "save_position_intake_retrospective",
         "save_trade_retrospective",
         "get_trade_retrospectives",
-        "get_retrospective_aggregate",
         "trade_retrospective_pending",
     ):
         assert name in AVAILABLE_TOOL_NAMES
+    for retired in (
+        "save_position_intake_retrospective",
+        "get_retrospective_aggregate",
+    ):
+        assert retired not in AVAILABLE_TOOL_NAMES
 
 
 def test_register_wires_all_retrospective_tools():
@@ -312,10 +316,8 @@ def test_register_wires_all_retrospective_tools():
 
     register_trade_retrospective_tools(_FakeMCP())
     assert set(registered) == {
-        "save_position_intake_retrospective",
         "save_trade_retrospective",
         "get_trade_retrospectives",
-        "get_retrospective_aggregate",
         "trade_retrospective_pending",
     }
 

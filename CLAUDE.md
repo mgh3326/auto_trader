@@ -96,9 +96,15 @@ auto_trader runtime code must not import or instantiate in-process LLM providers
 `tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
 scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
+### MCP 도구 표면 (surface audit 2026-09-03)
+
+- 레인 allowlist 정본 = `config/mcp_lane_allowlists/<lane>.txt` (`tool<TAB>basis`). 레인이 부르는 도구는 여기에 있어야 하고, 여기 있는 도구는 그 레인의 프로필에 등록돼 있어야 한다.
+- 계약 테스트 = `tests/mcp_server/test_lane_allowlist_contract.py` (레인 ⊆ 프로필 등록집합) · `test_profile_tool_snapshot.py` (프로필별 등록 도구 스냅샷, 변경 시 같은 커밋에서 갱신) · `test_niche_tool_isolation.py` (class C `niche` 태깅).
+- 제거·격리 내역과 고아 함수 목록 = `docs/runbooks/mcp-surface-cleanup-20260905.md`. `MCP_PROFILE=paper_execution` 은 폐지됐다(`Unknown MCP_PROFILE` 로 fail-closed).
+
 ### Investment Report Item Contract
 
-`investment_report_create` / `investment_report_add_items` reject unknown top-level item keys. Use typed fields for current contracts:
+`investment_report_create` 는 unknown top-level item key 를 거부한다. items 는 create 호출에 인라인으로 넘긴다 — `investment_report_add_items` 는 2026-09-03 surface audit 에서 class D 로 제거됐다(항목 계약 자체는 불변). Use typed fields for current contracts:
 
 - `trigger_checklist`: `string[]`; copied to watch trigger notifications.
 - `max_action`: structured execution-plan JSON for watch items. `account_mode` is required when `max_action` is present; it also requires `side` and exactly one of `quantity` or `notional`; optional keys include `amount_krw`, `limit_price`, `limit_price_hint`, and `ladder_level`.

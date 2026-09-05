@@ -41,7 +41,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
-from app.mcp_server.tooling.analysis_bundle_handlers import ANALYSIS_BUNDLE_TOOL_NAMES
 from app.mcp_server.tooling.analysis_readonly_registration import _AllowlistedMCP
 from app.mcp_server.tooling.investment_hermes_handlers import (
     INVESTMENT_HERMES_TOOL_NAMES,
@@ -82,7 +81,6 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "analysis_artifact_get",
         "analysis_artifact_list",
         "analysis_artifact_save",
-        "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",
         "discover_buy_candidates_fanout",
@@ -100,7 +98,6 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",
-        "get_analyst_consensus",
         "get_available_capital",
         "get_cash_balance",
         "get_company_profile",
@@ -117,27 +114,22 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "get_crypto_social",
         "get_crypto_top_movers",
         "get_disclosures",
-        "get_dividends",
         "get_earnings_calendar",
         "get_execution_strength",
-        "get_financials",
         "get_forecast_calibration",
         "get_forecasts",
         "get_fx_rate",
         "get_holdings",
         "get_holdings_news",
         "get_indicators",
-        "get_insider_transactions",
         "get_intraday_investor_flow",
         "get_investment_opinions",
-        "get_investor_trends",
         "get_kimchi_premium",
         "get_krx_session_health",
         "get_latest_market_brief",
         "get_market_index",
         "get_market_issues",
         "get_market_news",
-        "get_market_reports",
         "get_mock_loop_retrospective",
         "get_momentum_candidates",
         "get_news",
@@ -148,9 +140,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "get_position",
         "get_quote",
         "get_retail_sentiment",
-        "get_retrospective_aggregate",
         "get_sector_peers",
-        "get_short_interest",
         "get_support_resistance",
         "get_theme_events",
         "get_top_stocks",
@@ -159,26 +149,13 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "get_trade_journal",
         "get_trade_retrospectives",
         "get_trading_policy",
-        "get_trading_scoreboard",
         "get_upbit_altseason",
         "get_upbit_index",
-        "get_user_setting",
         "get_valuation",
-        "investment_report_activate_watch",
-        "investment_report_add_items",
-        "investment_report_context_get",
         "investment_report_create",
-        "investment_report_decide_item",
-        "investment_report_delta_get",
         "investment_report_get",
-        "investment_report_list",
-        "investment_report_set_status",
-        "investment_report_update",
         "investment_watch_create",
         "investment_watch_events_list_recent",
-        "investment_watch_expire",
-        "investment_watch_recommend",
-        "investment_watch_void",
         "kiwoom_mock_cancel_order",
         "kiwoom_mock_get_order_detail",
         "kiwoom_mock_get_order_history",
@@ -187,14 +164,11 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "kiwoom_mock_modify_order",
         "kiwoom_mock_place_order",
         "kiwoom_mock_preview_order",
-        "list_active_journals",
         "list_active_watches",
         "modify_journal_entry",
         "research_session_get",
         "research_session_list_recent",
-        "research_summary_get",
         "route_request",
-        "save_trade_journal",
         "save_trade_retrospective",
         "screen_stocks",
         "screen_stocks_snapshot",
@@ -202,13 +176,8 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "search_symbol",
         "session_context_append",
         "session_context_get_recent",
-        "set_user_setting",
-        "stage_analysis_get",
         "suggest_order_account",
-        "sweep_expired_watches",
         "trade_retrospective_pending",
-        "update_manual_holdings",
-        "update_trade_journal",
         "watch_downside_register_sweep",
     }
 )
@@ -219,8 +188,6 @@ _SNAPSHOT_GENERATOR_TOOL_NAMES = {"investment_report_generate_from_bundle"}
 def kiwoom_kr_profile_tool_names() -> set[str]:
     """Return the exact active profile inventory for the current feature gates."""
     names = set(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES)
-    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
-        names.update(ANALYSIS_BUNDLE_TOOL_NAMES)
     if settings.SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED:
         names.update(_SNAPSHOT_GENERATOR_TOOL_NAMES)
         names.update(INVESTMENT_HERMES_TOOL_NAMES)

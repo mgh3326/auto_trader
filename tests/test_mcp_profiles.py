@@ -55,13 +55,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL_NAMES
-from app.mcp_server.tooling.paper_analytics_registration import (
-    PAPER_ANALYTICS_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
@@ -82,9 +75,11 @@ _ALPACA_PAPER_TOOL_NAMES = (
     | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
-_DB_PAPER_TOOL_NAMES = (
-    PAPER_ACCOUNT_TOOL_NAMES | PAPER_ANALYTICS_TOOL_NAMES | PAPER_JOURNAL_TOOL_NAMES
-)
+# MCP surface audit 2026-09-03: the analytics (3) and journal-bridge (2) tool
+# sets and the account create/reset/delete trio were all class D and removed;
+# db-paper's simulator surface is now exactly PAPER_ACCOUNT_TOOL_NAMES
+# (list_paper_accounts).
+_DB_PAPER_TOOL_NAMES = PAPER_ACCOUNT_TOOL_NAMES
 _CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_crypto_profile",
     "get_kimchi_premium",
@@ -479,9 +474,6 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "toss_get_positions",
         "toss_get_orderable_cash",
     },
-    # Default-off profile: the direct registry exposes zero tools until the
-    # dedicated feature flag is explicitly enabled.
-    McpProfile.PAPER_EXECUTION: set(),
     McpProfile.ALPACA_PAPER_CLEAN: set(),
     # ROB-1286 — the watch-fire repricing session. It may create an order
     # *proposal*; it holds no order-mutation tool at all, so this row is the
@@ -499,7 +491,6 @@ _ALL_ORDER_TOOL_NAMES = (
     | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
-    | PAPER_EXECUTION_TOOL_NAMES
 )
 
 
@@ -536,7 +527,6 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ANALYSIS_READONLY,
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
-        McpProfile.PAPER_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
         # ROB-1286 — allowlist-only and early-returns before the "Always"
         # research block, like the other closed-world profiles above.
@@ -580,24 +570,9 @@ class TestShadowReplayIsResearchSurfaceException:
 
 
 class TestAnalysisReadonlyProfile:
-    def test_registers_exact_analysis_readonly_allowlist(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
-        )
+    def test_registers_exact_analysis_readonly_allowlist(self) -> None:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
         assert set(mcp.tools) == ANALYSIS_READONLY_TOOL_NAMES
-
-    def test_bundle_gate_registers_get_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
-        )
-        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
-        assert "analysis_bundle_get" in mcp.tools
-        assert "analysis_bundle_create" not in mcp.tools
 
     def test_does_not_register_forbidden_surfaces(self) -> None:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
@@ -1064,8 +1039,15 @@ class TestResolveMcpProfile:
             is McpProfile.TRADINGCODEX_EXECUTION
         )
 
-    def test_paper_execution(self) -> None:
-        assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
+    def test_paper_execution_profile_is_retired(self) -> None:
+        """The ROB-845 façade profile was removed (MCP surface audit 2026-09-03).
+
+        14 of its 15 tools were dead; the profile no longer exists, so the old
+        env value must fail closed instead of silently resolving to DEFAULT.
+        """
+        assert "paper_execution" not in {p.value for p in McpProfile}
+        with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
+            resolve_mcp_profile("paper_execution")
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
