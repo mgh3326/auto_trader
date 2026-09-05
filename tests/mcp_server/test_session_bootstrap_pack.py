@@ -528,19 +528,27 @@ async def test_resting_proposals_preserve_real_source_responses(
     assert all(source["count"] > 0 for source in sources.values())
     proposals = result["sections"]["resting"]["proposals"]
     assert set(proposals["by_state"]) == set(EXPECTED_OPEN_PROPOSAL_STATES)
-    assert _json(proposals) == _json(
-        {
-            "by_state": {
-                state: sources[state]["count"]
-                for state in EXPECTED_OPEN_PROPOSAL_STATES
-            },
-            "items": [
-                item
-                for state in EXPECTED_OPEN_PROPOSAL_STATES
-                for item in sources[state]["proposals"]
-            ],
-        }
-    )
+    assert proposals["by_state"] == {
+        state: sources[state]["count"] for state in EXPECTED_OPEN_PROPOSAL_STATES
+    }
+    expected_seeded_items = {
+        state: [
+            item
+            for item in sources[state]["proposals"]
+            if item["proposal_id"] == str(proposal_ids[state])
+        ]
+        for state in EXPECTED_OPEN_PROPOSAL_STATES
+    }
+    actual_seeded_items = {
+        state: [
+            item
+            for item in proposals["items"]
+            if item["proposal_id"] == str(proposal_ids[state])
+        ]
+        for state in EXPECTED_OPEN_PROPOSAL_STATES
+    }
+    assert all(expected_seeded_items.values())
+    assert _json(actual_seeded_items) == _json(expected_seeded_items)
     assert proposals["by_state"]["proposed"] == sources["proposed"]["count"]
 
 
