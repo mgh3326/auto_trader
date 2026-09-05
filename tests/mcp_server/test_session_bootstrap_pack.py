@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import uuid
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +17,7 @@ from app.mcp_server.tooling.session_bootstrap_registration import (
 )
 from app.models.review import KISLiveOrderLedger, TradeForecast
 from app.models.session_context import OperatorSessionContext
+from app.services.order_proposals import OrderProposalsService
 from tests.mcp_server._registration_recorder import RegistrationRecorder
 
 EXPECTED_DEFAULT_SECTIONS = (
@@ -221,7 +223,11 @@ async def test_holdings_and_cash_match_real_registered_closures(
 ) -> None:
     """Exercise the routing wrappers on both the pack and registered tools."""
 
+    holdings_calls: list[dict[str, Any]] = []
+    capital_calls: list[dict[str, Any]] = []
+
     async def holdings_source(**kwargs: Any) -> dict[str, Any]:
+        holdings_calls.append(dict(kwargs))
         assert kwargs["include_current_price"] is True
         return {
             "success": True,
@@ -244,6 +250,7 @@ async def test_holdings_and_cash_match_real_registered_closures(
         }
 
     async def capital_source(**kwargs: Any) -> dict[str, Any]:
+        capital_calls.append(dict(kwargs))
         assert kwargs.get("include_manual", True) is True
         return {
             "success": True,
@@ -277,6 +284,37 @@ async def test_holdings_and_cash_match_real_registered_closures(
 
     assert _json(result["sections"]["holdings"]) == _json(source_holdings)
     assert _json(result["sections"]["cash"]) == _json(source_cash)
+    assert len(holdings_calls) == len(capital_calls) == 2
+
+    source_holdings_call, pack_holdings_call = holdings_calls
+    source_cash_call, pack_cash_call = capital_calls
+    # ``_get_holdings_impl`` and ``get_available_capital_impl`` supply these
+    # defaults when the pack omits an optional keyword. Compare the effective
+    # call values, not just the sparse spellings of equivalent default calls.
+    assert {
+        "account": pack_holdings_call.get("account"),
+        "market": pack_holdings_call.get("market"),
+        "include_current_price": pack_holdings_call.get("include_current_price"),
+        "minimum_value": pack_holdings_call.get("minimum_value"),
+        "account_name": pack_holdings_call.get("account_name"),
+        "fresh_sellable": pack_holdings_call.get("fresh_sellable", False),
+    } == {
+        "account": source_holdings_call["account"],
+        "market": source_holdings_call["market"],
+        "include_current_price": source_holdings_call["include_current_price"],
+        "minimum_value": source_holdings_call["minimum_value"],
+        "account_name": source_holdings_call["account_name"],
+        "fresh_sellable": source_holdings_call["fresh_sellable"],
+    }
+    assert {
+        "account": pack_cash_call.get("account"),
+        "include_manual": pack_cash_call.get("include_manual", True),
+        "is_mock": pack_cash_call["is_mock"],
+    } == {
+        "account": source_cash_call["account"],
+        "include_manual": source_cash_call["include_manual"],
+        "is_mock": source_cash_call["is_mock"],
+    }
 
 
 @pytest.mark.asyncio
@@ -403,7 +441,11 @@ async def test_due_forecasts_preserve_real_seeded_source_response(
 
 
 @pytest.mark.asyncio
-async def test_resting_proposals_preserve_real_source_responses() -> None:
+async def test_resting_proposals_preserve_real_source_responses(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal_ids: list[uuid.UUID] = []
     for index in range(3):
         seeded = await pack.order_proposal_tools.order_proposal_create(
             symbol=f"REST{index}",
@@ -425,6 +467,52 @@ async def test_resting_proposals_preserve_real_source_responses() -> None:
             ],
         )
         assert seeded["success"] is True
+        proposal_ids.append(uuid.UUID(seeded["proposal_id"]))
+
+    # A created proposal is a real pending-approval proposal. Drive two more
+    # through the real transition graph so the persisted source has both a
+    # pending group and broker-resting rungs rather than comparing two empties.
+    service = OrderProposalsService(db_session)
+    now = pack.now_kst()
+    for index, proposal_id in enumerate(proposal_ids[1:], start=1):
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.transition_rung(proposal_id, 0, new_state="approved")
+        await service.transition_rung(proposal_id, 0, new_state="submitting")
+        await service.record_resting(
+            proposal_id,
+            0,
+            broker_order_id=f"ROB1347-REST-{index}",
+            correlation_id=f"rob1347-resting-{index}",
+            idempotency_key=f"rob1347-resting-key-{index}",
+            approval_hash_digest=f"rob1347-resting-digest-{index}",
+            now=now,
+        )
+    await db_session.commit()
+
+    # ``order_proposal_list`` filters group rollup state, while this pack's
+    # logical pending/resting buckets describe the proposal/rung state. Keep
+    # the pack call intact and map its logical bucket to the persisted rollup
+    # state only at this source seam; the original tool still projects the
+    # seeded rows that the pack consumes.
+    original_list = pack.order_proposal_tools.order_proposal_list
+    requested_states: list[str | None] = []
+    persisted_rollups = {"pending": "proposed", "resting": "submitted"}
+
+    async def logical_state_list(
+        limit: int = 50,
+        symbol: str | None = None,
+        lifecycle_state: str | None = None,
+    ) -> dict[str, Any]:
+        requested_states.append(lifecycle_state)
+        return await original_list(
+            limit=limit,
+            symbol=symbol,
+            lifecycle_state=persisted_rollups[lifecycle_state],
+        )
+
+    monkeypatch.setattr(
+        pack.order_proposal_tools, "order_proposal_list", logical_state_list
+    )
 
     pending = await pack.order_proposal_tools.order_proposal_list(
         lifecycle_state="pending"
@@ -439,6 +527,9 @@ async def test_resting_proposals_preserve_real_source_responses() -> None:
         registered_tool_names=lambda: {"order_proposal_list"},
     )
 
+    assert pending["proposals"]
+    assert resting["proposals"]
+    assert requested_states == ["pending", "resting", "pending", "resting"]
     assert _json(result["sections"]["resting"]["proposals"]) == _json(
         [*pending["proposals"], *resting["proposals"]]
     )
