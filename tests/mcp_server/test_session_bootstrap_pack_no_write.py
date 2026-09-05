@@ -15,6 +15,7 @@ from app.models.investment_reports import InvestmentWatchAlert
 from app.models.order_proposals import OrderProposal
 from app.models.review import TradeForecast, TradeRetrospective
 from app.models.session_context import OperatorSessionContext
+from app.services.order_proposals.state_machine import GROUP_STATES
 
 
 def test_session_bootstrap_pack_has_no_write_or_mutation_references() -> None:
@@ -44,6 +45,32 @@ def test_session_bootstrap_pack_has_no_write_or_mutation_references() -> None:
         "analysis_artifact_save",
     ):
         assert name not in source
+
+
+def test_session_bootstrap_pack_uses_only_group_lifecycle_states() -> None:
+    """The pack can only query proposal lifecycle groups defined by the schema."""
+
+    path = (
+        Path(__file__).parents[2] / "app/mcp_server/tooling/session_bootstrap_pack.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    state_assignment = next(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_OPEN_PROPOSAL_STATES"
+            for target in node.targets
+        )
+    )
+    assert isinstance(state_assignment, (ast.List, ast.Tuple))
+    assert all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str)
+        for element in state_assignment.elts
+    )
+    lifecycle_states = {element.value for element in state_assignment.elts}
+    assert lifecycle_states
+    assert lifecycle_states <= GROUP_STATES
 
 
 @pytest.mark.asyncio

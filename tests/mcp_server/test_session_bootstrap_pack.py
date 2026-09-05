@@ -30,6 +30,12 @@ EXPECTED_DEFAULT_SECTIONS = (
     "policy",
     "recent_context",
 )
+EXPECTED_OPEN_PROPOSAL_STATES = (
+    "proposed",
+    "approved",
+    "partially_submitted",
+    "submitted",
+)
 
 
 def _registered() -> set[str]:
@@ -81,9 +87,14 @@ def source_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         calls["resting"] += 1
         return {
             "success": True,
-            "count": 2,
-            "proposals": [{"state": "pending"}, {"state": "resting"}],
-            "live_orders": {"count": 1, "orders": [{"id": "l1"}]},
+            "proposals": {
+                "by_state": {
+                    state: 1 if state == "proposed" else 0
+                    for state in EXPECTED_OPEN_PROPOSAL_STATES
+                },
+                "items": [{"lifecycle_state": "proposed"}],
+            },
+            "ledger_open": [{"id": "l1"}],
         }
 
     async def retros(*, limit: int) -> dict[str, Any]:
@@ -443,83 +454,70 @@ async def test_due_forecasts_preserve_real_seeded_source_response(
 @pytest.mark.asyncio
 async def test_resting_proposals_preserve_real_source_responses(
     db_session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    proposal_ids: list[uuid.UUID] = []
-    for index in range(3):
+    proposal_ids: dict[str, uuid.UUID] = {}
+    for index, state in enumerate(EXPECTED_OPEN_PROPOSAL_STATES):
+        rungs = [
+            {
+                "rung_index": 0,
+                "side": "buy",
+                "quantity": str(index + 1),
+                "limit_price": str(70_000 + index),
+                "notional": None,
+            }
+        ]
+        if state == "partially_submitted":
+            rungs.append(
+                {
+                    "rung_index": 1,
+                    "side": "buy",
+                    "quantity": "9",
+                    "limit_price": "70009",
+                    "notional": None,
+                }
+            )
         seeded = await pack.order_proposal_tools.order_proposal_create(
-            symbol=f"REST{index}",
+            symbol=f"REST-R3-{index}",
             market="equity_kr",
             account_mode="kis_live",
             side="buy",
             order_type="limit",
             proposer="operator:bootstrap",
-            thesis=f"seeded proposal {index}",
+            thesis=f"seeded {state} proposal {index}",
             strategy="ladder",
-            rungs=[
-                {
-                    "rung_index": 0,
-                    "side": "buy",
-                    "quantity": str(index + 1),
-                    "limit_price": str(70_000 + index),
-                    "notional": None,
-                }
-            ],
+            rungs=rungs,
         )
         assert seeded["success"] is True
-        proposal_ids.append(uuid.UUID(seeded["proposal_id"]))
+        proposal_ids[state] = uuid.UUID(seeded["proposal_id"])
 
-    # A created proposal is a real pending-approval proposal. Drive two more
-    # through the real transition graph so the persisted source has both a
-    # pending group and broker-resting rungs rather than comparing two empties.
+    # Every visible group state comes from the production transition graph.
     service = OrderProposalsService(db_session)
     now = pack.now_kst()
-    for index, proposal_id in enumerate(proposal_ids[1:], start=1):
+    for state in ("approved", "partially_submitted", "submitted"):
+        proposal_id = proposal_ids[state]
         await service.transition_rung(proposal_id, 0, new_state="revalidating")
         await service.transition_rung(proposal_id, 0, new_state="approved")
-        await service.transition_rung(proposal_id, 0, new_state="submitting")
-        await service.record_resting(
-            proposal_id,
-            0,
-            broker_order_id=f"ROB1347-REST-{index}",
-            correlation_id=f"rob1347-resting-{index}",
-            idempotency_key=f"rob1347-resting-key-{index}",
-            approval_hash_digest=f"rob1347-resting-digest-{index}",
-            now=now,
-        )
+    await service.transition_rung(
+        proposal_ids["partially_submitted"], 0, new_state="submitting"
+    )
+    await service.transition_rung(proposal_ids["submitted"], 0, new_state="submitting")
+    await service.record_resting(
+        proposal_ids["submitted"],
+        0,
+        broker_order_id="ROB1347-REST-SUBMITTED",
+        correlation_id="rob1347-resting-submitted",
+        idempotency_key="rob1347-resting-submitted-key",
+        approval_hash_digest="rob1347-resting-submitted-digest",
+        now=now,
+    )
     await db_session.commit()
 
-    # ``order_proposal_list`` filters group rollup state, while this pack's
-    # logical pending/resting buckets describe the proposal/rung state. Keep
-    # the pack call intact and map its logical bucket to the persisted rollup
-    # state only at this source seam; the original tool still projects the
-    # seeded rows that the pack consumes.
-    original_list = pack.order_proposal_tools.order_proposal_list
-    requested_states: list[str | None] = []
-    persisted_rollups = {"pending": "proposed", "resting": "submitted"}
-
-    async def logical_state_list(
-        limit: int = 50,
-        symbol: str | None = None,
-        lifecycle_state: str | None = None,
-    ) -> dict[str, Any]:
-        requested_states.append(lifecycle_state)
-        return await original_list(
-            limit=limit,
-            symbol=symbol,
-            lifecycle_state=persisted_rollups[lifecycle_state],
+    sources = {
+        state: await pack.order_proposal_tools.order_proposal_list(
+            lifecycle_state=state
         )
-
-    monkeypatch.setattr(
-        pack.order_proposal_tools, "order_proposal_list", logical_state_list
-    )
-
-    pending = await pack.order_proposal_tools.order_proposal_list(
-        lifecycle_state="pending"
-    )
-    resting = await pack.order_proposal_tools.order_proposal_list(
-        lifecycle_state="resting"
-    )
+        for state in EXPECTED_OPEN_PROPOSAL_STATES
+    }
     result = await pack._session_bootstrap_pack(
         "kr",
         ["resting"],
@@ -527,12 +525,29 @@ async def test_resting_proposals_preserve_real_source_responses(
         registered_tool_names=lambda: {"order_proposal_list"},
     )
 
-    assert pending["proposals"]
-    assert resting["proposals"]
-    assert requested_states == ["pending", "resting", "pending", "resting"]
-    assert _json(result["sections"]["resting"]["proposals"]) == _json(
-        [*pending["proposals"], *resting["proposals"]]
+    assert all(source["count"] > 0 for source in sources.values())
+    proposals = result["sections"]["resting"]["proposals"]
+    assert set(proposals["by_state"]) == set(EXPECTED_OPEN_PROPOSAL_STATES)
+    assert _json(proposals) == _json(
+        {
+            "by_state": {
+                state: sources[state]["count"]
+                for state in EXPECTED_OPEN_PROPOSAL_STATES
+            },
+            "items": [
+                item
+                for state in EXPECTED_OPEN_PROPOSAL_STATES
+                for item in sources[state]["proposals"]
+            ],
+        }
     )
+    assert proposals["by_state"]["proposed"] == sources["proposed"]["count"]
+
+
+@pytest.mark.asyncio
+async def test_resting_rejects_unknown_group_lifecycle_state() -> None:
+    with pytest.raises(ValueError, match="unsupported proposal lifecycle_state"):
+        await pack._order_proposal_list_for_state("resting")
 
 
 @pytest.mark.asyncio

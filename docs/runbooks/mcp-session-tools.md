@@ -19,10 +19,11 @@ optional `compact`. The fixed section order is `briefing`, `holdings`, `cash`,
 | `recent_context` | `session_context_get_recent` |
 
 The non-composite sections preserve their source tool response without adding
-or renaming fields. `resting` combines the two `order_proposal_list` responses
-with the pending-order snapshot, and `policy` combines the three lane responses;
-both retain those original responses without loss. Call the individual source
-tool when a detailed field is needed. Section failure is fail-open for the pack:
+or renaming fields. `resting` exposes the nonterminal `proposed`, `approved`,
+`partially_submitted`, and `submitted` proposal groups as state counts and
+items, plus the pending-order snapshot as `ledger_open`; `policy` combines the
+three lane responses. Call the individual source tool when a detailed field is
+needed. Section failure is fail-open for the pack:
 a source fault produces that section's `missing` state while the rest of the
 pack continues.
 

@@ -31,6 +31,7 @@ from app.mcp_server.tooling.pending_orders_snapshot import (
     collect_pending_orders_snapshot,
 )
 from app.mcp_server.tooling.shared import logger
+from app.services.order_proposals.state_machine import GROUP_STATES
 
 DEFAULT_SECTIONS = (
     "briefing",
@@ -56,6 +57,12 @@ SECTION_SOURCE_TOOLS: dict[str, str] = {
 
 _MAX_RESPONSE_BYTES = 65536
 _POLICY_LANES = ("buy", "sell", "discovery")
+_OPEN_PROPOSAL_STATES = (
+    "proposed",
+    "approved",
+    "partially_submitted",
+    "submitted",
+)
 
 
 def _source_state(response: dict[str, Any]) -> str:
@@ -131,19 +138,27 @@ async def _resting(
     briefing_requested: bool,
     briefing_tool_registered: bool,
 ) -> dict[str, Any]:
-    pending, resting = await _proposal_lists()
-    live_orders: dict[str, Any]
+    sources = await _open_proposal_lists()
+    if not all(source.get("success") for source in sources.values()):
+        return next(source for source in sources.values() if not source.get("success"))
+
+    items_by_state = {
+        state: list(source.get("proposals") or []) for state, source in sources.items()
+    }
+    ledger_open: list[Any] | dict[str, str]
     if briefing is not None:
         pending_orders = briefing.get("pending_orders")
-        live_orders = (
-            dict(pending_orders) if isinstance(pending_orders, Mapping) else {}
+        ledger_open = (
+            list(pending_orders.get("orders") or [])
+            if isinstance(pending_orders, Mapping)
+            else []
         )
     elif briefing_requested:
         # The requested briefing owns this fan-out.  If it failed, do not
         # recreate its pending-order read while preparing another section.
-        live_orders = {}
+        ledger_open = []
     elif not briefing_tool_registered:
-        live_orders = _denied("get_operating_briefing")
+        ledger_open = _denied("get_operating_briefing")
     else:
         async with AsyncSessionLocal() as db:
             snapshot = await collect_pending_orders_snapshot(
@@ -151,28 +166,37 @@ async def _resting(
                 market=market,
                 account_scope=account_scope,
             )
-        live_orders = {
-            "count": len(snapshot.orders or []),
-            "orders": snapshot.orders or [],
-            "unavailable_reason": snapshot.unavailable_reason,
-        }
+        ledger_open = list(snapshot.orders or [])
 
-    proposals = [
-        *list(pending.get("proposals") or []),
-        *list(resting.get("proposals") or []),
-    ]
     return {
-        "success": bool(pending.get("success")) and bool(resting.get("success")),
-        "count": len(proposals),
-        "proposals": proposals,
-        "live_orders": live_orders,
+        "success": True,
+        "proposals": {
+            "by_state": {
+                state: len(items_by_state[state]) for state in _OPEN_PROPOSAL_STATES
+            },
+            "items": [
+                item
+                for state in _OPEN_PROPOSAL_STATES
+                for item in items_by_state[state]
+            ],
+        },
+        "ledger_open": ledger_open,
     }
 
 
-async def _proposal_lists() -> tuple[dict[str, Any], dict[str, Any]]:
-    pending = await order_proposal_tools.order_proposal_list(lifecycle_state="pending")
-    resting = await order_proposal_tools.order_proposal_list(lifecycle_state="resting")
-    return pending, resting
+async def _open_proposal_lists() -> dict[str, dict[str, Any]]:
+    return {
+        state: await _order_proposal_list_for_state(state)
+        for state in _OPEN_PROPOSAL_STATES
+    }
+
+
+async def _order_proposal_list_for_state(lifecycle_state: str) -> dict[str, Any]:
+    if lifecycle_state not in GROUP_STATES:
+        raise ValueError(f"unsupported proposal lifecycle_state {lifecycle_state!r}")
+    return await order_proposal_tools.order_proposal_list(
+        lifecycle_state=lifecycle_state
+    )
 
 
 async def _policy(market: str) -> dict[str, Any]:
@@ -249,7 +273,9 @@ def _compact_section(
             if isinstance(account, dict):
                 candidates.append((account, "positions", 20))
     elif section == "resting":
-        candidates.append((result, "proposals", 20))
+        proposals = result.get("proposals")
+        if isinstance(proposals, dict):
+            candidates.append((proposals, "items", 20))
     elif section == "pending_retros":
         candidates.extend((result, key, 20) for key in ("pending", "results", "items"))
     elif section == "recent_context":
