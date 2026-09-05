@@ -269,10 +269,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
-    # ROB — MCP surface audit 2026-09-03. Applied before every profile branch,
-    # including the allowlist profiles that return early, so a class-C tool is
-    # observed no matter which surface serves it. Registration/telemetry only:
-    # arguments, return values and exceptions pass through untouched.
+    # MCP surface audit 2026-09-03 — niche (class C) tagging. Applied before
+    # every profile branch, including the allowlist profiles that return early,
+    # so a class-C tool is observed no matter which surface serves it.
+    # Registration/telemetry only: arguments, return values and exceptions pass
+    # through untouched. See docs/runbooks/mcp-surface-cleanup-20260905.md.
     mcp = NicheTaggingMCP(mcp)
 
     if profile is McpProfile.SHADOW_REPLAY:

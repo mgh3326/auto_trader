@@ -129,18 +129,26 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_includes_readonly_advisors_and_is_exactly_122_tools(
+    def test_base_inventory_includes_readonly_advisors_and_is_exactly_92_tools(
         self,
     ) -> None:
-        # Closed world: the count moves only with a reviewed addition. ROB-1303
+        # Closed world: the count moves only with a reviewed change. ROB-1303
         # added get_spike_attribution (read-only attribution reader), which the
         # KIWOOM <-> KIWOOM_KR shared-surface contract requires here — see
         # TestKiwoomKrProfile::test_keeps_kr_order_surface_intact. ROB-1309
         # added screen_stocks_enrich alongside screen_stocks_snapshot.
+        #
+        # 122 -> 92: the 2026-09-03 MCP surface audit removed 30 class-D tools
+        # that this base set listed (12 investment_report_*/investment_watch_*,
+        # 6 fundamentals reads, 4 analysis reads, 3 trade-journal, 2
+        # user-settings, get_market_reports, get_retrospective_aggregate and
+        # get_trading_scoreboard). No tool was *added* to the profile, and the
+        # KR order surface is unchanged -- see
+        # docs/runbooks/mcp-surface-cleanup-20260905.md.
         assert "evaluate_buy_gate_ab_shadow" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "screen_stocks_enrich" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 122
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 92
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()
