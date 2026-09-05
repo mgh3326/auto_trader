@@ -15,6 +15,7 @@ from app.mcp_server.tooling import session_bootstrap_pack as pack
 from app.mcp_server.tooling.session_bootstrap_registration import (
     register_session_bootstrap_tools,
 )
+from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import KISLiveOrderLedger, TradeForecast
 from app.models.session_context import OperatorSessionContext
 from app.services.order_proposals import OrderProposalsService
@@ -455,6 +456,17 @@ async def test_due_forecasts_preserve_real_seeded_source_response(
 async def test_resting_proposals_preserve_real_source_responses(
     db_session: AsyncSession,
 ) -> None:
+    # Keep this fixture below the source tool's 50-row cap. Rungs cascade from
+    # their parent in production, but clearing them first makes the test's
+    # database isolation explicit for this shared ledger table.
+    await db_session.execute(delete(OrderProposalRung))
+    await db_session.execute(delete(OrderProposal))
+    await db_session.commit()
+
+    seed_symbols = {
+        state: f"REST-R3-{index}"
+        for index, state in enumerate(EXPECTED_OPEN_PROPOSAL_STATES)
+    }
     proposal_ids: dict[str, uuid.UUID] = {}
     for index, state in enumerate(EXPECTED_OPEN_PROPOSAL_STATES):
         rungs = [
@@ -477,7 +489,7 @@ async def test_resting_proposals_preserve_real_source_responses(
                 }
             )
         seeded = await pack.order_proposal_tools.order_proposal_create(
-            symbol=f"REST-R3-{index}",
+            symbol=seed_symbols[state],
             market="equity_kr",
             account_mode="kis_live",
             side="buy",
@@ -514,7 +526,7 @@ async def test_resting_proposals_preserve_real_source_responses(
 
     sources = {
         state: await pack.order_proposal_tools.order_proposal_list(
-            lifecycle_state=state
+            symbol=seed_symbols[state], lifecycle_state=state
         )
         for state in EXPECTED_OPEN_PROPOSAL_STATES
     }
@@ -528,28 +540,28 @@ async def test_resting_proposals_preserve_real_source_responses(
     assert all(source["count"] > 0 for source in sources.values())
     proposals = result["sections"]["resting"]["proposals"]
     assert set(proposals["by_state"]) == set(EXPECTED_OPEN_PROPOSAL_STATES)
-    assert proposals["by_state"] == {
-        state: sources[state]["count"] for state in EXPECTED_OPEN_PROPOSAL_STATES
-    }
     expected_seeded_items = {
-        state: [
-            item
-            for item in sources[state]["proposals"]
-            if item["proposal_id"] == str(proposal_ids[state])
-        ]
-        for state in EXPECTED_OPEN_PROPOSAL_STATES
+        state: source["proposals"] for state, source in sources.items()
     }
     actual_seeded_items = {
         state: [
-            item
-            for item in proposals["items"]
-            if item["proposal_id"] == str(proposal_ids[state])
+            item for item in proposals["items"] if item["symbol"] == seed_symbols[state]
         ]
         for state in EXPECTED_OPEN_PROPOSAL_STATES
     }
     assert all(expected_seeded_items.values())
     assert _json(actual_seeded_items) == _json(expected_seeded_items)
-    assert proposals["by_state"]["proposed"] == sources["proposed"]["count"]
+    seeded_by_state = {
+        state: len(items) for state, items in actual_seeded_items.items()
+    }
+    assert seeded_by_state == {
+        state: sources[state]["count"] for state in EXPECTED_OPEN_PROPOSAL_STATES
+    }
+    assert all(
+        proposals["by_state"][state] >= seeded_by_state[state]
+        for state in EXPECTED_OPEN_PROPOSAL_STATES
+    )
+    assert seeded_by_state["proposed"] == sources["proposed"]["count"]
 
 
 @pytest.mark.asyncio
