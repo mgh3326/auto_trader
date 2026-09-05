@@ -40,7 +40,10 @@ Profile → tool surface mapping
   Default research/read-only surface plus Alpaca paper and us_dual_paper tools.
 
 "db-paper" (McpProfile.DB_PAPER):
-  Default research/read-only surface plus internal DB paper simulator tools.
+  Default research/read-only surface plus the internal DB paper simulator
+  account read (``list_paper_accounts``). Its create/reset/delete, analytics,
+  and journal-bridge tools were class D in the 2026-09-03 MCP surface audit and
+  were removed.
 
 "kiwoom" (McpProfile.KIWOOM):
   Default research/read-only surface plus BOTH typed Kiwoom mock namespaces:
@@ -173,12 +176,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
 )
 from app.mcp_server.tooling.paper_account_registration import (
     register_paper_account_tools,
-)
-from app.mcp_server.tooling.paper_analytics_registration import (
-    register_paper_analytics_tools,
-)
-from app.mcp_server.tooling.paper_journal_registration import (
-    register_paper_journal_tools,
 )
 from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
@@ -491,8 +488,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_market_quote_snapshot_tools(mcp)
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)
-        register_paper_analytics_tools(mcp)
-        register_paper_journal_tools(mcp)
     elif profile is McpProfile.KIWOOM:
         orders_kiwoom_variants.register(mcp)
         from app.mcp_server.tooling.orders_kiwoom_us_variants import (

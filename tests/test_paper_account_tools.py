@@ -7,7 +7,6 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.paper_account_registration import _serialize_account
@@ -20,13 +19,21 @@ def build_tools():
 
 
 @pytest.mark.asyncio
-async def test_paper_account_tools_registered() -> None:
-    """All 4 paper account management tools must be registered."""
+async def test_only_the_account_read_tool_is_registered() -> None:
+    """MCP surface audit 2026-09-03: create/reset/delete were all class D.
+
+    Zero calls in 90 days and zero prompt/runbook/code references, so the three
+    mutating simulator-account tools were removed and db-paper's simulator
+    surface is exactly the read.
+    """
     tools = build_tools()
-    assert "create_paper_account" in tools
     assert "list_paper_accounts" in tools
-    assert "reset_paper_account" in tools
-    assert "delete_paper_account" in tools
+    for retired in (
+        "create_paper_account",
+        "reset_paper_account",
+        "delete_paper_account",
+    ):
+        assert retired not in tools, f"{retired} is still registered"
 
 
 def _make_account(**overrides) -> PaperAccount:
@@ -112,57 +119,6 @@ def _patch_session(monkeypatch, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_paper_account_success(monkeypatch) -> None:
-    db = AsyncMock()
-    db.add = MagicMock()
-
-    async def _refresh(instance):
-        instance.id = 42
-        instance.created_at = instance.created_at or None
-        instance.updated_at = instance.updated_at or None
-
-    db.refresh = AsyncMock(side_effect=_refresh)
-    _patch_session(monkeypatch, db)
-
-    tools = build_tools()
-    result = await tools["create_paper_account"](
-        name="bot-1",
-        initial_capital=50_000_000,
-        description="test",
-    )
-
-    assert result["success"] is True
-    assert result["account"]["id"] == 42
-    assert result["account"]["name"] == "bot-1"
-    assert result["account"]["initial_capital"] == pytest.approx(50_000_000.0)
-    assert result["account"]["cash_krw"] == pytest.approx(50_000_000.0)
-    assert result["account"]["description"] == "test"
-
-
-@pytest.mark.asyncio
-async def test_create_paper_account_with_strategy_name(monkeypatch) -> None:
-    db = AsyncMock()
-    db.add = MagicMock()
-
-    async def _refresh(instance):
-        instance.id = 55
-        instance.created_at = None
-        instance.updated_at = None
-
-    db.refresh = AsyncMock(side_effect=_refresh)
-    _patch_session(monkeypatch, db)
-
-    tools = build_tools()
-    result = await tools["create_paper_account"](
-        name="momentum-bot",
-        strategy_name="momentum",
-    )
-
-    assert result["success"] is True
-    assert result["account"]["strategy_name"] == "momentum"
-
-
-@pytest.mark.asyncio
 async def test_list_paper_accounts_with_strategy_filter(monkeypatch) -> None:
     db = AsyncMock()
     _patch_session(monkeypatch, db)
@@ -196,23 +152,6 @@ async def test_list_paper_accounts_with_strategy_filter(monkeypatch) -> None:
     assert result["success"] is True
     assert len(result["accounts"]) == 1
     assert result["accounts"][0]["strategy_name"] == "momentum"
-
-
-@pytest.mark.asyncio
-async def test_create_paper_account_duplicate_name(monkeypatch) -> None:
-    db = AsyncMock()
-    db.add = MagicMock()
-    db.commit = AsyncMock(side_effect=IntegrityError("INSERT", {}, Exception("unique")))
-    _patch_session(monkeypatch, db)
-
-    tools = build_tools()
-    result = await tools["create_paper_account"](name="dup")
-
-    assert result["success"] is False
-    assert (
-        "already exists" in result["error"].lower()
-        or "duplicate" in result["error"].lower()
-    )
 
 
 @pytest.mark.asyncio
@@ -297,137 +236,3 @@ async def test_list_paper_accounts_is_active_false(monkeypatch) -> None:
 
     assert captured["is_active"] is False
     assert result == {"success": True, "accounts": []}
-
-
-@pytest.mark.asyncio
-async def test_reset_paper_account_success(monkeypatch) -> None:
-    db = AsyncMock()
-    _patch_session(monkeypatch, db)
-
-    acc = _make_account(id=7, name="reset-me")
-    reset_acc = _make_account(
-        id=7, name="reset-me", cash_krw=Decimal("100000000"), cash_usd=Decimal("0")
-    )
-
-    with patch(
-        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
-    ) as svc_cls:
-        svc = svc_cls.return_value
-        svc.get_account_by_name = AsyncMock(return_value=acc)
-        svc.reset_account = AsyncMock(return_value=reset_acc)
-
-        tools = build_tools()
-        result = await tools["reset_paper_account"](name="reset-me")
-
-    svc.reset_account.assert_awaited_once_with(7)
-    assert result["success"] is True
-    assert result["account"]["id"] == 7
-    assert result["account"]["cash_krw"] == pytest.approx(100_000_000.0)
-
-
-@pytest.mark.asyncio
-async def test_reset_paper_account_missing(monkeypatch) -> None:
-    db = AsyncMock()
-    _patch_session(monkeypatch, db)
-
-    with patch(
-        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
-    ) as svc_cls:
-        svc = svc_cls.return_value
-        svc.get_account_by_name = AsyncMock(return_value=None)
-
-        tools = build_tools()
-        result = await tools["reset_paper_account"](name="ghost")
-
-    assert result["success"] is False
-    assert "not found" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_delete_paper_account_success(monkeypatch) -> None:
-    db = AsyncMock()
-    _patch_session(monkeypatch, db)
-
-    acc = _make_account(id=9, name="goodbye")
-
-    with patch(
-        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
-    ) as svc_cls:
-        svc = svc_cls.return_value
-        svc.get_account_by_name = AsyncMock(return_value=acc)
-        svc.delete_account = AsyncMock(return_value=True)
-
-        tools = build_tools()
-        result = await tools["delete_paper_account"](name="goodbye")
-
-    svc.delete_account.assert_awaited_once_with(9)
-    assert result == {"success": True, "deleted": True, "name": "goodbye", "id": 9}
-
-
-@pytest.mark.asyncio
-async def test_delete_paper_account_missing(monkeypatch) -> None:
-    db = AsyncMock()
-    _patch_session(monkeypatch, db)
-
-    with patch(
-        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
-    ) as svc_cls:
-        svc = svc_cls.return_value
-        svc.get_account_by_name = AsyncMock(return_value=None)
-
-        tools = build_tools()
-        result = await tools["delete_paper_account"](name="ghost")
-
-    assert result["success"] is False
-    assert "not found" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_paper_account_full_flow(monkeypatch) -> None:
-    """create → list → reset → delete all succeed against a mocked service."""
-    db = AsyncMock()
-    _patch_session(monkeypatch, db)
-
-    created = _make_account(id=101, name="flow")
-    after_reset = _make_account(id=101, name="flow")
-
-    with patch(
-        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
-    ) as svc_cls:
-        svc = svc_cls.return_value
-        svc.create_account = AsyncMock(return_value=created)
-        svc.list_accounts = AsyncMock(return_value=[created])
-        svc.get_portfolio_summary = AsyncMock(
-            return_value={
-                "total_invested": Decimal("0"),
-                "total_evaluated": Decimal("100000000"),
-                "total_pnl": Decimal("0"),
-                "total_pnl_pct": Decimal("0.00"),
-                "cash_krw": created.cash_krw,
-                "cash_usd": created.cash_usd,
-                "positions_count": 0,
-            }
-        )
-        svc.get_account_by_name = AsyncMock(return_value=created)
-        svc.reset_account = AsyncMock(return_value=after_reset)
-        svc.delete_account = AsyncMock(return_value=True)
-
-        tools = build_tools()
-
-        create_result = await tools["create_paper_account"](name="flow")
-        assert create_result["success"] is True
-
-        list_result = await tools["list_paper_accounts"](is_active=True)
-        assert list_result["success"] is True
-        assert list_result["accounts"][0]["id"] == 101
-
-        reset_result = await tools["reset_paper_account"](name="flow")
-        assert reset_result["success"] is True
-
-        delete_result = await tools["delete_paper_account"](name="flow")
-        assert delete_result == {
-            "success": True,
-            "deleted": True,
-            "name": "flow",
-            "id": 101,
-        }

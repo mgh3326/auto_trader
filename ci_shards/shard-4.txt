@@ -365,7 +365,6 @@ tests/test_nxt_preflight_order_tools.py
 tests/test_ohlcv_cache_common.py
 tests/test_order_brief_formatting.py
 tests/test_orders_history_summary_rob657.py
-tests/test_paper_journal_bridge.py
 tests/test_paper_trading_model.py
 tests/test_portfolio_links.py
 tests/test_portfolio_rotation_service.py

@@ -55,10 +55,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL_NAMES
-from app.mcp_server.tooling.paper_analytics_registration import (
-    PAPER_ANALYTICS_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
@@ -79,9 +75,11 @@ _ALPACA_PAPER_TOOL_NAMES = (
     | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
-_DB_PAPER_TOOL_NAMES = (
-    PAPER_ACCOUNT_TOOL_NAMES | PAPER_ANALYTICS_TOOL_NAMES | PAPER_JOURNAL_TOOL_NAMES
-)
+# MCP surface audit 2026-09-03: the analytics (3) and journal-bridge (2) tool
+# sets and the account create/reset/delete trio were all class D and removed;
+# db-paper's simulator surface is now exactly PAPER_ACCOUNT_TOOL_NAMES
+# (list_paper_accounts).
+_DB_PAPER_TOOL_NAMES = PAPER_ACCOUNT_TOOL_NAMES
 _CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_crypto_profile",
     "get_kimchi_premium",

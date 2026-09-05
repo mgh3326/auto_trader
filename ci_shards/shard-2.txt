@@ -376,7 +376,6 @@ tests/test_number_utils.py
 tests/test_order_approval_config.py
 tests/test_order_estimation_service.py
 tests/test_order_live_precheck_reservation.py
-tests/test_paper_analytics_tools.py
 tests/test_paper_trading_service.py
 tests/test_partition_health.py
 tests/test_partition_health_loader_wiring.py
