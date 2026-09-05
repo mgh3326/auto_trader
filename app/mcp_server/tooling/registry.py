@@ -129,6 +129,7 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.dead_tools import without_dead_tools
 from app.mcp_server.tooling.downside_watch_registration import (
     register_downside_watch_tools,
 )
@@ -280,6 +281,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
+    mcp = without_dead_tools(mcp, profile.value)
+
     if profile is McpProfile.SHADOW_REPLAY:
         # ROB-697 M1 — frozen-context replay ONLY: read the bundle + policy +
         # lane procedure. Deliberately NO live-fetch (market_data/analysis/
