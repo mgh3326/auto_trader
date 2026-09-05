@@ -220,6 +220,7 @@ tests/services/test_downside_watch_service_no_broker_imports.py
 tests/services/test_fill_event_handoff.py
 tests/services/test_kis_mock_attribution_chain.py
 tests/services/test_krb1_p0_journal.py
+tests/services/test_lane_events.py
 tests/services/test_live_reconcile_metrics.py
 tests/services/test_market_events_discover_calendar.py
 tests/services/test_market_events_forexfactory_helpers.py

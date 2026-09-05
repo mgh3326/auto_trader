@@ -12,12 +12,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from app.schemas.session_context import SessionContextAppendEntry
 from app.services.execution_ledger.fill_event_sanitizer import sanitize_fill
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.lane_events import (
+    LANE_EVENT_TEXT_LIMIT,
+    LaneEventConfig,
+    emit_lane_event,
+)
 from app.services.session_context import SessionContextService
 
 from .state import HandoffState
@@ -56,6 +61,8 @@ class HandoffConfig:
     discord_webhook: str | None = None
     since_ledger_id: int | None = None
     dry_run: bool = False
+    lane_events: Mapping[str, str] | None = None
+    lane_event: LaneEventConfig | None = None
 
 
 def dedupe_key(fill: Mapping[str, Any]) -> str:
@@ -82,6 +89,21 @@ def handoff_text(fill: Mapping[str, Any]) -> tuple[str, str]:
         "같은 refs로 decision 엔트리로 닫는다."
     )
     return title, body
+
+
+def handoff_lane_event_text(fill: Mapping[str, Any]) -> str:
+    """Render one shared prompt for lane delivery and the herdr fallback."""
+    prompt = (
+        f"체결 인계: {fill['symbol']} {fill['side']} {fill['filled_qty']}@{fill['filled_price']} "
+        f"({fill['currency']} {fill['filled_notional']}). briefing.session_context의 "
+        "fill_handoff=v1 open_question을 같은 refs의 decision으로 닫아라."
+    )
+    if len(prompt.encode("utf-8")) <= LANE_EVENT_TEXT_LIMIT:
+        return prompt
+    return (
+        f"체결 인계: {fill['symbol']} {fill['side']} {fill['filled_qty']}@"
+        f"{fill['filled_price']} (ledger_id={fill['ledger_id']})"
+    )
 
 
 def _agents(payload: str) -> list[Mapping[str, Any]]:
@@ -209,13 +231,19 @@ class FillHandoffRunner:
         )
 
     async def _notify(
-        self, fill: Mapping[str, Any], *, pushed: int, kicked: bool
+        self,
+        fill: Mapping[str, Any],
+        *,
+        pushed: int,
+        kicked: bool,
+        delivery: Literal["lane_event", "lane_event_duplicate", "herdr", "none"],
     ) -> None:
         if not self.config.discord_webhook:
             return
         content = (
             f"{fill['symbol']} {fill['side']} {fill['currency']} {fill['filled_notional']} "
-            f"— session_context 적재 / 푸시 {pushed}건 / kick {'yes' if kicked else 'no'}"
+            f"— session_context 적재 / 푸시 {pushed}건 / kick {'yes' if kicked else 'no'} "
+            f"/ delivery {delivery}"
         )
         request = urllib.request.Request(
             self.config.discord_webhook,
@@ -272,11 +300,63 @@ class FillHandoffRunner:
             return flow_run_id
         return None
 
-    async def run(self, db: Any) -> dict[str, int]:
+    async def _fallback_to_herdr_then_kick(
+        self,
+        fill: Mapping[str, Any],
+        *,
+        prompt: str,
+        state: dict[str, Any],
+        service: SessionContextService,
+        context_row: Any,
+        outcome: dict[str, Any],
+        db: Any,
+    ) -> tuple[int, str | None]:
+        """Keep the original discovery → prompt → kickoff fallback ordering."""
+        all_panes: list[tuple[str, str]] = []
+        discovery_complete = True
+        for target in self.config.herdr_targets:
+            try:
+                listed = self.command(self._target_command(target, ("agent", "list")))
+            except (OSError, subprocess.SubprocessError, ValueError):
+                discovery_complete = False
+                continue
+            if listed.returncode == 0:
+                all_panes.extend(
+                    (target, pane)
+                    for pane in live_panes(str(fill["market"]), listed.stdout)
+                )
+            else:
+                discovery_complete = False
+        pushed = 0
+        for target, pane in all_panes:
+            if self._submit(target, pane, prompt):
+                pushed += 1
+        flow_run_id = None
+        if not all_panes and discovery_complete:
+            try:
+                flow_run_id = await self._kick(fill, state)
+            except Exception:  # noqa: BLE001 - durable context remains canonical
+                flow_run_id = None
+            if flow_run_id:
+                outcome["kicked"] += 1
+                if context_row is not None:
+                    await service.append_fill_handoff_kick_result(
+                        entry_id=context_row.id, flow_run_id=flow_run_id
+                    )
+                    await db.commit()
+        return pushed, flow_run_id
+
+    async def run(self, db: Any) -> dict[str, Any]:
         repo = ExecutionLedgerRepository(db)
         with HandoffState(self.config.state_dir) as locked:
             state = locked.data
-            outcome = {"durable": 0, "pushed": 0, "kicked": 0}
+            outcome: dict[str, Any] = {
+                "durable": 0,
+                "pushed": 0,
+                "kicked": 0,
+                "duplicate": 0,
+                "fallback": [],
+            }
             if locked.is_new:
                 if self.config.since_ledger_id is None:
                     # An empty state directory is an installation, not an
@@ -341,43 +421,59 @@ class FillHandoffRunner:
                 if self.config.dry_run:
                     continue
                 state["seen"][key] = now.timestamp()
+                prompt = handoff_lane_event_text(fill)
+                delivery: Literal[
+                    "lane_event", "lane_event_duplicate", "herdr", "none"
+                ] = "none"
                 pushed = 0
-                prompt = f"체결 인계: {fill['symbol']} {fill['side']} {fill['filled_qty']}@{fill['filled_price']} ({fill['currency']} {fill['filled_notional']}). briefing.session_context의 fill_handoff=v1 open_question을 같은 refs의 decision으로 닫아라."
-                all_panes: list[tuple[str, str]] = []
-                discovery_complete = True
-                for target in self.config.herdr_targets:
-                    try:
-                        listed = self.command(
-                            self._target_command(target, ("agent", "list"))
-                        )
-                    except (OSError, subprocess.SubprocessError, ValueError):
-                        discovery_complete = False
-                        continue
-                    if listed.returncode == 0:
-                        all_panes.extend(
-                            (target, pane)
-                            for pane in live_panes(str(fill["market"]), listed.stdout)
-                        )
-                    else:
-                        discovery_complete = False
-                for target, pane in all_panes:
-                    if self._submit(target, pane, prompt):
-                        pushed += 1
-                outcome["pushed"] += pushed
                 flow_run_id = None
-                if not all_panes and discovery_complete:
-                    try:
-                        flow_run_id = await self._kick(fill, state)
-                    except Exception:  # noqa: BLE001 - durable context remains canonical
-                        flow_run_id = None
-                    if flow_run_id:
-                        outcome["kicked"] += 1
-                        if context_row is not None:
-                            await service.append_fill_handoff_kick_result(
-                                entry_id=context_row.id, flow_run_id=flow_run_id
-                            )
-                            await db.commit()
-                await self._notify(fill, pushed=pushed, kicked=flow_run_id is not None)
+                market = str(fill["market"])
+                lane = (self.config.lane_events or {}).get(market)
+                if lane:
+                    lane_result = emit_lane_event(
+                        lane,
+                        event_id=str(fill["event_key"]),
+                        text=prompt,
+                        config=self.config.lane_event or LaneEventConfig(),
+                    )
+                    if lane_result.outcome == "emitted":
+                        pushed = 1
+                        delivery = "lane_event"
+                    elif lane_result.outcome == "duplicate":
+                        outcome["duplicate"] += 1
+                        delivery = "lane_event_duplicate"
+                    else:
+                        outcome["fallback"].append(lane_result.reason or "os_error")
+                        pushed, flow_run_id = await self._fallback_to_herdr_then_kick(
+                            fill,
+                            prompt=prompt,
+                            state=state,
+                            service=service,
+                            context_row=context_row,
+                            outcome=outcome,
+                            db=db,
+                        )
+                        if pushed:
+                            delivery = "herdr"
+                else:
+                    pushed, flow_run_id = await self._fallback_to_herdr_then_kick(
+                        fill,
+                        prompt=prompt,
+                        state=state,
+                        service=service,
+                        context_row=context_row,
+                        outcome=outcome,
+                        db=db,
+                    )
+                    if pushed:
+                        delivery = "herdr"
+                outcome["pushed"] += pushed
+                await self._notify(
+                    fill,
+                    pushed=pushed,
+                    kicked=flow_run_id is not None,
+                    delivery=delivery,
+                )
                 state["watermark"] = max(
                     int(state["watermark"]), int(fill["ledger_id"])
                 )
