@@ -142,7 +142,13 @@ _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES: set[str] = {
 
 # ROB-816 — order_proposals SOT ledger read/create surface. No approve/submit
 # tool is included — approval is Telegram-only (PR 2).
-_TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = ORDER_PROPOSAL_TOOL_NAMES
+_TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = (
+    ORDER_PROPOSAL_TOOL_NAMES
+    - {
+        "order_proposal_expire_sweep",
+        "order_proposal_redispatch",
+    }
+)
 
 TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
     ACCOUNT_READ_TOOL_NAMES
