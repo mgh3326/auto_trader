@@ -1,0 +1,21 @@
++[Unit]
+Description=auto_trader durable kickoff lane event crypto-0220
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/at-run
+EnvironmentFile=/root/at-secrets/.env.api
+EnvironmentFile=/root/at-secrets/.env.lane-kickoff
+Environment=PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock
+Environment=LANE_EVENT_EMIT_BIN=/root/pw-s2pilot/bin/panewire
+Environment=LANE_EVENT_EMIT_INBOX_ROOT=/root/pw-s2pilot/inbox
+Environment=LANE_EVENT_EMIT_HOST=ncp
+ExecStart=/bin/sh -ec 'image="$$(cat /root/at-run/deployed-digest)"; exec /usr/bin/docker run --rm --network host --env PANEWIRE_SOCKET --env LANE_EVENT_EMIT_BIN --env LANE_EVENT_EMIT_INBOX_ROOT --env LANE_EVENT_EMIT_HOST --env-file /root/at-secrets/.env.api --env-file /root/at-secrets/.env.lane-kickoff -v /root/pw-s2pilot/bin/panewire:/root/pw-s2pilot/bin/panewire:ro -v /root/pw-s2pilot/inbox:/root/pw-s2pilot/inbox -v "/root/Library/Application Support/panewire":"/root/Library/Application Support/panewire" "$$image" /app/.venv/bin/python -m scripts.lane_event_kickoff --lane "$$LANE_EVENT_KICKOFF_LANE_CRYPTO" --slot crypto-0220 --playbook prompts/crypto-session-trade.md'
+TimeoutStartSec=60
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

@@ -19,6 +19,8 @@ from urllib.parse import quote
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
+from scripts.lane_event_kickoff import KICKOFF_SLOTS, KickoffSlot
+
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD_DIR = ROOT / "ops/ncp/systemd"
 RUNNER = "/root/at-run/ops/ncp/bin/at-job.sh"
@@ -379,11 +381,116 @@ def check_job(job: Job, *, check_imports: bool) -> None:
             raise ValueError(f"{module}: import failed: {result.stderr.strip()}")
 
 
+def _kickoff_lane_env(slot: str) -> str:
+    if slot.startswith("crypto-"):
+        return "LANE_EVENT_KICKOFF_LANE_CRYPTO"
+    if slot == "us-2235":
+        return "LANE_EVENT_KICKOFF_LANE_US"
+    return "LANE_EVENT_KICKOFF_LANE_KR"
+
+
+def _kickoff_oncalendar(slot: KickoffSlot) -> str:
+    weekday = "Mon..Fri " if slot.weekdays_only else ""
+    return f"{weekday}*-*-* {slot.oncalendar}:00 Asia/Seoul"
+
+
+def _check_kickoff_timer(slot_name: str, slot: KickoffSlot) -> None:
+    timer_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.timer"
+    timer = _directives(timer_path)
+    if timer.get("OnCalendar") != [_kickoff_oncalendar(slot)]:
+        raise ValueError(f"{timer_path}: OnCalendar differs from kickoff slot")
+    if timer.get("Persistent") != ["false"]:
+        raise ValueError(f"{timer_path}: Persistent must be false to avoid catchup")
+    if timer.get("RandomizedDelaySec") != ["0"]:
+        raise ValueError(f"{timer_path}: RandomizedDelaySec must be 0")
+    if timer.get("Unit") != [f"job-kickoff-{slot_name}.service"]:
+        raise ValueError(f"{timer_path}: wrong paired service")
+    if timer.get("WantedBy") != ["timers.target"]:
+        raise ValueError(f"{timer_path}: must install under timers.target")
+
+
+def _check_kickoff_service(slot_name: str, slot: KickoffSlot) -> None:
+    service_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.service"
+    service = _directives(service_path)
+    expected_env = {
+        "PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock",
+        "LANE_EVENT_EMIT_BIN=/root/pw-s2pilot/bin/panewire",
+        "LANE_EVENT_EMIT_INBOX_ROOT=/root/pw-s2pilot/inbox",
+        "LANE_EVENT_EMIT_HOST=ncp",
+    }
+    if set(service.get("Environment", [])) != expected_env:
+        raise ValueError(f"{service_path}: kickoff environment differs from exact set")
+    if service.get("EnvironmentFile") != [
+        "/root/at-secrets/.env.api",
+        "/root/at-secrets/.env.lane-kickoff",
+    ]:
+        raise ValueError(f"{service_path}: missing kickoff environment files")
+    expected_directives = {
+        "Type": ["oneshot"],
+        "WorkingDirectory": ["/root/at-run"],
+        "TimeoutStartSec": ["60"],
+        "User": ["root"],
+        "UMask": ["0077"],
+        "NoNewPrivileges": ["true"],
+        "PrivateTmp": ["true"],
+    }
+    for directive, expected in expected_directives.items():
+        if service.get(directive) != expected:
+            raise ValueError(
+                f"{service_path}: {directive} differs from kickoff contract"
+            )
+
+    execstart = service.get("ExecStart", [])
+    if len(execstart) != 1:
+        raise ValueError(f"{service_path}: must have exactly one ExecStart")
+    command = execstart[0]
+    required_fragments = (
+        'image="$$(cat /root/at-run/deployed-digest)"',
+        "/usr/bin/docker run --rm --network host",
+        "--env-file /root/at-secrets/.env.api",
+        "--env-file /root/at-secrets/.env.lane-kickoff",
+        "-v /root/pw-s2pilot/bin/panewire:/root/pw-s2pilot/bin/panewire:ro",
+        "-v /root/pw-s2pilot/inbox:/root/pw-s2pilot/inbox",
+        '-v "/root/Library/Application Support/panewire":"/root/Library/Application Support/panewire"',
+        "-m scripts.lane_event_kickoff",
+        f'--lane "$${_kickoff_lane_env(slot_name)}"',
+        f"--slot {slot_name}",
+        f"--playbook {slot.playbook}",
+    )
+    if any(fragment not in command for fragment in required_fragments):
+        raise ValueError(f"{service_path}: ExecStart differs from kickoff contract")
+    lane_match = re.search(r"--lane\s+(?P<lane>\S+)", command)
+    if lane_match is None or not lane_match["lane"].lstrip("\"\\'").startswith("$"):
+        raise ValueError(f"{service_path}: --lane must use an environment reference")
+
+
+def check_kickoff_units() -> None:
+    expected_services = {f"job-kickoff-{slot}.service" for slot in KICKOFF_SLOTS}
+    expected_timers = {f"job-kickoff-{slot}.timer" for slot in KICKOFF_SLOTS}
+    actual_services = {path.name for path in SYSTEMD_DIR.glob("job-kickoff-*.service")}
+    actual_timers = {path.name for path in SYSTEMD_DIR.glob("job-kickoff-*.timer")}
+    if actual_services != expected_services or actual_timers != expected_timers:
+        raise ValueError(
+            "kickoff unit inventory is unpaired or contains an unreviewed unit"
+        )
+    for slot_name, slot in KICKOFF_SLOTS.items():
+        _check_kickoff_service(slot_name, slot)
+        _check_kickoff_timer(slot_name, slot)
+
+
 def check_all(*, check_imports: bool) -> None:
     expected_services = {f"job-{job.name}.service" for job in JOBS}
     expected_timers = {f"job-{job.name}.timer" for job in JOBS}
-    actual_services = {path.name for path in SYSTEMD_DIR.glob("job-*.service")}
-    actual_timers = {path.name for path in SYSTEMD_DIR.glob("job-*.timer")}
+    actual_services = {
+        path.name
+        for path in SYSTEMD_DIR.glob("job-*.service")
+        if not path.name.startswith("job-kickoff-")
+    }
+    actual_timers = {
+        path.name
+        for path in SYSTEMD_DIR.glob("job-*.timer")
+        if not path.name.startswith("job-kickoff-")
+    }
     if actual_services != expected_services or actual_timers != expected_timers:
         raise ValueError(
             "job unit inventory is unpaired or contains an unreviewed unit"
@@ -395,6 +502,7 @@ def check_all(*, check_imports: bool) -> None:
         if key in seen:
             raise ValueError(f"duplicate schedule: {job.name} and {seen[key]}")
         seen[key] = job.name
+    check_kickoff_units()
 
 
 def deployment_paused(api_url: str, job: Job) -> bool:
@@ -461,7 +569,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_cutover:
         check_cutover()
     network_calls = len(JOBS) if args.check_cutover else 0
-    print(f"checked {len(JOBS)} NCP job timer(s); network calls: {network_calls}")
+    print(
+        f"checked {len(JOBS)} Prefect and {len(KICKOFF_SLOTS)} kickoff "
+        f"NCP job timer(s); network calls: {network_calls}"
+    )
     return 0
 
 

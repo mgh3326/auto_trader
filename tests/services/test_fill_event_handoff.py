@@ -560,7 +560,7 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
                 prefect_api_url="http://prefect",
                 kick_deployments={"crypto": "crypto-deployment"},
                 lane_events={"crypto": "lane-a"},
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary), timeout_s=1.0),
+                lane_event=LaneEventConfig(binary=str(lane_emit_binary), timeout_s=3.0),
             ),
             command=command,
             now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
@@ -672,6 +672,36 @@ def test_cli_lane_event_environment_and_validation(
     monkeypatch.setenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "1")
     with pytest.raises(ValueError, match="greater than 1"):
         handoff_cli._lane_event_config()
+
+
+def test_fill_handoff_emitter_namespace_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANE_EVENT_EMIT_BIN", "shared-panewire")
+    monkeypatch.setenv("LANE_EVENT_EMIT_HOST", "host-a")
+    monkeypatch.setenv("LANE_EVENT_EMIT_PANE", "w1:p1")
+    monkeypatch.setenv("LANE_EVENT_EMIT_INBOX_ROOT", "/tmp/shared-inbox")
+    monkeypatch.setenv("LANE_EVENT_EMIT_TIMEOUT_S", "4.5")
+    assert handoff_cli._lane_event_config() == LaneEventConfig(
+        binary="shared-panewire",
+        host="host-a",
+        pane="w1:p1",
+        inbox_root="/tmp/shared-inbox",
+        timeout_s=4.5,
+    )
+
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_BIN", "fill-panewire")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_HOST", "host-b")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_PANE", "w2:p2")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_INBOX_ROOT", "/tmp/fill-inbox")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "5.5")
+    assert handoff_cli._lane_event_config() == LaneEventConfig(
+        binary="fill-panewire",
+        host="host-b",
+        pane="w2:p2",
+        inbox_root="/tmp/fill-inbox",
+        timeout_s=5.5,
+    )
 
 
 def test_cli_and_unit_layer_settings_environment(tmp_path: Path) -> None:

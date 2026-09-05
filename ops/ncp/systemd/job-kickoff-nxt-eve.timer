@@ -1,0 +1,12 @@
++[Unit]
+Description=Run auto_trader kickoff lane event nxt-eve
+
+[Timer]
+# Persistent=false: a missed kickoff must never be replayed after its market window.
+OnCalendar=Mon..Fri *-*-* 15:50:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kickoff-nxt-eve.service
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -55,7 +56,50 @@ def test_all_checked_units_match_fake_prefect_run(
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
-    check.check_all(check_imports=True)
+    assert check.run_cli(["--skip-imports"]) == 0
+
+
+def _copy_systemd_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    copied = tmp_path / "systemd"
+    shutil.copytree(check.SYSTEMD_DIR, copied)
+    monkeypatch.setattr(check, "SYSTEMD_DIR", copied)
+    return copied
+
+
+def test_kickoff_persistent_mutant_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    systemd_dir = _copy_systemd_dir(tmp_path, monkeypatch)
+    timer = systemd_dir / "job-kickoff-0905.timer"
+    timer.write_text(
+        timer.read_text(encoding="utf-8").replace(
+            "Persistent=false", "Persistent=true"
+        ),
+        encoding="utf-8",
+    )
+    assert check.run_cli(["--skip-imports"]) == 1
+
+
+def test_kickoff_missing_timer_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    systemd_dir = _copy_systemd_dir(tmp_path, monkeypatch)
+    (systemd_dir / "job-kickoff-0905.timer").unlink()
+    assert check.run_cli(["--skip-imports"]) == 1
+
+
+def test_kickoff_literal_lane_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    systemd_dir = _copy_systemd_dir(tmp_path, monkeypatch)
+    service = systemd_dir / "job-kickoff-0905.service"
+    service.write_text(
+        service.read_text(encoding="utf-8").replace(
+            '--lane "$$LANE_EVENT_KICKOFF_LANE_KR"', "--lane lane-a"
+        ),
+        encoding="utf-8",
+    )
+    assert check.run_cli(["--skip-imports"]) == 1
 
 
 def test_argv_mutant_is_red(monkeypatch: pytest.MonkeyPatch) -> None:
