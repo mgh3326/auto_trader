@@ -77,6 +77,11 @@
     완전 열거 + exact committed receipt coverage + active-hold 0일 때만
     `RELEASE_VERIFIED`다. 빈 lock, pool close, PID 부재만으로 승격 금지.
 
+16. **MCP 레인 계약**: `config/mcp_lane_allowlists/`의 `tool<TAB>basis`를 보존하고,
+    등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와
+    `test_profile_tool_snapshot.py`로 검증한다. D 제거·C niche 관측의 감사 범위와
+    보존 예외는 `docs/runbooks/mcp-surface-cleanup-20260905.md`를 따른다.
+
 ## 최소 명령어
 
 ```bash

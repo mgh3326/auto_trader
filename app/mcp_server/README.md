@@ -348,7 +348,11 @@ provider to fill it.
 
 ### Paper execution validation boundary (ROB-848)
 
-The default-off `paper_execution` profile is one exact union under
+Historical contract: the `paper_execution` profile was removed on 2026-09-05.
+The following describes its former validation boundary; it is not a startup
+instruction. See [the cleanup runbook](../../docs/runbooks/mcp-surface-cleanup-20260905.md).
+
+The former default-off `paper_execution` profile was one exact union under
 `PAPER_EXECUTION_ENABLED`: the unchanged six names in
 `PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
 `PAPER_VALIDATION_TOOL_NAMES` and the operator-only
@@ -379,9 +383,8 @@ prepared native order without POST, then performs cohort-owned cleanup. See
 Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
 existing audit/fence rows remain immutable.
 
-The `analysis_readonly` Codex/headless profile exposes
-`analysis_bundle_get` only when the gate is enabled. It never exposes
-`analysis_bundle_create`, preserving the consumer's get-only boundary.
+The `analysis_readonly` profile no longer registers either analysis bundle tool.
+Their service implementations remain available to internal callers.
 
 The ROB-833 runner handoff is exactly:
 
