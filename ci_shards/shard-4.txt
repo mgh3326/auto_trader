@@ -22,6 +22,7 @@ tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_intraday_support_resistance_recompute.py
 tests/mcp_server/test_investment_report_delta_tool.py
 tests/mcp_server/test_investment_report_generate_from_bundle_handler.py
+tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_market_normalization.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
 tests/mcp_server/tooling/test_fx_pnl.py
