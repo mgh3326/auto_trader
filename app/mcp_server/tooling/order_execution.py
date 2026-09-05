@@ -70,6 +70,15 @@ from app.services.brokers.edge_client import (
     get_kis_mock_edge_url,
 )
 from app.services.brokers.kis import KISClient
+from app.services.brokers.kis.live_shadow_witness import (
+    activate as activate_live_shadow_witness,
+)
+from app.services.brokers.kis.live_shadow_witness import (
+    deactivate as deactivate_live_shadow_witness,
+)
+from app.services.brokers.kis.live_shadow_witness import (
+    start_kis_live_shadow_witness,
+)
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.kis.send_outcome import (
     OrderSendDisposition,
@@ -358,26 +367,43 @@ async def _execute_kr_order(
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if send_outcome is not None:
         hook_kw["send_outcome"] = send_outcome
-    if side == "buy":
-        result = await _call_kis(
-            kis.order_korea_stock,
-            stock_code=stock_code,
-            order_type="buy",
-            quantity=order_quantity,
-            price=order_price,
-            is_mock=is_mock,
-            **hook_kw,
-        )
-    else:
-        result = await _call_kis(
-            kis.order_korea_stock,
-            stock_code=stock_code,
-            order_type="sell",
-            quantity=order_quantity,
-            price=order_price,
-            is_mock=is_mock,
-            **hook_kw,
-        )
+    witness = None
+    if not is_mock:
+        try:
+            witness = start_kis_live_shadow_witness(
+                command_id=idempotency_key,
+                side=side,
+                stock_code=stock_code,
+                quantity=order_quantity,
+                price=order_price,
+                kis_order_code="00" if order_price != 0 else "01",
+            )
+        except Exception:  # Witness observation never changes broker authority.
+            logger.warning("kis_live_witness_setup_failed")
+    witness_token = activate_live_shadow_witness(witness)
+    try:
+        if side == "buy":
+            result = await _call_kis(
+                kis.order_korea_stock,
+                stock_code=stock_code,
+                order_type="buy",
+                quantity=order_quantity,
+                price=order_price,
+                is_mock=is_mock,
+                **hook_kw,
+            )
+        else:
+            result = await _call_kis(
+                kis.order_korea_stock,
+                stock_code=stock_code,
+                order_type="sell",
+                quantity=order_quantity,
+                price=order_price,
+                is_mock=is_mock,
+                **hook_kw,
+            )
+    finally:
+        deactivate_live_shadow_witness(witness_token)
 
     if original_price is not None and order_price != original_price:
         result["original_price"] = original_price

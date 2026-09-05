@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mgh3326/broker-edge/execution_contracts/kis_live_shadow_witness_v1.schema.json",
+  "title": "KIS live shadow witness v1",
+  "description": "Phase 1 audit witness only. It never authorizes or constructs broker HTTP.",
+  "type": "object",
+  "properties": {
+    "intent": {
+      "type": "object",
+      "required": ["schema_version", "command_id", "account_scope", "side", "stock_code", "quantity", "price", "order_type", "issued_at"],
+      "properties": {
+        "schema_version": {"const": "execution-command/v1"},
+        "command_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "account_scope": {"const": "kis_live"},
+        "side": {"enum": ["buy", "sell"]},
+        "stock_code": {"type": "string"},
+        "quantity": {"type": "string", "pattern": "^[0-9]+$"},
+        "price": {"type": "string", "pattern": "^(?:[0-9]+|[0-9]+\\.[0-9]+)$"},
+        "order_type": {"const": "limit"},
+        "issued_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "required": ["witness_id", "command_id", "recorded_at", "mode"],
+      "properties": {
+        "witness_id": {"type": "string"},
+        "command_id": {"type": "string"},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "mode": {"const": "shadow"}
+      },
+      "additionalProperties": false
+    },
+    "echo": {
+      "type": "object",
+      "required": ["ODNO", "rt_cd", "msg_cd", "msg1", "received_at"],
+      "properties": {
+        "ODNO": {"type": "string"},
+        "rt_cd": {"type": "string"},
+        "msg_cd": {"type": "string"},
+        "msg1": {"type": "string"},
+        "received_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
