@@ -80,6 +80,7 @@ PROFILE_DEAD_TOOLS: dict[str, frozenset[str]] = {
     "crypto": _SHARED_DEAD_TOOLS,
     "kiwoom": _SHARED_DEAD_TOOLS,
     "kiwoom_kr": _SHARED_DEAD_TOOLS,
+    "hermes-paper-kis": _SHARED_DEAD_TOOLS,
 }
 
 
