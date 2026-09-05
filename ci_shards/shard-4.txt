@@ -25,6 +25,7 @@ tests/mcp_server/test_investment_report_generate_from_bundle_handler.py
 tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_market_normalization.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
+tests/mcp_server/tooling/test_decision_table_validate.py
 tests/mcp_server/tooling/test_fx_pnl.py
 tests/mcp_server/tooling/test_get_holdings_news.py
 tests/mcp_server/tooling/test_live_order_evidence_upbit.py

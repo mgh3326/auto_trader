@@ -1,0 +1,2696 @@
+{
+ "_fixture_provenance": {
+  "operator_repo_file": "kr-nxt-prep-2026-09-04-audit-evidence.json",
+  "json_pointer": "/audit_materials/decision_table",
+  "recorded_decision_table_hash": "a9e0a80baf84d12147ba7ea31cd8d92fb30a55d58447723ffcd80da56e7dab7c",
+  "recorded_hash_algorithm": "sha256_utf8_json_sort_keys_no_whitespace",
+  "correlation_id": "kr-nxt-prep-2026-09-04",
+  "canonical_bytes": 58555,
+  "rows": 23,
+  "decision_table": "verbatim",
+  "envelope": "transcribed from reports/kr-nxt-prep-2026-09-04.md"
+ },
+ "decision_table": {
+  "no_match_action": "no_proposal",
+  "row_match_unit": "(symbol, account_mode) - a candidate is matched at most once; rows for the same symbol in different accounts are distinct candidates and never compete",
+  "condition_evaluation": "a row matches only when every entry of common_conditions AND every entry of that row's conditions holds, and no entry of common_invalidation or that row's invalidation has fired",
+  "common_conditions": [
+   {
+    "metric": "price_source_is_nxt",
+    "source": "get_quote(symbol,market='kr').price_source",
+    "operator": "in",
+    "value": [
+     "nxt_mid",
+     "nxt_expected_price",
+     "nxt_best_bid_ask_mid"
+    ],
+    "max_age_seconds": 300
+   },
+   {
+    "metric": "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+    "source": "abs(get_quote.price / get_orderbook(symbol,venue='nxt').mid - 1)",
+    "operator": "lte",
+    "value": 0.02,
+    "max_age_seconds": 300
+   },
+   {
+    "metric": "nxt_tradable",
+    "source": "get_quote(symbol,market='kr').nxt_tradable",
+    "operator": "eq",
+    "value": true,
+    "max_age_seconds": 86400
+   },
+   {
+    "metric": "toss_open_orders_count_same_symbol",
+    "source": "toss_get_order_history(status='open')",
+    "operator": "eq",
+    "value": 0,
+    "max_age_seconds": 300
+   },
+   {
+    "metric": "kis_open_orders_count_same_symbol",
+    "source": "kis_live_get_order_history(status='pending',market='kr')",
+    "operator": "eq",
+    "value": 0,
+    "max_age_seconds": 300
+   },
+   {
+    "metric": "policy_frozen_keys",
+    "source": "get_trading_policy(market='kr',lane='sell')",
+    "operator": "eq",
+    "value": {
+     "$ref": "source_snapshot.policy_frozen_keys"
+    },
+    "max_age_seconds": 3600
+   },
+   {
+    "metric": "crash_day_state_at_decision",
+    "source": "crash_day.trigger (069500 KRX open gap) evaluated inside the 08:00-08:50 NXT window",
+    "operator": "eq",
+    "value": "not_evaluable_no_krx_open",
+    "max_age_seconds": 3600
+   }
+  ],
+  "common_invalidation": [
+   "fresh resistance level used as this row's anchor changes value, moves into supports[], or disappears",
+   "the lot changes quantity or avg_buy_price (corporate action, out-of-session fill, or broker-app accumulation)",
+   "holdings row source differs from the value recorded in this row's position_source condition",
+   "either broker shows a live open order on this symbol",
+   "observed live price leaves this row's band",
+   "get_quote.price_source absent (premarket fallback to previous close) or nxt_tradable=false",
+   "any frozen policy key value or semantics changes",
+   "069500 KRX open gap <= -3% becomes observable (crash_day)",
+   "valid_window exited"
+  ],
+  "rows": [
+   {
+    "scenario_id": "kr-nxt-2026-09-04:196170:toss_live:breakeven_reserve_trim:302820",
+    "priority": 1,
+    "symbols": [
+     "196170"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 302820,
+       "max_exclusive": 312090
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[196170].quantity",
+      "operator": "eq",
+      "value": 9,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[196170].avg_buy_price",
+      "operator": "eq",
+      "value": 309000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[196170].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 283000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       315000
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       315000
+      ],
+      "price_max": [
+       315000
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 312090,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5325.9
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:196170:toss_live:momentum_spike_d2:312090",
+    "priority": 2,
+    "symbols": [
+     "196170"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 312090,
+       "max_exclusive": 315038.18
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[196170].quantity",
+      "operator": "eq",
+      "value": 9,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[196170].avg_buy_price",
+      "operator": "eq",
+      "value": 309000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[196170].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 283000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 2,
+      "prices": [
+       315500,
+       324000
+      ],
+      "quantities": [
+       1,
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       315500,
+       324000
+      ],
+      "price_max": [
+       315500,
+       324000
+      ],
+      "quantity_min": [
+       1,
+       1
+      ],
+      "quantity_max": [
+       1,
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 312090,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5824.83,
+      14306.64
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:196170:toss_live:momentum_spike_d2:315038.18",
+    "priority": 3,
+    "symbols": [
+     "196170"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 315038.18,
+       "max_exclusive": 323734.2
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[196170].quantity",
+      "operator": "eq",
+      "value": 9,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[196170].avg_buy_price",
+      "operator": "eq",
+      "value": 309000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[196170].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 283000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 2,
+      "prices": [
+       324000,
+       343000
+      ],
+      "quantities": [
+       1,
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       324000,
+       343000
+      ],
+      "price_max": [
+       324000,
+       343000
+      ],
+      "quantity_min": [
+       1,
+       1
+      ],
+      "quantity_max": [
+       1,
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 312090,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      14306.64,
+      33265.98
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:196170:kis_live:breakeven_reserve_trim:306740",
+    "priority": 4,
+    "symbols": [
+     "196170"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 306740,
+       "max_exclusive": 316130
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[kis_live].positions[196170].quantity",
+      "operator": "eq",
+      "value": 6,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[kis_live].positions[196170].avg_buy_price",
+      "operator": "eq",
+      "value": 313000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[kis_live].positions[196170].source",
+      "operator": "eq",
+      "value": "kis_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 283000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "kis_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       319500
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       319500
+      ],
+      "price_max": [
+       319500
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 316130,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00347,
+     "expected_net_realized_gain_krw_per_rung": [
+      5391.34
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:196170:kis_live:momentum_spike_d2:316130",
+    "priority": 5,
+    "symbols": [
+     "196170"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 316130,
+       "max_exclusive": 323734.2
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[kis_live].positions[196170].quantity",
+      "operator": "eq",
+      "value": 6,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[kis_live].positions[196170].avg_buy_price",
+      "operator": "eq",
+      "value": 313000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[kis_live].positions[196170].source",
+      "operator": "eq",
+      "value": "kis_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 283000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "kis_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       324000
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       324000
+      ],
+      "price_max": [
+       324000
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 316130,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00347,
+     "expected_net_realized_gain_krw_per_rung": [
+      9875.72
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:326030:toss_live:single_share_full_exit_d5:89856",
+    "priority": 6,
+    "symbols": [
+     "326030"
+    ],
+    "matched_tier": "single_share_full_exit_review",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 89856,
+       "max_exclusive": 90019.52
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[326030].quantity",
+      "operator": "eq",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[326030].avg_buy_price",
+      "operator": "eq",
+      "value": 83200,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[326030].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 86400,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "position_profit_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": 8,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "recorded_single_share_disposition",
+      "source": "session_context / prior KR report disposition record for this symbol",
+      "operator": "eq",
+      "value": "full_static_target",
+      "max_age_seconds": 86400
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       90100
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       90100
+      ],
+      "price_max": [
+       90100
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 84032,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      6707.19
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "recorded single-share disposition flips to full_trailing"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:326030:toss_live:single_share_full_exit_d5:90019.52",
+    "priority": 7,
+    "symbols": [
+     "326030"
+    ],
+    "matched_tier": "single_share_full_exit_review",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 90019.52,
+       "max_exclusive": 94800
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[326030].quantity",
+      "operator": "eq",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[326030].avg_buy_price",
+      "operator": "eq",
+      "value": 83200,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[326030].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 86400,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "position_profit_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": 8,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "recorded_single_share_disposition",
+      "source": "session_context / prior KR report disposition record for this symbol",
+      "operator": "eq",
+      "value": "full_static_target",
+      "max_age_seconds": 86400
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       94800
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       94800
+      ],
+      "price_max": [
+       94800
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 84032,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      11397.13
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "recorded single-share disposition flips to full_trailing"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:005490:toss_live:single_share_full_exit_d5:363960",
+    "priority": 8,
+    "symbols": [
+     "005490"
+    ],
+    "matched_tier": "single_share_full_exit_review",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 363960,
+       "max_exclusive": 371678
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[005490].quantity",
+      "operator": "eq",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[005490].avg_buy_price",
+      "operator": "eq",
+      "value": 337000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[005490].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 342000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "position_profit_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": 8,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "recorded_single_share_disposition",
+      "source": "session_context / prior KR report disposition record for this symbol",
+      "operator": "eq",
+      "value": "full_static_target",
+      "max_age_seconds": 86400
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       372000
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       372000
+      ],
+      "price_max": [
+       372000
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 340370,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      34203.92
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "recorded single-share disposition flips to full_trailing"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:005490:toss_live:single_share_full_exit_d5:371678",
+    "priority": 9,
+    "symbols": [
+     "005490"
+    ],
+    "matched_tier": "single_share_full_exit_review",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 371678,
+       "max_exclusive": 398000
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[005490].quantity",
+      "operator": "eq",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[005490].avg_buy_price",
+      "operator": "eq",
+      "value": 337000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[005490].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 342000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "position_profit_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": 8,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "recorded_single_share_disposition",
+      "source": "session_context / prior KR report disposition record for this symbol",
+      "operator": "eq",
+      "value": "full_static_target",
+      "max_age_seconds": 86400
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       398000
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       398000
+      ],
+      "price_max": [
+       398000
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 340370,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      60148.28
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "recorded single-share disposition flips to full_trailing"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:316140:kis_live:breakeven_reserve_trim:32732",
+    "priority": 10,
+    "symbols": [
+     "316140"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 32732,
+       "max_exclusive": 33734
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[kis_live].positions[316140].quantity",
+      "operator": "eq",
+      "value": 19,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[kis_live].positions[316140].avg_buy_price",
+      "operator": "eq",
+      "value": 33400,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[kis_live].positions[316140].source",
+      "operator": "eq",
+      "value": "kis_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 34650,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "kis_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       38550
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       38550
+      ],
+      "price_max": [
+       38550
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 33734,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00347,
+     "expected_net_realized_gain_krw_per_rung": [
+      5016.23
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:039200:toss_live:breakeven_reserve_trim:32634",
+    "priority": 11,
+    "symbols": [
+     "039200"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 32634,
+       "max_exclusive": 33633
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[039200].quantity",
+      "operator": "eq",
+      "value": 7,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[039200].avg_buy_price",
+      "operator": "eq",
+      "value": 33300,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[039200].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 35900,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       38400
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       38400
+      ],
+      "price_max": [
+       38400
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 33633,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5017.82
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:039200:toss_live:ultra_near:38773.5",
+    "priority": 12,
+    "symbols": [
+     "039200"
+    ],
+    "matched_tier": "ultra_near_resistance",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 38773.5,
+       "max_exclusive": 39490
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[039200].quantity",
+      "operator": "eq",
+      "value": 7,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[039200].avg_buy_price",
+      "operator": "eq",
+      "value": 33300,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[039200].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 35900,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "rsi_14_last_completed_daily_bar",
+      "source": "analyze_stock_batch(['039200'],quick=false).indicators.rsi['14']",
+      "operator": "lt",
+      "value": 58,
+      "max_age_seconds": 86400
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       39550
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       39550
+      ],
+      "price_max": [
+       39550
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 33633,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      6165.36
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "RSI-14 crosses sell.rsi_place_min (58) and reclassifies the tier"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:039200:toss_live:momentum_spike_d2:39490",
+    "priority": 13,
+    "symbols": [
+     "039200"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 39490,
+       "max_exclusive": 39548.97
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[039200].quantity",
+      "operator": "eq",
+      "value": 7,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[039200].avg_buy_price",
+      "operator": "eq",
+      "value": 33300,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[039200].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 35900,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 2,
+      "prices": [
+       39550,
+       40700
+      ],
+      "quantities": [
+       1,
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       39550,
+       40700
+      ],
+      "price_max": [
+       39550,
+       40700
+      ],
+      "quantity_min": [
+       1,
+       1
+      ],
+      "quantity_max": [
+       1,
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 33633,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      6165.36,
+      7312.9
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:039200:toss_live:momentum_spike_d2:39548.97",
+    "priority": 14,
+    "symbols": [
+     "039200"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 39548.97,
+       "max_exclusive": 40687.5
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[039200].quantity",
+      "operator": "eq",
+      "value": 7,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[039200].avg_buy_price",
+      "operator": "eq",
+      "value": 33300,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[039200].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 35900,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 2,
+      "prices": [
+       40700,
+       43050
+      ],
+      "quantities": [
+       1,
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       40700,
+       43050
+      ],
+      "price_max": [
+       40700,
+       43050
+      ],
+      "quantity_min": [
+       1,
+       1
+      ],
+      "quantity_max": [
+       1,
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 33633,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      7312.9,
+      9657.87
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:004020:toss_live:breakeven_reserve_trim:28868",
+    "priority": 15,
+    "symbols": [
+     "004020"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 28868,
+       "max_exclusive": 29751.714286
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[004020].quantity",
+      "operator": "eq",
+      "value": 14,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[004020].avg_buy_price",
+      "operator": "eq",
+      "value": 29457.142857,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[004020].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 31650,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       34550
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       34550
+      ],
+      "price_max": [
+       34550
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 29751.71428557,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5018.92
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:004020:toss_live:rsi_confirmed:35000",
+    "priority": 16,
+    "symbols": [
+     "004020"
+    ],
+    "matched_tier": "rsi_confirmed_resistance",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 35000,
+       "max_exclusive": 37100
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[004020].quantity",
+      "operator": "eq",
+      "value": 14,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[004020].avg_buy_price",
+      "operator": "eq",
+      "value": 29457.142857,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[004020].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 31650,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "rsi_14_last_completed_daily_bar",
+      "source": "analyze_stock_batch(['004020'],quick=false).indicators.rsi['14']",
+      "operator": "gte",
+      "value": 58,
+      "max_age_seconds": 86400
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       37100
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       37100
+      ],
+      "price_max": [
+       37100
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 29751.71428557,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      7563.46
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "RSI-14 crosses sell.rsi_place_min (58) and reclassifies the tier"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:034020:toss_live:breakeven_reserve_trim:83436.5",
+    "priority": 17,
+    "symbols": [
+     "034020"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 83436.5,
+       "max_exclusive": 85990.678571
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[034020].quantity",
+      "operator": "eq",
+      "value": 28,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[034020].avg_buy_price",
+      "operator": "eq",
+      "value": 85139.285714,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[034020].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 79200,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       90400
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       90400
+      ],
+      "price_max": [
+       90400
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 85990.67857114,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5067.26
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:005930:toss_live:breakeven_reserve_trim:251737.5",
+    "priority": 18,
+    "symbols": [
+     "005930"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 251737.5,
+       "max_exclusive": 259443.75
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[005930].quantity",
+      "operator": "eq",
+      "value": 7,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[005930].avg_buy_price",
+      "operator": "eq",
+      "value": 256875,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[005930].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 250000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       262500
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       262500
+      ],
+      "price_max": [
+       262500
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 259443.75,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5063.25
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:005930:toss_live:momentum_spike_d2:275000",
+    "priority": 19,
+    "symbols": [
+     "005930"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 275000,
+       "max_exclusive": 283469.52
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[005930].quantity",
+      "operator": "eq",
+      "value": 7,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[005930].avg_buy_price",
+      "operator": "eq",
+      "value": 256875,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[005930].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 250000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 2,
+      "prices": [
+       283500,
+       304000
+      ],
+      "quantities": [
+       1,
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       283500,
+       304000
+      ],
+      "price_max": [
+       283500,
+       304000
+      ],
+      "quantity_min": [
+       1,
+       1
+      ],
+      "quantity_max": [
+       1,
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 259443.75,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      26018.31,
+      46474.44
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:000660:toss_live:breakeven_reserve_trim:1722350",
+    "priority": 20,
+    "symbols": [
+     "000660"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 1722350,
+       "max_exclusive": 1775075
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[000660].quantity",
+      "operator": "eq",
+      "value": 4,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[000660].avg_buy_price",
+      "operator": "eq",
+      "value": 1757500,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[000660].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 1596000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       1776000
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       1776000
+      ],
+      "price_max": [
+       1776000
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 1775075,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      14699.36
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:000660:toss_live:momentum_spike_d2:1775075",
+    "priority": 21,
+    "symbols": [
+     "000660"
+    ],
+    "matched_tier": "momentum_spike_profit_ladder",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 1775075,
+       "max_exclusive": 1813707.2
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[000660].quantity",
+      "operator": "eq",
+      "value": 4,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[000660].avg_buy_price",
+      "operator": "eq",
+      "value": 1757500,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[000660].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 1596000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "premarket_session_change_pct",
+      "source": "(live_price / krx_previous_close - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "required_thesis_evidence_present",
+      "source": "catalyst_basis from get_news article datetime; flow_basis from get_orderbook(venue='nxt') at decision time",
+      "operator": "eq",
+      "value": [
+       "catalyst_basis",
+       "flow_basis"
+      ],
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       1814000
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       1814000
+      ],
+      "price_max": [
+       1814000
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 1775075,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      52618.04
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": [
+     "catalyst_basis or flow_basis cannot be established from a fresh source at 08:0x (required_thesis_evidence unmet -> fail closed)",
+     "resistance_2 above resistance_1 disappears (resistance_levels_required unmet)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:041510:toss_live:breakeven_reserve_trim:77057.4",
+    "priority": 22,
+    "symbols": [
+     "041510"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 77057.4,
+       "max_exclusive": 79416.3
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[toss_live].positions[041510].quantity",
+      "operator": "eq",
+      "value": 20,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[toss_live].positions[041510].avg_buy_price",
+      "operator": "eq",
+      "value": 78630,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[toss_live].positions[041510].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 75300,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       83900
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       83900
+      ],
+      "price_max": [
+       83900
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 79416.3,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00214,
+     "expected_net_realized_gain_krw_per_rung": [
+      5090.45
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-04:041510:kis_live:breakeven_reserve_trim:82817.5385",
+    "priority": 23,
+    "symbols": [
+     "041510"
+    ],
+    "matched_tier": "sell.breakeven_reserve_trim",
+    "conditions": [
+     {
+      "metric": "live_price_band",
+      "source": "get_quote(symbol,market='kr').price",
+      "operator": "between",
+      "value": {
+       "min_inclusive": 82817.5385,
+       "max_exclusive": 85352.769223
+      },
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_quantity",
+      "source": "get_holdings.accounts[kis_live].positions[041510].quantity",
+      "operator": "eq",
+      "value": 13,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_avg_buy_price",
+      "source": "get_holdings.accounts[kis_live].positions[041510].avg_buy_price",
+      "operator": "eq",
+      "value": 84507.6923,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "position_source",
+      "source": "get_holdings.accounts[kis_live].positions[041510].source",
+      "operator": "eq",
+      "value": "kis_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol,market='kr').previous_close",
+      "operator": "eq",
+      "value": 75300,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "lot_pnl_pct",
+      "source": "(live_price / position_avg_buy_price - 1) * 100",
+      "operator": "gte",
+      "value": -2,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_pre_guard_average_cost_multiple",
+      "source": "live_price / position_avg_buy_price",
+      "operator": "lt",
+      "value": 1.01,
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "kis_live",
+     "side": "sell",
+     "order_type": "limit",
+     "time_in_force": "DAY",
+     "rungs": {
+      "count": 1,
+      "prices": [
+       89900
+      ],
+      "quantities": [
+       1
+      ],
+      "price_formula": "fixed anchor derived in prep from the matched tier formula; price_min == price_max == anchor (zero open-session discretion)",
+      "tick_rule": "KRX sell-side tick grid: p<2000:1, <5000:5, <20000:10, <50000:50, <200000:100, <500000:500, else 1000",
+      "rounding": "ceil to the sell-side tick grid",
+      "price_min": [
+       89900
+      ],
+      "price_max": [
+       89900
+      ],
+      "quantity_min": [
+       1
+      ],
+      "quantity_max": [
+       1
+      ],
+      "submission": "one single-rung proposal per rung (live/CLAUDE.md 4-0: multi_rung_requires_approval)"
+     },
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "derivation": {
+     "loss_guard_min_price": 85352.769223,
+     "d7_min_expected_net_realized_gain_krw": 5000,
+     "assumed_effective_deduction_rate": 0.00347,
+     "expected_net_realized_gain_krw_per_rung": [
+      5080.35
+     ],
+     "non_marketable": "every anchor >= band max_exclusive, so the limit price is always strictly above the live price"
+    },
+    "invalidation": []
+   }
+  ]
+ }
+}

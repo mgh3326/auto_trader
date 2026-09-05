@@ -13,17 +13,17 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 |---|---:|---:|---:|---:|---:|---:|
 | account_read | 9 | 0 | 1 | 0 | 0 | 10 |
 | alpaca-paper-clean | 8 | 0 | 5 | 0 | 0 | 13 |
-| analysis_readonly | 25 | 1 | 1 | 1 | 0 | 28 |
-| crypto | 59 | 3 | 41 | 39 | 0 | 142 |
-| db-paper | 58 | 3 | 35 | 47 | 0 | 143 |
-| default | 80 | 4 | 76 | 42 | 0 | 202 |
-| hermes-paper-kis | 59 | 3 | 37 | 39 | 0 | 138 |
-| kiwoom | 63 | 4 | 43 | 39 | 0 | 149 |
-| kiwoom_kr | 61 | 3 | 38 | 39 | 0 | 141 |
+| analysis_readonly | 25 | 1 | 1 | 1 | 1 | 29 |
+| crypto | 59 | 3 | 41 | 39 | 1 | 143 |
+| db-paper | 58 | 3 | 35 | 47 | 1 | 144 |
+| default | 80 | 4 | 76 | 42 | 1 | 203 |
+| hermes-paper-kis | 59 | 3 | 37 | 39 | 1 | 139 |
+| kiwoom | 63 | 4 | 43 | 39 | 1 | 150 |
+| kiwoom_kr | 61 | 3 | 38 | 39 | 1 | 142 |
 | paper_execution | 0 | 0 | 1 | 14 | 0 | 15 |
 | shadow-replay | 2 | 0 | 1 | 0 | 0 | 3 |
 | tradingcodex_execution | 27 | 0 | 14 | 2 | 0 | 43 |
-| us-paper | 66 | 3 | 47 | 41 | 0 | 157 |
+| us-paper | 66 | 3 | 47 | 41 | 1 | 158 |
 | watch_repricing | 15 | 0 | 0 | 0 | 0 | 15 |
 
 ## Proposed follow-up (no change applied)
@@ -81,6 +81,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | compare_paper_accounts | db-paper | app.mcp_server.tooling.paper_analytics_registration | no | D | 0 | 0 | 0 | 0 | 0 |
 | compare_strategies | db-paper | app.mcp_server.tooling.paper_journal_bridge | no | D | 0 | 0 | 0 | 0 | 0 |
 | create_paper_account | db-paper | app.mcp_server.tooling.paper_account_registration | persistence | D | 0 | 0 | 0 | 0 | 0 |
+| decision_table_validate | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.decision_table_registration | no | U | 0 | 0 | 0 | 1 | 10 |
 | delete_paper_account | db-paper | app.mcp_server.tooling.paper_account_registration | persistence | D | 0 | 0 | 0 | 0 | 0 |
 | discover_buy_candidates_fanout | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_candidate_fanout_registration | no | C | 0 | 0 | 0 | 1 | 0 |
 | evaluate_buy_gate_ab_shadow | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_gate_ab_shadow_registration | no | A | 0 | 6 | 0 | 2 | 0 |
@@ -315,3 +316,6 @@ For a future generator, commit reviewed `config/mcp_lane_allowlists/*.txt`; gene
 | us-paper | alpaca_paper_automated_preview_order, alpaca_paper_reconcile_orders, analysis_bundle_create, analysis_bundle_get, analyze_portfolio, get_analyst_consensus, get_dividends, get_financials, get_insider_transactions, get_investor_trends, get_market_reports, get_retrospective_aggregate, get_sector_peers, get_short_interest, get_toss_ai_signal, get_toss_buy_balance, get_trading_scoreboard, get_user_setting, investment_report_activate_watch, investment_report_add_items, investment_report_context_get, investment_report_create_from_hermes_composition, investment_report_decide_item, investment_report_delta_get, investment_report_list, investment_report_prepare_intraday_context, investment_report_set_status, investment_report_update, investment_watch_expire, investment_watch_recommend, investment_watch_void, list_active_journals, order_proposal_expire_sweep, order_proposal_redispatch, research_summary_get, save_trade_journal, set_user_setting, stage_analysis_get, sweep_expired_watches, update_manual_holdings, update_trade_journal | alpaca_paper_execution_preflight_check, alpaca_paper_get_cash, alpaca_paper_ledger_get_by_correlation, alpaca_paper_list_fills, alpaca_paper_list_orders, analysis_artifact_list, analyze_stock, analyze_stock_batch, evaluate_buy_gate_ab_shadow, execution_ledger_fill_events_list_recent, forecast_resolve, forecast_save, get_available_capital, get_cash_balance, get_cost_basis_distribution, get_crypto_catalysts, get_crypto_fear_greed, get_crypto_long_short_ratio, get_crypto_order_flow, get_disclosures, get_earnings_calendar, get_forecasts, get_fx_rate, get_holdings, get_holdings_news, get_indicators, get_intraday_investor_flow, get_kimchi_premium, get_krx_session_health, get_market_index, get_momentum_candidates, get_news, get_ohlcv, get_orderbook, get_portfolio_allocation, get_position, get_quote, get_spike_attribution, get_support_resistance, get_top_stocks, get_trade_retrospectives, get_trading_policy, get_upbit_altseason, investment_report_get, investment_watch_create, investment_watch_events_list_recent, list_active_watches, order_proposal_get, order_proposal_void, save_trade_retrospective, screen_stocks, screen_stocks_enrich, screen_stocks_snapshot, search_symbol, session_context_append, session_context_get_recent, suggest_order_account, trade_retrospective_pending, analysis_artifact_get, get_crypto_top_movers, get_trade_journal | alpaca_paper_automated_submit_order, alpaca_paper_cancel_order, alpaca_paper_get_order, alpaca_paper_ledger_get, alpaca_paper_list_assets, alpaca_paper_preview_order, alpaca_paper_roundtrip_report, alpaca_paper_submit_order, discover_buy_candidates_fanout, get_company_profile, get_correlation, get_crypto_funding_rate, get_crypto_market_regime, get_crypto_open_interest, get_crypto_profile, get_crypto_social, get_execution_strength, get_forecast_calibration, get_investment_opinions, get_latest_market_brief, get_market_issues, get_market_news, get_mock_loop_retrospective, get_retail_sentiment, get_theme_events, get_upbit_index, get_valuation, investment_report_create, investment_report_generate_from_bundle, investment_report_get_hermes_context, investment_report_prepare_bundle, investment_snapshot_bundle_get, investment_snapshot_bundle_list, investment_snapshot_list, investment_stage_artifacts_ingest_from_hermes, kis_mock_mirror_execute_report, market_quote_snapshot_ensure, market_quote_snapshot_latest, modify_journal_entry, order_proposal_list_expired_defensive, research_session_get, research_session_list_recent, support_reserve_net_consume, us_dual_paper_account_states, us_dual_paper_capability_matrix, us_dual_paper_preview, watch_downside_register_sweep |
 | watch_repricing | — | get_fx_rate, get_holdings, get_indicators, get_market_index, get_news, get_quote, get_support_resistance, get_trading_policy, investment_watch_events_list_recent, list_active_watches, order_proposal_create, order_proposal_get, order_proposal_list, route_request, suggest_order_account | — |
 UNLISTED=219
+
+> 2026-09-05 ROB-1348 postscript: `decision_table_validate` was added after
+> this 2026-09-03 snapshot and was not part of its Sentry usage measurement.
