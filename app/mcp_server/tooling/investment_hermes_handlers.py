@@ -75,7 +75,6 @@ INVESTMENT_HERMES_TOOL_NAMES: set[str] = {
     "investment_report_get_hermes_context",
     "investment_report_create_from_hermes_composition",
     "investment_stage_artifacts_ingest_from_hermes",
-    "investment_report_prepare_intraday_context",
 }
 
 
@@ -476,17 +475,6 @@ def register_investment_hermes_tools(mcp: FastMCP) -> None:
             "effect. Gated by SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
         ),
     )(investment_stage_artifacts_ingest_from_hermes_impl)
-    mcp.tool(
-        name="investment_report_prepare_intraday_context",
-        description=(
-            "ROB-376 — assemble an intraday_update Hermes context: the bundle's "
-            "deterministic context plus an intraday_delta_block (report-vs-now / "
-            "report-vs-prior delta) keyed to baseline_report_uuid, for Hermes to "
-            "compose an intraday_update_v1 report. Read-only, fail-open on the "
-            "delta, no in-process LLM, no broker/order/watch mutation. Gated by "
-            "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED."
-        ),
-    )(investment_report_prepare_intraday_context_impl)
 
 
 HERMES_CONTEXT_READ_ONLY_TOOL_NAMES: set[str] = {"investment_report_get_hermes_context"}

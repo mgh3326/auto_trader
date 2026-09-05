@@ -6,44 +6,19 @@ from __future__ import annotations
 from typing import Any
 
 from app.mcp_server.tooling.trade_retrospective_tools import (
-    get_retrospective_aggregate,
     get_trade_retrospectives,
-    save_position_intake_retrospective,
     save_trade_retrospective,
     trade_retrospective_pending,
 )
 
 TRADE_RETROSPECTIVE_TOOL_NAMES: set[str] = {
     "save_trade_retrospective",
-    "save_position_intake_retrospective",
     "get_trade_retrospectives",
-    "get_retrospective_aggregate",
     "trade_retrospective_pending",
 }
 
 
-def register_trade_retrospective_tools(
-    mcp: Any,
-    *,
-    include_position_intake: bool = True,
-) -> None:
-    if include_position_intake:
-        _ = mcp.tool(
-            name="save_position_intake_retrospective",
-            description=(
-                "Create a KIS-live-KR position-intake retrospective for an externally "
-                "acquired or pre-ledger holding. This path is fail-closed: it locks "
-                "and scans the complete review.kis_live_order_ledger history for the "
-                "same symbol and rejects when status is any of {filled, rejected, "
-                "unknown, anomaly, cancelled, expired}. The durable evidence is "
-                "typed retrospective_type=intake and excluded from execution "
-                "learning/scoring. Requires a timezone-aware <=24h position snapshot, "
-                "account/quantity/average/current-price evidence, acquisition "
-                "provenance, an idempotent correlation_id, loss-cut-eligible "
-                "trigger_type, and next_actions. Writes only the retrospective/action "
-                "ledgers; never mutates a broker or creates an order proposal."
-            ),
-        )(save_position_intake_retrospective)
+def register_trade_retrospective_tools(mcp: Any) -> None:
     _ = mcp.tool(
         name="save_trade_retrospective",
         description=(
@@ -77,20 +52,6 @@ def register_trade_retrospective_tools(
             "(symbol/account_mode/strategy_key/market/correlation_id/days). Read-only."
         ),
     )(get_trade_retrospectives)
-    _ = mcp.tool(
-        name="get_retrospective_aggregate",
-        description=(
-            "Aggregate retrospectives by group_by in {strategy, day, trigger_type, "
-            "root_cause} over a KST date window: win_rate_pct, avg_pnl_pct, "
-            "absolute realized_pnl sum (per currency), wins/misses, plus "
-            "by_outcome/by_trigger_type/by_root_cause_class breakdowns per group. "
-            "PnL-oriented dims (strategy/day) count only fill-evidence rows "
-            "(excluded_no_fill_evidence reported); process dims "
-            "(trigger_type/root_cause) include no-evidence rows so "
-            "rejected/cancelled postmortems are analyzed too. Read-only. "
-            "Complements get_mock_loop_retrospective."
-        ),
-    )(get_retrospective_aggregate)
     _ = mcp.tool(
         name="trade_retrospective_pending",
         description=(

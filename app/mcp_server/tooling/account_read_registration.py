@@ -39,7 +39,7 @@ from app.mcp_server.tooling.portfolio_registration import register_portfolio_too
 from app.mcp_server.tooling.session_context_registration import (
     SESSION_CONTEXT_TOOL_NAMES,
 )
-from app.mcp_server.tooling.user_settings_registration import USER_SETTINGS_TOOL_NAMES
+from app.mcp_server.tooling.user_settings_tools import USER_SETTINGS_TOOL_NAMES
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

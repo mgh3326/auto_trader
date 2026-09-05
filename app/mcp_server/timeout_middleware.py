@@ -40,11 +40,9 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     "investment_report_generate_from_bundle": 240.0,
     "investment_report_prepare_bundle": 240.0,
     "investment_report_create_from_hermes_composition": 240.0,
-    "investment_report_prepare_intraday_context": 180.0,
     "investment_report_get_hermes_context": 180.0,
     # Batch analysis / screeners (multi-symbol fan-out).
     "analyze_stock_batch": 120.0,
-    "analyze_portfolio": 120.0,
     "screen_stocks": 120.0,
     "screen_stocks_snapshot": 120.0,
     # ROB-1309: enrichment lives here now (screen_stocks_snapshot is DB-only).
@@ -53,7 +51,6 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     "analyze_stock": 90.0,
     "get_holdings": 120.0,
     # Multi-API fundamentals.
-    "get_financials": 90.0,
     "get_company_profile": 90.0,
     "get_valuation": 90.0,
     "get_sector_peers": 90.0,

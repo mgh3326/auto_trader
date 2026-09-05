@@ -5,13 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 from app.mcp_server.tooling.analysis_tool_handlers import (
-    analyze_portfolio_impl,
     analyze_stock_batch_impl,
     analyze_stock_impl,
     get_correlation_impl,
     get_crypto_top_movers_impl,
     get_disclosures_impl,
-    get_dividends_impl,
     get_fear_greed_index_impl,
     get_top_stocks_impl,
     screen_stocks_impl,
@@ -26,8 +24,6 @@ from app.mcp_server.tooling.momentum_candidates import get_momentum_candidates_i
 from app.mcp_server.tooling.research_pipeline_read import (
     research_session_get_impl,
     research_session_list_recent_impl,
-    research_summary_get_impl,
-    stage_analysis_get_impl,
 )
 from app.mcp_server.tooling.screener_enrich_tool import screen_stocks_enrich_impl
 from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
@@ -44,7 +40,6 @@ if TYPE_CHECKING:
 # profile (ROB-503).
 ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_stock",
-    "analyze_portfolio",
     "analyze_stock_batch",
     "screen_stocks",
     "screen_stocks_snapshot",
@@ -60,15 +55,12 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "get_crypto_top_movers",
     "get_disclosures",
     "get_correlation",
-    "get_dividends",
     "get_crypto_fear_greed",
     "get_momentum_candidates",
     "get_krx_session_health",
     "get_theme_events",
     "research_session_get",
     "research_session_list_recent",
-    "stage_analysis_get",
-    "research_summary_get",
 }
 
 
@@ -267,26 +259,6 @@ def register_analysis_tools(
             symbol=symbol,
             market=market,
             include_peers=include_peers,
-        )
-
-    @mcp.tool(
-        name="analyze_portfolio",
-        description=(
-            "Analyze multiple stocks in parallel. Returns per-symbol analysis plus "
-            "portfolio summary."
-        ),
-    )
-    async def analyze_portfolio(
-        symbols: list[str | int],
-        market: str | None = None,
-        include_peers: bool = False,
-        include_rotation_plan: bool = False,
-    ) -> dict[str, Any]:
-        return await analyze_portfolio_impl(
-            symbols=symbols,
-            market=market,
-            include_peers=include_peers,
-            include_rotation_plan=include_rotation_plan,
         )
 
     @mcp.tool(
@@ -586,13 +558,6 @@ def register_analysis_tools(
     # active report/operator prompts.
 
     @mcp.tool(
-        name="get_dividends",
-        description="Get dividend information for US stocks (via yfinance).",
-    )
-    async def get_dividends(symbol: str) -> dict[str, Any]:
-        return await get_dividends_impl(symbol=symbol)
-
-    @mcp.tool(
         name="get_crypto_fear_greed",
         description=(
             "Get the Crypto Fear & Greed Index from Alternative.me with current "
@@ -615,20 +580,6 @@ def register_analysis_tools(
     )
     async def research_session_list_recent(limit: int = 10) -> dict[str, Any]:
         return await research_session_list_recent_impl(limit=limit)
-
-    @mcp.tool(
-        name="stage_analysis_get",
-        description="Returns one research stage analysis row by id.",
-    )
-    async def stage_analysis_get(stage_id: int) -> dict[str, Any]:
-        return await stage_analysis_get_impl(stage_id=stage_id)
-
-    @mcp.tool(
-        name="research_summary_get",
-        description="Returns one research summary with its linked stage rows by summary id.",
-    )
-    async def research_summary_get(summary_id: int) -> dict[str, Any]:
-        return await research_summary_get_impl(summary_id=summary_id)
 
 
 __all__ = ["ANALYSIS_TOOL_NAMES", "register_analysis_tools"]

@@ -2,6 +2,44 @@
 
 MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
+> **2026-09-03 MCP surface audit — removed tools.** The tools listed below were
+> class D (zero `tools/call` spans in 90 days, zero prompt/runbook/code
+> references) and no longer register on any profile. Sections further down this
+> file that still describe them are historical: the registration is gone, the
+> prose was left in place deliberately rather than rewritten wholesale. The
+> canonical list, the service functions each one orphaned, and every remaining
+> doc reference are in
+> [`docs/runbooks/mcp-surface-cleanup-20260905.md`](../../docs/runbooks/mcp-surface-cleanup-20260905.md).
+>
+> `analysis_bundle_create`, `analysis_bundle_get`, `analyze_portfolio`,
+> `alpaca_paper_reconcile_orders`, `compare_paper_accounts`,
+> `compare_strategies`, `create_paper_account`, `delete_paper_account`,
+> `get_analyst_consensus`, `get_dividends`, `get_financials`,
+> `get_insider_transactions`, `get_investor_trends`, `get_market_reports`,
+> `get_paper_performance`, `get_paper_trade_log`, `get_retrospective_aggregate`,
+> `get_short_interest`, `get_trading_scoreboard`, `get_user_setting`,
+> `investment_report_activate_watch`, `investment_report_add_items`,
+> `investment_report_context_get`, `investment_report_decide_item`,
+> `investment_report_delta_get`, `investment_report_list`,
+> `investment_report_prepare_intraday_context`, `investment_report_set_status`,
+> `investment_report_update`, `investment_watch_expire`,
+> `investment_watch_recommend`, `investment_watch_void`, `list_active_journals`,
+> `order_proposal_expire_sweep`, `order_proposal_redispatch`,
+> `paper_cancel_pending_order`, `paper_execution_*` (6),
+> `paper_validation_*` (8), `recommend_go_live`, `research_summary_get`,
+> `reset_paper_account`, `save_position_intake_retrospective`,
+> `save_trade_journal`, `set_user_setting`, `stage_analysis_get`,
+> `sweep_expired_watches`, `update_manual_holdings`, `update_trade_journal`.
+>
+> Two class-D tools were **kept** on purpose:
+> `alpaca_paper_automated_preview_order` (its class-C partner
+> `alpaca_paper_automated_submit_order` accepts only a token this tool mints)
+> and `get_sector_peers` (named by the machine-checked discovery lane in
+> `docs/playbooks/trading-decision-playbook.md`). Three more —
+> `get_toss_ai_signal`, `get_toss_buy_balance`,
+> `investment_report_create_from_hermes_composition` — are named by live lane
+> allowlists in `config/mcp_lane_allowlists/`.
+
 ## Observability (Sentry MCP)
 - MCP tracing uses `sentry_sdk.integrations.mcp.MCPIntegration` when enabled.
 - Recommended trace filter:

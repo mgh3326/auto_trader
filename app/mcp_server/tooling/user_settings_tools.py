@@ -10,6 +10,16 @@ from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.shared import MCP_USER_ID
 from app.models.user_settings import UserSetting
 
+# The MCP registrations for these two names were removed by the 2026-09-03 MCP
+# surface audit (both class D). The set is kept here -- the module that survives
+# because ``portfolio_cash`` and ``account_routing_tools`` still import
+# ``get_user_setting`` directly -- so the closed-world profiles that list them as
+# forbidden keep firing if a registrar is ever re-added.
+USER_SETTINGS_TOOL_NAMES: set[str] = {
+    "get_user_setting",
+    "set_user_setting",
+}
+
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))

@@ -134,7 +134,6 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "get_position",
     "get_cash_balance",
     "get_available_capital",
-    "update_manual_holdings",
 }
 
 # Phase 2 strategy constants for crypto exit signals
@@ -1870,26 +1869,6 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             account_mode=account_mode,
             account_type=account_type,
             paper_account=paper_account,
-        )
-
-    @mcp.tool(
-        name="update_manual_holdings",
-        description=(
-            "Update manual holdings from parsed securities app screenshot data. "
-            "Uses upsert by default and supports action='remove' for sold holdings."
-        ),
-    )
-    async def update_manual_holdings(
-        holdings: list[dict[str, Any]],
-        broker: str = "toss",
-        account_name: str = "기본 계좌",
-        dry_run: bool = True,
-    ) -> dict[str, Any]:
-        return await _update_manual_holdings_impl(
-            holdings=holdings,
-            broker=broker,
-            account_name=account_name,
-            dry_run=dry_run,
         )
 
     @mcp.tool(

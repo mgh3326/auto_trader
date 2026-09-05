@@ -8,11 +8,14 @@ import pytest
 import app.mcp_server.tooling.investment_reports_handlers as handlers
 
 
-def test_delta_tool_name_registered():
-    assert "investment_report_delta_get" in handlers.INVESTMENT_REPORT_TOOL_NAMES
+def test_delta_tool_is_deregistered():
+    """MCP surface audit 2026-09-03: investment_report_delta_get was class D.
 
+    The impl below is still exercised — it is kept because the module's other
+    report handlers share its helpers — but no profile serves it as a tool.
+    """
+    assert "investment_report_delta_get" not in handlers.INVESTMENT_REPORT_TOOL_NAMES
 
-def test_register_investment_report_tools_includes_delta():
     registered: list[str] = []
 
     class _FakeMCP:
@@ -21,7 +24,7 @@ def test_register_investment_report_tools_includes_delta():
             return lambda fn: fn
 
     handlers.register_investment_report_tools(_FakeMCP())
-    assert "investment_report_delta_get" in registered
+    assert "investment_report_delta_get" not in registered
 
 
 @pytest.mark.asyncio
