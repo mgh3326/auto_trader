@@ -1,0 +1,932 @@
+{
+ "_fixture_provenance": {
+  "operator_repo_file": "kr-nxt-prep-2026-09-03-audit-evidence.json",
+  "json_pointer": "/audit_materials/decision_table",
+  "recorded_decision_table_hash": "f1077523ca36428a8d02fbaccee66de0ee5d58f72bff3b13d9f87d2cf55bd5c7",
+  "recorded_hash_algorithm": "sha256_utf8_json_sort_keys_no_whitespace",
+  "correlation_id": "kr-nxt-prep-2026-09-03",
+  "canonical_bytes": 32988,
+  "rows": 5,
+  "decision_table": "verbatim",
+  "envelope": "transcribed from reports/kr-nxt-prep-2026-09-03.md"
+ },
+ "decision_table": {
+  "no_match_action": "no_proposal",
+  "row_match_unit": "(symbol, account_mode) 단위로 판정한다. 같은 심볼의 Row 1·2·3 은 live 밴드가 서로소라 동시 매칭이 구조적으로 불가능하고, 서로 다른 심볼의 행은 서로 다른 proposal 후보에 대응하므로 후보 하나당 매칭 행은 정확히 1개다.",
+  "rows": [
+   {
+    "scenario_id": "kr-nxt-2026-09-03:196170:toss:ultra_near_r1_low_band",
+    "priority": 1,
+    "symbols": [
+     "196170"
+    ],
+    "conditions": [
+     {
+      "metric": "price_source_is_nxt",
+      "source": "get_quote(symbol=196170, market=\"kr\").price_source",
+      "operator": "in",
+      "value": [
+       "nxt_mid",
+       "nxt_expected_price",
+       "nxt_best_bid_ask_mid"
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+      "source": "abs(get_quote(196170).price / mid(get_orderbook(symbol=196170, venue=\"nxt\")) - 1)",
+      "operator": "lte",
+      "value": 0.02,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_tradable",
+      "source": "get_quote(symbol=196170, market=\"kr\").nxt_tradable",
+      "operator": "eq",
+      "value": true,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "toss_position_quantity",
+      "source": "get_holdings(market=\"kr\", include_current_price=true, minimum_value=0).accounts[account=toss].positions[symbol=196170].quantity",
+      "operator": "eq",
+      "value": 9,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_avg_buy_price",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=196170].avg_buy_price",
+      "operator": "eq",
+      "value": 309000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_source",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=196170].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_open_orders_count_same_symbol",
+      "source": "toss_get_order_history(status=\"open\") filtered symbol=196170",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "kis_open_orders_count_same_symbol",
+      "source": "kis_live_get_order_history(status=\"pending\", market=\"kr\") filtered symbol=196170",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol=196170, market=\"kr\").previous_close",
+      "operator": "eq",
+      "value": 298500,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "fresh_resistance_r1_price",
+      "source": "analyze_stock_batch([196170], quick=false).results.196170.support_resistance.resistances[first price > live].price",
+      "operator": "eq",
+      "value": 314888.18,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "policy_frozen_keys",
+      "source": "get_trading_policy(market=\"kr\", lane=\"sell\")",
+      "operator": "eq",
+      "value": {
+       "sell.loss_guard_min_multiple": 1.01,
+       "sell.rsi_place_min": 58,
+       "sell.resistance_near_pct": 6,
+       "sell.breakeven_near_pct": 2,
+       "sell.trim_min_expected_net_realized_gain_krw": 5000,
+       "sell.momentum_spike_change_pct_min": 10,
+       "sell.single_share_profit_pct_min": 8,
+       "order.day_expiry_kst": "20:00",
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.resistance_near_pct_max": 2,
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.rsi_below_policy_key": "sell.rsi_place_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.total_quantity_eq": 1,
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.profit_pct_min_policy_key": "sell.single_share_profit_pct_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.resistance_reference_required": true,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.position_quantity_min": 2,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.ladder_total_position_pct_max": 33.3333,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.average_cost_multiple_min_exclusive": 1,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.required_thesis_evidence": [
+        "catalyst_basis",
+        "flow_basis"
+       ],
+       "sell.trim_preplace.tiers[sell.breakeven_reserve_trim].conditions.lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": "sell.loss_guard_min_multiple",
+       "sell.trim_preplace.tie_breaks.tier_priority": "de_minimis_trim_watch > sell.breakeven_reserve_trim > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone > breakeven_extension_ladder",
+       "sell.trim_preplace.tie_breaks.momentum_spike_integer_rounding": "floor_without_exceeding_one_third_or_watch",
+       "phase25.10_single_share_exit_choice.tiers[one_share_profitable_resistance_exit].action": "advise_full_quantity_resistance_exit_or_proposal"
+      },
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "crash_day_state_at_decision",
+      "source": "config.trading_policy crash_day.trigger (069500 시가 갭) — 08:00~08:50 KST 창에는 KRX 시가가 존재하지 않음",
+      "operator": "eq",
+      "value": "not_evaluable_no_krx_open",
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "nxt_premarket_price",
+      "source": "get_quote(196170).price",
+      "operator": "between",
+      "value": [
+       312090,
+       314888.17
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_premarket_change_pct_vs_prev_close",
+      "source": "(P / 298500 - 1) * 100",
+      "operator": "lt",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "rsi_14_last_completed_daily_bar",
+      "source": "analyze_stock_batch([196170]).results.196170.indicators.rsi.14",
+      "operator": "lt",
+      "value": 58,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "matched_tier_id",
+      "source": "sell.trim_preplace 티어 순회 결과",
+      "operator": "eq",
+      "value": "ultra_near_resistance",
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "rungs": "정확히 1 rung. price_min=price_max=315000 = tick_ceil(314888.18, tick=500). quantity_min=quantity_max=1 (보유 9 중 소량 트림). time_in_force=DAY. 손실가드 315000 >= 309000*1.01 = 312090 PASS. D7 1주 순실현 = 315000*(1-0.00214) - 309000 = 5325.90 >= 5000 PASS. 앵커 > 구간 상한 314888.17 이므로 non-marketable resting 보장.",
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "invalidation": [
+     "fresh R1 값 변화 또는 supports[] 배열로 이동 또는 소멸",
+     "toss lot 수량·평단 변화 (196170 무상증자 신주 입고·권리락 재기준 포함)",
+     "lot source != \"toss_api\" (팬텀 manual 전환)",
+     "kis 또는 toss 어느 한쪽이라도 동일 심볼 open 주문 존재",
+     "관측가가 행의 닫힌 구간을 이탈",
+     "get_quote.price_source 부재(전일종가 폴백) 또는 nxt_tradable=false",
+     "동결 정책 키 세트 중 하나라도 값·semantics 변경",
+     "069500 시가 갭 ≤ −3% 로 crash_day 성립 (창 밖 사건이나 관측되면 무효)",
+     "order_proposals.auto_approve.breakeven_band_pct 키 등장 AND 손익배수가 1.01 아래로 복귀 (티어 2 지배권 회복)",
+     "valid_window(08:00~08:50 KST) 이탈",
+     "rsi_14 >= 58 (→ rsi_confirmed_resistance 로 티어 전환, 재판단)",
+     "관측가 >= 314888.18 (R1 이 323734.2 로 이동 → Row 2 영역)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-03:196170:toss:ultra_near_r1_high_band",
+    "priority": 2,
+    "symbols": [
+     "196170"
+    ],
+    "conditions": [
+     {
+      "metric": "price_source_is_nxt",
+      "source": "get_quote(symbol=196170, market=\"kr\").price_source",
+      "operator": "in",
+      "value": [
+       "nxt_mid",
+       "nxt_expected_price",
+       "nxt_best_bid_ask_mid"
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+      "source": "abs(get_quote(196170).price / mid(get_orderbook(symbol=196170, venue=\"nxt\")) - 1)",
+      "operator": "lte",
+      "value": 0.02,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_tradable",
+      "source": "get_quote(symbol=196170, market=\"kr\").nxt_tradable",
+      "operator": "eq",
+      "value": true,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "toss_position_quantity",
+      "source": "get_holdings(market=\"kr\", include_current_price=true, minimum_value=0).accounts[account=toss].positions[symbol=196170].quantity",
+      "operator": "eq",
+      "value": 9,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_avg_buy_price",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=196170].avg_buy_price",
+      "operator": "eq",
+      "value": 309000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_source",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=196170].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_open_orders_count_same_symbol",
+      "source": "toss_get_order_history(status=\"open\") filtered symbol=196170",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "kis_open_orders_count_same_symbol",
+      "source": "kis_live_get_order_history(status=\"pending\", market=\"kr\") filtered symbol=196170",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol=196170, market=\"kr\").previous_close",
+      "operator": "eq",
+      "value": 298500,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "fresh_resistance_r1_price",
+      "source": "analyze_stock_batch([196170], quick=false).results.196170.support_resistance.resistances[first price > live].price",
+      "operator": "eq",
+      "value": 323734.2,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "policy_frozen_keys",
+      "source": "get_trading_policy(market=\"kr\", lane=\"sell\")",
+      "operator": "eq",
+      "value": {
+       "sell.loss_guard_min_multiple": 1.01,
+       "sell.rsi_place_min": 58,
+       "sell.resistance_near_pct": 6,
+       "sell.breakeven_near_pct": 2,
+       "sell.trim_min_expected_net_realized_gain_krw": 5000,
+       "sell.momentum_spike_change_pct_min": 10,
+       "sell.single_share_profit_pct_min": 8,
+       "order.day_expiry_kst": "20:00",
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.resistance_near_pct_max": 2,
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.rsi_below_policy_key": "sell.rsi_place_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.total_quantity_eq": 1,
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.profit_pct_min_policy_key": "sell.single_share_profit_pct_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.resistance_reference_required": true,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.position_quantity_min": 2,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.ladder_total_position_pct_max": 33.3333,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.average_cost_multiple_min_exclusive": 1,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.required_thesis_evidence": [
+        "catalyst_basis",
+        "flow_basis"
+       ],
+       "sell.trim_preplace.tiers[sell.breakeven_reserve_trim].conditions.lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": "sell.loss_guard_min_multiple",
+       "sell.trim_preplace.tie_breaks.tier_priority": "de_minimis_trim_watch > sell.breakeven_reserve_trim > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone > breakeven_extension_ladder",
+       "sell.trim_preplace.tie_breaks.momentum_spike_integer_rounding": "floor_without_exceeding_one_third_or_watch",
+       "phase25.10_single_share_exit_choice.tiers[one_share_profitable_resistance_exit].action": "advise_full_quantity_resistance_exit_or_proposal"
+      },
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "crash_day_state_at_decision",
+      "source": "config.trading_policy crash_day.trigger (069500 시가 갭) — 08:00~08:50 KST 창에는 KRX 시가가 존재하지 않음",
+      "operator": "eq",
+      "value": "not_evaluable_no_krx_open",
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "nxt_premarket_price",
+      "source": "get_quote(196170).price",
+      "operator": "between",
+      "value": [
+       317386.5,
+       323734.19
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_premarket_change_pct_vs_prev_close",
+      "source": "(P / 298500 - 1) * 100",
+      "operator": "lt",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "rsi_14_last_completed_daily_bar",
+      "source": "analyze_stock_batch([196170]).results.196170.indicators.rsi.14",
+      "operator": "lt",
+      "value": 58,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "matched_tier_id",
+      "source": "sell.trim_preplace 티어 순회 결과",
+      "operator": "eq",
+      "value": "ultra_near_resistance",
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "rungs": "정확히 1 rung. price_min=price_max=324000 = tick_ceil(323734.2, tick=500). quantity_min=quantity_max=1. time_in_force=DAY. 손실가드 324000 >= 312090 PASS. D7 순실현 = 324000*(1-0.00214) - 309000 = 14306.64 PASS. 앵커 > 구간 상한 323734.19 → non-marketable.",
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "invalidation": [
+     "fresh R1 값 변화 또는 supports[] 배열로 이동 또는 소멸",
+     "toss lot 수량·평단 변화 (196170 무상증자 신주 입고·권리락 재기준 포함)",
+     "lot source != \"toss_api\" (팬텀 manual 전환)",
+     "kis 또는 toss 어느 한쪽이라도 동일 심볼 open 주문 존재",
+     "관측가가 행의 닫힌 구간을 이탈",
+     "get_quote.price_source 부재(전일종가 폴백) 또는 nxt_tradable=false",
+     "동결 정책 키 세트 중 하나라도 값·semantics 변경",
+     "069500 시가 갭 ≤ −3% 로 crash_day 성립 (창 밖 사건이나 관측되면 무효)",
+     "order_proposals.auto_approve.breakeven_band_pct 키 등장 AND 손익배수가 1.01 아래로 복귀 (티어 2 지배권 회복)",
+     "valid_window(08:00~08:50 KST) 이탈",
+     "rsi_14 >= 58 (→ rsi_confirmed_resistance 전환)",
+     "관측가 < 317386.5 (거리 > 2% → watch_zone) 또는 >= 323734.2 (R1 이동)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-03:196170:toss:momentum_spike_profit_ladder_d2",
+    "priority": 3,
+    "symbols": [
+     "196170"
+    ],
+    "conditions": [
+     {
+      "metric": "price_source_is_nxt",
+      "source": "get_quote(symbol=196170, market=\"kr\").price_source",
+      "operator": "in",
+      "value": [
+       "nxt_mid",
+       "nxt_expected_price",
+       "nxt_best_bid_ask_mid"
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+      "source": "abs(get_quote(196170).price / mid(get_orderbook(symbol=196170, venue=\"nxt\")) - 1)",
+      "operator": "lte",
+      "value": 0.02,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_tradable",
+      "source": "get_quote(symbol=196170, market=\"kr\").nxt_tradable",
+      "operator": "eq",
+      "value": true,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "toss_position_quantity",
+      "source": "get_holdings(market=\"kr\", include_current_price=true, minimum_value=0).accounts[account=toss].positions[symbol=196170].quantity",
+      "operator": "eq",
+      "value": 9,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_avg_buy_price",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=196170].avg_buy_price",
+      "operator": "eq",
+      "value": 309000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_source",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=196170].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_open_orders_count_same_symbol",
+      "source": "toss_get_order_history(status=\"open\") filtered symbol=196170",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "kis_open_orders_count_same_symbol",
+      "source": "kis_live_get_order_history(status=\"pending\", market=\"kr\") filtered symbol=196170",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol=196170, market=\"kr\").previous_close",
+      "operator": "eq",
+      "value": 298500,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "fresh_resistance_r1_price",
+      "source": "analyze_stock_batch([196170], quick=false).results.196170.support_resistance.resistances[first price > live].price",
+      "operator": "eq",
+      "value": 343663.77,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "policy_frozen_keys",
+      "source": "get_trading_policy(market=\"kr\", lane=\"sell\")",
+      "operator": "eq",
+      "value": {
+       "sell.loss_guard_min_multiple": 1.01,
+       "sell.rsi_place_min": 58,
+       "sell.resistance_near_pct": 6,
+       "sell.breakeven_near_pct": 2,
+       "sell.trim_min_expected_net_realized_gain_krw": 5000,
+       "sell.momentum_spike_change_pct_min": 10,
+       "sell.single_share_profit_pct_min": 8,
+       "order.day_expiry_kst": "20:00",
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.resistance_near_pct_max": 2,
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.rsi_below_policy_key": "sell.rsi_place_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.total_quantity_eq": 1,
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.profit_pct_min_policy_key": "sell.single_share_profit_pct_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.resistance_reference_required": true,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.position_quantity_min": 2,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.ladder_total_position_pct_max": 33.3333,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.average_cost_multiple_min_exclusive": 1,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.required_thesis_evidence": [
+        "catalyst_basis",
+        "flow_basis"
+       ],
+       "sell.trim_preplace.tiers[sell.breakeven_reserve_trim].conditions.lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": "sell.loss_guard_min_multiple",
+       "sell.trim_preplace.tie_breaks.tier_priority": "de_minimis_trim_watch > sell.breakeven_reserve_trim > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone > breakeven_extension_ladder",
+       "sell.trim_preplace.tie_breaks.momentum_spike_integer_rounding": "floor_without_exceeding_one_third_or_watch",
+       "phase25.10_single_share_exit_choice.tiers[one_share_profitable_resistance_exit].action": "advise_full_quantity_resistance_exit_or_proposal"
+      },
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "crash_day_state_at_decision",
+      "source": "config.trading_policy crash_day.trigger (069500 시가 갭) — 08:00~08:50 KST 창에는 KRX 시가가 존재하지 않음",
+      "operator": "eq",
+      "value": "not_evaluable_no_krx_open",
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "nxt_premarket_price",
+      "source": "get_quote(196170).price",
+      "operator": "between",
+      "value": [
+       328350,
+       343663.76
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_premarket_change_pct_vs_prev_close",
+      "source": "(P / 298500 - 1) * 100",
+      "operator": "gte",
+      "value": 10,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "fresh_resistance_r2_price",
+      "source": "analyze_stock_batch([196170]).results.196170.support_resistance.resistances[second price > live].price",
+      "operator": "eq",
+      "value": 356000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "average_cost_multiple",
+      "source": "P / 309000",
+      "operator": "gt",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "catalyst_basis_recorded",
+      "source": "prep 기록: 2026-09-03 알테오젠-노바티스 최대 4.4조 SC 피하주사 기술수출 (중앙일보/동아일보/뉴시스/세계일보/서울경제 5개 매체, datetime=2026-09-03)",
+      "operator": "eq",
+      "value": "novartis_sc_licensing_44trn_2026-09-03",
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "flow_basis_observed_at_decision",
+      "source": "get_orderbook(196170, venue=\"nxt\") 매수/매도 총잔량과 체결강도를 open 세션이 관측해 thesis 에 기록",
+      "operator": "eq",
+      "value": "recorded_by_open_session",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "matched_tier_id",
+      "source": "sell.trim_preplace 티어 순회 결과",
+      "operator": "eq",
+      "value": "momentum_spike_profit_ladder",
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "rungs": "정확히 2개의 단일-rung 제안(§4-0 1제안=1rung). rung A: price_min=price_max=344000 = tick_ceil(343663.77, tick=500), quantity=1. rung B: price_min=price_max=356000 (= R2 356000, 이미 tick 500 배수), quantity=1. 합계 수량 2 = floor(9 * 0.333333) = floor(2.999997) — ladder_total_position_pct_max 33.3333 을 초과하지 않는 정수 내림. time_in_force=DAY. 손실가드 두 rung 모두 >= 312090 PASS. D7 순실현 rung A 34263.84 / rung B 46238.16 PASS. 두 앵커 모두 구간 상한 343663.76 초과 → non-marketable.",
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "invalidation": [
+     "fresh R1 값 변화 또는 supports[] 배열로 이동 또는 소멸",
+     "toss lot 수량·평단 변화 (196170 무상증자 신주 입고·권리락 재기준 포함)",
+     "lot source != \"toss_api\" (팬텀 manual 전환)",
+     "kis 또는 toss 어느 한쪽이라도 동일 심볼 open 주문 존재",
+     "관측가가 행의 닫힌 구간을 이탈",
+     "get_quote.price_source 부재(전일종가 폴백) 또는 nxt_tradable=false",
+     "동결 정책 키 세트 중 하나라도 값·semantics 변경",
+     "069500 시가 갭 ≤ −3% 로 crash_day 성립 (창 밖 사건이나 관측되면 무효)",
+     "order_proposals.auto_approve.breakeven_band_pct 키 등장 AND 손익배수가 1.01 아래로 복귀 (티어 2 지배권 회복)",
+     "valid_window(08:00~08:50 KST) 이탈",
+     "관측가 >= 343663.77 (R1 이 356000 으로 이동하고 R2 가 소멸 → resistance_levels_required 미충족 → 범위 이탈)",
+     "관측가 < 328350 (변동률 < 10% → D2 미성립)",
+     "flow_basis 를 08:0x 호가 원본으로 확인할 수 없음 (required_thesis_evidence 미충족 → fail-closed)",
+     "무상증자 권리락으로 previous_close 가 298500 이 아님 (변동률 분모 붕괴)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-03:326030:toss:single_share_full_exit_d5",
+    "priority": 4,
+    "symbols": [
+     "326030"
+    ],
+    "conditions": [
+     {
+      "metric": "price_source_is_nxt",
+      "source": "get_quote(symbol=326030, market=\"kr\").price_source",
+      "operator": "in",
+      "value": [
+       "nxt_mid",
+       "nxt_expected_price",
+       "nxt_best_bid_ask_mid"
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+      "source": "abs(get_quote(326030).price / mid(get_orderbook(symbol=326030, venue=\"nxt\")) - 1)",
+      "operator": "lte",
+      "value": 0.02,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_tradable",
+      "source": "get_quote(symbol=326030, market=\"kr\").nxt_tradable",
+      "operator": "eq",
+      "value": true,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "toss_position_quantity",
+      "source": "get_holdings(market=\"kr\", include_current_price=true, minimum_value=0).accounts[account=toss].positions[symbol=326030].quantity",
+      "operator": "eq",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_avg_buy_price",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=326030].avg_buy_price",
+      "operator": "eq",
+      "value": 83200,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_source",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=326030].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_open_orders_count_same_symbol",
+      "source": "toss_get_order_history(status=\"open\") filtered symbol=326030",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "kis_open_orders_count_same_symbol",
+      "source": "kis_live_get_order_history(status=\"pending\", market=\"kr\") filtered symbol=326030",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol=326030, market=\"kr\").previous_close",
+      "operator": "eq",
+      "value": 86300,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "fresh_resistance_r1_price",
+      "source": "analyze_stock_batch([326030], quick=false).results.326030.support_resistance.resistances[first price > live].price",
+      "operator": "eq",
+      "value": 91506.01,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "policy_frozen_keys",
+      "source": "get_trading_policy(market=\"kr\", lane=\"sell\")",
+      "operator": "eq",
+      "value": {
+       "sell.loss_guard_min_multiple": 1.01,
+       "sell.rsi_place_min": 58,
+       "sell.resistance_near_pct": 6,
+       "sell.breakeven_near_pct": 2,
+       "sell.trim_min_expected_net_realized_gain_krw": 5000,
+       "sell.momentum_spike_change_pct_min": 10,
+       "sell.single_share_profit_pct_min": 8,
+       "order.day_expiry_kst": "20:00",
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.resistance_near_pct_max": 2,
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.rsi_below_policy_key": "sell.rsi_place_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.total_quantity_eq": 1,
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.profit_pct_min_policy_key": "sell.single_share_profit_pct_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.resistance_reference_required": true,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.position_quantity_min": 2,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.ladder_total_position_pct_max": 33.3333,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.average_cost_multiple_min_exclusive": 1,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.required_thesis_evidence": [
+        "catalyst_basis",
+        "flow_basis"
+       ],
+       "sell.trim_preplace.tiers[sell.breakeven_reserve_trim].conditions.lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": "sell.loss_guard_min_multiple",
+       "sell.trim_preplace.tie_breaks.tier_priority": "de_minimis_trim_watch > sell.breakeven_reserve_trim > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone > breakeven_extension_ladder",
+       "sell.trim_preplace.tie_breaks.momentum_spike_integer_rounding": "floor_without_exceeding_one_third_or_watch",
+       "phase25.10_single_share_exit_choice.tiers[one_share_profitable_resistance_exit].action": "advise_full_quantity_resistance_exit_or_proposal"
+      },
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "crash_day_state_at_decision",
+      "source": "config.trading_policy crash_day.trigger (069500 시가 갭) — 08:00~08:50 KST 창에는 KRX 시가가 존재하지 않음",
+      "operator": "eq",
+      "value": "not_evaluable_no_krx_open",
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "nxt_premarket_price",
+      "source": "get_quote(326030).price",
+      "operator": "between",
+      "value": [
+       89856,
+       91506.0
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_profit_pct",
+      "source": "(P / 83200 - 1) * 100",
+      "operator": "gte",
+      "value": 8,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "matched_tier_id",
+      "source": "sell.trim_preplace 티어 순회 결과",
+      "operator": "eq",
+      "value": "single_share_full_exit_review",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "disposition_tier_id",
+      "source": "phase25.10_single_share_exit_choice 티어 순회 결과",
+      "operator": "eq",
+      "value": "one_share_profitable_resistance_exit",
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "rungs": "정확히 1 rung. price_min=price_max=91600 = tick_ceil(91506.01, tick=100). quantity_min=quantity_max=1 (전량). time_in_force=DAY. 손실가드 91600 >= 83200*1.01 = 84032 PASS. D7 순실현 = 91600*(1-0.00214) - 83200 = 8204.02 PASS. 앵커 > 구간 상한 91506.00 → non-marketable.",
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "invalidation": [
+     "fresh R1 값 변화 또는 supports[] 배열로 이동 또는 소멸",
+     "toss lot 수량·평단 변화 (196170 무상증자 신주 입고·권리락 재기준 포함)",
+     "lot source != \"toss_api\" (팬텀 manual 전환)",
+     "kis 또는 toss 어느 한쪽이라도 동일 심볼 open 주문 존재",
+     "관측가가 행의 닫힌 구간을 이탈",
+     "get_quote.price_source 부재(전일종가 폴백) 또는 nxt_tradable=false",
+     "동결 정책 키 세트 중 하나라도 값·semantics 변경",
+     "069500 시가 갭 ≤ −3% 로 crash_day 성립 (창 밖 사건이나 관측되면 무효)",
+     "order_proposals.auto_approve.breakeven_band_pct 키 등장 AND 손익배수가 1.01 아래로 복귀 (티어 2 지배권 회복)",
+     "valid_window(08:00~08:50 KST) 이탈",
+     "손익률이 +8% 아래로 복귀 (D5 게이트 상실 — 1주 lot 의 부분 트림은 sell.trim_preplace.semantics 문언으로 금지)",
+     "해당 심볼에 full_trailing disposition 이 기록됨 (one_share_choice: hard_target_or_trail_not_both)"
+    ]
+   },
+   {
+    "scenario_id": "kr-nxt-2026-09-03:005490:toss:single_share_full_exit_d5",
+    "priority": 5,
+    "symbols": [
+     "005490"
+    ],
+    "conditions": [
+     {
+      "metric": "price_source_is_nxt",
+      "source": "get_quote(symbol=005490, market=\"kr\").price_source",
+      "operator": "in",
+      "value": [
+       "nxt_mid",
+       "nxt_expected_price",
+       "nxt_best_bid_ask_mid"
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+      "source": "abs(get_quote(005490).price / mid(get_orderbook(symbol=005490, venue=\"nxt\")) - 1)",
+      "operator": "lte",
+      "value": 0.02,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "nxt_tradable",
+      "source": "get_quote(symbol=005490, market=\"kr\").nxt_tradable",
+      "operator": "eq",
+      "value": true,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "toss_position_quantity",
+      "source": "get_holdings(market=\"kr\", include_current_price=true, minimum_value=0).accounts[account=toss].positions[symbol=005490].quantity",
+      "operator": "eq",
+      "value": 1,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_avg_buy_price",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=005490].avg_buy_price",
+      "operator": "eq",
+      "value": 337000,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_position_source",
+      "source": "get_holdings(...).accounts[account=toss].positions[symbol=005490].source",
+      "operator": "eq",
+      "value": "toss_api",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "toss_open_orders_count_same_symbol",
+      "source": "toss_get_order_history(status=\"open\") filtered symbol=005490",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "kis_open_orders_count_same_symbol",
+      "source": "kis_live_get_order_history(status=\"pending\", market=\"kr\") filtered symbol=005490",
+      "operator": "eq",
+      "value": 0,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "krx_previous_close",
+      "source": "get_quote(symbol=005490, market=\"kr\").previous_close",
+      "operator": "eq",
+      "value": 330000,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "fresh_resistance_r1_price",
+      "source": "analyze_stock_batch([005490], quick=false).results.005490.support_resistance.resistances[first price > live].price",
+      "operator": "eq",
+      "value": 371678.0,
+      "max_age_seconds": 86400
+     },
+     {
+      "metric": "policy_frozen_keys",
+      "source": "get_trading_policy(market=\"kr\", lane=\"sell\")",
+      "operator": "eq",
+      "value": {
+       "sell.loss_guard_min_multiple": 1.01,
+       "sell.rsi_place_min": 58,
+       "sell.resistance_near_pct": 6,
+       "sell.breakeven_near_pct": 2,
+       "sell.trim_min_expected_net_realized_gain_krw": 5000,
+       "sell.momentum_spike_change_pct_min": 10,
+       "sell.single_share_profit_pct_min": 8,
+       "order.day_expiry_kst": "20:00",
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.resistance_near_pct_max": 2,
+       "sell.trim_preplace.tiers[ultra_near_resistance].conditions.rsi_below_policy_key": "sell.rsi_place_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.total_quantity_eq": 1,
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.profit_pct_min_policy_key": "sell.single_share_profit_pct_min",
+       "sell.trim_preplace.tiers[single_share_full_exit_review].conditions.resistance_reference_required": true,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.position_quantity_min": 2,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.ladder_total_position_pct_max": 33.3333,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.average_cost_multiple_min_exclusive": 1,
+       "sell.trim_preplace.tiers[momentum_spike_profit_ladder].conditions.required_thesis_evidence": [
+        "catalyst_basis",
+        "flow_basis"
+       ],
+       "sell.trim_preplace.tiers[sell.breakeven_reserve_trim].conditions.lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": "sell.loss_guard_min_multiple",
+       "sell.trim_preplace.tie_breaks.tier_priority": "de_minimis_trim_watch > sell.breakeven_reserve_trim > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone > breakeven_extension_ladder",
+       "sell.trim_preplace.tie_breaks.momentum_spike_integer_rounding": "floor_without_exceeding_one_third_or_watch",
+       "phase25.10_single_share_exit_choice.tiers[one_share_profitable_resistance_exit].action": "advise_full_quantity_resistance_exit_or_proposal"
+      },
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "crash_day_state_at_decision",
+      "source": "config.trading_policy crash_day.trigger (069500 시가 갭) — 08:00~08:50 KST 창에는 KRX 시가가 존재하지 않음",
+      "operator": "eq",
+      "value": "not_evaluable_no_krx_open",
+      "max_age_seconds": 3600
+     },
+     {
+      "metric": "nxt_premarket_price",
+      "source": "get_quote(005490).price",
+      "operator": "between",
+      "value": [
+       363960,
+       371677.99
+      ],
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "lot_profit_pct",
+      "source": "(P / 337000 - 1) * 100",
+      "operator": "gte",
+      "value": 8,
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "matched_tier_id",
+      "source": "sell.trim_preplace 티어 순회 결과",
+      "operator": "eq",
+      "value": "single_share_full_exit_review",
+      "max_age_seconds": 300
+     },
+     {
+      "metric": "disposition_tier_id",
+      "source": "phase25.10_single_share_exit_choice 티어 순회 결과",
+      "operator": "eq",
+      "value": "one_share_profitable_resistance_exit",
+      "max_age_seconds": 300
+     }
+    ],
+    "action": {
+     "proposal_action": "place",
+     "account_mode": "toss_live",
+     "side": "sell",
+     "order_type": "limit",
+     "rungs": "정확히 1 rung. price_min=price_max=372000 = tick_ceil(371678.0, tick=500). quantity_min=quantity_max=1 (전량). time_in_force=DAY. 손실가드 372000 >= 337000*1.01 = 340370 PASS. D7 순실현 = 372000*(1-0.00214) - 337000 = 34203.92 PASS. 앵커 > 구간 상한 371677.99 → non-marketable. momentum_spike 는 position_quantity_min=2 로 구조적 미적용이므로 변동률 +10% 초과 구간이어도 티어 선점 없음.",
+     "required_thesis_fields": [
+      "scenario_id",
+      "decision_table_hash"
+     ]
+    },
+    "invalidation": [
+     "fresh R1 값 변화 또는 supports[] 배열로 이동 또는 소멸",
+     "toss lot 수량·평단 변화 (196170 무상증자 신주 입고·권리락 재기준 포함)",
+     "lot source != \"toss_api\" (팬텀 manual 전환)",
+     "kis 또는 toss 어느 한쪽이라도 동일 심볼 open 주문 존재",
+     "관측가가 행의 닫힌 구간을 이탈",
+     "get_quote.price_source 부재(전일종가 폴백) 또는 nxt_tradable=false",
+     "동결 정책 키 세트 중 하나라도 값·semantics 변경",
+     "069500 시가 갭 ≤ −3% 로 crash_day 성립 (창 밖 사건이나 관측되면 무효)",
+     "order_proposals.auto_approve.breakeven_band_pct 키 등장 AND 손익배수가 1.01 아래로 복귀 (티어 2 지배권 회복)",
+     "valid_window(08:00~08:50 KST) 이탈",
+     "손익률이 +8% 아래로 복귀 (D5 게이트 상실)",
+     "해당 심볼에 full_trailing disposition 이 기록됨"
+    ]
+   }
+  ]
+ }
+}

@@ -22,6 +22,9 @@ from app.mcp_server.tooling.buy_candidate_fanout_registration import (
 from app.mcp_server.tooling.buy_gate_ab_shadow_registration import (
     register_buy_gate_ab_shadow_tools,
 )
+from app.mcp_server.tooling.decision_table_registration import (
+    register_decision_table_tools,
+)
 from app.mcp_server.tooling.momentum_candidates import get_momentum_candidates_impl
 from app.mcp_server.tooling.research_pipeline_read import (
     research_session_get_impl,
@@ -51,6 +54,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "screen_stocks_enrich",
     "discover_buy_candidates_fanout",
     "evaluate_buy_gate_ab_shadow",
+    "decision_table_validate",
     "get_spike_attribution",
     # ROB-359: "recommend_stocks" is intentionally registry-hidden (parked).
     # screen_stocks is the generic candidate-discovery entrypoint; the
@@ -79,6 +83,7 @@ def register_analysis_tools(
 
     register_buy_candidate_fanout_tools(mcp)
     register_buy_gate_ab_shadow_tools(mcp)
+    register_decision_table_tools(mcp)
     register_spike_attribution_tools(mcp)
 
     @mcp.tool(

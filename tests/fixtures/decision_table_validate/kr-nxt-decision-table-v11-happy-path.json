@@ -1,0 +1,84 @@
+{
+  "_fixture_provenance": {
+    "kind": "constructed_from_merged_prompt_skeleton",
+    "decision_table": "constructed_from_merged_prompt_skeleton",
+    "source": "prompts/kr-nxt-prep.md v1.1 skeleton + 2026-09-04 verbatim audit-evidence symbol, avg_price, quantity, and tick values",
+    "real_artifact_claim": false
+  },
+  "envelope": {
+    "schema_version": "kr-nxt-decision-table/v1.1",
+    "correlation_id": "kr-nxt-prep-2026-09-05",
+    "trading_date": "2026-09-05",
+    "market": "kr",
+    "valid_window": {
+      "starts_at": "08:00 KST",
+      "ends_at": "08:50 KST"
+    },
+    "decision_table": {
+      "no_match_action": "no_proposal",
+      "extensions": [
+        "common_conditions"
+      ],
+      "common_conditions": {
+        "market": "kr"
+      },
+      "rows": [
+        {
+          "scenario_id": "constructed-v11-196170-breakeven-reserve-trim",
+          "priority": 1,
+          "symbols": [
+            "196170"
+          ],
+          "conditions": [
+            {
+              "metric": "live_price_band",
+              "source": "get_quote(symbol,market='kr').price",
+              "operator": "between",
+              "value": {
+                "min_inclusive": 302820,
+                "max_exclusive": 312090
+              },
+              "max_age_seconds": 300
+            },
+            {
+              "metric": "position_quantity",
+              "source": "get_holdings.accounts[toss_live].positions[196170].quantity",
+              "operator": "eq",
+              "value": 9,
+              "max_age_seconds": 300
+            },
+            {
+              "metric": "position_avg_buy_price",
+              "source": "get_holdings.accounts[toss_live].positions[196170].avg_buy_price",
+              "operator": "eq",
+              "value": 309000,
+              "max_age_seconds": 300
+            }
+          ],
+          "action": {
+            "proposal_action": "place",
+            "account_mode": "toss_live",
+            "side": "sell",
+            "order_type": "limit",
+            "rungs": [
+              {
+                "rung": 1,
+                "price_min": 315000,
+                "price_max": 315000,
+                "qty": 1,
+                "tick": 500,
+                "formula": "fixed anchor; KRX sell-side ceil; zero discretion"
+              }
+            ],
+            "required_thesis_fields": [
+              "scenario_id",
+              "decision_table_hash"
+            ]
+          },
+          "invalidation": []
+        }
+      ]
+    },
+    "decision_table_hash": "5ac9d92b13742a723c89e95e7373ecc3a3d2f35b91ea85afcb273dde0863e620"
+  }
+}

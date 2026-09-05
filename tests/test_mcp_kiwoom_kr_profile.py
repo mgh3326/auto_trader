@@ -137,11 +137,13 @@ class TestWholeProfileClosedWorld:
         # KIWOOM <-> KIWOOM_KR shared-surface contract requires here — see
         # TestKiwoomKrProfile::test_keeps_kr_order_surface_intact. ROB-1309
         # added screen_stocks_enrich alongside screen_stocks_snapshot.
+        # ROB-1348 added the pure decision-table validator to every profile.
         assert "evaluate_buy_gate_ab_shadow" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
+        assert "decision_table_validate" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "screen_stocks_enrich" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "session_bootstrap_pack" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 123
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 124
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()

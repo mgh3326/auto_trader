@@ -486,6 +486,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # ROB-1301: observation-only A/B buy-gate shadow. Never a proposal,
         # order, or watch; live variant A is unchanged.
         "evaluate_buy_gate_ab_shadow",
+        # ROB-1348: deterministic decision-table validation. It performs no
+        # database, network, broker, order, or proposal operation.
+        "decision_table_validate",
         # ROB-1303: read-only spike cause attribution. Reads news / DART /
         # earnings rows this repo already stores and returns candidates with
         # their links, or an explicit unattributed verdict. Writes nothing.
