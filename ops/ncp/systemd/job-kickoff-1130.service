@@ -1,4 +1,4 @@
-+[Unit]
+[Unit]
 Description=auto_trader durable kickoff lane event 1130
 Wants=network-online.target
 After=network-online.target docker.service

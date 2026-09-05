@@ -396,6 +396,8 @@ def _kickoff_oncalendar(slot: KickoffSlot) -> str:
 
 def _check_kickoff_timer(slot_name: str, slot: KickoffSlot) -> None:
     timer_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.timer"
+    if not timer_path.read_text(encoding="utf-8").startswith("[Unit]\n"):
+        raise ValueError(f"{timer_path}: must start with a [Unit] section")
     timer = _directives(timer_path)
     if timer.get("OnCalendar") != [_kickoff_oncalendar(slot)]:
         raise ValueError(f"{timer_path}: OnCalendar differs from kickoff slot")
@@ -411,6 +413,8 @@ def _check_kickoff_timer(slot_name: str, slot: KickoffSlot) -> None:
 
 def _check_kickoff_service(slot_name: str, slot: KickoffSlot) -> None:
     service_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.service"
+    if not service_path.read_text(encoding="utf-8").startswith("[Unit]\n"):
+        raise ValueError(f"{service_path}: must start with a [Unit] section")
     service = _directives(service_path)
     expected_env = {
         "PANEWIRE_SOCKET=/root/Library/Application Support/panewire/panewire.sock",

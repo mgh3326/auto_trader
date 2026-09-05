@@ -1,4 +1,4 @@
-+[Unit]
+[Unit]
 Description=Run auto_trader kickoff lane event us-2235
 
 [Timer]
