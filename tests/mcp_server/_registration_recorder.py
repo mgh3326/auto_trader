@@ -17,6 +17,7 @@ class RegistrationRecorder:
 
     def __init__(self) -> None:
         self.tools: dict[str, Callable[..., Any]] = {}
+        self.options: dict[str, dict[str, Any]] = {}
 
     def tool(self, *args: Any, **kwargs: Any) -> Any:
         name = kwargs.get("name")
@@ -29,6 +30,7 @@ class RegistrationRecorder:
             assert isinstance(tool_name, str) and tool_name, "unnamed MCP tool"
             assert tool_name not in self.tools, f"duplicate MCP tool: {tool_name}"
             self.tools[tool_name] = function
+            self.options[tool_name] = dict(kwargs)
             return function
 
         return register(direct) if direct is not None else register

@@ -442,3 +442,4 @@ tests/unit/services/daily_candles/test_toss_daily_fetcher.py
 tests/unit/services/daily_candles/test_toss_ohlcv_daily_adjusted.py
 tests/upbit_public_read_model/test_candles_cache.py
 tests/upbit_public_read_model/test_read_model_facade.py
+tests/mcp_server/test_niche_tools.py

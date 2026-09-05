@@ -98,7 +98,7 @@ from __future__ import annotations
 
 import inspect
 from functools import wraps
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
@@ -159,6 +159,7 @@ from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
 from app.mcp_server.tooling.news_registration import register_news_tools
+from app.mcp_server.tooling.niche import NicheMCP
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
@@ -266,6 +267,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
+    mcp = cast("FastMCP", NicheMCP(mcp, profile=profile.value))
     mcp = without_dead_tools(mcp, profile.value)
 
     if profile is McpProfile.SHADOW_REPLAY:

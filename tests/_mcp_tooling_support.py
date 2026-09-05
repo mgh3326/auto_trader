@@ -76,7 +76,7 @@ class DummyMCP:
     def __init__(self) -> None:
         self.tools: dict[str, Callable[..., Any]] = {}
 
-    def tool(self, name: str, description: str):
+    def tool(self, name: str, description: str, **_options: Any):
         """Decorator that captures tool registrations."""
         del description
 
