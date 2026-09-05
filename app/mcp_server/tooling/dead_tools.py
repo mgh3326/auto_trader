@@ -64,6 +64,19 @@ PROFILE_DEAD_TOOLS: dict[str, frozenset[str]] = {
             "alpaca_paper_reconcile_orders",
         }
     ),
+    "db-paper": _SHARED_DEAD_TOOLS
+    | frozenset(
+        {
+            "compare_paper_accounts",
+            "compare_strategies",
+            "create_paper_account",
+            "delete_paper_account",
+            "get_paper_performance",
+            "get_paper_trade_log",
+            "recommend_go_live",
+            "reset_paper_account",
+        }
+    ),
 }
 
 
