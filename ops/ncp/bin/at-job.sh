@@ -57,10 +57,12 @@ commit_gate_enabled() {
       [[ -z "$stripped" || "${stripped:0:1}" == "#" ]] && continue
       if [[ "$stripped" == "$key="* ]]; then
         value="$(trim "${stripped#*=}")"
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
+        # Match Prefect: str.strip('"').strip("'") removes every edge quote,
+        # first double quotes and then single quotes.
+        while [[ "$value" == \"* ]]; do value="${value#\"}"; done
+        while [[ "$value" == *\" ]]; do value="${value%\"}"; done
+        while [[ "$value" == \'* ]]; do value="${value#\'}"; done
+        while [[ "$value" == *\' ]]; do value="${value%\'}"; done
         break
       fi
     done <"$AT_RUNTIME_ENV_FILE"
@@ -75,7 +77,7 @@ commit_gate_enabled() {
 emit_summary() {
   local summary_module="$1" summary_rc="$2" summary_elapsed="$3" summary_digest="$4"
   local step="$5" steps_total="$6"
-  if (( steps_total == 1 )) && [[ -z "$commit_env" ]]; then
+  if (( steps_total == 1 )) && [[ "$commit_gate_evaluated" != true ]]; then
     # Legacy single-step output is intentionally byte-for-byte unchanged.
     printf '{"module":"%s","rc":%d,"elapsed_s":%d,"image_digest":"%s"}\n' \
       "$summary_module" "$summary_rc" "$summary_elapsed" "$summary_digest"
@@ -83,7 +85,7 @@ emit_summary() {
     printf '{"module":"%s","rc":%d,"elapsed_s":%d,"image_digest":"%s","commit":%s,"commit_env":"%s"}\n' \
       "$summary_module" "$summary_rc" "$summary_elapsed" "$summary_digest" \
       "$commit_enabled" "$commit_env"
-  elif [[ -n "$commit_env" ]]; then
+  elif [[ "$commit_gate_evaluated" == true ]]; then
     printf '{"module":"%s","rc":%d,"elapsed_s":%d,"image_digest":"%s","commit":%s,"commit_env":"%s","step":%d,"steps_total":%d}\n' \
       "$summary_module" "$summary_rc" "$summary_elapsed" "$summary_digest" \
       "$commit_enabled" "$commit_env" "$step" "$steps_total"
@@ -130,6 +132,7 @@ mkdir -p "$LOCK_DIRECTORY"
 exec 9>"$lock_file"
 commit_env="${AT_JOB_COMMIT_ENV:-}"
 commit_enabled=false
+commit_gate_evaluated=false
 if variable_is_set AT_JOB_COMMIT_ENV; then
   [[ "$commit_env" =~ ^[A-Z][A-Z0-9_]*$ ]] || usage
 fi
@@ -157,6 +160,7 @@ if variable_is_set AT_JOB_COMMIT_ENV; then
   if commit_gate_enabled "$commit_env"; then
     commit_enabled=true
   fi
+  commit_gate_evaluated=true
 fi
 
 first_failure=0

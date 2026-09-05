@@ -113,21 +113,42 @@ def test_deployed_digest_allows_job_without_at_api_inspect(tmp_path: Path) -> No
 
 
 def test_missing_deployed_digest_is_refused(tmp_path: Path) -> None:
-    result = _run(tmp_path, "exit 99", deployed_digest=None)
+    result = _run(
+        tmp_path,
+        "exit 99",
+        deployed_digest=None,
+        extra_env={"AT_JOB_COMMIT_ENV": "KEY", "KEY": "true"},
+    )
     assert result.returncode == 78
     assert '"image_digest":"unresolved"' in result.stdout
+    assert '"commit"' not in result.stdout
+    assert '"commit_env"' not in result.stdout
 
 
 def test_missing_runtime_env_file_is_refused(tmp_path: Path) -> None:
-    result = _run(tmp_path, "exit 99", runtime_env=False)
+    result = _run(
+        tmp_path,
+        "exit 99",
+        runtime_env=False,
+        extra_env={"AT_JOB_COMMIT_ENV": "KEY", "KEY": "true"},
+    )
     assert result.returncode == 78
     assert "AT_RUNTIME_ENV_FILE" in result.stderr
+    assert '"commit"' not in result.stdout
+    assert '"commit_env"' not in result.stdout
 
 
 def test_flock_duplicate_is_refused(tmp_path: Path) -> None:
-    result = _run(tmp_path, "exit 99", flock_body="exit 1")
+    result = _run(
+        tmp_path,
+        "exit 99",
+        flock_body="exit 1",
+        extra_env={"AT_JOB_COMMIT_ENV": "KEY", "KEY": "true"},
+    )
     assert result.returncode == 75
     assert '"rc":75' in result.stdout
+    assert '"commit"' not in result.stdout
+    assert '"commit_env"' not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -221,6 +242,50 @@ def test_process_env_empty_value_overrides_runtime_env_file(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr
     assert _captured_argv(capture)[-1] == "--all"
     assert '"commit":false' in result.stdout
+
+
+# Prefect's _env_file_commit_gate_enabled() is the semantic source: a present
+# process value (including empty) wins; otherwise first non-comment KEY= line
+# wins after whitespace trim, all outer double quotes, then all outer singles.
+@pytest.mark.parametrize(
+    ("case", "process_value", "runtime_env_contents", "expected_commit"),
+    [
+        ("process-empty", "", "KEY=true\n", False),
+        ("process-TRUE", "TRUE", "KEY=no\n", True),
+        ("process-On", "On", "KEY=no\n", True),
+        ("process-yes", "yes", "KEY=no\n", True),
+        ("process-zero", "0", "KEY=true\n", False),
+        ("process-no", "no", "KEY=true\n", False),
+        ("file-double-quoted", None, 'KEY="true"\n', True),
+        ("file-whitespace", None, "  KEY=  true  \n", True),
+        ("file-single-quoted", None, "KEY='true'\n", True),
+        ("file-comment", None, "#KEY=true\n", False),
+        ("file-first-key-wins", None, "KEY=no\nKEY=true\n", False),
+        ("file-repeated-double-quotes", None, 'KEY=""true""\n', True),
+        ("file-repeated-single-quotes", None, "KEY=''true''\n", True),
+    ],
+)
+def test_commit_gate_prefect_parity_matrix(
+    tmp_path: Path,
+    case: str,
+    process_value: str | None,
+    runtime_env_contents: str,
+    expected_commit: bool,
+) -> None:
+    capture = tmp_path / "docker.argv"
+    extra_env = {"AT_JOB_COMMIT_ENV": "KEY"}
+    if process_value is not None:
+        extra_env["KEY"] = process_value
+    result = _run(
+        tmp_path,
+        'printf "%s\\0" "$@" > "$AT_JOB_DOCKER_CAPTURE"',
+        module_args=["scripts.build_invest_crypto_screener_snapshots", "--all"],
+        runtime_env_contents=runtime_env_contents,
+        extra_env=extra_env,
+    )
+    assert result.returncode == 0, case
+    assert (_captured_argv(capture)[-1] == "--commit") is expected_commit, case
+    assert f'"commit":{str(expected_commit).lower()}' in result.stdout
 
 
 def test_multi_step_runs_all_steps_and_propagates_first_failure(tmp_path: Path) -> None:
