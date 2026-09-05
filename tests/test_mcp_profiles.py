@@ -55,13 +55,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL_NAMES
-from app.mcp_server.tooling.paper_analytics_registration import (
-    PAPER_ANALYTICS_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_execution_registration import (
-    PAPER_EXECUTION_TOOL_NAMES,
-)
-from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
@@ -74,6 +67,16 @@ from app.mcp_server.tooling.tradingcodex_execution_registration import (
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
 
+PAPER_EXECUTION_TOOL_NAMES = {
+    "paper_execution_get_order",
+    "paper_execution_preview_order",
+    "paper_execution_get_capabilities",
+    "paper_execution_reconcile",
+    "paper_execution_submit_order",
+    "paper_execution_cancel_order",
+}
+
+
 _LEGACY_ORDER_TOOL_NAMES = ORDER_TOOL_NAMES  # {place_order, cancel_order, ...}
 _ALPACA_PAPER_TOOL_NAMES = (
     ALPACA_PAPER_READONLY_TOOL_NAMES
@@ -82,9 +85,7 @@ _ALPACA_PAPER_TOOL_NAMES = (
     | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
-_DB_PAPER_TOOL_NAMES = (
-    PAPER_ACCOUNT_TOOL_NAMES | PAPER_ANALYTICS_TOOL_NAMES | PAPER_JOURNAL_TOOL_NAMES
-)
+_DB_PAPER_TOOL_NAMES = PAPER_ACCOUNT_TOOL_NAMES
 _CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_crypto_profile",
     "get_kimchi_premium",

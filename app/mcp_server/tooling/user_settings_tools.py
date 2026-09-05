@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
@@ -47,47 +46,6 @@ async def get_user_setting(key: str) -> Any | None:
     if row is None:
         return None
     return row.value
-
-
-async def set_user_setting(key: str, value: Any) -> dict[str, Any]:
-    """Set a user setting value by key (upsert).
-
-    Returns the serialized setting with key, value, and updated_at.
-    """
-    if not key or not key.strip():
-        raise ValueError("key is required")
-
-    key = key.strip()
-
-    async with _session_factory()() as session:
-        # Use PostgreSQL upsert (INSERT ... ON CONFLICT DO UPDATE)
-        upsert_stmt = (
-            insert(UserSetting)
-            .values(
-                user_id=MCP_USER_ID,
-                key=key,
-                value=value,
-            )
-            .on_conflict_do_update(
-                index_elements=["user_id", "key"],
-                set_={
-                    "value": value,
-                    "updated_at": func.now(),
-                },
-            )
-        )
-        await session.execute(upsert_stmt)
-        await session.commit()
-
-        # Fetch the updated row to return serialized data
-        row = await session.execute(
-            select(UserSetting).where(
-                UserSetting.user_id == MCP_USER_ID,
-                UserSetting.key == key,
-            )
-        )
-        setting = row.scalar_one()
-        return _serialize_setting(setting)
 
 
 async def get_manual_cash_setting() -> dict[str, Any] | None:

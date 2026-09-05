@@ -15,7 +15,6 @@ import pytest
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
 from app.mcp_server.tooling import kiwoom_kr_registration, registry
-from app.mcp_server.tooling.analysis_bundle_handlers import ANALYSIS_BUNDLE_TOOL_NAMES
 from app.mcp_server.tooling.investment_hermes_handlers import (
     INVESTMENT_HERMES_TOOL_NAMES,
 )
@@ -130,7 +129,7 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_includes_readonly_advisors_and_is_exactly_122_tools(
+    def test_base_inventory_includes_readonly_advisors_and_is_exactly_109_tools(
         self,
     ) -> None:
         # Closed world: the count moves only with a reviewed addition. ROB-1303
@@ -141,7 +140,7 @@ class TestWholeProfileClosedWorld:
         assert "evaluate_buy_gate_ab_shadow" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "screen_stocks_enrich" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 122
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 109
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()
@@ -178,10 +177,6 @@ class TestWholeProfileClosedWorld:
     @pytest.mark.parametrize(
         ("enabled_setting", "expected_optional_names"),
         [
-            (
-                "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED",
-                ANALYSIS_BUNDLE_TOOL_NAMES,
-            ),
             (
                 "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED",
                 INVESTMENT_HERMES_TOOL_NAMES

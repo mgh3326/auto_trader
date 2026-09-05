@@ -9,7 +9,6 @@ import pandas as pd
 import pytest
 
 from app.mcp_server.tooling import analysis_analyze, portfolio_cash, portfolio_holdings
-from app.mcp_server.tooling.fundamentals import _financials
 from app.services.brokers.kis.circuit_breaker import KISCircuitOpen
 from app.services.nxt_preflight import NxtTradability
 
@@ -330,100 +329,3 @@ def test_nxt_tradability_fresh_asof_remains_available():
     assert fields["nxt_tradable_stale"] is False
     assert "nxt_tradable_observed" not in fields
     assert "nxt_tradable_reason" not in fields
-
-
-@pytest.mark.asyncio
-async def test_empty_kr_financials_are_explicitly_unavailable(monkeypatch):
-    monkeypatch.setattr(
-        _financials,
-        "_fetch_financials_naver",
-        AsyncMock(
-            return_value={
-                "symbol": "005930",
-                "instrument_type": "equity_kr",
-                "source": "naver",
-                "statement": "income",
-                "freq": "annual",
-                "currency": "KRW",
-                "periods": ["최근 연간 실적"],
-                "metrics": {},
-            }
-        ),
-    )
-
-    result = await _financials.handle_get_financials("005930", market="kr")
-
-    assert result["metrics"] == {}
-    assert result["status"] == "unavailable"
-    assert result["scoreable"] is False
-    assert result["reason"] == "financial_metrics_unavailable"
-    assert result["evidence"] == {
-        "source": "naver",
-        "statement": "income",
-        "freq": "annual",
-        "period_count": 1,
-    }
-
-
-@pytest.mark.asyncio
-async def test_nonempty_kr_financials_are_available_without_synthetic_values(
-    monkeypatch,
-):
-    metrics = {"매출액": [100_000_000]}
-    monkeypatch.setattr(
-        _financials,
-        "_fetch_financials_naver",
-        AsyncMock(
-            return_value={
-                "symbol": "005930",
-                "instrument_type": "equity_kr",
-                "source": "naver",
-                "statement": "income",
-                "freq": "annual",
-                "currency": "KRW",
-                "periods": ["2025/12"],
-                "metrics": metrics,
-            }
-        ),
-    )
-
-    result = await _financials.handle_get_financials("005930", market="kr")
-
-    assert result["metrics"] == metrics
-    assert result["status"] == "available"
-    assert result["scoreable"] is True
-    assert "reason" not in result
-    assert "evidence" not in result
-
-
-@pytest.mark.asyncio
-async def test_us_financial_report_metadata_without_metrics_is_unavailable(monkeypatch):
-    monkeypatch.setattr(
-        _financials,
-        "_fetch_financials_finnhub",
-        AsyncMock(
-            return_value={
-                "symbol": "AAPL",
-                "instrument_type": "equity_us",
-                "source": "finnhub",
-                "statement": "income",
-                "freq": "annual",
-                "reports": [
-                    {
-                        "year": 2025,
-                        "quarter": 0,
-                        "filed_date": "2026-02-01",
-                        "data": {},
-                    }
-                ],
-            }
-        ),
-    )
-
-    result = await _financials.handle_get_financials("AAPL", market="us")
-
-    assert result["reports"][0]["data"] == {}
-    assert result["status"] == "unavailable"
-    assert result["scoreable"] is False
-    assert result["reason"] == "financial_metrics_unavailable"
-    assert result["evidence"]["period_count"] == 1

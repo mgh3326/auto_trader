@@ -122,9 +122,6 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
 from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
 )
-from app.mcp_server.tooling.analysis_bundle_handlers import (
-    register_analysis_bundle_tools,
-)
 from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
@@ -178,12 +175,6 @@ from app.mcp_server.tooling.orders_toss_variants import (
 from app.mcp_server.tooling.paper_account_registration import (
     register_paper_account_tools,
 )
-from app.mcp_server.tooling.paper_analytics_registration import (
-    register_paper_analytics_tools,
-)
-from app.mcp_server.tooling.paper_journal_registration import (
-    register_paper_journal_tools,
-)
 from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
 )
@@ -206,16 +197,10 @@ from app.mcp_server.tooling.trade_retrospective_registration import (
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
 )
-from app.mcp_server.tooling.trading_scoreboard_registration import (
-    register_trading_scoreboard_tools,
-)
 from app.mcp_server.tooling.tradingcodex_execution_registration import (
     register_tradingcodex_execution_tools,
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
-from app.mcp_server.tooling.user_settings_registration import (
-    register_user_settings_tools,
-)
 from app.mcp_server.tooling.watch_repricing_registration import (
     register_watch_repricing_tools,
 )
@@ -362,8 +347,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     )
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
-    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
-        register_analysis_bundle_tools(mcp)
     register_operating_briefing_tools(mcp)
     # ROB-646 — read-only policy thresholds + version stamp; always registered
     # so every profile can cite the stamp when recording a verdict.
@@ -379,7 +362,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # (per-symbol AI analysis history) is the operator-observed surface. The report판
     # SERVICE (app/services/market_report_service.py) stays — it is the n8n write path
     # + weekly_summary consumer; only its dead MCP tool registration is dropped.
-    register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_market_brief_tools(mcp)
 
@@ -398,7 +380,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         include_position_intake=profile is McpProfile.DEFAULT,
     )
     register_forecast_tools(mcp)
-    register_trading_scoreboard_tools(mcp)
     # ROB-1173: this is a direct KIS mock broker mutation despite its report
     # name. The KR-only Kiwoom profile must not inherit it from the broad shared
     # block; its only broker mutation surface is the typed Kiwoom KR namespace.
@@ -499,8 +480,6 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_market_quote_snapshot_tools(mcp)
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)
-        register_paper_analytics_tools(mcp)
-        register_paper_journal_tools(mcp)
     elif profile is McpProfile.KIWOOM:
         orders_kiwoom_variants.register(mcp)
         from app.mcp_server.tooling.orders_kiwoom_us_variants import (

@@ -13,7 +13,6 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
-import yfinance as yf
 
 from app.mcp_server.tooling import (
     analysis_quick,
@@ -39,7 +38,6 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
 )
-from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 from app.services.decision_history import build_decision_context
 from app.services.market_valuation_snapshots.normalized_market_cap import (
@@ -1497,52 +1495,6 @@ async def recommend_stocks_impl(
     )
 
 
-async def get_dividends_impl(symbol: str) -> dict[str, Any]:
-    symbol = (symbol or "").strip()
-    if not symbol:
-        raise ValueError("symbol is required")
-
-    def fetch_sync(ticker: yf.Ticker) -> dict[str, Any]:
-        try:
-            info = ticker.info or {}
-
-            dividend_yield = info.get("dividendYield")
-            dividend_rate = info.get("dividendRate")
-            ex_date = info.get("exDividendDate")
-
-            divs = ticker.dividends
-            last_div = None
-            if divs is not None and not divs.empty:
-                last_date = divs.index[-1]
-                last_div = {
-                    "date": last_date.strftime("%Y-%m-%d"),
-                    "amount": float(divs.iloc[-1]),
-                }
-
-            return {
-                "success": True,
-                "symbol": symbol.upper(),
-                "dividend_yield": round(dividend_yield, 4) if dividend_yield else None,
-                "dividend_rate": float(dividend_rate) if dividend_rate else None,
-                "ex_dividend_date": (
-                    datetime.datetime.fromtimestamp(ex_date).strftime("%Y-%m-%d")
-                    if ex_date
-                    else None
-                ),
-                "last_dividend": last_div,
-            }
-        except Exception as exc:
-            return {
-                "success": False,
-                "error": str(exc),
-                "symbol": symbol.upper(),
-            }
-
-    with yfinance_tracing_session() as session:
-        ticker = yf.Ticker(symbol.upper(), session=session)
-        return await asyncio.to_thread(fetch_sync, ticker)
-
-
 async def get_fear_greed_index_impl(days: int = 7) -> dict[str, Any]:
     capped_days = min(max(days, 1), 365)
     url = "https://api.alternative.me/fng/"
@@ -1617,11 +1569,9 @@ async def get_fear_greed_index_impl(days: int = 7) -> dict[str, Any]:
 
 
 __all__ = [
-    "analyze_portfolio_impl",
     "analyze_stock_impl",
     "get_correlation_impl",
     "get_disclosures_impl",
-    "get_dividends_impl",
     "get_fear_greed_index_impl",
     "get_top_stocks_impl",
     "recommend_stocks_impl",

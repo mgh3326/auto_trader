@@ -110,17 +110,6 @@ def test_session_context_append_is_NOT_denied():
     assert not any(e.endswith("__session_context_append") for e in _deny())
 
 
-def test_analysis_bundle_read_is_allowed_but_capture_is_not() -> None:
-    from app.mcp_server.tooling.analysis_readonly_registration import (
-        ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
-        ANALYSIS_READONLY_TOOL_NAMES,
-    )
-
-    assert "analysis_bundle_get" in ANALYSIS_READONLY_TOOL_NAMES
-    assert "analysis_bundle_create" not in ANALYSIS_READONLY_TOOL_NAMES
-    assert "analysis_bundle_create" in ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES
-
-
 def test_no_new_order_mutation_tool_escapes_known_set():
     found: set[str] = set()
     for p in TOOLING.glob("*.py"):
@@ -130,40 +119,6 @@ def test_no_new_order_mutation_tool_escapes_known_set():
         f"새 주문 mutation 도구가 deny-list/KNOWN_MUTATION_TOOLS에 없음: {sorted(escaped)} "
         "→ .claude/settings.readonly.json deny + KNOWN_MUTATION_TOOLS 둘 다 갱신"
     )
-
-
-def test_paper_execution_facade_denies_every_non_read_operation():
-    from app.mcp_server.tooling.paper_execution_registration import (
-        PAPER_EXECUTION_TOOL_NAMES,
-    )
-
-    read_only = {
-        "paper_execution_get_capabilities",
-        "paper_execution_get_order",
-    }
-    mutations = PAPER_EXECUTION_TOOL_NAMES - read_only
-
-    assert mutations == {
-        "paper_execution_preview_order",
-        "paper_execution_submit_order",
-        "paper_execution_cancel_order",
-        "paper_execution_reconcile",
-    }
-    assert mutations <= KNOWN_MUTATION_TOOLS
-    assert mutations <= _denied_mcp_suffixes()
-
-
-def test_paper_validation_denies_mutations_but_allows_audit_read() -> None:
-    from app.mcp_server.tooling.paper_validation_registration import (
-        PAPER_VALIDATION_MUTATION_TOOL_NAMES,
-        PAPER_VALIDATION_TOOL_NAMES,
-    )
-
-    assert PAPER_VALIDATION_TOOL_NAMES - PAPER_VALIDATION_MUTATION_TOOL_NAMES == {
-        "paper_validation_get_audit"
-    }
-    assert PAPER_VALIDATION_MUTATION_TOOL_NAMES <= KNOWN_MUTATION_TOOLS
-    assert PAPER_VALIDATION_MUTATION_TOOL_NAMES <= _denied_mcp_suffixes()
 
 
 # report/stage/watch 도구 분류 가드: 모든 investment_report*/investment_stage*/investment_watch* 도구가

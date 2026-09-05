@@ -57,9 +57,6 @@ from app.mcp_server.tooling.fundamentals import (
 from app.mcp_server.tooling.fundamentals import _news as fundamentals_news
 from app.mcp_server.tooling.fundamentals import _profiles as fundamentals_profiles
 from app.mcp_server.tooling.fundamentals import (
-    _sector_peers as fundamentals_sector_peers,
-)
-from app.mcp_server.tooling.fundamentals import (
     _support_resistance as fundamentals_support_resistance,
 )
 from app.mcp_server.tooling.fundamentals import _valuation as fundamentals_valuation
@@ -175,7 +172,6 @@ _PATCH_MODULES = (
     fundamentals_market_index,
     fundamentals_news,
     fundamentals_profiles,
-    fundamentals_sector_peers,
     fundamentals_support_resistance,
     fundamentals_valuation,
     fundamentals_sources_binance,

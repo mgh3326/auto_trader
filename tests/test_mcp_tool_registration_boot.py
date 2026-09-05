@@ -25,19 +25,3 @@ def test_register_all_tools_no_duplicate_names(profile: McpProfile) -> None:
     # tool name. A clean run proves the registered surface has no name collisions.
     mcp = FastMCP(name="auto_trader-mcp-boot-test", on_duplicate="error")
     register_all_tools(mcp, profile=profile)  # must not raise
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_get_market_reports_is_the_brief_surface() -> None:
-    # ROB-447: with the report판 registration dropped, get_market_reports must resolve
-    # to the brief판 (per-symbol analysis history: params include 'symbol'), NOT the
-    # old report판 (params included 'report_type').
-    mcp = FastMCP(name="auto_trader-mcp-boot-test", on_duplicate="error")
-    register_all_tools(mcp, profile=McpProfile.DEFAULT)
-
-    tool = await mcp.get_tool("get_market_reports")
-    schema = tool.parameters or {}
-    props = set((schema.get("properties") or {}).keys())
-    assert "symbol" in props  # brief판 signature
-    assert "report_type" not in props  # report판 signature is gone
