@@ -47,6 +47,7 @@ order_proposal_create	prompt
 order_proposal_get	prompt
 order_proposal_list	prompt
 order_proposal_void	prompt
+proposal_revalidate	spec:mcp-session-tools-v1
 paper_list_pending_orders	prompt
 paper_place_limit_order	prompt
 paper_reconcile_orders	prompt

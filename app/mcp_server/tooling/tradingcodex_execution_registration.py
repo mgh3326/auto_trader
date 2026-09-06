@@ -65,8 +65,15 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+    register_proposal_revalidate_tools,
+)
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
+)
+from app.mcp_server.tooling.session_bootstrap_registration import (
+    registered_tool_names_for,
 )
 from app.mcp_server.tooling.session_context_registration import (
     SESSION_CONTEXT_TOOL_NAMES,
@@ -142,7 +149,7 @@ _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES: set[str] = {
 # ROB-816 — order_proposals SOT ledger read/create surface. No approve/submit
 # tool is included — approval is Telegram-only (PR 2).
 _TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = (
-    ORDER_PROPOSAL_TOOL_NAMES - set()
+    ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES
 )
 
 TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
@@ -456,6 +463,10 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     # default-profile registration in registry.py.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(filtered)
+        register_proposal_revalidate_tools(
+            filtered,
+            registered_tool_names=lambda: registered_tool_names_for(mcp),
+        )
 
 
 __all__ = [

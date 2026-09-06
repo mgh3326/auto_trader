@@ -181,6 +181,9 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    register_proposal_revalidate_tools,
+)
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
 )
@@ -282,6 +285,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
     def register_bootstrap_pack() -> None:
         register_session_bootstrap_tools(
+            mcp,
+            registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
+        )
+
+    def register_proposal_revalidate() -> None:
+        register_proposal_revalidate_tools(
             mcp,
             registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
         )
@@ -431,6 +440,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # the existing proposal dispatch path.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(mcp)
+        register_proposal_revalidate()
 
     # Profile-gated: side-effect order surfaces
     if profile is McpProfile.DEFAULT:
