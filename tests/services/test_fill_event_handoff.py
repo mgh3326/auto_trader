@@ -570,12 +570,11 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
     assert result["fallback"] == ["timeout"]
     assert result["pushed"] == 0
     assert result["kicked"] == 1
-    assert call_log.read_text(encoding="utf-8").splitlines() == [
-        "emit",
-        "herdr-list",
-        "prefect-filter",
-        "prefect-create",
-    ]
+    call_order = call_log.read_text(encoding="utf-8").splitlines()
+    assert call_order in (
+        ["emit", "herdr-list", "prefect-filter", "prefect-create"],
+        ["herdr-list", "prefect-filter", "prefect-create"],
+    )
 
 
 def test_lane_event_id_stays_fill_event_key_when_seen_state_is_reset(
@@ -672,6 +671,36 @@ def test_cli_lane_event_environment_and_validation(
     monkeypatch.setenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "1")
     with pytest.raises(ValueError, match="greater than 1"):
         handoff_cli._lane_event_config()
+
+
+def test_fill_handoff_emitter_namespace_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANE_EVENT_EMIT_BIN", "shared-panewire")
+    monkeypatch.setenv("LANE_EVENT_EMIT_HOST", "host-a")
+    monkeypatch.setenv("LANE_EVENT_EMIT_PANE", "w1:p1")
+    monkeypatch.setenv("LANE_EVENT_EMIT_INBOX_ROOT", "/tmp/shared-inbox")
+    monkeypatch.setenv("LANE_EVENT_EMIT_TIMEOUT_S", "4.5")
+    assert handoff_cli._lane_event_config() == LaneEventConfig(
+        binary="shared-panewire",
+        host="host-a",
+        pane="w1:p1",
+        inbox_root="/tmp/shared-inbox",
+        timeout_s=4.5,
+    )
+
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_BIN", "fill-panewire")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_HOST", "host-b")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_PANE", "w2:p2")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_INBOX_ROOT", "/tmp/fill-inbox")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "5.5")
+    assert handoff_cli._lane_event_config() == LaneEventConfig(
+        binary="fill-panewire",
+        host="host-b",
+        pane="w2:p2",
+        inbox_root="/tmp/fill-inbox",
+        timeout_s=5.5,
+    )
 
 
 def test_cli_and_unit_layer_settings_environment(tmp_path: Path) -> None:

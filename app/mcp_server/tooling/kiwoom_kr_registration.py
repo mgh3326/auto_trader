@@ -56,6 +56,9 @@ from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_kiwoom_variants import (
     register as register_kiwoom_mock_tools,
 )
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -200,6 +203,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "screen_stocks_snapshot",
         "screen_stocks_enrich",
         "search_symbol",
+        "session_bootstrap_pack",
         "session_context_append",
         "session_context_get_recent",
         "set_user_setting",
@@ -226,6 +230,7 @@ def kiwoom_kr_profile_tool_names() -> set[str]:
         names.update(INVESTMENT_SNAPSHOTS_TOOL_NAMES)
     if settings.ORDER_PROPOSALS_ENABLED:
         names.update(ORDER_PROPOSAL_TOOL_NAMES)
+        names.update(PROPOSAL_REVALIDATE_TOOL_NAMES)
     return names
 
 

@@ -34,6 +34,9 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+)
 from tests._mcp_tooling_support import DummyMCP
 
 _EXPECTED_KR_TOOL_NAMES = {
@@ -142,7 +145,8 @@ class TestWholeProfileClosedWorld:
         assert "decision_table_validate" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "screen_stocks_enrich" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 123
+        assert "session_bootstrap_pack" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 124
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()
@@ -188,7 +192,10 @@ class TestWholeProfileClosedWorld:
                 "INVESTMENT_SNAPSHOTS_MCP_ENABLED",
                 INVESTMENT_SNAPSHOTS_TOOL_NAMES,
             ),
-            ("ORDER_PROPOSALS_ENABLED", ORDER_PROPOSAL_TOOL_NAMES),
+            (
+                "ORDER_PROPOSALS_ENABLED",
+                ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES,
+            ),
         ],
     )
     def test_optional_gates_expand_only_their_reviewed_exact_sets(

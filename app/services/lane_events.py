@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import socket
 import subprocess
@@ -27,6 +28,48 @@ class LaneEmitResult:
     outcome: str
     returncode: int | None
     reason: str | None
+
+
+def lane_event_config_from_env(
+    *,
+    prefix_fallbacks: Sequence[str],
+    pane_none_values: frozenset[str] = frozenset(),
+) -> LaneEventConfig:
+    """Load a lane-event emitter configuration from ordered env namespaces.
+
+    The first namespace that names a value wins.  This lets an established
+    producer retain its dedicated settings while newer producers share the
+    ``LANE_EVENT_EMIT_*`` defaults.
+    """
+    if not prefix_fallbacks:
+        raise ValueError("at least one lane-event env prefix is required")
+
+    def value(name: str, default: str) -> tuple[str, str | None]:
+        for prefix in prefix_fallbacks:
+            configured = os.getenv(f"{prefix}_{name}")
+            if configured is not None:
+                return configured, prefix
+        return default, None
+
+    timeout_value, timeout_prefix = value("TIMEOUT_S", "3")
+    timeout_s = float(timeout_value)
+    if timeout_s <= 1:
+        raise ValueError(
+            f"{timeout_prefix or prefix_fallbacks[0]}_TIMEOUT_S must be greater than 1"
+        )
+    pane, _ = value("PANE", "")
+    if pane in pane_none_values:
+        pane = ""
+    binary, _ = value("BIN", "panewire")
+    host, _ = value("HOST", socket.gethostname())
+    inbox_root, _ = value("INBOX_ROOT", str(Path("~/work/herdr-inbox").expanduser()))
+    return LaneEventConfig(
+        binary=binary,
+        host=host,
+        pane=pane,
+        inbox_root=inbox_root,
+        timeout_s=timeout_s,
+    )
 
 
 def _contains_control(text: str) -> bool:

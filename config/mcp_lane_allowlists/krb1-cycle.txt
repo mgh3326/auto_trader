@@ -27,8 +27,10 @@ kiwoom_mock_preview_order	prompt
 list_active_watches	sentry
 order_proposal_create	prompt
 order_proposal_list	sentry
+proposal_revalidate	spec:mcp-session-tools-v1
 route_request	both
 screen_stocks	prompt
 screen_stocks_snapshot	prompt
 session_context_append	both
 session_context_get_recent	both
+session_bootstrap_pack	spec:mcp-session-tools-v1

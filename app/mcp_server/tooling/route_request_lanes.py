@@ -273,6 +273,11 @@ PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
         "order_proposal_expire_sweep",
         "order_proposal_redispatch",
         "order_proposal_void",
+        # `proposal_revalidate` is normally read-only, but its explicit
+        # confirm-gated path delegates a terminal proposal to the existing
+        # lifecycle void boundary. It is never route-request allowed unless a
+        # lane opts in through LANE_PROPOSAL_LIFECYCLE_ALLOWED.
+        "proposal_revalidate",
     }
 )
 RESERVE_NET_CONSUMER_TOOLS: frozenset[str] = frozenset({"support_reserve_net_consume"})
@@ -597,6 +602,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "screen_stocks_snapshot",
         "screen_stocks_enrich",
         "search_symbol",
+        "session_bootstrap_pack",
         "session_context_append",
         "session_context_get_recent",
         "set_user_setting",

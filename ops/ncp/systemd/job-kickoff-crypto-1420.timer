@@ -1,0 +1,12 @@
+[Unit]
+Description=Run auto_trader kickoff lane event crypto-1420
+
+[Timer]
+# Persistent=false: a missed kickoff must never be replayed after its market window.
+OnCalendar=*-*-* 14:20:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kickoff-crypto-1420.service
+
+[Install]
+WantedBy=timers.target

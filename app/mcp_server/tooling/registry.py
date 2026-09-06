@@ -59,9 +59,10 @@ Profile → tool surface mapping
   registered set is narrower.
 
 "shadow-replay" (McpProfile.SHADOW_REPLAY):
-  ROB-697 M1 — frozen-context replay ONLY. Registers EXACTLY
+  ROB-697 M1 — frozen-context replay. Registers
   investment_report_get_hermes_context (read-only) + get_trading_policy +
-  route_request, then returns before the "Always" block. Deliberately omits
+  route_request + session_bootstrap_pack, then returns before the "Always"
+  block. Deliberately omits
   every live-fetch tool (market_data/analysis/news/fundamentals), every
   mutation/order tool, and the 4 Hermes WRITE tools — this is the load-bearing
   validity guard so a headless replay session cannot leak live market data or
@@ -183,8 +184,15 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    register_proposal_revalidate_tools,
+)
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
+)
+from app.mcp_server.tooling.session_bootstrap_registration import (
+    register_session_bootstrap_tools,
+    registered_tool_names_for,
 )
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
@@ -276,6 +284,20 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
       - DEFAULT: legacy ambiguous tools + typed kis_live_* + typed kis_mock_*
       - HERMES_PAPER_KIS: typed kis_mock_* only (live surface absent)
     """
+    profile_mcp = mcp
+
+    def register_bootstrap_pack() -> None:
+        register_session_bootstrap_tools(
+            mcp,
+            registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
+        )
+
+    def register_proposal_revalidate() -> None:
+        register_proposal_revalidate_tools(
+            mcp,
+            registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
+        )
+
     mcp = cast("FastMCP", NicheMCP(mcp, profile=profile.value))
     mcp = without_dead_tools(mcp, profile.value)
 
@@ -288,6 +310,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_hermes_context_read_only(mcp)  # investment_report_get_hermes_context
         register_trading_policy_tools(mcp)  # get_trading_policy (versioned thresholds)
         register_route_request_tools(mcp)  # route_request (lane procedure)
+        register_bootstrap_pack()
         return
 
     if profile is McpProfile.ANALYSIS_READONLY:
@@ -295,6 +318,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # before the normal "Always" block so unlisted research, account,
         # settings, watch, report-write, and order tools are physically absent.
         register_analysis_readonly_tools(mcp)
+        register_bootstrap_pack()
         return
 
     if profile is McpProfile.ACCOUNT_READ:
@@ -302,6 +326,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal "Always" block so research, persistence,
         # settings, watch, preview, reconcile, and mutation tools are absent.
         register_account_read_tools(mcp)
+        register_bootstrap_pack()
         return
 
     if profile is McpProfile.WATCH_REPRICING:
@@ -309,7 +334,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # and returns before the broad "Always" block, so every broker order
         # tool, watch mutation, reconcile and preview surface is physically
         # absent. The session may create a proposal; it may not submit one.
-        register_watch_repricing_tools(mcp)
+        register_watch_repricing_tools(
+            mcp,
+            registered_tool_names=lambda: registered_tool_names_for(profile_mcp),
+        )
         return
 
     if profile is McpProfile.TRADINGCODEX_EXECUTION:
@@ -317,6 +345,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal default block so broad research, settings,
         # watch, modify, reconcile, and persistence tools are physically absent.
         register_tradingcodex_execution_tools(mcp)
+        register_bootstrap_pack()
         return
 
     if profile is McpProfile.ALPACA_PAPER_CLEAN:
@@ -328,6 +357,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             register_alpaca_paper_tools(clean_mcp)
             register_alpaca_paper_preview_tools(clean_mcp)
             register_alpaca_paper_ledger_read_tools(clean_mcp)
+        register_bootstrap_pack()
         return
 
     if profile is McpProfile.KIWOOM_KR:
@@ -418,6 +448,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # the existing proposal dispatch path.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(mcp)
+        register_proposal_revalidate()
 
     # Profile-gated: side-effect order surfaces
     if profile is McpProfile.DEFAULT:
@@ -526,6 +557,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # Without these a crypto session could research but never trade.
         register_order_tools(mcp)
         register_live_reconcile_tools(mcp)
+
+    register_bootstrap_pack()
 
 
 __all__ = ["register_all_tools"]

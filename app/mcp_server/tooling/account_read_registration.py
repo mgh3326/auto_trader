@@ -61,6 +61,7 @@ KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES: set[str] = {
 }
 
 ACCOUNT_READ_TOOL_NAMES: set[str] = {
+    "session_bootstrap_pack",
     "get_holdings",
     "toss_get_positions",
     "get_cash_balance",

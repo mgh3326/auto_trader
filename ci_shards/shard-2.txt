@@ -75,6 +75,7 @@ tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
+tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_native_retirement.py
 tests/scripts/test_ncp_job_timers_check.py
 tests/scripts/test_ncp_job_timers_golden.py

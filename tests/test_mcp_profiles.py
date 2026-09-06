@@ -58,6 +58,9 @@ from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.tradingcodex_execution_registration import (
     KIWOOM_MOCK_EXECUTION_TOOL_NAMES,
@@ -214,11 +217,12 @@ class TestAlpacaCleanProfile:
         monkeypatch.setattr(settings, "alpaca_paper_crypto_enabled", True)
         mcp = _build_mcp(McpProfile.ALPACA_PAPER_CLEAN)
 
-        assert len(mcp.tools) == 13
+        assert len(mcp.tools) == 14
         assert set(mcp.tools) == (
             ALPACA_PAPER_READONLY_TOOL_NAMES
             | ALPACA_PAPER_PREVIEW_TOOL_NAMES
             | {
+                "session_bootstrap_pack",
                 "alpaca_paper_ledger_list_recent",
                 "alpaca_paper_ledger_get",
                 "alpaca_paper_ledger_get_by_correlation",
@@ -779,7 +783,9 @@ class TestTradingCodexExecutionProfile:
         # is flipped on.
         expected = TRADINGCODEX_EXECUTION_TOOL_NAMES
         if not settings.ORDER_PROPOSALS_ENABLED:
-            expected = expected - ORDER_PROPOSAL_TOOL_NAMES
+            expected = expected - (
+                ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES
+            )
         assert set(mcp.tools) == expected
 
     def test_does_not_register_forbidden_execution_surfaces(self) -> None:
