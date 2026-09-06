@@ -23,9 +23,7 @@ pytestmark = pytest.mark.unit
 
 _FULL_CAPABILITIES = {"order_proposal_list", "order_proposal_void"}
 _LIST_CAPABILITIES = {"order_proposal_list"}
-_SEEDED_SYMBOLS = frozenset(
-    {"RVKEEP01", "RVDEAD02", "RVGUARD03", "RVFILLED04", "RVSTALE05"}
-)
+_SEEDED_SYMBOLS = frozenset({"RVK001", "RVD002", "RVG003", "RVF004", "RVS005"})
 
 
 async def _seed_revalidation_rows(db_session) -> dict[str, str]:
@@ -46,7 +44,7 @@ async def _seed_revalidation_rows(db_session) -> dict[str, str]:
     current_policy = policy_version_stamp()
     labels = {
         "keep": {
-            "symbol": "RVKEEP01",
+            "symbol": "RVK001",
             "lifecycle_state": "proposed",
             "price": "101",
             "anchor": "100",
@@ -55,7 +53,7 @@ async def _seed_revalidation_rows(db_session) -> dict[str, str]:
             "policy": current_policy,
         },
         "dead_anchor": {
-            "symbol": "RVDEAD02",
+            "symbol": "RVD002",
             "lifecycle_state": "approved",
             "price": "102",
             "anchor": "100",
@@ -64,7 +62,7 @@ async def _seed_revalidation_rows(db_session) -> dict[str, str]:
             "policy": current_policy,
         },
         "guard_blocked": {
-            "symbol": "RVGUARD03",
+            "symbol": "RVG003",
             "lifecycle_state": "partially_submitted",
             "price": "99.5",
             "anchor": "100",
@@ -73,7 +71,7 @@ async def _seed_revalidation_rows(db_session) -> dict[str, str]:
             "policy": current_policy,
         },
         "filled_or_expired": {
-            "symbol": "RVFILLED04",
+            "symbol": "RVF004",
             "lifecycle_state": "submitted",
             "price": "101",
             "anchor": "100",
@@ -82,7 +80,7 @@ async def _seed_revalidation_rows(db_session) -> dict[str, str]:
             "policy": {"version": "older", "content_hash": "older-hash"},
         },
         "stale_policy": {
-            "symbol": "RVSTALE05",
+            "symbol": "RVS005",
             "lifecycle_state": "submitted",
             "price": "100",
             "anchor": "100",
@@ -148,11 +146,11 @@ async def _seed_revalidation_rows(db_session) -> dict[str, str]:
 
 def _quote_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     prices = {
-        "RVKEEP01": "101",
-        "RVDEAD02": "102",
-        "RVGUARD03": "99.5",
-        "RVFILLED04": "101",
-        "RVSTALE05": "100",
+        "RVK001": "101",
+        "RVD002": "102",
+        "RVG003": "99.5",
+        "RVF004": "101",
+        "RVS005": "100",
     }
 
     async def get_quote(
@@ -170,6 +168,57 @@ def _quote_stub(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr(revalidate.market_data_quotes, "_get_quote_impl", get_quote)
+
+
+def _quote_route_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Keep the production get-quote router while replacing its external I/O."""
+
+    calls: list[str] = []
+    original = revalidate.market_data_quotes._get_quote_impl
+
+    async def fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_kr",
+            "price": "101",
+            "previous_close": "100",
+            "open": "100",
+            "high": "102",
+            "low": "99",
+            "volume": "10",
+            "value": "1000",
+            "source": "kis",
+        }
+
+    async def no_tradability(symbols: list[str]) -> dict[str, Any]:
+        assert symbols
+        return {}
+
+    async def no_overlay(
+        symbol: str, quote: dict[str, Any], *, data_state: str
+    ) -> bool:
+        del symbol, quote, data_state
+        return False
+
+    async def routed_quote(
+        symbol: str | int,
+        market: str | None = None,
+        include_extended_hours: bool = False,
+    ) -> dict[str, Any]:
+        calls.append(str(symbol))
+        return await original(symbol, market, include_extended_hours)
+
+    monkeypatch.setattr(
+        revalidate.market_data_quotes, "_fetch_quote_equity_kr", fetch_quote_equity_kr
+    )
+    monkeypatch.setattr(
+        revalidate.market_data_quotes, "get_kr_nxt_tradability", no_tradability
+    )
+    monkeypatch.setattr(
+        revalidate.market_data_quotes, "_apply_nxt_quote_overlay", no_overlay
+    )
+    monkeypatch.setattr(revalidate.market_data_quotes, "_get_quote_impl", routed_quote)
+    return calls
 
 
 async def _run(
@@ -297,7 +346,7 @@ async def test_proposal_revalidate_dry_run_has_no_writes_and_no_broker_client(
     db_session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seeded = await _seed_revalidation_rows(db_session)
-    _quote_stub(monkeypatch)
+    quote_calls = _quote_route_stub(monkeypatch)
 
     class BrokerClientSpy:
         calls = 0
@@ -313,7 +362,18 @@ async def test_proposal_revalidate_dry_run_has_no_writes_and_no_broker_client(
     assert result["count"] == 5
     assert before == (5, 5)
     assert after == before
+    assert len(quote_calls) == 3
+    assert set(quote_calls) == {"RVK001", "RVD002", "RVG003"}
     assert BrokerClientSpy.calls == 0
+
+
+def test_proposal_revalidate_preserves_explicit_zero_anchor_values() -> None:
+    price, band = revalidate._anchor(
+        {"proposal_revalidate": {"anchor": {"price": 0, "band_bps": 0}}}, []
+    )
+
+    assert price == Decimal("0")
+    assert band == Decimal("0")
 
 
 def test_proposal_revalidate_has_no_unrelated_mutation_references() -> None:
@@ -448,11 +508,15 @@ def test_proposal_revalidate_profile_registration_follows_list_capability(
         for profile, names in inventory.items()
         if "order_proposal_void" in names
     }
+    quote_profiles = {
+        profile for profile, names in inventory.items() if "get_quote" in names
+    }
 
     assert list_profiles
     assert revalidate_profiles == list_profiles
     assert len(revalidate_profiles) == 9
     assert void_profiles <= list_profiles
+    assert revalidate_profiles <= quote_profiles
 
 
 @pytest.mark.asyncio

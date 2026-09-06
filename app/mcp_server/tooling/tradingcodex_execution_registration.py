@@ -30,6 +30,7 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 from app.mcp_server.tooling.investment_reports_handlers import (
     investment_watch_create_impl as _investment_watch_create,
 )
+from app.mcp_server.tooling.market_data_registration import register_market_data_tools
 from app.mcp_server.tooling.operating_briefing_registration import (
     OPERATING_BRIEFING_TOOL_NAMES,
     register_operating_briefing_tools,
@@ -120,6 +121,7 @@ KIWOOM_MOCK_EXECUTION_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 _TRADINGCODEX_EXECUTION_ADVISORY_TOOL_NAMES: set[str] = {
+    "get_quote",
     "suggest_order_account",
     "get_fx_rate",
     "route_request",
@@ -439,6 +441,7 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     register_toss_live_order_tools(filtered)
     register_kiwoom_mock_tools(filtered)
     register_account_routing_tools(filtered)
+    register_market_data_tools(filtered)
     register_fundamentals_tools(filtered)
     register_trading_policy_tools(filtered)
     register_route_request_tools(filtered)

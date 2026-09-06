@@ -57,6 +57,10 @@ def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _first_present(*values: object) -> object | None:
+    return next((value for value in values if value is not None), None)
+
+
 async def _list_for_state(lifecycle_state: str) -> dict[str, Any]:
     if lifecycle_state not in GROUP_STATES:
         raise ValueError(f"unsupported proposal lifecycle_state {lifecycle_state!r}")
@@ -109,21 +113,23 @@ def _anchor(source_asof: object, rungs: list[Any]) -> tuple[Decimal | None, Deci
     source = _mapping(source_asof)
     revalidation = _mapping(source.get("proposal_revalidate"))
     anchor = _mapping(revalidation.get("anchor"))
-    price = _decimal(
-        anchor.get("price")
-        or revalidation.get("anchor_price")
-        or source.get("anchor_price")
+    stored_price = _first_present(
+        anchor.get("price"),
+        revalidation.get("anchor_price"),
+        source.get("anchor_price"),
     )
-    if price is None:
+    price = _decimal(stored_price)
+    if stored_price is None:
         for rung in sorted(rungs, key=lambda item: item.rung_index):
             price = _decimal(getattr(rung, "limit_price", None))
             if price is not None:
                 break
-    band = _decimal(
-        anchor.get("band_bps")
-        or revalidation.get("anchor_band_bps")
-        or source.get("anchor_band_bps")
+    stored_band = _first_present(
+        anchor.get("band_bps"),
+        revalidation.get("anchor_band_bps"),
+        source.get("anchor_band_bps"),
     )
+    band = _decimal(stored_band)
     return price, band if band is not None and band >= 0 else _DEFAULT_ANCHOR_BAND_BPS
 
 

@@ -138,7 +138,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_paper_trade_log | db-paper | app.mcp_server.tooling.paper_analytics_registration | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_portfolio_allocation | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.portfolio_allocation | no | A | 9352 | 114 | 3 | 0 | 0 |
 | get_position | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.portfolio_holdings | no | A | 3080 | 5220 | 0 | 5 | 2 |
-| get_quote | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper, watch_repricing | app.mcp_server.tooling.market_data_quotes | no | A | 9144 | 8057 | 40 | 12 | 6 |
+| get_quote | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.market_data_quotes | no | A | 9144 | 8057 | 40 | 12 | 6 |
 | get_retail_sentiment | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | C | 0 | 0 | 0 | 6 | 0 |
 | get_retrospective_aggregate | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_retrospective_tools | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_sector_peers | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
