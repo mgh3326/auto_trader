@@ -490,21 +490,23 @@ async def test_explicit_rung_mapping_uses_pinned_price_for_limit_and_notional() 
 
 
 @pytest.mark.asyncio
-async def test_watch_and_forecast_rows_use_the_existing_writer_boundaries() -> None:
+async def test_watch_mapping_uses_existing_writer_and_forecast_stays_fail_closed() -> (
+    None
+):
     response = _three_row_response()
     rows = response["artifact"]["payload"]["decision_table"]["rows"]
     rows[1]["action"].update(
         {
             "apply_kind": "watch",
             "watch": {
-                "intent": "sell_review",
-                "rationale": "constructed watch fixture",
+                "symbol": "196170",
                 "watch_condition": {
                     "metric": "price",
                     "operator": "above",
                     "threshold": "315000",
                 },
                 "valid_until": "2099-01-02T09:00:00+09:00",
+                "trigger_checklist": ["confirm price source"],
             },
         }
     )
@@ -512,12 +514,10 @@ async def test_watch_and_forecast_rows_use_the_existing_writer_boundaries() -> N
         {
             "apply_kind": "forecast",
             "forecast": {
-                "forecast_target": {
-                    "kind": "manual",
-                    "direction": "up",
-                    "outcome_rule_version": "v1",
-                },
-                "probability": 0.5,
+                "symbol": "196170",
+                "direction": "up",
+                "horizon": "5d",
+                "decision_bucket": "deferred_no_action",
                 "review_date": "2099-01-02",
             },
         }
@@ -527,19 +527,175 @@ async def test_watch_and_forecast_rows_use_the_existing_writer_boundaries() -> N
 
     result = await _apply(harness)
 
-    assert [item["kind"] for item in result["rows"]] == [
-        "proposal",
-        "watch",
-        "forecast",
+    assert [item["status"] for item in result["rows"]] == [
+        "applied",
+        "applied",
+        "failed",
     ]
-    assert (
-        len(harness.proposal_calls)
-        == len(harness.watch_calls)
-        == len(harness.forecast_calls)
-        == 1
-    )
+    assert result["rows"][2]["error"] == "invalid_row_mapping"
+    assert len(harness.proposal_calls) == len(harness.watch_calls) == 1
+    assert harness.forecast_calls == []
     assert harness.watch_calls[0]["idempotency_key"].startswith("decision-table-apply-")
-    assert harness.forecast_calls[0]["instrument_type"] == "equity_kr"
+    assert harness.watch_calls[0]["symbol"] == "196170"
+    assert harness.watch_calls[0]["watch_condition"] == {
+        "metric": "price",
+        "operator": "above",
+        "threshold": "315000",
+    }
+    assert harness.watch_calls[0]["trigger_checklist"] == ["confirm price source"]
+    assert harness.watch_calls[0]["intent"] == "sell_review"
+    assert harness.watch_calls[0]["rationale"] == "decision table scenario resume-row-2"
+    # `forecast_save` requires `forecast_target` and `probability`, neither of
+    # which exists in the v1.1 additive row. The coordinator must not invent
+    # them merely to reach the writer.
+    assert result["complete"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "config"),
+    [
+        (
+            "watch",
+            {
+                "symbol": "196170",
+                "watch_condition": {
+                    "metric": "price",
+                    "operator": "above",
+                    "threshold": "315000",
+                },
+                "valid_until": "2099-01-02T09:00:00+09:00",
+            },
+        ),
+        (
+            "forecast",
+            {
+                "symbol": "196170",
+                "direction": "up",
+                "horizon": "5d",
+                "decision_bucket": "deferred_no_action",
+                "review_date": "2099-01-02",
+            },
+        ),
+    ],
+)
+async def test_missing_apply_kind_with_canonical_auxiliary_payload_fails_closed(
+    field: str, config: dict[str, Any]
+) -> None:
+    response = _happy_response()
+    response["artifact"]["payload"]["decision_table"]["rows"][0]["action"][field] = (
+        config
+    )
+    _rehash(response)
+    harness = _Harness(response)
+
+    result = await _apply(harness)
+
+    assert result["rows"] == [
+        {
+            "scenario_id": "constructed-v11-196170-breakeven-reserve-trim",
+            "status": "failed",
+            "error": "ambiguous_apply_kind",
+        }
+    ]
+    # This is the approval-card boundary: an auxiliary intent with no explicit
+    # discriminator must not fall through to a proposal writer.
+    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
+    assert result["complete"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias", ["kind", "action_type", "type"])
+async def test_noncanonical_discriminator_aliases_do_not_select_auxiliary_writers(
+    alias: str,
+) -> None:
+    response = _happy_response()
+    action = response["artifact"]["payload"]["decision_table"]["rows"][0]["action"]
+    action[alias] = "watch"
+    action["watch_config"] = {"noncanonical": True}
+    _rehash(response)
+    harness = _Harness(response)
+
+    result = await _apply(harness)
+
+    assert result["rows"][0]["kind"] == "proposal"
+    assert len(harness.proposal_calls) == 1
+    assert harness.watch_calls == harness.forecast_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "alias", "config"),
+    [
+        (
+            "watch",
+            "watch_config",
+            {
+                "symbol": "196170",
+                "watch_condition": {
+                    "metric": "price",
+                    "operator": "above",
+                    "threshold": "315000",
+                },
+                "valid_until": "2099-01-02T09:00:00+09:00",
+            },
+        ),
+        (
+            "forecast",
+            "forecast_config",
+            {
+                "symbol": "196170",
+                "direction": "up",
+                "horizon": "5d",
+                "decision_bucket": "deferred_no_action",
+                "review_date": "2099-01-02",
+            },
+        ),
+    ],
+)
+async def test_noncanonical_auxiliary_config_aliases_do_not_reach_writers(
+    kind: str, alias: str, config: dict[str, Any]
+) -> None:
+    response = _happy_response()
+    action = response["artifact"]["payload"]["decision_table"]["rows"][0]["action"]
+    action["apply_kind"] = kind
+    action[alias] = config
+    _rehash(response)
+    harness = _Harness(response)
+
+    result = await _apply(harness)
+
+    assert result["rows"][0]["status"] == "failed"
+    assert result["rows"][0]["error"] == "invalid_row_mapping"
+    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
+
+
+@pytest.mark.asyncio
+async def test_watch_condition_spelling_has_no_condition_alias() -> None:
+    response = _happy_response()
+    action = response["artifact"]["payload"]["decision_table"]["rows"][0]["action"]
+    action.update(
+        {
+            "apply_kind": "watch",
+            "watch": {
+                "symbol": "196170",
+                "condition": {
+                    "metric": "price",
+                    "operator": "above",
+                    "threshold": "315000",
+                },
+                "valid_until": "2099-01-02T09:00:00+09:00",
+            },
+        }
+    )
+    _rehash(response)
+    harness = _Harness(response)
+
+    result = await _apply(harness)
+
+    assert result["rows"][0]["status"] == "failed"
+    assert result["rows"][0]["error"] == "invalid_row_mapping"
+    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
 
 
 @pytest.mark.asyncio

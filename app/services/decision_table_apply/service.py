@@ -13,7 +13,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
 
 from app.services.decision_table_validate import decision_table_validate
 
@@ -21,14 +20,13 @@ ApplyCallable = Callable[..., Awaitable[dict[str, Any]]]
 
 _APPLY_RECORD_SCHEMA = "kr-nxt-apply-record/v1"
 _MARKET_TO_ORDER_MARKET = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
-_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 _ACTION_KINDS = {
     "proposal": "proposal",
-    "order": "proposal",
-    "order_proposal": "proposal",
     "watch": "watch",
     "forecast": "forecast",
 }
+_AMBIGUOUS_APPLY_KIND = "ambiguous_apply_kind"
+_WATCH_INTENT_BY_SIDE = {"buy": "buy_review", "sell": "sell_review"}
 
 
 @dataclass(frozen=True)
@@ -280,10 +278,15 @@ async def _save_apply_record(
 def _action_kind(action: object) -> str | None:
     if not isinstance(action, dict):
         return None
-    raw_kind = action.get(
-        "apply_kind",
-        action.get("kind", action.get("action_type", action.get("type", "proposal"))),
-    )
+    if "apply_kind" not in action:
+        # The v1.1 additive contract keeps proposal as the legacy default.  A
+        # canonical auxiliary payload without its discriminator is unsafe,
+        # however: silently treating a watch or forecast intent as a proposal
+        # would create an approval card.
+        if "watch" in action or "forecast" in action:
+            return _AMBIGUOUS_APPLY_KIND
+        return "proposal"
+    raw_kind = action["apply_kind"]
     return _ACTION_KINDS.get(raw_kind) if isinstance(raw_kind, str) else None
 
 
@@ -418,38 +421,63 @@ def _watch_kwargs(
     action = row.get("action")
     if not isinstance(action, dict):
         raise ValueError("invalid_action")
-    config = action.get("watch", action.get("watch_config"))
+    config = action.get("watch")
     if not isinstance(config, dict):
         raise ValueError("watch_config_required")
-    symbol = _only_symbol(row)
-    if symbol is None:
-        raise ValueError("watch_requires_one_symbol")
-    required = ("intent", "rationale", "watch_condition", "valid_until")
-    if any(field not in config for field in required):
+    required = {"symbol", "watch_condition", "valid_until"}
+    allowed = required | {"trigger_checklist"}
+    if not required.issubset(config) or set(config) - allowed:
         raise ValueError("watch_config_required")
+    row_symbol = _only_symbol(row)
+    symbol = config.get("symbol")
+    if (
+        row_symbol is None
+        or not isinstance(symbol, str)
+        or not symbol
+        or symbol != row_symbol
+    ):
+        raise ValueError("watch_requires_one_symbol")
+    watch_condition = config.get("watch_condition")
+    valid_until = config.get("valid_until")
+    trigger_checklist = config.get("trigger_checklist")
+    if (
+        not isinstance(watch_condition, dict)
+        or not isinstance(valid_until, str)
+        or (
+            trigger_checklist is not None
+            and (
+                not isinstance(trigger_checklist, list)
+                or not all(isinstance(item, str) for item in trigger_checklist)
+            )
+        )
+    ):
+        raise ValueError("watch_config_required")
+    intent = _WATCH_INTENT_BY_SIDE.get(action.get("side"))
+    if intent is None:
+        raise ValueError("watch_intent_unrepresentable")
     key = _stable_key(
         parent_artifact_uuid=parent_artifact_uuid,
         table_hash=table_hash,
         scenario_id=scenario_id,
     )
-    metadata = config.get("metadata")
-    merged_metadata = dict(metadata) if isinstance(metadata, dict) else {}
-    merged_metadata["decision_table_apply"] = _provenance(
-        parent_artifact_uuid=parent_artifact_uuid,
-        table_hash=table_hash,
-        scenario_id=scenario_id,
-    )["decision_table_apply"]
     return {
         "created_by": "decision_table_apply",
         "market": market,
         "symbol": symbol,
-        "intent": config["intent"],
-        "rationale": config["rationale"],
-        "watch_condition": config["watch_condition"],
-        "valid_until": config["valid_until"],
-        "trigger_checklist": config.get("trigger_checklist"),
-        "max_action": config.get("max_action"),
-        "metadata": merged_metadata,
+        # The direct watch writer requires these provenance fields but the
+        # additive table schema intentionally does not add parallel fields.
+        # Side is already a machine-validated v1.1 action field; the rationale
+        # is deterministic provenance rather than new operator-authored text.
+        "intent": intent,
+        "rationale": f"decision table scenario {scenario_id}",
+        "watch_condition": watch_condition,
+        "valid_until": valid_until,
+        "trigger_checklist": trigger_checklist,
+        "metadata": _provenance(
+            parent_artifact_uuid=parent_artifact_uuid,
+            table_hash=table_hash,
+            scenario_id=scenario_id,
+        ),
         "idempotency_key": f"decision-table-apply-{key}",
     }
 
@@ -465,47 +493,32 @@ def _forecast_kwargs(
     action = row.get("action")
     if not isinstance(action, dict):
         raise ValueError("invalid_action")
-    config = action.get("forecast", action.get("forecast_config"))
+    config = action.get("forecast")
     if not isinstance(config, dict):
         raise ValueError("forecast_config_required")
-    symbol = _only_symbol(row)
-    if symbol is None:
-        raise ValueError("forecast_requires_one_symbol")
-    required = ("forecast_target", "probability", "review_date")
-    if any(field not in config for field in required):
+    required = {"symbol", "direction", "horizon", "decision_bucket", "review_date"}
+    if set(config) != required:
         raise ValueError("forecast_config_required")
-    seed = _stable_key(
-        parent_artifact_uuid=parent_artifact_uuid,
-        table_hash=table_hash,
-        scenario_id=scenario_id,
-    )
-    kwargs: dict[str, Any] = {
-        "created_by": "decision_table_apply",
-        "symbol": symbol,
-        "instrument_type": _MARKET_TO_INSTRUMENT[market],
-        "forecast_target": config["forecast_target"],
-        "probability": config["probability"],
-        "review_date": config["review_date"],
-        "forecast_id": str(uuid5(NAMESPACE_URL, f"decision-table-apply:{seed}")),
-        "session_label": "decision_table_apply",
-        "artifact_uuid": parent_artifact_uuid,
-        "correlation_id": f"decision-table-apply-{seed[:24]}",
-    }
-    for field in (
-        "horizon",
-        "probability_range_low",
-        "probability_range_high",
-        "evidence_ids",
-        "contrary_evidence",
-        "forecast_start_date",
-        "resolution_source",
-        "model_label",
-        "policy_version",
-        "decision_bucket",
+    row_symbol = _only_symbol(row)
+    symbol = config.get("symbol")
+    if (
+        row_symbol is None
+        or not isinstance(symbol, str)
+        or not symbol
+        or symbol != row_symbol
     ):
-        if field in config:
-            kwargs[field] = config[field]
-    return kwargs
+        raise ValueError("forecast_requires_one_symbol")
+    if not all(
+        isinstance(config.get(field), str) and config[field]
+        for field in ("direction", "horizon", "decision_bucket", "review_date")
+    ):
+        raise ValueError("forecast_config_required")
+    # forecast_save requires both a typed forecast_target and a probability.
+    # The v1.1 additive schema deliberately provides neither, and deriving a
+    # target/probability from rungs or choosing a placeholder would fabricate
+    # investment semantics.  Leave the row unmarked for a corrected contract
+    # rather than persisting a made-up forecast.
+    raise ValueError("forecast_writer_contract_unrepresentable")
 
 
 def _row_kwargs(
@@ -731,6 +744,15 @@ async def apply_decision_table(
             continue
         action = row.get("action")
         kind = _action_kind(action)
+        if kind == _AMBIGUOUS_APPLY_KIND:
+            results.append(
+                {
+                    "scenario_id": scenario_id,
+                    "status": "failed",
+                    "error": _AMBIGUOUS_APPLY_KIND,
+                }
+            )
+            continue
         if kind is None:
             results.append(
                 {

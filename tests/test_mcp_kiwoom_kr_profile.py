@@ -132,10 +132,12 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_includes_readonly_advisors_and_is_exactly_123_tools(
+    def test_base_inventory_includes_readonly_advisors_and_is_exactly_124_tools(
         self,
     ) -> None:
-        # Closed world: the count moves only with a reviewed addition. ROB-1303
+        """Keep the reviewed 124-tool closed-world base inventory exact."""
+
+        # Closed world: the 124-tool count moves only with a reviewed addition. ROB-1303
         # added get_spike_attribution (read-only attribution reader), which the
         # KIWOOM <-> KIWOOM_KR shared-surface contract requires here — see
         # TestKiwoomKrProfile::test_keeps_kr_order_surface_intact. ROB-1309

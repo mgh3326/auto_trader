@@ -114,13 +114,29 @@ when both parent UUID and hash match. A changed hash is a new table and starts
 with no row markers. After every successful row it updates the separate record;
 failed rows remain unmarked, while later rows continue in original table order.
 
-The v1.1 action keeps its machine-validated proposal fields and rungs. The
-apply discriminator is `action.apply_kind` (`proposal`, `watch`, or
-`forecast`; `kind`, `action_type`, and `type` are compatibility aliases).
-Watch and forecast rows place their target-writer input in `action.watch` or
-`action.forecast` respectively (`watch_config` and `forecast_config` are
-compatibility aliases). This keeps the validator as the sole admission gate
-while making the selected existing persistence writer explicit.
+`action.apply_kind` is the v1.1 additive canonical row discriminator:
+`proposal`, `watch`, or `forecast`; `schema_version` remains v1.1. Omission
+means proposal for legacy rows. A canonical `action.watch` or
+`action.forecast` payload without `apply_kind` is instead
+`ambiguous_apply_kind`: apply does not invoke a row writer and never silently
+turns that intent into a proposal. v1.2 mandatory-discriminator work is
+separate.
+
+The only canonical auxiliary payloads are
+`action.watch{symbol,watch_condition,valid_until,trigger_checklist?}` (where
+`watch_condition` uses the existing playbook schema) and
+`action.forecast{symbol,direction,horizon,decision_bucket,review_date}`.
+`kind`, `action_type`, `type`, `watch_config`, and `forecast_config` are not
+accepted aliases. There are three row writers—proposal, watch, and forecast.
+`session_context_append` is not a row kind: it records exactly one summary per
+apply invocation after the rows have been processed.
+
+`forecast_save` additionally requires an `instrument_type`, typed
+`forecast_target`, and `probability`. The v1.1 additive forecast payload has
+no ratified deterministic mapping for the target or probability, so forecast
+rows currently return `invalid_row_mapping`, remain unmarked for resume, and
+never invoke `forecast_save`. Until a later approval defines that mapping,
+proposal and watch are the only row kinds this tool applies.
 
 Operators should first use the default `dry_run=true` and review the row
 statuses. For an accepted table call again with `dry_run=false, confirm=true`.
