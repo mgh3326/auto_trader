@@ -6,5 +6,6 @@ analysis_artifact_save	prompt
 get_operating_briefing	prompt
 order_proposal_create	prompt
 order_proposal_list	prompt
+proposal_revalidate	spec:mcp-session-tools-v1
 route_request	prompt
 session_bootstrap_pack	spec:mcp-session-tools-v1

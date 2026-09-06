@@ -40,6 +40,22 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         frozenset({"session_bootstrap_pack"}),
     ),
     (
+        frozenset(
+            {
+                "crypto",
+                "db-paper",
+                "default",
+                "hermes-paper-kis",
+                "kiwoom",
+                "kiwoom_kr",
+                "tradingcodex_execution",
+                "us-paper",
+                "watch_repricing",
+            }
+        ),
+        frozenset({"proposal_revalidate"}),
+    ),
+    (
         frozenset({"account_read", "default", "crypto", "tradingcodex_execution"}),
         frozenset(
             {

@@ -51,6 +51,7 @@ modify_order	prompt
 order_proposal_create	prompt
 order_proposal_list	prompt
 order_proposal_void	prompt
+proposal_revalidate	spec:mcp-session-tools-v1
 place_order	prompt
 route_request	prompt
 save_trade_retrospective	prompt

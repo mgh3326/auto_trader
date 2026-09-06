@@ -138,7 +138,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_paper_trade_log | db-paper | app.mcp_server.tooling.paper_analytics_registration | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_portfolio_allocation | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.portfolio_allocation | no | A | 9352 | 114 | 3 | 0 | 0 |
 | get_position | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.portfolio_holdings | no | A | 3080 | 5220 | 0 | 5 | 2 |
-| get_quote | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper, watch_repricing | app.mcp_server.tooling.market_data_quotes | no | A | 9144 | 8057 | 40 | 12 | 6 |
+| get_quote | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.market_data_quotes | no | A | 9144 | 8057 | 40 | 12 | 6 |
 | get_retail_sentiment | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | C | 0 | 0 | 0 | 6 | 0 |
 | get_retrospective_aggregate | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_retrospective_tools | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_sector_peers | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
@@ -222,6 +222,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | order_proposal_list_expired_defensive | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.order_proposal_tools | no | C | 0 | 0 | 0 | 1 | 0 |
 | order_proposal_redispatch | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.order_proposal_tools | no | D | 0 | 0 | 0 | 0 | 0 |
 | order_proposal_void | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.order_proposal_tools | order, proposal | A | 152 | 168 | 5 | 10 | 0 |
+| proposal_revalidate | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.proposal_revalidate_registration | order, proposal | C | 0 | 0 | 0 | 1 | 0 |
 | paper_cancel_pending_order | default | app.mcp_server.tooling.paper_limit_order_handler | order | D | 0 | 0 | 0 | 0 | 0 |
 | paper_cohort_kill_switch | paper_execution | app.mcp_server.tooling.paper_cohort_control_registration | persistence | C | 0 | 0 | 0 | 1 | 0 |
 | paper_execution_cancel_order | paper_execution | app.mcp_server.tooling.paper_execution_registration | order | D | 0 | 0 | 0 | 0 | 0 |

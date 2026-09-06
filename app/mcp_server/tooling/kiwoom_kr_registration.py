@@ -56,6 +56,9 @@ from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_kiwoom_variants import (
     register as register_kiwoom_mock_tools,
 )
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -227,6 +230,7 @@ def kiwoom_kr_profile_tool_names() -> set[str]:
         names.update(INVESTMENT_SNAPSHOTS_TOOL_NAMES)
     if settings.ORDER_PROPOSALS_ENABLED:
         names.update(ORDER_PROPOSAL_TOOL_NAMES)
+        names.update(PROPOSAL_REVALIDATE_TOOL_NAMES)
     return names
 
 

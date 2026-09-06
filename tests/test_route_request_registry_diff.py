@@ -33,6 +33,9 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
     KIWOOM_MOCK_US_READ_TOOL_NAMES,
 )
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
@@ -191,14 +194,16 @@ def test_every_proposal_enabled_default_tool_is_classified(
     default = _default_tools()
 
     assert ORDER_PROPOSAL_TOOL_NAMES <= default
+    assert PROPOSAL_REVALIDATE_TOOL_NAMES <= default
     assert default <= ALL_KNOWN_TOOLS
-    assert ORDER_PROPOSAL_TOOL_NAMES == (
+    assert ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES == (
         ORDER_PROPOSAL_READ_TOOLS
         | PROPOSAL_LED_TOOLS
         | PROPOSAL_LIFECYCLE_TOOLS
         | RESERVE_NET_CONSUMER_TOOLS
     )
     assert ORDER_PROPOSAL_READ_TOOLS <= READ_ONLY_ADVISORY_TOOLS
+    assert PROPOSAL_REVALIDATE_TOOL_NAMES <= PROPOSAL_LIFECYCLE_TOOLS
     assert (
         PROPOSAL_LED_TOOLS | PROPOSAL_LIFECYCLE_TOOLS | RESERVE_NET_CONSUMER_TOOLS
         <= MUTATION_TOOLS

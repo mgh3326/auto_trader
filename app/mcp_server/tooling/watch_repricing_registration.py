@@ -59,6 +59,9 @@ from app.mcp_server.tooling.operating_briefing_registration import (
 )
 from app.mcp_server.tooling.order_proposal_tools import register_order_proposal_tools
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    register_proposal_revalidate_tools,
+)
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
 )
@@ -131,6 +134,14 @@ def register_watch_repricing_tools(
     register_operating_briefing_tools(filtered)
     register_investment_report_tools(filtered, include_snapshot_generator=False)
     register_order_proposal_tools(filtered)
+    register_proposal_revalidate_tools(
+        filtered,
+        registered_tool_names=(
+            registered_tool_names
+            if registered_tool_names is not None
+            else lambda: registered_tool_names_for(mcp)
+        ),
+    )
     register_session_bootstrap_tools(
         filtered,
         registered_tool_names=(

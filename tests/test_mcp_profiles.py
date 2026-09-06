@@ -58,6 +58,9 @@ from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
+from app.mcp_server.tooling.proposal_revalidate_registration import (
+    PROPOSAL_REVALIDATE_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.tradingcodex_execution_registration import (
     KIWOOM_MOCK_EXECUTION_TOOL_NAMES,
@@ -780,7 +783,9 @@ class TestTradingCodexExecutionProfile:
         # is flipped on.
         expected = TRADINGCODEX_EXECUTION_TOOL_NAMES
         if not settings.ORDER_PROPOSALS_ENABLED:
-            expected = expected - ORDER_PROPOSAL_TOOL_NAMES
+            expected = expected - (
+                ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES
+            )
         assert set(mcp.tools) == expected
 
     def test_does_not_register_forbidden_execution_surfaces(self) -> None:

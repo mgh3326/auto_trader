@@ -88,6 +88,7 @@ PROPOSAL_ONLY_TOOLS: frozenset[str] = frozenset(
         EXECUTION_BOUNDARY,
         "order_proposal_get",
         "order_proposal_list",
+        "proposal_revalidate",
     }
 )
 
