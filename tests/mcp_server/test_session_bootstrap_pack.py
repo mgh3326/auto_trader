@@ -551,17 +551,14 @@ async def test_resting_proposals_preserve_real_source_responses(
     }
     assert all(expected_seeded_items.values())
     assert _json(actual_seeded_items) == _json(expected_seeded_items)
-    seeded_by_state = {
+    actual_seeded_by_state = {
         state: len(items) for state, items in actual_seeded_items.items()
     }
-    assert seeded_by_state == {
-        state: sources[state]["count"] for state in EXPECTED_OPEN_PROPOSAL_STATES
+    expected_seeded_by_state = {
+        state: len(items) for state, items in expected_seeded_items.items()
     }
-    assert all(
-        proposals["by_state"][state] >= seeded_by_state[state]
-        for state in EXPECTED_OPEN_PROPOSAL_STATES
-    )
-    assert seeded_by_state["proposed"] == sources["proposed"]["count"]
+    assert actual_seeded_by_state == expected_seeded_by_state
+    assert proposals["by_state"] == actual_seeded_by_state
 
 
 @pytest.mark.asyncio
