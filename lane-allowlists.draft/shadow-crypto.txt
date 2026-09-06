@@ -1,1 +1,2 @@
 # tool	basis (prompt|sentry|both)
+session_bootstrap_pack	spec:mcp-session-tools-v1

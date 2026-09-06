@@ -32,3 +32,4 @@ screen_stocks	prompt
 screen_stocks_snapshot	prompt
 session_context_append	both
 session_context_get_recent	both
+session_bootstrap_pack	spec:mcp-session-tools-v1

@@ -59,6 +59,7 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 
 ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
+    "session_bootstrap_pack",
     "get_operating_briefing",
     "route_request",
     "get_trading_policy",

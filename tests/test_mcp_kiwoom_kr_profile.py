@@ -142,7 +142,8 @@ class TestWholeProfileClosedWorld:
         assert "decision_table_validate" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "screen_stocks_enrich" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 123
+        assert "session_bootstrap_pack" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 124
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()

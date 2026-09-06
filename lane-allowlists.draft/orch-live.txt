@@ -43,6 +43,7 @@ save_trade_retrospective	prompt
 screen_stocks	prompt
 screen_stocks_snapshot	prompt
 session_context_append	prompt
+session_bootstrap_pack	spec:mcp-session-tools-v1
 toss_detect_manual_activity	prompt
 toss_get_order_history	prompt
 toss_get_orderable_cash	prompt

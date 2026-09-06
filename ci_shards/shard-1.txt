@@ -38,6 +38,9 @@ tests/mcp_server/test_kis_mock_shadow_order_history.py
 tests/mcp_server/test_portfolio_helpers.py
 tests/mcp_server/test_research_pipeline_read_tools.py
 tests/mcp_server/test_sector_concentration.py
+tests/mcp_server/test_session_bootstrap_pack.py
+tests/mcp_server/test_session_bootstrap_pack_no_write.py
+tests/mcp_server/test_session_bootstrap_profile_sections.py
 tests/mcp_server/test_trading_policy_tool.py
 tests/mcp_server/tooling/test_execute_and_record_routing.py
 tests/mcp_server/tooling/test_kis_live_ledger.py

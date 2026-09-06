@@ -35,30 +35,30 @@ LANE_PROFILES: dict[str, tuple[str, ...]] = {
     "watch-alert-relay": ("default",),
 }
 LANE_COUNTS = {
-    "claude-mock": 8,
-    "crypto": 65,
-    "fable-workbench": 27,
-    "fill-handoff": 54,
-    "kr": 64,
-    "krb1-cycle": 33,
-    "orch-live": 52,
-    "orch-mock": 8,
-    "shadow-crypto": 0,
-    "us": 66,
-    "watch-alert-relay": 52,
+    "claude-mock": 9,
+    "crypto": 66,
+    "fable-workbench": 28,
+    "fill-handoff": 55,
+    "kr": 65,
+    "krb1-cycle": 34,
+    "orch-live": 53,
+    "orch-mock": 9,
+    "shadow-crypto": 1,
+    "us": 67,
+    "watch-alert-relay": 53,
 }
 LANE_SHA256 = {
-    "claude-mock": "750ae813180ad05916657c0f61756bee2a79b607b99e663d37751a7c5e5c7937",
-    "crypto": "6d0e3dec375b4067a6321c9e16f831d2aa78f709e63ddf8a21caca30b28803a8",
-    "fable-workbench": "78194ea4939daf2750695dfdc2aaabbbdd3793b33adeeda1d27daea1b8176309",
-    "fill-handoff": "12bc7c94d923138195c926c25eb8fedf65bdc5512a85a96ca3b722aeb37f30d5",
-    "kr": "0bbc5d8fa369f0c85c16d4bb8083611470db9d12c42d2c26e74fb445fce18258",
-    "krb1-cycle": "ba965de24a388e88c1b3a377a3815f0eb2616e29b99b1eea9e1262a4c329cbfa",
-    "orch-live": "c5ba1f1021059e33e33930e924146c0f0e426c7139e089592dc0a5988edbf18b",
-    "orch-mock": "750ae813180ad05916657c0f61756bee2a79b607b99e663d37751a7c5e5c7937",
-    "shadow-crypto": "9589ec25bc0f716c7651dddee3fb81536bf998575d2b92a30a34cdd5514fbb54",
-    "us": "e4cea9f8bb17cdb085cdab9ed7767ee832cef2b31fab3024a42843eda2d07ebb",
-    "watch-alert-relay": "c5ba1f1021059e33e33930e924146c0f0e426c7139e089592dc0a5988edbf18b",
+    "claude-mock": "1a598a68113d04715e388b9a79f4f1ebf9e9ee1ceeddea7eefc33407b7c331ad",
+    "crypto": "b1f472d537193ef472b7b43b9ca67e99e0327b63a7a48814936e8d6a69cb51ce",
+    "fable-workbench": "87c93ec245d04457803e6879d9a73aed29b54b8d6d834946a93d8e670f49e5ab",
+    "fill-handoff": "cfd62580350cfc23fc9fead7df7ce30a5c23d796703d45503f932a67d6ad2593",
+    "kr": "f44e243da2fa52aa2976ab5862ffbdb8b106c7bb1574d5d9b5fba72f3658d076",
+    "krb1-cycle": "962bbb9b70c9c35a71d15ea0635a84fe59504eedec0fdfe271891f215d2601c2",
+    "orch-live": "2657ff67d9664b857426a14d1024ebafb9424e4633199678e89a005297f32fac",
+    "orch-mock": "1a598a68113d04715e388b9a79f4f1ebf9e9ee1ceeddea7eefc33407b7c331ad",
+    "shadow-crypto": "ca565c27d6d8bfb34386f1fa0bc3457afa194961c9a1797d1d1c94e59195500a",
+    "us": "05b7d5d61f969472fd6a198ca64684aa92437c03c0b6145edb2e04263b973fa7",
+    "watch-alert-relay": "2657ff67d9664b857426a14d1024ebafb9424e4633199678e89a005297f32fac",
 }
 
 
@@ -80,9 +80,9 @@ def _read_allowlist(lane: str) -> set[str]:
         assert len(columns) == 2, f"{lane}: expected tool<TAB>basis: {line!r}"
         tool, basis = columns
         assert tool and tool not in tools, f"{lane}: blank or duplicate tool {tool!r}"
-        assert basis in {"", "prompt", "sentry", "both"}, (
-            f"{lane}: unknown audit basis {basis!r}"
-        )
+        assert basis in {"", "prompt", "sentry", "both"} or (
+            basis.startswith("spec:") and len(basis) > 5
+        ), f"{lane}: unknown audit basis {basis!r}"
         tools.add(tool)
     assert len(tools) == LANE_COUNTS[lane], f"{lane}: audited lane rows disappeared"
     return tools

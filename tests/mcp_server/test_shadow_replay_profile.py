@@ -24,6 +24,7 @@ _ALLOWED = {
     "investment_report_get_hermes_context",
     "get_trading_policy",
     "route_request",
+    "session_bootstrap_pack",
 }
 _FORBIDDEN = {
     "get_quote",
