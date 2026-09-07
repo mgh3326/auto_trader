@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SHADOW_DIR = REPO_ROOT / "app" / "services" / "buy_gate_ab_shadow"
+POLICY_ALIGNMENT_V2_FILE = SHADOW_DIR / "policy_alignment_v2.py"
 MCP_FILES = (
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow.py",
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow_registration.py",
@@ -87,6 +88,15 @@ def test_shadow_package_has_no_broker_proposal_policy_or_scheduler_imports() -> 
         modules = _imported_module_names(tree)
         for module in modules:
             for prefix in FORBIDDEN_IMPORT_PREFIXES:
+                # ROB-1351 v2 needs one read-only exception: this isolated
+                # seal-to-live alignment module loads/projections the operator
+                # policy but has no DB, broker, proposal, or scheduler imports.
+                # Keep it exact so no other shadow file can gain a policy path.
+                if (
+                    path == POLICY_ALIGNMENT_V2_FILE
+                    and module == "app.services.trading_policy_service"
+                ):
+                    continue
                 assert not module.startswith(prefix), f"{path.name} imports {module!r}"
             lowered = module.lower()
             for needle in FORBIDDEN_NAME_SUBSTRINGS:
