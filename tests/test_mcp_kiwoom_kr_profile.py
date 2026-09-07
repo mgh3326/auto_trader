@@ -132,10 +132,10 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_includes_readonly_advisors_and_is_exactly_124_tools(
+    def test_base_inventory_includes_readonly_advisors_and_matches_pinned_count(
         self,
     ) -> None:
-        """Keep the reviewed 124-tool closed-world base inventory exact."""
+        """Keep the reviewed closed-world base inventory count pinned."""
 
         # Closed world: the 124-tool count moves only with a reviewed addition. ROB-1303
         # added get_spike_attribution (read-only attribution reader), which the
