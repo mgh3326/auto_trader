@@ -238,6 +238,7 @@ class _FanoutGates:
 
     rsi_max: float
     support_source_count_min: int
+    discovery_support_source_count_min: int
     support_within_current_pct_max: float
     honest_upside_pct_min: float
     support_strength_min: str
@@ -266,10 +267,30 @@ class _FanoutGates:
             raise ValueError(
                 "screen.support_strength_min must be one of weak, moderate, strong"
             )
+        try:
+            discovery_support_source_count = policy.thresholds[
+                "screen.independent_support_source_count_min"
+            ].value
+        except KeyError as exc:
+            raise ValueError(
+                "missing required discovery threshold "
+                "screen.independent_support_source_count_min"
+            ) from exc
+        if isinstance(discovery_support_source_count, bool) or not isinstance(
+            discovery_support_source_count, int
+        ):
+            raise ValueError(
+                "screen.independent_support_source_count_min must be an integer"
+            )
+        if discovery_support_source_count < 1:
+            raise ValueError(
+                "screen.independent_support_source_count_min must be at least 1"
+            )
         reserve = policy.decision_rules["buy.support_reserve_net"]
         gates = cls(
             rsi_max=float(threshold.value),
             support_source_count_min=int(reserve.independent_support_source_count_min),
+            discovery_support_source_count_min=discovery_support_source_count,
             support_within_current_pct_max=float(
                 reserve.support_within_current_pct_max
             ),
@@ -316,6 +337,7 @@ class _FanoutGates:
         return {
             "rsi_max": self.rsi_max,
             "support_source_count_min": self.support_source_count_min,
+            "discovery_support_source_count_min": self.discovery_support_source_count_min,
             "support_within_current_pct_max": self.support_within_current_pct_max,
             "honest_upside_pct_min": self.honest_upside_pct_min,
             "support_strength_min": self.support_strength_min,
@@ -390,6 +412,7 @@ def _support_evidence(
     *,
     current_price: float,
     gates: _FanoutGates,
+    required_family_count: int,
 ) -> tuple[dict[str, Any] | None, str]:
     if not isinstance(supports, list):
         return None, "fresh_supports_missing"
@@ -422,8 +445,10 @@ def _support_evidence(
         if strength_rank.get(strength, -1) < required_strength:
             nearest_failure = "support_strength_below_moderate"
             continue
-        if len(families) < gates.support_source_count_min:
-            nearest_failure = "independent_support_family_count_below_2"
+        if len(families) < required_family_count:
+            nearest_failure = (
+                f"independent_support_family_count_below_{required_family_count}"
+            )
             continue
         usable.append(
             {
@@ -696,15 +721,30 @@ def _evaluate_funnel(
             "trading_restriction": "clear",
         }
 
+    rsi = _first_float(fresh, "rsi_14", "rsi14", "rsi")
+    regular_rsi_pass = rsi is not None and rsi <= gates.rsi_max
+    required_family_count = (
+        gates.discovery_support_source_count_min
+        if regular_rsi_pass
+        else gates.support_source_count_min
+    )
+
     support, support_reason = _support_evidence(
-        fresh.get("supports"), current_price=current_price, gates=gates
+        fresh.get("supports"),
+        current_price=current_price,
+        gates=gates,
+        required_family_count=required_family_count,
     )
     if support is None:
         funnel["support_source_count"] = observed_stage("fail", reason=support_reason)
         for stage in _FUNNEL_STAGE_NAMES[3:]:
             funnel[stage] = _not_evaluated("support_source_count_failed")
         return _funnel_result(funnel, freshness)
-    funnel["support_source_count"] = observed_stage("pass", **support)
+    funnel["support_source_count"] = observed_stage(
+        "pass",
+        **support,
+        required_source_family_count=required_family_count,
+    )
 
     consensus = fresh.get("consensus")
     consensus_data = consensus if isinstance(consensus, Mapping) else {}
@@ -749,8 +789,6 @@ def _evaluate_funnel(
         honest_upside_pct=round(upside_pct, 6),
     )
 
-    rsi = _first_float(fresh, "rsi_14", "rsi14", "rsi")
-    regular_rsi_pass = rsi is not None and rsi <= gates.rsi_max
     if regular_rsi_pass:
         funnel["rsi"] = observed_stage(
             "regular_pass",
