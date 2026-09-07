@@ -6,14 +6,16 @@ requires for a new tier. Precedent: PR #1990.
 ```yaml
 freeze_epoch_id: q4-tier-freeze-2026-08-30
 change_id: s177-underwater-support-net-20260907
-pr_number: TBD_ON_OPEN
+pr_number: 2060
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
-  operator decision 2026-09-07 11:05 KST ("물타기 티어 등록하자"), relayed in
-  herdr-inbox/jobs/captain-25-underwater-tier-20260907/captain-brief.md;
-  measured trigger in week1-exec-report.md §4-1 (three KIS averaging-down
-  proposals with no matching registered tier) and cash-active-week1-plan
-  §0/§b/§c.
+  operator decision 2026-09-07 (decision queue #91). Measured trigger: the
+  2026-09-07 operator session produced three KIS averaging-down proposals with
+  no matching registered tier, because buy.winner_pullback_add requires an
+  unrealized gain and buy.support_reserve_net.add_candidate forbids a partial
+  A_limit fill. Sizing and the three-way classification formula come from that
+  session's week-1 execution review; the underlying operator records are held
+  outside this repository.
 market: [kr, us]
 account_scope: >-
   Held equity lots on KR and US live accounts. No crypto surface is touched:
