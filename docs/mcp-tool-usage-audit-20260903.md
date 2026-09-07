@@ -86,6 +86,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | delete_paper_account | db-paper | app.mcp_server.tooling.paper_account_registration | persistence | D | 0 | 0 | 0 | 0 | 0 |
 | discover_buy_candidates_fanout | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_candidate_fanout_registration | no | C | 0 | 0 | 0 | 1 | 0 |
 | evaluate_buy_gate_ab_shadow | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_gate_ab_shadow_registration | no | A | 0 | 6 | 0 | 2 | 0 |
+| evaluate_buy_gate_ab_shadow_v2 | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.buy_gate_ab_shadow_v2_registration | no | U | 0 | 0 | 0 | 1 | 0 |
 | execution_ledger_fill_events_list_recent | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.execution_ledger_events | no | A | 1512 | 328 | 0 | 0 | 0 |
 | forecast_resolve | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.forecast_tools | no | A | 7256 | 7068 | 11 | 5 | 0 |
 | forecast_save | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | multiple | persistence | A | 10840 | 1210 | 36 | 12 | 3 |
@@ -289,7 +290,7 @@ Each `lane-allowlists.draft/<lane>.txt` line is `tool<TAB>basis`; basis is exact
 |---|---|---:|
 | claude-mock | hermes-paper-kis, kiwoom, us-paper | 8 |
 | crypto | crypto, default | 65 |
-| fable-workbench | analysis_readonly | 27 |
+| fable-workbench | analysis_readonly | 29 |
 | fill-handoff | crypto, default | 54 |
 | kr | default | 64 |
 | krb1-cycle | kiwoom | 33 |

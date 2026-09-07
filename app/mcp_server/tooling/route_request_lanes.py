@@ -491,6 +491,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # ROB-1301: observation-only A/B buy-gate shadow. Never a proposal,
         # order, or watch; live variant A is unchanged.
         "evaluate_buy_gate_ab_shadow",
+        # ROB-1351: v2 is a pre-arming witness evaluator. It returns tagged
+        # forecast kwargs but neither saves them nor creates an epoch marker.
+        "evaluate_buy_gate_ab_shadow_v2",
         # ROB-1348: deterministic decision-table validation. It performs no
         # database, network, broker, order, or proposal operation.
         "decision_table_validate",
