@@ -774,6 +774,30 @@ class Settings(BaseSettings):
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
 
+    # fillwire P0 — token-authed execution-ledger HTTP ingest + reconnect
+    # reconcile trigger. Same machine-token shape as the research-reports /
+    # Hermes branches: unset token (or unset header name) is fail-closed 403,
+    # a wrong token is 401. Never log or echo the value.
+    EXECUTION_LEDGER_INGEST_TOKEN: str = ""
+    EXECUTION_LEDGER_INGEST_TOKEN_HEADER: str = "X-Execution-Ledger-Ingest-Token"
+    # Reconnect-trigger dedupe window (process-local, monotonic). A second
+    # reconnect call for the same market inside this window is answered
+    # ``deduped`` instead of re-entering the reconcile kernel.
+    EXECUTION_LEDGER_RECONCILE_TRIGGER_DEDUPE_SECONDS: float = 60.0
+
+    # fillwire P0 — websocket monitor ledger sink switch. ``db`` (default)
+    # keeps the pre-existing direct service-layer write; ``http`` posts the
+    # same normalized ``ExecutionLedgerUpsert`` to the localhost ingest API.
+    # HTTP failures are queued (bounded) and retried, then fail **open** to
+    # the direct DB path so a fill is never dropped.
+    WS_LEDGER_SINK: str = "db"
+    WS_LEDGER_SINK_URL: str = (
+        "http://127.0.0.1:8000/trading/api/execution-ledger/fills/ingest"
+    )
+    WS_LEDGER_SINK_TIMEOUT_SECONDS: float = 3.0
+    WS_LEDGER_SINK_MAX_QUEUE: int = 200
+    WS_LEDGER_SINK_MAX_ATTEMPTS: int = 3
+
     # ROB-404 — kis_mock execution-event consumer + periodic reconcile.
     # Default off: the consumer runs reconcile in dry-run preflight and the
     # periodic taskiq task returns paused until an operator flips these.
