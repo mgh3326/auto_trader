@@ -60,6 +60,32 @@ separate operator activation decision and independent review. A plumbing
 witness cannot satisfy that condition, cannot select `collection_armed_at`, and
 cannot create an epoch row.
 
+## v2 서버 저장 가드와 라이브 정책 대조
+
+`forecast_save`는 `experiment_id=rob-1351-buy-gate-moderate-live`인 모든
+v2 target을 서버에서 다시 검증한다. 이 검사는 빌더를 우회한 직접 호출에도
+동일하게 적용된다. `promote=false`, calibration/trade-performance 제외,
+variant/cohort, 봉인 SHA-256, canonical `input_snapshot` digest, timezone-aware
+결정일, unarmed epoch(`collection_epoch_id=null`,
+`pre_arming_witness=true`), 그리고 `experiment_sample`과 shared-bit provenance의
+정확한 일관성을 fail-closed로 강제한다. 성공한 v2 저장은 JSON 태그만 남기지 않고
+`review.sample_eligibility_decisions`에 calibration 및 trade-performance
+`EXCLUDE` 결정을 append한다.
+
+같은 저장 경계(그리고 v2 forecast builder)는 봉인된 투영의 네 라이브 discovery
+입력만 실제 `config/trading_policy.yaml`의 KR/US effective policy와 대조한다:
+`screen.support_strength_min`, `screen.rsi_max`,
+`screen.support_within_pct`, `screen.upside_min_pct`. market override를 포함해
+각 시장별로 대조하며, 누락·형식 불량·불일치는 저장을 거부한다. 이 소스 머지는
+epoch arm 승인이 아니다. arm에는 여전히 `experiment_sample=true` witness가 최소
+1건, 별도 운영자 활성화 결정, 그리고 독립 리뷰가 모두 선행해야 한다.
+
+정직한 한계: 이 대조는 봉인 투영에서 라이브 정책으로 향하는 단방향 매핑이다.
+따라서 기존 네 매핑 키를 바꾸지 않은 채 새 라이브 정책 키가 추가되어 실효 게이트의
+의미를 바꾸는 경우에는 이 가드가 이를 잡지 못한다. 이 한계는 새 키가 모두 봉인에
+있어야 한다는 역방향 검사를 도입해 해결하지 않는다. 그러면 무관한 정책 추가가
+관측 계약을 부당하게 깨뜨리기 때문이다.
+
 ## Historical ROB-1301 forbidden record (issue canonical, not paraphrased)
 
 * shadow가 제안·주문·워치로 승격 금지(순수 기록)
