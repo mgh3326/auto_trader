@@ -390,6 +390,11 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
    upside ≥ `screen.upside_min_pct` + liquid mid-cap + not over-concentrated +
    **rights-issue / overhang filter**
    (`get_disclosures` — the EcoPro BM ₩1.2T rights-issue lesson).
+   The independent support-family minimum is now split between
+   `screen.independent_support_source_count_min` (discovery) and
+   `buy.support_reserve_net.independent_support_source_count_min` (tier); both
+   are currently 2, so the verdict is unchanged. This is a configuration split,
+   not a relaxation.
 4. **Ranking / competition (the tournament):** compare each survivor against the
    existing net (swap decision), bonus for sector diversification, bonus for
    freshness (newly pulled back).

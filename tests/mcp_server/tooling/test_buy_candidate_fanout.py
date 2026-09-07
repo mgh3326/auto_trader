@@ -42,6 +42,46 @@ def _fresh_row(
     }
 
 
+def _real_shaped_fresh_row(*, rsi: float) -> dict[str, Any]:
+    """Mirror producer-created support rows and their source-derived strength.
+
+    ``_cluster_price_levels`` derives strength from source count (>=3 strong,
+    ==2 moderate, 1 weak). Its source strings include ``fib_<pct>``,
+    ``bb_lower``, ``bb_middle``, ``bb_upper``, ``volume_poc``,
+    ``volume_value_area_low``, and ``volume_value_area_high``. Each fixture
+    level therefore uses only combinations the real producer can create.
+    """
+
+    return {
+        "data_state": "fresh",
+        "current_price": 100,
+        "rsi_14": rsi,
+        "consensus": {"avg_target_price": 145},
+        "supports": [
+            {
+                "price": 95,
+                "strength": "moderate",
+                "sources": ["fib_50", "bb_lower"],
+            },
+            {
+                "price": 94,
+                "strength": "moderate",
+                "sources": ["volume_poc", "volume_value_area_low"],
+            },
+        ],
+    }
+
+
+def _funnel_candidate() -> dict[str, Any]:
+    return {"matched_sources": ["fixture:real-shaped-support"]}
+
+
+def _policy_with_discovery_family_count(value: Any):
+    policy = fanout.load_trading_policy()
+    policy.thresholds["screen.independent_support_source_count_min"].value = value
+    return policy
+
+
 @pytest.mark.asyncio
 async def test_five_families_are_bounded_deduped_and_funnelled() -> None:
     live_calls: list[tuple[str, dict[str, Any]]] = []
@@ -490,6 +530,7 @@ def test_support_strength_and_independent_family_gates_are_pinned() -> None:
         ],
         current_price=100,
         gates=gates,
+        required_family_count=2,
     )
     one_family_support, one_family_reason = fanout._support_evidence(
         [
@@ -501,12 +542,156 @@ def test_support_strength_and_independent_family_gates_are_pinned() -> None:
         ],
         current_price=100,
         gates=gates,
+        required_family_count=2,
     )
 
     assert weak_support is None
     assert weak_reason == "support_strength_below_moderate"
     assert one_family_support is None
     assert one_family_reason == "independent_support_family_count_below_2"
+
+
+def test_discovery_support_family_default_is_two() -> None:
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+
+    assert gates.discovery_support_source_count_min == 2
+
+
+def test_split_keeps_regular_and_reserve_funnel_verdicts_unchanged() -> None:
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+    expected_anchor = {
+        "status": "pass",
+        "non_executable": True,
+        "raw_anchor_range": [85.5, 90.25],
+        "valid_observation_anchor_range": [85.5, 90.25],
+        "support_discount_pct_range": [5.0, 10.0],
+        "final_distance_from_current_pct_range": [-15.0, -5.0],
+    }
+    expected = [
+        {
+            "rsi": 35,
+            "statuses": {
+                "source": "pass",
+                "base_eligibility": "pass",
+                "support_source_count": "pass",
+                "upside": "pass",
+                "rsi": "regular_pass",
+                "anchor_band": "pass",
+                "budget": "deferred",
+            },
+            "regular_evidence_eligible": True,
+            "rsi_only_fail_candidate": False,
+        },
+        {
+            "rsi": 55,
+            "statuses": {
+                "source": "pass",
+                "base_eligibility": "pass",
+                "support_source_count": "pass",
+                "upside": "pass",
+                "rsi": "rsi_only_fail",
+                "anchor_band": "pass",
+                "budget": "deferred",
+            },
+            "regular_evidence_eligible": False,
+            "rsi_only_fail_candidate": True,
+        },
+    ]
+
+    for expected_case in expected:
+        result = fanout._evaluate_funnel(
+            _funnel_candidate(),
+            _real_shaped_fresh_row(rsi=expected_case["rsi"]),
+            gates,
+        )
+
+        assert {
+            stage: result["funnel"][stage]["status"]
+            for stage in fanout._FUNNEL_STAGE_NAMES
+        } == expected_case["statuses"]
+        assert (
+            result["regular_evidence_eligible"]
+            is expected_case["regular_evidence_eligible"]
+        )
+        assert (
+            result["rsi_only_fail_candidate"]
+            is expected_case["rsi_only_fail_candidate"]
+        )
+        assert result["actionable"] is False
+        assert result["funnel"]["support_source_count"]["price"] == 95.0
+        assert (
+            result["funnel"]["support_source_count"]["required_source_family_count"]
+            == 2
+        )
+        assert result["funnel"]["anchor_band"] == expected_anchor
+
+
+def test_discovery_family_count_one_only_changes_regular_rsi_pass_lane() -> None:
+    gates = fanout._FanoutGates.from_policy(_policy_with_discovery_family_count(1))
+    one_family_regular = _fresh_row(rsi=35)
+    one_family_regular["supports"][0]["sources"] = ["fib_50", "fib_61.8"]
+    one_family_tier = _fresh_row(rsi=55)
+    one_family_tier["supports"][0]["sources"] = ["fib_50", "fib_61.8"]
+
+    regular = fanout._evaluate_funnel(_funnel_candidate(), one_family_regular, gates)
+    tier = fanout._evaluate_funnel(_funnel_candidate(), one_family_tier, gates)
+
+    assert regular["funnel"]["support_source_count"]["status"] == "pass"
+    assert (
+        regular["funnel"]["support_source_count"]["required_source_family_count"] == 1
+    )
+    assert tier["funnel"]["support_source_count"] == {
+        "status": "fail",
+        "reason": "independent_support_family_count_below_2",
+    }
+
+
+def test_discovery_family_count_three_only_changes_regular_rsi_pass_lane() -> None:
+    gates = fanout._FanoutGates.from_policy(_policy_with_discovery_family_count(3))
+    two_family_regular = _real_shaped_fresh_row(rsi=35)
+    two_family_tier = _real_shaped_fresh_row(rsi=55)
+
+    regular = fanout._evaluate_funnel(_funnel_candidate(), two_family_regular, gates)
+    tier = fanout._evaluate_funnel(_funnel_candidate(), two_family_tier, gates)
+
+    assert regular["funnel"]["support_source_count"] == {
+        "status": "fail",
+        "reason": "independent_support_family_count_below_3",
+    }
+    assert tier["funnel"]["support_source_count"]["status"] == "pass"
+    assert tier["funnel"]["support_source_count"]["required_source_family_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [0, -1, "2", 2.5, True, None],
+    ids=["zero", "negative", "string", "float", "bool", "missing"],
+)
+def test_discovery_family_count_policy_shape_is_fail_closed(bad_value: Any) -> None:
+    policy = fanout.load_trading_policy()
+    if bad_value is None:
+        del policy.thresholds["screen.independent_support_source_count_min"]
+    else:
+        policy.thresholds[
+            "screen.independent_support_source_count_min"
+        ].value = bad_value
+
+    with pytest.raises(ValueError):
+        fanout._FanoutGates.from_policy(policy)
+
+
+def test_discovery_family_count_is_echoed_and_reserve_net_remains_frozen() -> None:
+    for value in (1, 3):
+        gates = fanout._FanoutGates.from_policy(
+            _policy_with_discovery_family_count(value)
+        )
+
+        assert gates.discovery_support_source_count_min == value
+        assert gates.support_source_count_min == 2
+        assert gates.as_dict()["discovery_support_source_count_min"] == value
+        assert gates.as_dict()["support_source_count_min"] == 2
+        assert gates.rsi_max == 45
+        assert gates.tier_armed_required_cash_cap_pct == 50
 
 
 def test_anchor_band_empty_intersection_stays_excluded() -> None:
