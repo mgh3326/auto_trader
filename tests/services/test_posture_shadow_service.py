@@ -43,6 +43,8 @@ def test_shipped_policy_is_default_off_and_projection_shape_is_unchanged():
         "market_rules",
         "crash_day",
         "user_stances",
+        "cash_yields",
+        "transfer_costs",
     }
     assert "posture" not in existing_view
 
