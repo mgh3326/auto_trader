@@ -1367,6 +1367,133 @@ async def test_dispatch_parking_rungs_do_not_accumulate_daily_budget(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_cash_funding_rungs_accumulate_cumulative_cap(
+    monkeypatch, db_session
+):
+    """§S177: each eligible funding sell advances the in-proposal cap meter."""
+    from app.core.config import settings
+
+    now = datetime(2026, 9, 8, 14, 0, tzinfo=UTC)
+    limits = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("1500"),
+        daily_cap=Decimal("1500"),
+        policy_version="s177-test-policy",
+        mode="expanded",
+        breakeven_band_pct=Decimal("1"),
+        round_trip_cost_bps=Decimal("90"),
+    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    monkeypatch.setattr(dispatch_module, "limits_for_market", lambda _market: limits)
+
+    async def insufficient_advisory(*_args, **_kwargs):
+        return {"status": "insufficient", "shortfall": "1000"}
+
+    async def flat_parking_exposure(**_kwargs):
+        return ParkingExposure.observed(Decimal("0"))
+
+    # Creation and dispatch both must prove the same-account USD shortage;
+    # the latter is the fresh value supplied to the auto-approve classifier.
+    monkeypatch.setattr(service_module, "build_create_advisory", insufficient_advisory)
+    monkeypatch.setattr(dispatch_module, "build_create_advisory", insufficient_advisory)
+    monkeypatch.setattr(dispatch_module, "load_parking_exposure", flat_parking_exposure)
+
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="SGOV",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        exit_intent="cash_funding",
+        proposer="s177-dispatch",
+        thesis="Sell cash equivalent to fund approved USD buy.",
+        broker_account_id=f"s177-{uuid.uuid4()}",
+        source_asof={
+            "cash_funding": {
+                "funding_target": {
+                    "market": "equity_us",
+                    "required": "1000",
+                    "plan_ref": "s177-planned-buy",
+                }
+            }
+        },
+        rungs=[
+            RungInput(0, "sell", Decimal("10"), Decimal("100"), None),
+            RungInput(1, "sell", Decimal("10"), Decimal("100"), None),
+            RungInput(2, "sell", Decimal("10"), Decimal("100"), None),
+        ],
+        now=now,
+        valid_until=now + timedelta(hours=1),
+    )
+    await db_session.commit()
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        outcomes = []
+        for rung in rungs:
+            decision = await eligibility_gate(
+                group=fresh_group,
+                rung=rung,
+                preview={
+                    "success": True,
+                    "current_price": "100",
+                    "price": "100",
+                    "quantity": "10",
+                    "avg_buy_price": "110",
+                    "realized_pnl": "-100",
+                },
+                now=now,
+            )
+            assert decision.eligible is True
+            await service.transition_rung(
+                proposal_id, rung.rung_index, new_state="revalidating"
+            )
+            await service.transition_rung(
+                proposal_id, rung.rung_index, new_state="approved"
+            )
+            await service.transition_rung(
+                proposal_id, rung.rung_index, new_state="submitting"
+            )
+            await service.record_resting(
+                proposal_id,
+                rung.rung_index,
+                broker_order_id=f"s177-broker-{rung.rung_index}",
+                correlation_id=f"s177-corr-{rung.rung_index}",
+                idempotency_key=f"s177-idem-{rung.rung_index}",
+                approval_hash_digest=f"s177-digest-{rung.rung_index}",
+                now=now,
+            )
+            outcomes.append(RungOutcome(rung.rung_index, "submitted_resting", {}))
+        return outcomes
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=now,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    decisions = refreshed.source_asof["auto_approved"]["eligibility"]
+    assert [
+        (
+            row["cash_funding_cumulative_before"],
+            row["cash_funding_cumulative_after"],
+        )
+        for row in decisions
+    ] == [
+        ("0", "1000"),
+        ("1000", "2000"),
+        ("2000", "3000"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_auto_ineligible_degrades_to_human_approval(
     monkeypatch, db_session
 ):

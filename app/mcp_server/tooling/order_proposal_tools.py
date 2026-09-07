@@ -623,6 +623,7 @@ async def order_proposal_create(
     action: str = "place",
     target_broker_order_id: str | None = None,
     funding_candidate_event: dict | None = None,
+    funding_target: dict | None = None,
     source_funding_advisory_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
@@ -654,6 +655,11 @@ async def order_proposal_create(
         funding_candidate_event: optional typed proof that non-funding gates passed
                 plus a fresh broker-authoritative funding snapshot. Evaluation is
                 advisory-only and fail-open; errors never block proposal create.
+        funding_target: load-bearing cash_funding evidence with exact ``market``,
+                ``required``, and non-empty ``plan_ref`` fields. Unlike
+                ``funding_candidate_event``, it is fail-closed and is only
+                accepted through this proposal flow; service verifies a fresh
+                same-account shortfall before persistence.
         source_funding_advisory_id: optional provenance-only reference. It is not
                 a classification, sizing, eligibility, or approval input.
     """
@@ -724,6 +730,11 @@ async def order_proposal_create(
                 target_order_snapshot=(
                     target_snapshot.to_payload()
                     if target_snapshot is not None
+                    else None
+                ),
+                source_asof=(
+                    {"cash_funding": {"funding_target": funding_target}}
+                    if exit_intent == "cash_funding"
                     else None
                 ),
             )
@@ -1157,7 +1168,9 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "mutate a broker. Approval/submission happens via Telegram (PR 2), not "
             "through this tool. loss_cut requires a two-click confirmation with a "
             "single-use nonce and full second-click revalidation; loss_cut also "
-            "requires a non-empty approval_issue_id (never externally queried)."
+            "requires a non-empty approval_issue_id (never externally queried). "
+            "cash_funding is proposal-only and requires fail-closed funding_target "
+            "evidence; its separate funding_candidate_event is advisory only."
         ),
     )(order_proposal_create)
     _ = mcp.tool(

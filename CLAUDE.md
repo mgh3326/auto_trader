@@ -1109,6 +1109,7 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 ### Trading Policy YAML 단일 소스 (ROB-646)
 
 `config/trading_policy.yaml` = 매매 판단 임계값/decision rule 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
+정규 발굴 독립 지지 계열 최소 개수는 `screen.independent_support_source_count_min`으로 reserve-net과 분리되며, 이는 완화가 아니다.
 
 - **스키마/로더**: `app/schemas/trading_policy.py`, `app/services/trading_policy_service.py`
 - **MCP 도구**: `get_trading_policy(market, lane)` — market×lane 임계값 + lane-scoped `decision_rules` + `{version, content_hash}` echo; 없는 키는 `success=false, error=unknown_key`

@@ -857,6 +857,37 @@ async def test_non_exit_intent_still_fails_closed_when_toss_calendar_unknown(
     assert calendar_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_cash_funding_still_uses_the_normal_toss_calendar_window(monkeypatch):
+    """§S177 is a price-guard exception, never a calendar-window exception."""
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=policy._KST)
+    calendar_calls = 0
+
+    async def unavailable_calendar(market, query_date):
+        del market, query_date
+        nonlocal calendar_calls
+        calendar_calls += 1
+        return None
+
+    monkeypatch.setattr(policy, "get_toss_market_calendar", unavailable_calendar)
+    group = _group(
+        account_mode="toss_live",
+        symbol="SGOV",
+        valid_until=now + timedelta(days=1),
+        exit_intent="cash_funding",
+    )
+
+    decision = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+        require_policy_stamp=False,
+    )
+
+    assert decision.code is ApprovalWindowCode.CALENDAR_UNKNOWN
+    assert calendar_calls == 1
+
+
 class _FakeRevalidationService:
     def __init__(self, *, action: str = "place", valid_until: datetime):
         proposal_id = uuid.uuid4()

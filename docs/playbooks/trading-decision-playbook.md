@@ -390,6 +390,11 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
    upside ≥ `screen.upside_min_pct` + liquid mid-cap + not over-concentrated +
    **rights-issue / overhang filter**
    (`get_disclosures` — the EcoPro BM ₩1.2T rights-issue lesson).
+   The independent support-family minimum is now split between
+   `screen.independent_support_source_count_min` (discovery) and
+   `buy.support_reserve_net.independent_support_source_count_min` (tier); both
+   are currently 2, so the verdict is unchanged. This is a configuration split,
+   not a relaxation.
 4. **Ranking / competition (the tournament):** compare each survivor against the
    existing net (swap decision), bonus for sector diversification, bonus for
    freshness (newly pulled back).
@@ -475,10 +480,19 @@ strength differs. The cohort split is observational, not randomized: support
 strength is a candidate property, not an assignment.
 
 v2 is registered but **not armed**. It has no selected collection epoch or
-`collection_armed_at` value, and caller wiring remains zero in this PR; a
-separate PR follows an operator activation decision and independent review.
-No shadow candidate may be promoted to a proposal, order, or watch, and no
-intermediate result may change policy or declare a winner.
+`collection_armed_at` value. Its pre-arming witness wiring cannot create an
+epoch marker, promote a candidate to a proposal/order/watch, change policy, or
+declare a winner; activation remains a separate operator decision and
+independent review.
+
+The outer fanout observer creates a **plumbing witness** only: because fanout
+does not supply liquid-midcap, concentration, or overhang review bits, every
+such record is `experiment_sample=false`. An explicit reviewed set sent to
+`evaluate_buy_gate_ab_shadow_v2` is the **experiment-sample witness** path and
+can stamp `experiment_sample=true` only when all three bits are actual
+booleans. The v2 epoch activation condition is at least one such sample witness
+before the separate operator activation decision; a plumbing witness never
+satisfies it.
 
 ROB-1301's three prohibitions remain its sealed canonical record after
 termination; the v2 description below does not replace them.
@@ -495,13 +509,14 @@ For ROB-1351 v2, the separately ratified wording is: 라이브 게이트 문언�
 sealed ROB-1301 prohibitions above.
 
 `evaluate_buy_gate_ab_shadow` remains an observation-only evaluator and is
-**never order_proposal_create**; v2 has no caller wiring in this PR.
+**never order_proposal_create**. `evaluate_buy_gate_ab_shadow_v2` likewise
+returns witness kwargs only and neither writes nor arms v2.
 
 This block is **NOT a lane sequence**. `lanes.buy` / `lanes.discovery` ordering
 is unchanged and mock accounts remain out of scope.
 
 ```yaml
-# playbook-machine-readable: ROB-1301 terminal / ROB-1351 v2 registered only
+# playbook-machine-readable: ROB-1301 terminal / ROB-1351 v2 pre-arming witness only
 # NOT a lane sequence — live buy/discovery lanes are unchanged.
 shadow_experiments:
   rob-1301-buy-gate-ab:
@@ -520,7 +535,9 @@ shadow_experiments:
     live_cohorts: [strong, moderate_only]
     shadow_gate: weak
     promote: false
-    caller_wiring: false
+    caller_wiring: pre_arming_witness_only
+    plumbing_witness_experiment_sample: false
+    sample_witness_tool: evaluate_buy_gate_ab_shadow_v2
     observation_tool: evaluate_buy_gate_ab_shadow
 ```
 

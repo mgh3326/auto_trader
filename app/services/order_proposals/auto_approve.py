@@ -131,6 +131,11 @@ from app.services.order_proposals.approval_message import (
 from app.services.order_proposals.auto_approve_audit import (
     AUTO_APPROVE_REJECTIONS_KEY,
 )
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+    parse_funding_target,
+    resolve_cash_funding_exemption,
+)
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     DispatchBinding,
@@ -631,6 +636,8 @@ def evaluate_auto_approve_eligibility(
     limits: AutoApproveLimits,
     daily_notional: Decimal,
     parking_exposure: ParkingExposure | None = None,
+    cash_funding_shortfall: Decimal | None = None,
+    cash_funding_cumulative_notional: Decimal | None = None,
 ) -> AutoApproveDecision:
     """Classify a rung using the fresh submit-time preview, failing closed.
 
@@ -640,6 +647,11 @@ def evaluate_auto_approve_eligibility(
     to ``None``, which is the fail-closed value: a caller that does not supply
     it cannot obtain the parking treatment, and every non-parking rung is
     unaffected either way.
+
+    ``cash_funding_shortfall`` and ``cash_funding_cumulative_notional`` are
+    stateful readings owned by dispatch.  They intentionally default to
+    ``None``: a caller that cannot measure either is demoted to the human
+    approval card rather than inheriting the exception.
     """
 
     base = {"policy_version": limits.policy_version}
@@ -688,7 +700,8 @@ def evaluate_auto_approve_eligibility(
         # the audit row says why, and so a future exit-intent vocabulary cannot
         # dilute this branch.
         return reject("loss_cut_intent", exit_intent_present=True)
-    if exit_intent is not None:
+    cash_funding_requested = exit_intent == CASH_FUNDING_EXIT_INTENT
+    if exit_intent is not None and not cash_funding_requested:
         return reject("exit_intent_present", exit_intent_present=True)
     account_mode = getattr(group, "account_mode", None)
     market = getattr(group, "market", None)
@@ -750,6 +763,9 @@ def evaluate_auto_approve_eligibility(
     # intent, veto-capable account/market, approval-required tags), so parking
     # can never be a way *past* one of them; it only ever relaxes the two gates
     # named in ``parking_allowlist``. `off` mode never reaches this branch.
+    # §S177's distinct cash-funding sell path is resolved below; it uses the
+    # same closed scope constants but never turns ordinary off-mode parking
+    # orders into an exception.
     expanded = mode == "expanded"
     parking_scope_record = parking_scope(
         symbol=getattr(group, "symbol", None),
@@ -784,6 +800,47 @@ def evaluate_auto_approve_eligibility(
     if missing_inputs:
         return reject("price_or_quantity_missing", missing_inputs=missing_inputs)
 
+    cash_funding_active = False
+    cash_funding_details: dict[str, str] = {}
+    if cash_funding_requested:
+        source_asof = getattr(group, "source_asof", None)
+        raw_cash_funding = (
+            source_asof.get("cash_funding")
+            if isinstance(source_asof, Mapping)
+            else None
+        )
+        raw_target = (
+            raw_cash_funding.get("funding_target")
+            if isinstance(raw_cash_funding, Mapping)
+            else None
+        )
+        verdict = resolve_cash_funding_exemption(
+            exit_intent=exit_intent,
+            symbol=getattr(group, "symbol", None),
+            account_mode=account_mode,
+            market=market,
+            side=getattr(rung, "side", None),
+            order_type=getattr(group, "order_type", None),
+            funding_target=parse_funding_target(raw_target),
+            quantity=quantity,
+            current_price=current_price,
+            measured_shortfall=cash_funding_shortfall,
+        )
+        if not verdict.exempt:
+            # This is a demotion to a human approval card, not a broker-order
+            # rejection.  Dispatch records the closed reason for audit.
+            return reject(
+                "cash_funding_boundary_failed",
+                cash_funding_reason=verdict.reason,
+                **verdict.details,
+            )
+        cash_funding_active = True
+        cash_funding_details = {
+            "cash_funding_reason": verdict.reason,
+            "cash_funding_max_quantity": _text(verdict.max_quantity or Decimal("0")),
+            "cash_funding_currency": verdict.scope_currency or "",
+        }
+
     # Start with the established booked limit price × quantity, never
     # proposer-supplied advisory notional, so a stale or understated metadata
     # field cannot bypass caps.  §156's one marketable profit-sell exception
@@ -798,7 +855,7 @@ def evaluate_auto_approve_eligibility(
     # order is bounded at PARKING_PER_ORDER_CAP_USD. That first line is what
     # keeps the residual gaps in the cumulative measurement survivable.
     per_order_cap = limits.per_order_cap
-    if parking:
+    if parking or cash_funding_active:
         # Meter the *executable* amount (max(limit, current) x quantity), never
         # the possibly-discounted limit: a parking buy is allowed to be
         # marketable, so the limit price is no longer an upper bound on what it
@@ -852,6 +909,33 @@ def evaluate_auto_approve_eligibility(
         )
         if parking_after > parking_scope_record.cumulative_cap:
             return reject("parking_cap_exceeded", **parking_details)
+    if cash_funding_active:
+        # THIRD §S177 boundary: the per-order check above is still intact, and
+        # this separate durable KST-day sum prevents many individually-valid
+        # funding sells from silently exceeding the immutable scope cap.
+        assert parking_scope_record is not None
+        cumulative_before = cash_funding_cumulative_notional
+        if (
+            cumulative_before is None
+            or not cumulative_before.is_finite()
+            or cumulative_before < 0
+        ):
+            return reject(
+                "cash_funding_cumulative_cap_exceeded",
+                cash_funding_cumulative_reason="unmeasured",
+                **cash_funding_details,
+            )
+        cumulative_after = cumulative_before + notional
+        cash_funding_details.update(
+            cash_funding_cumulative_before=_text(cumulative_before),
+            cash_funding_cumulative_after=_text(cumulative_after),
+            cash_funding_cumulative_cap=_text(parking_scope_record.cumulative_cap),
+        )
+        if cumulative_after > parking_scope_record.cumulative_cap:
+            return reject(
+                "cash_funding_cumulative_cap_exceeded",
+                **cash_funding_details,
+            )
     # §S170: daily-cap exclusion is scoped by the exact same strict parking
     # tuple as the marketability/per-order treatment, plus `expanded` mode.
     # It applies to both parking buys and sells. Its contribution is zero, so
@@ -915,7 +999,7 @@ def evaluate_auto_approve_eligibility(
         threshold = current_price * (Decimal("1") + min_fraction)
         distance_pct = (limit_price - current_price) / current_price * Decimal("100")
         marketable_profit_sell = expanded and limit_price <= threshold
-        if not expanded and limit_price < threshold:
+        if not expanded and limit_price < threshold and not cash_funding_active:
             return reject(
                 "distance_below_minimum",
                 current_price=_text(current_price),
@@ -928,8 +1012,32 @@ def evaluate_auto_approve_eligibility(
         # A successful fresh sell preview means the existing avg-cost loss
         # guard ran and passed. We record that provenance instead of
         # reimplementing the guard with a potentially different threshold.
-        loss_guard = "preview_passed"
-        if expanded:
+        loss_guard = "cash_funding_exempt" if cash_funding_active else "preview_passed"
+        if cash_funding_active:
+            # §S177: cash-equivalent liquidation funds the already-proved
+            # planned buy; it is explicitly not a take-profit classification.
+            # A marketable limit sell is allowed, but its executable notional
+            # is re-metered against both hard per-order and existing daily caps.
+            if limit_price <= current_price:
+                cash_funding_details["marketability"] = "cash_funding_marketable"
+                notional = max(limit_price, current_price) * quantity
+                if notional > per_order_cap:
+                    return reject(
+                        "per_order_cap_exceeded",
+                        notional=_text(notional),
+                        per_order_cap=_text(per_order_cap),
+                        **parking_details,
+                    )
+                daily_after = daily_notional + (
+                    Decimal("0") if daily_cap_exempt else notional
+                )
+                if not daily_cap_exempt and daily_after > limits.daily_cap:
+                    return reject(
+                        "daily_cap_exceeded",
+                        daily_notional_after=_text(daily_after),
+                        daily_cap=_text(limits.daily_cap),
+                    )
+        elif expanded:
             # ...but the preview guard fails open on unknown cost basis and is
             # bypassable (defensive_trim / loss_cut / mock), so `expanded`
             # proves the profit itself rather than inheriting that verdict.
@@ -1009,6 +1117,7 @@ def evaluate_auto_approve_eligibility(
             "loss_guard": loss_guard,
             **profit_details,
             **parking_details,
+            **cash_funding_details,
         },
     )
 

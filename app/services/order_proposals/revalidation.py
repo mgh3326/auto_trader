@@ -64,6 +64,9 @@ from app.services.order_proposals.buying_power import (
     default_buying_power_releaser,
     required_cash,
 )
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+)
 from app.services.order_proposals.errors import (
     OrderProposalDispatchNoLongerAuthorized,
     OrderProposalError,
@@ -612,6 +615,8 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     """
     account_mode = kwargs.pop("account_mode", None)
     proposal_client_order_id = kwargs.pop("proposal_client_order_id", None)
+    cash_funding_target = kwargs.pop("cash_funding_target", None)
+    cash_funding_shortfall = kwargs.pop("cash_funding_shortfall", None)
     if account_mode == "toss_live":
         from app.mcp_server.tooling.orders_toss_variants import (
             _bind_order_proposal_context,
@@ -640,6 +645,8 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
                 client_order_id=str(proposal_client_order_id),
                 correlation_id=None,
                 rung=kwargs.get("rung"),
+                cash_funding_target=cash_funding_target,
+                cash_funding_shortfall=cash_funding_shortfall,
             ):
                 preview = await toss_preview_order(**toss_kwargs)
             return _adapt_toss_preview_response(preview)
@@ -660,6 +667,8 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
                 client_order_id=str(proposal_client_order_id),
                 correlation_id=kwargs.get("correlation_id"),
                 rung=kwargs.get("rung"),
+                cash_funding_target=cash_funding_target,
+                cash_funding_shortfall=cash_funding_shortfall,
             ),
             _bind_toss_pre_send_hook(kwargs.get("pre_send_hook")),
         ):
@@ -687,6 +696,11 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     # activation smoke, KRW-BTC canary). Normalize at this caller boundary;
     # the impl's float contract stays unchanged for every other caller.
     kwargs = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in kwargs.items()}
+    if cash_funding_target is not None:
+        kwargs["cash_funding_target"] = cash_funding_target
+    if cash_funding_shortfall is not None:
+        # Keep this classifier input Decimal across the MCP float boundary.
+        kwargs["cash_funding_shortfall"] = cash_funding_shortfall
     if proposal_client_order_id is not None:
         kwargs["client_order_id"] = str(proposal_client_order_id)
 
@@ -700,6 +714,45 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             submit, order_type=str(kwargs.get("order_type"))
         )
     return submit
+
+
+def _cash_funding_revalidation_kwargs(group: OrderProposal) -> dict[str, Any]:
+    """Extract only durable §S177 inputs for execution revalidation.
+
+    The source envelope was written by proposal creation after its fail-closed
+    shortage read.  A malformed legacy/manual envelope intentionally yields
+    ``None`` values so the downstream pure classifier rejects it; this helper
+    never repairs or infers funding evidence.
+    """
+    if group.exit_intent != CASH_FUNDING_EXIT_INTENT:
+        return {}
+    source_asof = group.source_asof
+    cash_funding = (
+        source_asof.get("cash_funding") if isinstance(source_asof, dict) else None
+    )
+    raw_target = (
+        cash_funding.get("funding_target")
+        if isinstance(cash_funding, dict)
+        and type(cash_funding.get("funding_target")) is dict
+        else None
+    )
+    raw_shortfall = (
+        cash_funding.get("measured_shortfall")
+        if isinstance(cash_funding, dict)
+        else None
+    )
+    shortfall: Decimal | None = None
+    if type(raw_shortfall) is str:
+        try:
+            candidate = Decimal(raw_shortfall)
+        except (InvalidOperation, ValueError):
+            candidate = None
+        if candidate is not None and candidate.is_finite():
+            shortfall = candidate
+    return {
+        "cash_funding_target": raw_target,
+        "cash_funding_shortfall": shortfall,
+    }
 
 
 async def _default_retrospective_lookup(retrospective_id: int) -> Any:
@@ -1108,6 +1161,7 @@ async def _revalidate_place_rung(
                 approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
+                **_cash_funding_revalidation_kwargs(group),
                 **(
                     {"proposal_client_order_id": proposal_client_order_id}
                     if proposal_client_order_id is not None
@@ -1346,6 +1400,7 @@ async def _revalidate_place_rung(
                 rung=rung_index,
                 correlation_id=corr,
                 pre_send_hook=transport_gate,
+                **_cash_funding_revalidation_kwargs(group),
             )
         )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
@@ -1559,6 +1614,7 @@ async def _revalidate_replace_preview(
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
                 account_mode=group.account_mode,
+                **_cash_funding_revalidation_kwargs(group),
                 **(
                     {"proposal_client_order_id": proposal_client_order_id}
                     if proposal_client_order_id is not None
@@ -1961,6 +2017,7 @@ async def _revalidate_replace_rung(
                 rung=rung_index,
                 correlation_id=corr,
                 account_mode=group.account_mode,
+                **_cash_funding_revalidation_kwargs(group),
                 **(
                     {"proposal_client_order_id": proposal_client_order_id}
                     if proposal_client_order_id is not None

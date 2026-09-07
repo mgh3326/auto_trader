@@ -37,7 +37,7 @@ LANE_PROFILES: dict[str, tuple[str, ...]] = {
 LANE_COUNTS = {
     "claude-mock": 10,
     "crypto": 67,
-    "fable-workbench": 28,
+    "fable-workbench": 29,
     "fill-handoff": 56,
     "kr": 66,
     "krb1-cycle": 35,
@@ -50,7 +50,7 @@ LANE_COUNTS = {
 LANE_SHA256 = {
     "claude-mock": "e942cf3f43f184fb6c5893e53582ad027d2e9abd50a19126d6e52c1fd905cd36",
     "crypto": "50adf2dd9f9660e18e3db3b361d1018ef81aa1e1cd4d65f07e8056d236c673ed",
-    "fable-workbench": "87c93ec245d04457803e6879d9a73aed29b54b8d6d834946a93d8e670f49e5ab",
+    "fable-workbench": "7d90c03e1d95fd18ac608c82bacb0a7b67580449832584b267e65d1a10811167",
     "fill-handoff": "bd1dbe0d34836f9b0e74890a10c27e21589b14f2dc3beea46b5dee9dfcffdc52",
     "kr": "094fead23286d6feeba1496bb7147b4d44d99245195feb984a266d6bfadc0837",
     "krb1-cycle": "6b5d6fdbc6076e1f88ddf6203893a10601b9698d3b98d3ac13fac960db4fc73c",

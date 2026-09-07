@@ -204,6 +204,7 @@ def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
         "expected_net_realized_gain_krw_below_policy_key": (
             "sell.trim_min_expected_net_realized_gain_krw"
         ),
+        "exempt_exit_intents": ["cash_funding"],
     }
     assert tiers["de_minimis_trim_watch"]["action"] == (
         "register_watch_instead_of_trim"

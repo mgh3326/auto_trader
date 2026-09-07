@@ -143,7 +143,7 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
 HARD_CONSTRAINTS: dict[str, list[str]] = {
     "buy": [
         "recovery gate: deploy reserve only when >= recovery_gate.min_conditions_met of 4 conditions",
-        "loss guard (sell-side): sell price >= avg * sell.loss_guard_min_multiple",
+        "loss guard (sell-side): sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
@@ -160,7 +160,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "sell": [
-        "loss guard: sell price >= avg * sell.loss_guard_min_multiple",
+        "loss guard: sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
@@ -497,6 +497,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # ROB-1301: observation-only A/B buy-gate shadow. Never a proposal,
         # order, or watch; live variant A is unchanged.
         "evaluate_buy_gate_ab_shadow",
+        # ROB-1351: v2 is a pre-arming witness evaluator. It returns tagged
+        # forecast kwargs but neither saves them nor creates an epoch marker.
+        "evaluate_buy_gate_ab_shadow_v2",
         # ROB-1348: deterministic decision-table validation. It performs no
         # database, network, broker, order, or proposal operation.
         "decision_table_validate",
