@@ -647,3 +647,139 @@ async def test_get_available_capital_degrades_when_manual_cash_setting_fails(
     assert result["errors"] == [
         {"source": "manual_cash", "error": "manual setting unavailable"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# §177차 — the deployment-cap advisory rides the existing capital read.
+#
+# Wiring note (deliberate deviation from the brief's suggested call sites):
+# the cap's denominator is broker orderable cash PLUS parking cash across the
+# whole book. Neither `order_validation` nor proposal-create knows the
+# fleet-wide figure, and obtaining it there would mean adding a multi-broker
+# balance fan-out to an order path. This read already holds both terms, so the
+# advisory is emitted here at zero additional I/O and touches no order path.
+# ---------------------------------------------------------------------------
+
+
+def _patch_capital_sources(monkeypatch, *, manual_cash, accounts=None):
+    from app.mcp_server.tooling import portfolio_cash
+
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
+        return {
+            "accounts": accounts
+            if accounts is not None
+            else [{"account": "upbit", "currency": "KRW", "orderable": 10_000_000.0}],
+            "summary": {"total_krw": 10_000_000.0, "total_usd": 0.0},
+            "errors": [],
+        }
+
+    async def mock_manual_cash():
+        return manual_cash
+
+    async def mock_account_costs():
+        return None
+
+    monkeypatch.setattr(
+        portfolio_cash, "get_cash_balance_impl", mock_get_cash_balance_impl
+    )
+    monkeypatch.setattr(portfolio_cash, "get_manual_cash_setting", mock_manual_cash)
+    monkeypatch.setattr(portfolio_cash, "get_account_costs_setting", mock_account_costs)
+
+
+@pytest.mark.asyncio
+async def test_capital_read_emits_the_deployment_cap_advisory(monkeypatch):
+    _patch_capital_sources(
+        monkeypatch,
+        manual_cash={
+            "key": "manual_cash",
+            "value": {"amount": 7_800_000},
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl()
+    advisory = result["summary"]["deployment_cap_advisory"]
+
+    # The broker term excludes parking, so the two denominator terms stay
+    # separate even though the shared total folds fresh manual cash in.
+    assert result["summary"]["broker_orderable_total_krw"] == pytest.approx(
+        10_000_000.0
+    )
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(17_800_000.0)
+    assert advisory["broker_orderable_total_krw"] == "10000000"
+    assert advisory["parking_balance_krw"] == "7800000"
+    assert advisory["denominator_krw"] == "17800000"
+    assert advisory["cap_krw"] == "8010000"
+    assert advisory["blocks_proposal"] is False
+    assert advisory["retroactive_violation"] is False
+
+
+@pytest.mark.asyncio
+async def test_deployment_cap_advisory_does_not_double_count_parking(monkeypatch):
+    """Reading the shared total would count the parking balance twice."""
+
+    _patch_capital_sources(
+        monkeypatch,
+        manual_cash={
+            "key": "manual_cash",
+            "value": {"amount": 7_800_000},
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl()
+    advisory = result["summary"]["deployment_cap_advisory"]
+
+    assert advisory["denominator_krw"] != str(
+        int(result["summary"]["total_orderable_krw"] + 7_800_000)
+    )
+    assert advisory["denominator_krw"] == "17800000"
+
+
+@pytest.mark.asyncio
+async def test_stale_manual_cash_zeroes_the_parking_term_and_says_so(monkeypatch):
+    _patch_capital_sources(
+        monkeypatch,
+        manual_cash={
+            "key": "manual_cash",
+            "value": {"amount": 7_800_000},
+            "updated_at": (datetime.now(UTC) - timedelta(days=10)).isoformat(),
+        },
+    )
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl()
+    advisory = result["summary"]["deployment_cap_advisory"]
+
+    assert result["manual_cash"]["stale_warning"] is True
+    assert advisory["parking_balance_krw"] == "0"
+    assert advisory["parking_balance_source"] == "stale_treated_as_zero"
+    assert advisory["cap_is_lower_bound"] is True
+    assert advisory["cap_krw"] == "4500000"
+
+
+@pytest.mark.asyncio
+async def test_deployment_cap_failure_never_degrades_the_capital_read(monkeypatch):
+    """Fail-open: a broken advisory must not take the balances down with it."""
+
+    from app.mcp_server.tooling import portfolio_cash
+
+    _patch_capital_sources(monkeypatch, manual_cash=None)
+
+    def exploding_evaluate(**_kwargs):
+        raise RuntimeError("advisory exploded")
+
+    monkeypatch.setattr(portfolio_cash, "evaluate_deployment_cap", exploding_evaluate)
+
+    from app.mcp_server.tooling.portfolio_cash import get_available_capital_impl
+
+    result = await get_available_capital_impl()
+
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(10_000_000.0)
+    assert result["summary"]["deployment_cap_advisory"] is None
+    assert any(error["source"] == "deployment_cap" for error in result["errors"])
