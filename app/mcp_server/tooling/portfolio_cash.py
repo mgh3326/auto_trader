@@ -30,6 +30,10 @@ from app.services.brokers.kis import (
 from app.services.brokers.kis.overseas_cash import (
     overseas_usd_cash_unavailable_reason,
 )
+from app.services.deployment_cap import (
+    evaluate_deployment_cap,
+    resolve_parking_balance_krw,
+)
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
@@ -474,6 +478,12 @@ async def get_available_capital_impl(
         is_paper_account_token,
     )
 
+    # §176차 — the deployment cap's denominator is broker orderable cash PLUS
+    # parking cash as two separate terms, so it must be captured here, before
+    # manual cash is folded into the shared total below. Reading the combined
+    # figure would count the parking balance twice.
+    broker_orderable_total_krw = total_orderable_krw
+
     manual_cash_result: dict[str, Any] | None = None
     if include_manual and not is_mock and not is_paper_account_token(account):
         try:
@@ -517,11 +527,32 @@ async def get_available_capital_impl(
         if profile is not None:
             processed_acc["cost_profile"] = profile
 
+    # §176차 — advisory only, and fail-open by construction: a cap that cannot
+    # be computed must not degrade a capital read that otherwise succeeded.
+    # Nothing here blocks, sizes, or rejects anything; the advisory is emitted
+    # for a session to quote when it proposes NEW deployment, and existing
+    # deployment is never measured against it (see app/services/deployment_cap).
+    deployment_cap_advisory: dict[str, Any] | None = None
+    try:
+        parking_balance, parking_source = resolve_parking_balance_krw(
+            manual_cash_result
+        )
+        deployment_cap_advisory = evaluate_deployment_cap(
+            broker_orderable_total_krw=broker_orderable_total_krw,
+            parking_balance_krw=parking_balance,
+            parking_balance_source=parking_source,
+        )
+    except Exception as exc:  # noqa: BLE001 - advisory never blocks a capital read
+        logger.warning("Failed to evaluate deployment cap advisory: %s", exc)
+        errors.append({"source": "deployment_cap", "error": str(exc)})
+
     return {
         "accounts": processed_accounts,
         "manual_cash": manual_cash_result,
         "summary": {
             "total_orderable_krw": total_orderable_krw,
+            "broker_orderable_total_krw": broker_orderable_total_krw,
+            "deployment_cap_advisory": deployment_cap_advisory,
             "manual_cash_excluded_krw": manual_cash_excluded_krw,
             "exchange_rate_usd_krw": exchange_rate,
             "as_of": now_kst().isoformat(),

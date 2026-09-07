@@ -212,6 +212,7 @@ tests/services/test_alpaca_paper_source_allocation.py
 tests/services/test_alpaca_paper_submit_coordinator.py
 tests/services/test_analyst_consensus_snapshot_builder.py
 tests/services/test_candidate_screening_service.py
+tests/services/test_deployment_cap.py
 tests/services/test_finnhub_news.py
 tests/services/test_investment_snapshots_roundtrip.py
 tests/services/test_kis_mock_retrospective_pending.py
@@ -241,6 +242,7 @@ tests/services/test_trade_journal_mirror_aggregates.py
 tests/services/test_trade_retrospective_mirror_correlation.py
 tests/services/test_trading_decision_service_committee.py
 tests/services/test_tradingview_normalizer.py
+tests/services/test_underwater_support_net.py
 tests/services/us_dual_paper/test_alpaca_adapter.py
 tests/services/us_dual_paper/test_mcp_preview_tool.py
 tests/services/us_dual_paper/test_no_mutation_imports.py

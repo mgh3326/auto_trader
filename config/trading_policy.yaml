@@ -40,6 +40,13 @@
 # keys, so this block's keyset is unchanged. The daily cap, loss guard,
 # break-even band, round-trip cost, tag scan, account/market allowlist and
 # default mode are all unchanged, and no threshold or cap VALUE moves here.
+# §176차 (2026-09-07): 손실 lot 물타기 티어 buy.underwater_support_net 신설
+# (§139차 crypto buy.held_majors_support_net 의 KR/US 이식, 부호 반전 — 그쪽은
+# 이익 lot 전용, 이쪽은 손실 lot 전용), 3분류(물타기/손절/보유) 기준의 손절
+# 절반 sell.loss_cut, 동적 배치 한도 buy.deployment_cap 을 함께 등록한다.
+# 🔴 세 키 전부 advisory 다. 게이트 완화 0 · 승인 캡 상향 0 · 신규 발굴
+# 모집단 변경 0(그래서 ROB-1301/1351 A/B shadow 무접촉) · 코드 강제 가드
+# (손실매도 가드·loss_cut 슬립·ladder 가드) 변경 0.
 # §156차 (2026-08-26): auto-approval authorization revision. `table_disagreement`
 # remains an auditable session record but is no longer an approval-blocking tag.
 # §156차 final scope addition ②: tier-shaped metadata is not an input. In
@@ -49,9 +56,9 @@
 # after normal full fill +
 # clean ledger reconciliation; the sector cap is observed, warned, and retained
 # as an advisory rather than a reserve-net admission gate.
-version: "2026-09-07.1"
+version: "2026-09-07.2"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised. §142차 breakeven band boundary repair 2026-08-23 (GPT Pro checkpoint #3 Q4 permitted class 'policy-clause contradiction resolution'; versioned bugfix, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under): the §115차 breakeven_extension_ladder tier-1 anchor and the §44차 sell.breakeven_reserve_trim post-max anchor now resolve to max(tick_ceil(raw anchor), first valid tick STRICTLY above average_cost × (1 + order_proposals.auto_approve.breakeven_band_pct / 100)), because the §40차 break-even band comparison is inclusive (|distance| <= band) and a rung that lands exactly on avg × 1.01 was classified breakeven_band instead of take_profit whenever the tick ceil was a no-op. The §40차 classifier itself is unchanged — the inclusive comparison stays inclusive globally — and no threshold, cap, tier, sizing rule, or exclusion is added or relaxed. §145차 crypto per-order auto-approve cap 1M -> 5M and daily cap 5M -> 10M 2026-08-23 (operator decision in claude-mock session: \"100만 초과도 자동이었으면 해\"): the averaging-down A_limit band the §136차 add lane produces runs past 1M (XRP ~2.93M at the -5% conversion point, measured 2026-08-23), so every such add was structurally carded. The §71차 lesson is kept by raising the daily cap in proportion (5M -> 10M) so the first auto-approved add does not demote the rest of the day to cards. Per §106차 the per-order cap remains the maximum-loss boundary of one automation error; the operator re-defined that boundary at 5M. The real ceiling stays the Upbit orderable cash (§144차 trigger reserve plus JIT deposit), and a short-of-cash proposal still emits deferred_with_condition plus a deposit alert before any order. min_distance, resting-only, tag scan, loss guard, and the no-partial-fill rule are unchanged, and no KR or US cap moves. §147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24 (operator decision in claude-mock session: \"원화 여유로우니 슬롯 제한 불필요, 지지선 매수는 부담 없다\"): the §127차 two-slot count and the §129차 cash-conditioned 0.5x overflow slots are removed from the user_stances prose, and the buy.new_entry_overflow rule is DELETED because its whole reason to exist was to relieve a slot count that no longer exists. The number of concurrent new entries is now bounded by ORDERABLE CASH ALONE. This removes a COUNT limit only — every quality and diversification device is untouched and none is relaxed: the buy gates (RSI, support, upside, deep band), the per-symbol notional bands (KR 200,000-400,000 / US 150-450), the 10% sector cluster cap (portfolio.sector_cluster_cap_pct), and the 2-symbols-per-theme cap (portfolio.max_symbols_per_theme) all stand unchanged, so a candidate that fails any gate is still not admitted and concentration is still bounded. Honest record of the Q4 tension (carried forward verbatim from the operator ledger): this change is a withdrawal of an operator STANCE (a count limit), not the creation of a new tier, but it is in tension with the \"no relaxation before scoring\" intent of the Q4 tier freeze - the operator was informed of that tension and decided anyway. The scoring infrastructure (screener pick logging and negative-class recording) is already running, so the effect of this change is itself tracked in the record. No threshold, cap, sizing rule, gate, or approval surface is added or raised. §148차 A(k) eligibility wording contradiction resolution 2026-08-24 (Q4 permitted class: policy-clause contradiction resolution; this is wording-only scope clarification: threshold/value/enum changes 0; application-scope clarification only; discovery strong requirement and all other gates remain unchanged; versioned wording clarification, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under). §156차 auto-approval authorization revision 2026-08-26 (table_disagreement retained as audit evidence, not an approval blocker; marketable orders remain resting-only pending canonical tier evidence; no threshold, cap, tier, sizing, or default-mode change). §156차 scope addendum ④⑤ 2026-08-26 (operator-approved): a same-session Toss fill interlock releases only after exact normal full-fill and clean ledger reconciliation; missing, partial, or unexpected evidence remains frozen. The 10% sector cluster cap is deliberately relaxed from a reserve-net admission backstop to an emitted and persisted advisory; unknown sector, negative projected-sector data, and max_symbols_per_sector_cluster remain hard gates; portfolio.max_symbols_per_theme and all quality, cash, and approval controls are otherwise unchanged. This directly reverses the §147 assertion that the sector cap stood unchanged and concentration was bounded by it; despite the recorded Q4 \"no relaxation before scoring\" tension, the informed operator decided that this cap must be observed, warned, and recorded rather than block an otherwise eligible candidate. §156차 final scope addendum ② 2026-08-26 (operator-approved): the earlier pending-canonical-tier-evidence wording is superseded. This is a narrow authorization relaxation: only an expanded-mode limit sell that is marketable and whose submit-time broker/account preview produces classify_sell_profit(...)=take_profit may auto-submit. The predicate uses the broker-origin avg_buy_price, inclusive break-even band, conservative round-trip cost, and the more pessimistic preview realized_pnl when supplied; no tier, strategy, rationale, or session self-declaration is an input. A fill can precede the veto card in this one case; marketable buys, market orders, loss/breakeven/unclassifiable sells, loss-cut, policy_deviation, account/market allowlists, and the existing loss-sell guard remain blocked or unchanged. Per-order and daily caps remain hard gates: for a marketable `take_profit` sell they meter `max(limit_price, current_price) × quantity`; resting sells, buys, and `off` mode retain `limit_price × quantity`. §163차 cash-parking ticker allowlist 2026-08-28 (operator decision in claude-mock session): SGOV and BIL on kis_live/equity_us get TWO changes and only two — the marketable-buy rule is released (§156차 ② had kept marketable buys manual; this is its only exception, and the only marketable-buy release that exists) and the per-order auto-approve cap is RAISED from USD 1,500 to USD 10,000. 🔴 The per-order cap is RAISED, NOT EXEMPTED: the check still runs on every parking rung, so per §106차 the maximum-loss boundary of one automation error keeps its shape and a single parking order stays bounded at USD 10,000; a parking order above that is rejected as per_order_cap_exceeded exactly as any other over-cap order is. Behind that first line sits a SECOND boundary, a cumulative USD 10,000 parking-exposure cap checked on every parking buy, failing closed to a human card whenever that exposure cannot be read. That exposure is measured from TWO sources and both are load-bearing: (a) the broker's own overseas balance (ovrs_stck_evlu_amt, USD) and (b) the durable same-day record of already-auto-approved parking BUYS. (b) is not optional bookkeeping — KIS returns only positions with ovrs_cblc_qty > 0, so an order that was auto-approved and sent but has not filled yet has no balance row at all, and a balance-only cap would re-meter the next proposal from zero and approve the same amount twice (two USD 10,000 proposals both clearing, for USD 20,000). (b) reuses the KST-day window, advisory lock and row filter of the already-vetted daily circuit breaker. A same-day buy that has filled is counted in both halves until the KST day rolls over; that double count is deliberate, because de-duplicating would require matching fills back to orders and an error there restores the under-count, whereas over-counting only tightens the cap. Rationale: ultra-short Treasury ETFs are cash-equivalents with essentially no intraday price risk, so the anti-chase resting rule protects nothing there. NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY: the allowlist and the USD 10,000 cap are hardcoded closed constants in app/services/order_proposals/parking_allowlist.py (frozenset/Decimal literals, no settings key, no environment variable, no loader), so a runtime session cannot widen the allowlist or raise the cap and the auto_approve keyset above is byte-identical to §156차. The cumulative cap is the second line and never the only one: its measurement has known residual gaps (BL-37 account labelling rather than proven account identity, BL-38 no pre-submit reservation, BL-39 current-KST-day window), all three tracked as backlog and deliberately not fixed in this change, and the per-order cap above is what keeps each of them bounded per order. Everything else is unchanged for parking rungs exactly as for all others: the daily cap is unchanged and still applied, the per-order cap for every non-allowlisted US ticker remains USD 1,500, and neither are loss_cut/exit intent, the policy_deviation tag scan, the veto-capable account/market allowlist, the Toss freeze, the limit-order-type requirement, the fresh-preview requirement, the sell-side break-even band and round-trip-cost profit proof (a break-even SGOV sell still goes to a human), the mandatory veto thesis, or any `off`-mode verdict. Scope is kis_live × equity_us only — toss_live equity_us is excluded because its parking exposure lives on a different broker surface and metering a KIS balance to authorize a Toss order would be a wrong-account cap. Honest limits recorded (corrected after adversarial review): a parking buy can fill before the veto card is visible (that is what marketable means, accepted); the durable half is scoped to the CURRENT KST DAY, so a parking buy auto-approved before that boundary that is still unfilled and still absent from the balance is not counted — 🔴 an earlier version of this entry justified that window with ROB-671 ('US day orders do not survive the session'), and THAT JUSTIFICATION IS WITHDRAWN because it does not describe what the window does: KST midnight is 15:00 UTC while XNYS regular hours are 13:30-20:00 UTC (EDT) / 14:30-21:00 UTC (EST), so KST midnight falls in the middle of the US session, and a durable row recorded at 23:00 KST reads back as 0 an hour later at 00:01 KST while the same XNYS session is still open and the order is still live; the window is a deliberate reuse of the daily circuit breaker's already-vetted KST-day scoping rather than anything the market calendar guarantees, it is tracked as BL-39, and it is the sharpest remaining edge of this cap; an allowlisted position the broker omits from its balance response AND that is not in today's durable record is counted as zero; the measurement is not atomic with the submit (the durable read takes the same per-account/day advisory lock as the daily circuit breaker, which serializes concurrent dispatches inside a transaction, but this is the same TOCTOU shape as the shipped daily-notional accumulator, not a distributed guarantee); and the per-row USD currency guard is a guard rather than a verified fact, since this repo holds no captured sample proving whether KIS emits a per-row currency key on an overseas balance, so it is deliberately inert when no row declares one. The earlier claim that the omitted-holding gap was 'bounded by the USD 20,000 daily cap' was wrong and is withdrawn: a USD 20,000 daily bound does not preserve a USD 10,000 cumulative boundary, which is precisely why the durable half was added. See docs/runbooks/order-proposal-auto-approve-expand.md §8.; §S170 parking daily-cap exclusion 2026-08-31 (operator decision): enabled closed `kis_live` parking scopes for both US (SGOV/BIL) and KR (459580/357870) are excluded from shared daily-cap judgment and durable contribution on both buy and sell, through closed per-market literals only. This adds or changes no policy key, threshold, cap value, roster, currency key, or other gate. Correction/withdrawal of the §163 statement that the daily cap was unchanged and still applied: it no longer applies to this exact expanded-mode parking subset. Parking buys retain the immutable cumulative parking cap, but parking sells have no daily aggregate boundary after exclusion; their remaining boundaries are the immutable per-order cap, held quantity, and take_profit proof. BL-38/BL-39 mechanism is unchanged because the daily and parking durable readers already share the same KST-day window; however the KR binding gate moves from the KRW 5,000,000 daily cap to the KRW 15,000,000 cumulative parking-buy cap, so BL-37/BL-39 can expose up to 3x the KR amount per day.; §S174 Toss KR parking scope 2026-09-01 (operator decision): the prior §163 Scope is kis_live × equity_us only assertion and its former reason that a Toss order would be metered by a KIS balance are WITHDRAWN for Toss KR. S174 binds each closed toss_live/equity_kr 459580 or 357870 scope to the toss_kr_holdings provider, typed TossReadClient.holdings native KRW value, and an exact configured-account identity before any read; it therefore does not use a KIS balance to authorize a Toss order and avoids the wrong-account cap. Toss KR has its own immutable KRW 10,000,000 per-order and KRW 15,000,000 cumulative-buy cap, independently metered from KIS KR. The accepted KR aggregate is KRW 30,000,000 across the two independent faces. Operator accepts this because parking instruments are cash-equivalents with zero market exposure and the cap still serves its purpose of bounding one automation error. No policy key, threshold, or cap value changes.; §173 toss US parking scope 2026-09-02 (operator decision): SGOV and BIL are additionally authorized on toss_live/equity_us after live observations showed quantity × last_price == market_value.amount for USD rows at zero arithmetic error; each closed scope binds toss_us_holdings, currency USD, market_country US, and the exact configured Toss account before the read, with the existing USD 10,000 per-order and cumulative-buy caps independently metered from KIS US. No policy key, threshold, cap value, or existing face changes. §S175 cash-yield and transfer-cost reference block 2026-09-07 (operator input): additive advisory reference data only — parking annual rates by account and the Upbit KRW withdrawal fee. No gate, cap, threshold, sizing rule, tier, approval surface, or existing key is added, changed, or relaxed; no consumer reads these keys for any decision. tax_treatment and the marginal/whole-balance tier basis are operator-reported and unverified; the Upbit withdrawal lead time is recorded as unknown rather than estimated."
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden); §129차 buy.new_entry_overflow cash-conditioned overflow slots at 0.5x sizing 2026-08-21 (operator decision in claude-mock session; no gate relaxed); §133차 KR per-order auto-approve cap 2M 2026-08-21 (single-share high-priced KR exits structurally carded — SK하이닉스 1,776,000 measured case, §65차 US twin; daily cap unchanged); §136차 A(k) two add symbols per market + owned-symbol add exempt from new-entry symbol cap 2026-08-21 (operator directive to deploy idle Upbit KRW; measured blocker from 2026-08-21 20:20 session; k_used retained at 0.10 — k is the averaging-target parameter, and raising it flips A_limit non-positive, the opposite of expansion); §139차 buy-side retrospective decisions 2026-08-22 (operator decisions in claude-mock session, sourced from retro-buyside-multiweek-20260822.md): US one_share_exception absolute_ceiling_usd 700 -> 10000 (operator: deposited cash is the ceiling; the real boundary is cash plus the USD 1,500 per-order auto-approve cap, and the AVGO -11.58% counter-evidence is retained), buy.index_etf_candidate equal-candidate universe admission for broad index ETFs with structurally-absent gates declared not-applicable rather than waived, and buy.held_majors_support_net time-boxed pre-registered LIVE crypto tier for profitable held coins (<=300k KRW per coin, <=900k KRW tier, scored 2026-09-19 and retired unless the filled cohort D+20 median >= 0 and lower quartile > -8%; ROB-1031 60% post-touch breakdown and the XRP -8.36% one-hour flush recorded as counter-evidence). No gate relaxed for new-coin discovery; no approval cap raised. §142차 breakeven band boundary repair 2026-08-23 (GPT Pro checkpoint #3 Q4 permitted class 'policy-clause contradiction resolution'; versioned bugfix, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under): the §115차 breakeven_extension_ladder tier-1 anchor and the §44차 sell.breakeven_reserve_trim post-max anchor now resolve to max(tick_ceil(raw anchor), first valid tick STRICTLY above average_cost × (1 + order_proposals.auto_approve.breakeven_band_pct / 100)), because the §40차 break-even band comparison is inclusive (|distance| <= band) and a rung that lands exactly on avg × 1.01 was classified breakeven_band instead of take_profit whenever the tick ceil was a no-op. The §40차 classifier itself is unchanged — the inclusive comparison stays inclusive globally — and no threshold, cap, tier, sizing rule, or exclusion is added or relaxed. §145차 crypto per-order auto-approve cap 1M -> 5M and daily cap 5M -> 10M 2026-08-23 (operator decision in claude-mock session: \"100만 초과도 자동이었으면 해\"): the averaging-down A_limit band the §136차 add lane produces runs past 1M (XRP ~2.93M at the -5% conversion point, measured 2026-08-23), so every such add was structurally carded. The §71차 lesson is kept by raising the daily cap in proportion (5M -> 10M) so the first auto-approved add does not demote the rest of the day to cards. Per §106차 the per-order cap remains the maximum-loss boundary of one automation error; the operator re-defined that boundary at 5M. The real ceiling stays the Upbit orderable cash (§144차 trigger reserve plus JIT deposit), and a short-of-cash proposal still emits deferred_with_condition plus a deposit alert before any order. min_distance, resting-only, tag scan, loss guard, and the no-partial-fill rule are unchanged, and no KR or US cap moves. §147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24 (operator decision in claude-mock session: \"원화 여유로우니 슬롯 제한 불필요, 지지선 매수는 부담 없다\"): the §127차 two-slot count and the §129차 cash-conditioned 0.5x overflow slots are removed from the user_stances prose, and the buy.new_entry_overflow rule is DELETED because its whole reason to exist was to relieve a slot count that no longer exists. The number of concurrent new entries is now bounded by ORDERABLE CASH ALONE. This removes a COUNT limit only — every quality and diversification device is untouched and none is relaxed: the buy gates (RSI, support, upside, deep band), the per-symbol notional bands (KR 200,000-400,000 / US 150-450), the 10% sector cluster cap (portfolio.sector_cluster_cap_pct), and the 2-symbols-per-theme cap (portfolio.max_symbols_per_theme) all stand unchanged, so a candidate that fails any gate is still not admitted and concentration is still bounded. Honest record of the Q4 tension (carried forward verbatim from the operator ledger): this change is a withdrawal of an operator STANCE (a count limit), not the creation of a new tier, but it is in tension with the \"no relaxation before scoring\" intent of the Q4 tier freeze - the operator was informed of that tension and decided anyway. The scoring infrastructure (screener pick logging and negative-class recording) is already running, so the effect of this change is itself tracked in the record. No threshold, cap, sizing rule, gate, or approval surface is added or raised. §148차 A(k) eligibility wording contradiction resolution 2026-08-24 (Q4 permitted class: policy-clause contradiction resolution; this is wording-only scope clarification: threshold/value/enum changes 0; application-scope clarification only; discovery strong requirement and all other gates remain unchanged; versioned wording clarification, NOT retroactive — cohorts and forecasts stamped with an earlier policy version keep the anchor they were placed under). §156차 auto-approval authorization revision 2026-08-26 (table_disagreement retained as audit evidence, not an approval blocker; marketable orders remain resting-only pending canonical tier evidence; no threshold, cap, tier, sizing, or default-mode change). §156차 scope addendum ④⑤ 2026-08-26 (operator-approved): a same-session Toss fill interlock releases only after exact normal full-fill and clean ledger reconciliation; missing, partial, or unexpected evidence remains frozen. The 10% sector cluster cap is deliberately relaxed from a reserve-net admission backstop to an emitted and persisted advisory; unknown sector, negative projected-sector data, and max_symbols_per_sector_cluster remain hard gates; portfolio.max_symbols_per_theme and all quality, cash, and approval controls are otherwise unchanged. This directly reverses the §147 assertion that the sector cap stood unchanged and concentration was bounded by it; despite the recorded Q4 \"no relaxation before scoring\" tension, the informed operator decided that this cap must be observed, warned, and recorded rather than block an otherwise eligible candidate. §156차 final scope addendum ② 2026-08-26 (operator-approved): the earlier pending-canonical-tier-evidence wording is superseded. This is a narrow authorization relaxation: only an expanded-mode limit sell that is marketable and whose submit-time broker/account preview produces classify_sell_profit(...)=take_profit may auto-submit. The predicate uses the broker-origin avg_buy_price, inclusive break-even band, conservative round-trip cost, and the more pessimistic preview realized_pnl when supplied; no tier, strategy, rationale, or session self-declaration is an input. A fill can precede the veto card in this one case; marketable buys, market orders, loss/breakeven/unclassifiable sells, loss-cut, policy_deviation, account/market allowlists, and the existing loss-sell guard remain blocked or unchanged. Per-order and daily caps remain hard gates: for a marketable `take_profit` sell they meter `max(limit_price, current_price) × quantity`; resting sells, buys, and `off` mode retain `limit_price × quantity`. §163차 cash-parking ticker allowlist 2026-08-28 (operator decision in claude-mock session): SGOV and BIL on kis_live/equity_us get TWO changes and only two — the marketable-buy rule is released (§156차 ② had kept marketable buys manual; this is its only exception, and the only marketable-buy release that exists) and the per-order auto-approve cap is RAISED from USD 1,500 to USD 10,000. 🔴 The per-order cap is RAISED, NOT EXEMPTED: the check still runs on every parking rung, so per §106차 the maximum-loss boundary of one automation error keeps its shape and a single parking order stays bounded at USD 10,000; a parking order above that is rejected as per_order_cap_exceeded exactly as any other over-cap order is. Behind that first line sits a SECOND boundary, a cumulative USD 10,000 parking-exposure cap checked on every parking buy, failing closed to a human card whenever that exposure cannot be read. That exposure is measured from TWO sources and both are load-bearing: (a) the broker's own overseas balance (ovrs_stck_evlu_amt, USD) and (b) the durable same-day record of already-auto-approved parking BUYS. (b) is not optional bookkeeping — KIS returns only positions with ovrs_cblc_qty > 0, so an order that was auto-approved and sent but has not filled yet has no balance row at all, and a balance-only cap would re-meter the next proposal from zero and approve the same amount twice (two USD 10,000 proposals both clearing, for USD 20,000). (b) reuses the KST-day window, advisory lock and row filter of the already-vetted daily circuit breaker. A same-day buy that has filled is counted in both halves until the KST day rolls over; that double count is deliberate, because de-duplicating would require matching fills back to orders and an error there restores the under-count, whereas over-counting only tightens the cap. Rationale: ultra-short Treasury ETFs are cash-equivalents with essentially no intraday price risk, so the anti-chase resting rule protects nothing there. NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY: the allowlist and the USD 10,000 cap are hardcoded closed constants in app/services/order_proposals/parking_allowlist.py (frozenset/Decimal literals, no settings key, no environment variable, no loader), so a runtime session cannot widen the allowlist or raise the cap and the auto_approve keyset above is byte-identical to §156차. The cumulative cap is the second line and never the only one: its measurement has known residual gaps (BL-37 account labelling rather than proven account identity, BL-38 no pre-submit reservation, BL-39 current-KST-day window), all three tracked as backlog and deliberately not fixed in this change, and the per-order cap above is what keeps each of them bounded per order. Everything else is unchanged for parking rungs exactly as for all others: the daily cap is unchanged and still applied, the per-order cap for every non-allowlisted US ticker remains USD 1,500, and neither are loss_cut/exit intent, the policy_deviation tag scan, the veto-capable account/market allowlist, the Toss freeze, the limit-order-type requirement, the fresh-preview requirement, the sell-side break-even band and round-trip-cost profit proof (a break-even SGOV sell still goes to a human), the mandatory veto thesis, or any `off`-mode verdict. Scope is kis_live × equity_us only — toss_live equity_us is excluded because its parking exposure lives on a different broker surface and metering a KIS balance to authorize a Toss order would be a wrong-account cap. Honest limits recorded (corrected after adversarial review): a parking buy can fill before the veto card is visible (that is what marketable means, accepted); the durable half is scoped to the CURRENT KST DAY, so a parking buy auto-approved before that boundary that is still unfilled and still absent from the balance is not counted — 🔴 an earlier version of this entry justified that window with ROB-671 ('US day orders do not survive the session'), and THAT JUSTIFICATION IS WITHDRAWN because it does not describe what the window does: KST midnight is 15:00 UTC while XNYS regular hours are 13:30-20:00 UTC (EDT) / 14:30-21:00 UTC (EST), so KST midnight falls in the middle of the US session, and a durable row recorded at 23:00 KST reads back as 0 an hour later at 00:01 KST while the same XNYS session is still open and the order is still live; the window is a deliberate reuse of the daily circuit breaker's already-vetted KST-day scoping rather than anything the market calendar guarantees, it is tracked as BL-39, and it is the sharpest remaining edge of this cap; an allowlisted position the broker omits from its balance response AND that is not in today's durable record is counted as zero; the measurement is not atomic with the submit (the durable read takes the same per-account/day advisory lock as the daily circuit breaker, which serializes concurrent dispatches inside a transaction, but this is the same TOCTOU shape as the shipped daily-notional accumulator, not a distributed guarantee); and the per-row USD currency guard is a guard rather than a verified fact, since this repo holds no captured sample proving whether KIS emits a per-row currency key on an overseas balance, so it is deliberately inert when no row declares one. The earlier claim that the omitted-holding gap was 'bounded by the USD 20,000 daily cap' was wrong and is withdrawn: a USD 20,000 daily bound does not preserve a USD 10,000 cumulative boundary, which is precisely why the durable half was added. See docs/runbooks/order-proposal-auto-approve-expand.md §8.; §S170 parking daily-cap exclusion 2026-08-31 (operator decision): enabled closed `kis_live` parking scopes for both US (SGOV/BIL) and KR (459580/357870) are excluded from shared daily-cap judgment and durable contribution on both buy and sell, through closed per-market literals only. This adds or changes no policy key, threshold, cap value, roster, currency key, or other gate. Correction/withdrawal of the §163 statement that the daily cap was unchanged and still applied: it no longer applies to this exact expanded-mode parking subset. Parking buys retain the immutable cumulative parking cap, but parking sells have no daily aggregate boundary after exclusion; their remaining boundaries are the immutable per-order cap, held quantity, and take_profit proof. BL-38/BL-39 mechanism is unchanged because the daily and parking durable readers already share the same KST-day window; however the KR binding gate moves from the KRW 5,000,000 daily cap to the KRW 15,000,000 cumulative parking-buy cap, so BL-37/BL-39 can expose up to 3x the KR amount per day.; §S174 Toss KR parking scope 2026-09-01 (operator decision): the prior §163 Scope is kis_live × equity_us only assertion and its former reason that a Toss order would be metered by a KIS balance are WITHDRAWN for Toss KR. S174 binds each closed toss_live/equity_kr 459580 or 357870 scope to the toss_kr_holdings provider, typed TossReadClient.holdings native KRW value, and an exact configured-account identity before any read; it therefore does not use a KIS balance to authorize a Toss order and avoids the wrong-account cap. Toss KR has its own immutable KRW 10,000,000 per-order and KRW 15,000,000 cumulative-buy cap, independently metered from KIS KR. The accepted KR aggregate is KRW 30,000,000 across the two independent faces. Operator accepts this because parking instruments are cash-equivalents with zero market exposure and the cap still serves its purpose of bounding one automation error. No policy key, threshold, or cap value changes.; §173 toss US parking scope 2026-09-02 (operator decision): SGOV and BIL are additionally authorized on toss_live/equity_us after live observations showed quantity × last_price == market_value.amount for USD rows at zero arithmetic error; each closed scope binds toss_us_holdings, currency USD, market_country US, and the exact configured Toss account before the read, with the existing USD 10,000 per-order and cumulative-buy caps independently metered from KIS US. No policy key, threshold, cap value, or existing face changes. §S175 cash-yield and transfer-cost reference block 2026-09-07 (operator input): additive advisory reference data only — parking annual rates by account and the Upbit KRW withdrawal fee. No gate, cap, threshold, sizing rule, tier, approval surface, or existing key is added, changed, or relaxed; no consumer reads these keys for any decision. tax_treatment and the marginal/whole-balance tier basis are operator-reported and unverified; the Upbit withdrawal lead time is recorded as unknown rather than estimated. §176차 underwater averaging-down tier, loss-cut classification, and dynamic deployment cap 2026-09-07 (operator decision 2026-09-07 11:05, “물타기 티어 등록하자”): buy.underwater_support_net registers the KR/US mirror of the §139차 crypto held_majors_support_net tier with the P&L sign reversed (held AND losing account lots only, unrealized P&L <= -8% inclusive), sized at <= 50% of the existing position notional (the §127차 winner_pullback_add cap adopted unchanged) and anchored at tick_floor(support) inside the same moderate / two-independent-family / [-12,-3]% support band, TIF DAY with daily regeneration because GTC is forbidden on KR/US; sell.loss_cut records the loss-cut half of the same three-way classification (thesis broken, OR <= -40% inclusive with weak-only support) as advisory CLASSIFICATION criteria that change no execution, pricing, or approval path; buy.deployment_cap records an advisory 45% dynamic ceiling on NEW deployment measured against broker orderable cash plus operator-maintained parking cash, evaluated at new-deployment time only and explicitly never retroactive. NO GATE IS RELAXED AND NO CAP IS RAISED: the discovery gates (RSI, strong support for new entries, honest upside), the per-order and daily auto-approve caps, the loss-sell guard, sell.loss_cut_max_slip, the policy_deviation tag scan and the veto-capable account/market allowlist are all unchanged, and the new-entry discovery population that the ROB-1301/ROB-1351 buy-gate A/B shadow experiment measures is untouched because this tier admits only held lots. The per-symbol notional bands are recorded as NOT APPLYING to a held-lot add, which is a restatement of their own “for new entries” scope rather than a waiver, and no new-entry inherits it. Honest limits: the tier is an advisory session contract like every other tier here, its only code-enforced boundary is the ordinary per-order auto-approve cap followed by a human card, and buy.deployment_cap’s parking term has no repository balance source (cash_yields is a rate table, not a balance) so it reads 0 whenever operator manual cash is absent or stale, making the emitted cap a conservative lower bound."
 
 # 운영자 입력 2026-09-07 — 현금 파킹 금리 · 이체 비용 참조표.
 # advisory 참조 데이터 전용: 게이트·캡·사이징·승인 표면 어느 것도 이 키를 읽지 않는다.
@@ -152,6 +159,20 @@ posture:
 # records the lineage only; the caps below do not depend on any slot count.
 order_proposals:
   auto_approve:
+    # §176차 (2026-09-07) — 물타기 티어와 이 블록의 관계를 명시한다.
+    # buy.underwater_support_net 를 통과한 매수 제안은 **이미 이 블록의
+    # 기존 규칙만으로 자동 승인 적격**이다: 그 티어의 지지 밴드가 [-12%, -3%]
+    # 라서 rung 이 항상 현재가 대비 최소 3% 아래에 놓이고(= 아래
+    # min_distance_pct 와 정확히 같은 경계), order_type 은 limit, resting
+    # only, side 는 buy, exit_intent 는 없기 때문이다. 따라서 카드 없이
+    # 승인된다.
+    # 🔴 그러나 이 블록은 티어를 **구분하지 않는다** — 이 문언은 새로운
+    # 승인 경로를 만들지 않으며, 분류기에 tier 이름을 가르치지도 않는다.
+    # per-order 캡(kr 2,000,000 / us 1,500)·daily 캡·policy_deviation 태그
+    # 스캔·veto 가능 계좌/시장 allowlist 는 물타기 rung 에도 똑같이 적용되고,
+    # 캡을 넘는 물타기 1건은 다른 모든 초과 주문과 똑같이 사람 카드로
+    # 강등된다(09-07 실측 015760 1,567,800 <= 2,000,000 통과). 이 티어는
+    # 어떤 캡도 올리지 않는다.
     min_distance_pct: 3
     # §106차 (2026-08-19): daily caps are a practical circuit-breaker release;
     # the daily limit must not constrict the approval lane. Per-order caps are
@@ -569,6 +590,208 @@ decision_rules:
     exclusions:
       - breakout_chase
       - market_order_momentum_add
+  # §176차 (2026-09-07) — 손실 lot 물타기의 유일한 인가 형태. §139차
+  # buy.held_majors_support_net(crypto·이익 lot 전용)을 KR/US 로 이식하되
+  # 부호를 뒤집는다: 이쪽은 **손실 lot 전용**이다. 09-07 등록 세션이 KIS 물타기
+  # 3건(015760·196170·035420)을 냈으나 대응 티어가 없어 — winner_pullback_add 는
+  # position_unrealized_gain_required: true 라 미매칭, support_reserve_net
+  # .add_candidate 는 partial_A_limit_fill: FORBIDDEN 이라 미매칭 — 전건이
+  # 근거 없는 승인형 카드로 강등됐다(week1-exec-report §4-1 실측). 이 티어는
+  # 그 공백만 닫는다: 게이트를 낮추지 않고, 신규 발굴 모집단에 손대지 않으며,
+  # 승인 캡을 올리지 않는다.
+  # 🔴 crypto 원본과 다른 점 3가지 — 이식할 때 반드시 다르게 읽어야 한다:
+  #   ① tif: crypto 는 GTC(업비트 관행), KR/US 는 DAY + 매일 재발행이며
+  #      gtc 는 FORBIDDEN 이다. "걸어두고 기다리기"가 구조적으로 불가능하다.
+  #   ② 부호: crypto 는 unrealized_pnl_pct_min_exclusive: 0(이익만),
+  #      이 티어는 unrealized_pnl_pct_max_inclusive: -8(손실만).
+  #   ③ r931_review: crypto 티어에는 없다. KR add 경로에는 이미 있어 승계한다.
+  # 🔴 물타기가 실패하면 묶인 자본만 커진다. 그래서 캡(기존 포지션 평가액의
+  # 50%)이 이 티어의 본질이며, 필요 반등폭 개선 3%p 하한이 "캡을 써서 의미
+  # 있는 개선이 나오는가"를 사전에 되묻는 장치다(015760 캡안: +37.95% →
+  # +23.36%, 개선 14.59%p).
+  buy.underwater_support_net:
+    lanes: [buy]
+    markets: [kr, us]
+    semantics: >-
+      Pre-registered resting-LIMIT tier for a HELD and LOSING account lot,
+      placed at a support level in order to lower that lot's average cost.
+      Structurally identical to §139차 buy.held_majors_support_net with the
+      P&L sign reversed: that tier admits only profitable crypto holdings,
+      this one admits only losing KR/US equity lots. ENFORCEMENT SURFACE —
+      advisory, exactly like every other tier in this file
+      (authority.scope: judgment_policy_only): no code in this repo reads
+      these conditions to place, size, aggregate, or block an order. The
+      session applies them as judgment.
+      ELIGIBILITY is the §0 classification formula made countable, and every
+      clause must hold: (1) the symbol is HELD in the account being sized and
+      that ACCOUNT LOT is at a loss (current price < average cost) — average
+      cost is per account, so a KIS lot can only be averaged down inside KIS
+      and buying the same symbol at another broker does not lower it;
+      (2) unrealized P&L <= -8% on that lot (INCLUSIVE — exactly -8.00%
+      qualifies); (3) support strength >= moderate AND >= 2 independent
+      support source families AND the support sits between -12% and -3% of
+      the current price; (4) thesis-alive evidence exists at decision time
+      (a decision_history entry that still holds, or an analyst consensus in
+      which buy >= hold + sell) — absence of evidence is NOT evidence, and a
+      lot with no thesis record is ineligible here and belongs to the
+      sell.loss_cut classification instead; (5) applying the size cap
+      improves the required rebound (average_cost x
+      sell.loss_guard_min_multiple / current_price - 1) by at least 3
+      percentage points. A candidate failing any clause is not admitted; the
+      remainder is "hold", which is a verdict and not an omission.
+      SIZING is capped at 50% of the existing position's current notional —
+      the same cap §127차 buy.winner_pullback_add applies to a winning
+      position, adopted here unchanged. The per-symbol notional bands
+      (buy.per_symbol_notional_krw_range / buy.per_symbol_notional_usd_range)
+      are NOT applied: their own semantics scope them to NEW ENTRIES, and an
+      add to a held lot is not a new entry. That is a statement of the
+      existing band scope, not a waiver, and it grants no relaxation to any
+      new entry. This tier declares NO absolute KRW or USD notional ceiling
+      of its own: the 50% cap is proportional (so it cannot be gamed by a
+      large position without that position already existing) and the
+      code-enforced ceiling is the ordinary per-order auto-approve cap.
+      AUTO-APPROVAL rides the EXISTING lane and creates no new approval
+      surface: a rung that satisfies this tier is a resting LIMIT buy priced
+      at least 3% below the market (the band's -3% edge is exactly
+      order_proposals.auto_approve.min_distance_pct), so it already satisfies
+      ROB-871's `off`-mode distance rule, and it remains subject unchanged to
+      the per-order cap (KR 2,000,000 / US 1,500), the daily cap, the
+      policy_deviation tag scan, the veto-capable account/market allowlist,
+      and every other auto-approve gate. NO CAP IS RAISED BY THIS TIER and
+      the classifier is not taught to recognise it: an over-cap add falls
+      back to a human card exactly as any other over-cap order does.
+      sell.loss_guard_min_multiple is a SELL guard and does not apply to
+      these buys; the relationship is serial, not conflicting — the guard is
+      not relaxed, the add lowers the price at which the guard is satisfied.
+      SCOPE is held-lot adds only. The new-symbol discovery gates (RSI,
+      strong support for discovery, honest upside) are untouched, so the
+      ROB-1301 / ROB-1351 buy-gate A/B shadow experiment population — which
+      is a NEW-ENTRY discovery population — is unaffected by this tier.
+      Every placement records a forecast (touch / fill / D+20 outcome). On
+      2026-10-05 the tier is RETIRED unless the FILLED cohort's D+20 median
+      is >= 0 AND its lower quartile is > -8%; those two numbers are fixed in
+      advance and may not be reinterpreted at scoring time. On a crash day no
+      new batch is placed.
+    tiers:
+      - id: underwater_support_net
+        conditions:
+          holding_required: true
+          account_lot_scoped: true
+          unrealized_pnl_pct_max_inclusive: -8
+          thesis_alive_evidence_required: true
+          thesis_alive_evidence_sources: [decision_history, analyst_consensus_buy_gte_hold_plus_sell]
+          support_strength_min: moderate
+          independent_support_source_count_min: 2
+          support_distance_from_current_pct_range: [-12, -3]
+          required_rebound_improvement_pct_min: 3
+          required_rebound_formula: "average_cost x sell.loss_guard_min_multiple / current_price - 1"
+          required_rebound_guard_policy_key: sell.loss_guard_min_multiple
+          order_type: limit
+          resting_only: true
+          anchor_price_formula: "tick_floor(support)"
+          tif: DAY
+          gtc: FORBIDDEN
+          daily_regeneration: REQUIRED
+          max_add_notional_pct_of_position: 50
+          partial_fill: allowed
+          per_symbol_notional_band_applies: false
+          per_symbol_notional_band_scope_reason: bands_are_scoped_to_new_entries
+          max_placements_per_symbol_per_day: 1
+          auto_approve_path: existing_per_order_cap
+          per_order_cap_raised: false
+          new_symbol_discovery_gate_unchanged: true
+          buy_gate_ab_shadow_population_unchanged: true
+          r931_review_required: PASS
+          r931_review_max_age_days: 7
+          forecast_save_required: true
+          forecast_scored_fields: "touch, fill, d20_outcome"
+          crash_day_new_batch_suspended: true
+          enforcement_surface: advisory_session_contract
+          code_enforced_boundary: per_order_auto_approve_cap_then_card
+          review_date: "2026-10-05"
+          retire_unless_filled_cohort_d20_median_pct_min: 0
+          retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive: -8
+        action: pre_place_resting_limit_at_support
+        sizing: "<= 50% of the existing account lot's current notional; one placement per symbol per day; anchor = tick_floor(support); forecast_save required per placement"
+    exclusions:
+      - new_symbol_entry
+      - profitable_position
+      - thesis_broken
+      - weak_support_only
+      - market_order
+      - gtc_order
+      - crash_day_new_batch
+      - cross_account_average_cost_transfer
+  # §176차 (2026-09-07) — 동적 배치 한도. 운영자 결정: 신규 배치 총액의 상한을
+  # 고정 금액이 아니라 "가용 재원의 비율"로 잡는다.
+  #     cap = 0.45 x (broker_orderable_total + parking_balance_krw)
+  # 🔴 45% 계수의 출처는 실측이 아니라 운영자 판단이다. 정책에 이미 있는 가장
+  # 가까운 값은 buy.support_reserve_net.tier_armed_required_cash_cap_pct: 50 이며
+  # 45% 는 그보다 보수적이다. 별도 검증으로는 월 유입 600만 x 1.7 = 1,020만이
+  # 09-07 실측 분모(2,272.5만)의 45%인 1,022.6만과 거의 일치한다 — 두 방식이
+  # 수렴한다는 사후 근거일 뿐 승격 근거가 아니다.
+  # 🔴 비율식의 함정과 그 수리: 분모가 "주문가능 현금"이라 체결될수록 분모가
+  # 줄고 한도도 줄어든다. 체결로 현금이 500만 줄면 한도는 225만 줄어, 이미
+  # 배치한 금액이 새 한도를 초과할 수 있다. 그래서 한도는 **신규 배치 시점에만**
+  # 평가하며 기존 배치를 소급 위반으로 만들지 않는다. 소급 위반이 없다는 것은
+  # "초과분을 취소하라"는 지시가 이 키에서 나올 수 없다는 뜻이다.
+  # 🔴 parking_balance_krw 의 원천은 이 레포에 사실상 없다. cash_yields 는
+  # **금리표**이지 잔고 원천이 아니며(계좌 이름과 연이율만 있고 금액이 없다),
+  # 유일한 수동 잔고 저장소는 user_settings 의 manual_cash 다. 값이 없거나
+  # stale 이면 0 으로 읽는다 — 추정하지 않는다. 따라서 실무상 한도는
+  # 대개 브로커 주문가능액만으로 계산된 **하한**이며, 그만큼 보수적이다.
+  buy.deployment_cap:
+    lanes: [buy]
+    semantics: >-
+      Advisory ceiling on the total notional of NEW deployment, expressed as a
+      fraction of currently available funding rather than as a fixed amount.
+      cap = coefficient_pct / 100 x (broker_orderable_total +
+      parking_balance_krw), both terms in KRW. ADVISORY ONLY — it is
+      surfaced, warned about and recorded; it never blocks a proposal, never
+      cancels an order, and no code path treats an over-cap state as a
+      rejection reason. Turning it into a block is a separate operator
+      decision and a separate change.
+      EVALUATED AT NEW DEPLOYMENT TIME ONLY. Because the denominator is
+      orderable cash, filling an order shrinks the denominator and therefore
+      the cap itself, so an already-placed deployment can find itself above a
+      later cap through no new decision. That is explicitly NOT a violation:
+      existing deployments are never retroactively in breach, and this key
+      never asks for one to be unwound. Only a NEW deployment is measured,
+      and only against the cap computed at the moment it is proposed.
+      RECALCULATION is weekly (the operator's standing review cadence), and
+      the weekly recalculation is where realised loss-cut proceeds and new
+      monthly inflow enter the denominator.
+      PARKING TERM PROVENANCE: parking_balance_krw is the operator-maintained
+      manual cash balance (user_settings key `manual_cash`). `cash_yields` in
+      this document is a RATE table and carries no balances, so it cannot
+      supply this term. When the manual cash balance is absent, unreadable,
+      or stale, the term is 0 — never estimated, never carried forward — and
+      the resulting cap is a conservative lower bound that is reported as
+      such.
+    tiers:
+      - id: deployment_cap
+        conditions:
+          coefficient_pct: 45
+          denominator_terms: [broker_orderable_total_krw, parking_balance_krw]
+          denominator_currency: KRW
+          parking_balance_source: user_settings.manual_cash
+          parking_balance_missing_or_stale_value: 0
+          parking_balance_estimation: FORBIDDEN
+          cash_yields_is_rate_table_not_balance_source: true
+          evaluated_at: new_deployment_only
+          retroactive_violation: false
+          unwind_existing_deployment: FORBIDDEN
+          recalculation_cadence: weekly
+          enforcement_surface: advisory_session_contract
+          blocks_proposal: false
+          nearest_existing_policy_reference: buy.support_reserve_net.tier_armed_required_cash_cap_pct
+        action: warn_and_record_when_new_deployment_exceeds_cap
+        sizing: "advisory ceiling on aggregate NEW deployment notional; no per-symbol sizing rule and no block"
+    exclusions:
+      - retroactive_violation
+      - proposal_block
+      - forced_unwind
+      - parking_balance_estimation
 
   # §139차 (2026-08-22) — 지수 ETF는 발굴 유니버스의 "동등 후보"다.
   # 회고 §4-ⓔ가 기각한 것은 "N회차 연속 후보 0이면 유휴 현금 X%를 지수
@@ -717,6 +940,73 @@ decision_rules:
       - losing_position_averaging_down
       - market_order
       - crash_day_new_batch
+
+  # §176차 (2026-09-07) — 3분류(물타기 / 손절 / 보유) 기준의 손절 절반.
+  # 물타기 절반은 buy.underwater_support_net 에 있고, 두 절이 같은 §0 식의
+  # 양쪽 끝이다. 이 키는 기존 loss_cut **실행** 경로를 바꾸지 않는다 —
+  # sell.loss_cut_max_slip(코드 강제)·손실매도 가드·승인 카드는 전부 그대로다.
+  # 여기에 적히는 것은 "어떤 lot 이 손절 후보로 분류되는가"뿐이다.
+  # 🔴 세 분류는 상호배타·전수(MECE)다. 물타기도 손절도 아니면 "보유"이며,
+  # 보유는 판정 결과이지 판정 누락이 아니다. 특히 지지가 weak-only 인데 논지가
+  # 살아 있는 lot 은 손절이 아니라 보유다(035720 카카오 실측 -27.7%/-28.4%).
+  sell.loss_cut:
+    lanes: [sell]
+    markets: [kr, us]
+    semantics: >-
+      Classification criteria for the loss-cut half of the three-way
+      underwater verdict (average down / cut / hold). ADVISORY
+      CLASSIFICATION ONLY — this rule creates no proposal, authorizes no
+      automatic submission, and changes nothing about how a sanctioned
+      loss_cut is priced or approved: sell.loss_cut_max_slip stays
+      code-enforced, the average-cost loss guard stays fail-closed in
+      order_validation, and every loss_cut remains a human approval with
+      `auto_approve: false` (auto_approve.py rejects exit_intent=loss_cut
+      outright, in both modes).
+      A held losing lot is a LOSS-CUT CANDIDATE when EITHER (a) its thesis is
+      gone — coverage is zero, or the decision history carries no surviving
+      thesis for it — OR (b) the lot is at -40% or worse (INCLUSIVE) AND its
+      only support levels are weak (no level reaching moderate strength with
+      >= 2 independent source families). (a) and (b) are alternatives, not
+      cumulative: a broken thesis is sufficient at any depth, and depth alone
+      is never sufficient while a moderate two-family support and a live
+      thesis remain.
+      It is an AVERAGE-DOWN candidate instead when it satisfies
+      buy.underwater_support_net in full. It is HOLD when it is neither — and
+      HOLD is an explicit verdict, including for the common case of a lot
+      that is deeply underwater with weak-only support but an intact thesis.
+      No lot may be classified both ways: the loss-cut (b) branch requires
+      weak-only support, which the average-down tier's support clause
+      excludes by construction.
+      A loss-cut proposal requires an exit_intent=loss_cut proposal plus a
+      retrospective (retrospective_id) and an operator approval; a lot with
+      no terminal event needs a NEW retrospective written before the proposal
+      exists. Nothing here shortens that path.
+    tiers:
+      - id: loss_cut_candidate
+        conditions:
+          holding_required: true
+          account_lot_scoped: true
+          thesis_broken_is_sufficient: true
+          thesis_broken_evidence: coverage_zero_or_no_surviving_thesis_in_decision_history
+          deep_loss_unrealized_pnl_pct_max_inclusive: -40
+          deep_loss_requires_weak_support_only: true
+          weak_support_only_definition: no_level_at_moderate_strength_with_two_independent_families
+          branches_are_alternatives_not_cumulative: true
+          approval_required: true
+          auto_approve: false
+          retrospective_required: true
+          exit_intent: loss_cut
+          max_slip_policy_key: sell.loss_cut_max_slip
+          loss_guard_policy_key: sell.loss_guard_min_multiple
+          mutually_exclusive_with: buy.underwater_support_net
+          residual_class: hold
+        action: propose_loss_cut_for_human_approval
+        sizing: "operator-decided exit quantity; never auto-approved, never session-executed"
+    exclusions:
+      - auto_approval
+      - session_initiated_execution
+      - intact_thesis_with_weak_support_only
+      - average_down_eligible_lot
 
   sell.trim_preplace:
     lanes: [sell]
