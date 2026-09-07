@@ -15,6 +15,9 @@ import app.services.buy_gate_ab_shadow.evaluate_v2 as evaluate_v2
 from app.mcp_server.tooling.analysis_readonly_registration import (
     ANALYSIS_READONLY_TOOL_NAMES,
 )
+from app.mcp_server.tooling.buy_candidate_fanout import (
+    discover_buy_candidates_fanout_impl,
+)
 from app.mcp_server.tooling.buy_gate_ab_shadow_v2 import (
     evaluate_buy_gate_ab_shadow_v2_impl,
 )
@@ -394,6 +397,69 @@ async def test_fanout_witness_recorder_logs_evaluation_counts(
     assert completed[0].evaluated == 1
     assert completed[0].skipped == 1
     assert completed[0].rows_saved == 2
+
+
+@pytest.mark.asyncio
+async def test_merged_fanout_result_still_records_witness_rows() -> None:
+    """Exercise the merged fanout's actual result shape through the observer."""
+
+    async def live_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        return {
+            "source": source.source,
+            "family": source.source,
+            "kind": "live",
+            "rows": [{"symbol": "005930", "name": "witness-samsung", "rank": 1}],
+            "metadata": {"request": {"market": market, "limit": top_n}},
+        }
+
+    async def snapshot_reader(
+        _family: str, _presets: tuple[str, ...], _market: str, _top_n: int
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def fresh_revalidator(
+        symbols: list[str], _market: str
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            symbol: {
+                "data_state": "fresh",
+                "current_price": 100,
+                "rsi_14": 35,
+                "consensus": {"avg_target_price": 145},
+                "supports": [
+                    {
+                        "price": 95,
+                        "strength": _A_MIN,
+                        "sources": ["fib_50", "bb_lower"],
+                    }
+                ],
+            }
+            for symbol in symbols
+        }
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=live_reader,
+        _snapshot_reader=snapshot_reader,
+        _fresh_revalidator=fresh_revalidator,
+    )
+    saved: list[dict[str, Any]] = []
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    await maybe_record_buy_gate_ab_shadow(
+        result,
+        enabled=True,
+        save=save,
+        now=_AS_OF,
+    )
+
+    assert len(result["candidates"]) >= 1
+    assert len(saved) >= 1
+    target = saved[0]["forecast_target"]
+    assert target["evaluated_cohort"] == "neither"
+    assert target["experiment_sample"] is False
+    assert target["shared_gate_bits"] == "unavailable_at_this_call_site"
 
 
 def test_v2_mcp_tool_returns_witness_kwargs_without_writing(
