@@ -21,9 +21,10 @@ DECISION_TABLE_APPLY_TOOL_NAMES: set[str] = {"decision_table_apply"}
 
 _TOOL_DESCRIPTION = (
     "Apply one exact, validated kr-nxt decision-table artifact through existing "
-    "proposal/watch/forecast persistence writers. This tool never performs a "
-    "direct broker order operation. Real application is confirm-gated and "
-    "resumes idempotently after partial writer failures."
+    "proposal/watch persistence writers. Forecast rows are skipped and must be "
+    "recorded by forecast_save directly from the session. This tool never "
+    "performs a direct broker order operation. Real application is confirm-gated "
+    "and resumes idempotently after partial writer failures."
 )
 
 
@@ -65,9 +66,10 @@ def _default_dependencies() -> DecisionTableApplyDependencies:
         return await investment_watch_create_impl(**kwargs)
 
     async def forecast_save(**kwargs: Any) -> dict[str, Any]:
-        from app.mcp_server.tooling.forecast_tools import forecast_save
-
-        return await forecast_save(**kwargs)
+        # ESC-4 keeps this seam fail-closed without importing the scored
+        # forecast writer. apply v1 must never call it; a direct session call
+        # is the only allowed forecast persistence route.
+        raise RuntimeError("forecast_save is outside decision_table_apply v1")
 
     async def context_append(**kwargs: Any) -> dict[str, Any]:
         from app.mcp_server.tooling.session_context_tools import session_context_append

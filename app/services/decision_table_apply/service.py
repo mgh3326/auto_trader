@@ -26,6 +26,8 @@ _ACTION_KINDS = {
     "forecast": "forecast",
 }
 _AMBIGUOUS_APPLY_KIND = "ambiguous_apply_kind"
+_UNSUPPORTED_APPLY_KIND = "unsupported_apply_kind"
+_FORECAST_DIRECT_SESSION_HINT = "Call forecast_save directly in this session."
 _WATCH_INTENT_BY_SIDE = {"buy": "buy_review", "sell": "sell_review"}
 
 
@@ -43,6 +45,8 @@ class DecisionTableApplyDependencies:
     artifact_save: ApplyCallable
     proposal_create: ApplyCallable
     watch_create: ApplyCallable
+    # A fail-closed seam, not an adapter to the real forecast writer. It lets
+    # focused tests prove a future forecast-route mutation made no call.
     forecast_save: ApplyCallable
     context_append: ApplyCallable
 
@@ -112,7 +116,7 @@ def _scenario_id(row: object) -> str | None:
 def _record_marker_id(marker: object) -> str | None:
     if not isinstance(marker, dict):
         return None
-    for field in ("proposal_id", "watch_id", "forecast_id"):
+    for field in ("proposal_id", "watch_id"):
         value = marker.get(field)
         if isinstance(value, str) and value:
             return value
@@ -288,6 +292,33 @@ def _action_kind(action: object) -> str | None:
         return "proposal"
     raw_kind = action["apply_kind"]
     return _ACTION_KINDS.get(raw_kind) if isinstance(raw_kind, str) else None
+
+
+def _unsupported_forecast_result(scenario_id: str) -> dict[str, str]:
+    """Describe an intentionally excluded v1 row without treating it as bad input."""
+
+    return {
+        "scenario_id": scenario_id,
+        "status": "skipped",
+        "reason": _UNSUPPORTED_APPLY_KIND,
+        "hint": _FORECAST_DIRECT_SESSION_HINT,
+        "kind": "forecast",
+    }
+
+
+def _skipped_items(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expose skip details separately while retaining the ordered row results."""
+
+    return [item for item in results if item.get("status") == "skipped"]
+
+
+def _row_is_settled(row: dict[str, Any], markers: dict[str, dict[str, str]]) -> bool:
+    """Whether a row is applied already or intentionally outside apply v1."""
+
+    scenario_id = _scenario_id(row)
+    return scenario_id is not None and (
+        scenario_id in markers or _action_kind(row.get("action")) == "forecast"
+    )
 
 
 def _only_symbol(row: dict[str, Any]) -> str | None:
@@ -482,45 +513,6 @@ def _watch_kwargs(
     }
 
 
-def _forecast_kwargs(
-    row: dict[str, Any],
-    *,
-    market: str,
-    parent_artifact_uuid: str,
-    table_hash: str,
-    scenario_id: str,
-) -> dict[str, Any]:
-    action = row.get("action")
-    if not isinstance(action, dict):
-        raise ValueError("invalid_action")
-    config = action.get("forecast")
-    if not isinstance(config, dict):
-        raise ValueError("forecast_config_required")
-    required = {"symbol", "direction", "horizon", "decision_bucket", "review_date"}
-    if set(config) != required:
-        raise ValueError("forecast_config_required")
-    row_symbol = _only_symbol(row)
-    symbol = config.get("symbol")
-    if (
-        row_symbol is None
-        or not isinstance(symbol, str)
-        or not symbol
-        or symbol != row_symbol
-    ):
-        raise ValueError("forecast_requires_one_symbol")
-    if not all(
-        isinstance(config.get(field), str) and config[field]
-        for field in ("direction", "horizon", "decision_bucket", "review_date")
-    ):
-        raise ValueError("forecast_config_required")
-    # forecast_save requires both a typed forecast_target and a probability.
-    # The v1.1 additive schema deliberately provides neither, and deriving a
-    # target/probability from rungs or choosing a placeholder would fabricate
-    # investment semantics.  Leave the row unmarked for a corrected contract
-    # rather than persisting a made-up forecast.
-    raise ValueError("forecast_writer_contract_unrepresentable")
-
-
 def _row_kwargs(
     row: dict[str, Any],
     *,
@@ -533,7 +525,6 @@ def _row_kwargs(
     kwargs_by_kind = {
         "proposal": _proposal_kwargs,
         "watch": _watch_kwargs,
-        "forecast": _forecast_kwargs,
     }
     return kwargs_by_kind[kind](
         row,
@@ -568,7 +559,6 @@ async def _apply_row(
     writer = {
         "proposal": dependencies.proposal_create,
         "watch": dependencies.watch_create,
-        "forecast": dependencies.forecast_save,
     }[kind]
     try:
         response = await writer(**kwargs)
@@ -576,14 +566,12 @@ async def _apply_row(
         return "failed", None, "writer_failed"
     if not _response_success(response):
         return "failed", None, _writer_error(response)
+    identifier: object | None = None
     if kind == "proposal":
         identifier = response.get("proposal_id")
     elif kind == "watch":
         alert = response.get("alert")
         identifier = alert.get("alert_uuid") if isinstance(alert, dict) else None
-    else:
-        data = response.get("data")
-        identifier = data.get("forecast_id") if isinstance(data, dict) else None
     if not isinstance(identifier, str) or not identifier:
         return "failed", None, "writer_missing_identifier"
     return "applied", identifier, None
@@ -593,7 +581,6 @@ def _marker_for(kind: str, identifier: str, now: datetime) -> dict[str, str]:
     marker_field = {
         "proposal": "proposal_id",
         "watch": "watch_id",
-        "forecast": "forecast_id",
     }[kind]
     return {marker_field: identifier, "at": _timestamp(now)}
 
@@ -648,8 +635,9 @@ async def apply_decision_table(
     """Apply one exact validated artifact with durable idempotent resume.
 
     The six entry gates deliberately precede every writer.  After those gates,
-    writers can fail independently; successful rows are marked immediately so
-    the next call never creates a duplicate proposal/watch/forecast.
+    proposal and watch writers can fail independently; successful rows are
+    marked immediately so the next call never creates a duplicate. Forecast
+    rows are deliberately outside apply v1 and are reported as skipped.
     """
 
     try:
@@ -711,6 +699,7 @@ async def apply_decision_table(
             "already_applied_rows": sorted(markers),
             "apply_record_uuid": apply_record_uuid,
             "rows": [],
+            "skipped": [],
         }
 
     decision_table = envelope["decision_table"]
@@ -731,6 +720,15 @@ async def apply_decision_table(
                 {"scenario_id": None, "status": "failed", "error": "invalid_row"}
             )
             continue
+        action = row.get("action")
+        kind = _action_kind(action)
+        if kind == "forecast":
+            # Forecasts feed a scored learning loop and this table has no
+            # approved target/probability mapping. They are intentionally
+            # excluded—not malformed—and must not prevent supported rows from
+            # completing this apply invocation.
+            results.append(_unsupported_forecast_result(scenario_id))
+            continue
         marker = markers.get(scenario_id)
         if marker is not None:
             already_applied_rows.append(scenario_id)
@@ -742,8 +740,6 @@ async def apply_decision_table(
                 }
             )
             continue
-        action = row.get("action")
-        kind = _action_kind(action)
         if kind == _AMBIGUOUS_APPLY_KIND:
             results.append(
                 {
@@ -758,7 +754,7 @@ async def apply_decision_table(
                 {
                     "scenario_id": scenario_id,
                     "status": "failed",
-                    "error": "unsupported_apply_kind",
+                    "error": _UNSUPPORTED_APPLY_KIND,
                 }
             )
             continue
@@ -831,6 +827,7 @@ async def apply_decision_table(
                 **saved,
                 "complete": False,
                 "rows": results,
+                "skipped": _skipped_items(results),
                 "already_applied_rows": already_applied_rows,
             }
         apply_record_uuid = saved.get("apply_record_uuid")
@@ -841,16 +838,14 @@ async def apply_decision_table(
             "dry_run": True,
             "complete": False,
             "rows": results,
+            "skipped": _skipped_items(results),
             "already_applied_rows": already_applied_rows,
         }
 
     applied = sum(item["status"] == "applied" for item in results)
     skipped = sum(item["status"] == "skipped" for item in results)
     failed = sum(item["status"] == "failed" for item in results)
-    all_rows_marked = all(
-        scenario_id is not None and scenario_id in markers
-        for scenario_id in map(_scenario_id, rows)
-    )
+    all_rows_settled = all(_row_is_settled(row, markers) for row in rows)
     summary_succeeded = await _append_summary(
         dependencies,
         market=market,
@@ -862,7 +857,7 @@ async def apply_decision_table(
         skipped=skipped,
         failed=failed,
     )
-    complete = all_rows_marked and summary_succeeded
+    complete = all_rows_settled and summary_succeeded
     saved = await _save_apply_record(
         dependencies,
         market=market,
@@ -879,6 +874,7 @@ async def apply_decision_table(
             **saved,
             "complete": False,
             "rows": results,
+            "skipped": _skipped_items(results),
             "already_applied_rows": already_applied_rows,
         }
     return {
@@ -886,6 +882,7 @@ async def apply_decision_table(
         "dry_run": False,
         "complete": complete,
         "rows": results,
+        "skipped": _skipped_items(results),
         "already_applied_rows": already_applied_rows,
         "apply_record_uuid": saved.get("apply_record_uuid") or apply_record_uuid,
     }

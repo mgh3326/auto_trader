@@ -69,8 +69,11 @@ those external records.
 
 `decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` is
 a default-profile helmsman/navigator persistence coordinator, not a broker
-tool. It creates only proposals, watches, forecasts, and one session-context
-summary through their existing writers. It is deliberately absent from
+tool. It creates only proposals, watches, and one session-context summary
+through their existing writers. Apply v1 has proposal and watch
+writers only: a forecast row is skipped, and the session must call
+`forecast_save` directly if it has a real target and probability. It is
+deliberately absent from
 read-only, auto-spawned closed-world, and external BrokerAdapter profiles. A
 proposal writer can independently commit and then perform post-commit Telegram
 work, so this tool must never promise a cross-writer rollback.
@@ -108,7 +111,7 @@ artifact with `correlation_id="kr-nxt-apply-<YYYY-MM-DD>"` and this payload:
 }
 ```
 
-`rows` may instead hold `watch_id` or `forecast_id`. The tool lists metadata
+`rows` may instead hold `watch_id`. The tool lists metadata
 for that correlation ID newest-first, gets the newest payload, and resumes only
 when both parent UUID and hash match. A changed hash is a new table and starts
 with no row markers. After every successful row it updates the separate record;
@@ -127,21 +130,28 @@ The only canonical auxiliary payloads are
 `watch_condition` uses the existing playbook schema) and
 `action.forecast{symbol,direction,horizon,decision_bucket,review_date}`.
 `kind`, `action_type`, `type`, `watch_config`, and `forecast_config` are not
-accepted aliases. There are three row writers—proposal, watch, and forecast.
+accepted aliases. There are two apply-v1 row writers—proposal and watch.
 `session_context_append` is not a row kind: it records exactly one summary per
 apply invocation after the rows have been processed.
 
 `forecast_save` additionally requires an `instrument_type`, typed
 `forecast_target`, and `probability`. The v1.1 additive forecast payload has
-no ratified deterministic mapping for the target or probability, so forecast
-rows currently return `invalid_row_mapping`, remain unmarked for resume, and
-never invoke `forecast_save`. Until a later approval defines that mapping,
-proposal and watch are the only row kinds this tool applies.
+no ratified deterministic mapping for the target or probability. ESC-4
+therefore excludes forecast from apply v1: an `apply_kind=forecast` row is
+`skipped` with `reason="unsupported_apply_kind"`, its `scenario_id`, and a
+hint to call `forecast_save` directly from the current session. It never calls
+that writer, creates no row marker, does not count as an unmarked resume
+remainder, and does not block `complete=true` for supported rows.
+`invalid_row_mapping` remains reserved for malformed proposal/watch mappings,
+not for this unsupported apply kind.
 
 Operators should first use the default `dry_run=true` and review the row
 statuses. For an accepted table call again with `dry_run=false, confirm=true`.
-If any row reports `failed` or `complete=false`, correct only the external
-writer problem and repeat the identical artifact ID and table hash: durable
-markers cause completed rows to be reported as `skipped`, and only unmarked
-rows are attempted again. Do not edit or resave the prep artifact to force a
+If any supported row reports `failed` or `complete=false`, correct only the
+external writer problem and repeat the identical artifact ID and table hash:
+durable markers cause completed rows to be reported as `skipped`, and only
+unmarked supported rows are attempted again. An
+`unsupported_apply_kind` forecast skip is not a retry target; create it with a
+direct `forecast_save` session call only when the session has a genuine typed
+target and probability. Do not edit or resave the prep artifact to force a
 retry.

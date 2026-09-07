@@ -293,8 +293,7 @@ class _Harness:
 
     async def forecast_save(self, **kwargs: Any) -> dict[str, Any]:
         self.forecast_calls.append(deepcopy(kwargs))
-        identifier = kwargs["forecast_id"]
-        return {"success": True, "data": {"forecast_id": identifier}}
+        return {"success": True, "data": {"forecast_id": "unexpected-forecast"}}
 
     async def context_append(self, **kwargs: Any) -> dict[str, Any]:
         self.context_calls.append(deepcopy(kwargs))
@@ -354,8 +353,14 @@ async def test_m1_hash_byte_mutation_fails_closed_without_writes() -> None:
         dependencies=harness.dependencies,
     )
 
-    assert harness.save_calls == harness.proposal_calls == harness.watch_calls == []
-    assert harness.forecast_calls == harness.context_calls == []
+    assert (
+        harness.save_calls
+        == harness.proposal_calls
+        == harness.watch_calls
+        == harness.forecast_calls
+        == harness.context_calls
+        == []
+    )
     assert result["error"] == "table_hash_mismatch"
     assert result["argument_table_hash"] == bad_hash
 
@@ -374,8 +379,14 @@ async def test_m2_historical_v1_fixture_is_blocked_without_writes(name: str) -> 
         dependencies=harness.dependencies,
     )
 
-    assert harness.save_calls == harness.proposal_calls == harness.watch_calls == []
-    assert harness.forecast_calls == harness.context_calls == []
+    assert (
+        harness.save_calls
+        == harness.proposal_calls
+        == harness.watch_calls
+        == harness.forecast_calls
+        == harness.context_calls
+        == []
+    )
     assert result["error"] == "table_invalid"
     assert result["violations"]
 
@@ -386,8 +397,14 @@ async def test_m3_real_apply_requires_literal_confirm_before_any_write() -> None
 
     result = await _apply(harness, dry_run=False, confirm=False)
 
-    assert harness.save_calls == harness.proposal_calls == harness.watch_calls == []
-    assert harness.forecast_calls == harness.context_calls == []
+    assert (
+        harness.save_calls
+        == harness.proposal_calls
+        == harness.watch_calls
+        == harness.forecast_calls
+        == harness.context_calls
+        == []
+    )
     assert result == {"success": False, "error": "confirm_required"}
 
 
@@ -490,9 +507,7 @@ async def test_explicit_rung_mapping_uses_pinned_price_for_limit_and_notional() 
 
 
 @pytest.mark.asyncio
-async def test_watch_mapping_uses_existing_writer_and_forecast_stays_fail_closed() -> (
-    None
-):
+async def test_forecast_row_is_skipped_and_does_not_block_supported_apply() -> None:
     response = _three_row_response()
     rows = response["artifact"]["payload"]["decision_table"]["rows"]
     rows[1]["action"].update(
@@ -530,9 +545,16 @@ async def test_watch_mapping_uses_existing_writer_and_forecast_stays_fail_closed
     assert [item["status"] for item in result["rows"]] == [
         "applied",
         "applied",
-        "failed",
+        "skipped",
     ]
-    assert result["rows"][2]["error"] == "invalid_row_mapping"
+    assert result["rows"][2] == {
+        "scenario_id": "resume-row-3",
+        "status": "skipped",
+        "reason": "unsupported_apply_kind",
+        "hint": "Call forecast_save directly in this session.",
+        "kind": "forecast",
+    }
+    assert result["skipped"] == [result["rows"][2]]
     assert len(harness.proposal_calls) == len(harness.watch_calls) == 1
     assert harness.forecast_calls == []
     assert harness.watch_calls[0]["idempotency_key"].startswith("decision-table-apply-")
@@ -545,10 +567,88 @@ async def test_watch_mapping_uses_existing_writer_and_forecast_stays_fail_closed
     assert harness.watch_calls[0]["trigger_checklist"] == ["confirm price source"]
     assert harness.watch_calls[0]["intent"] == "sell_review"
     assert harness.watch_calls[0]["rationale"] == "decision table scenario resume-row-2"
-    # `forecast_save` requires `forecast_target` and `probability`, neither of
-    # which exists in the v1.1 additive row. The coordinator must not invent
-    # them merely to reach the writer.
+    assert harness.apply_record is not None
+    assert set(harness.apply_record["payload"]["rows"]) == {
+        "resume-row-1",
+        "resume-row-2",
+    }
+    # apply v1 completes its supported rows. Forecast persistence remains an
+    # explicit current-session action, rather than an invented learning-loop
+    # input hidden behind this coordinator.
+    assert result["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_forecast_only_apply_is_complete_unmarked_and_never_calls_writer() -> (
+    None
+):
+    response = _happy_response()
+    action = response["artifact"]["payload"]["decision_table"]["rows"][0]["action"]
+    action.update(
+        {
+            "apply_kind": "forecast",
+            "forecast": {
+                "symbol": "196170",
+                "direction": "up",
+                "horizon": "5d",
+                "decision_bucket": "deferred_no_action",
+                "review_date": "2099-01-02",
+            },
+        }
+    )
+    _rehash(response)
+    harness = _Harness(response)
+
+    result = await _apply(harness)
+
+    expected = {
+        "scenario_id": "constructed-v11-196170-breakeven-reserve-trim",
+        "status": "skipped",
+        "reason": "unsupported_apply_kind",
+        "hint": "Call forecast_save directly in this session.",
+        "kind": "forecast",
+    }
+    assert result["rows"] == result["skipped"] == [expected]
+    assert result["complete"] is True
+    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
+    assert len(harness.context_calls) == 1
+    assert harness.apply_record is not None
+    assert harness.apply_record["payload"]["rows"] == {}
+
+
+@pytest.mark.asyncio
+async def test_forecast_row_is_skipped_in_dry_run_with_direct_session_hint() -> None:
+    response = _happy_response()
+    action = response["artifact"]["payload"]["decision_table"]["rows"][0]["action"]
+    action.update(
+        {
+            "apply_kind": "forecast",
+            "forecast": {
+                "symbol": "196170",
+                "direction": "up",
+                "horizon": "5d",
+                "decision_bucket": "deferred_no_action",
+                "review_date": "2099-01-02",
+            },
+        }
+    )
+    _rehash(response)
+    harness = _Harness(response)
+
+    result = await _apply(harness, dry_run=True, confirm=False)
+
+    expected = {
+        "scenario_id": "constructed-v11-196170-breakeven-reserve-trim",
+        "status": "skipped",
+        "reason": "unsupported_apply_kind",
+        "hint": "Call forecast_save directly in this session.",
+        "kind": "forecast",
+    }
+    assert result["rows"] == result["skipped"] == [expected]
     assert result["complete"] is False
+    assert harness.save_calls == harness.proposal_calls == harness.watch_calls == []
+    assert harness.forecast_calls == []
+    assert harness.context_calls == []
 
 
 @pytest.mark.asyncio
@@ -600,7 +700,8 @@ async def test_missing_apply_kind_with_canonical_auxiliary_payload_fails_closed(
     ]
     # This is the approval-card boundary: an auxiliary intent with no explicit
     # discriminator must not fall through to a proposal writer.
-    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
+    assert harness.proposal_calls == harness.watch_calls == []
+    assert harness.forecast_calls == []
     assert result["complete"] is False
 
 
@@ -620,46 +721,24 @@ async def test_noncanonical_discriminator_aliases_do_not_select_auxiliary_writer
 
     assert result["rows"][0]["kind"] == "proposal"
     assert len(harness.proposal_calls) == 1
-    assert harness.watch_calls == harness.forecast_calls == []
+    assert harness.watch_calls == []
+    assert harness.forecast_calls == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("kind", "alias", "config"),
-    [
-        (
-            "watch",
-            "watch_config",
-            {
-                "symbol": "196170",
-                "watch_condition": {
-                    "metric": "price",
-                    "operator": "above",
-                    "threshold": "315000",
-                },
-                "valid_until": "2099-01-02T09:00:00+09:00",
-            },
-        ),
-        (
-            "forecast",
-            "forecast_config",
-            {
-                "symbol": "196170",
-                "direction": "up",
-                "horizon": "5d",
-                "decision_bucket": "deferred_no_action",
-                "review_date": "2099-01-02",
-            },
-        ),
-    ],
-)
-async def test_noncanonical_auxiliary_config_aliases_do_not_reach_writers(
-    kind: str, alias: str, config: dict[str, Any]
-) -> None:
+async def test_noncanonical_watch_config_alias_is_invalid_row_mapping() -> None:
     response = _happy_response()
     action = response["artifact"]["payload"]["decision_table"]["rows"][0]["action"]
-    action["apply_kind"] = kind
-    action[alias] = config
+    action["apply_kind"] = "watch"
+    action["watch_config"] = {
+        "symbol": "196170",
+        "watch_condition": {
+            "metric": "price",
+            "operator": "above",
+            "threshold": "315000",
+        },
+        "valid_until": "2099-01-02T09:00:00+09:00",
+    }
     _rehash(response)
     harness = _Harness(response)
 
@@ -667,7 +746,8 @@ async def test_noncanonical_auxiliary_config_aliases_do_not_reach_writers(
 
     assert result["rows"][0]["status"] == "failed"
     assert result["rows"][0]["error"] == "invalid_row_mapping"
-    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
+    assert harness.proposal_calls == harness.watch_calls == []
+    assert harness.forecast_calls == []
 
 
 @pytest.mark.asyncio
@@ -695,7 +775,8 @@ async def test_watch_condition_spelling_has_no_condition_alias() -> None:
 
     assert result["rows"][0]["status"] == "failed"
     assert result["rows"][0]["error"] == "invalid_row_mapping"
-    assert harness.proposal_calls == harness.watch_calls == harness.forecast_calls == []
+    assert harness.proposal_calls == harness.watch_calls == []
+    assert harness.forecast_calls == []
 
 
 @pytest.mark.asyncio
@@ -790,6 +871,31 @@ def test_static_broker_import_and_dynamic_import_bypass_guard() -> None:
                 ):
                     bad_imports.append(f"{path}: {func.attr}()")
     assert bad_imports == []
+
+
+def test_apply_v1_has_no_forecast_writer_import_or_call_path() -> None:
+    """ESC-4: forecast persistence belongs to an explicit session call."""
+
+    guarded = [
+        *_ROOT.glob("app/services/decision_table_apply/**/*.py"),
+        _ROOT / "app/mcp_server/tooling/decision_table_apply_registration.py",
+    ]
+    violations: list[str] = []
+    for path in guarded:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "app.mcp_server.tooling.forecast_tools" and any(
+                    alias.name == "forecast_save" for alias in node.names
+                ):
+                    violations.append(f"{path}: forecast_save import")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if (isinstance(func, ast.Name) and func.id == "forecast_save") or (
+                    isinstance(func, ast.Attribute) and func.attr == "forecast_save"
+                ):
+                    violations.append(f"{path}: forecast_save call")
+    assert violations == []
 
 
 @pytest.mark.integration
