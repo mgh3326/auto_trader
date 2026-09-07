@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -127,9 +128,9 @@ def _patch_loaded_policy(
     document: Any,
 ) -> None:
     monkeypatch.setattr(
-        policy_alignment_v2.trading_policy_service,
-        "load_trading_policy",
-        lambda: document,
+        trading_policy_service,
+        "_load",
+        lambda: (document, "test"),
     )
 
 
@@ -665,7 +666,10 @@ def test_policy_alignment_uses_loaded_document_not_projection_copy(
     document.thresholds["screen.rsi_max"].value = 50
     _patch_loaded_policy(monkeypatch, document)
 
-    with pytest.raises(policy_alignment_v2.PolicyAlignmentV2Error, match="rsi_max"):
+    with pytest.raises(
+        policy_alignment_v2.PolicyAlignmentV2Error,
+        match=r"sealed .* does not match .* screen\.rsi_max",
+    ):
         policy_alignment_v2.assert_v2_policy_alignment()
 
 
@@ -679,7 +683,10 @@ async def test_save_forecast_rejects_live_policy_drift(
     document.thresholds["screen.rsi_max"].value = 50
     _patch_loaded_policy(monkeypatch, document)
 
-    with pytest.raises(forecast_service.ForecastValidationError, match="rsi_max"):
+    with pytest.raises(
+        forecast_service.ForecastValidationError,
+        match=r"sealed .* does not match .* screen\.rsi_max",
+    ):
         await forecast_service.save_forecast(db_session, **v2_payload)
 
 
@@ -702,7 +709,10 @@ def test_policy_alignment_rejects_each_related_live_drift(
     document.thresholds[policy_key].value = changed_value
     _patch_loaded_policy(monkeypatch, document)
 
-    with pytest.raises(policy_alignment_v2.PolicyAlignmentV2Error, match=policy_key):
+    with pytest.raises(
+        policy_alignment_v2.PolicyAlignmentV2Error,
+        match=rf"sealed .* does not match .* {re.escape(policy_key)}",
+    ):
         policy_alignment_v2.assert_v2_policy_alignment()
 
 
@@ -713,7 +723,10 @@ def test_policy_alignment_rejects_missing_related_key(
     del document.thresholds["screen.rsi_max"]
     _patch_loaded_policy(monkeypatch, document)
 
-    with pytest.raises(policy_alignment_v2.PolicyAlignmentV2Error, match="rsi_max"):
+    with pytest.raises(
+        policy_alignment_v2.PolicyAlignmentV2Error,
+        match=r"loaded trading policy is missing screen\.rsi_max",
+    ):
         policy_alignment_v2.assert_v2_policy_alignment()
 
 
@@ -726,7 +739,10 @@ def test_policy_alignment_rejects_malformed_numeric_live_value(
     document.thresholds["screen.rsi_max"].value = malformed_value
     _patch_loaded_policy(monkeypatch, document)
 
-    with pytest.raises(policy_alignment_v2.PolicyAlignmentV2Error, match="rsi_max"):
+    with pytest.raises(
+        policy_alignment_v2.PolicyAlignmentV2Error,
+        match=r"loaded kr screen\.rsi_max must be a finite number",
+    ):
         policy_alignment_v2.assert_v2_policy_alignment()
 
 
@@ -737,7 +753,10 @@ def test_policy_alignment_applies_market_override_effective_value(
     document.market_overrides["kr"]["screen.rsi_max"] = 50
     _patch_loaded_policy(monkeypatch, document)
 
-    with pytest.raises(policy_alignment_v2.PolicyAlignmentV2Error, match="rsi_max"):
+    with pytest.raises(
+        policy_alignment_v2.PolicyAlignmentV2Error,
+        match=r"sealed .* does not match .* screen\.rsi_max",
+    ):
         policy_alignment_v2.assert_v2_policy_alignment()
 
 
