@@ -102,6 +102,137 @@ _PolicyLoader = Callable[[], Any]
 
 
 @dataclass(frozen=True, slots=True)
+class _UnderwaterAddGates:
+    """§177차 held-lot averaging-down gate literals, read fail-closed.
+
+    These are NOT discovery gates and deliberately change nothing about which
+    candidates this fan-out returns: ``buy.underwater_support_net`` admits only
+    lots that are already HELD, while this fan-out screens NEW entries. They
+    are read here so the frozen-gate echo carries the tier a session must apply
+    when it sizes an add, and so a policy edit that drops or renames one of
+    these keys fails the fan-out instead of leaving a session to invent a value.
+    """
+
+    unrealized_pnl_pct_max_inclusive: float
+    support_strength_min: str
+    independent_support_source_count_min: int
+    support_distance_from_current_pct_range: tuple[float, float]
+    required_rebound_improvement_pct_min: float
+    max_add_notional_pct_of_position: int
+    max_placements_per_symbol_per_day: int
+    partial_fill: str
+    per_symbol_notional_band_applies: bool
+
+    @classmethod
+    def from_policy(cls, policy: Any) -> _UnderwaterAddGates:
+        try:
+            rule = policy.decision_rules["buy.underwater_support_net"]
+        except KeyError as exc:
+            raise ValueError(
+                "buy.underwater_support_net is missing from the trading policy"
+            ) from exc
+        tiers = [
+            tier
+            for tier in getattr(rule, "tiers", [])
+            if tier.id == "underwater_support_net"
+        ]
+        if len(tiers) != 1:
+            raise ValueError(
+                "buy.underwater_support_net must declare exactly one "
+                "underwater_support_net tier"
+            )
+        conditions = tiers[0].conditions
+        missing = [
+            key
+            for key in (
+                "unrealized_pnl_pct_max_inclusive",
+                "support_strength_min",
+                "independent_support_source_count_min",
+                "support_distance_from_current_pct_range",
+                "required_rebound_improvement_pct_min",
+                "max_add_notional_pct_of_position",
+                "max_placements_per_symbol_per_day",
+                "partial_fill",
+                "per_symbol_notional_band_applies",
+            )
+            if key not in conditions
+        ]
+        if missing:
+            raise ValueError(
+                f"buy.underwater_support_net is missing conditions {missing}"
+            )
+        band = conditions["support_distance_from_current_pct_range"]
+        if not isinstance(band, list) or len(band) != 2:
+            raise ValueError(
+                "buy.underwater_support_net support band must be two numbers"
+            )
+        gates = cls(
+            unrealized_pnl_pct_max_inclusive=float(
+                conditions["unrealized_pnl_pct_max_inclusive"]
+            ),
+            support_strength_min=str(conditions["support_strength_min"]),
+            independent_support_source_count_min=int(
+                conditions["independent_support_source_count_min"]
+            ),
+            support_distance_from_current_pct_range=(
+                float(band[0]),
+                float(band[1]),
+            ),
+            required_rebound_improvement_pct_min=float(
+                conditions["required_rebound_improvement_pct_min"]
+            ),
+            max_add_notional_pct_of_position=int(
+                conditions["max_add_notional_pct_of_position"]
+            ),
+            max_placements_per_symbol_per_day=int(
+                conditions["max_placements_per_symbol_per_day"]
+            ),
+            partial_fill=str(conditions["partial_fill"]),
+            per_symbol_notional_band_applies=bool(
+                conditions["per_symbol_notional_band_applies"]
+            ),
+        )
+        # Operator-frozen literals, same fail-closed treatment the reserve-net
+        # gates get: a substituted policy shape must not silently widen an add.
+        if (
+            gates.unrealized_pnl_pct_max_inclusive != -8
+            or gates.support_strength_min != "moderate"
+            or gates.independent_support_source_count_min != 2
+            or gates.support_distance_from_current_pct_range != (-12, -3)
+            or gates.required_rebound_improvement_pct_min != 3
+            or gates.max_add_notional_pct_of_position != 50
+            or gates.max_placements_per_symbol_per_day != 1
+            or gates.partial_fill != "allowed"
+            or gates.per_symbol_notional_band_applies is not False
+        ):
+            raise ValueError(
+                "underwater add gate literals do not match buy.underwater_support_net"
+            )
+        return gates
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "unrealized_pnl_pct_max_inclusive": (self.unrealized_pnl_pct_max_inclusive),
+            "support_strength_min": self.support_strength_min,
+            "independent_support_source_count_min": (
+                self.independent_support_source_count_min
+            ),
+            "support_distance_from_current_pct_range": list(
+                self.support_distance_from_current_pct_range
+            ),
+            "required_rebound_improvement_pct_min": (
+                self.required_rebound_improvement_pct_min
+            ),
+            "max_add_notional_pct_of_position": (self.max_add_notional_pct_of_position),
+            "max_placements_per_symbol_per_day": (
+                self.max_placements_per_symbol_per_day
+            ),
+            "partial_fill": self.partial_fill,
+            "per_symbol_notional_band_applies": (self.per_symbol_notional_band_applies),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class _FanoutGates:
     """Immutable literal gate view read from the authoritative policy."""
 
@@ -110,15 +241,31 @@ class _FanoutGates:
     support_within_current_pct_max: float
     honest_upside_pct_min: float
     support_strength_min: str
+    discovery_support_strength_min: str
     support_families: tuple[str, ...]
     discount_below_support_pct_range: tuple[float, float]
     final_limit_distance_from_current_pct_range: tuple[float, float]
     all_pending_buy_required_cash_hard_cap_pct: int
     tier_armed_required_cash_cap_pct: int
+    # §177차 — read and echoed, never applied to discovery selection below.
+    underwater_add: _UnderwaterAddGates
 
     @classmethod
     def from_policy(cls, policy: Any) -> _FanoutGates:
         threshold = policy.thresholds["screen.rsi_max"]
+        try:
+            discovery_support_strength = policy.thresholds[
+                "screen.support_strength_min"
+            ].value
+        except KeyError as exc:
+            raise ValueError(
+                "missing required discovery threshold screen.support_strength_min"
+            ) from exc
+        discovery_support_strength_min = str(discovery_support_strength)
+        if discovery_support_strength_min not in {"weak", "moderate", "strong"}:
+            raise ValueError(
+                "screen.support_strength_min must be one of weak, moderate, strong"
+            )
         reserve = policy.decision_rules["buy.support_reserve_net"]
         gates = cls(
             rsi_max=float(threshold.value),
@@ -128,6 +275,7 @@ class _FanoutGates:
             ),
             honest_upside_pct_min=float(reserve.honest_upside_pct_min),
             support_strength_min=str(reserve.support_strength_min),
+            discovery_support_strength_min=discovery_support_strength_min,
             support_families=tuple(reserve.independent_support_source_families),
             discount_below_support_pct_range=tuple(
                 float(value) for value in reserve.discount_below_support_pct_range
@@ -142,6 +290,7 @@ class _FanoutGates:
             tier_armed_required_cash_cap_pct=int(
                 reserve.tier_armed_required_cash_cap_pct
             ),
+            underwater_add=_UnderwaterAddGates.from_policy(policy),
         )
         # These are operator-frozen safety literals.  Fail closed if a future
         # policy shape is accidentally substituted for the reserve-net contract.
@@ -151,6 +300,7 @@ class _FanoutGates:
             or gates.support_within_current_pct_max != 8
             or gates.honest_upside_pct_min != 40
             or gates.support_strength_min != "moderate"
+            or gates.discovery_support_strength_min != "moderate"
             or set(gates.support_families) != {"fib", "bb_lower", "volume_profile"}
             or gates.discount_below_support_pct_range != (5, 10)
             or gates.final_limit_distance_from_current_pct_range != (-15, -5)
@@ -169,6 +319,7 @@ class _FanoutGates:
             "support_within_current_pct_max": self.support_within_current_pct_max,
             "honest_upside_pct_min": self.honest_upside_pct_min,
             "support_strength_min": self.support_strength_min,
+            "discovery_support_strength_min": self.discovery_support_strength_min,
             "support_families": list(self.support_families),
             "discount_below_support_pct_range": list(
                 self.discount_below_support_pct_range
@@ -180,6 +331,7 @@ class _FanoutGates:
                 self.all_pending_buy_required_cash_hard_cap_pct
             ),
             "tier_armed_required_cash_cap_pct": self.tier_armed_required_cash_cap_pct,
+            "underwater_add": self.underwater_add.as_dict(),
         }
 
 

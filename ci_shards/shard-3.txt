@@ -63,6 +63,7 @@ tests/research/us_stage_b/test_verdict.py
 tests/research_contracts/test_dfc_2c_4h_v21.py
 tests/routers/test_alpaca_paper_ledger_router.py
 tests/routers/test_candidate_discovery.py
+tests/routers/test_execution_ledger_ingest_downstream.py
 tests/routers/test_invest_buy_plan_router.py
 tests/routers/test_invest_loss_cut_approvals.py
 tests/routers/test_invest_order_proposal_approvals.py
@@ -223,6 +224,7 @@ tests/services/test_paper_correlation.py
 tests/services/test_paper_fills.py
 tests/services/test_portfolio_overview_currency.py
 tests/services/test_posture_shadow_service.py
+tests/services/test_reconcile_trigger.py
 tests/services/test_research_run_service_safety.py
 tests/services/test_trade_journal_aggregates_scoreboard.py
 tests/services/test_trading_policy_service.py

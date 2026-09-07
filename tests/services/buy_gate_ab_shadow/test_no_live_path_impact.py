@@ -94,13 +94,16 @@ def test_live_order_and_gate_modules_do_not_import_the_shadow_package() -> None:
             )
 
 
-def test_live_policy_support_gate_wording_is_untouched() -> None:
+def test_live_policy_support_gate_records_the_operator_moderate_decision() -> None:
     policy = yaml.safe_load(
         (REPO_ROOT / "config" / "trading_policy.yaml").read_text(encoding="utf-8")
     )
     screen = policy["thresholds"]["screen.support_within_pct"]
     assert screen["value"] == 8
-    assert "strong support" in screen["semantics"]
+    assert screen["semantics"] == "support must be within this distance"
+    discovery_strength = policy["thresholds"]["screen.support_strength_min"]
+    assert discovery_strength["value"] == "moderate"
+    assert discovery_strength["unit"] == "support_strength"
     exception = policy["crash_day"]["actions"]["new_entry_hold_exception"]
     assert exception["requires"]["support_quality"] == "required"
     assert exception["requires"]["price_zone"] == "strong_support"

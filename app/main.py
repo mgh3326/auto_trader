@@ -32,6 +32,7 @@ from app.routers import (
     alpaca_paper_ledger,
     candidate_discovery,
     deprecated_pages,
+    execution_ledger_ingest,
     health,
     invest_api,
     invest_app_spa,
@@ -237,6 +238,7 @@ def create_app() -> FastAPI:
     app.include_router(news_radar.router)
     app.include_router(news_issues.router)
     app.include_router(alpaca_paper_ledger.router)
+    app.include_router(execution_ledger_ingest.router)
     app.include_router(market_calendar.router)
     app.include_router(market_events.router)
     app.include_router(mock_auto_read_model.router)

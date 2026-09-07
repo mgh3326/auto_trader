@@ -145,7 +145,9 @@ def test_reserve_net_playbook_repeats_machine_policy_priority_contract() -> None
 
 def test_rob1301_shadow_block_is_not_a_lane_and_carries_the_forbidden_three() -> None:
     text = _PLAYBOOK_PATH.read_text(encoding="utf-8")
-    section_start = text.index("### 3.2 ROB-1301 buy-gate A/B shadow")
+    section_start = text.index(
+        "### 3.2 ROB-1301 buy-gate A/B shadow — termination and ROB-1351 v2 re-registration"
+    )
     section_end = text.index("## 4) Recording / retrospective")
     section = text[section_start:section_end]
     for forbidden in (
@@ -158,6 +160,16 @@ def test_rob1301_shadow_block_is_not_a_lane_and_carries_the_forbidden_three() ->
     assert "- tool: order_proposal_create" not in section
     assert "never order_proposal_create" in section
     assert "NOT a lane sequence" in section
+    for terminal_fact in (
+        "STOPPED_BY_OPERATOR_DECISION",
+        "INSUFFICIENT_SAMPLE",
+        "NO_FIRING",
+        "2026-09-07T09:43:42+09:00",
+        "rob-1351-buy-gate-moderate-live",
+        "registered_unarmed",
+        "carryover: forbidden",
+    ):
+        assert terminal_fact in section
 
     lane_names: set[str] = set()
     for block in _YAML_BLOCK_RE.findall(text):

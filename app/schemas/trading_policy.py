@@ -176,6 +176,42 @@ _HELD_MAJORS_REQUIRED_EXCLUSIONS = (
     "crash_day_new_batch",
 )
 
+# §177차 (2026-09-07) — the KR/US mirror of §139차's crypto tier, with the P&L
+# sign reversed, plus the loss-cut half of the same three-way classification
+# and the advisory dynamic deployment cap. Each of the three is pinned for the
+# same reason §139차's tier is: a pre-registration whose scope, size, or
+# retirement bar can be edited after the fact is not a pre-registration.
+UNDERWATER_SUPPORT_NET_TIER_ID = "underwater_support_net"
+LOSS_CUT_CANDIDATE_TIER_ID = "loss_cut_candidate"
+DEPLOYMENT_CAP_TIER_ID = "deployment_cap"
+_S177_REQUIRED_TIER_IDS = {
+    "buy.underwater_support_net": UNDERWATER_SUPPORT_NET_TIER_ID,
+    "sell.loss_cut": LOSS_CUT_CANDIDATE_TIER_ID,
+    "buy.deployment_cap": DEPLOYMENT_CAP_TIER_ID,
+}
+_UNDERWATER_REQUIRED_EXCLUSIONS = (
+    "new_symbol_entry",
+    "profitable_position",
+    "thesis_broken",
+    "weak_support_only",
+    "market_order",
+    "gtc_order",
+    "crash_day_new_batch",
+    "cross_account_average_cost_transfer",
+)
+_LOSS_CUT_REQUIRED_EXCLUSIONS = (
+    "auto_approval",
+    "session_initiated_execution",
+    "intact_thesis_with_weak_support_only",
+    "average_down_eligible_lot",
+)
+_DEPLOYMENT_CAP_REQUIRED_EXCLUSIONS = (
+    "retroactive_violation",
+    "proposal_block",
+    "forced_unwind",
+    "parking_balance_estimation",
+)
+
 
 class PolicyDecisionRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -476,6 +512,439 @@ class PolicyDecisionRule(BaseModel):
         if missing:
             raise ValueError(
                 f"{HELD_MAJORS_SUPPORT_NET_TIER_ID} must retain exclusions {missing}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_underwater_support_net_stays_bounded_and_time_boxed(
+        self,
+    ) -> PolicyDecisionRule:
+        """§177차 — the losing-lot mirror of §139차, pinned the same way.
+
+        This tier authorises averaging DOWN, which is the direction that turns
+        a bad thesis into a bigger one: every clause that keeps it narrow is
+        asserted here rather than left to prose, so a later edit that admits a
+        profitable lot, drops the loss floor, widens the support band, removes
+        the 50% size cap, or lets the rung rest overnight fails the build.
+        """
+
+        tier = self._tier_by_id(UNDERWATER_SUPPORT_NET_TIER_ID)
+        if tier is None:
+            return self
+        conditions = tier.conditions
+
+        # SCOPE — held, LOSING, per account lot, KR/US equities.
+        if conditions.get("holding_required") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must require holding_required: true"
+            )
+        if conditions.get("account_lot_scoped") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "account_lot_scoped: true — average cost is per account, so an "
+                "add at another broker does not lower this lot's average"
+            )
+        # The sign is the whole difference from §139차. -8 is INCLUSIVE, which
+        # is what the §0 classification formula ("손실 <= -8%") says; the key
+        # name carries the comparison so the two cannot drift apart.
+        if conditions.get("unrealized_pnl_pct_max_inclusive") != -8:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must require "
+                "unrealized_pnl_pct_max_inclusive: -8 (losing lots only)"
+            )
+        if "unrealized_pnl_pct_min_exclusive" in conditions:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must not carry the §139차 "
+                "profitable-lot floor — this tier is the losing-lot mirror"
+            )
+        if conditions.get("thesis_alive_evidence_required") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must require "
+                "thesis_alive_evidence_required: true — averaging into a dead "
+                "thesis is the sell.loss_cut branch, not this one"
+            )
+        if conditions.get("new_symbol_discovery_gate_unchanged") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "new_symbol_discovery_gate_unchanged: true"
+            )
+        # ROB-1301/ROB-1351 measure a NEW-ENTRY discovery population. This tier
+        # is held-lot only, so it must say so in a way an edit cannot silently
+        # drop while widening the tier into discovery.
+        if conditions.get("buy_gate_ab_shadow_population_unchanged") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "buy_gate_ab_shadow_population_unchanged: true"
+            )
+        if self.markets != ["kr", "us"]:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} is scoped to markets [kr, us]"
+            )
+
+        # ANCHOR — identical to §139차: moderate strength bought with >= 2
+        # independent families, inside the same [-12, -3] band. The -3 edge is
+        # also what keeps the rung on the existing auto-approve distance lane.
+        if conditions.get("support_strength_min") != "moderate":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} anchor strength must be moderate"
+            )
+        source_min = conditions.get("independent_support_source_count_min")
+        if not isinstance(source_min, int) or isinstance(source_min, bool):
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} requires a numeric "
+                "independent_support_source_count_min"
+            )
+        if source_min < 2:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} requires at least 2 "
+                "independent support sources"
+            )
+        if conditions.get("support_distance_from_current_pct_range") != [-12, -3]:
+            raise ValueError(f"{UNDERWATER_SUPPORT_NET_TIER_ID} band must be [-12, -3]")
+        # The improvement floor is what stops a token add that consumes cash
+        # and moves the escape price by nothing.
+        if conditions.get("required_rebound_improvement_pct_min") != 3:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} requires a >= 3 percentage "
+                "point required-rebound improvement after the cap is applied"
+            )
+        if conditions.get("required_rebound_guard_policy_key") != (
+            "sell.loss_guard_min_multiple"
+        ):
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must derive its escape price "
+                "from sell.loss_guard_min_multiple, not a literal"
+            )
+
+        # EXECUTION — resting DAY limit, regenerated daily. KR/US have no GTC,
+        # so "leave it and wait" is structurally unavailable here (§139차's
+        # crypto twin rests GTC; that difference must not be copied over).
+        if conditions.get("order_type") != "limit":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must be order_type: limit"
+            )
+        if conditions.get("resting_only") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must be resting_only: true"
+            )
+        if conditions.get("tif") != "DAY":
+            raise ValueError(f"{UNDERWATER_SUPPORT_NET_TIER_ID} must be tif: DAY")
+        if conditions.get("gtc") != "FORBIDDEN":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare gtc: FORBIDDEN"
+            )
+        if conditions.get("daily_regeneration") != "REQUIRED":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "daily_regeneration: REQUIRED — a DAY order dies at the close"
+            )
+        if conditions.get("per_order_cap_raised") is not False:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "per_order_cap_raised: false — it rides the existing cap"
+            )
+
+        # SIZE — 50% of the existing position, the §127차 cap adopted
+        # unchanged, and one placement per symbol per day.
+        if conditions.get("max_add_notional_pct_of_position") != 50:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} size cap must be 50% of the "
+                "existing position notional"
+            )
+        if conditions.get("max_placements_per_symbol_per_day") != 1:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} allows one placement per "
+                "symbol per day"
+            )
+        # An add is partially fillable without harm (unlike the reserve-net
+        # A_limit rung, whose whole size is the averaging target).
+        if conditions.get("partial_fill") != "allowed":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare partial_fill: allowed"
+            )
+        # Recording that the new-entry bands do not reach a held-lot add is a
+        # scope statement. Pinning the reason keeps it from being read later as
+        # a waiver that a new entry could inherit.
+        if conditions.get("per_symbol_notional_band_applies") is not False:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "per_symbol_notional_band_applies: false"
+            )
+        if conditions.get("per_symbol_notional_band_scope_reason") != (
+            "bands_are_scoped_to_new_entries"
+        ):
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must record "
+                "per_symbol_notional_band_scope_reason: "
+                "bands_are_scoped_to_new_entries — this is the bands' own scope, "
+                "not a waiver"
+            )
+
+        # REVIEW — the KR add lane already carries an R-931 review; §139차's
+        # crypto tier does not, and that difference must not be lost.
+        if conditions.get("r931_review_required") != "PASS":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must inherit "
+                "r931_review_required: PASS from the KR add lane"
+            )
+        if conditions.get("r931_review_max_age_days") != 7:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must inherit "
+                "r931_review_max_age_days: 7"
+            )
+
+        # SCORING — same shape as §139차: a fixed review date and a retirement
+        # bar that predates the batches.
+        if conditions.get("forecast_save_required") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must require forecast_save"
+            )
+        review_date = conditions.get("review_date")
+        if not isinstance(review_date, str):
+            raise ValueError(f"{UNDERWATER_SUPPORT_NET_TIER_ID} requires a review_date")
+        date.fromisoformat(review_date)
+        if conditions.get("retire_unless_filled_cohort_d20_median_pct_min") != 0:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} retirement bar requires a "
+                "filled-cohort D+20 median floor of 0"
+            )
+        if (
+            conditions.get(
+                "retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"
+            )
+            != -8
+        ):
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} retirement bar requires a "
+                "filled-cohort D+20 lower-quartile floor of -8"
+            )
+
+        # ENFORCEMENT SURFACE — the honest description, pinned so a later edit
+        # cannot claim a machine guard this repo does not have.
+        if conditions.get("enforcement_surface") != "advisory_session_contract":
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "enforcement_surface: advisory_session_contract"
+            )
+        if (
+            conditions.get("code_enforced_boundary")
+            != "per_order_auto_approve_cap_then_card"
+        ):
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must name the only "
+                "code-enforced boundary: per_order_auto_approve_cap_then_card"
+            )
+        if conditions.get("crash_day_new_batch_suspended") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must suspend new batches on "
+                "a crash day"
+            )
+
+        missing = [
+            name
+            for name in _UNDERWATER_REQUIRED_EXCLUSIONS
+            if name not in self.exclusions
+        ]
+        if missing:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must retain exclusions {missing}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_loss_cut_classification_stays_advisory(
+        self,
+    ) -> PolicyDecisionRule:
+        """§177차 — the loss-cut half of the three-way underwater verdict.
+
+        This rule classifies; it must never acquire an execution surface. The
+        two branches are alternatives (a broken thesis is sufficient at any
+        depth, depth alone never is), and the -40% branch is gated on
+        weak-only support precisely so that it cannot overlap the
+        averaging-down tier.
+        """
+
+        tier = self._tier_by_id(LOSS_CUT_CANDIDATE_TIER_ID)
+        if tier is None:
+            return self
+        conditions = tier.conditions
+
+        if conditions.get("holding_required") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must require holding_required: true"
+            )
+        if conditions.get("account_lot_scoped") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must declare account_lot_scoped: true"
+            )
+        if conditions.get("thesis_broken_is_sufficient") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must declare "
+                "thesis_broken_is_sufficient: true"
+            )
+        if conditions.get("deep_loss_unrealized_pnl_pct_max_inclusive") != -40:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} deep-loss branch triggers at -40% "
+                "inclusive"
+            )
+        # Without this the -40% branch would swallow lots that the
+        # averaging-down tier admits, and the classification would stop being
+        # mutually exclusive.
+        if conditions.get("deep_loss_requires_weak_support_only") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} deep-loss branch requires "
+                "weak-only support so it cannot overlap "
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID}"
+            )
+        if conditions.get("branches_are_alternatives_not_cumulative") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must declare "
+                "branches_are_alternatives_not_cumulative: true"
+            )
+        if conditions.get("mutually_exclusive_with") != "buy.underwater_support_net":
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must name "
+                "mutually_exclusive_with: buy.underwater_support_net"
+            )
+        if conditions.get("residual_class") != "hold":
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must declare residual_class: hold — "
+                "hold is a verdict, not a missing judgement"
+            )
+
+        # NO EXECUTION SURFACE.
+        if conditions.get("approval_required") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must require operator approval"
+            )
+        if conditions.get("auto_approve") is not False:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must declare auto_approve: false"
+            )
+        if conditions.get("retrospective_required") is not True:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must require a retrospective"
+            )
+        if conditions.get("exit_intent") != "loss_cut":
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must route through exit_intent: loss_cut"
+            )
+        if conditions.get("max_slip_policy_key") != "sell.loss_cut_max_slip":
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must reference the existing "
+                "sell.loss_cut_max_slip guard rather than restate a number"
+            )
+        if conditions.get("loss_guard_policy_key") != "sell.loss_guard_min_multiple":
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must reference the existing "
+                "sell.loss_guard_min_multiple guard"
+            )
+        if self.markets != ["kr", "us"]:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} is scoped to markets [kr, us]"
+            )
+
+        missing = [
+            name
+            for name in _LOSS_CUT_REQUIRED_EXCLUSIONS
+            if name not in self.exclusions
+        ]
+        if missing:
+            raise ValueError(
+                f"{LOSS_CUT_CANDIDATE_TIER_ID} must retain exclusions {missing}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_deployment_cap_stays_advisory_and_forward_only(
+        self,
+    ) -> PolicyDecisionRule:
+        """§177차 — the dynamic cap, pinned against the two ways it goes wrong.
+
+        (1) A ratio whose denominator is orderable cash SHRINKS as orders
+        fill, so an already-placed deployment can breach a later cap without
+        any new decision. The forward-only clause is the whole reason the cap
+        is safe to state, so it is machine-pinned.
+        (2) The parking term has no repository balance source (``cash_yields``
+        is a rate table). Estimating it would inflate the cap silently, so
+        "missing means zero" is pinned too.
+        """
+
+        tier = self._tier_by_id(DEPLOYMENT_CAP_TIER_ID)
+        if tier is None:
+            return self
+        conditions = tier.conditions
+
+        coefficient = conditions.get("coefficient_pct")
+        if coefficient != 45:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} coefficient is 45 percent "
+                "(operator decision 2026-09-07)"
+            )
+        if conditions.get("denominator_terms") != [
+            "broker_orderable_total_krw",
+            "parking_balance_krw",
+        ]:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} denominator is broker orderable cash "
+                "plus parking cash, in that order"
+            )
+        if conditions.get("denominator_currency") != "KRW":
+            raise ValueError(f"{DEPLOYMENT_CAP_TIER_ID} denominator is KRW")
+        if conditions.get("parking_balance_source") != "user_settings.manual_cash":
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must name its parking balance source"
+            )
+        if conditions.get("parking_balance_missing_or_stale_value") != 0:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must read a missing or stale parking "
+                "balance as 0"
+            )
+        if conditions.get("parking_balance_estimation") != "FORBIDDEN":
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must declare "
+                "parking_balance_estimation: FORBIDDEN"
+            )
+        if conditions.get("cash_yields_is_rate_table_not_balance_source") is not True:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must record that cash_yields carries "
+                "rates, not balances"
+            )
+        if conditions.get("evaluated_at") != "new_deployment_only":
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} is evaluated at new-deployment time only"
+            )
+        if conditions.get("retroactive_violation") is not False:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must declare retroactive_violation: "
+                "false — a filling order shrinks the denominator and would "
+                "otherwise put existing deployments in breach"
+            )
+        if conditions.get("unwind_existing_deployment") != "FORBIDDEN":
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must declare "
+                "unwind_existing_deployment: FORBIDDEN"
+            )
+        if conditions.get("recalculation_cadence") != "weekly":
+            raise ValueError(f"{DEPLOYMENT_CAP_TIER_ID} recalculates weekly")
+        if conditions.get("blocks_proposal") is not False:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must declare blocks_proposal: false"
+            )
+        if conditions.get("enforcement_surface") != "advisory_session_contract":
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must declare "
+                "enforcement_surface: advisory_session_contract"
+            )
+
+        missing = [
+            name
+            for name in _DEPLOYMENT_CAP_REQUIRED_EXCLUSIONS
+            if name not in self.exclusions
+        ]
+        if missing:
+            raise ValueError(
+                f"{DEPLOYMENT_CAP_TIER_ID} must retain exclusions {missing}"
             )
         return self
 
@@ -1256,6 +1725,106 @@ class UserStance(BaseModel):
         return value
 
 
+class CashYieldBracket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    up_to_amount: float | int | None
+    annual_pct: float | int
+
+    @model_validator(mode="after")
+    def validate_non_negative_values(self) -> CashYieldBracket:
+        if self.annual_pct < 0:
+            raise ValueError("cash yield annual_pct must be greater than or equal to 0")
+        if self.up_to_amount is not None and self.up_to_amount <= 0:
+            raise ValueError(
+                "cash yield closed bracket up_to_amount must be greater than 0"
+            )
+        return self
+
+
+class CashYieldAccount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    currency: Literal["KRW", "USD"]
+    tier_basis: Literal["marginal", "flat"]
+    brackets: list[CashYieldBracket]
+
+    @model_validator(mode="after")
+    def validate_brackets(self) -> CashYieldAccount:
+        if not self.brackets:
+            raise ValueError("cash yield brackets must not be empty")
+
+        open_indexes = [
+            index
+            for index, bracket in enumerate(self.brackets)
+            if bracket.up_to_amount is None
+        ]
+        if len(open_indexes) != 1:
+            raise ValueError(
+                "cash yield brackets must contain exactly one open-ended bracket"
+            )
+        if open_indexes[0] != len(self.brackets) - 1:
+            raise ValueError("cash yield open-ended bracket must be last")
+
+        closed_amounts = [
+            bracket.up_to_amount
+            for bracket in self.brackets
+            if bracket.up_to_amount is not None
+        ]
+        if any(
+            current <= previous
+            for previous, current in zip(
+                closed_amounts, closed_amounts[1:], strict=False
+            )
+        ):
+            raise ValueError(
+                "cash yield closed bracket up_to_amount values must be strictly increasing"
+            )
+
+        if self.tier_basis == "flat" and (
+            len(self.brackets) != 1 or self.brackets[0].up_to_amount is not None
+        ):
+            raise ValueError(
+                "flat cash yield account must have exactly one open-ended bracket"
+            )
+        return self
+
+
+class CashYieldsPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    basis: str
+    tax_treatment: str
+    accounts: dict[str, CashYieldAccount]
+
+
+class TransferCostRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_account: str
+    to_account: str
+    currency: Literal["KRW", "USD"]
+    fee_basis: Literal["flat"]
+    fee_amount: float | int
+    lead_time: str
+
+    @model_validator(mode="after")
+    def validate_non_negative_fee_amount(self) -> TransferCostRoute:
+        if self.fee_amount < 0:
+            raise ValueError(
+                "transfer cost fee_amount must be greater than or equal to 0"
+            )
+        return self
+
+
+class TransferCostsPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    routes: dict[str, TransferCostRoute]
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1278,6 +1847,8 @@ class TradingPolicyDocument(BaseModel):
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
     user_stances: list[UserStance]
+    cash_yields: CashYieldsPolicy
+    transfer_costs: TransferCostsPolicy
 
     @model_validator(mode="after")
     def validate_s139_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
@@ -1296,6 +1867,28 @@ class TradingPolicyDocument(BaseModel):
             if not isinstance(rule, PolicyDecisionRule) or tier_id not in tier_ids:
                 raise ValueError(
                     f"{key} must declare tier id {tier_id!r} so its §139차 "
+                    f"validators run; got {tier_ids}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_s177_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
+        """Same binding for §177차 — renaming a tier must not drop its pins.
+
+        Unlike §139차 these three rules are NOT retired on a schedule, so a
+        missing key means someone deleted the rule; that is still permitted
+        (the loop skips ``None``), but keeping the key while renaming the tier
+        is not.
+        """
+
+        for key, tier_id in _S177_REQUIRED_TIER_IDS.items():
+            rule = self.decision_rules.get(key)
+            if rule is None:
+                continue
+            tier_ids = [tier.id for tier in getattr(rule, "tiers", [])]
+            if not isinstance(rule, PolicyDecisionRule) or tier_id not in tier_ids:
+                raise ValueError(
+                    f"{key} must declare tier id {tier_id!r} so its §177차 "
                     f"validators run; got {tier_ids}"
                 )
         return self

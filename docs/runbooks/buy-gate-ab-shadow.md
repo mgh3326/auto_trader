@@ -1,17 +1,39 @@
-# Buy-gate A/B shadow — pre-registered experiment (ROB-1301)
+# Buy-gate A/B shadow — ROB-1301 terminal record and ROB-1351 v2
 
-Observation-only. Variant A is the live KR/US buy screen (strong support
-required). Variant B is the moderate+ support counterfactual. This runbook
-is the scoring-report spec; it does not authorize an order, a proposal, a
-watch, a policy edit, or a scheduler.
+ROB-1301 is historical, sealed observation-only evidence. Its former live
+variant A required strong support and its shadow B counterfactual required
+moderate support. It never authorized an order, proposal, watch, policy edit,
+or scheduler; its scoring section below remains the preserved pre-registration
+record, not an active procedure.
 
-Controlling issue: [ROB-1301](https://linear.app/mgh3326/issue/ROB-1301).
-Code pin: `app/services/buy_gate_ab_shadow/spec.py` (`PINNED_SPEC_SHA256`).
-Q6 activation addendum: ROB-1331
-`rob-1331-q6-activation-epoch.v1`; immutable marker:
-`review.buy_gate_ab_collection_epoch`.
+Controlling issues: [ROB-1301](https://linear.app/mgh3326/issue/ROB-1301) and
+ROB-1351. The v1 code pin remains
+`app/services/buy_gate_ab_shadow/spec.py` (`PINNED_SPEC_SHA256`), with the
+ROB-1331 Q6 immutable marker `review.buy_gate_ab_collection_epoch`.
 
-## Forbidden (issue canonical, not paraphrased)
+## Termination and v2 re-registration (ROB-1351)
+
+The operator terminated ROB-1301 at `2026-09-07T09:43:42+09:00` with
+`reason=STOPPED_BY_OPERATOR_DECISION`. The terminal record is
+`status=INSUFFICIENT_SAMPLE`, `outcome=NO_FIRING`, and `carryover=forbidden`.
+It intentionally does not calculate a return, drawdown, winner, or policy
+implication; it proves the original spec and policy-projection seals remain
+unchanged.
+
+The preceding operator decision lowered regular discovery's support requirement
+from strong to moderate. Accordingly, `rob-1351-buy-gate-moderate-live` is a
+new registration, not a v1 amendment: live A requires moderate support with
+`strong` and `moderate_only` cohort labels; shadow B requires weak support and
+uses `shadow_buy`. The split is observational rather than randomized because
+support strength is a candidate property, not an assignment. v1 samples do not
+carry over.
+
+v2 is registered only. `review.buy_gate_ab_collection_epoch_v2` is deliberately
+empty, no `collection_armed_at` has been selected, and caller wiring remains
+zero pending a separate operator activation and review PR. The live/shadow
+comparison still cannot promote a candidate to proposal, order, or watch.
+
+## Historical ROB-1301 forbidden record (issue canonical, not paraphrased)
 
 * shadow가 제안·주문·워치로 승격 금지(순수 기록)
 * 라이브 게이트 문언 무접촉
@@ -20,14 +42,14 @@ Q6 activation addendum: ROB-1331
 Promotion, automation, and TaskIQ/cron/Prefect triggers are **0**. Mock
 accounts are not used (1 account = 1 strategy).
 
-## Hypothesis (pre-registered)
+## Historical hypothesis (pre-registered)
 
 "strong 지지 요구가 기대값 양(+)인 후보를 과도하게 기각한다" — KR 매수
 기각 4/6 (2026-08-20) · US 9세션 사인 다수가 지지 품질.
 
 Do not amend the hypothesis after seeing scores.
 
-## Design
+## Historical design
 
 | Item | Frozen value |
 | --- | --- |
@@ -48,7 +70,7 @@ Giving one arm later bars, a different entry, or a different other-gate
 bit is a contract violation; the evaluator/scorer drop bars after
 `scoring_as_of` and do not impute holes.
 
-## Q6 activation epoch addendum (ROB-1331, v1)
+## Historical Q6 activation epoch addendum (ROB-1331, v1)
 
 This is a versioned addendum to the original ROB-1301 pre-registration, not a
 replacement chosen from observed records. The exact marker is:
@@ -81,9 +103,9 @@ reviewed. Wiring is a separate PR.
 is a nullable observation derived from valid event rows. Whether it is null,
 early, or late cannot move `collection_start` or `collection_end_exclusive`.
 
-## Session procedure
+## Historical session procedure (not active)
 
-1. Run the live screen as today (variant A). Winners still go through
+1. This was the former live-screen procedure (variant A). Winners went through
    `order_proposal_create`. Nothing here relaxes that path.
 2. Call `evaluate_buy_gate_ab_shadow(candidates, evaluation_as_of, created_by)`
    on the **same** reviewed set. One `evaluation_as_of` per call.
@@ -95,7 +117,7 @@ early, or late cannot move `collection_start` or `collection_end_exclusive`.
 `evaluate_buy_gate_ab_shadow` does not write. Forgetting `forecast_save`
 is a missed record, not a live-path change.
 
-## Forecast tagging
+## Historical forecast tagging
 
 Every shadow row must carry:
 
@@ -128,7 +150,7 @@ forecast decision with `calibration_eligibility=calibration_exclude`. The
 calibration aggregate reads that decision table, not this JSON tag alone. A
 malformed purported shadow target is rejected before it is saved.
 
-## 4-week scoring report spec
+## Historical 4-week scoring report spec
 
 `scoring_ready` is exactly `collection_window_closed AND
 all_events_matured`. The collection window closes at the sealed exclusive
@@ -177,11 +199,14 @@ window primary + sensitivity, and `combine_with=ROB-1283`.
 
 Copy that JSON. Do not retune thresholds from it in the same change.
 
-## What this does not do
+## What the terminated record does not do
 
-* It does not edit `config/trading_policy.yaml`.
-* It does not change `buy.support_reserve_net` (`moderate` there is a
-  different tier and stays as-is).
+* The preserved ROB-1301 record does not edit `config/trading_policy.yaml`; the
+  separate ROB-1351 operator decision is recorded there.
+* It does not change any `buy.support_reserve_net` threshold, cap, band, or
+  enforcement value. Its rewritten semantics records that it shares regular
+  discovery's moderate support strength and differs by its RSI exemption plus
+  requirement for at least two independent support families.
 * It does not call `order_proposal_create`, `place_order`, or watch
   create.
 * It does not register a schedule.
