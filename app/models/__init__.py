@@ -5,6 +5,11 @@ from .analyst_consensus_snapshot import AnalystConsensusSnapshot
 from .base import Base
 from .binance_demo_order_ledger import BinanceDemoOrderLedger
 from .buy_gate_ab_collection_epoch import BuyGateABCollectionEpoch
+from .buy_gate_ab_experiment_lifecycle import (
+    BuyGateABCollectionEpochV2,
+    BuyGateABExperimentRegistration,
+    BuyGateABExperimentTermination,
+)
 from .crypto_candles import CryptoCandle1d, CryptoCandle1m
 from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
@@ -187,6 +192,9 @@ __all__ = [
     "AnalystConsensusSnapshot",
     "BinanceDemoOrderLedger",
     "BuyGateABCollectionEpoch",
+    "BuyGateABCollectionEpochV2",
+    "BuyGateABExperimentRegistration",
+    "BuyGateABExperimentTermination",
     "ScalpTradeAnalytics",
     "ScalpingDailyReview",
     "ScalpingReviewAction",

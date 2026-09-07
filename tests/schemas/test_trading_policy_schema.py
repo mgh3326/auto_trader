@@ -262,11 +262,12 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-09-07.3"
-    assert policy_content_hash() == "c80460c0c00c"
+    assert policy_content_hash() == "e76182f303ba"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
     assert doc.thresholds["screen.rsi_max"].value == 45
+    assert doc.thresholds["screen.support_strength_min"].value == "moderate"
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
 
 
@@ -345,6 +346,99 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
     assert "single_share_position" not in trim_rule.exclusions
+
+
+def test_cash_yields_and_transfer_costs_match_operator_input():
+    doc = TradingPolicyDocument.model_validate(_raw())
+
+    assert {
+        account_id: [bracket.model_dump() for bracket in account.brackets]
+        for account_id, account in doc.cash_yields.accounts.items()
+    } == {
+        "naver_parking_krw": [
+            {"up_to_amount": 10000000, "annual_pct": 2.8},
+            {"up_to_amount": None, "annual_pct": 2.25},
+        ],
+        "acuon_krw": [
+            {"up_to_amount": 20000000, "annual_pct": 2.6},
+            {"up_to_amount": None, "annual_pct": 2.4},
+        ],
+        "upbit_deposit_krw": [{"up_to_amount": None, "annual_pct": 2.1}],
+        "toss_krw": [{"up_to_amount": None, "annual_pct": 1.0}],
+        "toss_usd": [{"up_to_amount": None, "annual_pct": 0.6}],
+    }
+    assert doc.transfer_costs.routes["upbit_krw_withdrawal"].fee_amount == 1000
+    assert doc.transfer_costs.routes["upbit_krw_withdrawal"].lead_time == "unknown"
+    assert doc.cash_yields.source == "operator_input_2026-09-07"
+    assert doc.transfer_costs.source == "operator_input_2026-09-07"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda raw: raw["cash_yields"]["accounts"]["toss_krw"].update(brackets=[]),
+        lambda raw: raw["cash_yields"]["accounts"]["naver_parking_krw"].update(
+            brackets=[
+                {"up_to_amount": None, "annual_pct": 2.8},
+                {"up_to_amount": 10000000, "annual_pct": 2.25},
+            ]
+        ),
+        lambda raw: raw["cash_yields"]["accounts"]["naver_parking_krw"].update(
+            brackets=[
+                {"up_to_amount": 10000000, "annual_pct": 2.8},
+                {"up_to_amount": 10000000, "annual_pct": 2.25},
+                {"up_to_amount": None, "annual_pct": 2.0},
+            ]
+        ),
+        lambda raw: raw["cash_yields"]["accounts"]["toss_krw"].update(
+            brackets=[
+                {"up_to_amount": 10000000, "annual_pct": 1.0},
+                {"up_to_amount": None, "annual_pct": 0.8},
+            ]
+        ),
+    ],
+    ids=["empty", "open_ended_not_last", "closed_amount_not_increasing", "flat_two"],
+)
+def test_cash_yield_validators_reject_invalid_brackets(mutate):
+    raw = _raw()
+    mutate(raw)
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_cash_yield_and_transfer_cost_addition_preserves_existing_surfaces():
+    raw = _raw()
+
+    assert {
+        key: raw["thresholds"][key]["value"]
+        for key in (
+            "screen.rsi_max",
+            "screen.support_within_pct",
+            "screen.upside_min_pct",
+            "portfolio.sector_cluster_cap_pct",
+        )
+    } == {
+        "screen.rsi_max": 45,
+        "screen.support_within_pct": 8,
+        "screen.upside_min_pct": 40,
+        "portfolio.sector_cluster_cap_pct": 10,
+    }
+    reserve_net = raw["decision_rules"]["buy.support_reserve_net"]
+    assert {
+        key: reserve_net[key]
+        for key in (
+            "support_strength_min",
+            "max_symbols_per_sector_cluster",
+            "all_pending_buy_required_cash_hard_cap_pct",
+            "tier_armed_required_cash_cap_pct",
+        )
+    } == {
+        "support_strength_min": "moderate",
+        "max_symbols_per_sector_cluster": 1,
+        "all_pending_buy_required_cash_hard_cap_pct": 90,
+        "tier_armed_required_cash_cap_pct": 50,
+    }
 
 
 def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
@@ -569,8 +663,9 @@ def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     ):
         assert current_reserve[key] == baseline_reserve[key]
     assert (
-        current["thresholds"]["screen.support_within_pct"]
-        == baseline["thresholds"]["screen.support_within_pct"]
+        current["thresholds"]["screen.support_within_pct"]["value"]
+        == baseline["thresholds"]["screen.support_within_pct"]["value"]
+        == 8
     )
     assert (
         current["thresholds"]["screen.rsi_max"]
@@ -580,11 +675,15 @@ def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     discovery_semantics = current["thresholds"]["screen.support_within_pct"][
         "semantics"
     ]
-    assert discovery_semantics == "strong support must be within this distance"
+    assert discovery_semantics == "support must be within this distance"
     reserve_semantics = current_reserve["semantics"]
     assert "support_strength_min (moderate)" in reserve_semantics
     assert "independent_support_source_count_min (2)" in reserve_semantics
-    assert "not discovery's strong support requirement" in reserve_semantics
+    assert (
+        "Regular discovery uses the same moderate support strength" in reserve_semantics
+    )
+    assert "omitting its RSI gate" in reserve_semantics
+    assert "at least two independent support families" in reserve_semantics
     assert "failure of any other gate" in reserve_semantics
     assert rule.cash_reservation.required_cash_fallback == "quantity_times_limit_price"
     assert rule.cash_reservation.broker_orderable_unavailable_or_error == "FAIL_CLOSED"
@@ -1336,6 +1435,11 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     baseline["crash_day"]["actions"]["new_entry_hold_exception"] = current_raw[
         "crash_day"
     ]["actions"]["new_entry_hold_exception"]
+    # §S175 (2026-09-07) adds two required advisory reference blocks. Copy
+    # them into the historical payload only to make it schema-valid, then
+    # remove both below so this remains an exact check of every prior surface.
+    baseline["cash_yields"] = deepcopy(current_raw["cash_yields"])
+    baseline["transfer_costs"] = deepcopy(current_raw["transfer_costs"])
     # ROB-1298 KEY_DIFF — the §115차 tier is appended to the current document
     # only. The schema now requires tie_breaks.tier_priority to match the
     # declared tier order, so the baseline copy is given the same appended tier
@@ -1391,6 +1495,10 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert current_dump["source"].startswith(baseline_dump["source"])
     assert "ROB-1298" in current_dump["source"]
     current_dump["source"] = baseline_dump["source"]
+    del current_dump["cash_yields"]
+    del current_dump["transfer_costs"]
+    del baseline_dump["cash_yields"]
+    del baseline_dump["transfer_costs"]
 
     # §148차 (2026-08-24) — additive semantics-only clarification. The
     # contradiction repair is allowed to extend the prose, but it may not
@@ -1407,9 +1515,31 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert (
         "independent_support_source_count_min (2)" in current_reserve_net["semantics"]
     )
-    assert "not discovery's strong support" in current_reserve_net["semantics"]
+    assert (
+        "Regular discovery uses the same moderate support strength"
+        in current_reserve_net["semantics"]
+    )
     assert "failure of any other gate" in current_reserve_net["semantics"]
     current_reserve_net["semantics"] = baseline_reserve_net["semantics"]
+    assert "screen.support_strength_min" not in baseline_dump["thresholds"]
+    assert current_dump["thresholds"]["screen.support_strength_min"] == {
+        "lanes": ["discovery"],
+        "value": "moderate",
+        "unit": "support_strength",
+        "semantics": (
+            "minimum support quality for a regular-discovery candidate; allowed "
+            "vocabulary is weak < moderate < strong. Lowered from strong to moderate "
+            "by operator decision 2026-09-07 (ROB-1351); the ROB-1301 A/B "
+            "pre-registration that observed the strong requirement was terminated by "
+            "that same decision and re-registered as ROB-1351 v2."
+        ),
+        "of": None,
+        "one_share_exception": None,
+    }
+    del current_dump["thresholds"]["screen.support_strength_min"]
+    current_dump["thresholds"]["screen.support_within_pct"]["semantics"] = (
+        baseline_dump["thresholds"]["screen.support_within_pct"]["semantics"]
+    )
     del current_dump["decision_rules"]["buy.preplanned_support_ladder"]
     del current_dump["crash_day"]["actions"]["new_entry_hold_exception"]
     del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
@@ -3066,10 +3196,10 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             current["thresholds"][key]["value"] == baseline["thresholds"][key]["value"]
         ), key
 
-    # The only non-``value`` differences are the §139차 US one-share ceiling
-    # and §156's explicitly recorded sector-cap semantics.  Both are pinned
-    # rather than ignored, so §147차 cannot be used as cover for a new sibling
-    # key drift.
+    # The only non-``value`` differences are the §139차 US one-share ceiling,
+    # §156's explicitly recorded sector-cap semantics, and ROB-1351's neutral
+    # rewrite of the discovery-distance prose.  Each is pinned rather than
+    # ignored, so §147차 cannot be used as cover for a new sibling key drift.
     for key in {**_S147_INVARIANT_BUY_GATES, **_S147_INVARIANT_SIZING_AND_CAPS}:
         cur = deepcopy(current["thresholds"][key])
         base = deepcopy(baseline["thresholds"][key])
@@ -3077,6 +3207,9 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             assert cur["one_share_exception"]["absolute_ceiling_usd"] == 10000
             assert base["one_share_exception"]["absolute_ceiling_usd"] == 700
             cur["one_share_exception"] = base["one_share_exception"]
+        if key == "screen.support_within_pct":
+            assert cur["semantics"] == "support must be within this distance"
+            cur["semantics"] = base["semantics"]
         if key == "portfolio.sector_cluster_cap_pct":
             assert "advisory only" in cur["semantics"]
             cur["semantics"] = base["semantics"]

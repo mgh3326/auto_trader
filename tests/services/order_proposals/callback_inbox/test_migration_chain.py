@@ -60,13 +60,19 @@ from sqlalchemy.engine import make_url
 from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS
 from app.services.buy_gate_ab_shadow.epoch import COLLECTION_EPOCH
 from app.services.buy_gate_ab_shadow.spec import POLICY_PROJECTION
+from app.services.buy_gate_ab_shadow.spec_v2 import (
+    PINNED_POLICY_PROJECTION_SHA256_V2,
+    PINNED_SPEC_SHA256_V2,
+    POLICY_PROJECTION_V2,
+)
+from app.services.buy_gate_ab_shadow.termination import ROB_1301_TERMINATION
 from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260904_web_approval_marker"
+HEAD_REVISION = "20260907_rob1351_lifecycle"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -103,6 +109,9 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.telegram_callback_inbox",
     "review.screener_pick_log",
     "review.buy_gate_ab_collection_epoch",
+    "review.buy_gate_ab_experiment_termination",
+    "review.buy_gate_ab_experiment_registration",
+    "review.buy_gate_ab_collection_epoch_v2",
     "review.kiwoom_coordination_lifecycle",
 )
 
@@ -114,6 +123,7 @@ async def scratch_database() -> AsyncIterator[str]:
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
+    import app.models  # noqa: F401  (register current-head ORM tables)
     from app.models.base import Base
 
     base = validate_run_owned_database_url(os.environ["DATABASE_URL"])
@@ -266,6 +276,39 @@ async def _epoch_table_exists(database_url: str) -> bool:
         await connection.close()
 
 
+async def _lifecycle_tables_exist(database_url: str) -> bool:
+    """ROB-1351's three additive lifecycle tables arrive as one boundary."""
+
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        termination_exists = bool(
+            await connection.fetchval(
+                "SELECT to_regclass('review.buy_gate_ab_experiment_termination') "
+                "IS NOT NULL"
+            )
+        )
+        registration_exists = bool(
+            await connection.fetchval(
+                "SELECT to_regclass('review.buy_gate_ab_experiment_registration') "
+                "IS NOT NULL"
+            )
+        )
+        epoch_v2_exists = bool(
+            await connection.fetchval(
+                "SELECT to_regclass('review.buy_gate_ab_collection_epoch_v2') "
+                "IS NOT NULL"
+            )
+        )
+        return termination_exists and registration_exists and epoch_v2_exists
+    finally:
+        await connection.close()
+
+
 async def _kiwoom_coordination_table_exists(database_url: str) -> bool:
     import asyncpg
 
@@ -353,6 +396,84 @@ async def _assert_epoch_marker(database_url: str) -> None:
         except asyncpg.PostgresError as exc:
             mutation_rejected = exc.sqlstate == "23001"
         assert mutation_rejected is True
+    finally:
+        await connection.close()
+
+
+async def _assert_rob1351_lifecycle_records(database_url: str) -> None:
+    """Exercise the terminal seed, v2 registration seed, and unarmed proof."""
+
+    import asyncpg
+
+    url = make_url(database_url)
+    connection = await asyncpg.connect(
+        **_admin_kwargs(url, database=url.database or "")
+    )
+    try:
+        termination = await connection.fetchrow(
+            "SELECT * FROM review.buy_gate_ab_experiment_termination WHERE id = 1"
+        )
+        assert termination is not None
+        assert termination["experiment_id"] == ROB_1301_TERMINATION.experiment_id
+        assert termination["epoch_id"] == ROB_1301_TERMINATION.epoch_id
+        assert termination[
+            "terminated_at"
+        ] == ROB_1301_TERMINATION.terminated_at.astimezone(UTC)
+        assert termination["reason"] == ROB_1301_TERMINATION.reason
+        assert termination["decided_by"] == ROB_1301_TERMINATION.decided_by
+        assert termination["carryover"] == "forbidden"
+        assert termination["terminal_status"] == "INSUFFICIENT_SAMPLE"
+        assert termination["terminal_outcome"] == "NO_FIRING"
+        assert (
+            termination["preregistration_spec_sha256"]
+            == ROB_1301_TERMINATION.preregistration_spec_sha256
+        )
+        assert (
+            termination["policy_projection_sha256"]
+            == ROB_1301_TERMINATION.policy_projection_sha256
+        )
+
+        registration = await connection.fetchrow(
+            "SELECT * FROM review.buy_gate_ab_experiment_registration WHERE id = 1"
+        )
+        assert registration is not None
+        assert registration["experiment_id"] == "rob-1351-buy-gate-moderate-live"
+        assert registration["spec_sha256"] == PINNED_SPEC_SHA256_V2
+        assert (
+            registration["policy_projection_sha256"]
+            == PINNED_POLICY_PROJECTION_SHA256_V2
+        )
+        assert (
+            registration["predecessor_experiment_id"]
+            == ROB_1301_TERMINATION.experiment_id
+        )
+        assert registration["carryover"] == "forbidden"
+        projection = registration["policy_projection"]
+        if isinstance(projection, str):
+            projection = json.loads(projection)
+        assert projection == POLICY_PROJECTION_V2
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM review.buy_gate_ab_collection_epoch_v2"
+            )
+            == 0
+        )
+
+        for statement in (
+            "UPDATE review.buy_gate_ab_experiment_termination "
+            "SET terminal_status = 'NO_FIRING' WHERE id = 1",
+            "UPDATE review.buy_gate_ab_experiment_registration "
+            "SET carryover = 'forbidden' WHERE id = 1",
+            "TRUNCATE review.buy_gate_ab_collection_epoch_v2",
+        ):
+            try:
+                await connection.execute(statement)
+            except asyncpg.PostgresError as exc:
+                assert exc.sqlstate == "23001"
+            else:
+                raise AssertionError(
+                    "ROB-1351 lifecycle evidence mutation was accepted"
+                )
     finally:
         await connection.close()
 
@@ -944,6 +1065,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
     assert await _epoch_table_exists(scratch_database) is False
+    assert await _lifecycle_tables_exist(scratch_database) is False
     assert await _kiwoom_coordination_table_exists(scratch_database) is False
     assert await _kiwoom_authority_tables_exist(scratch_database) is False
     _alembic("stamp", PARENT_REVISION, database_url=scratch_database)
@@ -956,6 +1078,10 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     )
     assert await _epoch_table_exists(scratch_database) is False, (
         "the Q6 epoch exists at the parent revision; the chain is not additive"
+    )
+    assert await _lifecycle_tables_exist(scratch_database) is False, (
+        "the ROB-1351 lifecycle tables exist at the parent revision; "
+        "the chain is not additive"
     )
     assert await _kiwoom_coordination_table_exists(scratch_database) is False, (
         "the Kiwoom lifecycle table exists at the parent revision; "
@@ -971,9 +1097,11 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
         assert await _table_exists(scratch_database) is True
         assert await _cursor_table_exists(scratch_database) is True
         assert await _epoch_table_exists(scratch_database) is True
+        assert await _lifecycle_tables_exist(scratch_database) is True
         assert await _kiwoom_coordination_table_exists(scratch_database) is True
         assert await _kiwoom_authority_tables_exist(scratch_database) is True
         await _assert_epoch_marker(scratch_database)
+        await _assert_rob1351_lifecycle_records(scratch_database)
         assert await _cursor_row_count(scratch_database) == 0
         await _assert_cursor_constraint_matrix(scratch_database)
         assert await _cursor_row_count(scratch_database) == 0
@@ -1041,6 +1169,7 @@ async def test_the_real_chain_upgrades_downgrades_and_upgrades_again(
     assert await _table_exists(scratch_database) is False
     assert await _cursor_table_exists(scratch_database) is False
     assert await _epoch_table_exists(scratch_database) is False
+    assert await _lifecycle_tables_exist(scratch_database) is False
     assert await _kiwoom_coordination_table_exists(scratch_database) is False
     assert await _kiwoom_authority_tables_exist(scratch_database) is False
 
