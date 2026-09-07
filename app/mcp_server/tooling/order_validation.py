@@ -1550,7 +1550,7 @@ async def _check_balance_and_warn(
         if reserved_amount > 0:
             balance = max(0.0, balance - reserved_amount)
 
-    # §176차 (2026-09-07) — what this comparison does and does not net out.
+    # §177차 (2026-09-07) — what this comparison does and does not net out.
     #
     # `balance` is the broker's own orderable figure. For a KIS live account
     # the broker has ALREADY deducted the reserve of every buy order it has

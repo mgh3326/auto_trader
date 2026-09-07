@@ -176,7 +176,7 @@ _HELD_MAJORS_REQUIRED_EXCLUSIONS = (
     "crash_day_new_batch",
 )
 
-# §176차 (2026-09-07) — the KR/US mirror of §139차's crypto tier, with the P&L
+# §177차 (2026-09-07) — the KR/US mirror of §139차's crypto tier, with the P&L
 # sign reversed, plus the loss-cut half of the same three-way classification
 # and the advisory dynamic deployment cap. Each of the three is pinned for the
 # same reason §139차's tier is: a pre-registration whose scope, size, or
@@ -184,7 +184,7 @@ _HELD_MAJORS_REQUIRED_EXCLUSIONS = (
 UNDERWATER_SUPPORT_NET_TIER_ID = "underwater_support_net"
 LOSS_CUT_CANDIDATE_TIER_ID = "loss_cut_candidate"
 DEPLOYMENT_CAP_TIER_ID = "deployment_cap"
-_S176_REQUIRED_TIER_IDS = {
+_S177_REQUIRED_TIER_IDS = {
     "buy.underwater_support_net": UNDERWATER_SUPPORT_NET_TIER_ID,
     "sell.loss_cut": LOSS_CUT_CANDIDATE_TIER_ID,
     "buy.deployment_cap": DEPLOYMENT_CAP_TIER_ID,
@@ -519,7 +519,7 @@ class PolicyDecisionRule(BaseModel):
     def validate_underwater_support_net_stays_bounded_and_time_boxed(
         self,
     ) -> PolicyDecisionRule:
-        """§176차 — the losing-lot mirror of §139차, pinned the same way.
+        """§177차 — the losing-lot mirror of §139차, pinned the same way.
 
         This tier authorises averaging DOWN, which is the direction that turns
         a bad thesis into a bigger one: every clause that keeps it narrow is
@@ -755,7 +755,7 @@ class PolicyDecisionRule(BaseModel):
     def validate_loss_cut_classification_stays_advisory(
         self,
     ) -> PolicyDecisionRule:
-        """§176차 — the loss-cut half of the three-way underwater verdict.
+        """§177차 — the loss-cut half of the three-way underwater verdict.
 
         This rule classifies; it must never acquire an execution surface. The
         two branches are alternatives (a broken thesis is sufficient at any
@@ -859,7 +859,7 @@ class PolicyDecisionRule(BaseModel):
     def validate_deployment_cap_stays_advisory_and_forward_only(
         self,
     ) -> PolicyDecisionRule:
-        """§176차 — the dynamic cap, pinned against the two ways it goes wrong.
+        """§177차 — the dynamic cap, pinned against the two ways it goes wrong.
 
         (1) A ratio whose denominator is orderable cash SHRINKS as orders
         fill, so an already-placed deployment can breach a later cap without
@@ -1872,8 +1872,8 @@ class TradingPolicyDocument(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_s176_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
-        """Same binding for §176차 — renaming a tier must not drop its pins.
+    def validate_s177_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
+        """Same binding for §177차 — renaming a tier must not drop its pins.
 
         Unlike §139차 these three rules are NOT retired on a schedule, so a
         missing key means someone deleted the rule; that is still permitted
@@ -1881,14 +1881,14 @@ class TradingPolicyDocument(BaseModel):
         is not.
         """
 
-        for key, tier_id in _S176_REQUIRED_TIER_IDS.items():
+        for key, tier_id in _S177_REQUIRED_TIER_IDS.items():
             rule = self.decision_rules.get(key)
             if rule is None:
                 continue
             tier_ids = [tier.id for tier in getattr(rule, "tiers", [])]
             if not isinstance(rule, PolicyDecisionRule) or tier_id not in tier_ids:
                 raise ValueError(
-                    f"{key} must declare tier id {tier_id!r} so its §176차 "
+                    f"{key} must declare tier id {tier_id!r} so its §177차 "
                     f"validators run; got {tier_ids}"
                 )
         return self

@@ -1,4 +1,4 @@
-"""§176차 — ``buy.underwater_support_net`` eligibility, sizing, and approval lane.
+"""§177차 — ``buy.underwater_support_net`` eligibility, sizing, and approval lane.
 
 The fixtures are the three real KIS adds the 2026-09-07 session proposed
 (week1-exec-report §1-1 / cash-active-week1-plan §b-2), not invented numbers,
@@ -374,7 +374,7 @@ def test_underwater_rung_is_auto_approvable_under_the_existing_off_mode_rules():
 
 
 def test_an_over_cap_underwater_rung_still_falls_back_to_a_human_card():
-    """§176차 raises no cap: the per-order boundary keeps its shape."""
+    """§177차 raises no cap: the per-order boundary keeps its shape."""
 
     class _BigRung:
         side = "buy"

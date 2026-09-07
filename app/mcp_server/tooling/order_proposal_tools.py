@@ -335,7 +335,7 @@ async def _complete_committed_proposal_create(
                 replacement_proposal_id=proposal_id,
             )
 
-        # §176차 — `kis_live` joins the advisory. It has no buying-power reader
+        # §177차 — `kis_live` joins the advisory. It has no buying-power reader
         # (adding one would put a broker balance call on the create path), so
         # its advisory reports buying power as unavailable; what it DOES carry
         # is the per-approval ladder, which needs no balance and is the half

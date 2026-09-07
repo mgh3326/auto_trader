@@ -1,4 +1,4 @@
-"""§176차 — the advisory dynamic deployment cap (``buy.deployment_cap``).
+"""§177차 — the advisory dynamic deployment cap (``buy.deployment_cap``).
 
 Pure and deterministic: it reads the coefficient from the authoritative policy
 and does arithmetic. It performs no I/O, never blocks anything, and has no

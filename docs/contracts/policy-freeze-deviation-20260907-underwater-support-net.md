@@ -1,11 +1,11 @@
-# Freeze deviation record — §176차 underwater averaging-down tier
+# Freeze deviation record — §177차 underwater averaging-down tier
 
 Checkpoint #4 appendix-A schema. Written **before merge**, as the Q4 rule
 requires for a new tier. Precedent: PR #1990.
 
 ```yaml
 freeze_epoch_id: q4-tier-freeze-2026-08-30
-change_id: s176-underwater-support-net-20260907
+change_id: s177-underwater-support-net-20260907
 pr_number: TBD_ON_OPEN
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
@@ -27,7 +27,7 @@ affected_policy_keys:
   - decision_rules.buy.underwater_support_net      # NEW
   - decision_rules.sell.loss_cut                   # NEW
   - decision_rules.buy.deployment_cap              # NEW
-  - version                                        # 2026-09-07.1 -> 2026-09-07.2
+  - version                                        # 2026-09-07.2 -> 2026-09-07.3
   - source                                         # append-only provenance
   # No pre-existing key's VALUE changes. Proven by
   # tests/schemas/test_trading_policy_schema.py::
@@ -44,10 +44,10 @@ consumer_paths:
   - app/mcp_server/tooling/order_proposal_tools.py      # advisory now also built for kis_live buys
   - app/mcp_server/tooling/order_validation.py          # comment only, no behaviour change
   - app/services/order_proposals/auto_approve.py        # docstring only, no behaviour change
-effective_at: on merge (policy version 2026-09-07.2)
+effective_at: on merge (policy version 2026-09-07.3)
 live_only_claim: false
-mock_projection_hash_before: "efa337993098"   # policy content_hash 2026-09-07.1
-mock_projection_hash_after: "cc9e770f3065"    # policy content_hash 2026-09-07.2
+mock_projection_hash_before: "e364868237fb"   # policy content_hash 2026-09-07.2 (post-#2058)
+mock_projection_hash_after: "265ff4942ded"    # policy content_hash 2026-09-07.3
 mock_experiment_effect: NONE
 rollback: >-
   Revert the PR. The three decision rules are additive and no consumer stores
@@ -89,7 +89,7 @@ Q4 requires this verdict to be earned by a consumer trace, not asserted.
    entries. The tier declares this as `buy_gate_ab_shadow_population_unchanged:
    true` and `new_symbol_discovery_gate_unchanged: true`, both machine-pinned.
 5. **Projection hash.** The policy `content_hash` necessarily moves
-   (`efa337993098` -> `cc9e770f3065`) because the document changed. That is a
+   (`e364868237fb` -> `265ff4942ded`) because the document changed. That is a
    document hash, not an A/B projection: no A/B spec, epoch marker, or scored
    field takes an input from any of the three new keys.
 

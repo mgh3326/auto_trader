@@ -650,7 +650,7 @@ async def test_get_available_capital_degrades_when_manual_cash_setting_fails(
 
 
 # ---------------------------------------------------------------------------
-# §176차 — the deployment-cap advisory rides the existing capital read.
+# §177차 — the deployment-cap advisory rides the existing capital read.
 #
 # Wiring note (deliberate deviation from the brief's suggested call sites):
 # the cap's denominator is broker orderable cash PLUS parking cash across the

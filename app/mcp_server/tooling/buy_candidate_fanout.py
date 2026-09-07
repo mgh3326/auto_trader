@@ -103,7 +103,7 @@ _PolicyLoader = Callable[[], Any]
 
 @dataclass(frozen=True, slots=True)
 class _UnderwaterAddGates:
-    """§176차 held-lot averaging-down gate literals, read fail-closed.
+    """§177차 held-lot averaging-down gate literals, read fail-closed.
 
     These are NOT discovery gates and deliberately change nothing about which
     candidates this fan-out returns: ``buy.underwater_support_net`` admits only
@@ -241,17 +241,31 @@ class _FanoutGates:
     support_within_current_pct_max: float
     honest_upside_pct_min: float
     support_strength_min: str
+    discovery_support_strength_min: str
     support_families: tuple[str, ...]
     discount_below_support_pct_range: tuple[float, float]
     final_limit_distance_from_current_pct_range: tuple[float, float]
     all_pending_buy_required_cash_hard_cap_pct: int
     tier_armed_required_cash_cap_pct: int
-    # §176차 — read and echoed, never applied to discovery selection below.
+    # §177차 — read and echoed, never applied to discovery selection below.
     underwater_add: _UnderwaterAddGates
 
     @classmethod
     def from_policy(cls, policy: Any) -> _FanoutGates:
         threshold = policy.thresholds["screen.rsi_max"]
+        try:
+            discovery_support_strength = policy.thresholds[
+                "screen.support_strength_min"
+            ].value
+        except KeyError as exc:
+            raise ValueError(
+                "missing required discovery threshold screen.support_strength_min"
+            ) from exc
+        discovery_support_strength_min = str(discovery_support_strength)
+        if discovery_support_strength_min not in {"weak", "moderate", "strong"}:
+            raise ValueError(
+                "screen.support_strength_min must be one of weak, moderate, strong"
+            )
         reserve = policy.decision_rules["buy.support_reserve_net"]
         gates = cls(
             rsi_max=float(threshold.value),
@@ -261,6 +275,7 @@ class _FanoutGates:
             ),
             honest_upside_pct_min=float(reserve.honest_upside_pct_min),
             support_strength_min=str(reserve.support_strength_min),
+            discovery_support_strength_min=discovery_support_strength_min,
             support_families=tuple(reserve.independent_support_source_families),
             discount_below_support_pct_range=tuple(
                 float(value) for value in reserve.discount_below_support_pct_range
@@ -285,6 +300,7 @@ class _FanoutGates:
             or gates.support_within_current_pct_max != 8
             or gates.honest_upside_pct_min != 40
             or gates.support_strength_min != "moderate"
+            or gates.discovery_support_strength_min != "moderate"
             or set(gates.support_families) != {"fib", "bb_lower", "volume_profile"}
             or gates.discount_below_support_pct_range != (5, 10)
             or gates.final_limit_distance_from_current_pct_range != (-15, -5)
@@ -303,6 +319,7 @@ class _FanoutGates:
             "support_within_current_pct_max": self.support_within_current_pct_max,
             "honest_upside_pct_min": self.honest_upside_pct_min,
             "support_strength_min": self.support_strength_min,
+            "discovery_support_strength_min": self.discovery_support_strength_min,
             "support_families": list(self.support_families),
             "discount_below_support_pct_range": list(
                 self.discount_below_support_pct_range

@@ -93,8 +93,8 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     rung. See ``parking_allowlist`` for the closed constants and
     ``parking_exposure`` for the provenance of the measurement.
 
-§176차 -- ``buy.underwater_support_net``
-    The averaging-down tier registered by §176차 is auto-approvable through
+§177차 -- ``buy.underwater_support_net``
+    The averaging-down tier registered by §177차 is auto-approvable through
     the rules already written above, and this classifier is NOT taught to
     recognise it. That is the point: the tier's support band is [-12%, -3%],
     so a rung that satisfies it is a resting limit buy priced at least
@@ -107,7 +107,7 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     veto-capable account/market allowlist, the limit-order requirement and
     the fresh-preview requirement all still run, and an over-cap add is
     rejected as ``per_order_cap_exceeded`` and goes to a human card exactly
-    as any other over-cap order does. §176차 raises no cap.
+    as any other over-cap order does. §177차 raises no cap.
 """
 
 from __future__ import annotations

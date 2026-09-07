@@ -525,7 +525,7 @@ async def test_toss_create_warns_on_same_account_pending_buying_power_shortfall(
         "skipped_market_rungs": 0,
         "warning": ("매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"),
     }
-    # §176차 — the walk names which of the two pending approvals will strand.
+    # §177차 — the walk names which of the two pending approvals will strand.
     assert sequential["status"] == "blocked"
     assert sequential["approvable_count"] == 1
     # 500,000 available - 200,000 (first card) = 300,000 left, second needs
@@ -627,7 +627,7 @@ async def test_create_advisory_skips_sell_proposals(monkeypatch):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_create_advisory_covers_kis_live_buys_without_a_broker_read(monkeypatch):
-    """§176차 — `kis_live` joins the advisory, and adds no balance call.
+    """§177차 — `kis_live` joins the advisory, and adds no balance call.
 
     KIS has no buying-power reader wired (adding one would put a broker call on
     the create path), so the aggregate reports `unavailable`. What the advisory

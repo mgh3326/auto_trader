@@ -1,4 +1,4 @@
-"""§176차 — the advisory dynamic deployment cap.
+"""§177차 — the advisory dynamic deployment cap.
 
 The reference numbers are the 2026-09-07 measured position (framework-v0 §2 /
 cash-active-week1-plan §d): 14,925,048 KRW broker orderable plus 7,800,000 KRW

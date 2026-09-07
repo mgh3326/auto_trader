@@ -478,7 +478,7 @@ async def get_available_capital_impl(
         is_paper_account_token,
     )
 
-    # §176차 — the deployment cap's denominator is broker orderable cash PLUS
+    # §177차 — the deployment cap's denominator is broker orderable cash PLUS
     # parking cash as two separate terms, so it must be captured here, before
     # manual cash is folded into the shared total below. Reading the combined
     # figure would count the parking balance twice.
@@ -527,7 +527,7 @@ async def get_available_capital_impl(
         if profile is not None:
             processed_acc["cost_profile"] = profile
 
-    # §176차 — advisory only, and fail-open by construction: a cap that cannot
+    # §177차 — advisory only, and fail-open by construction: a cap that cannot
     # be computed must not degrade a capital read that otherwise succeeded.
     # Nothing here blocks, sizes, or rejects anything; the advisory is emitted
     # for a session to quote when it proposes NEW deployment, and existing

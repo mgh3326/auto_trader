@@ -334,7 +334,7 @@ async def test_create_advisory_reports_exact_pending_shortfall(db_session):
         "skipped_market_rungs": 0,
         "warning": ("매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"),
     }
-    # §176차 — the single pending approval is itself already unpayable.
+    # §177차 — the single pending approval is itself already unpayable.
     assert sequential["status"] == "blocked"
     assert sequential["approvable_count"] == 0
     assert sequential["shortfall"] == "200000"
@@ -502,7 +502,7 @@ async def test_create_advisory_no_false_shortfall_from_stale_expired_group(
 
 
 # ---------------------------------------------------------------------------
-# §176차 — sequential approval shortfall.
+# §177차 — sequential approval shortfall.
 #
 # The 2026-09-07 incident: three KIS averaging-down adds were proposed
 # (1,567,800 + 823,500 + 202,500 = 2,593,800 KRW). The operator approved them
@@ -563,7 +563,7 @@ async def test_sequential_walk_names_the_approval_that_will_be_blocked(db_sessio
 async def test_aggregate_can_read_sufficient_while_an_approval_is_already_blocked(
     db_session,
 ):
-    """The exact blind spot §176차 closes.
+    """The exact blind spot §177차 closes.
 
     Buying power covers the pending total here, so the aggregate says
     "sufficient" with a zero shortfall. It is still true that the operator can

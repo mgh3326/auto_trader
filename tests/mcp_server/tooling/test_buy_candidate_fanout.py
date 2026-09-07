@@ -887,7 +887,7 @@ def test_runbook_states_observation_only_and_no_tuning() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §176차 — the held-lot averaging-down gates are read here, fail closed, and
+# §177차 — the held-lot averaging-down gates are read here, fail closed, and
 # change nothing about which NEW candidates this fan-out returns.
 # ---------------------------------------------------------------------------
 
