@@ -14,6 +14,9 @@ from typing import Any
 
 from app.services.buy_gate_ab_shadow.epoch_v2 import assert_v2_seal
 from app.services.buy_gate_ab_shadow.evaluate_v2 import CandidateEvaluation
+from app.services.buy_gate_ab_shadow.policy_alignment_v2 import (
+    assert_v2_policy_alignment,
+)
 from app.services.buy_gate_ab_shadow.spec_v2 import (
     EXPERIMENT_ID_V2,
     PINNED_POLICY_PROJECTION_SHA256_V2,
@@ -79,6 +82,7 @@ def build_shadow_buy_forecasts(
     if not author:
         raise ValueError("created_by is required")
     assert_v2_seal()
+    assert_v2_policy_alignment()
 
     decision = evaluation.evaluation_as_of.date()
     notional = assumed_notional(evaluation.market)
