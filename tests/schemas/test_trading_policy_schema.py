@@ -261,8 +261,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-07.2"
-    assert policy_content_hash() == "e364868237fb"
+    assert doc.version == "2026-09-07.3"
+    assert policy_content_hash() == "265ff4942ded"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -423,7 +423,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-07.2"
+    assert current["version"] == "2026-09-07.3"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -471,7 +471,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-07.2"
+    assert current["version"] == "2026-09-07.3"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -614,7 +614,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-07.2"
+    assert doc.version == "2026-09-07.3"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1575,6 +1575,65 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert net_conditions["review_date"] == "2026-09-19"
     del current_dump["decision_rules"]["buy.held_majors_support_net"]
 
+    # §177차 (2026-09-07) — three additive decision rules and NOTHING else.
+    # Pin each rule's load-bearing fields here, then strip them, so the
+    # closed-equivalence comparison below still proves that no pre-existing
+    # gate, cap, band, or exclusion moved to make room for them.
+    assert "buy.underwater_support_net" not in baseline_dump["decision_rules"]
+    underwater = current_dump["decision_rules"]["buy.underwater_support_net"]
+    assert underwater["exclusions"] == [
+        "new_symbol_entry",
+        "profitable_position",
+        "thesis_broken",
+        "weak_support_only",
+        "market_order",
+        "gtc_order",
+        "crash_day_new_batch",
+        "cross_account_average_cost_transfer",
+    ]
+    underwater_conditions = underwater["tiers"][0]["conditions"]
+    # The sign reversal from §139차's crypto twin, and the size cap that is
+    # the whole reason an averaging-down tier is safe to register.
+    assert underwater_conditions["unrealized_pnl_pct_max_inclusive"] == -8
+    assert "unrealized_pnl_pct_min_exclusive" not in underwater_conditions
+    assert underwater_conditions["max_add_notional_pct_of_position"] == 50
+    assert underwater_conditions["support_distance_from_current_pct_range"] == [-12, -3]
+    assert underwater_conditions["required_rebound_improvement_pct_min"] == 3
+    assert underwater_conditions["per_order_cap_raised"] is False
+    assert underwater_conditions["new_symbol_discovery_gate_unchanged"] is True
+    assert underwater_conditions["review_date"] == "2026-10-05"
+    del current_dump["decision_rules"]["buy.underwater_support_net"]
+
+    assert "sell.loss_cut" not in baseline_dump["decision_rules"]
+    loss_cut = current_dump["decision_rules"]["sell.loss_cut"]
+    assert loss_cut["exclusions"] == [
+        "auto_approval",
+        "session_initiated_execution",
+        "intact_thesis_with_weak_support_only",
+        "average_down_eligible_lot",
+    ]
+    loss_cut_conditions = loss_cut["tiers"][0]["conditions"]
+    assert loss_cut_conditions["auto_approve"] is False
+    assert loss_cut_conditions["retrospective_required"] is True
+    assert loss_cut_conditions["deep_loss_unrealized_pnl_pct_max_inclusive"] == -40
+    assert loss_cut_conditions["deep_loss_requires_weak_support_only"] is True
+    del current_dump["decision_rules"]["sell.loss_cut"]
+
+    assert "buy.deployment_cap" not in baseline_dump["decision_rules"]
+    deployment_cap = current_dump["decision_rules"]["buy.deployment_cap"]
+    assert deployment_cap["exclusions"] == [
+        "retroactive_violation",
+        "proposal_block",
+        "forced_unwind",
+        "parking_balance_estimation",
+    ]
+    cap_conditions = deployment_cap["tiers"][0]["conditions"]
+    assert cap_conditions["coefficient_pct"] == 45
+    assert cap_conditions["retroactive_violation"] is False
+    assert cap_conditions["blocks_proposal"] is False
+    assert cap_conditions["parking_balance_missing_or_stale_value"] == 0
+    del current_dump["decision_rules"]["buy.deployment_cap"]
+
     normalized_current_dump = deepcopy(current_dump)
     for keys, baseline_value, current_value in _S139_ALLOWED_POLICY_DELTAS:
         assert _policy_keys_get(baseline_dump, keys) == baseline_value
@@ -2453,7 +2512,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-07.2"
+    assert doc.version == "2026-09-07.3"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3236,7 +3295,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-07.2"
+    assert doc.version == "2026-09-07.3"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
@@ -3245,3 +3304,268 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     assert "no relaxation before scoring" in doc.source
     assert "COUNT limit only" in doc.source
     assert "directly reverses the §147 assertion" in doc.source
+
+
+# ---------------------------------------------------------------------------
+# §177차 (2026-09-07) — buy.underwater_support_net / sell.loss_cut /
+# buy.deployment_cap.
+#
+# The tier authorises averaging DOWN, which is the direction that turns a bad
+# thesis into a bigger one. Every clause that keeps it narrow is pinned here,
+# in the same style as the §139차 pins it mirrors, so a later edit that admits
+# a winner, drops the loss floor, widens the band, removes the size cap, or
+# lets the rung rest overnight fails the build rather than shipping.
+# ---------------------------------------------------------------------------
+
+_S177_UNDERWATER_KEY = "buy.underwater_support_net"
+_S177_LOSS_CUT_KEY = "sell.loss_cut"
+_S177_DEPLOYMENT_CAP_KEY = "buy.deployment_cap"
+
+
+def _underwater_conditions(raw):
+    return raw["decision_rules"][_S177_UNDERWATER_KEY]["tiers"][0]["conditions"]
+
+
+def test_s177_underwater_tier_mirrors_the_crypto_twin_with_the_sign_reversed():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    underwater = doc.decision_rules[_S177_UNDERWATER_KEY]
+    crypto_twin = doc.decision_rules["buy.held_majors_support_net"]
+
+    conditions = underwater.tiers[0].conditions
+    twin_conditions = crypto_twin.tiers[0].conditions
+
+    # Same anchor, opposite sign, different markets.
+    assert (
+        conditions["support_strength_min"] == (twin_conditions["support_strength_min"])
+    )
+    assert (
+        conditions["independent_support_source_count_min"]
+        == (twin_conditions["independent_support_source_count_min"])
+    )
+    assert (
+        conditions["support_distance_from_current_pct_range"]
+        == (twin_conditions["support_distance_from_current_pct_range"])
+    )
+    assert twin_conditions["unrealized_pnl_pct_min_exclusive"] == 0
+    assert conditions["unrealized_pnl_pct_max_inclusive"] == -8
+    assert underwater.markets == ["kr", "us"]
+    assert crypto_twin.markets == ["crypto"]
+
+    # §c-3 difference ①: crypto rests GTC, KR/US cannot.
+    assert twin_conditions["tif"] == "GTC"
+    assert conditions["tif"] == "DAY"
+    assert conditions["gtc"] == "FORBIDDEN"
+    assert conditions["daily_regeneration"] == "REQUIRED"
+    # §c-3 difference ③: the KR add lane's R-931 review is inherited.
+    assert "r931_review_required" not in twin_conditions
+    assert conditions["r931_review_required"] == "PASS"
+
+
+def test_s177_underwater_size_cap_matches_the_winner_pullback_add_cap():
+    """The 50% cap is §127차's, adopted rather than invented."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    conditions = doc.decision_rules[_S177_UNDERWATER_KEY].tiers[0].conditions
+    winner = doc.decision_rules["buy.winner_pullback_add"].tiers[0]
+
+    assert conditions["max_add_notional_pct_of_position"] == 50
+    assert "max 50% of existing position notional" in winner.sizing
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        # the sign reversal
+        ("unrealized_pnl_pct_max_inclusive", -5),
+        ("unrealized_pnl_pct_max_inclusive", 0),
+        # the anchor
+        ("support_strength_min", "weak"),
+        ("independent_support_source_count_min", 1),
+        ("support_distance_from_current_pct_range", [-20, -1]),
+        ("required_rebound_improvement_pct_min", 0),
+        # the size cap
+        ("max_add_notional_pct_of_position", 100),
+        ("max_placements_per_symbol_per_day", 3),
+        # execution
+        ("tif", "GTC"),
+        ("gtc", "ALLOWED"),
+        ("daily_regeneration", "OPTIONAL"),
+        ("resting_only", False),
+        ("order_type", "market"),
+        ("per_order_cap_raised", True),
+        # scope
+        ("holding_required", False),
+        ("account_lot_scoped", False),
+        ("thesis_alive_evidence_required", False),
+        ("new_symbol_discovery_gate_unchanged", False),
+        ("buy_gate_ab_shadow_population_unchanged", False),
+        ("per_symbol_notional_band_applies", True),
+        ("per_symbol_notional_band_scope_reason", "waived"),
+        # review and scoring
+        ("r931_review_required", "SKIP"),
+        ("r931_review_max_age_days", 90),
+        ("forecast_save_required", False),
+        ("retire_unless_filled_cohort_d20_median_pct_min", -20),
+        ("retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive", -50),
+        ("crash_day_new_batch_suspended", False),
+        ("enforcement_surface", "code_enforced"),
+        ("code_enforced_boundary", "none"),
+        ("partial_fill", "FORBIDDEN"),
+    ],
+)
+def test_s177_underwater_drift_fails_the_build(key, value):
+    raw = _raw()
+    _underwater_conditions(raw)[key] = value
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s177_underwater_cannot_readopt_the_profitable_lot_floor():
+    """A document carrying BOTH signs would admit winners through the twin key."""
+
+    raw = _raw()
+    _underwater_conditions(raw)["unrealized_pnl_pct_min_exclusive"] = 0
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+_S177_UNDERWATER_EXCLUSIONS = (
+    "new_symbol_entry",
+    "profitable_position",
+    "thesis_broken",
+    "weak_support_only",
+    "market_order",
+    "gtc_order",
+    "crash_day_new_batch",
+    "cross_account_average_cost_transfer",
+)
+
+
+@pytest.mark.parametrize("dropped", _S177_UNDERWATER_EXCLUSIONS)
+def test_s177_underwater_exclusions_cannot_be_dropped(dropped):
+    raw = _raw()
+    rule = raw["decision_rules"][_S177_UNDERWATER_KEY]
+    rule["exclusions"] = [name for name in rule["exclusions"] if name != dropped]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s177_underwater_markets_cannot_be_widened_to_crypto():
+    raw = _raw()
+    raw["decision_rules"][_S177_UNDERWATER_KEY]["markets"] = ["kr", "us", "crypto"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s177_renaming_a_tier_does_not_skip_its_validators():
+    """The §139차 B2 lesson, applied to all three new rules."""
+
+    for key, tier_id in (
+        (_S177_UNDERWATER_KEY, "underwater_support_net"),
+        (_S177_LOSS_CUT_KEY, "loss_cut_candidate"),
+        (_S177_DEPLOYMENT_CAP_KEY, "deployment_cap"),
+    ):
+        raw = _raw()
+        raw["decision_rules"][key]["tiers"][0]["id"] = f"{tier_id}_v2"
+        with pytest.raises(ValidationError):
+            TradingPolicyDocument.model_validate(raw)
+
+
+def test_s177_new_rules_reject_typo_keys():
+    for key in (
+        _S177_UNDERWATER_KEY,
+        _S177_LOSS_CUT_KEY,
+        _S177_DEPLOYMENT_CAP_KEY,
+    ):
+        raw = _raw()
+        raw["decision_rules"][key]["bogus"] = True
+        with pytest.raises(ValidationError):
+            TradingPolicyDocument.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("auto_approve", True),
+        ("approval_required", False),
+        ("retrospective_required", False),
+        ("deep_loss_unrealized_pnl_pct_max_inclusive", -10),
+        ("deep_loss_requires_weak_support_only", False),
+        ("branches_are_alternatives_not_cumulative", False),
+        ("residual_class", "loss_cut"),
+        ("mutually_exclusive_with", "none"),
+        ("exit_intent", "trim"),
+        ("max_slip_policy_key", "invented.key"),
+        ("loss_guard_policy_key", "invented.key"),
+    ],
+)
+def test_s177_loss_cut_classification_cannot_grow_an_execution_surface(key, value):
+    raw = _raw()
+    raw["decision_rules"][_S177_LOSS_CUT_KEY]["tiers"][0]["conditions"][key] = value
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s177_loss_cut_and_underwater_cannot_both_claim_the_same_lot():
+    """The deep-loss branch is gated on weak-only support by construction."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    loss_cut = doc.decision_rules[_S177_LOSS_CUT_KEY].tiers[0].conditions
+    underwater = doc.decision_rules[_S177_UNDERWATER_KEY].tiers[0].conditions
+
+    assert loss_cut["deep_loss_requires_weak_support_only"] is True
+    assert underwater["support_strength_min"] == "moderate"
+    assert underwater["independent_support_source_count_min"] == 2
+    # ...and the residual is a verdict, not a gap.
+    assert loss_cut["residual_class"] == "hold"
+
+
+def test_s177_loss_cut_leaves_the_existing_execution_keys_untouched():
+    """The classification rule references the guards; it does not restate them."""
+
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current = _raw()
+
+    for key in ("sell.loss_cut_max_slip", "sell.loss_guard_min_multiple"):
+        assert current["thresholds"][key] == baseline["thresholds"][key]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("coefficient_pct", 90),
+        ("coefficient_pct", 0),
+        ("retroactive_violation", True),
+        ("blocks_proposal", True),
+        ("unwind_existing_deployment", "ALLOWED"),
+        ("parking_balance_missing_or_stale_value", 7800000),
+        ("parking_balance_estimation", "ALLOWED"),
+        ("parking_balance_source", "cash_yields"),
+        ("cash_yields_is_rate_table_not_balance_source", False),
+        ("evaluated_at", "every_evaluation"),
+        ("recalculation_cadence", ""),
+        ("denominator_terms", ["parking_balance_krw"]),
+        ("denominator_currency", "USD"),
+        ("enforcement_surface", "code_enforced"),
+    ],
+)
+def test_s177_deployment_cap_drift_fails_the_build(key, value):
+    raw = _raw()
+    raw["decision_rules"][_S177_DEPLOYMENT_CAP_KEY]["tiers"][0]["conditions"][key] = (
+        value
+    )
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s177_source_records_the_three_rules_and_the_honest_limits():
+    doc = TradingPolicyDocument.model_validate(_raw())
+
+    assert "§177차 underwater averaging-down tier" in doc.source
+    assert "NO GATE IS RELAXED AND NO CAP IS RAISED" in doc.source
+    # the ROB-1301/1351 non-impact claim is stated, with its reason
+    assert "buy-gate A/B shadow experiment measures is untouched" in doc.source
+    # the band scope statement is recorded as a scope statement, not a waiver
+    assert "rather than a waiver" in doc.source
+    # the parking term's honest limit
+    assert "conservative lower bound" in doc.source

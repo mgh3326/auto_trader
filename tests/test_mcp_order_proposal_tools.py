@@ -467,6 +467,7 @@ async def test_place_create_never_fetches_a_target(monkeypatch):
     assert result["target_broker_order_id"] is None
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_toss_create_warns_on_same_account_pending_buying_power_shortfall(
     monkeypatch,
@@ -513,24 +514,30 @@ async def test_toss_create_warns_on_same_account_pending_buying_power_shortfall(
 
     assert first["success"] is True
     assert created["success"] is True
-    assert created["buying_power_advisory"] == [
-        {
-            "status": "insufficient",
-            "currency": "KRW",
-            "buying_power": "500000",
-            "pending_required": "700000",
-            "shortfall": "200000",
-            "skipped_market_rungs": 0,
-            "warning": (
-                "매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"
-            ),
-        }
-    ]
+    advisory = dict(created["buying_power_advisory"][0])
+    sequential = advisory.pop("sequential_approval_shortfall")
+    assert advisory == {
+        "status": "insufficient",
+        "currency": "KRW",
+        "buying_power": "500000",
+        "pending_required": "700000",
+        "shortfall": "200000",
+        "skipped_market_rungs": 0,
+        "warning": ("매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"),
+    }
+    # §177차 — the walk names which of the two pending approvals will strand.
+    assert sequential["status"] == "blocked"
+    assert sequential["approvable_count"] == 1
+    # 500,000 available - 200,000 (first card) = 300,000 left, second needs
+    # 500,000.
+    assert sequential["remaining_before_blocked"] == "300000"
+    assert sequential["shortfall"] == "200000"
     assert created["warnings"] == [
         "매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"
     ]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_toss_create_reports_sufficient_buying_power_without_warning(monkeypatch):
     broker_account_id = f"rob-861-sufficient-{uuid.uuid4()}"
@@ -563,6 +570,7 @@ async def test_toss_create_reports_sufficient_buying_power_without_warning(monke
     assert "warnings" not in created
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_toss_create_reader_failure_is_non_blocking_unavailable_advisory(
     monkeypatch,
@@ -587,13 +595,15 @@ async def test_toss_create_reader_failure_is_non_blocking_unavailable_advisory(
     assert "warnings" not in created
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_create_advisory_skips_kis_and_sell_proposals(monkeypatch):
+async def test_create_advisory_skips_sell_proposals(monkeypatch):
+    """A sell has no buying-power question; the advisory is not built for one."""
+
     async def forbidden_reader(**kwargs):
         pytest.fail(f"unsupported create advisory read: {kwargs}")
 
     monkeypatch.setattr(opt, "default_buying_power_reader", forbidden_reader)
-    kis = await opt.order_proposal_create(**_create_kwargs())
     toss_sell = await opt.order_proposal_create(
         **_create_kwargs(
             account_mode="toss_live",
@@ -610,10 +620,43 @@ async def test_create_advisory_skips_kis_and_sell_proposals(monkeypatch):
         )
     )
 
-    assert kis["success"] is True
     assert toss_sell["success"] is True
-    assert "buying_power_advisory" not in kis
     assert "buying_power_advisory" not in toss_sell
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_create_advisory_covers_kis_live_buys_without_a_broker_read(monkeypatch):
+    """§177차 — `kis_live` joins the advisory, and adds no balance call.
+
+    KIS has no buying-power reader wired (adding one would put a broker call on
+    the create path), so the aggregate reports `unavailable`. What the advisory
+    does carry for KIS is the per-approval ladder, which is arithmetic over the
+    proposals themselves — that is the half the 2026-09-07 sequential-approval
+    failure needed.
+    """
+
+    reads: list[dict] = []
+
+    async def reader(**kwargs):
+        reads.append(kwargs)
+        return None
+
+    monkeypatch.setattr(opt, "default_buying_power_reader", reader)
+    kis = await opt.order_proposal_create(**_create_kwargs())
+
+    assert kis["success"] is True
+    advisory = kis["buying_power_advisory"][0]
+    assert advisory["status"] == "unavailable"
+    assert advisory["buying_power"] is None
+    sequential = advisory["sequential_approval_shortfall"]
+    assert sequential["status"] == "unavailable"
+    assert sequential["reason"] == "buying_power_unknown"
+    assert sequential["pending_count"] >= 1
+    assert [step["proposal_id"] for step in sequential["ladder"]]
+    assert len(reads) == 1
+    assert reads[0]["account_mode"] == "kis_live"
+    assert reads[0]["currency"] == "KRW"
 
 
 @pytest.mark.asyncio

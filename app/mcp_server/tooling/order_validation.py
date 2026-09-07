@@ -1550,6 +1550,27 @@ async def _check_balance_and_warn(
         if reserved_amount > 0:
             balance = max(0.0, balance - reserved_amount)
 
+    # §177차 (2026-09-07) — what this comparison does and does not net out.
+    #
+    # `balance` is the broker's own orderable figure. For a KIS live account
+    # the broker has ALREADY deducted the reserve of every buy order it has
+    # accepted on this account, so an accepted-but-unfilled sibling order is
+    # netted out here exactly once; this precheck must NOT subtract pending
+    # broker-side buys again or it would double-count them. (The KIS *mock*
+    # branch above is the deliberate exception: its DB shadow reserve exists
+    # because the mock broker does not net it for us.)
+    #
+    # 🔴 What the broker figure cannot see is a proposal that is still waiting
+    # for a human tap — nothing has reached the broker, so nothing is reserved.
+    # Approving those in sequence spends the same balance one card at a time,
+    # and the balance only moves once each approval is accepted. That is the
+    # 2026-09-07 shape: three KIS adds proposed (1,567,800 + 823,500 +
+    # 202,500), the first two approved and reserved, the third rejected here
+    # against a remaining 188,451. This precheck is correct in that moment and
+    # deliberately unchanged; the gap it exposes is a VISIBILITY gap at
+    # proposal-create time, which `sequential_approval_shortfall`
+    # (app/services/order_proposals/buying_power.py) reports as an advisory.
+    # Nothing about the comparison below moved.
     if balance >= order_amount:
         return None, None
 

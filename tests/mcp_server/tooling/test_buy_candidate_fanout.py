@@ -884,3 +884,104 @@ def test_runbook_states_observation_only_and_no_tuning() -> None:
     assert "actionable_count` is always zero" in normalized
     assert "freshness_data_state_missing" in normalized
     assert "bounded_unknown" in normalized
+
+
+# ---------------------------------------------------------------------------
+# §177차 — the held-lot averaging-down gates are read here, fail closed, and
+# change nothing about which NEW candidates this fan-out returns.
+# ---------------------------------------------------------------------------
+
+
+def test_underwater_add_gates_are_read_from_the_policy_and_echoed():
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+
+    echoed = gates.as_dict()["underwater_add"]
+    assert echoed == {
+        "unrealized_pnl_pct_max_inclusive": -8.0,
+        "support_strength_min": "moderate",
+        "independent_support_source_count_min": 2,
+        "support_distance_from_current_pct_range": [-12.0, -3.0],
+        "required_rebound_improvement_pct_min": 3.0,
+        "max_add_notional_pct_of_position": 50,
+        "max_placements_per_symbol_per_day": 1,
+        "partial_fill": "allowed",
+        "per_symbol_notional_band_applies": False,
+    }
+
+
+def test_underwater_add_gates_do_not_change_the_discovery_gates():
+    """The add tier is held-lot only; the discovery literals are untouched."""
+
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+
+    assert gates.rsi_max == 45
+    assert gates.support_strength_min == "moderate"
+    assert gates.support_within_current_pct_max == 8
+    assert gates.honest_upside_pct_min == 40
+    assert gates.discount_below_support_pct_range == (5, 10)
+    assert gates.final_limit_distance_from_current_pct_range == (-15, -5)
+
+
+def test_missing_underwater_rule_fails_the_fanout_closed():
+    policy = fanout.load_trading_policy()
+    stripped = policy.model_copy(
+        update={
+            "decision_rules": {
+                key: rule
+                for key, rule in policy.decision_rules.items()
+                if key != "buy.underwater_support_net"
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="buy.underwater_support_net is missing"):
+        fanout._FanoutGates.from_policy(stripped)
+
+
+def test_underwater_gate_literal_drift_fails_the_fanout_closed():
+    """A substituted policy shape must not silently widen an add."""
+
+    policy = fanout.load_trading_policy()
+    rule = policy.decision_rules["buy.underwater_support_net"]
+    tier = rule.tiers[0]
+    widened_conditions = dict(tier.conditions)
+    widened_conditions["max_add_notional_pct_of_position"] = 100
+    widened = rule.model_copy(
+        update={"tiers": [tier.model_copy(update={"conditions": widened_conditions})]}
+    )
+    drifted = policy.model_copy(
+        update={
+            "decision_rules": {
+                **policy.decision_rules,
+                "buy.underwater_support_net": widened,
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="underwater add gate literals"):
+        fanout._FanoutGates.from_policy(drifted)
+
+
+def test_missing_underwater_condition_key_fails_the_fanout_closed():
+    policy = fanout.load_trading_policy()
+    rule = policy.decision_rules["buy.underwater_support_net"]
+    tier = rule.tiers[0]
+    trimmed_conditions = {
+        key: value
+        for key, value in tier.conditions.items()
+        if key != "required_rebound_improvement_pct_min"
+    }
+    trimmed = rule.model_copy(
+        update={"tiers": [tier.model_copy(update={"conditions": trimmed_conditions})]}
+    )
+    drifted = policy.model_copy(
+        update={
+            "decision_rules": {
+                **policy.decision_rules,
+                "buy.underwater_support_net": trimmed,
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="missing conditions"):
+        fanout._FanoutGates.from_policy(drifted)

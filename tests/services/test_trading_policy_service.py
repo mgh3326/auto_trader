@@ -41,6 +41,11 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
         "buy.winner_pullback_add",
         # §139차 — KR/US only; the crypto held-majors tier must not appear here.
         "buy.index_etf_candidate",
+        # §177차 — the KR/US held-lot averaging-down tier (markets [kr, us], so
+        # it is absent from a crypto buy view) and the advisory deployment cap
+        # (no markets scope, so every buy view carries it).
+        "buy.underwater_support_net",
+        "buy.deployment_cap",
     }
     reserve = view["decision_rules"]["buy.support_reserve_net"]
     assert reserve["discount_below_support_pct_range"] == [5, 10]
@@ -137,7 +142,18 @@ def test_all_policy_key_references_bind_to_thresholds_for_every_market_lane():
                 if reference not in view["thresholds"]:
                     missing.append((market, lane, reference))
 
-    assert len(all_references) == 10
+    # §177차 adds one NEW distinct reference target, sell.loss_cut_max_slip,
+    # via sell.loss_cut.max_slip_policy_key. Its other two references
+    # (buy.underwater_support_net.required_rebound_guard_policy_key and
+    # sell.loss_cut.loss_guard_policy_key) both point at the already-counted
+    # sell.loss_guard_min_multiple, which is why the count moves by one rather
+    # than three. Every one of them still resolves in its lane view -- that is
+    # what `missing == []` proves, and it is the assertion that matters:
+    # sell.loss_guard_min_multiple declares lanes [buy, sell], so the buy-lane
+    # reference from the averaging-down tier binds too.
+    assert len(all_references) == 11
+    assert "sell.loss_cut_max_slip" in all_references
+    assert "sell.loss_guard_min_multiple" in all_references
     assert missing == []
 
 

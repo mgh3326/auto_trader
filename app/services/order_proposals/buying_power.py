@@ -239,6 +239,158 @@ def _markets_for_currency(currency: str) -> tuple[str, ...]:
     return ()
 
 
+@dataclass(frozen=True)
+class PendingApprovalStep:
+    """One still-unapproved buy proposal, in the order it would be approved."""
+
+    proposal_id: str
+    symbol: str
+    required: Decimal
+
+
+async def pending_buy_ladder(
+    session: AsyncSession,
+    *,
+    account_mode: str,
+    broker_account_id: str | None,
+    currency: str,
+    now: datetime,
+) -> tuple[list[PendingApprovalStep], int]:
+    """Per-proposal pending buy requirements for one broker account/currency.
+
+    Same row predicate as ``pending_buy_requirement`` (which is built on this),
+    but the totals stay attributed to their proposal so a caller can walk the
+    approvals in order instead of only seeing the sum. Ordering is
+    ``created_at`` then primary key, which is the order the operator sees the
+    approval cards in and is deterministic even when two rows share a
+    timestamp.
+    """
+
+    _require_timezone_aware(now)
+    markets = _markets_for_currency(currency)
+    if not markets:
+        return [], 0
+
+    stmt = (
+        select(OrderProposal, OrderProposalRung)
+        .join(OrderProposalRung, OrderProposal.id == OrderProposalRung.proposal_pk)
+        .where(
+            OrderProposal.account_mode == account_mode,
+            OrderProposal.broker_account_id == broker_account_id,
+            OrderProposal.market.in_(markets),
+            OrderProposal.action == "place",
+            OrderProposalRung.state == "pending_approval",
+            OrderProposalRung.side == "buy",
+            or_(
+                OrderProposal.valid_until.is_(None),
+                OrderProposal.valid_until > now,
+            ),
+        )
+        .order_by(OrderProposal.created_at, OrderProposal.id, OrderProposalRung.id)
+    )
+    rows = list((await session.execute(stmt)).all())
+
+    skipped_market_rungs = 0
+    # A proposal can carry several rungs; the operator approves the PROPOSAL,
+    # so the ladder step is the proposal and its required cash is the sum of
+    # its own pending rungs.
+    steps: dict[int, PendingApprovalStep] = {}
+    for proposal, rung in rows:
+        if rung.limit_price is None:
+            skipped_market_rungs += 1
+            continue
+        amount = Decimal(rung.quantity) * Decimal(rung.limit_price)
+        existing = steps.get(proposal.id)
+        if existing is None:
+            steps[proposal.id] = PendingApprovalStep(
+                proposal_id=str(proposal.proposal_id),
+                symbol=str(proposal.symbol),
+                required=amount,
+            )
+        else:
+            steps[proposal.id] = PendingApprovalStep(
+                proposal_id=existing.proposal_id,
+                symbol=existing.symbol,
+                required=existing.required + amount,
+            )
+    return list(steps.values()), skipped_market_rungs
+
+
+def sequential_approval_shortfall(
+    steps: list[PendingApprovalStep],
+    available: Decimal | None,
+) -> dict[str, Any]:
+    """Find the first approval that this account's cash cannot cover.
+
+    Why this is not the same number as ``shortfall``: the aggregate shortfall
+    says the pending set *in total* exceeds buying power, which is exactly the
+    figure that reads as "still fine" while an individual approval is about to
+    fail. The broker deducts each approved buy's reserve as it is accepted, so
+    approvals are consumed in sequence -- on 2026-09-07 three KIS adds totalling
+    2,593,800 KRW were created, the first two were approved, and the third
+    (202,500) failed the balance precheck against a remaining 188,451 with the
+    aggregate advisory never having named which one would break.
+
+    ``available`` of ``None`` means buying power is unknown for this account
+    (no reader is wired for it). The walk is then not computable and says so;
+    the per-step cumulative ladder is still returned, because it is the half
+    that needs no balance.
+    """
+
+    ladder: list[dict[str, str]] = []
+    cumulative = Decimal("0")
+    for step in steps:
+        cumulative += step.required
+        ladder.append(
+            {
+                "proposal_id": step.proposal_id,
+                "symbol": step.symbol,
+                "required": decimal_text(step.required),
+                "cumulative_required": decimal_text(cumulative),
+            }
+        )
+
+    if available is None:
+        return {
+            "status": "unavailable",
+            "reason": "buying_power_unknown",
+            "pending_count": len(steps),
+            "approvable_count": None,
+            "blocked_proposal_id": None,
+            "shortfall": None,
+            "ladder": ladder,
+        }
+
+    remaining = Decimal(available)
+    approvable = 0
+    for step in steps:
+        if step.required > remaining:
+            return {
+                "status": "blocked",
+                "reason": "next_approval_exceeds_remaining_buying_power",
+                "pending_count": len(steps),
+                "approvable_count": approvable,
+                "blocked_proposal_id": step.proposal_id,
+                "blocked_symbol": step.symbol,
+                "blocked_required": decimal_text(step.required),
+                "remaining_before_blocked": decimal_text(remaining),
+                "shortfall": decimal_text(step.required - remaining),
+                "ladder": ladder,
+            }
+        remaining -= step.required
+        approvable += 1
+    return {
+        "status": "clear",
+        "reason": None,
+        "pending_count": len(steps),
+        "approvable_count": approvable,
+        "blocked_proposal_id": None,
+        "shortfall": decimal_text(Decimal("0")),
+        "remaining_after_all": decimal_text(remaining),
+        "ladder": ladder,
+    }
+
+
 async def pending_buy_requirement(
     session: AsyncSession,
     *,
@@ -255,35 +407,16 @@ async def pending_buy_requirement(
     yet — tracked separately), so this predicate excludes them here to avoid
     inflating ``pending_required`` with stale groups.
     """
-    _require_timezone_aware(now)
-    markets = _markets_for_currency(currency)
-    if not markets:
-        return Decimal("0"), 0
-
-    stmt = (
-        select(OrderProposalRung)
-        .join(OrderProposal, OrderProposal.id == OrderProposalRung.proposal_pk)
-        .where(
-            OrderProposal.account_mode == account_mode,
-            OrderProposal.broker_account_id == broker_account_id,
-            OrderProposal.market.in_(markets),
-            OrderProposal.action == "place",
-            OrderProposalRung.state == "pending_approval",
-            OrderProposalRung.side == "buy",
-            or_(
-                OrderProposal.valid_until.is_(None),
-                OrderProposal.valid_until > now,
-            ),
-        )
+    # Delegated to ``pending_buy_ladder`` so the aggregate and the per-approval
+    # walk can never disagree about which rows count.
+    steps, skipped_market_rungs = await pending_buy_ladder(
+        session,
+        account_mode=account_mode,
+        broker_account_id=broker_account_id,
+        currency=currency,
+        now=now,
     )
-    rungs = list((await session.execute(stmt)).scalars().all())
-    required = Decimal("0")
-    skipped_market_rungs = 0
-    for rung in rungs:
-        if rung.limit_price is None:
-            skipped_market_rungs += 1
-            continue
-        required += Decimal(rung.quantity) * Decimal(rung.limit_price)
+    required = sum((step.required for step in steps), Decimal("0"))
     return required, skipped_market_rungs
 
 
@@ -296,13 +429,14 @@ async def build_create_advisory(
     now: datetime,
     buying_power_reader: BuyingPowerReader = default_buying_power_reader,
 ) -> dict[str, Any]:
-    required, skipped = await pending_buy_requirement(
+    steps, skipped = await pending_buy_ladder(
         session,
         account_mode=account_mode,
         broker_account_id=broker_account_id,
         currency=currency,
         now=now,
     )
+    required = sum((step.required for step in steps), Decimal("0"))
     try:
         buying_power = await buying_power_reader(
             account_mode=account_mode,
@@ -321,6 +455,9 @@ async def build_create_advisory(
             "shortfall": None,
             "skipped_market_rungs": skipped,
             "warning": None,
+            # The per-approval ladder needs no balance, so it survives an
+            # unknown buying power; only the walk that spends it is withheld.
+            "sequential_approval_shortfall": sequential_approval_shortfall(steps, None),
         }
 
     available = Decimal(buying_power)
@@ -334,6 +471,17 @@ async def build_create_advisory(
             f"{format_currency_amount(required, currency=currency)} → 부족 "
             f"{format_currency_amount(shortfall, currency=currency)}"
         )
+    sequential = sequential_approval_shortfall(steps, available)
+    if warning is None and sequential["status"] == "blocked":
+        # The aggregate can read "sufficient" while a single approval in the
+        # queue is already unpayable, because the aggregate is compared against
+        # the whole pending set rather than walked. Surface the sharper one.
+        warning = (
+            f"순차 승인 {sequential['approvable_count']}건 후 "
+            f"{sequential['blocked_symbol']} 승인 시 "
+            f"{format_currency_amount(Decimal(sequential['shortfall']), currency=currency)} "
+            "부족 예상"
+        )
     return {
         "status": "insufficient" if insufficient else "sufficient",
         "currency": currency,
@@ -342,4 +490,5 @@ async def build_create_advisory(
         "shortfall": decimal_text(shortfall),
         "skipped_market_rungs": skipped,
         "warning": warning,
+        "sequential_approval_shortfall": sequential,
     }
