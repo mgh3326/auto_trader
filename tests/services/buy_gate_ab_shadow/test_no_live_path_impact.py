@@ -10,9 +10,21 @@ SHADOW_DIR = REPO_ROOT / "app" / "services" / "buy_gate_ab_shadow"
 MCP_FILES = (
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow.py",
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow_registration.py",
+    REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow_v2.py",
+    REPO_ROOT
+    / "app"
+    / "mcp_server"
+    / "tooling"
+    / "buy_gate_ab_shadow_v2_registration.py",
 )
 SHADOW_IMPORT_ALLOWED_FILES = MCP_FILES + (
+    REPO_ROOT
+    / "app"
+    / "mcp_server"
+    / "tooling"
+    / "buy_candidate_fanout_registration.py",
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "analysis_registration.py",
+    REPO_ROOT / "app" / "services" / "buy_gate_ab_shadow_recorder.py",
     REPO_ROOT / "app" / "services" / "trade_journal" / "forecast_service.py",
 )
 LIVE_PATH_FILES = (

@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING, Any
 from app.mcp_server.tooling.buy_candidate_fanout import (
     discover_buy_candidates_fanout_impl,
 )
+from app.services.buy_gate_ab_shadow_recorder import (
+    maybe_record_buy_gate_ab_shadow,
+)
 from app.services.screener_pick_log import maybe_record_fanout_picks
 
 if TYPE_CHECKING:
@@ -33,12 +36,15 @@ def register_buy_candidate_fanout_tools(mcp: FastMCP) -> None:
             "does not query broker or account state, so budget remains deferred. Do not "
             "use this output for PnL scoring or immediate threshold tuning. The fan-out "
             "itself performs no writes; when SCREENER_PICK_LOG_ENABLED an outer "
-            "fail-open observer records the returned picks for prospective scoring."
+            "fail-open observer records the returned picks for prospective scoring. "
+            "When BUY_GATE_AB_SHADOW_RECORD_ENABLED, a second fail-open observer "
+            "records pre-arming v2 plumbing witnesses only, never experiment samples."
         ),
     )
     async def discover_buy_candidates_fanout() -> dict[str, Any]:
         result = await discover_buy_candidates_fanout_impl()
         await maybe_record_fanout_picks(result)
+        await maybe_record_buy_gate_ab_shadow(result)
         return result
 
 

@@ -93,6 +93,9 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         # read-only advisory tool, so including it preserves the KIWOOM ↔
         # KIWOOM_KR shared-surface contract without exposing a mutation.
         "evaluate_buy_gate_ab_shadow",
+        # ROB-1351: independently registered v2 pre-arming witness evaluator.
+        # It returns forecast kwargs but does not write, arm, or promote.
+        "evaluate_buy_gate_ab_shadow_v2",
         # ROB-1303: read-only spike cause attribution. Same reasoning as the
         # ROB-1301 entry above — it is advisory and cannot mutate anything, and
         # the KIWOOM <-> KIWOOM_KR shared-surface contract
