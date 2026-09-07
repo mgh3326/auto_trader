@@ -31,6 +31,11 @@ from app.models.invalid_sample_eligibility import SampleEligibilityDecision
 from app.models.review import TradeForecast
 from app.models.trading import InstrumentType
 from app.services.buy_gate_ab_shadow.epoch import COLLECTION_EPOCH
+from app.services.buy_gate_ab_shadow.forecast_guard_v2 import (
+    ForecastGuardV2Error,
+    is_rob1351_v2_target,
+    validate_v2_forecast_target,
+)
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
@@ -279,6 +284,77 @@ async def _record_rob1301_shadow_eligibility(
             "collection_armed_at": forecast_target["collection_armed_at"],
             "collection_start": forecast_target["collection_start"],
             "collection_end_exclusive": forecast_target["collection_end_exclusive"],
+            "evaluation_as_of": forecast_target["evaluation_as_of"],
+            "input_snapshot_sha256": forecast_target["input_snapshot_sha256"],
+            "forecast_id": str(row.forecast_id),
+        },
+    )
+
+
+def _validate_rob1351_v2_target(
+    forecast_target: dict[str, Any], *, instrument_type: str
+) -> None:
+    """Surface v2 persistence-boundary rejections as forecast validation errors."""
+
+    try:
+        validate_v2_forecast_target(
+            forecast_target,
+            instrument_type=instrument_type,
+        )
+    except ForecastGuardV2Error as exc:
+        raise ForecastValidationError(str(exc)) from exc
+
+
+async def _record_rob1351_v2_eligibility(
+    db: AsyncSession,
+    *,
+    row: TradeForecast,
+    forecast_target: dict[str, Any],
+) -> None:
+    """Append actual calibration and trade-performance exclusion for a v2 row.
+
+    A JSON tag alone is not a calibration boundary: the aggregate reads only
+    ``review.sample_eligibility_decisions``.  Every persisted v2 witness is
+    observation-only, including non-shadow evaluated cohorts.
+    """
+
+    if not is_rob1351_v2_target(forecast_target):
+        return
+    subject = EligibilitySubject(
+        kind=EligibilitySubjectKind.FORECAST, ref=str(row.forecast_id)
+    )
+    service = InvalidSampleEligibilityService(db)
+    existing = await service.get_decision(subject)
+    if (
+        existing.calibration_eligibility is CalibrationEligibility.EXCLUDE
+        and existing.trade_performance_eligibility
+        is TradePerformanceEligibility.EXCLUDE
+    ):
+        return
+    await service.record_decision(
+        subject=subject,
+        forecast_outcome_observability=ForecastOutcomeObservability.OBSERVABLE,
+        calibration_eligibility=CalibrationEligibility.EXCLUDE,
+        trade_performance_eligibility=TradePerformanceEligibility.EXCLUDE,
+        operational_reliability_eligibility=(
+            OperationalReliabilityEligibility.UNIDENTIFIABLE
+        ),
+        decision_reason=(
+            "ROB-1351 v2 pre-arming witness: exclude observation-only forecast "
+            "from calibration and trade-performance cohorts"
+        ),
+        decided_by=row.created_by,
+        evidence={
+            "experiment_id": forecast_target["experiment_id"],
+            "cohort": forecast_target["cohort"],
+            "evaluated_cohort": forecast_target.get("evaluated_cohort"),
+            "variant": forecast_target["variant"],
+            "spec_sha256": forecast_target["spec_sha256"],
+            "policy_projection_sha256": forecast_target["policy_projection_sha256"],
+            "collection_epoch_id": forecast_target["collection_epoch_id"],
+            "pre_arming_witness": forecast_target["pre_arming_witness"],
+            "experiment_sample": forecast_target["experiment_sample"],
+            "shared_gate_bits": forecast_target["shared_gate_bits"],
             "evaluation_as_of": forecast_target["evaluation_as_of"],
             "input_snapshot_sha256": forecast_target["input_snapshot_sha256"],
             "forecast_id": str(row.forecast_id),
@@ -751,6 +827,10 @@ async def save_forecast(
         forecast_target,
         instrument_type=instrument_type,
     )
+    _validate_rob1351_v2_target(
+        forecast_target,
+        instrument_type=instrument_type,
+    )
     start = (
         _parse_date(forecast_start_date, "forecast_start_date")
         if forecast_start_date is not None
@@ -792,6 +872,7 @@ async def save_forecast(
     await _record_rob1301_shadow_eligibility(
         db, row=row, forecast_target=forecast_target
     )
+    await _record_rob1351_v2_eligibility(db, row=row, forecast_target=forecast_target)
     return action, row
 
 
