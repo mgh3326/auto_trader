@@ -335,9 +335,16 @@ async def _complete_committed_proposal_create(
                 replacement_proposal_id=proposal_id,
             )
 
+        # §177차 — `kis_live` joins the advisory. It has no buying-power reader
+        # (adding one would put a broker balance call on the create path), so
+        # its advisory reports buying power as unavailable; what it DOES carry
+        # is the per-approval ladder, which needs no balance and is the half
+        # that names the 2026-09-07 failure: three KIS adds created, two
+        # approved, the third rejected by the balance precheck because the
+        # broker had already reserved the first two.
         if (
             normalized_action == "place"
-            and account_mode == "toss_live"
+            and account_mode in ("toss_live", "kis_live")
             and side == "buy"
         ):
             try:

@@ -14,7 +14,7 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
     assert out["version"] == policy_version_stamp()["version"]
-    assert out["content_hash"] == "e76182f303ba"
+    assert out["content_hash"] == "40923d978d6f"
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert set(out["decision_rules"]) == {
         "buy.support_reserve_net",
@@ -22,6 +22,11 @@ async def test_get_trading_policy_returns_thresholds_and_version():
         "buy.winner_pullback_add",
         # §139차 — the index-ETF admission is a KR/US equity-universe rule.
         "buy.index_etf_candidate",
+        # §177차 — the KR/US held-lot averaging-down tier and the advisory
+        # dynamic deployment cap. Both are buy-lane and both are visible to a
+        # KR buy session; the crypto-only §139차 tier still is not.
+        "buy.underwater_support_net",
+        "buy.deployment_cap",
     }
     reserve = out["decision_rules"]["buy.support_reserve_net"]
     assert reserve["eligible_only_when_regular_gate_failure"] == "RSI_ONLY"
@@ -76,7 +81,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
 
     assert out["success"] is True
     assert out["version"] == policy_version_stamp()["version"]
-    assert out["content_hash"] == "e76182f303ba"
+    assert out["content_hash"] == "40923d978d6f"
     gate = out["market_rules"]["recovery_gate"]
     assert gate["min_conditions_met"] == 2
     assert gate["of"] == 2
@@ -218,8 +223,8 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-09-07.3"
-    assert out["content_hash"] == "e76182f303ba"
+    assert out["version"] == "2026-09-07.4"
+    assert out["content_hash"] == "40923d978d6f"
 
 
 @pytest.mark.asyncio
@@ -232,7 +237,7 @@ async def test_get_trading_policy_returns_user_stances_advisory_with_version_ech
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-948, matching ROB-932).
     assert out["version"]
-    assert out["content_hash"] == "e76182f303ba"
+    assert out["content_hash"] == "40923d978d6f"
 
 
 @pytest.mark.asyncio
