@@ -10,7 +10,7 @@ pure classifier.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, Decimal, DivisionByZero, InvalidOperation
+from decimal import ROUND_CEILING, Decimal, DivisionByZero, InvalidOperation, Overflow
 from typing import Any
 
 from app.services.order_proposals.parking_allowlist import parking_scope
@@ -20,6 +20,15 @@ CASH_FUNDING_EXIT_INTENT = "cash_funding"
 # Closed operator constant.  It is intentionally not a setting, environment
 # variable, policy value, or caller input.
 TRANCHE_SLACK_UNITS = Decimal("1")
+
+# Closed input/resource limits.  A funding target is a compact native-currency
+# amount, never an unbounded decimal payload.  Keeping both the coefficient and
+# adjusted exponent bounded also guarantees that audit details cannot expand a
+# scientific-notation input into an unbounded fixed-point string.
+MAX_FUNDING_REQUIRED_DIGITS = 18
+MAX_FUNDING_REQUIRED_ADJUSTED = 18
+MAX_FUNDING_DECIMAL_TEXT_LENGTH = 64
+_UNREPRESENTABLE_DECIMAL_TEXT = "unrepresentable"
 
 
 @dataclass(frozen=True)
@@ -71,18 +80,39 @@ _FUNDING_MARKET_CURRENCY: dict[str, str] = {
 }
 
 
-def _decimal_from_payload(value: Any) -> Decimal | None:
-    """Parse only exact JSON-safe numeric forms; floats are never accepted."""
-    if type(value) is Decimal:
-        return value
-    if type(value) is int:
-        return Decimal(value)
-    if type(value) is not str or not value or value.strip() != value:
-        return None
+def _funding_decimal_within_bounds(value: Decimal) -> bool:
+    """Return whether a finite funding amount is safe to retain or render."""
+    if not value.is_finite():
+        return False
     try:
-        return Decimal(value)
-    except (InvalidOperation, ValueError):
+        return (
+            len(value.as_tuple().digits) <= MAX_FUNDING_REQUIRED_DIGITS
+            and abs(value.adjusted()) <= MAX_FUNDING_REQUIRED_ADJUSTED
+        )
+    except (InvalidOperation, Overflow, ValueError):
+        return False
+
+
+def _decimal_from_payload(value: Any) -> Decimal | None:
+    """Parse only exact bounded numeric forms; floats are never accepted."""
+    if type(value) is Decimal:
+        parsed = value
+    elif type(value) is int:
+        parsed = Decimal(value)
+    elif type(value) is not str or not value or value.strip() != value:
         return None
+    else:
+        try:
+            parsed = Decimal(value)
+        except (InvalidOperation, ValueError):
+            return None
+
+    # Preserve the parsed target shape so the resolver reports the dedicated
+    # `funding_required_invalid` reason rather than conflating hostile numeric
+    # input with a missing target.  Decimal NaN is never usable as an amount.
+    if parsed.is_finite() and not _funding_decimal_within_bounds(parsed):
+        return Decimal("NaN")
+    return parsed
 
 
 def _positive_finite_decimal(value: Any) -> Decimal | None:
@@ -92,8 +122,19 @@ def _positive_finite_decimal(value: Any) -> Decimal | None:
 
 
 def _decimal_text(value: Decimal) -> str:
-    normalized = format(value.normalize(), "f")
-    return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+    """Return a bounded audit representation without propagating decimal errors."""
+    if not _funding_decimal_within_bounds(value):
+        return _UNREPRESENTABLE_DECIMAL_TEXT
+    try:
+        normalized = format(value.normalize(), "f")
+    except (InvalidOperation, Overflow, ValueError):
+        return _UNREPRESENTABLE_DECIMAL_TEXT
+    rendered = normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+    return (
+        rendered
+        if len(rendered) <= MAX_FUNDING_DECIMAL_TEXT_LENGTH
+        else _UNREPRESENTABLE_DECIMAL_TEXT
+    )
 
 
 def _funding_currency(market: Any) -> str | None:
@@ -280,6 +321,7 @@ def resolve_cash_funding_exemption(
 __all__ = [
     "CASH_FUNDING_EXIT_INTENT",
     "CASH_FUNDING_REJECT_REASONS",
+    "MAX_FUNDING_DECIMAL_TEXT_LENGTH",
     "TRANCHE_SLACK_UNITS",
     "CashFundingVerdict",
     "FundingTarget",

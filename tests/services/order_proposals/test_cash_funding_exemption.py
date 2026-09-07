@@ -13,6 +13,7 @@ from app.services.order_proposals import cash_funding_exemption
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_EXIT_INTENT,
     CASH_FUNDING_REJECT_REASONS,
+    MAX_FUNDING_DECIMAL_TEXT_LENGTH,
     TRANCHE_SLACK_UNITS,
     FundingTarget,
     parse_funding_target,
@@ -175,6 +176,32 @@ def test_parse_funding_target_is_exact_and_preserves_dedicated_validation():
         is None
     )
     assert parse_funding_target({"market": "equity_us", "required": "100"}) is None
+
+
+@pytest.mark.parametrize(
+    "raw_required",
+    ("1e9999999", "1e999999", "-1e9999", "NaN", "Infinity"),
+)
+def test_extreme_funding_required_is_bounded_closed_reason(raw_required: str):
+    target = parse_funding_target(
+        {
+            "market": "equity_us",
+            "required": raw_required,
+            "plan_ref": "planned-buy-001",
+        }
+    )
+
+    assert target is not None
+    verdict = _resolve(funding_target=target)
+    assert verdict.exempt is False
+    assert verdict.reason == "funding_required_invalid"
+    assert all(
+        len(detail) <= MAX_FUNDING_DECIMAL_TEXT_LENGTH
+        for detail in verdict.details.values()
+    )
+    rendered = cash_funding_exemption._decimal_text(Decimal(raw_required))
+    assert len(rendered) <= MAX_FUNDING_DECIMAL_TEXT_LENGTH
+    assert rendered == "unrepresentable"
 
 
 def test_reject_vocabulary_is_exactly_closed():

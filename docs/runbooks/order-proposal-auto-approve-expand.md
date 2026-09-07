@@ -802,16 +802,37 @@ already planned buy; it is not a general loss-sale release. The roster,
 per-order caps, cumulative caps, and one-unit tranche slack remain closed code
 constants. Neither an MCP caller nor this policy document can widen them.
 
-The intent exempts exactly two named gates:
+Operator decision **2026-09-07 B′** ratifies the shipped behavior. The prior
+§S177 wording that named only two effects is corrected here: the intent has
+four specific effects, not two.
 
 | gate | treatment |
 | --- | --- |
 | limit-sell `avg_cost × sell.loss_guard_min_multiple` floor | exempt only after the closed cash-funding proof is present; the retained `SELL_MARKETABLE_MAX_DISCOUNT` fat-finger band still blocks a deep discount |
 | `de_minimis_trim_watch` minimum-benefit floor | explicitly exempt in the policy's advisory tier only; this tier has no runtime consumer and must not be described as code-enforced |
+| `order_proposals.auto_approve.per_order_cap` | **raised** to the immutable exact parking-scope value, never removed; the cap check still runs on every cash-funding rung and `per_order_cap_exceeded` demotes an over-cap rung to a human card (§106's one-automation-error boundary remains) |
+| sell `order_proposals.auto_approve.min_distance_pct` | skipped only after the cash-funding proof succeeds; this allows a marketable **limit** sell but does not release market orders or the retained fat-finger band |
+
+All four effects require all four conditions:
+
+1. `cash_funding_active`: `resolve_cash_funding_exemption` has returned
+   `exempt` from the proposal's closed funding proof.
+2. The symbol, account mode, and market form an exact closed
+   `parking_allowlist` tuple.
+3. The rung side is `sell`.
+4. The projected durable cash-funding cumulative notional is no greater than
+   that tuple's immutable `PARKING_CUMULATIVE_CAP_KRW` or
+   `PARKING_CUMULATIVE_CAP_USD`.
+
+This sell authorization is deliberately independent of parking auto-approve
+mode. §163/§S170 parking **buy** releases require `expanded` mode, whereas a
+cash-equivalent sell that funds an approved buy is a separate authorization and
+not a market-risk decision. `off` mode therefore does not revoke a fully
+proven cash-funding sell's raised cap or sell-side distance treatment.
 
 The auto-approve decision has three fail-closed boundaries, in addition to all
-unchanged account, tag, per-order, availability, preview, thesis-card, and
-ordinary-window gates:
+unchanged account, tag, availability, preview, thesis-card, and ordinary-window
+gates. Its per-order cap remains a hard check at the raised scope value:
 
 1. `resolve_cash_funding_exemption` must yield `exempt`: exact parking tuple,
    limit sell, parsed target, native-currency match, finite positive required

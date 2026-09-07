@@ -1718,8 +1718,12 @@ class CashProxyPolicy(BaseModel):
     symbol_list_duplicated_here: Literal[False]
     exit_intent: Literal["cash_funding"]
     exempt_gates: list[str]
+    exempt_gate_conditions_all_required: list[str]
+    parking_auto_approve_mode_independent: Literal[True]
+    parking_auto_approve_mode_independence_reason: str
+    operator_ratification: Literal["2026-09-07 운영자 결정 B′"]
     required_evidence: list[str]
-    quantity_cap_formula: str
+    quantity_cap_formula: Literal["ceil(funding_target.required / current_price) + 1"]
     quantity_cap_tranche_slack_units: Literal[1]
     cumulative_cap_source: str
     auto_approve: Literal["allowed_within_boundaries"]

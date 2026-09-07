@@ -262,7 +262,7 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-09-07.4"
-    assert policy_content_hash() == "fb553a03a28e"
+    assert policy_content_hash() == "b28173c91ec3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -279,6 +279,24 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     assert doc.version == "2026-09-07.4"
     assert doc.cash_proxy.exit_intent == "cash_funding"
     assert doc.cash_proxy.symbol_list_duplicated_here is False
+    assert doc.cash_proxy.exempt_gates == [
+        "sell.loss_guard_min_multiple",
+        "decision_rules.sell.trim_preplace.tiers.de_minimis_trim_watch",
+        "order_proposals.auto_approve.per_order_cap (raised to the parking scope value, never removed)",
+        "order_proposals.auto_approve.min_distance_pct (sell side only)",
+    ]
+    assert doc.cash_proxy.exempt_gate_conditions_all_required == [
+        "cash_funding_active",
+        "symbol ∈ cash_proxy allowlist (parking_allowlist scope tuple: symbol × account_mode × market)",
+        "side == sell",
+        "cumulative ≤ PARKING_CUMULATIVE_CAP_KRW|USD",
+    ]
+    assert doc.cash_proxy.parking_auto_approve_mode_independent is True
+    assert doc.cash_proxy.operator_ratification == "2026-09-07 운영자 결정 B′"
+    assert (
+        doc.cash_proxy.quantity_cap_formula
+        == "ceil(funding_target.required / current_price) + 1"
+    )
     assert doc.cash_proxy.quantity_cap_tranche_slack_units == 1
     assert doc.fx.fx_preferential.kis.preferential_rate_pct == 80
     assert doc.fx.fx_preferential.toss.preferential_rate_pct == 90
@@ -294,6 +312,10 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     cash_proxy_yaml = yaml.safe_dump(current["cash_proxy"], sort_keys=True)
     for symbol in ("459580", "357870", "SGOV", "BIL"):
         assert symbol not in cash_proxy_yaml
+    bad_formula = deepcopy(current)
+    bad_formula["cash_proxy"]["quantity_cap_formula"] = "operator override"
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(bad_formula)
     assert doc.thresholds["portfolio.max_symbols_per_theme"].value == 2
     assert doc.thresholds["sell.momentum_spike_change_pct_min"].value == 10
     assert doc.thresholds["sell.single_share_profit_pct_min"].value == 8

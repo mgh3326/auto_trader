@@ -102,6 +102,34 @@ async def test_cash_funding_create_fails_closed_without_target(db_session, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_required",
+    ("1e9999999", "1e999999", "-1e9999", "NaN", "Infinity"),
+)
+async def test_cash_funding_create_rejects_extreme_required_with_closed_reason(
+    db_session, monkeypatch, raw_required: str
+):
+    reader = AsyncMock(return_value={"status": "insufficient", "shortfall": "200"})
+    monkeypatch.setattr(service_module, "build_create_advisory", reader)
+    target = {
+        "market": "equity_us",
+        "required": raw_required,
+        "plan_ref": "planned-buy-001",
+    }
+
+    with pytest.raises(
+        OrderProposalError, match="cash_funding_funding_required_invalid"
+    ):
+        await OrderProposalsService(db_session).create_proposal(
+            **_cash_create_kwargs(
+                source_asof={"cash_funding": {"funding_target": target}}
+            )
+        )
+
+    reader.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mcp_create_carries_load_bearing_cash_target_in_source_asof(monkeypatch):
     proposal_id = uuid.uuid4()
     group = SimpleNamespace(
