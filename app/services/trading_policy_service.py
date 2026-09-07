@@ -242,6 +242,10 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
         # ROB-948 — global advisory stance context, not market/lane-scoped;
         # same echo pattern as crash_day above.
         "user_stances": [stance.model_dump() for stance in doc.user_stances],
+        # Advisory reference data — not market/lane-scoped; same echo pattern
+        # as crash_day above.
+        "cash_yields": doc.cash_yields.model_dump(),
+        "transfer_costs": doc.transfer_costs.model_dump(),
     }
 
 

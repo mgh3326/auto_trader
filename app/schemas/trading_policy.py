@@ -1256,6 +1256,106 @@ class UserStance(BaseModel):
         return value
 
 
+class CashYieldBracket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    up_to_amount: float | int | None
+    annual_pct: float | int
+
+    @model_validator(mode="after")
+    def validate_non_negative_values(self) -> CashYieldBracket:
+        if self.annual_pct < 0:
+            raise ValueError("cash yield annual_pct must be greater than or equal to 0")
+        if self.up_to_amount is not None and self.up_to_amount <= 0:
+            raise ValueError(
+                "cash yield closed bracket up_to_amount must be greater than 0"
+            )
+        return self
+
+
+class CashYieldAccount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    currency: Literal["KRW", "USD"]
+    tier_basis: Literal["marginal", "flat"]
+    brackets: list[CashYieldBracket]
+
+    @model_validator(mode="after")
+    def validate_brackets(self) -> CashYieldAccount:
+        if not self.brackets:
+            raise ValueError("cash yield brackets must not be empty")
+
+        open_indexes = [
+            index
+            for index, bracket in enumerate(self.brackets)
+            if bracket.up_to_amount is None
+        ]
+        if len(open_indexes) != 1:
+            raise ValueError(
+                "cash yield brackets must contain exactly one open-ended bracket"
+            )
+        if open_indexes[0] != len(self.brackets) - 1:
+            raise ValueError("cash yield open-ended bracket must be last")
+
+        closed_amounts = [
+            bracket.up_to_amount
+            for bracket in self.brackets
+            if bracket.up_to_amount is not None
+        ]
+        if any(
+            current <= previous
+            for previous, current in zip(
+                closed_amounts, closed_amounts[1:], strict=False
+            )
+        ):
+            raise ValueError(
+                "cash yield closed bracket up_to_amount values must be strictly increasing"
+            )
+
+        if self.tier_basis == "flat" and (
+            len(self.brackets) != 1 or self.brackets[0].up_to_amount is not None
+        ):
+            raise ValueError(
+                "flat cash yield account must have exactly one open-ended bracket"
+            )
+        return self
+
+
+class CashYieldsPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    basis: str
+    tax_treatment: str
+    accounts: dict[str, CashYieldAccount]
+
+
+class TransferCostRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_account: str
+    to_account: str
+    currency: Literal["KRW", "USD"]
+    fee_basis: Literal["flat"]
+    fee_amount: float | int
+    lead_time: str
+
+    @model_validator(mode="after")
+    def validate_non_negative_fee_amount(self) -> TransferCostRoute:
+        if self.fee_amount < 0:
+            raise ValueError(
+                "transfer cost fee_amount must be greater than or equal to 0"
+            )
+        return self
+
+
+class TransferCostsPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    routes: dict[str, TransferCostRoute]
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1278,6 +1378,8 @@ class TradingPolicyDocument(BaseModel):
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
     user_stances: list[UserStance]
+    cash_yields: CashYieldsPolicy
+    transfer_costs: TransferCostsPolicy
 
     @model_validator(mode="after")
     def validate_s139_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:
