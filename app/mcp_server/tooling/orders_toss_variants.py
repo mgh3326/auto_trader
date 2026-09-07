@@ -32,6 +32,7 @@ from app.mcp_server.tooling.account_modes import (
     normalize_account_mode,
 )
 from app.mcp_server.tooling.order_validation import (
+    CashFundingContext,
     LossCutContext,
     _validate_loss_cut_preconditions,
     evaluate_sector_concentration,
@@ -68,6 +69,11 @@ from app.services.nxt_preflight import (
     NxtPreflightVerdict,
     NxtTradability,
     evaluate_nxt_preflight,
+)
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+    parse_funding_target,
+    resolve_cash_funding_exemption,
 )
 from app.services.toss_sellable_cache import get_shared_sellable_cache
 
@@ -126,6 +132,8 @@ class _OrderProposalContext:
     client_order_id: str
     correlation_id: str | None
     rung: str | int | None
+    cash_funding_target: dict[str, Any] | None = None
+    cash_funding_shortfall: Decimal | None = None
 
 
 _order_proposal_context: ContextVar[_OrderProposalContext | None] = ContextVar(
@@ -139,15 +147,64 @@ def _bind_order_proposal_context(
     client_order_id: str,
     correlation_id: str | None,
     rung: str | int | None,
+    cash_funding_target: dict[str, Any] | None = None,
+    cash_funding_shortfall: Decimal | None = None,
 ):
     """Bind trusted proposal identity without exposing it in the MCP schema."""
     token = _order_proposal_context.set(
-        _OrderProposalContext(client_order_id, correlation_id, rung)
+        _OrderProposalContext(
+            client_order_id,
+            correlation_id,
+            rung,
+            cash_funding_target,
+            cash_funding_shortfall,
+        )
     )
     try:
         yield
     finally:
         _order_proposal_context.reset(token)
+
+
+def _resolve_toss_cash_funding_context(
+    *,
+    exit_intent: str | None,
+    symbol: str,
+    market: Literal["kr", "us"],
+    side: str,
+    order_type: str,
+    quantity: Decimal | None,
+    current_price: Decimal | None,
+    proposal_context: _OrderProposalContext | None,
+) -> tuple[CashFundingContext | None, str | None]:
+    """Return a proof token only for a trusted, valid proposal-flow sell.
+
+    A market order deliberately receives no token: it continues into the
+    ordinary market-loss guard and returns its established block message.
+    ``order_proposal_create`` prevents that malformed cash-funding proposal
+    from being made in the first place.
+    """
+    if exit_intent != CASH_FUNDING_EXIT_INTENT:
+        return None, None
+    if proposal_context is None:
+        return None, "cash_funding_direct_path_disabled_use_order_proposal_create"
+    if order_type == "market":
+        return None, None
+    verdict = resolve_cash_funding_exemption(
+        exit_intent=exit_intent,
+        symbol=symbol,
+        account_mode=ACCOUNT_MODE_TOSS_LIVE,
+        market="equity_kr" if market == "kr" else "equity_us",
+        side=side,
+        order_type=order_type,
+        funding_target=parse_funding_target(proposal_context.cash_funding_target),
+        quantity=quantity,
+        current_price=current_price,
+        measured_shortfall=proposal_context.cash_funding_shortfall,
+    )
+    if not verdict.exempt:
+        return None, f"cash_funding_{verdict.reason}"
+    return CashFundingContext.from_verdict(verdict), None
 
 
 def _config_error() -> dict[str, Any] | None:
@@ -611,6 +668,7 @@ async def _sell_loss_guard(
     base: dict[str, Any],
     *,
     loss_cut_ctx: LossCutContext | None = None,
+    cash_funding_ctx: CashFundingContext | None = None,
     current_price: Decimal | None = None,
     evidence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
@@ -643,12 +701,16 @@ async def _sell_loss_guard(
     if evidence_context is not None:
         evidence_context["avg_buy_price"] = _stringify_decimal(avg)
 
-    if loss_cut_ctx is not None:
+    if loss_cut_ctx is not None or cash_funding_ctx is not None:
         if price is None:
             return {
                 "success": False,
                 **base,
-                "error": "loss_cut requires a limit sell price.",
+                "error": (
+                    "loss_cut requires a limit sell price."
+                    if loss_cut_ctx is not None
+                    else "cash_funding requires a limit sell price."
+                ),
             }
         curr_price = current_price
         if curr_price is None:
@@ -659,7 +721,7 @@ async def _sell_loss_guard(
                     "success": False,
                     **base,
                     "error": (
-                        "Failed to retrieve current price for loss_cut slip-band "
+                        "Failed to retrieve current price for sell guard "
                         f"validation (fail closed): {exc}"
                     ),
                 }
@@ -670,6 +732,7 @@ async def _sell_loss_guard(
             defensive_trim_ctx=None,
             scalping_exit_ctx=None,
             loss_cut_ctx=loss_cut_ctx,
+            cash_funding_ctx=cash_funding_ctx,
         )
         if error is not None:
             return {"success": False, **base, "error": error}
@@ -984,12 +1047,23 @@ async def toss_preview_order(
         return guard
 
     mkt = _infer_market(symbol, market)
-    if exit_intent is not None and exit_intent != "loss_cut":
+    proposal_context = _order_proposal_context.get()
+    if exit_intent not in (None, "loss_cut", CASH_FUNDING_EXIT_INTENT):
         return {
             "success": False,
             "source": "toss",
             "account_mode": ACCOUNT_MODE_TOSS_LIVE,
-            "error": f"unknown exit_intent {exit_intent!r} (only 'loss_cut')",
+            "error": (
+                f"unknown exit_intent {exit_intent!r} "
+                "(only 'loss_cut' or 'cash_funding')"
+            ),
+        }
+    if exit_intent == CASH_FUNDING_EXIT_INTENT and proposal_context is None:
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": "cash_funding_direct_path_disabled_use_order_proposal_create",
         }
     loss_cut_ctx, loss_cut_errors = await _validate_loss_cut_preconditions(
         exit_intent=exit_intent,
@@ -1000,7 +1074,7 @@ async def toss_preview_order(
         order_type=order_type,
         is_mock=False,
         symbol=symbol,
-        proposal_flow=_order_proposal_context.get() is not None,
+        proposal_flow=proposal_context is not None,
     )
     if loss_cut_errors:
         return {
@@ -1053,7 +1127,6 @@ async def toss_preview_order(
         order_amount=order_amount_str,
     )
     now = now_kst()
-    proposal_context = _order_proposal_context.get()
     client_order_id = (
         proposal_context.client_order_id
         if proposal_context is not None
@@ -1113,7 +1186,26 @@ async def toss_preview_order(
         order_warnings.append(_PRICE_CONTEXT_UNAVAILABLE)
 
     sell_evidence: dict[str, Any] = {}
+    cash_funding_ctx: CashFundingContext | None = None
     if side == "sell":
+        cash_funding_ctx, cash_funding_error = _resolve_toss_cash_funding_context(
+            exit_intent=exit_intent,
+            symbol=symbol,
+            market=mkt,
+            side=side,
+            order_type=order_type,
+            quantity=quantity_dec,
+            current_price=current_price_dec,
+            proposal_context=proposal_context,
+        )
+        if cash_funding_error is not None:
+            return {
+                "success": False,
+                "source": "toss",
+                "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+                "preview": True,
+                "error": cash_funding_error,
+            }
         if loss_cut_ctx is not None and current_price_dec is None:
             return {
                 "success": False,
@@ -1138,6 +1230,7 @@ async def toss_preview_order(
                 price_dec,
                 base,
                 loss_cut_ctx=loss_cut_ctx,
+                cash_funding_ctx=cash_funding_ctx,
                 current_price=current_price_dec,
                 evidence_context=sell_evidence,
             )
@@ -1228,6 +1321,11 @@ async def toss_preview_order(
             1.0 - loss_cut_ctx.max_slip
         )
         response.update(sell_evidence)
+    elif cash_funding_ctx is not None:
+        response["exit_intent"] = CASH_FUNDING_EXIT_INTENT
+        response["cash_funding_currency"] = cash_funding_ctx.scope_currency
+        response["cash_funding_max_quantity"] = cash_funding_ctx.max_quantity
+        response.update(sell_evidence)
     elif side == "sell":
         response.update(sell_evidence)
     return response
@@ -1269,12 +1367,24 @@ async def _toss_place_order_impl(
 
     proposal_context = _order_proposal_context.get()
     mkt = _infer_market(symbol, market)
-    if exit_intent is not None and exit_intent != "loss_cut":
+    if exit_intent not in (None, "loss_cut", CASH_FUNDING_EXIT_INTENT):
         return {
             "success": False,
             "source": "toss",
             "account_mode": ACCOUNT_MODE_TOSS_LIVE,
-            "error": f"unknown exit_intent {exit_intent!r} (only 'loss_cut')",
+            "error": (
+                f"unknown exit_intent {exit_intent!r} "
+                "(only 'loss_cut' or 'cash_funding')"
+            ),
+        }
+    if exit_intent == CASH_FUNDING_EXIT_INTENT and proposal_context is None:
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "dry_run": dry_run,
+            "mutation_sent": False,
+            "error": "cash_funding_direct_path_disabled_use_order_proposal_create",
         }
     loss_cut_ctx, loss_cut_errors = await _validate_loss_cut_preconditions(
         exit_intent=exit_intent,
@@ -1560,6 +1670,31 @@ async def _toss_place_order_impl(
 
         # Guard: sell loss check
         if side == "sell":
+            cash_funding_ctx: CashFundingContext | None = None
+            cash_funding_current_price: Decimal | None = None
+            if exit_intent == CASH_FUNDING_EXIT_INTENT and order_type == "limit":
+                try:
+                    cash_funding_current_price = await _latest_price(client, symbol)
+                except Exception:
+                    cash_funding_current_price = None
+                cash_funding_ctx, cash_funding_error = (
+                    _resolve_toss_cash_funding_context(
+                        exit_intent=exit_intent,
+                        symbol=symbol,
+                        market=mkt,
+                        side=side,
+                        order_type=order_type,
+                        quantity=quantity_dec,
+                        current_price=cash_funding_current_price,
+                        proposal_context=proposal_context,
+                    )
+                )
+                if cash_funding_error is not None:
+                    return {
+                        "success": False,
+                        **base_response,
+                        "error": cash_funding_error,
+                    }
             if (
                 sell_guard := await _sell_loss_guard(
                     client,
@@ -1568,6 +1703,8 @@ async def _toss_place_order_impl(
                     price_dec,
                     base_response,
                     loss_cut_ctx=loss_cut_ctx,
+                    cash_funding_ctx=cash_funding_ctx,
+                    current_price=cash_funding_current_price,
                 )
             ) is not None:
                 return sell_guard

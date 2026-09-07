@@ -793,3 +793,76 @@ The daily-cap reader excludes only a post-§S170 writer marker for the exact
 markers continue to count, which is conservative during rollout. No
 per-order-cap value, cumulative-cap value, currency keying, roster, broker
 surface, scheduler, or other auto-approval gate changes here.
+
+## 9. cash_proxy `cash_funding` (§S177)
+
+`cash_funding` is a proposal-only **sell** intent for the closed parking
+instrument roster. It classifies a same-currency liquidation that funds an
+already planned buy; it is not a general loss-sale release. The roster,
+per-order caps, cumulative caps, and one-unit tranche slack remain closed code
+constants. Neither an MCP caller nor this policy document can widen them.
+
+The intent exempts exactly two named gates:
+
+| gate | treatment |
+| --- | --- |
+| limit-sell `avg_cost × sell.loss_guard_min_multiple` floor | exempt only after the closed cash-funding proof is present; the retained `SELL_MARKETABLE_MAX_DISCOUNT` fat-finger band still blocks a deep discount |
+| `de_minimis_trim_watch` minimum-benefit floor | explicitly exempt in the policy's advisory tier only; this tier has no runtime consumer and must not be described as code-enforced |
+
+The auto-approve decision has three fail-closed boundaries, in addition to all
+unchanged account, tag, per-order, availability, preview, thesis-card, and
+ordinary-window gates:
+
+1. `resolve_cash_funding_exemption` must yield `exempt`: exact parking tuple,
+   limit sell, parsed target, native-currency match, finite positive required
+   amount, nonblank plan reference, measured shortage, fresh price, and
+   quantity no greater than `ceil(required / current_price) + 1`.
+2. Dispatch reads `build_create_advisory` for the proposal's exact account and
+   native currency and injects its current `shortfall`. An unreadable or
+   non-insufficient result is `shortfall_unmeasured`, not an inferred zero or
+   a fail-open advisory result.
+3. `auto_approved_cash_funding_notional` sums only durable auto-approved
+   `cash_funding` sell rungs for that account/market/day. The proposed
+   executable notional is added before comparison with the closed scope cap.
+   Multi-rung dispatches advance the in-memory cumulative projection rung by
+   rung, so separately valid rungs cannot together pass the cap.
+
+At this auto-approval boundary, a failed proof or cap does **not** discard the
+proposal: `eligible=False` sends it through the normal human approval card
+path. The following closed reasons are preserved as card evidence. Create-time
+and revalidation failures remain fail-closed and do not submit a broker order.
+
+| reason |
+| --- |
+| `not_cash_funding` |
+| `side_not_sell` |
+| `order_type_not_limit` |
+| `symbol_not_cash_proxy` |
+| `funding_target_missing` |
+| `funding_currency_mismatch` |
+| `funding_required_invalid` |
+| `funding_plan_ref_missing` |
+| `shortfall_unmeasured` |
+| `no_measured_shortfall` |
+| `required_exceeds_measured_shortfall` |
+| `current_price_unavailable` |
+| `quantity_invalid` |
+| `quantity_exceeds_funding_need` |
+
+A successful cash-funding sell records `loss_guard="cash_funding_exempt"` and
+does not require `classify_sell_profit(...)=take_profit`. A marketable **limit**
+sell is allowed and records `marketability="cash_funding_marketable"`; its
+notional is re-metered as `max(limit_price, current_price) × quantity` before
+the per-order cap is accepted. Market orders are not exempt and continue to
+hit the existing market-loss block.
+
+### Honest limits
+
+1. A `cash_funding` sell can execute before its auto-veto card is visible. The
+   card remains a post-submit notification/veto surface, not a pre-trade hold.
+2. Its cumulative cap shares BL-39's current KST-day window with the existing
+   parking/daily readers. KST midnight can therefore reset the durable sum
+   mid-session; this is inherited scoping, not a market-calendar guarantee.
+3. `measured_shortfall` is measured at proposal creation and is not atomic
+   with submit. Auto approval additionally refreshes it at dispatch, but no
+   distributed reservation turns either reading into an atomic funding claim.

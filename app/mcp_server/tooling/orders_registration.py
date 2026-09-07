@@ -261,6 +261,13 @@ def register_order_tools(mcp: FastMCP) -> None:
                 "source": "mcp",
                 "symbol": symbol,
             }
+        if exit_intent == "cash_funding":
+            return {
+                "success": False,
+                "error": "cash_funding_direct_path_disabled_use_order_proposal_create",
+                "source": "mcp",
+                "symbol": symbol,
+            }
         if defensive_trim:
             return {
                 "success": False,

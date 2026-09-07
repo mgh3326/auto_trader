@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from sqlalchemy import literal, or_, select, text
@@ -41,6 +41,13 @@ from app.services.order_proposals.auto_approve_audit import (
     build_auto_approve_cap_observations,
 )
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
+from app.services.order_proposals.buying_power import build_create_advisory
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+    FundingTarget,
+    parse_funding_target,
+    resolve_cash_funding_exemption,
+)
 from app.services.order_proposals.defensive_ttl import (
     DEFENSIVE_EXIT_INTENTS,
     resolve_defensive_valid_until,
@@ -66,6 +73,7 @@ from app.services.order_proposals.errors import (
 from app.services.order_proposals.parking_allowlist import (
     is_parking_daily_cap_exempt,
     is_parking_exposure_symbol,
+    parking_scope,
 )
 from app.services.order_proposals.payload import (
     ProposalRungSpec,
@@ -465,6 +473,8 @@ def batch_member_block_reason(
         return block_reason
     if group.exit_intent == "loss_cut":
         return "loss_cut_excluded"
+    if group.exit_intent == CASH_FUNDING_EXIT_INTENT:
+        return "cash_funding_excluded"
     if isinstance((group.source_asof or {}).get("auto_approved"), dict):
         return "auto_approved_excluded"
     if group.approval_dispatch_state != ApprovalDispatchState.SENT_CURRENT.value:
@@ -881,12 +891,15 @@ class OrderProposalsService:
             symbol=symbol,
             market=market,
             account_mode=account_mode,
+            broker_account_id=broker_account_id,
             side=side,
             order_type=order_type,
+            rungs=rungs,
             exit_intent=exit_intent,
             exit_reason=exit_reason,
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
+            source_asof=merged_source_asof,
             now=now,
         )
         proposal_id = uuid.uuid4()
@@ -988,18 +1001,38 @@ class OrderProposalsService:
         symbol: str,
         market: str,
         account_mode: str,
+        broker_account_id: str | None,
         side: str,
         order_type: str,
+        rungs: list[RungInput],
         exit_intent: str | None,
         exit_reason: str | None,
         retrospective_id: int | None,
         approval_issue_id: str | None,
+        source_asof: dict[str, Any],
         now: datetime,
     ) -> None:
         supporting = (exit_reason, retrospective_id, approval_issue_id)
         if exit_intent is None:
             if any(value is not None for value in supporting):
                 raise OrderProposalError("exit binding fields require exit_intent")
+            return
+        if exit_intent == CASH_FUNDING_EXIT_INTENT:
+            # §S177 deliberately does not make loss-cut's retrospective,
+            # reason, or approval-issue evidence mandatory.  Its own
+            # load-bearing evidence lives in source_asof.cash_funding and is
+            # validated below before a proposal row exists.
+            await self._validate_cash_funding_binding(
+                symbol=symbol,
+                market=market,
+                account_mode=account_mode,
+                broker_account_id=broker_account_id,
+                side=side,
+                order_type=order_type,
+                rungs=rungs,
+                source_asof=source_asof,
+                now=now,
+            )
             return
         if exit_intent != "loss_cut":
             # ROB-929 code review: every submit path (order_execution.py,
@@ -1062,6 +1095,116 @@ class OrderProposalsService:
                         )
         if errors:
             raise OrderProposalError("loss_cut proposal invalid: " + "; ".join(errors))
+
+    async def _validate_cash_funding_binding(
+        self,
+        *,
+        symbol: str,
+        market: str,
+        account_mode: str,
+        broker_account_id: str | None,
+        side: str,
+        order_type: str,
+        rungs: list[RungInput],
+        source_asof: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """Validate §S177 evidence before persisting a cash-funding proposal.
+
+        This is intentionally separate from the existing funding-candidate
+        advisory: the latter is fail-open prose, while this branch has to prove
+        an actual, same-account shortage before it can create an exemption
+        candidate.  The current-price input available at proposal creation is
+        the requested limit price; execution and auto-approval repeat the
+        classifier against their fresh quote before any broker mutation.
+        """
+        if side != "sell":
+            raise OrderProposalError("cash_funding_side_not_sell")
+        if order_type != "limit":
+            raise OrderProposalError("cash_funding_order_type_not_limit")
+        if (account_mode, market) not in {
+            ("kis_live", "equity_kr"),
+            ("kis_live", "equity_us"),
+            ("toss_live", "equity_kr"),
+            ("toss_live", "equity_us"),
+        }:
+            raise OrderProposalError(
+                "cash_funding requires a supported live account and market"
+            )
+
+        scope = parking_scope(
+            symbol=symbol,
+            account_mode=account_mode,
+            market=market,
+        )
+        raw_cash_funding = source_asof.get("cash_funding")
+        raw_target = (
+            raw_cash_funding.get("funding_target")
+            if isinstance(raw_cash_funding, Mapping)
+            else None
+        )
+        funding_target: FundingTarget | None = parse_funding_target(raw_target)
+        measured_shortfall: Decimal | None = None
+
+        # A target and scope are the only prerequisites to know which native
+        # currency must be measured.  Any reader or shape failure deliberately
+        # becomes None, which the one pure classifier names
+        # ``shortfall_unmeasured`` below instead of becoming an advisory escape.
+        if scope is not None and funding_target is not None:
+            try:
+                advisory = await build_create_advisory(
+                    self._session,
+                    account_mode=account_mode,
+                    broker_account_id=broker_account_id,
+                    currency=scope.currency,
+                    now=now,
+                )
+            except Exception:  # noqa: BLE001 - cash-funding is fail-closed
+                advisory = None
+            if (
+                isinstance(advisory, Mapping)
+                and advisory.get("status") == "insufficient"
+                and type(advisory.get("shortfall")) is str
+            ):
+                try:
+                    measured_shortfall = Decimal(advisory["shortfall"])
+                except (InvalidOperation, ValueError):
+                    measured_shortfall = None
+
+        for rung in rungs:
+            verdict = resolve_cash_funding_exemption(
+                exit_intent=CASH_FUNDING_EXIT_INTENT,
+                symbol=symbol,
+                account_mode=account_mode,
+                market=market,
+                side=rung.side if rung.side != side else side,
+                order_type=order_type,
+                funding_target=funding_target,
+                quantity=rung.quantity,
+                current_price=rung.limit_price,
+                measured_shortfall=measured_shortfall,
+            )
+            if not verdict.exempt:
+                raise OrderProposalError(f"cash_funding_{verdict.reason}")
+
+        # Persist only JSON-safe evidence that has already cleared the strict
+        # classifier.  Revalidation reads this durable target plus this
+        # create-time measured shortfall; auto-approval injects a fresh
+        # dispatch-time shortfall instead.
+        assert scope is not None
+        assert funding_target is not None
+        assert measured_shortfall is not None
+        envelope = (
+            dict(raw_cash_funding) if isinstance(raw_cash_funding, Mapping) else {}
+        )
+        envelope["funding_target"] = {
+            "market": funding_target.market,
+            "required": str(funding_target.required),
+            "plan_ref": funding_target.plan_ref,
+        }
+        envelope["measured_shortfall"] = str(measured_shortfall)
+        envelope["currency"] = scope.currency
+        source_asof["cash_funding"] = envelope
 
     async def get_proposal(
         self, proposal_id: uuid.UUID
@@ -3719,6 +3862,33 @@ class OrderProposalsService:
                 account_mode=group.account_mode,
                 market=group.market,
             ),
+        )
+
+    async def auto_approved_cash_funding_notional(
+        self, group: OrderProposal, *, now: datetime
+    ) -> Decimal:
+        """§S177 — this account's KST-day auto-approved funding-sale notional.
+
+        This deliberately shares §163/BL-39's day window and advisory lock key
+        with the durable daily/parking readers.  It measures only durable
+        ``exit_intent == cash_funding`` sell rows; the pure exemption classifier
+        does not own this account/day state.
+        """
+        self._require_timezone_aware(now)
+        local = now.astimezone(KST)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        account_key = group.broker_account_id or "default"
+        await self._repo.acquire_auto_approve_lock(
+            f"order_proposals:auto_approve:{group.account_mode}:{group.market}:"
+            f"{account_key}:{start.date()}"
+        )
+        return await self._repo.auto_approved_cash_funding_notional_between(
+            account_mode=group.account_mode,
+            market=group.market,
+            broker_account_id=group.broker_account_id,
+            start=start,
+            end=end,
         )
 
     async def acquire_auto_dispatch_lock(self, proposal_id: uuid.UUID) -> None:

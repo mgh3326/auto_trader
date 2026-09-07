@@ -261,13 +261,38 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-02.1"
-    assert policy_content_hash() == "d9fb8697f0e5"
+    assert doc.version == "2026-09-07.3"
+    assert policy_content_hash() == "c80460c0c00c"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
     assert doc.thresholds["screen.rsi_max"].value == 45
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
+
+
+def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
+    """Cash funding is classified in code; the trim tier remains advisory prose."""
+    current = _raw()
+    doc = TradingPolicyDocument.model_validate(current)
+
+    assert doc.version == "2026-09-07.3"
+    assert doc.cash_proxy.exit_intent == "cash_funding"
+    assert doc.cash_proxy.symbol_list_duplicated_here is False
+    assert doc.cash_proxy.quantity_cap_tranche_slack_units == 1
+    assert doc.fx.fx_preferential.kis.preferential_rate_pct == 80
+    assert doc.fx.fx_preferential.toss.preferential_rate_pct == 90
+    assert (
+        current["thresholds"]["sell.trim_min_expected_net_realized_gain_krw"]["value"]
+        == 5000
+    )
+    de_minimis = current["decision_rules"]["sell.trim_preplace"]["tiers"][0]
+    assert de_minimis["id"] == "de_minimis_trim_watch"
+    assert de_minimis["conditions"]["exempt_exit_intents"] == ["cash_funding"]
+    # This condition documents an advisory tier; it does not claim a runtime
+    # consumer beyond the policy/schema surface.
+    cash_proxy_yaml = yaml.safe_dump(current["cash_proxy"], sort_keys=True)
+    for symbol in ("459580", "357870", "SGOV", "BIL"):
+        assert symbol not in cash_proxy_yaml
     assert doc.thresholds["portfolio.max_symbols_per_theme"].value == 2
     assert doc.thresholds["sell.momentum_spike_change_pct_min"].value == 10
     assert doc.thresholds["sell.single_share_profit_pct_min"].value == 8
@@ -329,7 +354,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-02.1"
+    assert current["version"] == "2026-09-07.3"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -377,7 +402,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-02.1"
+    assert current["version"] == "2026-09-07.3"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -520,7 +545,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.3"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1298,6 +1323,11 @@ def test_rob_1289_policy_loader_roundtrip_preserves_both_new_blocks():
 def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
     current_raw = _raw()
+    # §S177 adds mandatory top-level schema sections. This historical baseline
+    # predates them, so seed the current closed records solely to keep the
+    # pre-existing equivalence comparison focused on its older surface.
+    baseline["cash_proxy"] = deepcopy(current_raw["cash_proxy"])
+    baseline["fx"] = deepcopy(current_raw["fx"])
     # The pre-change document cannot satisfy the new required fields until
     # those two additive blocks are copied in; they are removed before compare.
     baseline["decision_rules"]["buy.preplanned_support_ladder"] = current_raw[
@@ -1313,6 +1343,12 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     # remaining comparison is a closed equivalence over every other key.
     baseline_trim = baseline["decision_rules"]["sell.trim_preplace"]
     current_trim = current_raw["decision_rules"]["sell.trim_preplace"]
+    # §S177 adds one advisory-only condition to the pre-existing first trim
+    # tier. Seed it here so the closed comparison below stays focused on all
+    # other historical values; its exact additive value is pinned separately.
+    baseline_trim["tiers"][0]["conditions"]["exempt_exit_intents"] = current_trim[
+        "tiers"
+    ][0]["conditions"]["exempt_exit_intents"]
     baseline_trim["semantics"] = current_trim["semantics"]
     baseline_trim["tiers"] = baseline_trim["tiers"] + [current_trim["tiers"][-1]]
     baseline_trim["tie_breaks"]["tier_priority"] = current_trim["tie_breaks"][
@@ -2061,10 +2097,14 @@ def test_rob_1298_leaves_loss_guard_d7_and_auto_approve_gates_untouched():
         _policy_path_set(current_auto, suffix, baseline_value)
     assert current_auto == baseline_auto
 
-    # The de_minimis (D7) watch tier itself is unchanged.
+    # §S177 changes only the advisory tier's explicit exit-intent exemption;
+    # its 5,000 KRW threshold, priority, action, and every pre-existing
+    # condition remain byte-identical to the ROB-1289 baseline.
     baseline_trim = baseline["decision_rules"]["sell.trim_preplace"]
     current_trim = current["decision_rules"]["sell.trim_preplace"]
-    assert current_trim["tiers"][0] == baseline_trim["tiers"][0]
+    expected_de_minimis = deepcopy(baseline_trim["tiers"][0])
+    expected_de_minimis["conditions"]["exempt_exit_intents"] = ["cash_funding"]
+    assert current_trim["tiers"][0] == expected_de_minimis
     # §142차 adds the enumerated effective-anchor keys to the reserve-trim
     # tier; strip exactly those and the tier is still byte-identical to the
     # ROB-1289 baseline (no threshold, operand, or gate key moved).
@@ -2323,7 +2363,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.3"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3103,7 +3143,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.3"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history

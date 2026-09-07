@@ -277,6 +277,15 @@ async def _place_order_variant(
         return early_response
     if str(order_type).lower().strip() != "limit":
         return _limit_order_error(tool_name, symbol, order_type)
+    if exit_intent == "cash_funding":
+        return {
+            "success": False,
+            "source": "kis",
+            "account_mode": pinned_mode,
+            "dry_run": dry_run,
+            "mutation_sent": False,
+            "error": "cash_funding_direct_path_disabled_use_order_proposal_create",
+        }
 
     warning_result: WarningsGuardResult | None = None
     is_live_buy = pinned_mode == ACCOUNT_MODE_KIS_LIVE and str(side).lower() == "buy"
