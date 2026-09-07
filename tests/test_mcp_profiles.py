@@ -32,6 +32,9 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
     ANALYSIS_READONLY_TOOL_NAMES,
 )
+from app.mcp_server.tooling.buy_gate_ab_shadow_v2_registration import (
+    BUY_GATE_AB_SHADOW_V2_TOOL_NAMES,
+)
 from app.mcp_server.tooling.kiwoom_kr_registration import (
     KIWOOM_KR_EXCLUDED_US_MUTATION_TOOL_NAMES,
     KIWOOM_KR_TOOL_NAMES,
@@ -132,6 +135,10 @@ def _build_mcp(profile: McpProfile) -> DummyMCP:
 
 
 class TestDefaultProfile:
+    def test_registers_v2_buy_gate_witness_evaluator(self) -> None:
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert BUY_GATE_AB_SHADOW_V2_TOOL_NAMES <= mcp.tools.keys()
+
     def test_registers_legacy_order_tools(self) -> None:
         mcp = _build_mcp(McpProfile.DEFAULT)
         assert _LEGACY_ORDER_TOOL_NAMES <= mcp.tools.keys()

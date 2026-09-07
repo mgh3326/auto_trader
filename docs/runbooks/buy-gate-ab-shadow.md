@@ -28,10 +28,37 @@ uses `shadow_buy`. The split is observational rather than randomized because
 support strength is a candidate property, not an assignment. v1 samples do not
 carry over.
 
-v2 is registered only. `review.buy_gate_ab_collection_epoch_v2` is deliberately
-empty, no `collection_armed_at` has been selected, and caller wiring remains
-zero pending a separate operator activation and review PR. The live/shadow
-comparison still cannot promote a candidate to proposal, order, or watch.
+v2 is registered but remains unarmed. `review.buy_gate_ab_collection_epoch_v2`
+is deliberately empty and no `collection_armed_at` has been selected. The
+live/shadow comparison still cannot promote a candidate to proposal, order, or
+watch.
+
+## V2 pre-arming plumbing witness versus experiment-sample witness
+
+The v2 wiring has two deliberately different pre-arming records:
+
+* A **plumbing witness** is emitted by the outer
+  `discover_buy_candidates_fanout` observer only when
+  `BUY_GATE_AB_SHADOW_RECORD_ENABLED=true`. Fanout does not produce the
+  `liquid_midcap`, `concentration`, or `overhang` review bits, so its rows are
+  fail-closed evaluations with `shared_gate_bits="unavailable_at_this_call_site"`
+  and `experiment_sample=false`. They prove the evaluate-to-`forecast_save`
+  plumbing works; they are never v2 experiment samples, regardless of cohort.
+* An **experiment-sample witness** comes from an explicit reviewed set passed
+  to `evaluate_buy_gate_ab_shadow_v2`. It returns, but does not write,
+  `forecast_save` kwargs. A row can have `experiment_sample=true` only when all
+  three review bits were supplied as actual booleans; missing or non-boolean
+  bits are evaluated as rejects and force `experiment_sample=false`.
+
+Within a v2 witness, `variant` and `cohort` are sealed stream labels; per-row
+facts are recorded in `evaluated_cohort`, `variant_a_passed`, and
+`variant_b_passed` (and `shadow_buy` is true only for an evaluated `b_only`).
+
+The v2 collection epoch may be activated only after at least one
+experiment-sample witness (`experiment_sample=true`) exists, followed by the
+separate operator activation decision and independent review. A plumbing
+witness cannot satisfy that condition, cannot select `collection_armed_at`, and
+cannot create an epoch row.
 
 ## Historical ROB-1301 forbidden record (issue canonical, not paraphrased)
 
