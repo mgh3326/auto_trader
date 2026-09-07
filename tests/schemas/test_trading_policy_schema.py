@@ -261,8 +261,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-02.1"
-    assert policy_content_hash() == "d9fb8697f0e5"
+    assert doc.version == "2026-09-07.1"
+    assert policy_content_hash() == "efa337993098"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -322,6 +322,99 @@ def test_shipped_config_validates():
     assert "single_share_position" not in trim_rule.exclusions
 
 
+def test_cash_yields_and_transfer_costs_match_operator_input():
+    doc = TradingPolicyDocument.model_validate(_raw())
+
+    assert {
+        account_id: [bracket.model_dump() for bracket in account.brackets]
+        for account_id, account in doc.cash_yields.accounts.items()
+    } == {
+        "naver_parking_krw": [
+            {"up_to_amount": 10000000, "annual_pct": 2.8},
+            {"up_to_amount": None, "annual_pct": 2.25},
+        ],
+        "acuon_krw": [
+            {"up_to_amount": 20000000, "annual_pct": 2.6},
+            {"up_to_amount": None, "annual_pct": 2.4},
+        ],
+        "upbit_deposit_krw": [{"up_to_amount": None, "annual_pct": 2.1}],
+        "toss_krw": [{"up_to_amount": None, "annual_pct": 1.0}],
+        "toss_usd": [{"up_to_amount": None, "annual_pct": 0.6}],
+    }
+    assert doc.transfer_costs.routes["upbit_krw_withdrawal"].fee_amount == 1000
+    assert doc.transfer_costs.routes["upbit_krw_withdrawal"].lead_time == "unknown"
+    assert doc.cash_yields.source == "operator_input_2026-09-07"
+    assert doc.transfer_costs.source == "operator_input_2026-09-07"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda raw: raw["cash_yields"]["accounts"]["toss_krw"].update(brackets=[]),
+        lambda raw: raw["cash_yields"]["accounts"]["naver_parking_krw"].update(
+            brackets=[
+                {"up_to_amount": None, "annual_pct": 2.8},
+                {"up_to_amount": 10000000, "annual_pct": 2.25},
+            ]
+        ),
+        lambda raw: raw["cash_yields"]["accounts"]["naver_parking_krw"].update(
+            brackets=[
+                {"up_to_amount": 10000000, "annual_pct": 2.8},
+                {"up_to_amount": 10000000, "annual_pct": 2.25},
+                {"up_to_amount": None, "annual_pct": 2.0},
+            ]
+        ),
+        lambda raw: raw["cash_yields"]["accounts"]["toss_krw"].update(
+            brackets=[
+                {"up_to_amount": 10000000, "annual_pct": 1.0},
+                {"up_to_amount": None, "annual_pct": 0.8},
+            ]
+        ),
+    ],
+    ids=["empty", "open_ended_not_last", "closed_amount_not_increasing", "flat_two"],
+)
+def test_cash_yield_validators_reject_invalid_brackets(mutate):
+    raw = _raw()
+    mutate(raw)
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_cash_yield_and_transfer_cost_addition_preserves_existing_surfaces():
+    raw = _raw()
+
+    assert {
+        key: raw["thresholds"][key]["value"]
+        for key in (
+            "screen.rsi_max",
+            "screen.support_within_pct",
+            "screen.upside_min_pct",
+            "portfolio.sector_cluster_cap_pct",
+        )
+    } == {
+        "screen.rsi_max": 45,
+        "screen.support_within_pct": 8,
+        "screen.upside_min_pct": 40,
+        "portfolio.sector_cluster_cap_pct": 10,
+    }
+    reserve_net = raw["decision_rules"]["buy.support_reserve_net"]
+    assert {
+        key: reserve_net[key]
+        for key in (
+            "support_strength_min",
+            "max_symbols_per_sector_cluster",
+            "all_pending_buy_required_cash_hard_cap_pct",
+            "tier_armed_required_cash_cap_pct",
+        )
+    } == {
+        "support_strength_min": "moderate",
+        "max_symbols_per_sector_cluster": 1,
+        "all_pending_buy_required_cash_hard_cap_pct": 90,
+        "tier_armed_required_cash_cap_pct": 50,
+    }
+
+
 def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     """§156 ②④⑤ changes no auto-approve key or default-mode setting."""
     current = _raw()
@@ -329,7 +422,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-02.1"
+    assert current["version"] == "2026-09-07.1"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -377,7 +470,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-02.1"
+    assert current["version"] == "2026-09-07.1"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -520,7 +613,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.1"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1306,6 +1399,11 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     baseline["crash_day"]["actions"]["new_entry_hold_exception"] = current_raw[
         "crash_day"
     ]["actions"]["new_entry_hold_exception"]
+    # §S175 (2026-09-07) adds two required advisory reference blocks. Copy
+    # them into the historical payload only to make it schema-valid, then
+    # remove both below so this remains an exact check of every prior surface.
+    baseline["cash_yields"] = deepcopy(current_raw["cash_yields"])
+    baseline["transfer_costs"] = deepcopy(current_raw["transfer_costs"])
     # ROB-1298 KEY_DIFF — the §115차 tier is appended to the current document
     # only. The schema now requires tie_breaks.tier_priority to match the
     # declared tier order, so the baseline copy is given the same appended tier
@@ -1355,6 +1453,10 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert current_dump["source"].startswith(baseline_dump["source"])
     assert "ROB-1298" in current_dump["source"]
     current_dump["source"] = baseline_dump["source"]
+    del current_dump["cash_yields"]
+    del current_dump["transfer_costs"]
+    del baseline_dump["cash_yields"]
+    del baseline_dump["transfer_costs"]
 
     # §148차 (2026-08-24) — additive semantics-only clarification. The
     # contradiction repair is allowed to extend the prose, but it may not
@@ -2323,7 +2425,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3103,7 +3205,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.1"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
