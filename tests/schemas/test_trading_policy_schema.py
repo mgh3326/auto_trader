@@ -261,12 +261,13 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-02.1"
-    assert policy_content_hash() == "d9fb8697f0e5"
+    assert doc.version == "2026-09-07.2"
+    assert policy_content_hash() == "e8942dc4237f"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
     assert doc.thresholds["screen.rsi_max"].value == 45
+    assert doc.thresholds["screen.support_strength_min"].value == "moderate"
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
     assert doc.thresholds["portfolio.max_symbols_per_theme"].value == 2
     assert doc.thresholds["sell.momentum_spike_change_pct_min"].value == 10
@@ -329,7 +330,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-02.1"
+    assert current["version"] == "2026-09-07.2"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -377,7 +378,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-02.1"
+    assert current["version"] == "2026-09-07.2"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -520,7 +521,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.2"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -544,8 +545,9 @@ def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     ):
         assert current_reserve[key] == baseline_reserve[key]
     assert (
-        current["thresholds"]["screen.support_within_pct"]
-        == baseline["thresholds"]["screen.support_within_pct"]
+        current["thresholds"]["screen.support_within_pct"]["value"]
+        == baseline["thresholds"]["screen.support_within_pct"]["value"]
+        == 8
     )
     assert (
         current["thresholds"]["screen.rsi_max"]
@@ -555,11 +557,15 @@ def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     discovery_semantics = current["thresholds"]["screen.support_within_pct"][
         "semantics"
     ]
-    assert discovery_semantics == "strong support must be within this distance"
+    assert discovery_semantics == "support must be within this distance"
     reserve_semantics = current_reserve["semantics"]
     assert "support_strength_min (moderate)" in reserve_semantics
     assert "independent_support_source_count_min (2)" in reserve_semantics
-    assert "not discovery's strong support requirement" in reserve_semantics
+    assert (
+        "Regular discovery uses the same moderate support strength" in reserve_semantics
+    )
+    assert "omitting its RSI gate" in reserve_semantics
+    assert "at least two independent support families" in reserve_semantics
     assert "failure of any other gate" in reserve_semantics
     assert rule.cash_reservation.required_cash_fallback == "quantity_times_limit_price"
     assert rule.cash_reservation.broker_orderable_unavailable_or_error == "FAIL_CLOSED"
@@ -1371,9 +1377,31 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert (
         "independent_support_source_count_min (2)" in current_reserve_net["semantics"]
     )
-    assert "not discovery's strong support" in current_reserve_net["semantics"]
+    assert (
+        "Regular discovery uses the same moderate support strength"
+        in current_reserve_net["semantics"]
+    )
     assert "failure of any other gate" in current_reserve_net["semantics"]
     current_reserve_net["semantics"] = baseline_reserve_net["semantics"]
+    assert "screen.support_strength_min" not in baseline_dump["thresholds"]
+    assert current_dump["thresholds"]["screen.support_strength_min"] == {
+        "lanes": ["discovery"],
+        "value": "moderate",
+        "unit": "support_strength",
+        "semantics": (
+            "minimum support quality for a regular-discovery candidate; allowed "
+            "vocabulary is weak < moderate < strong. Lowered from strong to moderate "
+            "by operator decision 2026-09-07 (ROB-1351); the ROB-1301 A/B "
+            "pre-registration that observed the strong requirement was terminated by "
+            "that same decision and re-registered as ROB-1351 v2."
+        ),
+        "of": None,
+        "one_share_exception": None,
+    }
+    del current_dump["thresholds"]["screen.support_strength_min"]
+    current_dump["thresholds"]["screen.support_within_pct"]["semantics"] = (
+        baseline_dump["thresholds"]["screen.support_within_pct"]["semantics"]
+    )
     del current_dump["decision_rules"]["buy.preplanned_support_ladder"]
     del current_dump["crash_day"]["actions"]["new_entry_hold_exception"]
     del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
@@ -2323,7 +2351,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.2"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3026,10 +3054,10 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             current["thresholds"][key]["value"] == baseline["thresholds"][key]["value"]
         ), key
 
-    # The only non-``value`` differences are the §139차 US one-share ceiling
-    # and §156's explicitly recorded sector-cap semantics.  Both are pinned
-    # rather than ignored, so §147차 cannot be used as cover for a new sibling
-    # key drift.
+    # The only non-``value`` differences are the §139차 US one-share ceiling,
+    # §156's explicitly recorded sector-cap semantics, and ROB-1351's neutral
+    # rewrite of the discovery-distance prose.  Each is pinned rather than
+    # ignored, so §147차 cannot be used as cover for a new sibling key drift.
     for key in {**_S147_INVARIANT_BUY_GATES, **_S147_INVARIANT_SIZING_AND_CAPS}:
         cur = deepcopy(current["thresholds"][key])
         base = deepcopy(baseline["thresholds"][key])
@@ -3037,6 +3065,9 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             assert cur["one_share_exception"]["absolute_ceiling_usd"] == 10000
             assert base["one_share_exception"]["absolute_ceiling_usd"] == 700
             cur["one_share_exception"] = base["one_share_exception"]
+        if key == "screen.support_within_pct":
+            assert cur["semantics"] == "support must be within this distance"
+            cur["semantics"] = base["semantics"]
         if key == "portfolio.sector_cluster_cap_pct":
             assert "advisory only" in cur["semantics"]
             cur["semantics"] = base["semantics"]
@@ -3103,7 +3134,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-02.1"
+    assert doc.version == "2026-09-07.2"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history

@@ -95,7 +95,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # Production uses its additive migration; test schemas use create_all.
 # v44 (ROB-1340): append-only authority start/terminal evidence tables and
 # UPDATE/DELETE/TRUNCATE rejection triggers.
-SCHEMA_BOOTSTRAP_VERSION = 44
+# v45 (ROB-1351): append-only ROB-1301 termination, ROB-1351 v2 registration,
+# and intentionally-empty future v2 epoch tables (all ORM tables via
+# create_all), plus their mutation-rejection triggers.
+SCHEMA_BOOTSTRAP_VERSION = 45
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1845,6 +1848,52 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.kiwoom_authority_cessation_receipts "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_kiwoom_authority_evidence_mutation()",
+    # ---- ROB-1351 lifecycle evidence (tables via create_all).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_buy_gate_ab_lifecycle_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.% is append-only; % rejected',
+            TG_TABLE_NAME, TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_buy_gate_ab_experiment_termination_append_only "
+    "ON review.buy_gate_ab_experiment_termination",
+    "CREATE TRIGGER trg_buy_gate_ab_experiment_termination_append_only "
+    "BEFORE UPDATE OR DELETE ON review.buy_gate_ab_experiment_termination "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_buy_gate_ab_lifecycle_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_buy_gate_ab_experiment_termination_truncate_append_only "
+    "ON review.buy_gate_ab_experiment_termination",
+    "CREATE TRIGGER trg_buy_gate_ab_experiment_termination_truncate_append_only "
+    "BEFORE TRUNCATE ON review.buy_gate_ab_experiment_termination "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_buy_gate_ab_lifecycle_mutation()",
+    "DROP TRIGGER IF EXISTS trg_buy_gate_ab_experiment_registration_append_only "
+    "ON review.buy_gate_ab_experiment_registration",
+    "CREATE TRIGGER trg_buy_gate_ab_experiment_registration_append_only "
+    "BEFORE UPDATE OR DELETE ON review.buy_gate_ab_experiment_registration "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_buy_gate_ab_lifecycle_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_buy_gate_ab_experiment_registration_truncate_append_only "
+    "ON review.buy_gate_ab_experiment_registration",
+    "CREATE TRIGGER trg_buy_gate_ab_experiment_registration_truncate_append_only "
+    "BEFORE TRUNCATE ON review.buy_gate_ab_experiment_registration "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_buy_gate_ab_lifecycle_mutation()",
+    "DROP TRIGGER IF EXISTS trg_buy_gate_ab_collection_epoch_v2_append_only "
+    "ON review.buy_gate_ab_collection_epoch_v2",
+    "CREATE TRIGGER trg_buy_gate_ab_collection_epoch_v2_append_only "
+    "BEFORE UPDATE OR DELETE ON review.buy_gate_ab_collection_epoch_v2 "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_buy_gate_ab_lifecycle_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_buy_gate_ab_collection_epoch_v2_truncate_append_only "
+    "ON review.buy_gate_ab_collection_epoch_v2",
+    "CREATE TRIGGER trg_buy_gate_ab_collection_epoch_v2_truncate_append_only "
+    "BEFORE TRUNCATE ON review.buy_gate_ab_collection_epoch_v2 "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_buy_gate_ab_lifecycle_mutation()",
 )
 
 
