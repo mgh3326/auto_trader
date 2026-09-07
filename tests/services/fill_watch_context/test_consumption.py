@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
 from app.models.fill_watch_context_outcome import FillWatchContextOutcome
 from app.services.fill_watch_context.consumer import ContextArtifactConsumer
 from app.services.fill_watch_context.contracts import ContextArtifact
@@ -25,11 +25,14 @@ from app.services.fill_watch_context.toss_token_boundary import (
     CachedTokenUnavailable,
     read_cached_token,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 from tests.services.fill_watch_context.conftest import (
     AS_OF,
     context_artifact,
     event_uuid,
 )
+
+validate_run_owned_database_url(engine.url)
 
 
 def _consumer() -> ContextArtifactConsumer:
