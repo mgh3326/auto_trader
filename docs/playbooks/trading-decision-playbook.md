@@ -385,9 +385,10 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
    `get_top_stocks(losers)` / `get_momentum_candidates` + `screen_stocks` /
    rotation-sector `get_sector_peers` / value screen.
 2. **Pool cleanup:** exclude held names, resting-order names, and duplicates.
-3. **Screening:** RSI < `screen.rsi_max` + strong support within
-   `screen.support_within_pct` + honest upside ≥ `screen.upside_min_pct` + liquid
-   mid-cap + not over-concentrated + **rights-issue / overhang filter**
+3. **Screening:** RSI < `screen.rsi_max` + support quality at least
+   `screen.support_strength_min` within `screen.support_within_pct` + honest
+   upside ≥ `screen.upside_min_pct` + liquid mid-cap + not over-concentrated +
+   **rights-issue / overhang filter**
    (`get_disclosures` — the EcoPro BM ₩1.2T rights-issue lesson).
 4. **Ranking / competition (the tournament):** compare each survivor against the
    existing net (swap decision), bonus for sector diversification, bonus for
@@ -455,29 +456,32 @@ lanes:
 
 ---
 
-### 3.2 ROB-1301 buy-gate A/B shadow (observation only)
+### 3.2 ROB-1301 buy-gate A/B shadow — termination and ROB-1351 v2 re-registration
 
-KR(우선)·US 매수 스크리닝은 **variant A(현행, strong 지지 필수)를 그대로
-집행**한다. 같은 후보 스냅샷·같은 `evaluation_as_of`로 **variant B
-(moderate 이상 지지) 판정을 병기**한다. 다른 게이트(RSI /
-`screen.support_within_pct` / honest upside / liquid mid-cap / concentration /
-overhang)는 전부 동일하다. 지지 품질만 다르다.
+ROB-1301/1331's sealed strong-versus-moderate pre-registration was terminated
+at `2026-09-07T09:43:42+09:00` by the operator under
+`STOPPED_BY_OPERATOR_DECISION`. Its terminal result is
+`INSUFFICIENT_SAMPLE / NO_FIRING`; samples carry over **forbidden**. This is a
+termination record, not a score: no intermediate return or drawdown is
+computed, and the ROB-1301 spec and policy-projection hashes remain unchanged.
 
-B만 통과하는 후보는 `evaluate_buy_gate_ab_shadow`가 돌려준
-`shadow_buy` `forecast_save` kwargs 로만 기록한다 (entry=판정 시점가 박제,
-가정 사이징=현행 cap×0.5, 창=5거래일/20거래일). 4주 수집이 끝나기 전에는
-중간 수익률을 정책 변경 논거로 쓰지 않는다. 채점 공식·단일 `scoring_as_of`·
-민감도 분리는 런북
-[`docs/runbooks/buy-gate-ab-shadow.md`](../runbooks/buy-gate-ab-shadow.md).
+The operator decision already changed the regular discovery population to
+`screen.support_strength_min=moderate`. ROB-1351 v2 is therefore separately
+registered as `rob-1351-buy-gate-moderate-live`: live variant A is moderate
+with `strong` and `moderate_only` cohort labels, while shadow variant B is weak
+and registered as `shadow_buy`. RSI, support distance, honest upside, liquid
+mid-cap, concentration, and overhang remain shared gates; only support
+strength differs. The cohort split is observational, not randomized: support
+strength is a candidate property, not an assignment.
 
-ROB-1331 Q6 부록은 시작점을 첫 record와 분리해 봉인한다:
-`collection_armed_at=2026-08-30T09:17:36+09:00` → 다음 공통 완전 세션
-`collection_start=2026-08-31` → 28일 고정 창
-(`collection_end_exclusive=2026-09-28`). `first_valid_record_at`은 nullable
-관측값일 뿐 경계 계산에 들어가지 않는다. 사건이 0건이어도 창은
-`INSUFFICIENT_SAMPLE / NO_FIRING`으로 종료하며, `scoring_ready`는 오직
-`collection_window_closed AND all_events_matured`이다. 호출 지점 배선은 이
-부록/불변 marker의 merge·배포·migration·독립 리뷰 뒤 별도 PR에서만 한다.
+v2 is registered but **not armed**. It has no selected collection epoch or
+`collection_armed_at` value, and caller wiring remains zero in this PR; a
+separate PR follows an operator activation decision and independent review.
+No shadow candidate may be promoted to a proposal, order, or watch, and no
+intermediate result may change policy or declare a winner.
+
+ROB-1301's three prohibitions remain its sealed canonical record after
+termination; the v2 description below does not replace them.
 
 금지 (이슈 정본, 변경 없음):
 
@@ -485,26 +489,39 @@ ROB-1331 Q6 부록은 시작점을 첫 record와 분리해 봉인한다:
 * 라이브 게이트 문언 무접촉
 * 채점 전 중간값으로 정책 변경 논거 삼지 않기(사전 등록 원칙)
 
-이 블록은 **lane sequence가 아니다.** `lanes.buy` / `lanes.discovery` 의
-집행 순서는 그대로다. mock 계좌도 쓰지 않는다 (1계좌=1전략).
+For ROB-1351 v2, the separately ratified wording is: 라이브 게이트 문언은 이
+실험이 바꾸지 않는다 — 문언 변경은 이 실험에 선행하는 운영자 결정이며 v2 의 모집단을
+정의한다. This v2 population definition is distinct from, and alongside, the
+sealed ROB-1301 prohibitions above.
+
+`evaluate_buy_gate_ab_shadow` remains an observation-only evaluator and is
+**never order_proposal_create**; v2 has no caller wiring in this PR.
+
+This block is **NOT a lane sequence**. `lanes.buy` / `lanes.discovery` ordering
+is unchanged and mock accounts remain out of scope.
 
 ```yaml
-# playbook-machine-readable: ROB-1301 buy-gate A/B shadow (observation only)
+# playbook-machine-readable: ROB-1301 terminal / ROB-1351 v2 registered only
 # NOT a lane sequence — live buy/discovery lanes are unchanged.
 shadow_experiments:
   rob-1301-buy-gate-ab:
-    live_gate: variant_a_unchanged
-    promote: false
-    steps:
+    status: INSUFFICIENT_SAMPLE
+    outcome: NO_FIRING
+    terminated_at: 2026-09-07T09:43:42+09:00
+    carryover: forbidden
+    terminal_observation:
       - tool: evaluate_buy_gate_ab_shadow
         note: >-
-          same candidate snapshot, same evaluation_as_of; only support
-          quality differs (A=strong required, B=moderate+)
-      - tool: forecast_save
-        when: variant_b_only
-        note: >-
-          shadow_buy tagging; never order_proposal_create / place_order /
+          terminal record only; never order_proposal_create / place_order /
           watch create
+  rob-1351-buy-gate-moderate-live:
+    status: registered_unarmed
+    live_gate: moderate
+    live_cohorts: [strong, moderate_only]
+    shadow_gate: weak
+    promote: false
+    caller_wiring: false
+    observation_tool: evaluate_buy_gate_ab_shadow
 ```
 
 ---
@@ -643,7 +660,12 @@ policy_keys:
     lanes: [discovery]
     captured: 8
     unit: percent
-    semantics: strong support must be within this distance
+    semantics: support must be within this distance
+  screen.support_strength_min:
+    lanes: [discovery]
+    captured: moderate
+    unit: support_strength
+    semantics: minimum support quality for a regular-discovery candidate
   screen.upside_min_pct:
     lanes: [discovery]
     captured: 40
@@ -663,6 +685,6 @@ policy_keys:
 - [ROB-626](https://linear.app/mgh3326/issue/ROB-626) / ROB-640 — intraday
   investor-flow freshness + confirmed multi-day foreign-flow embed.
 - **ROB-646** — trading policy YAML (single source for the `policy_keys` above).
-- **ROB-1301** — buy-gate A/B shadow (variant B moderate+ support). Playbook
-  §3.2 is observation-only; live gates stay variant A.
+- **ROB-1301 / ROB-1351** — the sealed ROB-1301 strong-versus-moderate shadow
+  registration is terminal; ROB-1351 v2 is separately registered and unarmed.
 - **ROB-649** — `route_request` (consumes the `lanes:` blocks above).

@@ -201,6 +201,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "telegram_callback_inbox",
                 "screener_pick_log",
                 "buy_gate_ab_collection_epoch",
+                "buy_gate_ab_experiment_termination",
+                "buy_gate_ab_experiment_registration",
+                "buy_gate_ab_collection_epoch_v2",
                 "kiwoom_coordination_lifecycle",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
