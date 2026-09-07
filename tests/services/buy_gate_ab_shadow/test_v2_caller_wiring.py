@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -226,6 +227,62 @@ def test_v2_forecast_tag_forces_experiment_sample_from_actual_bits() -> None:
     )
 
 
+def test_v2_forecast_tags_distinguish_a_and_b_from_b_only() -> None:
+    a_and_b_target = build_shadow_buy_forecasts(_evaluation(), created_by="reviewer")[
+        0
+    ]["forecast_target"]
+    b_only_target = build_shadow_buy_forecasts(
+        _evaluation(support_strength=_B_MIN), created_by="reviewer"
+    )[0]["forecast_target"]
+
+    assert a_and_b_target["evaluated_cohort"] == "a_and_b"
+    assert a_and_b_target["shadow_buy"] is False
+    assert b_only_target["evaluated_cohort"] == "b_only"
+    assert b_only_target["shadow_buy"] is True
+    assert (
+        a_and_b_target["evaluated_cohort"],
+        a_and_b_target["shadow_buy"],
+    ) != (
+        b_only_target["evaluated_cohort"],
+        b_only_target["shadow_buy"],
+    )
+
+
+def test_v2_forecast_tag_records_neither_verdict_facts() -> None:
+    target = build_shadow_buy_forecasts(
+        _evaluation(other_gate_bits={}), created_by="reviewer"
+    )[0]["forecast_target"]
+
+    assert target["evaluated_cohort"] == "neither"
+    assert target["shadow_buy"] is False
+    assert target["variant_a_passed"] is False
+    assert target["variant_b_passed"] is False
+
+
+def test_v2_forecast_tag_records_b_only_verdict_facts() -> None:
+    target = build_shadow_buy_forecasts(
+        _evaluation(support_strength=_B_MIN), created_by="reviewer"
+    )[0]["forecast_target"]
+
+    assert target["evaluated_cohort"] == "b_only"
+    assert target["shadow_buy"] is True
+    assert target["variant_a_passed"] is False
+    assert target["variant_b_passed"] is True
+
+
+def test_v2_forecast_tag_preserves_sealed_stream_cohort() -> None:
+    for evaluation in (
+        _evaluation(),
+        _evaluation(support_strength=_B_MIN),
+        _evaluation(other_gate_bits={}),
+    ):
+        target = build_shadow_buy_forecasts(evaluation, created_by="reviewer")[0][
+            "forecast_target"
+        ]
+        assert target["variant"] == "B"
+        assert target["cohort"] == PRE_REGISTRATION_V2["forecast_tagging"]["cohort"]
+
+
 def test_v1_and_v2_seals_stay_pinned() -> None:
     assert spec_sha256() == PINNED_SPEC_SHA256
     assert policy_projection_sha256() == PINNED_POLICY_PROJECTION_SHA256
@@ -302,6 +359,41 @@ async def test_fanout_witness_recorder_stops_at_ten_candidates() -> None:
         now=_AS_OF,
     )
     assert len(saved) == MAX_FANOUT_WITNESS_CANDIDATES * 2
+
+
+@pytest.mark.asyncio
+async def test_fanout_witness_recorder_logs_evaluation_counts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    saved: list[dict[str, Any]] = []
+    result = _fanout_result()
+    result["candidates"].append({"symbol": "invalid", "funnel": {}})
+
+    async def save(**kwargs: Any) -> None:
+        saved.append(kwargs)
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="app.services.buy_gate_ab_shadow_recorder",
+    ):
+        await maybe_record_buy_gate_ab_shadow(
+            result,
+            enabled=True,
+            save=save,
+            now=_AS_OF,
+        )
+
+    completed = [
+        record
+        for record in caplog.records
+        if record.message == "buy-gate A/B v2 witness recorder completed"
+    ]
+    assert len(saved) == 2
+    assert len(completed) == 1
+    assert completed[0].candidates_seen == 2
+    assert completed[0].evaluated == 1
+    assert completed[0].skipped == 1
+    assert completed[0].rows_saved == 2
 
 
 def test_v2_mcp_tool_returns_witness_kwargs_without_writing(

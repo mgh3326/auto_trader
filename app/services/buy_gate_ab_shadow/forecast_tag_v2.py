@@ -91,9 +91,14 @@ def build_shadow_buy_forecasts(
             "target_price": float(evaluation.entry_price),
             "outcome_rule_version": _TAG["outcome_rule_version"],
             "experiment_id": EXPERIMENT_ID_V2,
+            # ``variant``/``cohort`` identify the sealed v2 stream.  The
+            # evaluated facts below describe this particular candidate.
             "variant": "B",
             "cohort": _TAG["cohort"],
-            "shadow_buy": True,
+            "evaluated_cohort": evaluation.cohort,
+            "variant_a_passed": evaluation.variant_a.passed,
+            "variant_b_passed": evaluation.variant_b.passed,
+            "shadow_buy": evaluation.shadow_buy,
             "promote": False,
             "live_gate_impact": False,
             "spec_sha256": PINNED_SPEC_SHA256_V2,

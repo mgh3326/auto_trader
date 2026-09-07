@@ -91,14 +91,23 @@ async def maybe_record_buy_gate_ab_shadow(
 ) -> None:
     """Record witness rows when the env gate is on. Never raises. Never mutates ``result``."""
 
+    recording_started = False
+    candidates_seen = 0
+    evaluated = 0
+    skipped = 0
+    rows_saved = 0
     try:
         if enabled is None:
             enabled = env_gate_enabled()
-        if not enabled or not isinstance(result, Mapping):
+        if not enabled:
+            return
+        recording_started = True
+        if not isinstance(result, Mapping):
             return
         raw_candidates = result.get("candidates")
         if not isinstance(raw_candidates, list):
             return
+        candidates_seen = len(raw_candidates)
         if len(raw_candidates) > MAX_FANOUT_WITNESS_CANDIDATES:
             logger.warning(
                 "buy-gate A/B v2 witness recorder truncating fanout candidates",
@@ -107,12 +116,14 @@ async def maybe_record_buy_gate_ab_shadow(
                     "recording_limit": MAX_FANOUT_WITNESS_CANDIDATES,
                 },
             )
+            skipped += len(raw_candidates) - MAX_FANOUT_WITNESS_CANDIDATES
         evaluated_at = now or datetime.now(UTC)
         if evaluated_at.tzinfo is None:
             evaluated_at = evaluated_at.replace(tzinfo=UTC)
         writer = save or forecast_save
         for candidate in raw_candidates[:MAX_FANOUT_WITNESS_CANDIDATES]:
             if not isinstance(candidate, Mapping):
+                skipped += 1
                 continue
             try:
                 evaluation = evaluate_candidate(
@@ -124,19 +135,33 @@ async def maybe_record_buy_gate_ab_shadow(
                     "buy-gate A/B v2 witness candidate could not be evaluated",
                     exc_info=True,
                 )
+                skipped += 1
                 continue
             # Record every evaluable cohort.  Filtering to B-only would turn
             # missing shared bits into a permanent zero-row observer.
+            evaluated += 1
             for payload in build_v2_witness_forecasts(
                 evaluation,
                 created_by=FANOUT_WITNESS_CREATED_BY,
             ):
                 await writer(**payload)
+                rows_saved += 1
     except Exception:
         logger.warning(
             "buy-gate A/B v2 witness recording failed; fanout result is unchanged",
             exc_info=True,
         )
+    finally:
+        if recording_started:
+            logger.info(
+                "buy-gate A/B v2 witness recorder completed",
+                extra={
+                    "candidates_seen": candidates_seen,
+                    "evaluated": evaluated,
+                    "skipped": skipped,
+                    "rows_saved": rows_saved,
+                },
+            )
 
 
 __all__ = [

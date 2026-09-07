@@ -50,6 +50,10 @@ The v2 wiring has two deliberately different pre-arming records:
   three review bits were supplied as actual booleans; missing or non-boolean
   bits are evaluated as rejects and force `experiment_sample=false`.
 
+Within a v2 witness, `variant` and `cohort` are sealed stream labels; per-row
+facts are recorded in `evaluated_cohort`, `variant_a_passed`, and
+`variant_b_passed` (and `shadow_buy` is true only for an evaluated `b_only`).
+
 The v2 collection epoch may be activated only after at least one
 experiment-sample witness (`experiment_sample=true`) exists, followed by the
 separate operator activation decision and independent review. A plumbing
