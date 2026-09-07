@@ -43,7 +43,14 @@ def _fresh_row(
 
 
 def _real_shaped_fresh_row(*, rsi: float) -> dict[str, Any]:
-    """Use the full-analysis support shape, including all real family aliases."""
+    """Mirror producer-created support rows and their source-derived strength.
+
+    ``_cluster_price_levels`` derives strength from source count (>=3 strong,
+    ==2 moderate, 1 weak). Its source strings include ``fib_<pct>``,
+    ``bb_lower``, ``bb_middle``, ``bb_upper``, ``volume_poc``,
+    ``volume_value_area_low``, and ``volume_value_area_high``. Each fixture
+    level therefore uses only combinations the real producer can create.
+    """
 
     return {
         "data_state": "fresh",
@@ -59,7 +66,7 @@ def _real_shaped_fresh_row(*, rsi: float) -> dict[str, Any]:
             {
                 "price": 94,
                 "strength": "moderate",
-                "sources": ["volume_profile_poc"],
+                "sources": ["volume_poc", "volume_value_area_low"],
             },
         ],
     }
@@ -550,7 +557,7 @@ def test_discovery_support_family_default_is_two() -> None:
     assert gates.discovery_support_source_count_min == 2
 
 
-def test_split_keeps_regular_and_reserve_funnel_verdicts_byte_equivalent() -> None:
+def test_split_keeps_regular_and_reserve_funnel_verdicts_unchanged() -> None:
     gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
     expected_anchor = {
         "status": "pass",
@@ -622,9 +629,9 @@ def test_split_keeps_regular_and_reserve_funnel_verdicts_byte_equivalent() -> No
 def test_discovery_family_count_one_only_changes_regular_rsi_pass_lane() -> None:
     gates = fanout._FanoutGates.from_policy(_policy_with_discovery_family_count(1))
     one_family_regular = _fresh_row(rsi=35)
-    one_family_regular["supports"][0]["sources"] = ["fib_50"]
+    one_family_regular["supports"][0]["sources"] = ["fib_50", "fib_61.8"]
     one_family_tier = _fresh_row(rsi=55)
-    one_family_tier["supports"][0]["sources"] = ["fib_50"]
+    one_family_tier["supports"][0]["sources"] = ["fib_50", "fib_61.8"]
 
     regular = fanout._evaluate_funnel(_funnel_candidate(), one_family_regular, gates)
     tier = fanout._evaluate_funnel(_funnel_candidate(), one_family_tier, gates)
