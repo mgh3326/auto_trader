@@ -229,7 +229,9 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   `backfilled` 는 **실제 커밋된 booking**(`action=booked*`)만 세며 **dry-run 은 항상 0**.
   같은 market 60초 dedupe(프로세스 로컬 monotonic, 동시 요청도 커널 1회 진입).
 - **`WS_LEDGER_SINK=db|http`(기본 `db`)**: `http` 는 같은 정규화 upsert 를 localhost
-  ingest 로 POST 하고 **다운스트림은 API 서버가 소유**(모니터 중복 실행 없음). 실패는
+  ingest 로 POST 하고 **다운스트림은 API 서버가 소유**(모니터 중복 실행 없음). 단
+  sink 소유권은 `http` **AND** `EXECUTION_LEDGER_COMMIT_ENABLED` 이며, gate off 면
+  sink 가 아예 호출되지 않으므로 모니터가 알림을 계속 소유한다(알림 1회, write 0). 실패는
   bounded 재시도 큐 → 소진/큐 상한 시 **직접 DB 로 fail-open** + `sink_fallback` 증가,
   종료 시 flush. 남는 유실 경계는 DB fallback 자체 실패뿐이며 ERROR + `sink_fallback_failed`
   로 드러난다.

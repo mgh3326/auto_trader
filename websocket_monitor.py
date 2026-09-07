@@ -235,7 +235,7 @@ class UnifiedWebSocketMonitor:
                 broker="upbit",
                 correlation_id=str(order_data.get("uuid") or "n/a"),
             )
-            if not self._ledger_sink_owns_downstream:
+            if not self._sink_owns_downstream():
                 await run_post_upsert_downstream(
                     broker="upbit",
                     upsert_status=upsert_status,
@@ -274,6 +274,19 @@ class UnifiedWebSocketMonitor:
         except Exception:  # noqa: BLE001 - observability must never break the tap
             logger.warning("Failed to read ledger sink stats", exc_info=True)
             return {"mode": getattr(self._ledger_sink, "mode", "unknown")}
+
+    def _sink_owns_downstream(self) -> bool:
+        """Whether the sink — not this monitor — will run the downstream work.
+
+        Only the HTTP sink ever owns it, and only when a fill actually reaches
+        a sink. With ``EXECUTION_LEDGER_COMMIT_ENABLED`` off,
+        ``_record_execution_ledger_fill`` returns before consulting any sink, so
+        the monitor keeps owning the notification exactly as it did before the
+        sink switch existed — otherwise a gate-off process would go silent.
+        """
+        return self._ledger_sink_owns_downstream and bool(
+            settings.EXECUTION_LEDGER_COMMIT_ENABLED
+        )
 
     def _downstream_hooks(self) -> DownstreamHooks:
         """Bind the shared post-upsert orchestration to this monitor.
@@ -324,7 +337,7 @@ class UnifiedWebSocketMonitor:
                 broker="kis",
                 correlation_id=correlation_id,
             )
-            if not self._ledger_sink_owns_downstream:
+            if not self._sink_owns_downstream():
                 await run_post_upsert_downstream(
                     broker="kis",
                     upsert_status=upsert_status,

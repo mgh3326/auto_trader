@@ -221,6 +221,36 @@ async def test_http_mode_does_not_notify_twice(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_http_mode_still_notifies_when_the_commit_gate_is_off(
+    ledger_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gate off means no sink is consulted, so the monitor still owns the alert."""
+    from websocket_monitor import UnifiedWebSocketMonitor
+
+    monkeypatch.setattr(settings, "WS_LEDGER_SINK", "http", raising=False)
+    monkeypatch.setattr(settings, "EXECUTION_LEDGER_COMMIT_ENABLED", False)
+    transport = _FakeTransport(_accepted())
+    committed: list[ExecutionLedgerUpsert] = []
+
+    async def _commit(fill, *, session_factory=None, repository_cls=None):
+        committed.append(fill)
+        return "inserted", 1
+
+    monitor = UnifiedWebSocketMonitor()
+    monitor._ledger_sink = _http_sink(
+        transport, DirectDbFillSink(owns_downstream=True, commit=_commit)
+    )
+    monitor._send_fill_notification = AsyncMock()
+
+    await monitor._on_kis_execution(kis_domestic_fill_frame())
+
+    monitor._send_fill_notification.assert_awaited_once()
+    assert transport.requests == [], "gate off must not POST"
+    assert committed == [], "gate off must not write to the DB either"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_http_failure_falls_open_and_still_notifies_once(
     ledger_settings: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

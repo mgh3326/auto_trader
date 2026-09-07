@@ -166,6 +166,11 @@ curl -sS -X POST http://127.0.0.1:8000/trading/api/execution-ledger/reconcile/tr
 | `db` (**기본값**) | 기존 그대로: 모니터가 서비스 레이어로 직접 커밋하고, 다운스트림도 모니터가 실행 |
 | `http` | 같은 정규화 `ExecutionLedgerUpsert`를 위 ingest API로 POST. **다운스트림은 API 서버가 소유**하므로 모니터는 중복 실행하지 않는다 |
 
+🔴 **`EXECUTION_LEDGER_COMMIT_ENABLED=false` 인 동안에는 sink 자체가 호출되지 않는다**
+(`_record_execution_ledger_fill`이 그 전에 반환). 이때는 `http` 모드여도 **모니터가
+알림을 계속 소유**하므로 기존과 동일하게 알림 1회가 나가고 DB/HTTP write 는 0이다.
+sink 소유권은 "http 모드" 하나가 아니라 "http 모드 **AND** commit gate on"이다.
+
 인식하지 못하는 값은 경고 후 `db`로 떨어진다.
 
 ### 🔴 `WS_LEDGER_SINK_URL` 신뢰 경계 (토큰이 실린다)
