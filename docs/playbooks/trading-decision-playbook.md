@@ -456,7 +456,7 @@ lanes:
 
 ---
 
-### 3.2 ROB-1301 termination and ROB-1351 v2 re-registration
+### 3.2 ROB-1301 buy-gate A/B shadow — termination and ROB-1351 v2 re-registration
 
 ROB-1301/1331's sealed strong-versus-moderate pre-registration was terminated
 at `2026-09-07T09:43:42+09:00` by the operator under
@@ -480,7 +480,17 @@ separate PR follows an operator activation decision and independent review.
 No shadow candidate may be promoted to a proposal, order, or watch, and no
 intermediate result may change policy or declare a winner.
 
-This block is **not a lane sequence**. `lanes.buy` / `lanes.discovery` ordering
+The sealed history and the v2 registration retain these binding prohibitions:
+
+- `shadow가 제안·주문·워치로 승격 금지(순수 기록)`.
+- `라이브 게이트 문언 무접촉`: the gate wording change is the preceding
+  operator decision that defines v2's population, not an experimental result.
+- `채점 전 중간값으로 정책 변경 논거 삼지 않기(사전 등록 원칙)`.
+
+`evaluate_buy_gate_ab_shadow` remains an observation-only evaluator and is
+**never order_proposal_create**; v2 has no caller wiring in this PR.
+
+This block is **NOT a lane sequence**. `lanes.buy` / `lanes.discovery` ordering
 is unchanged and mock accounts remain out of scope.
 
 ```yaml
