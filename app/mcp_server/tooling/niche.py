@@ -20,6 +20,15 @@ import sentry_sdk
 # paper_cohort_kill_switch handler is preserved but has no active registration.
 NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
+        frozenset({"fill-watch-context"}),
+        frozenset(
+            {
+                "fill_watch_context_consume_artifact",
+                "fill_watch_context_outcome_get",
+            }
+        ),
+    ),
+    (
         frozenset(
             {
                 "account_read",
