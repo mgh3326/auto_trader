@@ -17,6 +17,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | crypto | 59 | 3 | 41 | 39 | 1 | 143 |
 | db-paper | 58 | 3 | 35 | 47 | 1 | 144 |
 | default | 80 | 4 | 76 | 42 | 1 | 203 |
+| fill-watch-context | 0 | 0 | 2 | 0 | 0 | 2 |
 | hermes-paper-kis | 59 | 3 | 37 | 39 | 1 | 139 |
 | kiwoom | 63 | 4 | 43 | 39 | 1 | 150 |
 | kiwoom_kr | 61 | 3 | 38 | 39 | 1 | 142 |
@@ -49,6 +50,8 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 
 | Tool | Profiles | Module | Mutation | Class | 90d | 30d | Prompt refs | Runbook refs | Code refs |
 |---|---|---|---|---|---:|---:|---:|---:|---:|
+| fill_watch_context_consume_artifact | fill-watch-context | app.mcp_server.tooling.fill_watch_context_registration | persistence | C | 0 | 0 | 0 | 1 | 1 |
+| fill_watch_context_outcome_get | fill-watch-context | app.mcp_server.tooling.fill_watch_context_registration | no | C | 0 | 0 | 0 | 1 | 1 |
 | session_bootstrap_pack | account_read, alpaca-paper-clean, analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, shadow-replay, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.session_bootstrap_registration | no | C | 0 | 0 | 0 | 1 | 1 |
 | alpaca_paper_automated_preview_order | us-paper | app.mcp_server.tooling.alpaca_paper_automated_orders | no | D | 0 | 0 | 0 | 0 | 0 |
 | alpaca_paper_automated_submit_order | us-paper | app.mcp_server.tooling.alpaca_paper_automated_orders | order | C | 0 | 0 | 0 | 2 | 0 |
@@ -304,6 +307,7 @@ For a future generator, commit reviewed `config/mcp_lane_allowlists/*.txt`; gene
 
 | Profile | D immediate-review | A/B unlisted (trace lane before removal) | C unlisted (contract review) |
 |---|---|---|---|
+| fill-watch-context | — | — | fill_watch_context_consume_artifact, fill_watch_context_outcome_get |
 | account_read | — | get_cash_balance, get_holdings, kis_live_get_order_history, kiwoom_mock_get_order_history, kiwoom_mock_get_orderable_cash, kiwoom_mock_get_positions, toss_get_order_history, toss_get_orderable_cash, toss_get_positions | get_order_history |
 | alpaca-paper-clean | — | alpaca_paper_execution_preflight_check, alpaca_paper_get_account, alpaca_paper_get_cash, alpaca_paper_ledger_get_by_correlation, alpaca_paper_ledger_list_recent, alpaca_paper_list_fills, alpaca_paper_list_orders, alpaca_paper_list_positions | alpaca_paper_get_order, alpaca_paper_ledger_get, alpaca_paper_list_assets, alpaca_paper_preview_order, alpaca_paper_roundtrip_report |
 | analysis_readonly | analysis_bundle_get | — | — |
