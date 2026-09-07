@@ -11,6 +11,7 @@ from app.services.order_proposals.buying_power import (
     build_create_advisory,
     currency_for_market,
     default_buying_power_reader,
+    pending_buy_ladder,
     pending_buy_requirement,
     required_cash,
 )
@@ -323,6 +324,7 @@ async def test_create_advisory_reports_exact_pending_shortfall(db_session):
         buying_power_reader=reader,
     )
 
+    sequential = advisory.pop("sequential_approval_shortfall")
     assert advisory == {
         "status": "insufficient",
         "currency": "KRW",
@@ -332,6 +334,10 @@ async def test_create_advisory_reports_exact_pending_shortfall(db_session):
         "skipped_market_rungs": 0,
         "warning": ("매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"),
     }
+    # §177차 — the single pending approval is itself already unpayable.
+    assert sequential["status"] == "blocked"
+    assert sequential["approvable_count"] == 0
+    assert sequential["shortfall"] == "200000"
 
 
 @pytest.mark.asyncio
@@ -348,6 +354,7 @@ async def test_create_advisory_is_unavailable_when_reader_fails(db_session):
         buying_power_reader=reader,
     )
 
+    sequential = advisory.pop("sequential_approval_shortfall")
     assert advisory == {
         "status": "unavailable",
         "currency": "KRW",
@@ -357,6 +364,8 @@ async def test_create_advisory_is_unavailable_when_reader_fails(db_session):
         "skipped_market_rungs": 0,
         "warning": None,
     }
+    assert sequential["status"] == "unavailable"
+    assert sequential["ladder"] == []
 
 
 # ROB-897 cause (2): pending_buy_requirement/build_create_advisory must ignore
@@ -490,3 +499,236 @@ async def test_create_advisory_no_false_shortfall_from_stale_expired_group(
     assert advisory["pending_required"] == "259700"
     assert advisory["shortfall"] == "0"
     assert advisory["warning"] is None
+
+
+# ---------------------------------------------------------------------------
+# §177차 — sequential approval shortfall.
+#
+# The 2026-09-07 incident: three KIS averaging-down adds were proposed
+# (1,567,800 + 823,500 + 202,500 = 2,593,800 KRW). The operator approved them
+# one card at a time; the broker reserved each accepted order as it went, and
+# the third failed the balance precheck against a remaining 188,451 KRW. The
+# aggregate advisory could not have named which approval would break, because
+# it compares the whole pending set against buying power in one shot. This
+# walks them instead.
+# ---------------------------------------------------------------------------
+
+_KIS_ADDS = (
+    ("52", "30150"),  # 015760 한국전력 — 1,567,800
+    ("3", "274500"),  # 196170 알테오젠 —   823,500
+    ("1", "202500"),  # 035420 NAVER    —   202,500
+)
+
+
+async def _seed_kis_adds(db_session, broker_account_id="account-a"):
+    for quantity, limit_price in _KIS_ADDS:
+        await _seed_proposal(
+            db_session,
+            side="buy",
+            quantity=quantity,
+            limit_price=limit_price,
+            broker_account_id=broker_account_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sequential_walk_names_the_approval_that_will_be_blocked(db_session):
+    await _seed_kis_adds(db_session)
+
+    async def reader(**_kwargs):
+        # Buying power at the moment the first card was tapped.
+        return Decimal("2579700")
+
+    advisory = await build_create_advisory(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=datetime.now(UTC),
+        buying_power_reader=reader,
+    )
+
+    sequential = advisory["sequential_approval_shortfall"]
+    assert sequential["status"] == "blocked"
+    assert sequential["pending_count"] == 3
+    # 2,579,700 - 1,567,800 - 823,500 = 188,400 left, and the third needs
+    # 202,500.
+    assert sequential["approvable_count"] == 2
+    assert sequential["remaining_before_blocked"] == "188400"
+    assert sequential["blocked_required"] == "202500"
+    assert sequential["shortfall"] == "14100"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_can_read_sufficient_while_an_approval_is_already_blocked(
+    db_session,
+):
+    """The exact blind spot §177차 closes.
+
+    Buying power covers the pending total here, so the aggregate says
+    "sufficient" with a zero shortfall. It is still true that the operator can
+    tap the cards in an order that strands one of them -- which is why the
+    sequential walk is a separate field rather than a restatement.
+    """
+
+    await _seed_kis_adds(db_session)
+
+    async def reader(**_kwargs):
+        return Decimal("2593800")  # exactly the pending total
+
+    advisory = await build_create_advisory(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=datetime.now(UTC),
+        buying_power_reader=reader,
+    )
+
+    assert advisory["status"] == "sufficient"
+    assert advisory["shortfall"] == "0"
+    sequential = advisory["sequential_approval_shortfall"]
+    assert sequential["status"] == "clear"
+    assert sequential["approvable_count"] == 3
+    assert sequential["remaining_after_all"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_sequential_warning_is_raised_even_when_the_aggregate_is_quiet(
+    db_session,
+):
+    await _seed_kis_adds(db_session)
+
+    async def reader(**_kwargs):
+        # Enough for the first two but not the third; the aggregate compares
+        # 2,579,700 against 2,593,800 and calls it insufficient by 14,100 --
+        # the sequential walk says WHICH card that is.
+        return Decimal("2579700")
+
+    advisory = await build_create_advisory(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=datetime.now(UTC),
+        buying_power_reader=reader,
+    )
+
+    assert advisory["warning"] is not None
+    assert advisory["sequential_approval_shortfall"]["blocked_symbol"] == "005930"
+
+
+@pytest.mark.asyncio
+async def test_sequential_ladder_survives_unknown_buying_power(db_session):
+    """Unknown buying power keeps the half that needs no balance.
+
+    This is the `kis_live` shape: no buying-power reader is wired for KIS (one
+    would put a broker balance call on the create path), so the reader returns
+    ``None`` and the aggregate goes unavailable. The ladder is still emitted,
+    because cumulative requirement is arithmetic on the proposals themselves.
+    """
+
+    await _seed_kis_adds(db_session)
+
+    async def reader(**_kwargs):
+        return None
+
+    advisory = await build_create_advisory(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=datetime.now(UTC),
+        buying_power_reader=reader,
+    )
+
+    assert advisory["status"] == "unavailable"
+    sequential = advisory["sequential_approval_shortfall"]
+    assert sequential["status"] == "unavailable"
+    assert sequential["reason"] == "buying_power_unknown"
+    assert sequential["shortfall"] is None
+    # The ladder itself needs no balance and is still emitted in full.
+    assert [entry["cumulative_required"] for entry in sequential["ladder"]] == [
+        "1567800",
+        "2391300",
+        "2593800",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sequential_walk_ignores_other_accounts_and_expired_groups(db_session):
+    now = datetime.now(UTC)
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="1",
+        limit_price="100000",
+        broker_account_id="account-a",
+    )
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="9",
+        limit_price="100000",
+        broker_account_id="account-b",
+    )
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="9",
+        limit_price="100000",
+        broker_account_id="account-a",
+        valid_until=now - timedelta(minutes=1),
+        now=now - timedelta(minutes=10),
+    )
+
+    async def reader(**_kwargs):
+        return Decimal("50000")
+
+    advisory = await build_create_advisory(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=now,
+        buying_power_reader=reader,
+    )
+
+    sequential = advisory["sequential_approval_shortfall"]
+    assert sequential["pending_count"] == 1
+    assert sequential["approvable_count"] == 0
+    assert sequential["shortfall"] == "50000"
+
+
+@pytest.mark.asyncio
+async def test_ladder_and_aggregate_agree_on_which_rows_count(db_session):
+    """The two numbers are derived from one query, so they cannot drift."""
+
+    await _seed_kis_adds(db_session)
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="1",
+        limit_price=None,  # market rung: skipped by both
+        broker_account_id="account-a",
+    )
+
+    required, skipped = await pending_buy_requirement(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=datetime.now(UTC),
+    )
+    steps, ladder_skipped = await pending_buy_ladder(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=datetime.now(UTC),
+    )
+
+    assert required == Decimal("2593800")
+    assert skipped == 1
+    assert ladder_skipped == 1
+    assert sum((step.required for step in steps), Decimal("0")) == required
