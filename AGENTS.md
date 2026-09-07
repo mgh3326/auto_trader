@@ -77,7 +77,18 @@
     완전 열거 + exact committed receipt coverage + active-hold 0일 때만
     `RELEASE_VERIFIED`다. 빈 lock, pool close, PID 부재만으로 승격 금지.
 
-16. **MCP 레인 계약**: `config/mcp_lane_allowlists/`의 `tool<TAB>basis`를 보존하고,
+16. **execution-ledger HTTP ingest (fillwire P0)**: `EXECUTION_LEDGER_INGEST_TOKEN`
+    미설정 403 · 오류 401 을 유지하고 세션 쿠키가 이 토큰을 대체하게 만들지 마라.
+    멱등키 `(broker, account_mode, venue, broker_order_id, fill_seq)` 를 약화하지 말고
+    (`venue`/`account_mode` 제거 금지), 외부 ingest 행의 `source` 는 항상 `websocket`
+    강제 · outer `source_run_id` 가 authority 다. 항목별 savepoint 를 전체 롤백으로
+    바꾸지 마라. 원장 커밋이 권한자이며 다운스트림 실패로 커밋된 fill 을 되돌리지 마라.
+    reconcile 트리거는 기존 커널만 호출하고 `dry_run` 기본 true · dry-run `backfilled=0`
+    을 유지한다. `WS_LEDGER_SINK` 기본 `db` 유지, `http` 실패는 DB fail-open(유실 0),
+    `WS_LEDGER_SINK_URL` 의 loopback/exact-path/no-userinfo 검증과
+    `follow_redirects=False` 를 완화하지 마라. 마이그레이션·스케줄러 추가 금지.
+
+17. **MCP 레인 계약**: `config/mcp_lane_allowlists/`의 `tool<TAB>basis`를 보존하고,
     등록 변경은 `tests/mcp_server/test_lane_allowlist_contract.py`와
     `test_profile_tool_snapshot.py`로 검증한다. D 제거·C niche 관측의 감사 범위와
     보존 예외는 `docs/runbooks/mcp-surface-cleanup-20260905.md`를 따른다.

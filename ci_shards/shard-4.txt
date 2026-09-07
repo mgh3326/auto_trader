@@ -50,6 +50,7 @@ tests/research/toss_phase2/test_collect.py
 tests/research/toss_phase2/test_load.py
 tests/research/toss_phase2/test_migration.py
 tests/research_contracts/test_strategy_ownership_manifest.py
+tests/routers/test_execution_ledger_reconcile_trigger.py
 tests/routers/test_invest_forecasts_router.py
 tests/routers/test_invest_open_orders_router.py
 tests/routers/test_invest_session_context_router.py
@@ -435,6 +436,7 @@ tests/test_watch_expiry_tasks.py
 tests/test_watch_validity_policy.py
 tests/test_watch_validity_review.py
 tests/test_websocket_monitor.py
+tests/test_websocket_monitor_ledger_sink.py
 tests/test_yfinance_sentry.py
 tests/unit/mcp_server/tooling/test_market_data_indicators_cache_first.py
 tests/upbit_public_read_model/test_orderbook_cache.py

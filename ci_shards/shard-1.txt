@@ -64,6 +64,7 @@ tests/research/test_kr_backfill_kiwoom_payload.py
 tests/research/test_kr_backfill_no_public_dml.py
 tests/research/test_krb1_c_stress_reducer.py
 tests/research/us_stage_b/test_registry_and_contracts.py
+tests/routers/test_execution_ledger_ingest.py
 tests/routers/test_invest_artifacts_router.py
 tests/routers/test_investment_reports_snapshot_backed.py
 tests/routers/test_investment_reports_snapshot_evidence_router.py
@@ -143,6 +144,7 @@ tests/services/brokers/toss/test_rate_limiter.py
 tests/services/brokers/toss/test_secret_redaction.py
 tests/services/buy_gate_ab_shadow/test_no_live_path_impact.py
 tests/services/buy_gate_ab_shadow/test_scoring_symmetry.py
+tests/services/execution_ledger/test_fill_sinks.py
 tests/services/execution_ledger/test_repository.py
 tests/services/execution_outcomes/test_static_boundaries.py
 tests/services/invest_screener_snapshots/test_alerts.py

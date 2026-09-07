@@ -25,6 +25,21 @@ from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services.execution_ledger.fill_ingest import (
+    DownstreamHooks,
+    run_post_upsert_downstream,
+)
+from app.services.execution_ledger.fill_ingest import (
+    project_upbit_proposal_fill as shared_project_upbit_proposal_fill,
+)
+from app.services.execution_ledger.fill_ingest import (
+    send_fill_notification as shared_send_fill_notification,
+)
+from app.services.execution_ledger.fill_sinks import (
+    SINK_MODE_HTTP,
+    SinkContext,
+    build_ledger_fill_sink,
+)
 from app.services.execution_ledger.normalizers import _redact_sensitive_keys
 from app.services.execution_ledger.repository import (
     ExecutionLedgerRepository,
@@ -33,7 +48,6 @@ from app.services.execution_ledger.repository import (
 from app.services.fill_enrichment import fetch_fill_enrichment
 from app.services.fill_notification import (
     FillOrder,
-    is_fill_notifiable,
     normalize_kis_fill,
     normalize_upbit_fill,
 )
@@ -114,6 +128,13 @@ class UnifiedWebSocketMonitor:
         )
         self._last_heartbeat_at = 0.0
 
+        # fillwire P0 — ledger sink switch (``WS_LEDGER_SINK``). ``db`` is the
+        # default and keeps the pre-existing direct write; ``http`` posts the
+        # same normalized upsert to the localhost ingest API, which then owns
+        # the shared downstream work so it never runs twice.
+        self._ledger_sink = build_ledger_fill_sink(settings)
+        self._ledger_sink_owns_downstream = self._ledger_sink.mode == SINK_MODE_HTTP
+
     def _setup_signal_handlers(self):
         """SIGINT/SIGTERM 시그널 핸들러 설정"""
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -156,6 +177,9 @@ class UnifiedWebSocketMonitor:
             "is_running": is_running,
             "upbit_connected": upbit_connected,
             "kis_connected": kis_connected,
+            # Ledger sink observability. Counters only — never the token, the
+            # ingest URL credentials, or any payload.
+            "ledger_sink": self._ledger_sink_stats(),
         }
 
         # Atomic write: write to temp file, then rename
@@ -211,25 +235,14 @@ class UnifiedWebSocketMonitor:
                 broker="upbit",
                 correlation_id=str(order_data.get("uuid") or "n/a"),
             )
-            proposal_rung_fill = False
-            if upsert_status is not None:
-                proposal_rung_fill = await self._project_upbit_proposal_fill(order_data)
-            duplicate_ledger_fill = upsert_status in {"updated", "unchanged"}
-            recover_suppressed_small_alert = (
-                duplicate_ledger_fill
-                and proposal_rung_fill
-                and not is_fill_notifiable(fill_order)
-            )
-            if not duplicate_ledger_fill or recover_suppressed_small_alert:
-                await self._send_fill_notification(
-                    fill_order,
-                    proposal_rung_fill=proposal_rung_fill,
-                )
-            else:
-                logger.info(
-                    "Upbit fill notification skipped for duplicate ledger row: symbol=%s status=%s",
-                    fill_order.symbol,
-                    upsert_status,
+            if not self._ledger_sink_owns_downstream:
+                await run_post_upsert_downstream(
+                    broker="upbit",
+                    upsert_status=upsert_status,
+                    fill_order=fill_order,
+                    raw_event=order_data,
+                    correlation_id=str(order_data.get("uuid") or "n/a"),
+                    hooks=self._downstream_hooks(),
                 )
             logger.info(
                 f"Upbit fill processed: {fill_order.symbol} {fill_order.side} "
@@ -254,70 +267,37 @@ class UnifiedWebSocketMonitor:
                 broker_order_id=broker_order_id,
             )
 
-    async def _project_upbit_proposal_fill(self, order_data: dict[str, Any]) -> bool:
-        """Best-effort projection of committed Upbit evidence into one rung."""
-        state = str(order_data.get("state") or "")
-        terminal_state = {
-            "trade": "partially_filled",
-            "done": "filled",
-        }.get(state)
-        if terminal_state is None:
-            return False
-
-        broker_order_id = str(order_data.get("uuid") or "").strip() or None
-        identifier = str(order_data.get("identifier") or "").strip() or None
+    def _ledger_sink_stats(self) -> dict[str, Any]:
+        """Sink mode + counters for heartbeat/health. Secret-free by construction."""
         try:
-            filled_qty = Decimal(str(order_data.get("executed_volume") or "0"))
-            if filled_qty <= 0:
-                logger.info(
-                    "Upbit proposal rung projection skipped: missing cumulative fill "
-                    "order_id=%s identifier=%s state=%s",
-                    broker_order_id,
-                    identifier,
-                    state,
-                )
-                return False
-            async with AsyncSessionLocal() as db:
-                rung = await OrderProposalsService(db).record_fill_evidence(
-                    idempotency_key=identifier,
-                    broker_order_id=broker_order_id,
-                    filled_qty=filled_qty,
-                    terminal_state=terminal_state,
-                    now=datetime.now(UTC),
-                    account_mode="upbit",
-                )
-                await db.commit()
-        except Exception as exc:  # noqa: BLE001 - ledger commit remains authoritative
-            logger.error(
-                "Upbit proposal rung projection failed: order_id=%s identifier=%s "
-                "state=%s error=%s",
-                broker_order_id,
-                identifier,
-                state,
-                exc,
-                exc_info=True,
-            )
-            return False
+            return dict(self._ledger_sink.stats())
+        except Exception:  # noqa: BLE001 - observability must never break the tap
+            logger.warning("Failed to read ledger sink stats", exc_info=True)
+            return {"mode": getattr(self._ledger_sink, "mode", "unknown")}
 
-        if rung is None:
-            logger.info(
-                "Upbit proposal rung projection found no matching proposal rung: "
-                "order_id=%s identifier=%s state=%s",
-                broker_order_id,
-                identifier,
-                state,
-            )
-            return False
-        logger.info(
-            "Upbit proposal rung projected: order_id=%s identifier=%s state=%s "
-            "rung_state=%s cumulative_filled_qty=%s",
-            broker_order_id,
-            identifier,
-            state,
-            rung.state,
-            filled_qty,
+    def _downstream_hooks(self) -> DownstreamHooks:
+        """Bind the shared post-upsert orchestration to this monitor.
+
+        Resolved per event on purpose, so a replaced instance attribute (the
+        long-standing test seam) is what actually runs.
+        """
+        return DownstreamHooks(
+            project_upbit_proposal_fill=self._project_upbit_proposal_fill,
+            send_fill_notification=self._send_fill_notification,
         )
-        return True
+
+    async def _project_upbit_proposal_fill(self, order_data: dict[str, Any]) -> bool:
+        """Best-effort projection of committed Upbit evidence into one rung.
+
+        The implementation is shared with the HTTP ingest route; the monitor's
+        own module-level session/service names are passed through so this
+        process keeps its existing wiring and patch points.
+        """
+        return await shared_project_upbit_proposal_fill(
+            order_data,
+            session_factory=AsyncSessionLocal,
+            proposals_service_cls=OrderProposalsService,
+        )
 
     async def _on_kis_execution(self, event: dict[str, Any]) -> None:
         """
@@ -344,16 +324,14 @@ class UnifiedWebSocketMonitor:
                 broker="kis",
                 correlation_id=correlation_id,
             )
-            if upsert_status not in {"updated", "unchanged"}:
-                await self._send_fill_notification(
-                    fill_order, correlation_id=correlation_id
-                )
-            else:
-                logger.info(
-                    "KIS fill notification skipped for duplicate ledger row: correlation_id=%s symbol=%s status=%s",
-                    correlation_id,
-                    fill_order.symbol,
-                    upsert_status,
+            if not self._ledger_sink_owns_downstream:
+                await run_post_upsert_downstream(
+                    broker="kis",
+                    upsert_status=upsert_status,
+                    fill_order=fill_order,
+                    raw_event=event,
+                    correlation_id=correlation_id,
+                    hooks=self._downstream_hooks(),
                 )
             logger.info(
                 f"KIS fill processed: {fill_order.symbol} {fill_order.side} "
@@ -501,18 +479,31 @@ class UnifiedWebSocketMonitor:
             source="websocket",
             raw_payload_json=_redact_sensitive_keys(event),
         )
-        async with AsyncSessionLocal() as db:
-            status, row_id = await ExecutionLedgerRepository(db).upsert_fill(fill)
-            await db.commit()
-        logger.info(
-            "Execution ledger websocket upsert committed: broker=%s symbol=%s order_id=%s fill_seq=%s status=%s row_id=%s",
-            broker,
-            fill.symbol,
-            fill.broker_order_id,
-            fill.fill_seq,
-            status,
-            row_id,
+        # Both sinks receive this identical normalized upsert; only the
+        # transport differs. In ``http`` mode the API server owns the shared
+        # downstream work, so the caller must not run it again.
+        status = await self._ledger_sink.deliver(
+            fill,
+            SinkContext(
+                broker=broker,
+                fill_order=order,
+                raw_event=event,
+                correlation_id=correlation_id,
+                hooks=self._downstream_hooks(),
+                session_factory=AsyncSessionLocal,
+                repository_cls=ExecutionLedgerRepository,
+            ),
         )
+        if status is None:
+            logger.warning(
+                "Execution ledger fill queued for retry by the %s sink: broker=%s "
+                "symbol=%s order_id=%s fill_seq=%s",
+                self._ledger_sink.mode,
+                broker,
+                fill.symbol,
+                fill.broker_order_id,
+                fill.fill_seq,
+            )
         return status
 
     async def _send_fill_notification(
@@ -522,65 +513,21 @@ class UnifiedWebSocketMonitor:
         correlation_id: str | None = None,
         proposal_rung_fill: bool = False,
     ) -> None:
-        """체결 알림: 통화 임계 → best-effort 보강 → TradeNotifier (fire-and-forget)."""
-        if not proposal_rung_fill and not is_fill_notifiable(order):
-            logger.info(
-                "Fill notification skipped: below threshold symbol=%s amount=%s currency=%s",
-                order.symbol,
-                order.filled_amount,
-                order.currency,
-            )
-            return
+        """체결 알림: 통화 임계 → best-effort 보강 → TradeNotifier (fire-and-forget).
 
-        enrichment = None
-        try:
-            enrichment = await fetch_fill_enrichment(order)
-        except Exception:
-            logger.warning(
-                "Fill enrichment error (fail-open): symbol=%s",
-                order.symbol,
-                exc_info=True,
-            )
-
-        from app.core.portfolio_links import build_position_detail_url
-
-        detail_url = build_position_detail_url(order.symbol, order.market_type)
-
-        logger.info(
-            "Fill notification send start: correlation_id=%s symbol=%s account=%s amount=%s",
-            correlation_id,
-            order.symbol,
-            order.account,
-            order.filled_amount,
+        Delegates to the shared implementation (also used by the HTTP ingest
+        route) and keeps the monitor-local forwarded-fill counters here.
+        """
+        delivered = await shared_send_fill_notification(
+            order,
+            correlation_id=correlation_id,
+            proposal_rung_fill=proposal_rung_fill,
+            notifier_factory=get_trade_notifier,
+            enrichment_fetcher=fetch_fill_enrichment,
         )
-        try:
-            ok = await get_trade_notifier().notify_fill(
-                order,
-                enrichment=enrichment,
-                detail_url=detail_url,
-            )
-            if ok:
-                self.fills_forwarded += 1
-                self.last_agent_success_at = datetime.now(UTC).isoformat()
-                logger.info(
-                    "Fill notification sent: correlation_id=%s symbol=%s result=success",
-                    correlation_id,
-                    order.symbol,
-                )
-            else:
-                logger.warning(
-                    "Fill notification not delivered: correlation_id=%s symbol=%s",
-                    correlation_id,
-                    order.symbol,
-                )
-        except Exception as e:
-            logger.error(
-                "Fill notification error: correlation_id=%s symbol=%s error=%s",
-                correlation_id,
-                order.symbol,
-                e,
-                exc_info=True,
-            )
+        if delivered:
+            self.fills_forwarded += 1
+            self.last_agent_success_at = datetime.now(UTC).isoformat()
 
     async def _start_upbit_supervisor(self) -> None:
         """
@@ -720,7 +667,7 @@ class UnifiedWebSocketMonitor:
             "upbit_connected=%s kis_connected=%s "
             "messages_received=%s execution_events_received=%s fills_forwarded=%s "
             "last_message_at=%s last_execution_at=%s last_pingpong_at=%s "
-            "last_agent_success_at=%s",
+            "last_agent_success_at=%s ledger_sink=%s",
             self.mode,
             connected,
             uptime,
@@ -733,6 +680,7 @@ class UnifiedWebSocketMonitor:
             runtime_snapshot["last_execution_at"],
             runtime_snapshot["last_pingpong_at"],
             self.last_agent_success_at,
+            self._ledger_sink_stats(),
         )
 
     async def start(self) -> None:
@@ -823,6 +771,15 @@ class UnifiedWebSocketMonitor:
         """통합 모니터링 정지"""
         logger.info("Stopping Unified WebSocket Monitor...")
         self.is_running = False
+
+        # Drain any fill still parked in the sink's retry queue before the
+        # process goes away — a queued fill must never be lost to shutdown.
+        try:
+            await self._ledger_sink.flush()
+        except Exception as e:
+            logger.error(
+                "Failed to flush the ledger sink on stop: %s", e, exc_info=True
+            )
 
         # Write heartbeat to indicate stopped
         self._write_heartbeat(is_running=False)
