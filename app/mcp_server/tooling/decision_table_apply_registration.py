@@ -31,10 +31,10 @@ _TOOL_DESCRIPTION = (
 def _default_dependencies() -> DecisionTableApplyDependencies:
     """Build lazy adapters so dry-run validation does not import order writers."""
 
-    async def artifact_get(**kwargs: Any) -> dict[str, Any]:
+    async def artifact_get(artifact_id: int | str) -> dict[str, Any]:
         from app.mcp_server.tooling.analysis_artifact_tools import analysis_artifact_get
 
-        return await analysis_artifact_get(**kwargs)
+        return await analysis_artifact_get(artifact_id)
 
     async def artifact_list(**kwargs: Any) -> dict[str, Any]:
         from app.mcp_server.tooling.analysis_artifact_tools import (

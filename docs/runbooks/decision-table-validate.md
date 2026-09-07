@@ -91,12 +91,17 @@ Before any write it performs this fail-closed sequence:
    `table_invalid` and its violations unchanged.
 5. For real application require literal `confirm=true`; otherwise return
    `confirm_required`.
-6. Read the newest apply record for the date. An exact completed
-   `(parent_artifact_uuid, table_hash)` match returns `already_applied=true`
-   without invoking any writer.
+6. Derive the table-scoped apply-record key
+   `kr-nxt-apply-<YYYY-MM-DD>:<parent_artifact_uuid>:<table_hash>` and read
+   that record. An exact completed `(parent_artifact_uuid, table_hash)` match
+   returns `already_applied=true` without invoking any writer. A pre-scope,
+   date-only record is read only as a legacy fallback when its payload proves
+   that same exact identity.
 
 The prep artifact is immutable. The resume state is a separate analysis
-artifact with `correlation_id="kr-nxt-apply-<YYYY-MM-DD>"` and this payload:
+artifact with
+`correlation_id="kr-nxt-apply-<YYYY-MM-DD>:<parent_artifact_uuid>:<table_hash>"`
+and this payload:
 
 ```json
 {
@@ -111,11 +116,21 @@ artifact with `correlation_id="kr-nxt-apply-<YYYY-MM-DD>"` and this payload:
 }
 ```
 
-`rows` may instead hold `watch_id`. The tool lists metadata
-for that correlation ID newest-first, gets the newest payload, and resumes only
-when both parent UUID and hash match. A changed hash is a new table and starts
-with no row markers. After every successful row it updates the separate record;
-failed rows remain unmarked, while later rows continue in original table order.
+`rows` may instead hold `watch_id`. The tool lists metadata for that exact,
+table-scoped correlation ID and resumes only when both parent UUID and hash
+match. A changed hash is a new table and starts with no row markers. After every
+successful row it updates the separate record; failed rows remain unmarked,
+while later rows continue in original table order.
+
+### Multiple tables on one trading date
+
+Two prep artifacts on the same trading date always receive different apply
+records because both the prep artifact UUID and the exact table hash are part of
+the correlation key. Applying table B cannot overwrite or hide table A's row
+markers; replaying A reads A's own record and produces no duplicate proposal or
+Telegram approval card. The old date-only key is only a read-only compatibility
+fallback for a payload that proves the same table identity, and new saves never
+write it.
 
 `action.apply_kind` is the v1.1 additive canonical row discriminator:
 `proposal`, `watch`, or `forecast`; `schema_version` remains v1.1. Omission

@@ -33,6 +33,7 @@ from app.services.decision_table_apply import (
     DecisionTableApplyDependencies,
     apply_decision_table,
 )
+from app.services.decision_table_apply.service import _apply_record_correlation_id
 from tests._mcp_tooling_support import DummyMCP
 from tests.mcp_server._registration_recorder import collect_profile_tools
 
@@ -189,7 +190,11 @@ class _Harness:
             "as_of": "2026-09-05T08:10:00+09:00",
             "valid_until": None,
             "session_label": "decision_table_apply",
-            "correlation_id": "kr-nxt-apply-2026-09-05",
+            "correlation_id": _apply_record_correlation_id(
+                date=payload["trading_date"],
+                parent_artifact_uuid=parent["artifact_uuid"],
+                table_hash=payload["decision_table_hash"],
+            ),
             "account_scope": None,
             "content_hash": None,
             "version": 1,
@@ -421,6 +426,30 @@ async def test_m4_complete_record_makes_second_apply_a_duplicate_free_noop() -> 
     assert len(harness.proposal_calls) == 1
     assert second["already_applied"] is True
     assert second["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_date_only_record_for_same_table_is_resume_safe() -> None:
+    harness = _Harness(_happy_response())
+    scenario_id = "constructed-v11-196170-breakeven-reserve-trim"
+    harness.seed_apply_record(
+        rows={
+            scenario_id: {
+                "proposal_id": "legacy-proposal-1",
+                "at": "2026-09-05T08:00:00+09:00",
+            }
+        },
+        complete=True,
+    )
+    assert harness.apply_record is not None
+    harness.apply_record["correlation_id"] = "kr-nxt-apply-2026-09-05"
+
+    result = await _apply(harness)
+
+    assert result["already_applied"] is True
+    assert result["complete"] is True
+    assert result["already_applied_rows"] == [scenario_id]
+    assert harness.proposal_calls == []
 
 
 @pytest.mark.asyncio
@@ -799,6 +828,94 @@ async def test_dynamic_tool_call_loads_no_broker_module() -> None:
     assert loaded_during_call == set()
 
 
+@pytest.mark.asyncio
+async def test_default_dependency_assembly_forwards_artifact_get_positionally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the registered production adapters, not an injected harness."""
+
+    from app.mcp_server.tooling import (
+        analysis_artifact_tools,
+        order_proposal_tools,
+        session_context_tools,
+    )
+
+    harness = _Harness(_happy_response())
+    parent = harness.parent_response["artifact"]
+    artifact_get_calls: list[int | str] = []
+    artifact_list_calls: list[dict[str, Any]] = []
+
+    async def artifact_get(artifact_id: int | str, /) -> dict[str, Any]:
+        artifact_get_calls.append(artifact_id)
+        return await harness.artifact_get(artifact_id)
+
+    async def artifact_list(
+        *, correlation_id: str, include_stale: bool, limit: int
+    ) -> dict[str, Any]:
+        artifact_list_calls.append(
+            {
+                "correlation_id": correlation_id,
+                "include_stale": include_stale,
+                "limit": limit,
+            }
+        )
+        return await harness.artifact_list(
+            correlation_id=correlation_id,
+            include_stale=include_stale,
+            limit=limit,
+        )
+
+    async def artifact_save(**kwargs: Any) -> dict[str, Any]:
+        return await harness.artifact_save(**kwargs)
+
+    monkeypatch.setattr(analysis_artifact_tools, "analysis_artifact_get", artifact_get)
+    monkeypatch.setattr(
+        analysis_artifact_tools, "analysis_artifact_list", artifact_list
+    )
+    monkeypatch.setattr(
+        analysis_artifact_tools, "analysis_artifact_save", artifact_save
+    )
+    monkeypatch.setattr(
+        order_proposal_tools, "order_proposal_create", harness.proposal_create
+    )
+    monkeypatch.setattr(
+        session_context_tools, "session_context_append", harness.context_append
+    )
+
+    mcp = DummyMCP()
+    # Deliberately omit ``dependencies``: this traverses _default_dependencies.
+    register_decision_table_apply_tools(mcp)
+    result = await mcp.tools["decision_table_apply"](
+        parent["id"],
+        parent["payload"]["decision_table_hash"],
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is True
+    assert result["complete"] is True
+    assert artifact_get_calls == [parent["id"]]
+    assert artifact_list_calls == [
+        {
+            "correlation_id": harness.save_calls[0]["correlation_id"],
+            "include_stale": True,
+            "limit": 1,
+        },
+        {
+            "correlation_id": "kr-nxt-apply-2026-09-05",
+            "include_stale": True,
+            "limit": 1,
+        },
+    ]
+    assert len(harness.save_calls) == 2
+    assert {call["correlation_id"] for call in harness.save_calls} == {
+        artifact_list_calls[0]["correlation_id"]
+    }
+    assert artifact_list_calls[0]["correlation_id"].startswith(
+        "kr-nxt-apply-2026-09-05:"
+    )
+
+
 def _literal_string(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -950,7 +1067,7 @@ async def test_dry_run_writes_no_apply_proposal_watch_or_forecast_and_keeps_prep
     apply_count = await db_session.scalar(
         sa.select(sa.func.count())
         .select_from(AnalysisArtifact)
-        .where(AnalysisArtifact.correlation_id == "kr-nxt-apply-2099-01-01")
+        .where(AnalysisArtifact.correlation_id.like("kr-nxt-apply-2099-01-01:%"))
     )
     proposal_count = await db_session.scalar(
         sa.select(sa.func.count())
@@ -1000,3 +1117,110 @@ async def test_dry_run_writes_no_apply_proposal_watch_or_forecast_and_keeps_prep
     assert after_real_apply["artifact"]["artifact_uuid"] == before["artifact_uuid"]
     assert after_real_apply["artifact"]["version"] == before["version"]
     assert after_real_apply["artifact"]["payload"] == before["payload"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_same_trading_date_tables_keep_apply_markers_isolated(
+    db_session: AsyncSession,
+) -> None:
+    """A second table must not overwrite the first table's resume markers."""
+
+    date = "2099-01-02"
+    token = uuid4().hex
+
+    async def save_prep(label: str) -> tuple[dict[str, Any], str]:
+        response = _happy_response()
+        envelope = deepcopy(response["artifact"]["payload"])
+        symbol = f"DTA{token[:8].upper()}{label.upper()}"
+        scenario_id = f"same-day-{token}-{label}"
+        envelope["trading_date"] = date
+        envelope["correlation_id"] = f"kr-nxt-prep-{date}-{token}-{label}"
+        row = envelope["decision_table"]["rows"][0]
+        row["scenario_id"] = scenario_id
+        row["symbols"] = [symbol]
+        _rehash({"artifact": {"payload": envelope}})
+        saved = await analysis_artifact_save(
+            market="kr",
+            kind="session_summary",
+            title=f"ROB-1349 same-day table {label}",
+            symbols=[symbol],
+            payload=envelope,
+            as_of=f"{date}T08:00:00+09:00",
+            created_by="codex",
+            session_label="kr-nxt-prep",
+            correlation_id=envelope["correlation_id"],
+        )
+        assert saved["success"] is True
+        return saved, scenario_id
+
+    prep_a, scenario_a = await save_prep("a")
+    prep_b, scenario_b = await save_prep("b")
+    proposal_scenarios: list[str] = []
+
+    async def proposal_writer(**kwargs: Any) -> dict[str, Any]:
+        proposal_scenarios.append(
+            kwargs["rationale"]["decision_table_apply"]["scenario_id"]
+        )
+        return {
+            "success": True,
+            "proposal_id": f"same-day-proposal-{len(proposal_scenarios)}",
+        }
+
+    async def unexpected_writer(**kwargs: Any) -> dict[str, Any]:
+        pytest.fail(f"unexpected writer call: {sorted(kwargs)}")
+
+    async def summary_writer(**kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "count": 1, "entries": []}
+
+    dependencies = DecisionTableApplyDependencies(
+        artifact_get=analysis_artifact_get,
+        artifact_list=analysis_artifact_list,
+        artifact_save=analysis_artifact_save,
+        proposal_create=proposal_writer,
+        watch_create=unexpected_writer,
+        forecast_save=unexpected_writer,
+        context_append=summary_writer,
+    )
+
+    first_a = await apply_decision_table(
+        prep_a["artifact"]["id"],
+        prep_a["artifact"]["payload"]["decision_table_hash"],
+        dry_run=False,
+        confirm=True,
+        dependencies=dependencies,
+    )
+    first_b = await apply_decision_table(
+        prep_b["artifact"]["id"],
+        prep_b["artifact"]["payload"]["decision_table_hash"],
+        dry_run=False,
+        confirm=True,
+        dependencies=dependencies,
+    )
+    replay_a = await apply_decision_table(
+        prep_a["artifact"]["id"],
+        prep_a["artifact"]["payload"]["decision_table_hash"],
+        dry_run=False,
+        confirm=True,
+        dependencies=dependencies,
+    )
+
+    assert first_a["complete"] is True
+    assert first_b["complete"] is True
+    assert first_a["apply_record_uuid"] != first_b["apply_record_uuid"]
+    assert proposal_scenarios == [scenario_a, scenario_b]
+    assert replay_a["already_applied"] is True
+    assert replay_a["complete"] is True
+
+    records = list(
+        await db_session.scalars(
+            sa.select(AnalysisArtifact).where(
+                AnalysisArtifact.correlation_id.like(f"kr-nxt-apply-{date}:%")
+            )
+        )
+    )
+    assert len(records) == 2
+    assert {record.payload["parent_artifact_uuid"] for record in records} == {
+        prep_a["artifact"]["artifact_uuid"],
+        prep_b["artifact"]["artifact_uuid"],
+    }

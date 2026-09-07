@@ -106,6 +106,21 @@ def _apply_date(envelope: dict[str, Any]) -> str | None:
     return None
 
 
+def _apply_record_correlation_id(
+    *, date: str, parent_artifact_uuid: str, table_hash: str
+) -> str:
+    """Return the durable apply-record key for exactly one decision table.
+
+    ``analysis_artifacts.correlation_id`` is unique and save updates that row
+    in place.  A date-only key would therefore let a second table from the
+    same trading date overwrite the first table's row markers.  Keep the
+    familiar date prefix for operational discovery, but scope the unique key
+    by the immutable prep-artifact UUID and exact decision-table hash.
+    """
+
+    return f"kr-nxt-apply-{date}:{parent_artifact_uuid}:{table_hash}"
+
+
 def _scenario_id(row: object) -> str | None:
     if not isinstance(row, dict):
         return None
@@ -681,7 +696,11 @@ async def apply_decision_table(
     date = _apply_date(envelope)
     if date is None:
         return _failure("invalid_apply_date")
-    correlation_id = f"kr-nxt-apply-{date}"
+    correlation_id = _apply_record_correlation_id(
+        date=date,
+        parent_artifact_uuid=parent_artifact_uuid,
+        table_hash=table_hash,
+    )
     loaded = await _load_apply_record(
         dependencies,
         correlation_id=correlation_id,
@@ -691,6 +710,24 @@ async def apply_decision_table(
     if isinstance(loaded, dict):
         return loaded
     markers, record_complete, apply_record_uuid = loaded
+    if apply_record_uuid is None:
+        # The initial date-only key was deployed before table scoping existed.
+        # Read a legacy marker only when it proves the same immutable identity;
+        # all subsequent saves use the scoped key and can never overwrite a
+        # second table from the same date.
+        legacy_loaded = await _load_apply_record(
+            dependencies,
+            correlation_id=f"kr-nxt-apply-{date}",
+            parent_artifact_uuid=parent_artifact_uuid,
+            table_hash=table_hash,
+        )
+        if isinstance(legacy_loaded, dict):
+            return legacy_loaded
+        legacy_markers, legacy_complete, legacy_record_uuid = legacy_loaded
+        if legacy_record_uuid is not None:
+            markers = legacy_markers
+            record_complete = legacy_complete
+            apply_record_uuid = legacy_record_uuid
     if record_complete:
         return {
             "success": True,
