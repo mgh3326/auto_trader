@@ -1,6 +1,6 @@
 """Record ROB-1301 cessation and register (but do not arm) ROB-1351 v2.
 
-Revision ID: 20260907_rob1351_buy_gate_lifecycle
+Revision ID: 20260907_rob1351_lifecycle
 Revises: 20260904_web_approval_marker
 Create Date: 2026-09-07
 
@@ -19,7 +19,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "20260907_rob1351_buy_gate_lifecycle"
+revision: str = "20260907_rob1351_lifecycle"
 down_revision: str | Sequence[str] | None = "20260904_web_approval_marker"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

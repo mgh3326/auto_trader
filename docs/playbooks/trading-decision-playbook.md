@@ -480,12 +480,19 @@ separate PR follows an operator activation decision and independent review.
 No shadow candidate may be promoted to a proposal, order, or watch, and no
 intermediate result may change policy or declare a winner.
 
-The sealed history and the v2 registration retain these binding prohibitions:
+ROB-1301's three prohibitions remain its sealed canonical record after
+termination; the v2 description below does not replace them.
 
-- `shadow가 제안·주문·워치로 승격 금지(순수 기록)`.
-- `라이브 게이트 문언 무접촉`: the gate wording change is the preceding
-  operator decision that defines v2's population, not an experimental result.
-- `채점 전 중간값으로 정책 변경 논거 삼지 않기(사전 등록 원칙)`.
+금지 (이슈 정본, 변경 없음):
+
+* shadow가 제안·주문·워치로 승격 금지(순수 기록)
+* 라이브 게이트 문언 무접촉
+* 채점 전 중간값으로 정책 변경 논거 삼지 않기(사전 등록 원칙)
+
+For ROB-1351 v2, the separately ratified wording is: 라이브 게이트 문언은 이
+실험이 바꾸지 않는다 — 문언 변경은 이 실험에 선행하는 운영자 결정이며 v2 의 모집단을
+정의한다. This v2 population definition is distinct from, and alongside, the
+sealed ROB-1301 prohibitions above.
 
 `evaluate_buy_gate_ab_shadow` remains an observation-only evaluator and is
 **never order_proposal_create**; v2 has no caller wiring in this PR.
@@ -495,12 +502,18 @@ is unchanged and mock accounts remain out of scope.
 
 ```yaml
 # playbook-machine-readable: ROB-1301 terminal / ROB-1351 v2 registered only
+# NOT a lane sequence — live buy/discovery lanes are unchanged.
 shadow_experiments:
   rob-1301-buy-gate-ab:
     status: INSUFFICIENT_SAMPLE
     outcome: NO_FIRING
     terminated_at: 2026-09-07T09:43:42+09:00
     carryover: forbidden
+    terminal_observation:
+      - tool: evaluate_buy_gate_ab_shadow
+        note: >-
+          terminal record only; never order_proposal_create / place_order /
+          watch create
   rob-1351-buy-gate-moderate-live:
     status: registered_unarmed
     live_gate: moderate
@@ -508,6 +521,7 @@ shadow_experiments:
     shadow_gate: weak
     promote: false
     caller_wiring: false
+    observation_tool: evaluate_buy_gate_ab_shadow
 ```
 
 ---
