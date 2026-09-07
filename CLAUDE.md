@@ -191,6 +191,55 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
   demo-scalping 봇과 동일 자격증명 공유 시 계정단 상태 충돌 가능)
 - **스케줄러 등록 없음** — CLI 수동 가동만, `--loop`도 operator 소유 foreground 프로세스
 
+### Execution Ledger HTTP Ingest (fillwire P0)
+
+체결 수집 Go 데몬 `fillwire` 로의 이관을 위한 **P0 계약**. Go 는 DB 에 직접 쓰지 않고
+auto_trader 의 토큰 인증 HTTP 표면으로 원장에 넣는다. 이 단계는 계약 + Python 모니터
+sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 · 마이그레이션 0건**이다.
+
+- **엔드포인트**: `POST /trading/api/execution-ledger/fills/ingest` (배치 1..200),
+  `POST /trading/api/execution-ledger/reconcile/trigger` (dry_run 기본 true)
+- **라우터/스키마**: `app/routers/execution_ledger_ingest.py`,
+  `app/schemas/execution_ledger_ingest.py`
+- **공유 서비스**: `app/services/execution_ledger/fill_ingest.py` (upsert + 다운스트림
+  오케스트레이션 — 모니터와 HTTP 라우터가 **같은 함수**를 쓴다),
+  `app/services/execution_ledger/fill_sinks.py` (`WS_LEDGER_SINK`),
+  `app/services/reconcile_trigger.py` (재연결 트리거 + dedupe)
+- **미들웨어**: `app/middleware/auth.py` — `EXECUTION_LEDGER_INGEST_PATH_PREFIX`
+  (`EXECUTION_LEDGER_INGEST_TOKEN` 미설정 403 · 오류 401 · 세션 쿠키 대체 불가)
+- **런북**: `docs/runbooks/execution-ledger-ingest.md`
+
+**계약/경계**:
+- 멱등키는 기존 DB unique key `(broker, account_mode, venue, broker_order_id, fill_seq)`
+  **그대로**. `venue`/`account_mode` 를 빼지 말 것. 같은 payload 재전송은 `unchanged` +
+  같은 `row_id` 라 **부분 재전송이 안전**하다.
+- 항목별 savepoint — 한 fill 의 검증/DB 실패가 배치의 다른 fill 을 롤백하지 않는다.
+  응답 항목은 정확히 `{status, row_id, reason}` 이며 요청 순서와 대응한다.
+- 🔴 **행의 `source` 는 항상 `websocket` 으로 강제**된다. producer 가 항목에
+  `reconciler`/`manual_import` 를 넣어도 무시 — 이 transport 자체가 websocket tap 이다.
+  envelope `source`(`fillwire`/`websocket_monitor`)는 transport provenance 이고 행에 쓰이지
+  않는다. **outer `source_run_id` 가 transport run authority**이며 item 값을 이긴다.
+- `raw_payload_json` 은 optional. 없으면 canonical 필드로 `FillOrder` 를 재구성해
+  **알림은 그대로 나간다**. raw frame 은 Upbit 누적 `executed_volume` 같은 추가 문맥용이며
+  없다는 이유로 알림을 생략하지 않는다.
+- 🔴 **원장 커밋이 권한자.** 다운스트림(알림·rung 투영) 실패는 커밋된 fill 을 rejected 로
+  세탁하거나 롤백/재삽입하지 않는다.
+- reconcile 트리거는 **기존 커널만** 호출(KR=`kis_live_reconcile_orders_impl`,
+  US/crypto=`live_reconcile_orders_impl`). `reason` 은 exact literal `"reconnect"`.
+  `backfilled` 는 **실제 커밋된 booking**(`action=booked*`)만 세며 **dry-run 은 항상 0**.
+  같은 market 60초 dedupe(프로세스 로컬 monotonic, 동시 요청도 커널 1회 진입).
+- **`WS_LEDGER_SINK=db|http`(기본 `db`)**: `http` 는 같은 정규화 upsert 를 localhost
+  ingest 로 POST 하고 **다운스트림은 API 서버가 소유**(모니터 중복 실행 없음). 단
+  sink 소유권은 `http` **AND** `EXECUTION_LEDGER_COMMIT_ENABLED` 이며, gate off 면
+  sink 가 아예 호출되지 않으므로 모니터가 알림을 계속 소유한다(알림 1회, write 0). 실패는
+  bounded 재시도 큐 → 소진/큐 상한 시 **직접 DB 로 fail-open** + `sink_fallback` 증가,
+  종료 시 flush. 남는 유실 경계는 DB fallback 자체 실패뿐이며 ERROR + `sink_fallback_failed`
+  로 드러난다.
+- 🔴 **`WS_LEDGER_SINK_URL` 은 토큰을 실어 보낸다**: scheme `http` + loopback host
+  (`127.0.0.1`/`localhost`/`::1`) + **정확한** ingest path + userinfo/query/fragment 금지를
+  **생성 시와 전송 직전 두 번** 검증하고 `follow_redirects=False` 를 명시 고정한다. 거부된
+  URL 은 **소켓을 열기 전에** DB 로 fail-open 하며 로그에 토큰·URL 을 남기지 않는다.
+
 ### KIS WebSocket Mock Smoke (ROB-104)
 
 `scripts/kis_websocket_mock_smoke.py` — KIS 모의 WebSocket 핸드셰이크 검증 (주문/체결/Redis publish 없음).

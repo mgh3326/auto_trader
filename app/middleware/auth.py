@@ -61,6 +61,9 @@ class AuthMiddleware:
     HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
     OPS_TASK_KICK_PATH_PREFIX: ClassVar[str] = "/trading/api/ops/tasks/"
     NEWS_RELEVANCE_PATH_PREFIX: ClassVar[str] = "/trading/api/news-relevance/"
+    EXECUTION_LEDGER_INGEST_PATH_PREFIX: ClassVar[str] = (
+        "/trading/api/execution-ledger/"
+    )
     TELEGRAM_CALLBACK_PATH_PREFIX: ClassVar[str] = "/trading/api/telegram/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
@@ -212,6 +215,33 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid Hermes ingest token"},
+                )
+            return None
+
+        # fillwire P0 — execution-ledger fills ingest + reconnect reconcile
+        # trigger. Same prefix-token shape as the Hermes branch, and placed
+        # ahead of the generic API/session logic on purpose: a valid session
+        # cookie must never substitute for this dedicated machine token.
+        if path.startswith(self.EXECUTION_LEDGER_INGEST_PATH_PREFIX):
+            expected_token = settings.EXECUTION_LEDGER_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Execution ledger ingest token not configured"},
+                )
+            header_name = settings.EXECUTION_LEDGER_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Execution ledger ingest token header not configured"
+                    },
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid execution ledger ingest token"},
                 )
             return None
 
