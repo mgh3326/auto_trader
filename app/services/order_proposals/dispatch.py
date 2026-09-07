@@ -65,6 +65,10 @@ from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
     fetch_target_order,
 )
+from app.services.order_proposals.buying_power import build_create_advisory
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+)
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     ApprovalDispatchState,
@@ -74,7 +78,10 @@ from app.services.order_proposals.dispatch_contract import (
     build_proposal_dispatch_binding,
 )
 from app.services.order_proposals.errors import OrderProposalError
-from app.services.order_proposals.parking_allowlist import ParkingExposure
+from app.services.order_proposals.parking_allowlist import (
+    ParkingExposure,
+    parking_scope,
+)
 from app.services.order_proposals.parking_exposure import load_parking_exposure
 from app.services.order_proposals.revalidation import (
     RungOutcome,
@@ -997,6 +1004,50 @@ async def dispatch_proposal(
             limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
+            cash_funding_shortfall: Decimal | None = None
+            cash_funding_cumulative_notional: Decimal | None = None
+            if getattr(group, "exit_intent", None) == CASH_FUNDING_EXIT_INTENT:
+                # §S177 supplies the fresh, same-account measured shortfall to
+                # the pure classifier; a reader failure is deliberately None,
+                # which becomes ``shortfall_unmeasured`` and a human card.
+                scope = parking_scope(
+                    symbol=getattr(group, "symbol", None),
+                    account_mode=group.account_mode,
+                    market=group.market,
+                )
+                if scope is not None:
+                    try:
+                        advisory = await build_create_advisory(
+                            session,
+                            account_mode=group.account_mode,
+                            broker_account_id=group.broker_account_id,
+                            currency=scope.currency,
+                            now=gate_now,
+                        )
+                    except Exception:  # noqa: BLE001 - auto path is fail-closed
+                        advisory = None
+                    if (
+                        isinstance(advisory, dict)
+                        and advisory.get("status") == "insufficient"
+                        and type(advisory.get("shortfall")) is str
+                    ):
+                        try:
+                            candidate = Decimal(advisory["shortfall"])
+                        except Exception:  # noqa: BLE001 - closed input boundary
+                            candidate = None
+                        if candidate is not None and candidate.is_finite():
+                            cash_funding_shortfall = candidate
+                    # Same KST window, advisory lock key, and common durable
+                    # row fetcher as §163 parking exposure; only cash-funding
+                    # SELL rows contribute to this distinct cumulative cap.
+                    try:
+                        cash_funding_cumulative_notional = (
+                            await service.auto_approved_cash_funding_notional(
+                                group, now=now
+                            )
+                        )
+                    except Exception:  # noqa: BLE001 - a missing cap read demotes
+                        cash_funding_cumulative_notional = None
             # §163차 — a parking rung is bounded twice: the per-order cap
             # (RAISED for parking, never removed) and, behind it, a cumulative
             # parking exposure cap. The cumulative one needs this reading. It
@@ -1027,7 +1078,10 @@ async def dispatch_proposal(
             )
 
             async def eligibility_gate(**kwargs: Any) -> Any:
-                nonlocal daily_notional, parking_exposure
+                nonlocal \
+                    daily_notional, \
+                    parking_exposure, \
+                    cash_funding_cumulative_notional
                 decision = evaluate_auto_approve_eligibility(
                     group=kwargs["group"],
                     rung=kwargs["rung"],
@@ -1035,6 +1089,8 @@ async def dispatch_proposal(
                     limits=limits,
                     daily_notional=daily_notional,
                     parking_exposure=parking_exposure,
+                    cash_funding_shortfall=cash_funding_shortfall,
+                    cash_funding_cumulative_notional=cash_funding_cumulative_notional,
                 )
                 decisions.append(
                     {
@@ -1056,6 +1112,13 @@ async def dispatch_proposal(
                     projected = decision.details.get("parking_exposure_after")
                     if projected is not None:
                         parking_exposure = ParkingExposure.observed(Decimal(projected))
+                    projected_cash_funding = decision.details.get(
+                        "cash_funding_cumulative_after"
+                    )
+                    if projected_cash_funding is not None:
+                        cash_funding_cumulative_notional = Decimal(
+                            projected_cash_funding
+                        )
                 return decision
 
             revalidate_kwargs: dict[str, Any] = {

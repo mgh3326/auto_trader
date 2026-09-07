@@ -11,9 +11,11 @@ calendar lookup and can never degrade into a session defer. The returned
 decision is typed and side-effect free; top-level callers own expiry
 convergence and transaction boundaries.
 
-Protective exits are the deliberate exception to the second layer:
-``exit_intent`` proposals retain the validity check but bypass session,
-calendar, and approval-window policy-stamp interpretation.
+Defensive exits are the deliberate exception to the second layer:
+``loss_cut`` / ``DEFENSIVE_EXIT_INTENTS`` proposals retain the validity check
+but bypass session, calendar, and approval-window policy-stamp interpretation.
+``cash_funding`` is intentionally not in that exception and follows ordinary
+window rules.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from app.services.order_proposals.approval_window_contract import (
     ApprovalWindowCode,
     valid_until_block,
 )
+from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
 
 POLICY_VERSION = "order-proposal-approval-window-v1"
 
@@ -168,10 +171,11 @@ def _exit_intent_window_exemption(
 ) -> ApprovalWindowDecision | None:
     """Return the validity-only decision for a protective exit proposal.
 
-    ``exit_intent`` is the discriminator. Supporting metadata such as
-    ``exit_reason`` must never grant this exemption by itself.
+    Only the closed defensive intent vocabulary is the discriminator.
+    Supporting metadata such as ``exit_reason`` must never grant this
+    exemption by itself; cash_funding deliberately follows normal windows.
     """
-    if not getattr(group, "exit_intent", None):
+    if getattr(group, "exit_intent", None) not in DEFENSIVE_EXIT_INTENTS:
         return None
 
     market, account_mode, action, order_type = _contract_fields(group)

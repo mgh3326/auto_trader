@@ -219,7 +219,10 @@ def register_order_tools(mcp: FastMCP) -> None:
             ' ROB-864 exit_intent="loss_cut" is disabled on this direct tool. Use '
             "order_proposal_create; Telegram performs two-click confirmation with a "
             "single-use nonce and second-click full revalidation; that proposal "
-            "flow requires approval_issue_id."
+            'flow requires approval_issue_id. exit_intent="cash_funding" is also '
+            "disabled on this direct tool: its error is "
+            "cash_funding_direct_path_disabled_use_order_proposal_create; use "
+            "order_proposal_create."
         ),
     )
     async def place_order(
@@ -258,6 +261,13 @@ def register_order_tools(mcp: FastMCP) -> None:
             return {
                 "success": False,
                 "error": "loss_cut_direct_path_disabled_use_order_proposal_create",
+                "source": "mcp",
+                "symbol": symbol,
+            }
+        if exit_intent == "cash_funding":
+            return {
+                "success": False,
+                "error": "cash_funding_direct_path_disabled_use_order_proposal_create",
                 "source": "mcp",
                 "symbol": symbol,
             }

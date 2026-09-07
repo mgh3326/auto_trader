@@ -123,6 +123,8 @@ AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
     ("order_type_not_limit", "limit 주문 여부"),
     ("loss_cut_intent", "손절 의도 아님"),
     ("exit_intent_present", "청산 의도 아님"),
+    ("cash_funding_boundary_failed", "cash_funding 필수 증거·부족액·수량 경계"),
+    ("cash_funding_cumulative_cap_exceeded", "cash_funding KST 일일 누적 상한 잔여"),
     ("account_not_veto_capable", "veto 가능한 계좌·시장"),
     ("approval_required_tag", "승인 필요 태그 스캔"),
     ("thesis_required_for_veto_card", "veto 카드용 thesis 존재"),

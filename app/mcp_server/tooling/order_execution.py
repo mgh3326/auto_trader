@@ -95,6 +95,11 @@ from app.services.kis_mock_attribution import (
 )
 from app.services.kis_mock_runner.singleton import run_kis_mock_send
 from app.services.kr_symbol_universe_service import get_kr_security_type
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+    parse_funding_target,
+    resolve_cash_funding_exemption,
+)
 from app.services.order_proposals.parking_allowlist import parking_scope
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
@@ -575,6 +580,7 @@ async def _build_preview(
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: ov.LossCutContext | None = None,
+    cash_funding_ctx: ov.CashFundingContext | None = None,
     allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
@@ -590,6 +596,7 @@ async def _build_preview(
         is_mock=is_mock,
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
+        cash_funding_ctx=cash_funding_ctx,
         allow_marketable_parking_buy=allow_marketable_parking_buy,
     )
     if not isinstance(dry_run_result, dict):
@@ -1729,6 +1736,8 @@ async def _place_order_impl(
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     client_order_id: str | None = None,
+    cash_funding_target: dict[str, Any] | None = None,
+    cash_funding_shortfall: Decimal | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
@@ -1799,10 +1808,18 @@ async def _place_order_impl(
     if market_type == "crypto" and is_mock:
         return _order_error(_MOCK_CRYPTO_ERROR)
 
-    if exit_intent is not None and exit_intent != "loss_cut":
-        return _order_error(f"unknown exit_intent {exit_intent!r} (only 'loss_cut')")
+    if exit_intent not in (None, "loss_cut", CASH_FUNDING_EXIT_INTENT):
+        return _order_error(
+            f"unknown exit_intent {exit_intent!r} (only 'loss_cut' or 'cash_funding')"
+        )
+    if exit_intent == CASH_FUNDING_EXIT_INTENT and not proposal_flow:
+        return _order_error(
+            "cash_funding_direct_path_disabled_use_order_proposal_create"
+        )
     if exit_intent == "loss_cut" and defensive_trim:
         return _order_error("loss_cut and defensive_trim are mutually exclusive")
+    if exit_intent == CASH_FUNDING_EXIT_INTENT and defensive_trim:
+        return _order_error("cash_funding and defensive_trim are mutually exclusive")
 
     loss_cut_ctx: ov.LossCutContext | None = None
     if exit_intent == "loss_cut":
@@ -1863,7 +1880,14 @@ async def _place_order_impl(
             market_type,
             order_type_lower,
             price,
-            require_fresh_quote=allow_marketable_parking_buy,
+            require_fresh_quote=(
+                allow_marketable_parking_buy
+                or (
+                    exit_intent == CASH_FUNDING_EXIT_INTENT
+                    and side_lower == "sell"
+                    and order_type_lower == "limit"
+                )
+            ),
         )
 
         # Resolve amount -> quantity for buy orders
@@ -1878,6 +1902,39 @@ async def _place_order_impl(
 
         if order_type_lower == "limit" and order_quantity is None:
             raise ValueError("quantity is required for limit orders")
+
+        cash_funding_ctx: ov.CashFundingContext | None = None
+        # §S177: creation stored the target and its create-time shortfall;
+        # revalidation supplies those trusted values here while this execution
+        # boundary repeats the pure classification against a fresh quote.  A
+        # cash-funding market sell deliberately receives no token and continues
+        # to the established market-loss guard below.
+        if exit_intent == CASH_FUNDING_EXIT_INTENT and not (
+            side_lower == "sell" and order_type_lower == "market"
+        ):
+            try:
+                cash_quantity = (
+                    Decimal(str(order_quantity)) if order_quantity is not None else None
+                )
+                cash_current_price = Decimal(str(current_price))
+            except Exception:  # noqa: BLE001 - classifier fails closed below
+                cash_quantity = None
+                cash_current_price = None
+            cash_verdict = resolve_cash_funding_exemption(
+                exit_intent=exit_intent,
+                symbol=normalized_symbol,
+                account_mode=proposal_account_mode,
+                market=market_type,
+                side=side_lower,
+                order_type=order_type_lower,
+                funding_target=parse_funding_target(cash_funding_target),
+                quantity=cash_quantity,
+                current_price=cash_current_price,
+                measured_shortfall=cash_funding_shortfall,
+            )
+            if not cash_verdict.exempt:
+                return _order_error(f"cash_funding_{cash_verdict.reason}")
+            cash_funding_ctx = ov.CashFundingContext.from_verdict(cash_verdict)
 
         # Validate sell-side: holdings, locked, price constraints
         avg_price = 0.0
@@ -1896,6 +1953,7 @@ async def _place_order_impl(
                 dry_run=dry_run,
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
+                cash_funding_ctx=cash_funding_ctx,
             )
             if sell_error is not None:
                 return sell_error
@@ -1914,6 +1972,7 @@ async def _place_order_impl(
                 is_mock=is_mock,
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
+                cash_funding_ctx=cash_funding_ctx,
                 allow_marketable_parking_buy=allow_marketable_parking_buy,
             )
         except ValueError as preview_exc:

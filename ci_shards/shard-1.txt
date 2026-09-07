@@ -42,6 +42,7 @@ tests/mcp_server/test_session_bootstrap_pack.py
 tests/mcp_server/test_session_bootstrap_pack_no_write.py
 tests/mcp_server/test_session_bootstrap_profile_sections.py
 tests/mcp_server/test_trading_policy_tool.py
+tests/mcp_server/tooling/test_cash_funding_mcp_guards.py
 tests/mcp_server/tooling/test_execute_and_record_routing.py
 tests/mcp_server/tooling/test_kis_live_ledger.py
 tests/mcp_server/tooling/test_live_ledger_correlation_id.py
@@ -183,6 +184,9 @@ tests/services/order_proposals/callback_inbox/test_seam_equivalence.py
 tests/services/order_proposals/callback_inbox/test_telegram_identifier_boundary.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_auto_approve_parking_allowlist.py
+tests/services/order_proposals/test_cash_funding_auto_approve.py
+tests/services/order_proposals/test_cash_funding_exemption.py
+tests/services/order_proposals/test_cash_funding_service.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
 tests/services/order_proposals/test_no_repository_imports.py
 tests/services/order_proposals/test_revalidation.py

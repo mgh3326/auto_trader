@@ -33,6 +33,9 @@ from app.models.order_proposals import (
 from app.services.order_proposals.auto_approve_audit import (
     project_auto_approve_cap_observations,
 )
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_EXIT_INTENT,
+)
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
 from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
 from app.services.order_proposals.state_machine import (
@@ -241,14 +244,14 @@ class OrderProposalRepository:
         broker_account_id: str | None,
         start: datetime,
         end: datetime,
-    ) -> list[tuple[Any, int, Any, Any, Any, Any]]:
+    ) -> list[tuple[Any, int, Any, Any, Any, Any, Any]]:
         """Fetch auto-approved rungs in a window, once, for every durable cap.
 
         Deliberately shared by ``auto_approved_notional_between`` (§40차 daily
-        circuit breaker) and ``auto_approved_parking_notional_between`` (§163차
-        cumulative parking cap). Two hand-copied versions of this WHERE clause
-        would be free to drift, and a drift on the parking side silently
-        reopens the cap it exists to enforce.
+        circuit breaker), ``auto_approved_parking_notional_between`` (§163차
+        cumulative parking cap), and ``auto_approved_cash_funding_notional_between``
+        (§S177 sell cap). Two hand-copied versions of this WHERE clause would be
+        free to drift, and a drift on either stateful cap silently reopens it.
         """
         approved_at = cast(
             OrderProposal.source_asof["auto_approved"]["approved_at"].astext,
@@ -262,6 +265,7 @@ class OrderProposalRepository:
                 OrderProposalRung.limit_price,
                 OrderProposalRung.side,
                 OrderProposal.symbol,
+                OrderProposal.exit_intent,
             )
             .select_from(OrderProposal)
             .join(
@@ -351,6 +355,7 @@ class OrderProposalRepository:
             limit_price,
             side,
             symbol,
+            _exit_intent,
         ) in await self._auto_approved_rung_rows(
             account_mode=account_mode,
             market=market,
@@ -359,6 +364,46 @@ class OrderProposalRepository:
             end=end,
         ):
             if side != "buy" or not is_parking_symbol(symbol):
+                continue
+            total += self._durable_cap_measure(
+                source_asof, rung_index, quantity, limit_price
+            )
+        return total
+
+    async def auto_approved_cash_funding_notional_between(
+        self,
+        *,
+        account_mode: str,
+        market: str,
+        broker_account_id: str | None,
+        start: datetime,
+        end: datetime,
+    ) -> Decimal:
+        """§S177 — durable sum of auto-approved cash-funding SELL rungs.
+
+        The stateful cap is intentionally scoped by durable exit intent, not by
+        a current allowlist lookup: a later roster narrowing must not erase an
+        already-approved same-day funding sale from the cap.  The common row
+        fetcher keeps its account/day/action WHERE contract identical to the
+        daily and parking readers.
+        """
+        total = Decimal("0")
+        for (
+            source_asof,
+            rung_index,
+            quantity,
+            limit_price,
+            side,
+            _symbol,
+            exit_intent,
+        ) in await self._auto_approved_rung_rows(
+            account_mode=account_mode,
+            market=market,
+            broker_account_id=broker_account_id,
+            start=start,
+            end=end,
+        ):
+            if side != "sell" or exit_intent != CASH_FUNDING_EXIT_INTENT:
                 continue
             total += self._durable_cap_measure(
                 source_asof, rung_index, quantity, limit_price
@@ -393,6 +438,7 @@ class OrderProposalRepository:
             limit_price,
             _side,
             symbol,
+            _exit_intent,
         ) in await self._auto_approved_rung_rows(
             account_mode=account_mode,
             market=market,

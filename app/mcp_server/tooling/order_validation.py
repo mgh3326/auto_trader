@@ -35,6 +35,7 @@ from app.services.brokers.kis.overseas_cash import (
 from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
+from app.services.order_proposals.cash_funding_exemption import CashFundingVerdict
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -94,6 +95,31 @@ class LossCutContext:
     approval_verified_at: datetime.datetime
 
 
+@dataclass(frozen=True)
+class CashFundingContext:
+    """§S177 proof token constructed from an exempt funding verdict only.
+
+    It exempts the avg-cost floor for a cash-proxy *limit* sell but deliberately
+    does not alter the marketable-discount fat-finger band.
+    """
+
+    scope_currency: str
+    max_quantity: str
+
+    @classmethod
+    def from_verdict(cls, verdict: CashFundingVerdict) -> CashFundingContext:
+        if (
+            not verdict.exempt
+            or verdict.scope_currency is None
+            or verdict.max_quantity is None
+        ):
+            raise ValueError("cash funding context requires an exempt verdict")
+        return cls(
+            scope_currency=verdict.scope_currency,
+            max_quantity=str(verdict.max_quantity),
+        )
+
+
 def evaluate_sell_price_guards(
     *,
     price: float,
@@ -103,6 +129,7 @@ def evaluate_sell_price_guards(
     scalping_exit_ctx: ScalpingExitContext | None,
     allow_loss_sell: bool = False,
     loss_cut_ctx: LossCutContext | None = None,
+    cash_funding_ctx: CashFundingContext | None = None,
 ) -> str | None:
     """Single source of truth for limit-sell price guards.
 
@@ -113,6 +140,7 @@ def evaluate_sell_price_guards(
       - allow_loss_sell True       -> both guards bypassed (ROB-461 kis_mock equity
                                        practice: 손절 / stop-loss / loss rebalancing).
       - defensive_trim_ctx present -> floor bypassed, current-price guard enforced.
+      - cash_funding_ctx present   -> avg-cost floor bypassed; marketable band remains.
       - neither                    -> both guards enforced.
 
     loss_cut_ctx  - When present: floor exempt; current-price guard relaxed to band
@@ -122,6 +150,10 @@ def evaluate_sell_price_guards(
                     NOT enforced here — that's the caller's contract in
                     _place_order_impl.
     """
+    if loss_cut_ctx is not None and cash_funding_ctx is not None:
+        # Both tokens are safety exceptions with incompatible evidence models;
+        # accepting both would make precedence a permission surface.
+        raise ValueError("loss_cut_ctx and cash_funding_ctx are mutually exclusive")
     if scalping_exit_ctx is not None:
         return None
     # ROB-461 — kis_mock is a practice sandbox with no real money, so a loss-sell
@@ -142,7 +174,11 @@ def evaluate_sell_price_guards(
             )
         return None
     min_sell_price = avg_price * 1.01
-    if price < min_sell_price and defensive_trim_ctx is None:
+    if (
+        price < min_sell_price
+        and defensive_trim_ctx is None
+        and cash_funding_ctx is None
+    ):
         return (
             f"Sell price {price} below minimum "
             f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
@@ -163,6 +199,7 @@ def evaluate_market_sell_loss_guard(
     current_price: float,
     avg_price: float,
     allow_loss_sell: bool = False,
+    cash_funding_ctx: CashFundingContext | None = None,
 ) -> str | None:
     """ROB-518: live market sells must not realize a loss by mistake.
 
@@ -171,8 +208,10 @@ def evaluate_market_sell_loss_guard(
     ROB-461 allow_loss_sell bypass (손절 practice). defensive_trim/scalping_exit
     are limit-only by precondition and can never reach the market path. Unknown
     cost basis (avg_price <= 0) stays fail-open, matching the limit-guard
-    semantics.
+    semantics. ``cash_funding_ctx`` is accepted only so callers cannot drop the
+    context while switching order types; it grants no market-order exemption.
     """
+    _ = cash_funding_ctx
     if allow_loss_sell:
         return None
     if avg_price <= 0:
@@ -1064,6 +1103,7 @@ async def _preview_sell(
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
+    cash_funding_ctx: CashFundingContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -1106,6 +1146,7 @@ async def _preview_sell(
             current_price=current_price,
             avg_price=avg_price,
             allow_loss_sell=allow_loss_sell,
+            cash_funding_ctx=cash_funding_ctx,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -1139,6 +1180,7 @@ async def _preview_sell(
             scalping_exit_ctx=scalping_exit_ctx,
             allow_loss_sell=allow_loss_sell,
             loss_cut_ctx=loss_cut_ctx,
+            cash_funding_ctx=cash_funding_ctx,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -1198,6 +1240,10 @@ async def _preview_sell(
         result["exit_intent"] = "loss_cut"
         result["loss_cut_slip_band"] = current_price * (1.0 - loss_cut_ctx.max_slip)
         result["retrospective_id"] = loss_cut_ctx.retrospective_id
+    if cash_funding_ctx is not None:
+        result["exit_intent"] = "cash_funding"
+        result["cash_funding_currency"] = cash_funding_ctx.scope_currency
+        result["cash_funding_max_quantity"] = cash_funding_ctx.max_quantity
 
     estimated_value = execution_price * order_quantity
     realized_pnl = (execution_price - avg_price) * order_quantity
@@ -1222,6 +1268,7 @@ async def _preview_order(
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
+    cash_funding_ctx: CashFundingContext | None = None,
     allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
@@ -1249,6 +1296,7 @@ async def _preview_order(
         is_mock=is_mock,
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
+        cash_funding_ctx=cash_funding_ctx,
     )
 
 
@@ -1316,6 +1364,7 @@ async def _validate_sell_side(
     dry_run: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
+    cash_funding_ctx: CashFundingContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -1377,6 +1426,7 @@ async def _validate_sell_side(
             current_price=current_price,
             avg_price=avg_price,
             allow_loss_sell=allow_loss_sell,
+            cash_funding_ctx=cash_funding_ctx,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)
@@ -1404,6 +1454,7 @@ async def _validate_sell_side(
             scalping_exit_ctx=scalping_exit_ctx,
             allow_loss_sell=allow_loss_sell,
             loss_cut_ctx=loss_cut_ctx,
+            cash_funding_ctx=cash_funding_ctx,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)

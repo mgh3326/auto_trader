@@ -1703,6 +1703,128 @@ class CrashDayPolicy(BaseModel):
     actions: CrashDayActions
 
 
+class CashProxyPolicy(BaseModel):
+    """§S177 — closed cash-equivalent funding-sale policy record.
+
+    The roster and numerical boundaries intentionally remain code constants;
+    this document records their source and the operational contract without
+    creating a mutable policy-loader path to widen them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    semantics: str
+    symbol_source: str
+    symbol_list_duplicated_here: Literal[False]
+    exit_intent: Literal["cash_funding"]
+    exempt_gates: list[str]
+    exempt_gate_conditions_all_required: list[str]
+    parking_auto_approve_mode_independent: Literal[True]
+    parking_auto_approve_mode_independence_reason: str
+    operator_ratification: Literal["2026-09-07 운영자 결정 B′"]
+    required_evidence: list[str]
+    quantity_cap_formula: Literal["ceil(funding_target.required / current_price) + 1"]
+    quantity_cap_tranche_slack_units: Literal[1]
+    cumulative_cap_source: str
+    auto_approve: Literal["allowed_within_boundaries"]
+    over_boundary_disposition: Literal["demote_to_human_approval"]
+    cross_currency_funding: Literal["forbidden"]
+    source: Literal["operator_input_2026-09-07"]
+
+
+class FxPreferentialKisPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preferential_rate_pct: int
+    applies_to: Literal["fx_spread_only"]
+
+
+class FxPreferentialTossPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preferential_rate_pct: int
+    note: str
+    conversion_hours: str
+    quote_refresh_seconds: int
+
+
+class FxPreferentialPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kis: FxPreferentialKisPolicy
+    toss: FxPreferentialTossPolicy
+    preferential_window_kst: str
+    preferential_window_calendar: str
+    source: Literal["operator_input_2026-09-07"]
+
+
+class FxThetaPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    krw_to_usd_min_usd: int
+    usd_to_krw_min_krw: int
+    derivation: str
+
+
+class FxBpsPairPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    toss_bps: float
+    kis_bps: float
+
+
+class FxComputedAccountPriorityPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversion_only: FxBpsPairPolicy
+    commission_inclusive: FxBpsPairPolicy
+    flip_threshold: str
+    withdrawn_claim: str
+
+
+class FxAccountPriorityPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[Literal["toss", "kis"]]
+    basis: str
+    computed_2026_09_07: FxComputedAccountPriorityPolicy
+    input_provenance_warning: str
+    cross_account_funding: str
+
+
+class FxZBandPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    window_business_days: int
+    krw_to_usd_z_max: float
+    usd_to_krw_z_min: float
+    timing_enabled: Literal[False]
+    timing_disabled_reason: str
+
+
+class FxAutomationPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alert_only: Literal[True]
+
+
+class FxConversionRulesPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theta_fx: FxThetaPolicy
+    account_priority: FxAccountPriorityPolicy
+    z_band: FxZBandPolicy
+    automation: FxAutomationPolicy
+    source: Literal["operator_input_2026-09-07"]
+
+
+class FxPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fx_preferential: FxPreferentialPolicy
+    fx_conversion_rules: FxConversionRulesPolicy
+
+
 class UserStance(BaseModel):
     """ROB-948 — user investment-stance advisory. Cited by session judgment
     (upside/downside weighting) alongside other advisory context; does not
@@ -1834,6 +1956,8 @@ class TradingPolicyDocument(BaseModel):
     authority: PolicyAuthority
     posture: PosturePolicy
     order_proposals: OrderProposalsPolicy
+    cash_proxy: CashProxyPolicy
+    fx: FxPolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
     decision_rules: dict[

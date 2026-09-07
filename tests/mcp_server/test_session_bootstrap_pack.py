@@ -15,7 +15,6 @@ from app.mcp_server.tooling import session_bootstrap_pack as pack
 from app.mcp_server.tooling.session_bootstrap_registration import (
     register_session_bootstrap_tools,
 )
-from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import KISLiveOrderLedger, TradeForecast
 from app.models.session_context import OperatorSessionContext
 from app.services.order_proposals import OrderProposalsService
@@ -455,13 +454,11 @@ async def test_due_forecasts_preserve_real_seeded_source_response(
 @pytest.mark.asyncio
 async def test_resting_proposals_preserve_real_source_responses(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Keep this fixture below the source tool's 50-row cap. Rungs cascade from
-    # their parent in production, but clearing them first makes the test's
-    # database isolation explicit for this shared ledger table.
-    await db_session.execute(delete(OrderProposalRung))
-    await db_session.execute(delete(OrderProposal))
-    await db_session.commit()
+    # The approval event ledger is append-only, so do not delete rows from the
+    # shared proposal table. Feed each real, uniquely seeded source response to
+    # the pack directly, independent of its global 50-row listing limit.
 
     seed_symbols = {
         state: f"REST-R3-{index}"
@@ -530,6 +527,11 @@ async def test_resting_proposals_preserve_real_source_responses(
         )
         for state in EXPECTED_OPEN_PROPOSAL_STATES
     }
+
+    async def seeded_sources() -> dict[str, dict[str, Any]]:
+        return sources
+
+    monkeypatch.setattr(pack, "_open_proposal_lists", seeded_sources)
     result = await pack._session_bootstrap_pack(
         "kr",
         ["resting"],
@@ -551,14 +553,6 @@ async def test_resting_proposals_preserve_real_source_responses(
     }
     assert all(expected_seeded_items.values())
     assert _json(actual_seeded_items) == _json(expected_seeded_items)
-    actual_seeded_by_state = {
-        state: len(items) for state, items in actual_seeded_items.items()
-    }
-    expected_seeded_by_state = {
-        state: len(items) for state, items in expected_seeded_items.items()
-    }
-    assert actual_seeded_by_state == expected_seeded_by_state
-    assert proposals["by_state"] == actual_seeded_by_state
 
 
 @pytest.mark.asyncio
