@@ -18,7 +18,7 @@ MIGRATION_PATH = (
     pathlib.Path(__file__).resolve().parents[3]
     / "alembic"
     / "versions"
-    / "20260908_task137_context_outcomes.py"
+    / "20260908_task137_ctx_outcomes.py"
 )
 TABLE = "fill_watch_context_outcomes"
 SCHEMA = "review"

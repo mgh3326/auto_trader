@@ -1,6 +1,6 @@
 """Add Phase 0 UUID context outcomes without economic intent.
 
-Revision ID: 20260908_task137_context_outcomes
+Revision ID: 20260908_task137_ctx_outcomes
 Revises: 20260907_rob1351_lifecycle
 Create Date: 2026-09-08
 
@@ -18,7 +18,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "20260908_task137_context_outcomes"
+revision: str = "20260908_task137_ctx_outcomes"
 down_revision: str | Sequence[str] | None = "20260907_rob1351_lifecycle"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
