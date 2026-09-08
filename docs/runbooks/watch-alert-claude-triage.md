@@ -14,14 +14,15 @@ ROB-602 — watch 알림 자동 기동: 발화 이벤트를 Claude (read-only �
 2. [구성 요소 개요](#2-구성-요소-개요)
 3. [Poller 스크립트](#3-poller-스크립트)
 4. [launchd 등록 (macOS)](#4-launchd-등록-macos)
-5. [스모크 절차](#5-스모크-절차)
+5. [Prefect 이관 대안 (ROB-758)](#5-prefect-이관-대안-rob-758)
+6. [스모크 절차](#6-스모크-절차)
    - [Step 1: 설치 사전 확인](#step-1-설치-사전-확인)
    - [Step 2: CLI read 경로 스모크](#step-2-cli-read-경로-스모크)
    - [Step 3: Poller dry-run (claude 미호출)](#step-3-poller-dry-run-claude-미호출)
    - [Step 4: 안전 차단 증명 (MANDATORY gate)](#step-4-안전-차단-증명-mandatory-gate)
    - [Step 5: 실 트리아지 1건 (선택)](#step-5-실-트리아지-1건-선택)
-6. [Q3 검증 프로토콜](#6-q3-검증-프로토콜)
-7. [문제 해결](#7-문제-해결)
+7. [Q3 검증 프로토콜](#7-q3-검증-프로토콜)
+8. [문제 해결](#8-문제-해결)
 
 ---
 
@@ -41,6 +42,7 @@ ROB-602 — watch 알림 자동 기동: 발화 이벤트를 Claude (read-only �
 
 ```bash
 export AUTO_TRADER_REPO="$HOME/work/auto_trader"
+export CLAUDE_WORKSPACE="$AUTO_TRADER_REPO"                          # MCP/command가 다른 operator 워크스페이스에 있으면 그 경로
 export TRIAGE_MARKET="crypto"
 export DISCORD_WEBHOOK_CRYPTO="https://discord.com/api/webhooks/..."  # market=crypto 예시
 export TELEGRAM_TOKEN="..."                                         # 기존 운영 env 사용
@@ -94,6 +96,7 @@ scripts/list_recent_watch_events.py  (레포 내, read-only DB 조회)
 set -euo pipefail
 
 REPO="${AUTO_TRADER_REPO:-$HOME/work/auto_trader}"
+CLAUDE_WORKSPACE="${CLAUDE_WORKSPACE:-$REPO}"
 SETTINGS="$REPO/.claude/settings.readonly.json"
 MARKET="${TRIAGE_MARKET:-crypto}"
 # Discord/Telegram routing is read from the app's TradeNotifier settings.
@@ -120,8 +123,10 @@ echo "$events" | jq -c '.[]' | while read -r ev; do
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[dry-run] claude -p \"/crypto-alert-triage $payload\" --permission-mode bypassPermissions --settings $SETTINGS --output-format json"
+    # dry-run은 검증 전용이다. seen/워터마크를 절대 전진시키지 않는다.
+    continue
   else
-    res="$(claude -p "/crypto-alert-triage $payload" \
+    res="$(cd "$CLAUDE_WORKSPACE" && claude -p "/crypto-alert-triage $payload" \
             --permission-mode bypassPermissions \
             --settings "$SETTINGS" \
             --output-format json)" || { echo "claude 실패: $uuid" >&2; continue; }
@@ -196,6 +201,7 @@ UUIDv5는 고정 namespace와 저장된 idempotency key로 같은 값을 재계�
   <key>EnvironmentVariables</key>
   <dict>
     <key>AUTO_TRADER_REPO</key><string>/Users/USERNAME/work/auto_trader</string>
+    <key>CLAUDE_WORKSPACE</key><string>/Users/USERNAME/work/auto_trader</string>
     <key>TRIAGE_MARKET</key><string>crypto</string>
     <key>DISCORD_WEBHOOK_CRYPTO</key><string>https://discord.com/api/webhooks/...</string>
     <key>TELEGRAM_TOKEN</key><string>...</string>
@@ -240,7 +246,62 @@ tail -f ~/.local/state/watch-alert-triage/stderr.log
 
 ---
 
-## 5. 스모크 절차
+## 5. Prefect 이관 대안 (ROB-758)
+
+ROB-758 이후 권장 운영 방식은 launchd `StartInterval=60`이 아니라 Prefect deployment가 이 poller를 subprocess로 감싸 실행하는 방식이다. poller 스크립트와 상태 파일(`~/.local/state/watch-alert-triage/*`)은 그대로 유지하고, Prefect는 실행 이력, 실패 알림, retry, UI pause/resume만 담당한다.
+
+**auto_trader repo에서 제공하는 flow:**
+
+- `app.flows.operator_triage_pollers_flow:watch_alert_triage_poller_flow`
+- task retry: `retries=2`, `retry_delay_seconds=60`
+- parameter: `poller_path="/Users/USERNAME/ops/watch-alert-triage/poller.sh"`, `timeout_s=600`
+
+**robin-prefect-automations 등록 원칙:**
+
+1. interval은 2-5분으로 둔다. 1분 주기는 하루 1,440 run으로 이력 노이즈가 크다.
+2. deployment는 처음에 `paused=true`로 등록한다.
+3. Failed/Crashed/TimedOut flow run에 Discord 또는 Telegram Prefect automation을 연결한다.
+4. `AUTO_TRADER_REPO`, `CLAUDE_WORKSPACE`, `TRIAGE_MARKET`, Discord/Telegram env는 Prefect worker 환경에 둔다.
+
+**Claude workspace 적응:**
+
+운영자 호스트에서 `claude mcp list`가 `auto_trader_local`을 보여주는 위치가 auto_trader repo가 아닐 수 있다. 이 경우 `AUTO_TRADER_REPO`는 코드/스크립트/readonly settings가 있는 repo로 유지하고, `CLAUDE_WORKSPACE`만 MCP와 slash command가 잡히는 operator 워크스페이스로 지정한다.
+
+```bash
+export AUTO_TRADER_REPO="$HOME/work/auto_trader"
+export CLAUDE_WORKSPACE="$HOME/work/operator-workspace"
+mkdir -p "$CLAUDE_WORKSPACE/.claude/commands"
+ln -sf "$AUTO_TRADER_REPO/.claude/commands/crypto-alert-triage.md" \
+  "$CLAUDE_WORKSPACE/.claude/commands/crypto-alert-triage.md"
+cd "$CLAUDE_WORKSPACE"
+claude mcp list | grep auto_trader_local
+```
+
+**컷오버 순서 (이중 실행 방지):**
+
+```bash
+# 1) Prefect deployment는 paused 상태로 등록만 완료
+
+# 2) 기존 launchd poller 중지
+launchctl bootout gui/$UID/com.operator.watch-alert-triage || true
+
+# 3) Prefect deployment unpause/resume
+# UI에서 Resume 또는 robin-prefect-automations의 표준 unpause 명령 사용
+
+# 4) 1회 수동 run으로 이력/알림 확인
+# prefect deployment run '<watch-alert deployment name>'
+
+# 5) 24시간 관찰 후 plist 제거
+rm -f ~/Library/LaunchAgents/com.operator.watch-alert-triage.plist
+```
+
+**launchd rollback:** Prefect worker 문제 시 deployment를 pause하고, 위 §4 plist를 다시 `launchctl bootstrap`한다. 상태 파일은 같은 경로를 쓰므로 중복 처리 없이 이어서 돈다.
+
+**Native daemon health 관측:** 상주 데몬(api/mcp/worker/scheduler/websocket/haproxy/mcp-watchdog)은 Prefect로 이관하지 않는다. 대신 `app.flows.native_daemon_health_flow:native_daemon_health_flow`를 별도 2-5분 interval deployment로 등록해 `ops/native/scripts/healthcheck-native.sh`와 launchd label 상태를 관측하고, degraded run에 알림을 붙인다.
+
+---
+
+## 6. 스모크 절차
 
 **원칙:** Step 4(안전 차단 증명)는 MANDATORY gate다. 이 단계를 통과하기 전에 poller를 실모드(`DRY_RUN=0`)로 돌리면 안 된다. deny prefix(`mcp__auto_trader_local__`)의 정합은 라이브 스모크로만 증명 가능하다.
 
@@ -337,7 +398,7 @@ DRY_RUN=1 AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
 [dry-run] claude -p "/crypto-alert-triage event_uuid=f912d55f-... symbol=KRW-BTC market=crypto source_report_uuid=... source_report_link_state=report_lookup_required metric=price operator=above threshold=1.00000000 current_value=92000000.00000000" --permission-mode bypassPermissions --settings /Users/.../auto_trader/.claude/settings.readonly.json --output-format json
 ```
 
-2회 실행 시: 동일 uuid가 `seen_event_uuids`에 기록되어 두 번째 실행에서는 출력 없음 (디듀프 동작).
+2회 실행 시: dry-run은 `seen_event_uuids`와 `last_delivered_at`를 갱신하지 않으므로 같은 출력이 다시 나와야 정상이다. dry-run에서 출력이 사라지면 상태 전진 버그다.
 
 ---
 
@@ -388,7 +449,7 @@ DRY_RUN=0 AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
 
 ---
 
-## 6. Q3 검증 프로토콜
+## 7. Q3 검증 프로토콜
 
 **목적:** 신선 세션(맥락 없는 상태)에서의 트리아지 품질이 인터랙티브 판단과 comparable한지 주기적으로 평가.
 
@@ -451,7 +512,7 @@ cat ~/.local/state/watch-alert-triage/validation.jsonl | \
 
 ---
 
-## 7. 문제 해결
+## 8. 문제 해결
 
 ### `triage reply post 실패(재시도 예정)` 오류
 
