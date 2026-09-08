@@ -262,7 +262,7 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-09-08.1"
-    assert policy_content_hash() == "4b4bd4ff43bb"
+    assert policy_content_hash() == "6d5a858ff5cb"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01

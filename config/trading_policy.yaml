@@ -815,8 +815,8 @@ decision_rules:
       5, the result is INSUFFICIENT_SAMPLE and review is deferred (neither
       retirement nor maintenance). With n >= 5, the tier is RETIRED unless
       the mature filled cohort's D+20 median is >= 0 AND its lower quartile is
-      > -8%; a passing cohort is retained and a failing cohort is retired.
-      Those two numbers are fixed in advance and may not be reinterpreted at
+      > -8%; a passing cohort is retained and a failing cohort is retired;
+      those two numbers are fixed in advance and may not be reinterpreted at
       scoring time. On a crash day no new batch is placed. The review date is
       the prospective cohort's policy review date, not a mutation of any prior
       forecast's probability, end date, or score. This contract applies
