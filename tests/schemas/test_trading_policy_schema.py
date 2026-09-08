@@ -262,7 +262,7 @@ def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
     assert doc.version == "2026-09-08.1"
-    assert policy_content_hash() == "3040bc782de4"
+    assert policy_content_hash() == "4b4bd4ff43bb"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -3545,17 +3545,23 @@ def test_s177_underwater_markets_cannot_be_widened_to_crypto():
 def _assert_task161_d20_contract(conditions: dict) -> None:
     """Assertion-only oracle used by the four required D20 mutants."""
 
-    assert conditions["d20_market_scope"] == ["kr", "us"]
-    assert conditions["d20_measurement_unit"] == "market_calendar_trading_days"
-    assert conditions["d20_horizon_trading_days"] == 20
+    def strict(actual, expected):
+        assert type(actual) is type(expected)
+        assert actual == expected
+
+    strict(conditions["d20_market_scope"], ["kr", "us"])
+    strict(conditions["d20_measurement_unit"], "market_calendar_trading_days")
+    strict(conditions["d20_horizon_trading_days"], 20)
     assert (
         conditions["d20_calendar_rule"]
         == "applicable_market_calendar_not_calendar_days_or_weekends_only"
     )
     assert conditions["d20_anchor_rule"] == "actual_fill_date_is_d0"
     assert conditions["d20_partial_or_multiple_fill_anchor"] == "last_actual_fill_date"
-    assert conditions["d20_price_basis"] == "close_vs_order_actual_execution_price"
-    assert conditions["d20_execution_price_is_not_average"] is True
+    assert conditions["d20_price_basis"] == (
+        "close_vs_order_actual_execution_price_not_position_average_cost"
+    )
+    assert conditions["d20_execution_price_is_not_position_average_cost"] is True
     assert conditions["d20_unfilled_order_cohort_status"] == "excluded_not_filled"
 
 
@@ -3570,9 +3576,8 @@ def test_task161_d20_contract_is_declared_on_loaded_schema():
     assert conditions["d20_insufficient_sample_rule"] == "n_lt_5"
     assert conditions["d20_insufficient_sample_status"] == "INSUFFICIENT_SAMPLE"
     assert conditions["d20_insufficient_sample_disposition"] == "defer_review"
-    assert (
-        conditions["d20_retirement_rule"]
-        == "mature_median_gte_0_and_lower_quartile_gt_minus_8"
+    assert conditions["d20_retirement_rule"] == (
+        "retired_unless_mature_median_gte_0_and_lower_quartile_gt_minus_8"
     )
     assert conditions["d20_effective_fill_date"] == "2026-09-08"
     assert conditions["d20_prior_forecasts"] == "unchanged"
@@ -3630,20 +3635,39 @@ def test_task161_d20_d4_branches_are_simultaneously_explicit_and_non_automatic()
     semantics = rule["semantics"]
 
     assert "twentieth subsequent trading session" in semantics
-    assert "actual execution price, never an average price" in semantics
+    assert "actual execution price, not the position's average cost" in semantics
     assert "censored and excluded" in semantics
     assert "mature filled sample as n" in semantics
     assert "n < 5" in semantics
     assert "INSUFFICIENT_SAMPLE" in semantics
     assert "review is deferred" in semantics
-    assert "median >= 0 AND" in semantics
-    assert "lower quartile > -8%" in semantics
+    assert "RETIRED unless" in semantics
+    assert "median is >= 0 AND" in semantics
+    assert "lower quartile is" in semantics
+    assert "fixed in advance and may not be reinterpreted" in semantics
+    assert "On a crash day no new batch is placed." in semantics
     assert "automatic" in semantics
     assert "batch stop" in semantics
     assert "resting-order cancellation" in semantics
     assert "lq_type" not in semantics.lower()
     assert "type 7" not in semantics.lower()
     assert conditions["d20_scorer_implemented"] is False
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("d20_execution_price_is_not_position_average_cost", 1),
+        ("d20_scorer_implemented", 0),
+        ("d20_horizon_trading_days", 20.0),
+    ],
+)
+def test_task161_d20_type_mutants_are_rejected_strictly(key, value):
+    raw = _raw()
+    conditions = raw["decision_rules"][_S177_UNDERWATER_KEY]["tiers"][0]["conditions"]
+    conditions[key] = value
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
 
 
 def test_s177_renaming_a_tier_does_not_skip_its_validators():

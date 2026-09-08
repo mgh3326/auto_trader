@@ -714,15 +714,17 @@ class PolicyDecisionRule(BaseModel):
             "d20_anchor_rule": "actual_fill_date_is_d0",
             "d20_partial_or_multiple_fill_anchor": "last_actual_fill_date",
             "d20_unfilled_order_cohort_status": "excluded_not_filled",
-            "d20_price_basis": "close_vs_order_actual_execution_price",
-            "d20_execution_price_is_not_average": True,
+            "d20_price_basis": (
+                "close_vs_order_actual_execution_price_not_position_average_cost"
+            ),
+            "d20_execution_price_is_not_position_average_cost": True,
             "d20_maturity_rule": "censor_unmatured_observations",
             "d20_mature_sample_count_field": "n",
             "d20_insufficient_sample_rule": "n_lt_5",
             "d20_insufficient_sample_status": "INSUFFICIENT_SAMPLE",
             "d20_insufficient_sample_disposition": "defer_review",
             "d20_retirement_rule": (
-                "mature_median_gte_0_and_lower_quartile_gt_minus_8"
+                "retired_unless_mature_median_gte_0_and_lower_quartile_gt_minus_8"
             ),
             "d20_effective_fill_date": "2026-09-08",
             "d20_prior_forecasts": "unchanged",
@@ -730,7 +732,8 @@ class PolicyDecisionRule(BaseModel):
             "d20_automation": "measurement_only_no_schedule_batch_stop_or_cancel",
         }
         for key, expected in d20_contract.items():
-            if conditions.get(key) != expected:
+            actual = conditions.get(key)
+            if type(actual) is not type(expected) or actual != expected:
                 raise ValueError(
                     f"{UNDERWATER_SUPPORT_NET_TIER_ID} D20 contract requires "
                     f"{key}: {expected!r}"
