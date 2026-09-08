@@ -3543,7 +3543,7 @@ def test_s177_underwater_markets_cannot_be_widened_to_crypto():
 
 
 def _assert_task161_d20_contract(conditions: dict) -> None:
-    """Assertion-only oracle used by the four required D20 mutants."""
+    """Assertion-only oracle used by the required D20 value mutants."""
 
     def strict(actual, expected):
         assert type(actual) is type(expected)
@@ -3608,10 +3608,7 @@ def test_task161_d20_contract_is_declared_on_loaded_schema():
         (
             "average execution price",
             lambda c: c.update(
-                {
-                    "d20_price_basis": "close_vs_order_average_execution_price",
-                    "d20_execution_price_is_not_average": False,
-                }
+                {"d20_price_basis": "close_vs_order_average_execution_price"}
             ),
         ),
         (
@@ -3620,12 +3617,61 @@ def test_task161_d20_contract_is_declared_on_loaded_schema():
         ),
     ],
 )
-def test_task161_d20_four_mutants_fail_by_assertion(label, mutate):
+def test_task161_d20_value_mutants_fail_by_assertion(label, mutate):
     raw = _raw()
     conditions = raw["decision_rules"][_S177_UNDERWATER_KEY]["tiers"][0]["conditions"]
     mutate(conditions)
     with pytest.raises(AssertionError):
         _assert_task161_d20_contract(conditions)
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        (
+            "wrong measurement unit",
+            lambda c: c.update({"d20_measurement_unit": "calendar_days"}),
+        ),
+        (
+            "weekends-only calendar",
+            lambda c: c.update({"d20_calendar_rule": "weekends_only_20_days"}),
+        ),
+        (
+            "created date as D0",
+            lambda c: c.update({"d20_anchor_rule": "order_created_date_is_d0"}),
+        ),
+        (
+            "average execution price",
+            lambda c: c.update(
+                {"d20_price_basis": "close_vs_order_average_execution_price"}
+            ),
+        ),
+        (
+            "retirement direction",
+            lambda c: c.update(
+                {
+                    "d20_retirement_rule": "mature_median_gte_0_and_lower_quartile_gt_minus_8"
+                }
+            ),
+        ),
+        (
+            "immature observations",
+            lambda c: c.update({"d20_maturity_rule": "include_unmatured_observations"}),
+        ),
+        (
+            "outcome rule version",
+            lambda c: c.update({"outcome_rule_version": "underwater-d20-v0"}),
+        ),
+    ],
+)
+def test_task161_d20_value_mutants_are_rejected_by_schema(label, mutate):
+    """Require the real validator to reject each independent value mutation."""
+
+    raw = _raw()
+    conditions = raw["decision_rules"][_S177_UNDERWATER_KEY]["tiers"][0]["conditions"]
+    mutate(conditions)
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
 
 
 def test_task161_d20_d4_branches_are_simultaneously_explicit_and_non_automatic():
