@@ -16,7 +16,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | analysis_readonly | 25 | 1 | 1 | 1 | 1 | 29 |
 | crypto | 59 | 3 | 41 | 39 | 1 | 143 |
 | db-paper | 58 | 3 | 35 | 47 | 1 | 144 |
-| default | 80 | 4 | 76 | 42 | 2 | 204 |
+| default | 80 | 4 | 78 | 42 | 3 | 207 |
 | fill-watch-context | 0 | 0 | 2 | 0 | 0 | 2 |
 | hermes-paper-kis | 59 | 3 | 37 | 39 | 1 | 139 |
 | kiwoom | 63 | 4 | 43 | 39 | 1 | 150 |
