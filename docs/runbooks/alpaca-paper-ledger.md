@@ -10,6 +10,46 @@ It was introduced in ROB-84 as a prerequisite for automating the preopen→paper
 
 Related: ROB-83 introduced the Alpaca Paper smoke workflow. ROB-84 adds persistent records. ROB-90 normalizes lifecycle states and adds roundtrip correlation. ROB-92 adds a read-only structured roundtrip audit report; see `docs/runbooks/alpaca-paper-roundtrip-report.md`.
 
+## Legacy timestamp contract (Alpaca timestamp consumption)
+
+`submitted_at` and `canceled_at` on `review.alpaca_paper_order_ledger` are
+legacy local record timestamps. `submitted_at` is the local time recorded by
+the ledger submit writer; it is not an Alpaca broker receipt, Alpaca's mutable
+partner-dispatch observation, or an execution-partner clock. `canceled_at` is
+the local time recorded by the cancel writer; it is not Alpaca
+`cancel_requested_at` and not the execution partner's terminal `canceled_at`.
+
+Consumers must not use either legacy column for latency, SLA, queue-delay,
+receipt-t0, or cross-clock comparisons. `submitted_at - created_at` is only a
+diagnostic if encountered in historical analysis, not a canonical latency
+measure; asynchronous updates can make it negative. HTTP cancel 204 is also
+not terminal evidence. Future source-qualified fields may be added
+additively; these legacy columns must retain their names and meaning.
+
+Historical rows must not be estimated or backfilled from local timestamps.
+There is no approved backfill for these columns.
+
+### Static guard boundary
+
+`tests/research/test_alpaca_timestamp_consumption_contract.py` checks the
+repository's statically visible Python AST for these columns used in timestamp
+arithmetic, non-identity comparisons, suspicious latency/SLA/clock helper
+calls, or suspicious latency-like assignments. The guard is an explicit
+source-pattern boundary: it does **not** claim to block every indirect,
+dynamic, SQL-string, reflection, or runtime use. The guard is intended to
+fail when a new statically visible consumer treats a local legacy value as a
+clock; ordinary state checks (`is None`/`is not None`) and serialization remain
+allowed.
+
+### Alpaca track / walk-forward audit note
+
+Code verification confirms the sealed `alpaca_track` path uses market-data
+`decision_ts_ms` and PIT bars, while `rob944_walkforward` orders trades by
+bar-derived `entry_ts`/`exit_ts`; neither consumes Alpaca order timestamps.
+Therefore the sealed alpaca_track/walk-forward results are unaffected by this
+legacy ledger timestamp contract. Future paper calibration must use
+source-qualified partner evidence, not these local columns.
+
 ---
 
 ## Lifecycle States (ROB-90 Canonical)
@@ -428,7 +468,7 @@ Table: `review.alpaca_paper_order_ledger`
 - `client_order_id`: per-leg caller-supplied correlation key
 - `lifecycle_correlation_id`: cross-leg roundtrip key (buy + sell share this value)
 - `broker`: always `alpaca`
-- `account_mode`: always `alpaca_paper`
+- `account_mode`: `alpaca_paper`, `alpaca_paper_lab`, or `alpaca_paper_crypto`
 - `lifecycle_state`: canonical ROB-90 state (see table above)
 - `record_kind`: row type — `plan`, `preview`, `validation_attempt`, `execution`, `reconcile`, `anomaly`
 
