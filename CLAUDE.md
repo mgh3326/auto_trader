@@ -68,6 +68,8 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 
 아키텍처의 분야별 기능 계약은 위의 필독 파일에 lossless-first로 분리되어 있다. 아래 최소 하드룰과 명시적 필독 목록은 어떤 진입점에서도 선택 사항이 아니다.
 
+**Compatibility locator — analyze quick fast projection (ROB-1311):** complete contract text remains mandatory in `docs/agent-contracts/market-data-and-screener-contracts.md`. The root locator preserves the quick-only removed-field enumeration required by the static guard: `nxt_tradable`, `price_source`, `session_state`, `krx_prev_close`, `change_pct`, `venue`, `quote_asof`, `delayed`, `price_data_state`, `fresh_artifact_exists`. For a current quote, call `get_quote`.
+
 ### 최소 하드룰 — 절대 위반 금지
 
 1. **런타임 LLM 경계 (ROB-501)**: `app/**` 런타임 코드에 in-process LLM provider
