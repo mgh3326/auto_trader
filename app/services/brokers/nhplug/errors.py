@@ -39,3 +39,7 @@ class NHPlugMockBrokerRejected(NHPlugMockError):
         super().__init__(
             f"NHPLUG mock broker rejected the read request (code={response_code})"
         )
+
+
+class NHPlugMockOrderRejected(NHPlugMockBrokerRejected):
+    """A non-zero broker order result; never a synthetic successful acceptance."""

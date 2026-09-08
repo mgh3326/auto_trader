@@ -20,3 +20,19 @@ def _assert_mock_enabled() -> None:
         raise NHPlugMockDisabled(
             "NHPLUG mock read access is disabled; set NHPLUG_MOCK_ENABLED=true"
         )
+
+
+def _mock_orders_enabled() -> bool:
+    """Return true only when the separately armed order mutation gate is set."""
+
+    return os.getenv("NHPLUG_MOCK_ORDERS_ENABLED", "").strip().lower() == "true"
+
+
+def _assert_mock_orders_enabled() -> None:
+    """Require both the read boundary and the explicit order-mutation boundary."""
+
+    _assert_mock_enabled()
+    if not _mock_orders_enabled():
+        raise NHPlugMockDisabled(
+            "NHPLUG mock order access is disabled; set NHPLUG_MOCK_ORDERS_ENABLED=true"
+        )
