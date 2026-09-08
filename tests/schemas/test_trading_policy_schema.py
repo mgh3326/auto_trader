@@ -3647,6 +3647,12 @@ def test_task161_d20_value_mutants_fail_by_assertion(label, mutate):
             ),
         ),
         (
+            "execution price is not position average cost",
+            lambda c: c.update(
+                {"d20_execution_price_is_not_position_average_cost": False}
+            ),
+        ),
+        (
             "retirement direction",
             lambda c: c.update(
                 {
