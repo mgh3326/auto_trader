@@ -699,6 +699,42 @@ class PolicyDecisionRule(BaseModel):
             raise ValueError(
                 f"{UNDERWATER_SUPPORT_NET_TIER_ID} must require forecast_save"
             )
+        # D20 (task161) — measurement declaration only. The schema pins the
+        # contract so a later policy edit cannot turn a market-calendar
+        # measurement into calendar-day counting, an average-price outcome, or
+        # an unconditional retirement rule. It does not implement scoring.
+        d20_contract = {
+            "outcome_rule_version": "underwater-d20-v1",
+            "d20_market_scope": ["kr", "us"],
+            "d20_measurement_unit": "market_calendar_trading_days",
+            "d20_horizon_trading_days": 20,
+            "d20_calendar_rule": (
+                "applicable_market_calendar_not_calendar_days_or_weekends_only"
+            ),
+            "d20_anchor_rule": "actual_fill_date_is_d0",
+            "d20_partial_or_multiple_fill_anchor": "last_actual_fill_date",
+            "d20_unfilled_order_cohort_status": "excluded_not_filled",
+            "d20_price_basis": "close_vs_order_actual_execution_price",
+            "d20_execution_price_is_not_average": True,
+            "d20_maturity_rule": "censor_unmatured_observations",
+            "d20_mature_sample_count_field": "n",
+            "d20_insufficient_sample_rule": "n_lt_5",
+            "d20_insufficient_sample_status": "INSUFFICIENT_SAMPLE",
+            "d20_insufficient_sample_disposition": "defer_review",
+            "d20_retirement_rule": (
+                "mature_median_gte_0_and_lower_quartile_gt_minus_8"
+            ),
+            "d20_effective_fill_date": "2026-09-08",
+            "d20_prior_forecasts": "unchanged",
+            "d20_scorer_implemented": False,
+            "d20_automation": "measurement_only_no_schedule_batch_stop_or_cancel",
+        }
+        for key, expected in d20_contract.items():
+            if conditions.get(key) != expected:
+                raise ValueError(
+                    f"{UNDERWATER_SUPPORT_NET_TIER_ID} D20 contract requires "
+                    f"{key}: {expected!r}"
+                )
         review_date = conditions.get("review_date")
         if not isinstance(review_date, str):
             raise ValueError(f"{UNDERWATER_SUPPORT_NET_TIER_ID} requires a review_date")

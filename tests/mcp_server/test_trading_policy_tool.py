@@ -14,7 +14,7 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
     assert out["version"] == policy_version_stamp()["version"]
-    assert out["content_hash"] == "46db7f65e6ab"
+    assert out["content_hash"] == "3040bc782de4"
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert set(out["decision_rules"]) == {
         "buy.support_reserve_net",
@@ -73,6 +73,25 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     assert reserve["toss_live_approval"] == (
         "HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING"
     )
+    underwater = out["decision_rules"]["buy.underwater_support_net"]
+    underwater_conditions = underwater["tiers"][0]["conditions"]
+    assert underwater_conditions["d20_market_scope"] == ["kr", "us"]
+    assert underwater_conditions["outcome_rule_version"] == "underwater-d20-v1"
+    assert underwater_conditions["d20_measurement_unit"] == (
+        "market_calendar_trading_days"
+    )
+    assert underwater_conditions["d20_horizon_trading_days"] == 20
+    assert underwater_conditions["d20_anchor_rule"] == "actual_fill_date_is_d0"
+    assert underwater_conditions["d20_price_basis"] == (
+        "close_vs_order_actual_execution_price"
+    )
+    assert underwater_conditions["d20_insufficient_sample_status"] == (
+        "INSUFFICIENT_SAMPLE"
+    )
+    assert underwater_conditions["d20_insufficient_sample_disposition"] == (
+        "defer_review"
+    )
+    assert underwater_conditions["d20_scorer_implemented"] is False
 
 
 @pytest.mark.asyncio
@@ -81,7 +100,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
 
     assert out["success"] is True
     assert out["version"] == policy_version_stamp()["version"]
-    assert out["content_hash"] == "46db7f65e6ab"
+    assert out["content_hash"] == "3040bc782de4"
     gate = out["market_rules"]["recovery_gate"]
     assert gate["min_conditions_met"] == 2
     assert gate["of"] == 2
@@ -223,8 +242,8 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-09-07.5"
-    assert out["content_hash"] == "46db7f65e6ab"
+    assert out["version"] == "2026-09-08.1"
+    assert out["content_hash"] == "3040bc782de4"
 
 
 @pytest.mark.asyncio
@@ -237,7 +256,7 @@ async def test_get_trading_policy_returns_user_stances_advisory_with_version_ech
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-948, matching ROB-932).
     assert out["version"]
-    assert out["content_hash"] == "46db7f65e6ab"
+    assert out["content_hash"] == "3040bc782de4"
 
 
 @pytest.mark.asyncio

@@ -261,8 +261,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-07.5"
-    assert policy_content_hash() == "46db7f65e6ab"
+    assert doc.version == "2026-09-08.1"
+    assert policy_content_hash() == "3040bc782de4"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -276,7 +276,7 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     current = _raw()
     doc = TradingPolicyDocument.model_validate(current)
 
-    assert doc.version == "2026-09-07.5"
+    assert doc.version == "2026-09-08.1"
     assert doc.cash_proxy.exit_intent == "cash_funding"
     assert doc.cash_proxy.symbol_list_duplicated_here is False
     assert doc.cash_proxy.exempt_gates == [
@@ -470,7 +470,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-07.5"
+    assert current["version"] == "2026-09-08.1"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -518,7 +518,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-07.5"
+    assert current["version"] == "2026-09-08.1"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -661,7 +661,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-07.5"
+    assert doc.version == "2026-09-08.1"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -2597,7 +2597,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-07.5"
+    assert doc.version == "2026-09-08.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3380,7 +3380,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-07.5"
+    assert doc.version == "2026-09-08.1"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
@@ -3540,6 +3540,110 @@ def test_s177_underwater_markets_cannot_be_widened_to_crypto():
     raw["decision_rules"][_S177_UNDERWATER_KEY]["markets"] = ["kr", "us", "crypto"]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+def _assert_task161_d20_contract(conditions: dict) -> None:
+    """Assertion-only oracle used by the four required D20 mutants."""
+
+    assert conditions["d20_market_scope"] == ["kr", "us"]
+    assert conditions["d20_measurement_unit"] == "market_calendar_trading_days"
+    assert conditions["d20_horizon_trading_days"] == 20
+    assert (
+        conditions["d20_calendar_rule"]
+        == "applicable_market_calendar_not_calendar_days_or_weekends_only"
+    )
+    assert conditions["d20_anchor_rule"] == "actual_fill_date_is_d0"
+    assert conditions["d20_partial_or_multiple_fill_anchor"] == "last_actual_fill_date"
+    assert conditions["d20_price_basis"] == "close_vs_order_actual_execution_price"
+    assert conditions["d20_execution_price_is_not_average"] is True
+    assert conditions["d20_unfilled_order_cohort_status"] == "excluded_not_filled"
+
+
+def test_task161_d20_contract_is_declared_on_loaded_schema():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    conditions = doc.decision_rules[_S177_UNDERWATER_KEY].tiers[0].conditions
+
+    _assert_task161_d20_contract(conditions)
+    assert conditions["outcome_rule_version"] == "underwater-d20-v1"
+    assert conditions["d20_maturity_rule"] == "censor_unmatured_observations"
+    assert conditions["d20_mature_sample_count_field"] == "n"
+    assert conditions["d20_insufficient_sample_rule"] == "n_lt_5"
+    assert conditions["d20_insufficient_sample_status"] == "INSUFFICIENT_SAMPLE"
+    assert conditions["d20_insufficient_sample_disposition"] == "defer_review"
+    assert (
+        conditions["d20_retirement_rule"]
+        == "mature_median_gte_0_and_lower_quartile_gt_minus_8"
+    )
+    assert conditions["d20_effective_fill_date"] == "2026-09-08"
+    assert conditions["d20_prior_forecasts"] == "unchanged"
+    assert conditions["d20_scorer_implemented"] is False
+    assert (
+        conditions["d20_automation"]
+        == "measurement_only_no_schedule_batch_stop_or_cancel"
+    )
+    assert conditions["review_date"] == "2026-10-05"
+    assert conditions["retire_unless_filled_cohort_d20_median_pct_min"] == 0
+    assert (
+        conditions["retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"]
+        == -8
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        (
+            "wrong measurement unit",
+            lambda c: c.update({"d20_measurement_unit": "calendar_days"}),
+        ),
+        (
+            "weekends-only calendar",
+            lambda c: c.update({"d20_calendar_rule": "weekends_only_20_days"}),
+        ),
+        (
+            "average execution price",
+            lambda c: c.update(
+                {
+                    "d20_price_basis": "close_vs_order_average_execution_price",
+                    "d20_execution_price_is_not_average": False,
+                }
+            ),
+        ),
+        (
+            "created date as D0",
+            lambda c: c.update({"d20_anchor_rule": "order_created_date_is_d0"}),
+        ),
+    ],
+)
+def test_task161_d20_four_mutants_fail_by_assertion(label, mutate):
+    raw = _raw()
+    conditions = raw["decision_rules"][_S177_UNDERWATER_KEY]["tiers"][0]["conditions"]
+    mutate(conditions)
+    with pytest.raises(AssertionError):
+        _assert_task161_d20_contract(conditions)
+
+
+def test_task161_d20_d4_branches_are_simultaneously_explicit_and_non_automatic():
+    raw = _raw()
+    rule = raw["decision_rules"][_S177_UNDERWATER_KEY]
+    conditions = rule["tiers"][0]["conditions"]
+    semantics = rule["semantics"]
+
+    assert "twentieth subsequent trading session" in semantics
+    assert "actual execution price, never an average price" in semantics
+    assert "censored and excluded" in semantics
+    assert "mature filled sample as n" in semantics
+    assert "n < 5" in semantics
+    assert "INSUFFICIENT_SAMPLE" in semantics
+    assert "review is deferred" in semantics
+    assert "median >= 0 AND" in semantics
+    assert "lower quartile > -8%" in semantics
+    assert "automatic" in semantics
+    assert "batch stop" in semantics
+    assert "resting-order cancellation" in semantics
+    assert "lq_type" not in semantics.lower()
+    assert "type 7" not in semantics.lower()
+    assert conditions["d20_scorer_implemented"] is False
 
 
 def test_s177_renaming_a_tier_does_not_skip_its_validators():

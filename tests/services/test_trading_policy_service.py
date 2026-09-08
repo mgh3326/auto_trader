@@ -22,8 +22,36 @@ def _policy_key_references(value: object) -> list[str]:
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
     assert stamp["version"] == svc.load_trading_policy().version
+    assert stamp["version"] == "2026-09-08.1"
     assert len(stamp["content_hash"]) == 12
     assert svc.policy_content_hash() == svc.policy_content_hash()
+
+
+def test_task161_loader_preserves_underwater_d20_declaration_and_crypto_scope():
+    policy = svc.load_trading_policy()
+    underwater = policy.decision_rules["buy.underwater_support_net"]
+    conditions = underwater.tiers[0].conditions
+
+    assert underwater.markets == ["kr", "us"]
+    assert conditions["d20_measurement_unit"] == "market_calendar_trading_days"
+    assert conditions["d20_horizon_trading_days"] == 20
+    assert conditions["d20_anchor_rule"] == "actual_fill_date_is_d0"
+    assert conditions["d20_partial_or_multiple_fill_anchor"] == "last_actual_fill_date"
+    assert conditions["outcome_rule_version"] == "underwater-d20-v1"
+
+    # The 24/7 crypto twin is intentionally not part of this contract.
+    crypto = policy.decision_rules["buy.held_majors_support_net"]
+    crypto_conditions = crypto.tiers[0].conditions
+    assert crypto.markets == ["crypto"]
+    assert crypto_conditions["tif"] == "GTC"
+    assert crypto_conditions["review_date"] == "2026-09-19"
+    assert crypto_conditions["retire_unless_filled_cohort_d20_median_pct_min"] == 0
+    assert (
+        crypto_conditions[
+            "retire_unless_filled_cohort_d20_lower_quartile_pct_min_exclusive"
+        ]
+        == -8
+    )
 
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
