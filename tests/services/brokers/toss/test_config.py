@@ -31,6 +31,16 @@ def test_validate_toss_api_config_reports_names_only() -> None:
     assert "secret-value" not in repr(Configured.toss_api_client_secret)
 
 
+def test_validate_toss_api_config_gatewayd_allows_missing_secret() -> None:
+    class GatewaydConfigured:
+        toss_api_enabled = True
+        toss_api_client_id = "client-id-value"
+        toss_api_client_secret = None
+        broker_token_issuance_mode = "gatewayd"
+
+    assert validate_toss_api_config(GatewaydConfigured()) == []
+
+
 def test_toss_live_order_mutation_gate_defaults_false() -> None:
     configured = Settings(
         kis_app_key="kis-key",
