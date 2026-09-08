@@ -452,6 +452,10 @@
       "update_trade_journal",
       "watch_downside_register_sweep"
     ],
+    "fill-watch-context": [
+      "fill_watch_context_consume_artifact",
+      "fill_watch_context_outcome_get"
+    ],
     "hermes-paper-kis": [
       "analysis_artifact_get",
       "analysis_artifact_list",
@@ -1602,6 +1606,10 @@
       "us_dual_paper_capability_matrix",
       "us_dual_paper_preview",
       "watch_downside_register_sweep"
+    ],
+    "fill-watch-context": [
+      "fill_watch_context_consume_artifact",
+      "fill_watch_context_outcome_get"
     ],
     "hermes-paper-kis": [
       "analysis_artifact_get",

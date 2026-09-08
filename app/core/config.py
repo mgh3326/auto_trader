@@ -841,6 +841,9 @@ class Settings(BaseSettings):
     TOSS_FILL_POLL_CLOSED_PAGE_CAP: int = 20
     TOSS_FILL_POLL_RECONCILE_LIMIT: int = 100
     TOSS_FILL_POLL_MARKET_GATE_ENABLED: bool = True
+    # #137 Phase 0 — independently armed, scheduleless artifact event loop.
+    # This does not inherit any existing execution, fill-poll, or watch gate.
+    FILL_WATCH_CONTEXT_EVENT_LOOP_ENABLED: bool = False
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False

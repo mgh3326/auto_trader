@@ -17,7 +17,18 @@ from tests.mcp_server._registration_recorder import (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("gates_enabled", [False, True])
-@pytest.mark.parametrize("profile", list(McpProfile))
+@pytest.mark.parametrize(
+    "profile",
+    [
+        profile
+        for profile in McpProfile
+        if profile
+        not in (
+            # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
+            McpProfile.FILL_WATCH_CONTEXT,
+        )
+    ],
+)
 async def test_sections_follow_the_actual_profile_registration(
     monkeypatch: pytest.MonkeyPatch,
     gates_enabled: bool,

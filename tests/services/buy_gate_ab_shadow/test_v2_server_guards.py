@@ -655,7 +655,7 @@ async def test_v1_shadow_and_general_forecast_paths_remain_unchanged(
 
 def test_current_real_policy_matches_sealed_v2_projection() -> None:
     policy = trading_policy_service.load_trading_policy()
-    assert policy.version == "2026-09-07.5"
+    assert policy.version == "2026-09-08.1"
     policy_alignment_v2.assert_v2_policy_alignment()
 
 

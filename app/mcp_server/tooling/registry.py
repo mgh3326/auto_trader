@@ -68,6 +68,14 @@ Profile → tool surface mapping
   validity guard so a headless replay session cannot leak live market data or
   persist anything.
 
+"fill-watch-context" (McpProfile.FILL_WATCH_CONTEXT):
+  #137 Phase 0 closed-world artifact surface. Registers exactly
+  fill_watch_context_consume_artifact (independently default-off) and
+  fill_watch_context_outcome_get, then returns before the "Always" block.
+  Account reads, broker/gateway calls, credential/OAuth paths, proposal/report/
+  watch mutation, signatures/capabilities, shell, bootstrap, and scheduler
+  surfaces are physically absent.
+
 "analysis_readonly" (McpProfile.ANALYSIS_READONLY):
   Codex/headless read/analysis allowlist only. Registers operating briefing,
   policy/route, selected market/fundamental/analysis/holdings tools,
@@ -136,6 +144,9 @@ from app.mcp_server.tooling.downside_watch_registration import (
 )
 from app.mcp_server.tooling.execution_ledger_events import (
     register_execution_ledger_event_tools,
+)
+from app.mcp_server.tooling.fill_watch_context_registration import (
+    register_fill_watch_context_tools,
 )
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
@@ -311,6 +322,14 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_trading_policy_tools(mcp)  # get_trading_policy (versioned thresholds)
         register_route_request_tools(mcp)  # route_request (lane procedure)
         register_bootstrap_pack()
+        return
+
+    if profile is McpProfile.FILL_WATCH_CONTEXT:
+        # #137 Phase 0 — closed world before the broad "Always" block. The
+        # two artifact/outcome tools are the entire surface; no account,
+        # broker, proposal, watch, credential, shell, or bootstrap tool can
+        # leak in by registration order.
+        register_fill_watch_context_tools(mcp)
         return
 
     if profile is McpProfile.ANALYSIS_READONLY:

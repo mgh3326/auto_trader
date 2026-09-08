@@ -107,6 +107,17 @@ def test_test_job_matrix_shape_is_unchanged(workflow: dict[str, Any]) -> None:
     }
 
 
+def test_test_job_checks_out_full_history_for_fail_loud_scope_contract(
+    workflow: dict[str, Any],
+) -> None:
+    checkout = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+
+
 # --------------------------------------------------------------------------
 # The aggregate exists and cannot disappear on failure
 # --------------------------------------------------------------------------

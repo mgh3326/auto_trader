@@ -15,6 +15,7 @@ from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
 from .crypto_instruments import CryptoInstrument
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
+from .fill_watch_context_outcome import FillWatchContextOutcome
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from .funding_advisory import (
     ExternalCashDeclaration,
@@ -187,6 +188,7 @@ from .watch_event_repricing_claims import WatchEventRepricingClaim
 
 __all__ = [
     "WatchEventRepricingClaim",
+    "FillWatchContextOutcome",
     "Base",
     "AnalysisArtifact",
     "AnalystConsensusSnapshot",
