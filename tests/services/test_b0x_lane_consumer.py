@@ -321,12 +321,14 @@ def test_relative_state_database_fails_before_storage_write() -> None:
         )
 
 
-def test_delivery_ingress_gap_keeps_source_fail_closed() -> None:
+def test_http_ingress_is_wired_but_missing_dispatch_keeps_source_fail_closed() -> None:
     readiness = production_consumer_path_readiness()
     assert readiness.ready is False
+    assert readiness.ingress_wired is True
+    assert readiness.dispatch_wired is False
     assert readiness.source_may_be_enabled is False
-    assert "pane prompt" in readiness.blocker
-    assert "no delivered-event artifact" in readiness.blocker
+    assert "no approved B0X queued-cycle runner" in readiness.blocker
+    assert "not dispatch completion" in readiness.blocker
 
 
 def test_one_shot_cli_is_default_off_and_does_not_read_artifact(
@@ -359,7 +361,7 @@ def test_one_shot_cli_is_default_off_and_does_not_read_artifact(
     assert not state.exists()
 
 
-def test_one_shot_cli_consumes_real_panewire_record_shape_only_when_enabled(
+def test_legacy_direct_artifact_cli_cannot_bypass_binding_and_stable_lock(
     tmp_path: Path,
 ) -> None:
     event_file = tmp_path / "00001-lane.event.json"
@@ -383,10 +385,9 @@ def test_one_shot_cli_consumes_real_panewire_record_shape_only_when_enabled(
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2, result.stderr
     receipt = json.loads(result.stdout)
-    assert receipt["durable_evidence"] == "sqlite_primary_key(lane,event_id)"
-    assert receipt["disposition"] == "preserved_unconsumed_out_of_window"
-    assert receipt["cycle_created"] is False
-    assert receipt["additional_kickoffs"] == 0
-    assert len(event_rows(state)) == 1
+    assert receipt["status"] == "blocked"
+    assert receipt["consumer_execution_evidence"] is None
+    assert "stable-lock HTTP poller" in receipt["reason"]
+    assert not state.exists()

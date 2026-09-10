@@ -130,24 +130,27 @@ unrendered template is not a valid unit, and a rendered unit still has
 `LANE_EVENT_KICKOFF_B0X_ENABLED=false`, and its `ExecStart` retains an
 unconditional `--dry-run`. Rendering neither installs nor enables it. Removing
 that CLI guard is a separately approved runtime switch whose rollback restores
-`--dry-run`; it is forbidden while the delivery-ingress blocker remains open.
+`--dry-run`; it is forbidden while HTTP ingress/business-dispatch activation
+readbacks remain incomplete.
 Exact operational inputs and rendered output hashes belong in the private
 installer handoff and readback, not this repository.
 
 ## Cutover and resident-session discipline
 
 The six legacy Prefect B0X sources and the new source must never both be live.
-Install and read back the new units, lane, consumer state root, and both false
-gates first. Collect three full KST days through a separately armed
+Install and read back the new units, sink route, consumer state/lock roots, and
+all three false binding gates (`ingress_enabled`, `dispatch_enabled`, and
+`source_enabled`) first. Collect three full KST days through a separately armed
 observation-only path while the legacy owner alone remains live. At cutover,
 freeze evidence, wait for the current legacy slot, record queued/unconsumed
-dispositions, and stop while the destination-delivery ingress blocker in
-`b0x-portability-install.md` remains open. Only a separately approved resolution
-may continue with disabling all six legacy sources, verifying them disabled,
-enabling the consumer, then enabling the B0X source and proving one owner plus
-successor consumption. Rollback freezes/disables the new source first, waits
-for its active slot, restores captured route/alias targets, then restores
-legacy.
+dispositions, and stop while the approved queued-cycle dispatch entry point in
+`b0x-portability-install.md` remains unresolved. Only a separately approved
+resolution plus exact floor/time/head/install/sink receipts may continue with
+disabling all six legacy sources, verifying them disabled, enabling ingress and
+dispatch, then enabling the B0X source and proving one owner plus successor
+consumption. Rollback freezes/disables the new source first, waits for its
+active slot, restores captured route/alias targets and the dry-run guard, then
+restores legacy.
 
 The retirement checklist is admiral-only: pause then delete the eleven `KR Live
 Session Kickoff` Prefect deployments, and handle its paused `manual-smoke`

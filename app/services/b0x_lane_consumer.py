@@ -13,6 +13,7 @@ import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -72,38 +73,42 @@ _SOURCE_CONTRACT = {
         ),
     ),
 }
+_SCHEMA_INITIALIZATION_LOCK = Lock()
 
 
 class B0XConsumerContractError(ValueError):
     """The supplied path or event violates the fail-closed consumer contract."""
 
 
-PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED = False
-PRODUCTION_DELIVERY_INGRESS_BLOCKER = (
-    "panewire destination delivery is a pane prompt and exposes no delivered-event "
-    "artifact or executable consumer hook"
+PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED = True
+PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED = False
+PRODUCTION_BUSINESS_DISPATCH_BLOCKER = (
+    "no approved B0X queued-cycle runner consumes the durable queue; ingress is "
+    "not dispatch completion"
 )
 
 
 @dataclass(frozen=True)
 class ConsumerPathReadiness:
     ready: bool
+    ingress_wired: bool
+    dispatch_wired: bool
     source_may_be_enabled: bool
     blocker: str
 
 
 def production_consumer_path_readiness() -> ConsumerPathReadiness:
-    """Fail closed until an approved destination-delivery hook exists.
-
-    The one-shot consumer below deliberately accepts a caller-supplied event
-    file for hermetic validation. It is not evidence that panewire destination
-    delivery invokes the consumer and therefore cannot arm the source.
-    """
+    """Describe code-path readiness without claiming install or dispatch."""
 
     return ConsumerPathReadiness(
-        ready=PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED,
+        ready=(
+            PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED
+            and PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED
+        ),
+        ingress_wired=PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED,
+        dispatch_wired=PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED,
         source_may_be_enabled=False,
-        blocker=PRODUCTION_DELIVERY_INGRESS_BLOCKER,
+        blocker=PRODUCTION_BUSINESS_DISPATCH_BLOCKER,
     )
 
 
@@ -134,6 +139,10 @@ def _confined_db_path(path: Path) -> Path:
 
 
 def _payload(event: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    if set(event) != {"type", "owner_lane", "event_id", "text"}:
+        raise B0XConsumerContractError(
+            "event envelope keys differ from the closed model"
+        )
     if event.get("type") != "lane.event":
         raise B0XConsumerContractError("event type must be lane.event")
     lane = event.get("owner_lane")
@@ -151,6 +160,17 @@ def _payload(event: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
         raise B0XConsumerContractError("event text must be valid JSON") from exc
     if not isinstance(body, dict) or body.get("source") != "b0x":
         raise B0XConsumerContractError("event text source must be b0x")
+    if set(body) != {
+        "date",
+        "disposition",
+        "playbook",
+        "source",
+        "slot",
+        "tick",
+    }:
+        raise B0XConsumerContractError(
+            "event text keys differ from the closed source model"
+        )
     match = _EVENT_ID.fullmatch(event_id)
     assert match is not None  # guarded above; keeps the identity comparison explicit
     expected = {
@@ -202,7 +222,7 @@ def _received_clock(received_at: datetime | None) -> tuple[datetime, str]:
     return effective.astimezone(KST), effective.astimezone(UTC).isoformat()
 
 
-def _eligible_first_delivery(body: dict[str, Any], received_kst: datetime) -> bool:
+def _eligible_at(body: dict[str, Any], received_kst: datetime) -> bool:
     *_, tick_scoped, scheduled_ticks = _SOURCE_CONTRACT[str(body["slot"])]
     received_tick = received_kst.strftime("%H%M")
     if body["date"] != received_kst.date().isoformat():
@@ -212,32 +232,139 @@ def _eligible_first_delivery(body: dict[str, Any], received_kst: datetime) -> bo
     return not tick_scoped or body["tick"] == received_tick
 
 
+def _eligible_first_delivery(
+    body: dict[str, Any],
+    received_kst: datetime,
+    hub_received_kst: datetime | None,
+) -> bool:
+    return _eligible_at(body, received_kst) and (
+        hub_received_kst is None or _eligible_at(body, hub_received_kst)
+    )
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path, timeout=10, isolation_level=None)
-    # Install the busy handler before any pragma or schema write so concurrent
-    # first delivery is as safe as concurrent use of an existing database.
-    connection.execute("PRAGMA busy_timeout=10000")
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=FULL")
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS b0x_lane_event (
-            lane TEXT NOT NULL,
-            event_id TEXT NOT NULL,
-            source_payload TEXT NOT NULL,
-            disposition TEXT NOT NULL,
-            cycle_created INTEGER NOT NULL CHECK (cycle_created IN (0, 1)),
-            received_at TEXT NOT NULL,
-            terminal_evidence TEXT,
-            PRIMARY KEY (lane, event_id)
-        );
-        CREATE TABLE IF NOT EXISTS b0x_active_lane (
-            lane TEXT PRIMARY KEY,
-            event_id TEXT NOT NULL
-        );
-        """
-    )
+    # A process-local initialization fence prevents first-use threads from
+    # racing the journal-mode transition. Production poller processes are
+    # separately serialized by the binding's stable POSIX lock; SQLite still
+    # owns atomic business identity through PRIMARY KEY(lane,event_id).
+    try:
+        with _SCHEMA_INITIALIZATION_LOCK:
+            connection.execute("PRAGMA busy_timeout=10000")
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.executescript(
+                """
+            CREATE TABLE IF NOT EXISTS b0x_lane_event (
+                lane TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                source_payload TEXT NOT NULL,
+                disposition TEXT NOT NULL,
+                cycle_created INTEGER NOT NULL CHECK (cycle_created IN (0, 1)),
+                received_at TEXT NOT NULL,
+                terminal_evidence TEXT,
+                PRIMARY KEY (lane, event_id)
+            );
+            CREATE TABLE IF NOT EXISTS b0x_active_lane (
+                lane TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL
+            );
+            """
+            )
+    except BaseException:
+        connection.close()
+        raise
     return connection
+
+
+def _canonical_source_payload(body: dict[str, Any]) -> str:
+    return json.dumps(body, separators=(",", ":"), sort_keys=True)
+
+
+def _consume_lane_event_in_connection(
+    event: dict[str, Any],
+    *,
+    connection: sqlite3.Connection,
+    received_at: datetime,
+    hub_received_at: datetime | None = None,
+) -> ConsumerReceipt:
+    """Consume inside a transaction owned by the caller.
+
+    The HTTP poller uses this path so its ingress receipt, business receipt,
+    and sweep cursor share one SQLite commit. This function never commits or
+    rolls back the supplied connection.
+    """
+
+    lane, event_id, body = _payload(event)
+    received_kst, received = _received_clock(received_at)
+    hub_received_kst = (
+        _received_clock(hub_received_at)[0] if hub_received_at is not None else None
+    )
+    canonical_payload = _canonical_source_payload(body)
+    prior = connection.execute(
+        "SELECT source_payload, disposition, cycle_created FROM b0x_lane_event "
+        "WHERE lane = ? AND event_id = ?",
+        (lane, event_id),
+    ).fetchone()
+    if prior is not None:
+        if prior[0] != canonical_payload:
+            raise B0XConsumerContractError(
+                "duplicate lane/event identity has different source payload"
+            )
+        return ConsumerReceipt(
+            lane,
+            event_id,
+            True,
+            str(prior[1]),
+            bool(prior[2]),
+            0,
+            "sqlite_primary_key(lane,event_id)",
+        )
+
+    requested = str(body["disposition"])
+    cycle_created = False
+    if not _eligible_first_delivery(body, received_kst, hub_received_kst):
+        disposition = "preserved_unconsumed_out_of_window"
+    elif requested == "cycle_kickoff":
+        active = connection.execute(
+            "SELECT event_id FROM b0x_active_lane WHERE lane = ?", (lane,)
+        ).fetchone()
+        if active is None:
+            connection.execute(
+                "INSERT INTO b0x_active_lane(lane, event_id) VALUES (?, ?)",
+                (lane, event_id),
+            )
+            disposition = "queued_cycle"
+            cycle_created = True
+        else:
+            disposition = "held_unconsumed_active_slot"
+    elif requested == "policy_table_build":
+        disposition = "queued_policy_table_build"
+    else:
+        disposition = "observed_harvest_no_cycle"
+
+    connection.execute(
+        "INSERT INTO b0x_lane_event "
+        "(lane, event_id, source_payload, disposition, cycle_created, received_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            lane,
+            event_id,
+            canonical_payload,
+            disposition,
+            int(cycle_created),
+            received,
+        ),
+    )
+    return ConsumerReceipt(
+        lane,
+        event_id,
+        False,
+        disposition,
+        cycle_created,
+        int(cycle_created),
+        "sqlite_primary_key(lane,event_id)",
+    )
 
 
 def consume_lane_event(
@@ -245,6 +372,7 @@ def consume_lane_event(
     *,
     state_db: Path,
     received_at: datetime | None = None,
+    hub_received_at: datetime | None = None,
 ) -> ConsumerReceipt:
     """Persist one event exactly once and return its explicit disposition.
 
@@ -255,74 +383,23 @@ def consume_lane_event(
     either kind of held record, so there is no implicit catch-up.
     """
 
-    lane, event_id, body = _payload(event)
+    _payload(event)
     db_path = _confined_db_path(state_db)
-    received_kst, received = _received_clock(received_at)
+    effective_received_at = received_at or datetime.now(UTC)
+    _received_clock(effective_received_at)
+    if hub_received_at is not None:
+        _received_clock(hub_received_at)
     connection = _connect(db_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
-        prior = connection.execute(
-            "SELECT disposition, cycle_created FROM b0x_lane_event "
-            "WHERE lane = ? AND event_id = ?",
-            (lane, event_id),
-        ).fetchone()
-        if prior is not None:
-            connection.commit()
-            return ConsumerReceipt(
-                lane,
-                event_id,
-                True,
-                str(prior[0]),
-                bool(prior[1]),
-                0,
-                "sqlite_primary_key(lane,event_id)",
-            )
-
-        requested = str(body["disposition"])
-        cycle_created = False
-        if not _eligible_first_delivery(body, received_kst):
-            disposition = "preserved_unconsumed_out_of_window"
-        elif requested == "cycle_kickoff":
-            active = connection.execute(
-                "SELECT event_id FROM b0x_active_lane WHERE lane = ?", (lane,)
-            ).fetchone()
-            if active is None:
-                connection.execute(
-                    "INSERT INTO b0x_active_lane(lane, event_id) VALUES (?, ?)",
-                    (lane, event_id),
-                )
-                disposition = "queued_cycle"
-                cycle_created = True
-            else:
-                disposition = "held_unconsumed_active_slot"
-        elif requested == "policy_table_build":
-            disposition = "queued_policy_table_build"
-        else:
-            disposition = "observed_harvest_no_cycle"
-
-        connection.execute(
-            "INSERT INTO b0x_lane_event "
-            "(lane, event_id, source_payload, disposition, cycle_created, received_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                lane,
-                event_id,
-                json.dumps(body, separators=(",", ":"), sort_keys=True),
-                disposition,
-                int(cycle_created),
-                received,
-            ),
+        receipt = _consume_lane_event_in_connection(
+            event,
+            connection=connection,
+            received_at=effective_received_at,
+            hub_received_at=hub_received_at,
         )
         connection.commit()
-        return ConsumerReceipt(
-            lane,
-            event_id,
-            False,
-            disposition,
-            cycle_created,
-            int(cycle_created),
-            "sqlite_primary_key(lane,event_id)",
-        )
+        return receipt
     except BaseException:
         connection.rollback()
         raise
@@ -405,8 +482,9 @@ __all__ = [
     "B0XConsumerContractError",
     "ConsumerPathReadiness",
     "ConsumerReceipt",
-    "PRODUCTION_DELIVERY_INGRESS_BLOCKER",
     "PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED",
+    "PRODUCTION_BUSINESS_DISPATCH_BLOCKER",
+    "PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED",
     "consume_lane_event",
     "event_rows",
     "production_consumer_path_readiness",

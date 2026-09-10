@@ -1,0 +1,17 @@
+[Unit]
+Description=auto_trader B0X handoffkeep HTTP lane-event ingress
+Wants=network-online.target
+After=network-online.target
+
+# Public, non-operational template. Render only into an installer-owned stage.
+[Service]
+Type=oneshot
+WorkingDirectory=@AUTO_TRADER_WORKTREE@
+EnvironmentFile=@B0X_INGRESS_CREDENTIAL_ENV_FILE@
+ExecStart=@B0X_PYTHON_EXECUTABLE@ -m scripts.b0x_lane_event_poller --binding @B0X_INGRESS_BINDING@ --state-db @B0X_INGRESS_STATE_DB@ --once
+TimeoutStartSec=@B0X_INGRESS_SERVICE_TIMEOUT_SECONDS@
+User=@B0X_INGRESS_OS_OWNER@
+Group=@B0X_INGRESS_OS_GROUP@
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
