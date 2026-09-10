@@ -26,6 +26,16 @@ Required installer inputs are exact absolute values for:
   source binding epoch, reviewed code head, binding install receipt, and the
   source-off/no-emit quiescence receipt captured before selecting the floor.
   These are private installer inputs and must not be copied into the public PR;
+- the installer-owned absolute `b0x-dispatch/v1` binding path, the same durable
+  state DB supplied to its CLI, its stable host-local dispatch lock, exact
+  auto_trader and Prefect roots/heads/interpreters, isolated policy checkout
+  identity and approved ref, approved non-table tree hash,
+  table/output/observation/receipt roots, and each
+  runner's distinct environment **reference path** and lower writer-lock
+  namespace. The binding also requires the approved account projection and
+  canonical hash plus install, owner-fence, route-sink, source-owner,
+  no-other-host-owner, and ready receipts. None of these private values belongs
+  in this public repository;
 
 Public mode placeholders accept only `0600` or read-only-group `0640`; the
 rendered binding, state database, and stable lock must each match its declared
@@ -50,11 +60,11 @@ explicit installer retry; it never rebases or stages another market.
 Install/readback order:
 
 1. Verify the exact code, image, unit, and config hashes offline.
-2. Render the six producer `.service.in` templates and the public ingress
-   config/service template into an installer-owned private stage using exact
-   validated inputs. Verify rendered hashes. Producer `ExecStart` still
-   contains `--dry-run`; the ingress binding remains `DRAFT_NOT_INSTALLED`.
-   Rendering is neither installation nor source arming.
+2. Render the six producer `.service.in` templates, the public ingress
+   config/service template, and `config/b0x_dispatch_binding.json.in` into an
+   installer-owned private stage using exact validated inputs. Verify rendered
+   hashes. Producer `ExecStart` still contains `--dry-run`; both bindings stay
+   draft/off. Rendering is neither installation nor source arming.
 3. If separately authorized, install the staged units disabled and read back
    their exact bytes plus environment **key names only**. Require
    `ingress_enabled=false`, `dispatch_enabled=false`, and
@@ -64,15 +74,18 @@ Install/readback order:
 4. Capture the real MCP `tools/list`; it must be exactly the seven task-191
    shadow functions and pass the deny matrix.
 5. Only after separate approval, collect three distinct full KST shadow days.
-6. Freeze/verify; wait for the current legacy slot; record every queued,
-   failed, held, and unconsumed event. Stop here while the approved
-   queued-cycle business-dispatch entry point remains unresolved.
-7. Only after that entry point and all private binding/readbacks are separately
-   approved: keep the new source off and prove no emit is in progress; capture
-   the backlog and fixed activation floor/time/epoch/head/receipts; prove the
-   route is a uniquely owned sink; disable and read back all six legacy Prefect
-   sources; then enable ingress/dispatch and finally the new source. Never
-   enable both source owners, and never convert an existing Mac lane to sink.
+6. Validate the fixed dispatch registry and its private binding/readbacks,
+   including US `ready=false` until task #164 supplies its approved output,
+   environment, writer-fence, and no-incomplete-attempt inputs. Freeze/verify;
+   wait for the current legacy slot; record every queued, failed, held, and
+   unconsumed event. Code existence is not operational readiness.
+7. Only after all private ingress/dispatch binding and owner readbacks are
+   separately approved: keep the new source off and prove no emit is in
+   progress; capture the backlog and fixed activation floor/time/epoch/head/
+   receipts; prove the route is a uniquely owned sink; disable and read back
+   all six legacy Prefect sources; then enable ingress/dispatch and finally the
+   new source. Never enable both source owners, and never convert an existing
+   Mac lane to sink.
 8. Prove the exact manifest/symlink source is stable, write the checkpoint,
    prove successor consumption, and only then shut down the Mac owner.
 
@@ -104,7 +117,7 @@ supplied live/shadow snapshots, requires exact live/shadow raw values and the
 fixed exclusion vocabulary, and creates a new confined artifact. Every handler
 returns `dry_run=true`, `orders=[]`, and `actions=[]`.
 
-## Implemented HTTP ingress and unresolved business dispatch
+## Implemented HTTP ingress and fixed default-off business dispatch
 
 The public production entry is
 `b0x-lane-event-consumer.service.in` ->
@@ -145,14 +158,54 @@ lease. Installer readback must separately prove one host owner. Row receipt,
 digest/metadata, business disposition, and scan progress commit together in
 SQLite, while composite `(lane,event_id)` remains the business identity.
 
-No approved production runner currently consumes `queued_cycle` rows. The
-repository search found persistence/readback and test helpers only, not a
-fixed strategy runner entry point. Therefore
-`production_consumer_path_readiness()` reports HTTP ingress wired but overall
-readiness false, dispatch wired false, and source enablement prohibited. A
-queued row is not dispatch started or terminal evidence. This exact
-business-dispatch gap is `NEEDS_INPUT`; this PR does not invent a generic argv,
-prompt, model, or strategy dispatcher and does not install or activate ingress.
+The fixed production entry is `python -m scripts.b0x_lane_event_dispatcher
+--binding <absolute-path> --state-db <absolute-path> --once`; its read-only
+counterpart adds `--readback --lane <lane> --event-id <event_id>`. It selects
+only KR `scripts.run_b0x_kr_kiwoom_cycle`, US `scripts.run_b0x_us_cycle`, crypto
+`scripts.run_b0x_cycle --lane shadow`, the Prefect policy-table handler, or the
+no-process harvest disposition. Event text supplies none of argv, paths,
+environment, account, owner, or policy inputs. Each cycle child receives a
+minimal non-credential process environment plus only its binding-selected
+`ENV_FILE` path; the dispatcher never opens that file or persists its contents.
+US never inherits another runner's reference or ambient credential key.
+
+The dispatch claim is the upper event-start authority. The existing per-lane
+writer lock is the lower defence, acquired in that order against the identical
+output namespace. Busy or unknown lower-lock state starts zero cycles. SQLite,
+the stable host-local `flock`, and an installer receipt do not claim a
+distributed lease. The fixed policy path performs dirty check, fetch, detached
+approved-ref checkout, non-table tree hash comparison, pointer/readlink-to-
+same-ref-blob comparison, and table hash capture. Policy preflight, post-build,
+and post-commit heads are separate
+attempt evidence rather than a permanent install-time policy HEAD pin. Crypto
+non-fast-forward is STOP/ESC with artifacts preserved, `push_reapplications=0`,
+and no automatic cycle restart.
+
+Claim time remains the exact source KST minute; hub receipt and ingress
+processing retain their separate exact-minute gates. Process start and cycle
+observation timestamps are recorded separately and do not create a grace or
+catch-up window. A committed claim with an ambiguous start/outcome becomes
+`unknown_preserved` and is never automatically retried.
+
+Typed readback exposes the durable queue disposition separately from claim,
+per-stage process evidence, cycle artifact observation, and verified terminal
+type. It binds `(lane,event_id)`, attempt, binding/source/runner, payload hash,
+owner epoch, executable/argv hash/cwd/installed head/PID/start identity and
+process timestamps, plus artifact path/hash/bytes/table hash/cycle id when
+present. It rejects an artifact replaced by a symlink even when its target has
+identical bytes. Raw stdout, stderr, environment values, and headers are never
+stored. `success_observed`, `zero_order_observed`, `failed_preserved`, and
+`unknown_preserved` remain distinct; a pre-table zero-order may omit the table
+hash only when its real record has a validated reason and explicit no-action
+evidence.
+
+`production_consumer_path_readiness()` therefore reports both ingress and
+fixed dispatch code wired, while overall readiness and source enablement remain
+false: the private install/account/owner receipts and all three gates are still
+unprovided/default-off. The future Prefect five-second deployment contract is
+paused with an inactive schedule and zero retries; it is not registered here.
+A queued row is not a process start, an observed cycle is not by itself a
+verified terminal, and no code merge is installation or activation.
 
 Broader KR/crypto/US resident redesign is `NEEDS_INPUT`: task 191 adds only the
 B0X source/consumer and seven-capability observation profile. Existing task

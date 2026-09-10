@@ -321,14 +321,14 @@ def test_relative_state_database_fails_before_storage_write() -> None:
         )
 
 
-def test_http_ingress_is_wired_but_missing_dispatch_keeps_source_fail_closed() -> None:
+def test_http_ingress_and_fixed_dispatch_code_keep_activation_fail_closed() -> None:
     readiness = production_consumer_path_readiness()
     assert readiness.ready is False
     assert readiness.ingress_wired is True
-    assert readiness.dispatch_wired is False
+    assert readiness.dispatch_wired is True
     assert readiness.source_may_be_enabled is False
-    assert "no approved B0X queued-cycle runner" in readiness.blocker
-    assert "not dispatch completion" in readiness.blocker
+    assert "private binding/install/account/owner receipts" in readiness.blocker
+    assert "default-off" in readiness.blocker
 
 
 def test_one_shot_cli_is_default_off_and_does_not_read_artifact(

@@ -220,6 +220,7 @@ tests/services/test_alpaca_paper_source_allocation.py
 tests/services/test_alpaca_paper_submit_coordinator.py
 tests/services/test_analyst_consensus_snapshot_builder.py
 tests/services/test_b0x_lane_consumer.py
+tests/services/test_b0x_lane_event_dispatcher.py
 tests/services/test_b0x_lane_event_poller.py
 tests/services/test_candidate_screening_service.py
 tests/services/test_deployment_cap.py

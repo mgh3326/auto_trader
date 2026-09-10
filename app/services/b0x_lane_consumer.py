@@ -81,10 +81,10 @@ class B0XConsumerContractError(ValueError):
 
 
 PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED = True
-PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED = False
+PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED = True
 PRODUCTION_BUSINESS_DISPATCH_BLOCKER = (
-    "no approved B0X queued-cycle runner consumes the durable queue; ingress is "
-    "not dispatch completion"
+    "fixed dispatch code exists, but the private binding/install/account/owner "
+    "receipts and all three activation gates remain unprovided and default-off"
 )
 
 
@@ -101,10 +101,7 @@ def production_consumer_path_readiness() -> ConsumerPathReadiness:
     """Describe code-path readiness without claiming install or dispatch."""
 
     return ConsumerPathReadiness(
-        ready=(
-            PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED
-            and PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED
-        ),
+        ready=False,
         ingress_wired=PRODUCTION_DELIVERY_INGRESS_IMPLEMENTED,
         dispatch_wired=PRODUCTION_BUSINESS_DISPATCH_IMPLEMENTED,
         source_may_be_enabled=False,

@@ -1566,6 +1566,15 @@ def ingress_readback(
             "cycle_created": False,
             "dispatch_queued": False,
             "dispatch_started": False,
+            "dispatch_attempt_id": None,
+            "dispatch_claimed_at": None,
+            "dispatch_process_started_at": None,
+            "cycle_observed": False,
+            "cycle_observed_at": None,
+            "dispatch_terminal_type": None,
+            "dispatch_terminal_verified": False,
+            "dispatch_cycle_starts": 0,
+            "dispatch_push_reapplications": 0,
             "terminal_evidence_present": False,
         }
     _secure_runtime_file(
@@ -1593,6 +1602,20 @@ def ingress_readback(
             "FROM b0x_lane_event WHERE lane = ? AND event_id = ?",
             (lane, event_id),
         ).fetchone()
+        dispatch_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='b0x_dispatch_attempt'"
+        ).fetchone()
+        dispatch = (
+            connection.execute(
+                "SELECT attempt_id,claimed_at,process_started_at,cycle_observed_at,"
+                "terminal_type,terminal_verified,cycle_starts,push_reapplications "
+                "FROM b0x_dispatch_attempt WHERE lane=? AND event_id=?",
+                (lane, event_id),
+            ).fetchone()
+            if dispatch_table is not None
+            else None
+        )
     finally:
         connection.close()
     disposition = business[0] if business is not None else None
@@ -1627,9 +1650,31 @@ def ingress_readback(
         ],
         "business_disposition": disposition,
         "cycle_created": cycle_created,
-        "dispatch_queued": cycle_created and disposition == "queued_cycle",
-        "dispatch_started": False,
-        "terminal_evidence_present": terminal is not None,
+        "dispatch_queued": cycle_created
+        and disposition
+        in {
+            "queued_cycle",
+            "dispatch_claimed",
+            "success_observed",
+            "zero_order_observed",
+            "failed_preserved",
+            "unknown_preserved",
+        },
+        "dispatch_attempt_id": None if dispatch is None else dispatch[0],
+        "dispatch_claimed_at": None if dispatch is None else dispatch[1],
+        "dispatch_started": dispatch is not None and dispatch[2] is not None,
+        "dispatch_process_started_at": None if dispatch is None else dispatch[2],
+        "cycle_observed": dispatch is not None and dispatch[3] is not None,
+        "cycle_observed_at": None if dispatch is None else dispatch[3],
+        "dispatch_terminal_type": None if dispatch is None else dispatch[4],
+        "dispatch_terminal_verified": bool(dispatch[5])
+        if dispatch is not None
+        else False,
+        "dispatch_cycle_starts": int(dispatch[6]) if dispatch is not None else 0,
+        "dispatch_push_reapplications": int(dispatch[7]) if dispatch is not None else 0,
+        "terminal_evidence_present": (
+            bool(dispatch[5]) if dispatch is not None else terminal is not None
+        ),
         "terminal_evidence_sha256": (
             hashlib.sha256(str(terminal).encode()).hexdigest()
             if terminal is not None
