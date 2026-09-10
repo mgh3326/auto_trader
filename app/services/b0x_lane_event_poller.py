@@ -55,17 +55,38 @@ _ROW_KEYS = frozenset(
     {
         "id",
         "kind",
+        "job_id",
+        "epoch",
         "owner_lane",
+        "machine",
+        "pane_id",
+        "report_path",
+        "report_last_line",
+        "question",
+        "pr",
+        "head",
+        "reason",
         "event_id",
         "text",
-        "epoch",
         "event_time",
         "received_at",
         "delivered_at",
         "delivered_to",
+        "attempts",
     }
 )
 _ROW_KEYS_WITH_TRUNCATED = _ROW_KEYS | {"truncated"}
+_UNUSED_RELAY_EVENT_STRING_KEYS = (
+    "job_id",
+    "machine",
+    "pane_id",
+    "report_path",
+    "report_last_line",
+    "question",
+    "pr",
+    "head",
+    "reason",
+)
 _TOP_KEYS = frozenset(
     {
         "schema",
@@ -1088,7 +1109,7 @@ def _normalized_row(
         common["truncated_value"] = row["truncated"]
         if row["truncated"] is True:
             return rejected("truncated_true")
-    if delivery_id is None:
+    if delivery_id is None or delivery_id > 2**63 - 1:
         return rejected("delivery_id_invalid")
     if delivery_id <= cursor or (
         previous_id is not None and delivery_id <= previous_id
@@ -1100,11 +1121,21 @@ def _normalized_row(
         return rejected("owner_lane_mismatch")
     if event_id is None:
         return rejected("event_id_invalid")
-    if type(row["epoch"]) is not int or row["epoch"] < 0:
+    if type(row["epoch"]) is not int or row["epoch"] < 0 or row["epoch"] > 2**63 - 1:
         return rejected("epoch_invalid")
     if row["epoch"] != binding.activation.source_binding_epoch:
         return rejected("source_binding_epoch_mismatch")
     common["epoch"] = row["epoch"]
+    for key in _UNUSED_RELAY_EVENT_STRING_KEYS:
+        value = row[key]
+        if (
+            not isinstance(value, str)
+            or len(value.encode("utf-8", errors="replace")) > binding.http.max_row_bytes
+        ):
+            return rejected(f"{key}_invalid")
+    attempts = row["attempts"]
+    if type(attempts) is not int or attempts < 0 or attempts > 2**63 - 1:
+        return rejected("attempts_invalid")
     try:
         event_time = _parse_timestamp(row["event_time"], "event_time_invalid")
         hub_received = _parse_timestamp(row["received_at"], "hub_received_at_invalid")
@@ -1129,7 +1160,9 @@ def _normalized_row(
     if delivered_to is not None and not isinstance(delivered_to, str):
         return rejected("delivered_to_invalid")
     common["delivered_to"] = delivered_to
-    if delivered_to is not None and delivered_to != binding.route_readback.sink_record:
+    if delivered_to not in (None, "") and (
+        delivered_to != binding.route_readback.sink_record
+    ):
         return rejected("route_mismatch", esc=True)
     if text_bytes > binding.http.max_text_bytes or not isinstance(row["text"], str):
         return rejected("text_invalid_or_oversize")

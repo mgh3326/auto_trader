@@ -41,6 +41,30 @@ ENV = {
     "FIXTURE_HANDOFFKEEP_KEY_TWO": "synthetic-sentinel-beta",
 }
 ROOT = Path(__file__).resolve().parents[2]
+HANDOFFKEEP_V7_RELAY_EVENT_FIELDS = frozenset(
+    {
+        "id",
+        "kind",
+        "job_id",
+        "epoch",
+        "owner_lane",
+        "machine",
+        "pane_id",
+        "report_path",
+        "report_last_line",
+        "question",
+        "pr",
+        "head",
+        "reason",
+        "event_id",
+        "text",
+        "event_time",
+        "received_at",
+        "delivered_at",
+        "delivered_to",
+        "attempts",
+    }
+)
 
 
 def _event_text(
@@ -86,20 +110,31 @@ def _row(
     *,
     received_at: str = "2026-09-10T09:05:10+09:00",
     delivered_at: str | None = None,
-    delivered_to: str | None = None,
+    delivered_to: str | None = "",
     text: str | None = None,
 ) -> dict[str, object]:
+    # Structurally mirrors handoffkeep store.RelayEvent at the pinned v7 source.
     return {
         "id": delivery_id,
         "kind": "lane.event",
+        "job_id": "",
+        "epoch": 7,
         "owner_lane": "fixture-ingress-lane",
+        "machine": "fixture-source-machine",
+        "pane_id": "",
+        "report_path": "",
+        "report_last_line": "",
+        "question": "",
+        "pr": "",
+        "head": "",
+        "reason": "",
         "event_id": event_id,
         "text": text if text is not None else _event_text(event_id),
-        "epoch": 7,
         "event_time": received_at,
         "received_at": received_at,
         "delivered_at": delivered_at,
         "delivered_to": delivered_to,
+        "attempts": 0,
     }
 
 
@@ -230,6 +265,9 @@ def test_real_cli_get_path_consumes_two_rows_once_and_readback_is_durable(
     payload = _binding_payload(tmp_path)
     binding, state_db = _write_binding(tmp_path, payload)
     kr = _row(4)
+    assert set(kr) == HANDOFFKEEP_V7_RELAY_EVENT_FIELDS
+    assert kr["delivered_at"] is None
+    assert kr["delivered_to"] == ""
     first_transport, first_requests = _transport([kr])
     rc, first = _run(
         capsys,
@@ -342,12 +380,79 @@ def test_real_cli_get_path_consumes_two_rows_once_and_readback_is_durable(
     terminal = json.loads(capsys.readouterr().out)
     assert terminal_rc == 0
     assert terminal["ingress_observation_count"] == 2
+    assert {row["delivered_to"] for row in terminal["ingress"]} == {""}
     assert terminal["dispatch_started"] is False
     assert terminal["terminal_evidence_present"] is True
     assert (
         terminal["terminal_evidence_sha256"]
         == hashlib.sha256(b"fixture-terminal-evidence").hexdigest()
     )
+
+
+def test_real_cli_accepts_exact_twenty_field_row_and_rejects_shape_mutants(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    binding, state_db = _write_binding(tmp_path, _binding_payload(tmp_path))
+    real_row = _row(4)
+    missing = _row(5, "kickoff-b0x-nudge-kr-2026-09-11")
+    missing.pop("attempts")
+    extra = _row(6, "kickoff-b0x-nudge-kr-2026-09-12")
+    extra["unexpected"] = "fixture-unused"
+    invalid_metadata = _row(7, "kickoff-b0x-nudge-kr-2026-09-13")
+    invalid_metadata["job_id"] = None
+    invalid_attempts = _row(8, "kickoff-b0x-nudge-kr-2026-09-14")
+    invalid_attempts["attempts"] = -1
+
+    transport, requests = _transport(
+        [real_row, missing, extra, invalid_metadata, invalid_attempts]
+    )
+    rc, output = _run(
+        capsys,
+        binding,
+        state_db,
+        transport,
+        now=datetime(2026, 9, 10, 9, 5, 30, tzinfo=KST),
+    )
+
+    assert rc == 0
+    assert [request.method for request in requests] == ["GET"]
+    assert output["business_consumed_count"] == 1
+    assert output["cycle_created_count"] == 1
+    assert [row["business_disposition"] for row in output["rows"]] == [
+        "queued_cycle",
+        "rejected_row_keys_invalid",
+        "rejected_row_keys_invalid",
+        "rejected_job_id_invalid",
+        "rejected_attempts_invalid",
+    ]
+    assert [row["cycle_created"] for row in output["rows"]] == [
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert len(event_rows(state_db)) == 1
+
+    readback_rc = cli.main(
+        [
+            "--binding",
+            str(binding),
+            "--state-db",
+            str(state_db),
+            "--readback",
+            "--lane",
+            "fixture-ingress-lane",
+            "--event-id",
+            str(real_row["event_id"]),
+        ]
+    )
+    readback = json.loads(capsys.readouterr().out)
+    assert readback_rc == 0
+    assert readback["ingress_observed"] is True
+    assert readback["business_disposition"] == "queued_cycle"
+    assert readback["cycle_created"] is True
+    assert readback["ingress"][0]["delivered_to"] == ""
 
 
 def test_transport_is_get_only_and_secrets_never_reach_output_or_source(
@@ -970,6 +1075,7 @@ def test_active_slot_hold_is_never_promoted_after_terminal_release(
     ("delivered_to", "expected", "esc"),
     (
         (None, "queued_cycle", False),
+        ("", "queued_cycle", False),
         ("fixture-sink-record", "queued_cycle", False),
         ("fixture-other-sink", "rejected_route_mismatch", True),
     ),
@@ -1089,12 +1195,10 @@ def test_public_config_unit_timer_are_real_default_off_entries(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = ROOT / "config/b0x_ingress_binding.json.in"
-    service = (ROOT / "ops/ncp/systemd/job-b0x-lane-event-poller.service.in").read_text(
-        encoding="utf-8"
-    )
-    timer = (ROOT / "ops/ncp/systemd/job-b0x-lane-event-poller.timer").read_text(
-        encoding="utf-8"
-    )
+    service_path = ROOT / "ops/ncp/systemd/b0x-lane-event-consumer.service.in"
+    timer_path = ROOT / "ops/ncp/systemd/b0x-lane-event-consumer.timer"
+    service = service_path.read_text(encoding="utf-8")
+    timer = timer_path.read_text(encoding="utf-8")
     payload = json.loads(config.read_text(encoding="utf-8"))
     assert payload["status"] == "DRAFT_NOT_INSTALLED"
     assert payload["gates"] == {
@@ -1117,7 +1221,14 @@ def test_public_config_unit_timer_are_real_default_off_entries(
     assert "OnUnitInactiveSec=5s" in timer
     assert "Persistent=false" in timer
     assert "AccuracySec=1s" in timer
-    assert "Unit=job-b0x-lane-event-poller.service" in timer
+    assert service_path.name.removesuffix(".in") == "b0x-lane-event-consumer.service"
+    assert timer_path.name == "b0x-lane-event-consumer.timer"
+    timer_target = next(
+        line.removeprefix("Unit=")
+        for line in timer.splitlines()
+        if line.startswith("Unit=")
+    )
+    assert timer_target == service_path.name.removesuffix(".in")
 
     rc = cli.main(
         [

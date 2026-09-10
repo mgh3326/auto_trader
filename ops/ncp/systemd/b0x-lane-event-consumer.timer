@@ -7,7 +7,7 @@ OnUnitInactiveSec=5s
 Persistent=false
 AccuracySec=1s
 RandomizedDelaySec=0
-Unit=job-b0x-lane-event-poller.service
+Unit=b0x-lane-event-consumer.service
 
 [Install]
 WantedBy=timers.target

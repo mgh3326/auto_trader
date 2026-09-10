@@ -107,7 +107,7 @@ returns `dry_run=true`, `orders=[]`, and `actions=[]`.
 ## Implemented HTTP ingress and unresolved business dispatch
 
 The public production entry is
-`job-b0x-lane-event-poller.service.in` ->
+`b0x-lane-event-consumer.service.in` ->
 `python -m scripts.b0x_lane_event_poller --binding <absolute-config>
 --state-db <absolute-db> --once` -> an HTTP GET adapter -> the same-transaction
 durable consumer. The only remote method/path is:
@@ -116,12 +116,22 @@ durable consumer. The only remote method/path is:
 GET /v1/relay/events?lane=<binding.lane>&kind=lane.event&undelivered=false&after_id=<sweep-cursor>&limit=200
 ```
 
-The poller maps HTTP `id` to `delivery_id` and `kind` to consumer `type`, treats
-the row's `text` strictly as closed JSON data, and never updates the hub's
-delivery ledger. It records the raw UTF-8 byte count/hash and hub metadata but
-not raw text. `delivered_at=null` is valid; a non-null `delivered_to` must match
-the attested sink record. HTTP/ingress/business/queue/start/terminal states are
-separate in JSON and readback.
+The poller accepts exactly the authoritative 20-field handoffkeep
+`store.RelayEvent` JSON shape, with the separately approved optional
+`truncated=false` marker. It maps HTTP `id` to `delivery_id` and `kind` to
+consumer `type`, treats the row's `text` strictly as closed JSON data, and
+never updates the hub's delivery ledger. It records the raw UTF-8 byte
+count/hash and hub metadata but not raw text. `delivered_at=null` and the Go
+zero-value `delivered_to=""` sentinel are valid undelivered evidence; a
+nonempty `delivered_to` must match the attested sink record. HTTP/ingress/
+business/queue/start/terminal states are separate in JSON and readback.
+
+The canonical future installed basenames are
+`b0x-lane-event-consumer.service` and `b0x-lane-event-consumer.timer`. The
+public timer is named accordingly and its `Unit=` target is exactly
+`b0x-lane-event-consumer.service`. Installer readback must prove both basenames
+and timer-target/service-basename equality; this code does not install or start
+either unit.
 
 The older `scripts.b0x_lane_event_consumer` direct event-file entry remains
 default-off for compatibility but is write-blocked even if its legacy gate is
