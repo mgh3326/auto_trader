@@ -879,7 +879,7 @@ def _source_blocker(
         )
         if not module_path.is_file() or module_path.is_symlink():
             return f"runner_{runner_id}_handler_absent"
-    if runner_id.startswith("policy_table_build_") or runner_id == "crypto_shadow":
+    if runner_id in _CYCLE_RUNNERS or runner_id.startswith("policy_table_build_"):
         handler = (
             binding.runtime.prefect_root / "src/robin_automation/b0x_policy_dispatch.py"
         )
@@ -1402,7 +1402,7 @@ def _validate_policy_receipt(
     source: str,
     attempt_id: str,
     phase: str,
-) -> tuple[str | None, str | None, str | None, str | None, int]:
+) -> tuple[str, str, str | None, str | None, int]:
     required = {
         "version",
         "source",
@@ -1445,8 +1445,10 @@ def _validate_policy_receipt(
         raise B0XDispatchError("policy_non_fast_forward_state_invalid")
     if receipt.get("cycle_starts") not in {0, 1}:
         raise B0XDispatchError("policy_cycle_start_count_invalid")
-    head_fields = ("preflight_head", "post_build_head", "post_commit_head")
-    for field in head_fields:
+    preflight_head = receipt.get("preflight_head")
+    if not isinstance(preflight_head, str) or _HEX40.fullmatch(preflight_head) is None:
+        raise B0XDispatchError("policy_preflight_head_invalid")
+    for field in ("post_build_head", "post_commit_head"):
         value = receipt.get(field)
         if value is not None and (
             not isinstance(value, str) or _HEX40.fullmatch(value) is None
@@ -1471,7 +1473,7 @@ def _validate_policy_receipt(
     ):
         raise B0XDispatchError("policy_stage_phase_evidence_mismatch")
     return (
-        str(receipt["preflight_head"]),
+        preflight_head,
         str(table_hash),
         None if post_build is None else str(post_build),
         None if post_commit is None else str(post_commit),

@@ -326,7 +326,7 @@ class FakeExecutor:
         fixture: dict[str, Any],
         *,
         mode: str = "success",
-        preflight_head: str = HEAD_A,
+        preflight_head: object = HEAD_A,
     ) -> None:
         self.fixture = fixture
         self.mode = mode
@@ -523,6 +523,23 @@ def test_fixed_runner_registry(
         "--repeat",
         "--derivation-only",
     }.isdisjoint(cycle[0].argv)
+    if source == "b0x-nudge-crypto":
+        runbook = " ".join(
+            Path("docs/runbooks/b0x-portability-install.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        assert (
+            "python -m scripts.run_b0x_cycle --lane shadow --derivation-only --repeat 2"
+        ) in runbook
+        assert "`writes=0` and `venue_contact=0`" in runbook
+        assert "neither authorizes nor counts as a production cycle restart" in runbook
+        assert "approved operator YAML and the active brief together" in runbook
+        assert "neither source alone is sufficient" in runbook
+        assert (
+            "Co-listing `kis_mock` never authorizes substitution or fallback for the KR "
+            "`kiwoom_mock` assignment"
+        ) in runbook
 
 
 def test_owned_child_binds_only_exact_environment_reference_path(
@@ -929,6 +946,76 @@ def test_wrong_state_owner_receipt_and_absent_handler_start_zero(
     assert absent_executor.calls == []
 
 
+@pytest.mark.parametrize(
+    ("source", "now", "handler_shape"),
+    [
+        (
+            "b0x-nudge-kr",
+            datetime(2026, 9, 10, 9, 5, 15, tzinfo=KST),
+            "missing",
+        ),
+        (
+            "b0x-nudge-kr",
+            datetime(2026, 9, 10, 9, 5, 15, tzinfo=KST),
+            "symlink",
+        ),
+        (
+            "b0x-nudge-us",
+            datetime(2026, 9, 10, 22, 35, 15, tzinfo=KST),
+            "missing",
+        ),
+        (
+            "b0x-nudge-us",
+            datetime(2026, 9, 10, 22, 35, 15, tzinfo=KST),
+            "symlink",
+        ),
+    ],
+)
+def test_cycle_policy_handler_absent_or_symlink_holds_before_claim(
+    dispatch_fixture: dict[str, Any],
+    source: str,
+    now: datetime,
+    handler_shape: str,
+) -> None:
+    dispatch_fixture["now"] = now
+    _rewrite(dispatch_fixture)
+    binding = _load(dispatch_fixture)
+    _queue(dispatch_fixture, source, now)
+    handler = (
+        dispatch_fixture["prefect"] / "src/robin_automation/b0x_policy_dispatch.py"
+    )
+    if handler_shape == "missing":
+        handler.unlink()
+    else:
+        target = handler.with_name("b0x_policy_dispatch.fixture.py")
+        handler.rename(target)
+        handler.symlink_to(target.name)
+    executor = FakeExecutor(dispatch_fixture)
+
+    held = dispatch_once(
+        binding,
+        dispatch_fixture["state"],
+        lambda: now,
+        executor=executor,
+    )
+
+    assert held.status == "held"
+    assert held.reason == "dispatch_held_prefect_policy_handler_absent"
+    assert held.attempt_id is None
+    assert held.claimed_at is None
+    assert held.process_started_at is None
+    assert held.children_started == 0
+    assert held.cycle_starts == 0
+    assert executor.calls == []
+    with sqlite3.connect(dispatch_fixture["state"]) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM b0x_dispatch_attempt"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM b0x_dispatch_process"
+        ).fetchone() == (0,)
+
+
 def test_policy_checkout_account_and_attempt_receipts_fail_closed(
     dispatch_fixture: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -977,6 +1064,43 @@ def test_advanced_policy_head_is_attempt_scoped_and_mismatch_starts_no_cycle(
     assert rejected.terminal_type == "failed_preserved"
     assert rejected.cycle_starts == 0
     assert all(call.kind != "cycle" for call in executor.calls)
+
+
+@pytest.mark.parametrize("preflight_head", [None, "malformed-head"])
+def test_malformed_policy_preflight_head_fails_typed_and_never_observes_success(
+    dispatch_fixture: dict[str, Any], preflight_head: object
+) -> None:
+    event = _queue(dispatch_fixture, "b0x-nudge-kr", dispatch_fixture["now"])
+    executor = FakeExecutor(dispatch_fixture, preflight_head=preflight_head)
+
+    failed = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        lambda: dispatch_fixture["now"],
+        executor=executor,
+        attempt_id_factory=lambda: "malformed-policy-head",
+    )
+    readback = dispatch_readback(
+        _load(dispatch_fixture),
+        lane="fixture-b0x-lane",
+        event_id=str(event["event_id"]),
+    )
+
+    assert failed.terminal_type == "failed_preserved"
+    assert failed.terminal_verified is True
+    assert failed.reason == "policy_preflight_head_invalid"
+    assert failed.policy_preflight_head is None
+    assert failed.cycle_observed_at is None
+    assert failed.cycle_starts == 0
+    assert [stage.kind for stage in executor.calls] == ["policy"]
+    assert readback.terminal_type == "failed_preserved"
+    assert readback.terminal_verified is True
+    assert readback.reason == "policy_preflight_head_invalid"
+    assert readback.queue_disposition == "failed_preserved"
+    assert readback.policy_preflight_head is None
+    assert readback.cycle_observed_at is None
+    assert readback.cycle_starts == 0
+    assert len(readback.processes) == 1
 
 
 def test_upper_claim_precedes_busy_lower_lock_and_starts_zero_cycles(

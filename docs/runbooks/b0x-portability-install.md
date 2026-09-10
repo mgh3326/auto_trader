@@ -37,6 +37,13 @@ Required installer inputs are exact absolute values for:
   no-other-host-owner, and ready receipts. None of these private values belongs
   in this public repository;
 
+The installer-supplied canonical account projection and hash must be derived
+from the approved operator YAML and the active brief together; neither
+source alone is sufficient. Co-listing `kis_mock` never authorizes substitution
+or fallback for the KR `kiwoom_mock` assignment. The input component hashes and
+receipts remain private installer inputs; this public contract contains no
+account values or active-brief content.
+
 Public mode placeholders accept only `0600` or read-only-group `0640`; the
 rendered binding, state database, and stable lock must each match its declared
 owner/group/mode exactly. The code never broadens permissions.
@@ -180,6 +187,18 @@ and post-commit heads are separate
 attempt evidence rather than a permanent install-time policy HEAD pin. Crypto
 non-fast-forward is STOP/ESC with artifacts preserved, `push_reapplications=0`,
 and no automatic cycle restart.
+
+The required pre-cutover offline repeat check uses approved fixture/snapshot
+inputs only:
+
+```text
+python -m scripts.run_b0x_cycle --lane shadow --derivation-only --repeat 2
+```
+
+This is pure shadow derivation verification with `writes=0` and
+`venue_contact=0`. It neither authorizes nor counts as a production cycle
+restart. `--derivation-only` and `--repeat` remain excluded from the production
+dispatcher registry.
 
 Claim time remains the exact source KST minute; hub receipt and ingress
 processing retain their separate exact-minute gates. Process start and cycle
