@@ -338,7 +338,7 @@ class FakeExecutor:
         source = argv[argv.index("--source") + 1]
         attempt_id = argv[argv.index("--attempt-id") + 1]
         phase = argv[argv.index("--phase") + 1]
-        return {
+        receipt: dict[str, object] = {
             "version": "b0x-policy-attempt/v1",
             "source": source,
             "attempt_id": attempt_id,
@@ -367,6 +367,9 @@ class FakeExecutor:
             "push_reapplications": 0,
             "cycle_starts": 1 if phase == "post-cycle" else 0,
         }
+        if self.mode == "malformed_post_cycle_receipt" and phase == "post-cycle":
+            receipt["preflight_head"] = None
+        return receipt
 
     def _cycle(self, stage: StagePlan, started_at: datetime) -> None:
         runner_id = {
@@ -419,7 +422,12 @@ class FakeExecutor:
             record["submitted"] = [{"fixture": True}]
         with (lane_dir / "cycles.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
-        (lane_dir / f"{len(self.calls):02d}-cycle.md").write_text(
+        artifact_at = (
+            started_at - timedelta(days=1)
+            if self.mode == "wrong_event_artifact"
+            else started_at
+        )
+        (lane_dir / f"{artifact_at:%Y%m%dT%H%M%SZ}-cycle.md").write_text(
             "fixture artifact\n", encoding="utf-8"
         )
 
@@ -437,20 +445,32 @@ class FakeExecutor:
         on_started(started)
         if stage.kind == "cycle":
             self._cycle(stage, started_at)
-        non_fast_forward = (
-            self.mode == "non_fast_forward" and stage.stage_id == "policy:post-cycle"
+        post_cycle_failure_reason = {
+            "git_add_failure": "crypto_commit_add_stop_esc",
+            "git_commit_failure": "crypto_commit_commit_stop_esc",
+            "git_push_failure": "crypto_commit_push_failed_stop_esc",
+            "non_fast_forward": "crypto_commit_push_stop_esc",
+        }.get(self.mode)
+        post_cycle_failure = (
+            post_cycle_failure_reason is not None
+            and stage.stage_id == "policy:post-cycle"
         )
         return ProcessResult(
             exit_code=2
-            if non_fast_forward
+            if post_cycle_failure
             else (1 if self.mode == "exit_failure" else 0),
             started=started,
             ended_at=started_at + timedelta(seconds=1),
             stdout=(
                 json.dumps(
-                    {"status": "blocked", "reason": "crypto_commit_push_stop_esc"}
+                    {
+                        "status": "blocked",
+                        "reason": post_cycle_failure_reason,
+                        "non_fast_forward": self.mode == "non_fast_forward",
+                        "push_reapplications": 0,
+                    }
                 )
-                if non_fast_forward
+                if post_cycle_failure
                 else ""
             ),
             timed_out=self.mode == "timeout",
@@ -545,7 +565,7 @@ def test_fixed_runner_registry(
 def test_owned_child_binds_only_exact_environment_reference_path(
     dispatch_fixture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    observed: dict[str, object] = {}
+    observed: list[dict[str, object]] = []
 
     class FakeProcess:
         pid = 4242
@@ -562,8 +582,7 @@ def test_owned_child_binds_only_exact_environment_reference_path(
             raise AssertionError("successful fixture child must not be killed")
 
     def fake_popen(argv: list[str], **kwargs: object) -> FakeProcess:
-        observed["argv"] = argv
-        observed.update(kwargs)
+        observed.append({"argv": argv, **kwargs})
         return FakeProcess()
 
     monkeypatch.setattr(
@@ -576,6 +595,10 @@ def test_owned_child_binds_only_exact_environment_reference_path(
         "SYNTHETIC_CREDENTIAL_SENTINEL=never-log-this\n", encoding="utf-8"
     )
     monkeypatch.setenv("KR_API_KEY_SYNTHETIC", "never-inherit-this")
+    monkeypatch.setenv("UNRELATED_CREDENTIAL_SYNTHETIC", "never-inherit-this-either")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/synthetic/policy-only/ssh-agent.sock")
+    monkeypatch.setenv("HOME", "/synthetic/policy-only/home")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/synthetic/policy-only/xdg")
     stage = StagePlan(
         stage_id="cycle:us_observation",
         kind="cycle",
@@ -586,7 +609,7 @@ def test_owned_child_binds_only_exact_environment_reference_path(
     )
     starts: list[ProcessStart] = []
     result = OwnedChildExecutor()(stage, on_started=starts.append, timeout_seconds=1)
-    child_env = observed["env"]
+    child_env = observed[0]["env"]
     assert isinstance(child_env, dict)
     assert child_env["ENV_FILE"] == str(environment_ref)
     assert (
@@ -594,8 +617,42 @@ def test_owned_child_binds_only_exact_environment_reference_path(
         != dispatch_fixture["raw"]["runners"]["kr_observation"]["environment_ref"]
     )
     assert "KR_API_KEY_SYNTHETIC" not in child_env
+    assert "UNRELATED_CREDENTIAL_SYNTHETIC" not in child_env
+    assert "SSH_AUTH_SOCK" not in child_env
+    assert "HOME" not in child_env
+    assert "XDG_CONFIG_HOME" not in child_env
     assert "never-log-this" not in json.dumps(result.__dict__, default=str)
     assert len(starts) == 1
+
+    policy_stage = StagePlan(
+        stage_id="policy:preflight",
+        kind="policy",
+        argv=(str(Path(sys.executable).resolve()), "-m", "fixture.policy"),
+        cwd=dispatch_fixture["prefect"],
+        installed_head=dispatch_fixture["raw"]["runtime"]["prefect_head"],
+    )
+    OwnedChildExecutor()(policy_stage, on_started=starts.append, timeout_seconds=1)
+    policy_env = observed[1]["env"]
+    assert isinstance(policy_env, dict)
+    assert policy_env["SSH_AUTH_SOCK"] == "/synthetic/policy-only/ssh-agent.sock"
+    assert policy_env["HOME"] == "/synthetic/policy-only/home"
+    assert policy_env["XDG_CONFIG_HOME"] == "/synthetic/policy-only/xdg"
+    assert "ENV_FILE" not in policy_env
+    assert "KR_API_KEY_SYNTHETIC" not in policy_env
+    assert "UNRELATED_CREDENTIAL_SYNTHETIC" not in policy_env
+    runbook = " ".join(
+        Path("docs/runbooks/b0x-portability-install.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert (
+        "Cycle stages never inherit ambient `HOME`, `XDG_CONFIG_HOME`, or "
+        "`SSH_AUTH_SOCK` credential-discovery selectors"
+    ) in runbook
+    assert (
+        "only the fixed policy Git stages may inherit those three selectors" in runbook
+    )
+    assert "values are never copied into the binding, receipt, or logs" in runbook
 
 
 @pytest.mark.parametrize(
@@ -813,6 +870,83 @@ def test_typed_outcomes_and_artifact_validation(
     )
     assert result.terminal_type == terminal
     assert result.terminal_verified is True
+
+
+def test_dispatch_rejects_other_event_artifact_name_in_same_lane(
+    dispatch_fixture: dict[str, Any],
+) -> None:
+    _queue(dispatch_fixture, "b0x-nudge-kr", dispatch_fixture["now"])
+
+    result = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        lambda: dispatch_fixture["now"],
+        executor=FakeExecutor(dispatch_fixture, mode="wrong_event_artifact"),
+        attempt_id_factory=lambda: "wrong-event-artifact",
+    )
+
+    assert result.terminal_type == "failed_preserved"
+    assert result.terminal_verified is True
+    assert result.reason == "cycle_artifact_event_identity_mismatch"
+    assert result.cycle_starts == 1
+    assert result.cycle_observed_at is None
+    assert result.artifact_path is None
+
+
+@pytest.mark.parametrize(
+    ("claim_now", "expect_start"),
+    [
+        (datetime(2026, 9, 10, 9, 6, 0, tzinfo=KST), False),
+        (datetime(2026, 9, 10, 9, 5, 59, tzinfo=KST), True),
+    ],
+)
+def test_claim_clock_is_sampled_after_db_work_and_persisted_as_decision_time(
+    dispatch_fixture: dict[str, Any], claim_now: datetime, expect_start: bool
+) -> None:
+    transaction_now = datetime(2026, 9, 10, 9, 5, 59, tzinfo=KST)
+    dispatch_fixture["now"] = transaction_now
+    _rewrite(dispatch_fixture)
+    _queue(dispatch_fixture, "b0x-nudge-kr", transaction_now)
+    samples = [transaction_now, claim_now]
+    observed_samples: list[datetime] = []
+
+    def sequenced_clock() -> datetime:
+        index = min(len(observed_samples), len(samples) - 1)
+        value = samples[index]
+        observed_samples.append(value)
+        return value
+
+    executor = FakeExecutor(dispatch_fixture)
+    result = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        sequenced_clock,
+        executor=executor,
+        attempt_id_factory=lambda: "claim-clock-attempt",
+    )
+
+    assert observed_samples[:2] == [transaction_now, claim_now]
+    if expect_start:
+        assert result.terminal_type == "success_observed"
+        assert result.claimed_at == claim_now.astimezone(UTC).isoformat()
+        assert result.cycle_starts == 1
+        assert len([stage for stage in executor.calls if stage.kind == "cycle"]) == 1
+        assert result.cycle_observed_at is not None
+        assert (
+            datetime.fromisoformat(result.cycle_observed_at).astimezone(KST).minute == 6
+        )
+    else:
+        assert result.disposition == "dispatch_held_out_of_window"
+        assert result.claimed_at is None
+        assert result.cycle_starts == 0
+        assert executor.calls == []
+        with sqlite3.connect(dispatch_fixture["state"]) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM b0x_dispatch_attempt"
+            ).fetchone() == (0,)
+            assert connection.execute(
+                "SELECT COUNT(*) FROM b0x_dispatch_process"
+            ).fetchone() == (0,)
 
 
 def test_draft_out_of_window_us_unready_and_owner_conflict_start_zero(
@@ -1194,13 +1328,22 @@ def test_policy_only_persists_hash_and_crypto_counts_stay_independent(
     assert crypto.push_reapplications == 0
 
 
-def test_crypto_non_fast_forward_stops_after_one_cycle_without_reapplication(
-    dispatch_fixture: dict[str, Any],
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        ("git_add_failure", "policy_git_add_stop_esc"),
+        ("git_commit_failure", "policy_git_commit_stop_esc"),
+        ("git_push_failure", "policy_git_push_stop_esc"),
+        ("non_fast_forward", "policy_non_fast_forward_stop_esc"),
+    ],
+)
+def test_crypto_post_cycle_git_failure_stops_after_one_cycle_without_reapplication(
+    dispatch_fixture: dict[str, Any], mode: str, reason: str
 ) -> None:
     dispatch_fixture["now"] = datetime(2026, 9, 10, 9, 0, 15, tzinfo=KST)
     _rewrite(dispatch_fixture)
     _queue(dispatch_fixture, "b0x-nudge-crypto", dispatch_fixture["now"])
-    executor = FakeExecutor(dispatch_fixture, mode="non_fast_forward")
+    executor = FakeExecutor(dispatch_fixture, mode=mode)
     result = dispatch_once(
         _load(dispatch_fixture),
         dispatch_fixture["state"],
@@ -1208,9 +1351,24 @@ def test_crypto_non_fast_forward_stops_after_one_cycle_without_reapplication(
         executor=executor,
     )
     assert result.terminal_type == "failed_preserved"
-    assert result.reason == "policy_non_fast_forward_stop_esc"
+    assert result.reason == reason
+    assert (result.reason == "policy_non_fast_forward_stop_esc") is (
+        mode == "non_fast_forward"
+    )
     assert result.cycle_starts == 1
     assert result.push_reapplications == 0
+    runbook = " ".join(
+        Path("docs/runbooks/b0x-portability-install.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert "Only explicit committer evidence of a non-fast-forward push" in runbook
+    assert (
+        "Generic add, commit, and push/auth/network failures retain distinct" in runbook
+    )
+    assert (
+        "Every post-cycle failure preserves the manual-recovery source fence" in runbook
+    )
     assert len([stage for stage in executor.calls if stage.kind == "cycle"]) == 1
     assert (
         dispatch_once(
@@ -1239,6 +1397,49 @@ def test_crypto_non_fast_forward_stops_after_one_cycle_without_reapplication(
         ).status
         == "idle"
     )
+    assert len([stage for stage in executor.calls if stage.kind == "cycle"]) == 1
+
+
+def test_malformed_post_cycle_receipt_preserves_fence_without_retry(
+    dispatch_fixture: dict[str, Any],
+) -> None:
+    dispatch_fixture["now"] = datetime(2026, 9, 10, 9, 0, 15, tzinfo=KST)
+    _rewrite(dispatch_fixture)
+    _queue(dispatch_fixture, "b0x-nudge-crypto", dispatch_fixture["now"])
+    executor = FakeExecutor(dispatch_fixture, mode="malformed_post_cycle_receipt")
+
+    result = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        lambda: dispatch_fixture["now"],
+        executor=executor,
+    )
+
+    assert result.terminal_type == "failed_preserved"
+    assert result.reason == "policy_preflight_head_invalid"
+    assert result.cycle_starts == 1
+    assert result.push_reapplications == 0
+    assert len([stage for stage in executor.calls if stage.kind == "cycle"]) == 1
+    with sqlite3.connect(dispatch_fixture["state"]) as connection:
+        assert connection.execute(
+            "SELECT state FROM b0x_dispatch_active_source "
+            "WHERE source='b0x-nudge-crypto'"
+        ).fetchone() == ("failed_preserved_stop_esc",)
+
+    next_tick = dispatch_fixture["now"] + timedelta(hours=4)
+    dispatch_fixture["now"] = next_tick
+    _queue(dispatch_fixture, "b0x-nudge-crypto", next_tick)
+    calls_before = len(executor.calls)
+    assert (
+        dispatch_once(
+            _load(dispatch_fixture),
+            dispatch_fixture["state"],
+            lambda: next_tick,
+            executor=executor,
+        ).status
+        == "idle"
+    )
+    assert len(executor.calls) == calls_before
     assert len([stage for stage in executor.calls if stage.kind == "cycle"]) == 1
 
 
@@ -1427,6 +1628,169 @@ def test_public_cli_readback_is_typed_mutation_free_and_detects_tamper(
     artifact.write_text("tampered\n", encoding="utf-8")
     assert dispatcher_cli.main(readback_args) == 2
     assert json.loads(capsys.readouterr().out)["reason"] == "readback_artifact_tampered"
+
+
+def test_readback_rejects_valid_same_lane_artifact_from_another_event(
+    dispatch_fixture: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    executor = FakeExecutor(dispatch_fixture)
+    first_now = datetime(2026, 9, 8, 9, 5, 15, tzinfo=KST)
+    dispatch_fixture["now"] = first_now
+    first_event = _queue(dispatch_fixture, "b0x-nudge-kr", first_now)
+    first = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        lambda: first_now,
+        executor=executor,
+        attempt_id_factory=lambda: "first-artifact-attempt",
+    )
+    second_now = datetime(2026, 9, 9, 9, 5, 15, tzinfo=KST)
+    dispatch_fixture["now"] = second_now
+    second_event = _queue(dispatch_fixture, "b0x-nudge-kr", second_now)
+    second = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        lambda: second_now,
+        executor=executor,
+        attempt_id_factory=lambda: "second-artifact-attempt",
+    )
+    assert first.terminal_type == "success_observed"
+    assert second.terminal_type == "success_observed"
+    assert first.artifact_path is not None
+    assert second.artifact_path is not None
+    assert Path(first.artifact_path).parent == Path(second.artifact_path).parent
+    assert first.artifact_path != second.artifact_path
+    assert first.artifact_sha256 == second.artifact_sha256
+
+    with sqlite3.connect(dispatch_fixture["state"]) as connection:
+        connection.execute(
+            "UPDATE b0x_dispatch_attempt SET artifact_path=?,artifact_sha256=?,"
+            "artifact_bytes=? WHERE lane=? AND event_id=?",
+            (
+                second.artifact_path,
+                second.artifact_sha256,
+                second.artifact_bytes,
+                "fixture-b0x-lane",
+                str(first_event["event_id"]),
+            ),
+        )
+
+    with pytest.raises(
+        B0XDispatchError, match="readback_artifact_event_identity_mismatch"
+    ):
+        dispatch_readback(
+            _load(dispatch_fixture),
+            lane="fixture-b0x-lane",
+            event_id=str(first_event["event_id"]),
+        )
+    readback_args = [
+        "--binding",
+        str(dispatch_fixture["binding"]),
+        "--state-db",
+        str(dispatch_fixture["state"]),
+        "--readback",
+        "--lane",
+        "fixture-b0x-lane",
+        "--event-id",
+        str(first_event["event_id"]),
+    ]
+    assert dispatcher_cli.main(readback_args) == 2
+    typed_failure = json.loads(capsys.readouterr().out)
+    assert typed_failure == {
+        "children_started": 0,
+        "cycle_starts": 0,
+        "push_reapplications": 0,
+        "reason": "readback_artifact_event_identity_mismatch",
+        "status": "contract_error",
+        "terminal_verified": False,
+    }
+    assert second_event["event_id"] != first_event["event_id"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("cycle_end_missing", "readback_artifact_cycle_process_end_missing"),
+        ("cycle_exit_missing", "readback_terminal_process_exit_missing"),
+        ("cycle_exit_nonzero", "readback_terminal_process_exit_nonzero"),
+        ("stage_time_overlap", "readback_terminal_process_order_invalid"),
+        ("process_end_before_start", "readback_process_end_predates_start"),
+        ("terminal_before_process_end", "readback_terminal_end_predates_process_end"),
+    ],
+)
+def test_success_readback_requires_completed_ordered_zero_exit_processes(
+    dispatch_fixture: dict[str, Any], mutation: str, reason: str
+) -> None:
+    event = _queue(dispatch_fixture, "b0x-nudge-kr", dispatch_fixture["now"])
+    succeeded = dispatch_once(
+        _load(dispatch_fixture),
+        dispatch_fixture["state"],
+        lambda: dispatch_fixture["now"],
+        executor=FakeExecutor(dispatch_fixture),
+        attempt_id_factory=lambda: "process-evidence-attempt",
+    )
+    assert succeeded.terminal_type == "success_observed"
+    assert succeeded.terminal_verified is True
+
+    with sqlite3.connect(dispatch_fixture["state"]) as connection:
+        if mutation == "cycle_end_missing":
+            connection.execute(
+                "UPDATE b0x_dispatch_process SET ended_at=NULL WHERE stage_index=1"
+            )
+        elif mutation == "cycle_exit_missing":
+            connection.execute(
+                "UPDATE b0x_dispatch_process SET exit_code=NULL WHERE stage_index=1"
+            )
+        elif mutation == "cycle_exit_nonzero":
+            connection.execute(
+                "UPDATE b0x_dispatch_process SET exit_code=7 WHERE stage_index=1"
+            )
+        elif mutation == "stage_time_overlap":
+            previous_end = connection.execute(
+                "SELECT ended_at FROM b0x_dispatch_process WHERE stage_index=0"
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE b0x_dispatch_process SET started_at=? WHERE stage_index=1",
+                (
+                    (
+                        datetime.fromisoformat(str(previous_end))
+                        - timedelta(microseconds=1)
+                    ).isoformat(),
+                ),
+            )
+        elif mutation == "process_end_before_start":
+            process_start = connection.execute(
+                "SELECT started_at FROM b0x_dispatch_process WHERE stage_index=1"
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE b0x_dispatch_process SET ended_at=? WHERE stage_index=1",
+                (
+                    (
+                        datetime.fromisoformat(str(process_start))
+                        - timedelta(microseconds=1)
+                    ).isoformat(),
+                ),
+            )
+        else:
+            process_end = connection.execute(
+                "SELECT ended_at FROM b0x_dispatch_process WHERE stage_index=1"
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE b0x_dispatch_attempt SET ended_at=?",
+                (
+                    (
+                        datetime.fromisoformat(str(process_end))
+                        - timedelta(microseconds=1)
+                    ).isoformat(),
+                ),
+            )
+
+    with pytest.raises(B0XDispatchError, match=reason):
+        dispatch_readback(
+            _load(dispatch_fixture),
+            lane="fixture-b0x-lane",
+            event_id=str(event["event_id"]),
+        )
 
 
 def test_readback_rejects_process_from_different_attempt(

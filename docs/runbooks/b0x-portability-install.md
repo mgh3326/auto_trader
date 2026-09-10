@@ -174,7 +174,13 @@ no-process harvest disposition. Event text supplies none of argv, paths,
 environment, account, owner, or policy inputs. Each cycle child receives a
 minimal non-credential process environment plus only its binding-selected
 `ENV_FILE` path; the dispatcher never opens that file or persists its contents.
-US never inherits another runner's reference or ambient credential key.
+Cycle stages never inherit ambient `HOME`, `XDG_CONFIG_HOME`, or
+`SSH_AUTH_SOCK` credential-discovery selectors. Policy stages are a distinct
+capability: only the fixed policy Git stages may inherit those three selectors
+for the installer-approved existing Git authentication route. Their values are
+never copied into the binding, receipt, or logs, and unrelated credential
+variables remain excluded. US never inherits another runner's reference or
+ambient credential key.
 
 The dispatch claim is the upper event-start authority. The existing per-lane
 writer lock is the lower defence, acquired in that order against the identical
@@ -187,6 +193,13 @@ and post-commit heads are separate
 attempt evidence rather than a permanent install-time policy HEAD pin. Crypto
 non-fast-forward is STOP/ESC with artifacts preserved, `push_reapplications=0`,
 and no automatic cycle restart.
+
+Only explicit committer evidence of a non-fast-forward push may set
+`non_fast_forward=true` or produce `policy_non_fast_forward_stop_esc`. Generic
+add, commit, and push/auth/network failures retain distinct secret-free
+STOP/ESC reasons. Every post-cycle failure preserves the manual-recovery source
+fence with `push_reapplications=0`, no rebuild, no cycle rerun, and no automatic
+retry.
 
 The required pre-cutover offline repeat check uses approved fixture/snapshot
 inputs only:
@@ -201,22 +214,33 @@ restart. `--derivation-only` and `--repeat` remain excluded from the production
 dispatcher registry.
 
 Claim time remains the exact source KST minute; hub receipt and ingress
-processing retain their separate exact-minute gates. Process start and cycle
-observation timestamps are recorded separately and do not create a grace or
-catch-up window. A committed claim with an ambiguous start/outcome becomes
-`unknown_preserved` and is never automatically retried.
+processing retain their separate exact-minute gates. After the stable lock,
+database transaction, row validation, and source-blocker checks, one fresh
+clock sample immediately before the conditional claim drives both eligibility
+and the persisted `claimed_at`. Process start and cycle observation timestamps
+are recorded separately and do not create a grace or catch-up window. A
+committed claim with an ambiguous start/outcome becomes `unknown_preserved` and
+is never automatically retried.
 
 Typed readback exposes the durable queue disposition separately from claim,
 per-stage process evidence, cycle artifact observation, and verified terminal
 type. It binds `(lane,event_id)`, attempt, binding/source/runner, payload hash,
 owner epoch, executable/argv hash/cwd/installed head/PID/start identity and
 process timestamps, plus artifact path/hash/bytes/table hash/cycle id when
-present. It rejects an artifact replaced by a symlink even when its target has
-identical bytes. Raw stdout, stderr, environment values, and headers are never
-stored. `success_observed`, `zero_order_observed`, `failed_preserved`, and
-`unknown_preserved` remain distinct; a pre-table zero-order may omit the table
-hash only when its real record has a validated reason and explicit no-action
-evidence.
+present. A cycle artifact must be a newly created regular file in the exact
+fixed runner-lane directory, with its basename derived from the stored UTC
+cycle-observation timestamp, and that observation must fall within the exact
+completed cycle-process interval for the attempt. Readback rechecks immutable
+bytes/SHA256; broad observation-root containment is insufficient. It rejects
+an artifact replaced by a symlink even when its target has identical bytes.
+This post-claim process/cycle evidence is not another source-minute deadline.
+Raw stdout, stderr, environment values, and headers are never stored.
+`success_observed`, `zero_order_observed`, `failed_preserved`, and
+`unknown_preserved` remain distinct; success/zero-order additionally requires
+the exact ordered stage set, every stage ended at/after its start with exit 0,
+and terminal end at/after the final process end. A pre-table zero-order may
+omit the table hash only when its real record has a validated reason and
+explicit no-action evidence.
 
 `production_consumer_path_readiness()` therefore reports both ingress and
 fixed dispatch code wired, while overall readiness and source enablement remain

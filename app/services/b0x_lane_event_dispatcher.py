@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.services.b0x_lane_consumer import (
-    KST,
     _connect,
     _eligible_at,
     _payload,
@@ -99,21 +98,19 @@ _FORBIDDEN_ARGV = frozenset(
         "--durable-ports-factory",
     }
 )
-_CHILD_ENV_ALLOWLIST = frozenset(
+_NON_CREDENTIAL_CHILD_ENV_ALLOWLIST = frozenset(
     {
-        "HOME",
         "LANG",
         "LC_ALL",
         "LC_CTYPE",
         "PATH",
         "SSL_CERT_DIR",
         "SSL_CERT_FILE",
-        "SSH_AUTH_SOCK",
         "TMPDIR",
         "TZ",
-        "XDG_CONFIG_HOME",
     }
 )
+_POLICY_GIT_AUTH_ENV_ALLOWLIST = frozenset({"HOME", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME"})
 _POLICY_STEPS = (
     "dirty_check",
     "fetch_approved_ref",
@@ -1262,6 +1259,10 @@ def _artifact_snapshot(runner: RunnerBinding, runner_id: str) -> ArtifactSnapsho
     return ArtifactSnapshot(lane_dir, cycle_log, size, names)
 
 
+def _expected_cycle_artifact_path(lane_dir: Path, observed_at: datetime) -> Path:
+    return lane_dir / f"{observed_at.astimezone(UTC):%Y%m%dT%H%M%SZ}-cycle.md"
+
+
 def _validate_cycle_artifact(
     snapshot: ArtifactSnapshot,
     *,
@@ -1310,7 +1311,8 @@ def _validate_cycle_artifact(
         raise B0XDispatchError("cycle_artifact_timestamp_invalid") from exc
     if observed.tzinfo is None or observed.utcoffset() is None:
         raise B0XDispatchError("cycle_artifact_timestamp_invalid")
-    if observed.astimezone(UTC) < process_started_at.astimezone(UTC):
+    observed_utc = observed.astimezone(UTC)
+    if observed_utc < process_started_at.astimezone(UTC):
         raise B0XDispatchError("cycle_artifact_predates_process_start")
     new_paths = [
         path
@@ -1322,6 +1324,8 @@ def _validate_cycle_artifact(
     artifact = new_paths[0]
     if artifact.is_symlink() or artifact.resolve() != artifact:
         raise B0XDispatchError("cycle_artifact_path_invalid")
+    if artifact != _expected_cycle_artifact_path(snapshot.lane_dir, observed_utc):
+        raise B0XDispatchError("cycle_artifact_event_identity_mismatch")
     if artifact.stat().st_mtime_ns < int(
         process_started_at.timestamp() * 1_000_000_000
     ):
@@ -1351,7 +1355,7 @@ def _validate_cycle_artifact(
         byte_count=len(payload),
         cycle_id=cycle_id,
         table_hash=(expected_table_hash if observed_table_hash is not None else None),
-        observed_at=observed.astimezone(UTC).isoformat(),
+        observed_at=observed_utc.isoformat(),
         zero_order_reason=zero_reason if isinstance(zero_reason, str) else None,
     )
 
@@ -1388,10 +1392,26 @@ def _policy_failure_reason(result: ProcessResult, stage: StagePlan) -> str:
             continue
         if isinstance(value, Mapping):
             records.append(value)
-    if len(records) == 1 and records[0].get("reason") == (
-        "crypto_commit_push_stop_esc"
-    ):
-        return "policy_non_fast_forward_stop_esc"
+    if len(records) == 1:
+        record = records[0]
+        reason = record.get("reason")
+        if (
+            record.get("status") == "blocked"
+            and record.get("push_reapplications") == 0
+            and type(record.get("non_fast_forward")) is bool
+        ):
+            if (
+                reason == "crypto_commit_push_stop_esc"
+                and record["non_fast_forward"] is True
+            ):
+                return "policy_non_fast_forward_stop_esc"
+            generic = {
+                "crypto_commit_add_stop_esc": "policy_git_add_stop_esc",
+                "crypto_commit_commit_stop_esc": "policy_git_commit_stop_esc",
+                "crypto_commit_push_failed_stop_esc": "policy_git_push_stop_esc",
+            }
+            if record["non_fast_forward"] is False and reason in generic:
+                return generic[str(reason)]
     return f"{stage.stage_id}_exit_nonzero"
 
 
@@ -1853,9 +1873,12 @@ class OwnedChildExecutor:
         timeout_seconds: float,
     ) -> ProcessResult:
         started_at = datetime.now(UTC)
-        child_env = {
-            key: os.environ[key] for key in _CHILD_ENV_ALLOWLIST if key in os.environ
-        }
+        if stage.kind not in {"cycle", "policy"}:
+            raise B0XDispatchError("child_stage_kind_invalid")
+        allowlist = _NON_CREDENTIAL_CHILD_ENV_ALLOWLIST
+        if stage.kind == "policy":
+            allowlist = allowlist | _POLICY_GIT_AUTH_ENV_ALLOWLIST
+        child_env = {key: os.environ[key] for key in allowlist if key in os.environ}
         if stage.environment_ref is not None:
             # Bind only the reviewed path selector.  The dispatcher never
             # opens the file and never serializes the inherited environment.
@@ -1913,8 +1936,6 @@ def dispatch_once(
 ) -> DispatchReceipt:
     """Claim and dispatch at most one durable event under the fixed registry."""
 
-    now = clock()
-    _received_clock(now)
     if state_db.resolve(strict=False) != binding.runtime.state_db:
         raise B0XDispatchError("runtime_state_db_mismatch")
     selected_executor = executor or OwnedChildExecutor()
@@ -1923,7 +1944,9 @@ def dispatch_once(
         try:
             _ensure_dispatch_schema(connection)
             connection.execute("BEGIN IMMEDIATE")
-            recovered = _recover_incomplete(connection, now=now)
+            transaction_now = clock()
+            _received_clock(transaction_now)
+            recovered = _recover_incomplete(connection, now=transaction_now)
             if recovered is not None:
                 connection.commit()
                 lane, event_id = recovered
@@ -1933,7 +1956,7 @@ def dispatch_once(
             blockers = binding_blockers(binding)
             if blockers:
                 for reason in blockers:
-                    _record_refusal(connection, now=now, reason=reason)
+                    _record_refusal(connection, now=transaction_now, reason=reason)
                 connection.commit()
                 return DispatchReceipt(status="blocked", reason=",".join(blockers))
             row = _next_event(connection, binding.lane)
@@ -1957,7 +1980,7 @@ def dispatch_once(
                     lane=lane,
                     event_id=event_id,
                     disposition="dispatch_rejected_source_payload",
-                    now=now,
+                    now=transaction_now,
                 )
                 connection.commit()
                 return receipt
@@ -1971,18 +1994,19 @@ def dispatch_once(
                     lane=lane,
                     event_id=event_id,
                     disposition=f"dispatch_held_{blocker}",
-                    now=now,
+                    now=transaction_now,
                 )
                 connection.commit()
                 return receipt
-            claim_kst = now.astimezone(KST)
+            claim_now = clock()
+            claim_kst, _ = _received_clock(claim_now)
             if not _eligible_at(validated_body, claim_kst):
                 receipt = _hold_event(
                     connection,
                     lane=lane,
                     event_id=event_id,
                     disposition="dispatch_held_out_of_window",
-                    now=now,
+                    now=claim_now,
                 )
                 connection.commit()
                 return receipt
@@ -1997,7 +2021,7 @@ def dispatch_once(
                 body=validated_body,
                 prior_disposition=prior_disposition,
                 runner_id=runner_id,
-                now=now,
+                now=claim_now,
                 attempt_id=attempt_id,
             )
             connection.commit()
@@ -2059,8 +2083,10 @@ def dispatch_once(
         artifact: ArtifactEvidence | None = None
         cycle_snapshot: ArtifactSnapshot | None = None
         last_end = clock()
+        current_stage_id: str | None = None
         try:
             for index, stage in enumerate(stages):
+                current_stage_id = stage.stage_id
                 if stage.kind == "cycle":
                     cycle_snapshot = _artifact_snapshot(
                         binding.runners[runner_id], runner_id
@@ -2134,9 +2160,7 @@ def dispatch_once(
                             post_commit_head,
                         ),
                         push_reapplications=push_reapplications,
-                        preserve_source_fence=(
-                            failure_reason == "policy_non_fast_forward_stop_esc"
-                        ),
+                        preserve_source_fence=(stage.stage_id == "policy:post-cycle"),
                     )
                 if stage.kind == "policy":
                     phase = stage.stage_id.split(":", 1)[1]
@@ -2175,7 +2199,7 @@ def dispatch_once(
                 consumed_table_hash=table_hash,
                 policy_heads=(policy_preflight_head, post_build_head, post_commit_head),
                 push_reapplications=push_reapplications,
-                preserve_source_fence=(exc.code == "policy_non_fast_forward_stop_esc"),
+                preserve_source_fence=(current_stage_id == "policy:post-cycle"),
             )
         except BaseException:
             # Claim committed before spawn. Any ambiguity after that point is
@@ -2380,6 +2404,42 @@ def dispatch_readback(
             raise B0XDispatchError("readback_artifact_tampered")
         if cycle_observed is None:
             raise B0XDispatchError("readback_cycle_observation_missing")
+        if runner_id not in _CYCLE_RUNNERS:
+            raise B0XDispatchError("readback_artifact_unexpected_for_runner")
+        expected_lane_dir = (
+            binding.runners[runner_id].output_root / RUNNER_LANES[runner_id]
+        )
+        if artifact_path != _expected_cycle_artifact_path(
+            expected_lane_dir, cycle_observed
+        ):
+            raise B0XDispatchError("readback_artifact_event_identity_mismatch")
+        cycle_processes = [
+            process
+            for process in processes
+            if process["stage_id"] == f"cycle:{runner_id}"
+        ]
+        if len(cycle_processes) != 1:
+            raise B0XDispatchError("readback_artifact_attempt_identity_mismatch")
+        cycle_process_started = _readback_time(
+            cycle_processes[0]["started_at"],
+            code="readback_cycle_process_started_at_invalid",
+        )
+        cycle_process_ended_raw = cycle_processes[0]["ended_at"]
+        cycle_process_ended = (
+            None
+            if cycle_process_ended_raw is None
+            else _readback_time(
+                cycle_process_ended_raw,
+                code="readback_cycle_process_ended_at_invalid",
+            )
+        )
+        if cycle_process_ended is None:
+            raise B0XDispatchError("readback_artifact_cycle_process_end_missing")
+        if (
+            cycle_observed < cycle_process_started
+            or cycle_observed > cycle_process_ended
+        ):
+            raise B0XDispatchError("readback_artifact_attempt_identity_mismatch")
     elif any(row[index] is not None for index in (16, 17, 19)):
         raise B0XDispatchError("readback_artifact_metadata_without_path")
     if terminal_type in {"success_observed", "zero_order_observed"}:
@@ -2395,6 +2455,27 @@ def dispatch_readback(
             raise B0XDispatchError("readback_terminal_process_count_mismatch")
         if runner_id in _CYCLE_RUNNERS and artifact_path is None:
             raise B0XDispatchError("readback_terminal_cycle_artifact_missing")
+        previous_end: datetime | None = None
+        for process in processes:
+            stage_started = _readback_time(
+                process["started_at"], code="readback_terminal_process_start_invalid"
+            )
+            if previous_end is not None and stage_started < previous_end:
+                raise B0XDispatchError("readback_terminal_process_order_invalid")
+            if process["ended_at"] is None:
+                raise B0XDispatchError("readback_terminal_process_end_missing")
+            stage_ended = _readback_time(
+                process["ended_at"], code="readback_terminal_process_end_invalid"
+            )
+            if process["exit_code"] is None:
+                raise B0XDispatchError("readback_terminal_process_exit_missing")
+            if process["exit_code"] != 0:
+                raise B0XDispatchError("readback_terminal_process_exit_nonzero")
+            previous_end = stage_ended
+        if terminal_ended is None:
+            raise B0XDispatchError("readback_terminal_end_missing")
+        if previous_end is not None and terminal_ended < previous_end:
+            raise B0XDispatchError("readback_terminal_end_predates_process_end")
     return DispatchReceipt(
         status=_status,
         lane=lane,
