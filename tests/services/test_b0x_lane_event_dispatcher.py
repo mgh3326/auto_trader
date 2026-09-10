@@ -63,7 +63,9 @@ def _repo(path: Path, files: dict[str, str]) -> tuple[Path, str]:
 
 def _policy_repo(tmp_path: Path) -> tuple[Path, str]:
     origin = (tmp_path / "policy-origin.git").resolve()
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True
+    )
     checkout = (tmp_path / "isolated-policy").resolve()
     subprocess.run(["git", "clone", "-q", str(origin), str(checkout)], check=True)
     _git(checkout, "config", "user.name", "Fixture")
