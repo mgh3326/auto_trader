@@ -11,16 +11,32 @@ python -m scripts.lane_event_kickoff \
 
 The accepted slots, their KST timer times, weekday restrictions, and default
 playbooks are the single `scripts.lane_event_kickoff.KICKOFF_SLOTS` mapping.
-An operator may provide a different safe relative `.md` path with `--playbook`.
-The event ID is always `kickoff-<slot>-<KST-date>`. In particular, `us-2235`
+An operator may provide a different safe relative `.md` path for the original
+eleven slots; each B0X source requires its frozen mapped playbook. The original
+event ID remains `kickoff-<slot>-<KST-date>`. In particular, `us-2235`
 uses the KST calendar date, not its UTC date; that agrees with the prior
 Prefect `market_closed_reason` convention.
+
+Six additive B0X sources mirror the legacy Prefect records exactly:
+
+| Source | KST schedule | Disposition |
+| --- | --- | --- |
+| `b0x-table-kr` | 07:45 weekdays | policy-table build, no cycle |
+| `b0x-table-us` | 22:00 weekdays | policy-table build, no cycle |
+| `b0x-nudge-kr` | 09:05 weekdays | cycle kickoff |
+| `b0x-nudge-us` | 22:35 weekdays | cycle kickoff |
+| `b0x-nudge-crypto` | 01/05/09/13/17/21 daily | tick-scoped cycle kickoff |
+| `b0x-harvest` | every hour at :13/:43 | tick-scoped observation only, never a cycle |
+
+Tick-scoped IDs append `-T<HHMM>` to the KST date. An off-schedule tick fails
+closed, and `Persistent=false` forbids implicit catch-up.
 
 ## Environment and outputs
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LANE_EVENT_KICKOFF_ENABLED` | `false` | Only lowercase `true` permits emission. Disabled mode is an exit-0 dry run. |
+| `LANE_EVENT_KICKOFF_B0X_ENABLED` | `false` | Second gate required only for every B0X source. |
 | `LANE_EVENT_EMIT_BIN` | `panewire` | Host `panewire` executable visible inside the unit container. |
 | `LANE_EVENT_EMIT_HOST` | local hostname | Producer host sent to `panewire`. |
 | `LANE_EVENT_EMIT_PANE` | empty | Producer pane. Empty or `-` means no pane, so `--pane` is omitted. |
@@ -29,6 +45,7 @@ Prefect `market_closed_reason` convention.
 | `LANE_EVENT_KICKOFF_LANE_KR` | unset | Admiral-supplied destination for KR slots. |
 | `LANE_EVENT_KICKOFF_LANE_CRYPTO` | unset | Admiral-supplied destination for crypto slots. |
 | `LANE_EVENT_KICKOFF_LANE_US` | unset | Admiral-supplied destination for the US slot. |
+| `LANE_EVENT_KICKOFF_LANE_B0X` | unset | Installer-supplied destination for all B0X sources. |
 
 The pre-existing fill-handoff CLI also understands the five
 `LANE_EVENT_EMIT_*` settings. Its deployment-specific `FILL_HANDOFF_EMIT_BIN`,
@@ -45,10 +62,12 @@ Every invocation prints one sorted JSON line. Typical results are:
 {"date":"2026-09-05","dry_run":false,"duplicate":false,"emitted":false,"enabled":true,"event_id":"kickoff-0905-2026-09-05","lane":"lane-a","playbook":"prompts/kr-open-trade.md","reason":"timeout","slot":"0905"}
 ```
 
-A duplicate is successful: the durable `(lane, event_id)` record already
-exists and the CLI exits 0. All other emitter failures exit 1 with `reason` in
-the JSON. `--dry-run`, a disabled gate, unsafe arguments, and text over 2048
-bytes never start the emitter.
+A duplicate is a successful **transport** result: the durable
+`(lane, event_id)` producer record already exists and the CLI exits 0. JSON
+reports `transport_acknowledged`; `consumer_execution_evidence` remains null.
+Only the consumer's durable disposition proves execution. All other emitter
+failures exit 1 with `reason`. `--dry-run`, either disabled B0X gate, unsafe
+arguments, and text over 2048 bytes never start the emitter.
 
 ## NCP unit boundary
 
@@ -91,14 +110,44 @@ window; its resident session could otherwise execute a past cycle. The units
 do not use `flock` or `at-job.sh` summary JSON. Event-ID idempotency, rather
 than overlapping-run locking, is the duplicate safeguard.
 
+The destination consumer additionally checks a first delivery against the
+exact KST source minute. It durably preserves prior-date, prior-tick, and late
+records as `preserved_unconsumed_out_of_window`; none is caught up later.
+Composite `(lane,event_id)` lookup precedes that eligibility decision, so a
+retransmission after a clock boundary returns the original disposition with no
+additional kickoff.
+
+The six additive B0X services do **not** copy that host layout. Public files are
+`job-kickoff-b0x-<source>.service.in` templates containing only closed render
+tokens plus false source gates. `scripts.b0x.systemd_render` requires an
+installer-owned exact checkout, env-file reference, executable, service user,
+timeout, and private staging root; it read-only attests the real Git root/HEAD
+and rejects relative, missing, wrong-kind, symlinked, unsafe-character,
+incomplete, fake-Git-marker, or already-rendered targets without reading the
+env file. Its receipt records the exact source HEAD and output hash. An
+unrendered template is not a valid unit, and a rendered unit still has
+`B0X_UNIT_TEMPLATE_RENDERED=false`, `LANE_EVENT_KICKOFF_ENABLED=false`, and
+`LANE_EVENT_KICKOFF_B0X_ENABLED=false`, and its `ExecStart` retains an
+unconditional `--dry-run`. Rendering neither installs nor enables it. Removing
+that CLI guard is a separately approved runtime switch whose rollback restores
+`--dry-run`; it is forbidden while the delivery-ingress blocker remains open.
+Exact operational inputs and rendered output hashes belong in the private
+installer handoff and readback, not this repository.
+
 ## Cutover and resident-session discipline
 
-Run Prefect kickoff and NCP kickoff timers on different days. Enabling both
-for a slot creates two sessions that can execute the same work. The admiral's
-one-day parallel plan is: validate resident lanes and disabled timer output,
-pause the relevant Prefect kickoff deployments, enable the NCP timers, and
-observe the next slot. To reverse the change, disable the NCP timers first,
-then unpause Prefect.
+The six legacy Prefect B0X sources and the new source must never both be live.
+Install and read back the new units, lane, consumer state root, and both false
+gates first. Collect three full KST days through a separately armed
+observation-only path while the legacy owner alone remains live. At cutover,
+freeze evidence, wait for the current legacy slot, record queued/unconsumed
+dispositions, and stop while the destination-delivery ingress blocker in
+`b0x-portability-install.md` remains open. Only a separately approved resolution
+may continue with disabling all six legacy sources, verifying them disabled,
+enabling the consumer, then enabling the B0X source and proving one owner plus
+successor consumption. Rollback freezes/disables the new source first, waits
+for its active slot, restores captured route/alias targets, then restores
+legacy.
 
 The retirement checklist is admiral-only: pause then delete the eleven `KR Live
 Session Kickoff` Prefect deployments, and handle its paused `manual-smoke`

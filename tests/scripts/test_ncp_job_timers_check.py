@@ -89,6 +89,21 @@ def test_kickoff_missing_timer_is_red(
     assert check.run_cli(["--skip-imports"]) == 1
 
 
+def test_b0x_public_template_default_off_mutant_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    systemd_dir = _copy_systemd_dir(tmp_path, monkeypatch)
+    service = systemd_dir / "job-kickoff-b0x-nudge-kr.service.in"
+    service.write_text(
+        service.read_text(encoding="utf-8").replace(
+            "Environment=LANE_EVENT_KICKOFF_B0X_ENABLED=false",
+            "Environment=LANE_EVENT_KICKOFF_B0X_ENABLED=true",
+        ),
+        encoding="utf-8",
+    )
+    assert check.run_cli(["--skip-imports"]) == 1
+
+
 def test_kickoff_literal_lane_is_red(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

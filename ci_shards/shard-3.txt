@@ -28,6 +28,7 @@ tests/integration/test_rob279_staged_pipeline_e2e.py
 tests/jobs/test_kis_mock_reconciliation_job.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py
+tests/mcp_server/test_b0x_shadow_replay_tools.py
 tests/mcp_server/test_fill_watch_context_profile.py
 tests/mcp_server/test_kis_live_expired_docs.py
 tests/mcp_server/test_kis_live_reconcile_expiry.py

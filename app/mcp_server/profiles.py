@@ -24,6 +24,8 @@ class McpProfile(StrEnum):
     # ROB-1159 — least-privilege split of KIWOOM: KR namespace only, the whole
     # kiwoom_mock_us_* namespace (4 mutations + 3 reads) physically absent.
     KIWOOM_KR = "kiwoom_kr"
+    # Task 191: exact seven-capability supplied-artifact observation/replay
+    # boundary. It is physically disjoint from live/default registrars.
     SHADOW_REPLAY = "shadow-replay"
     ANALYSIS_READONLY = "analysis_readonly"
     ACCOUNT_READ = "account_read"

@@ -415,12 +415,15 @@ def test_unreadable_pending_blocks_every_symbol_and_is_not_an_empty_tuple() -> N
 # 🔴 No state file may come back.
 # ---------------------------------------------------------------------------
 
-#: The only JSON file any B0-X lane persists: the Upbit shadow lane's virtual
+#: The only JSON file any B0-X lane persists is the Upbit shadow lane's virtual
 #: book, which is *actually written* every cycle (``store_json_state``) and is
 #: the lane's ledger rather than a cap input. ``".json"`` is the constant part
 #: of ``table_source``'s ``f"latest-{market}.json"`` — a read-only input the
-#: table generator owns.
-_ALLOWED_JSON_LITERALS = frozenset({"portfolio.json", ".json"})
+#: table generator owns. The projection is immutable repository configuration;
+#: the separate guard below proves that its production module cannot write it.
+_ALLOWED_JSON_LITERALS = frozenset(
+    {"portfolio.json", ".json", "config/b0x_operator_contract_projection.json"}
+)
 
 #: Persistence helpers may only be called from the two shadow-lane call sites.
 #: Keyed by repo-relative path, never by basename — ``scripts/b0x/cycle.py`` and
@@ -472,6 +475,28 @@ def test_no_lane_state_file_is_reintroduced() -> None:
     assert offenders == [], (
         "a new persisted-state path appeared in the B0-X package — contract "
         f"v1.5 ① forbids one: {offenders}"
+    )
+
+
+def test_operator_projection_remains_read_only_repository_configuration() -> None:
+    path = _REPO_ROOT / "scripts/b0x/portability_contract.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    mutating_calls: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name in {"write_text", "write_bytes", "dump", "unlink", "replace"}:
+            mutating_calls.append(f"{name}:{node.lineno}")
+        if name == "open" and len(node.args) > 1:
+            mode = node.args[1]
+            if isinstance(mode, ast.Constant) and any(
+                flag in str(mode.value) for flag in ("w", "a", "x", "+")
+            ):
+                mutating_calls.append(f"open:{node.lineno}")
+    assert mutating_calls == [], (
+        "the operator projection is immutable input, never B0-X persisted state: "
+        f"{mutating_calls}"
     )
 
 

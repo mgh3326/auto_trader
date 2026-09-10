@@ -26,6 +26,8 @@ from tests.mcp_server._registration_recorder import (
         not in (
             # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
             McpProfile.FILL_WATCH_CONTEXT,
+            # SHADOW_REPLAY exposes only its exact seven observation/replay tools.
+            McpProfile.SHADOW_REPLAY,
         )
     ],
 )

@@ -59,9 +59,14 @@ def test_every_actual_registration_has_only_its_audited_niche_group(
     )
     for name in tagged:
         assert hasattr(recorder.tools[name], "__wrapped__")
-        assert inspect.iscoroutinefunction(recorder.tools[name]), (
-            "current C handlers are async"
-        )
+        if profile is McpProfile.SHADOW_REPLAY:
+            assert not inspect.iscoroutinefunction(recorder.tools[name]), (
+                "the closed-world shadow handlers preserve their sync call shape"
+            )
+        else:
+            assert inspect.iscoroutinefunction(recorder.tools[name]), (
+                "the pre-existing C handlers preserve their async call shape"
+            )
 
 
 @pytest.mark.asyncio
