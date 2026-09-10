@@ -1,0 +1,20 @@
+[Unit]
+Description=auto_trader durable kickoff lane event b0x-harvest
+Wants=network-online.target
+After=network-online.target
+
+# Public, non-operational template. Render only into an installer-owned stage.
+[Service]
+Type=oneshot
+WorkingDirectory=@AUTO_TRADER_WORKTREE@
+Environment=B0X_UNIT_TEMPLATE_RENDERED=false
+Environment=LANE_EVENT_KICKOFF_ENABLED=false
+Environment=LANE_EVENT_KICKOFF_B0X_ENABLED=false
+EnvironmentFile=@B0X_ENV_FILE@
+ExecCondition=/usr/bin/test ${B0X_UNIT_TEMPLATE_RENDERED} = true
+ExecStart=@B0X_PYTHON_EXECUTABLE@ -m scripts.lane_event_kickoff --lane ${LANE_EVENT_KICKOFF_LANE_B0X} --slot b0x-harvest --playbook docs/runbooks/b0x-harvest.md --dry-run
+TimeoutStartSec=@B0X_TIMEOUT_START_SECONDS@
+User=@B0X_SERVICE_USER@
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

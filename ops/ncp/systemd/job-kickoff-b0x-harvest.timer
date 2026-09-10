@@ -1,0 +1,59 @@
+[Unit]
+Description=Run auto_trader kickoff lane event b0x-harvest
+
+[Timer]
+# Persistent=false: a missed kickoff must never be replayed after its window.
+OnCalendar=*-*-* 00:13:00 Asia/Seoul
+OnCalendar=*-*-* 00:43:00 Asia/Seoul
+OnCalendar=*-*-* 01:13:00 Asia/Seoul
+OnCalendar=*-*-* 01:43:00 Asia/Seoul
+OnCalendar=*-*-* 02:13:00 Asia/Seoul
+OnCalendar=*-*-* 02:43:00 Asia/Seoul
+OnCalendar=*-*-* 03:13:00 Asia/Seoul
+OnCalendar=*-*-* 03:43:00 Asia/Seoul
+OnCalendar=*-*-* 04:13:00 Asia/Seoul
+OnCalendar=*-*-* 04:43:00 Asia/Seoul
+OnCalendar=*-*-* 05:13:00 Asia/Seoul
+OnCalendar=*-*-* 05:43:00 Asia/Seoul
+OnCalendar=*-*-* 06:13:00 Asia/Seoul
+OnCalendar=*-*-* 06:43:00 Asia/Seoul
+OnCalendar=*-*-* 07:13:00 Asia/Seoul
+OnCalendar=*-*-* 07:43:00 Asia/Seoul
+OnCalendar=*-*-* 08:13:00 Asia/Seoul
+OnCalendar=*-*-* 08:43:00 Asia/Seoul
+OnCalendar=*-*-* 09:13:00 Asia/Seoul
+OnCalendar=*-*-* 09:43:00 Asia/Seoul
+OnCalendar=*-*-* 10:13:00 Asia/Seoul
+OnCalendar=*-*-* 10:43:00 Asia/Seoul
+OnCalendar=*-*-* 11:13:00 Asia/Seoul
+OnCalendar=*-*-* 11:43:00 Asia/Seoul
+OnCalendar=*-*-* 12:13:00 Asia/Seoul
+OnCalendar=*-*-* 12:43:00 Asia/Seoul
+OnCalendar=*-*-* 13:13:00 Asia/Seoul
+OnCalendar=*-*-* 13:43:00 Asia/Seoul
+OnCalendar=*-*-* 14:13:00 Asia/Seoul
+OnCalendar=*-*-* 14:43:00 Asia/Seoul
+OnCalendar=*-*-* 15:13:00 Asia/Seoul
+OnCalendar=*-*-* 15:43:00 Asia/Seoul
+OnCalendar=*-*-* 16:13:00 Asia/Seoul
+OnCalendar=*-*-* 16:43:00 Asia/Seoul
+OnCalendar=*-*-* 17:13:00 Asia/Seoul
+OnCalendar=*-*-* 17:43:00 Asia/Seoul
+OnCalendar=*-*-* 18:13:00 Asia/Seoul
+OnCalendar=*-*-* 18:43:00 Asia/Seoul
+OnCalendar=*-*-* 19:13:00 Asia/Seoul
+OnCalendar=*-*-* 19:43:00 Asia/Seoul
+OnCalendar=*-*-* 20:13:00 Asia/Seoul
+OnCalendar=*-*-* 20:43:00 Asia/Seoul
+OnCalendar=*-*-* 21:13:00 Asia/Seoul
+OnCalendar=*-*-* 21:43:00 Asia/Seoul
+OnCalendar=*-*-* 22:13:00 Asia/Seoul
+OnCalendar=*-*-* 22:43:00 Asia/Seoul
+OnCalendar=*-*-* 23:13:00 Asia/Seoul
+OnCalendar=*-*-* 23:43:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kickoff-b0x-harvest.service
+
+[Install]
+WantedBy=timers.target

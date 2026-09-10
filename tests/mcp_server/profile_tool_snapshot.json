@@ -843,10 +843,13 @@
       "watch_downside_register_sweep"
     ],
     "shadow-replay": [
-      "get_trading_policy",
-      "investment_report_get_hermes_context",
-      "route_request",
-      "session_bootstrap_pack"
+      "canonical_session_context_read",
+      "deterministic_replay_compare",
+      "emitted_trigger_playbook_read",
+      "identical_input_snapshot_read",
+      "raw_difference_artifact_write",
+      "shadow_report_write",
+      "source_event_observe"
     ],
     "tradingcodex_execution": [
       "buy_ladder_fill_preview",
@@ -2052,10 +2055,13 @@
       "watch_downside_register_sweep"
     ],
     "shadow-replay": [
-      "get_trading_policy",
-      "investment_report_get_hermes_context",
-      "route_request",
-      "session_bootstrap_pack"
+      "canonical_session_context_read",
+      "deterministic_replay_compare",
+      "emitted_trigger_playbook_read",
+      "identical_input_snapshot_read",
+      "raw_difference_artifact_write",
+      "shadow_report_write",
+      "source_event_observe"
     ],
     "tradingcodex_execution": [
       "buy_ladder_fill_preview",
