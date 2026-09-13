@@ -24,6 +24,8 @@ class McpProfile(StrEnum):
     # ROB-1159 — least-privilege split of KIWOOM: KR namespace only, the whole
     # kiwoom_mock_us_* namespace (4 mutations + 3 reads) physically absent.
     KIWOOM_KR = "kiwoom_kr"
+    # Task 191: exact seven-capability supplied-artifact observation/replay
+    # boundary. It is physically disjoint from live/default registrars.
     SHADOW_REPLAY = "shadow-replay"
     ANALYSIS_READONLY = "analysis_readonly"
     ACCOUNT_READ = "account_read"
@@ -35,6 +37,9 @@ class McpProfile(StrEnum):
     # Closed world: exactly the proposal-only allowlist, so the session can
     # create a proposal and cannot reach any broker order tool.
     WATCH_REPRICING = "watch_repricing"
+    # #137 Phase 0 — an isolated, context-only artifact consumer. This is
+    # intentionally not a relaxed proposal/watch profile.
+    FILL_WATCH_CONTEXT = "fill-watch-context"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

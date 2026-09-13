@@ -382,6 +382,8 @@ def check_job(job: Job, *, check_imports: bool) -> None:
 
 
 def _kickoff_lane_env(slot: str) -> str:
+    if slot.startswith("b0x-"):
+        return "LANE_EVENT_KICKOFF_LANE_B0X"
     if slot.startswith("crypto-"):
         return "LANE_EVENT_KICKOFF_LANE_CRYPTO"
     if slot == "us-2235":
@@ -389,9 +391,12 @@ def _kickoff_lane_env(slot: str) -> str:
     return "LANE_EVENT_KICKOFF_LANE_KR"
 
 
-def _kickoff_oncalendar(slot: KickoffSlot) -> str:
+def _kickoff_oncalendars(slot: KickoffSlot) -> tuple[str, ...]:
     weekday = "Mon..Fri " if slot.weekdays_only else ""
-    return f"{weekday}*-*-* {slot.oncalendar}:00 Asia/Seoul"
+    return tuple(
+        f"{weekday}*-*-* {value}:00 Asia/Seoul"
+        for value in (slot.oncalendar, *slot.additional_oncalendars)
+    )
 
 
 def _check_kickoff_timer(slot_name: str, slot: KickoffSlot) -> None:
@@ -399,7 +404,7 @@ def _check_kickoff_timer(slot_name: str, slot: KickoffSlot) -> None:
     if not timer_path.read_text(encoding="utf-8").startswith("[Unit]\n"):
         raise ValueError(f"{timer_path}: must start with a [Unit] section")
     timer = _directives(timer_path)
-    if timer.get("OnCalendar") != [_kickoff_oncalendar(slot)]:
+    if timer.get("OnCalendar") != list(_kickoff_oncalendars(slot)):
         raise ValueError(f"{timer_path}: OnCalendar differs from kickoff slot")
     if timer.get("Persistent") != ["false"]:
         raise ValueError(f"{timer_path}: Persistent must be false to avoid catchup")
@@ -431,6 +436,9 @@ def _environment_assignments(
 
 
 def _check_kickoff_service(slot_name: str, slot: KickoffSlot) -> None:
+    if slot_name.startswith("b0x-"):
+        _check_b0x_kickoff_service_template(slot_name, slot)
+        return
     service_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.service"
     if not service_path.read_text(encoding="utf-8").startswith("[Unit]\n"):
         raise ValueError(f"{service_path}: must start with a [Unit] section")
@@ -488,12 +496,69 @@ def _check_kickoff_service(slot_name: str, slot: KickoffSlot) -> None:
         raise ValueError(f"{service_path}: --lane must use an environment reference")
 
 
+def _check_b0x_kickoff_service_template(slot_name: str, slot: KickoffSlot) -> None:
+    service_path = SYSTEMD_DIR / f"job-kickoff-{slot_name}.service.in"
+    contents = service_path.read_text(encoding="utf-8")
+    if not contents.startswith("[Unit]\n"):
+        raise ValueError(f"{service_path}: must start with a [Unit] section")
+    private_layout = re.compile(
+        r"/(?:root|Users)/|Library.Application.Support|(?:^|/)ncp(?:/|$)"
+    )
+    if private_layout.search(contents):
+        raise ValueError(f"{service_path}: public template exposes a host layout")
+    service = _directives(service_path)
+    expected_env = {
+        "B0X_UNIT_TEMPLATE_RENDERED=false",
+        "LANE_EVENT_KICKOFF_ENABLED=false",
+        "LANE_EVENT_KICKOFF_B0X_ENABLED=false",
+    }
+    actual_env = _environment_assignments(service_path, service)
+    if len(actual_env) != len(expected_env) or set(actual_env) != expected_env:
+        raise ValueError(
+            f"{service_path}: B0X template environment differs from exact set"
+        )
+    if service.get("EnvironmentFile") != ["@B0X_ENV_FILE@"]:
+        raise ValueError(f"{service_path}: B0X template env-file token differs")
+    expected_directives = {
+        "Type": ["oneshot"],
+        "WorkingDirectory": ["@AUTO_TRADER_WORKTREE@"],
+        "ExecCondition": ["/usr/bin/test ${B0X_UNIT_TEMPLATE_RENDERED} = true"],
+        "TimeoutStartSec": ["@B0X_TIMEOUT_START_SECONDS@"],
+        "User": ["@B0X_SERVICE_USER@"],
+        "UMask": ["0077"],
+        "NoNewPrivileges": ["true"],
+        "PrivateTmp": ["true"],
+    }
+    for directive, expected in expected_directives.items():
+        if service.get(directive) != expected:
+            raise ValueError(
+                f"{service_path}: {directive} differs from B0X template contract"
+            )
+    expected_exec = (
+        "@B0X_PYTHON_EXECUTABLE@ -m scripts.lane_event_kickoff "
+        "--lane ${LANE_EVENT_KICKOFF_LANE_B0X} "
+        f"--slot {slot_name} --playbook {slot.playbook} --dry-run"
+    )
+    if service.get("ExecStart") != [expected_exec]:
+        raise ValueError(f"{service_path}: ExecStart differs from B0X template")
+
+
 def check_kickoff_units() -> None:
-    expected_services = {f"job-kickoff-{slot}.service" for slot in KICKOFF_SLOTS}
+    original_slots = {slot for slot in KICKOFF_SLOTS if not slot.startswith("b0x-")}
+    b0x_slots = set(KICKOFF_SLOTS) - original_slots
+    expected_services = {f"job-kickoff-{slot}.service" for slot in original_slots}
+    expected_templates = {f"job-kickoff-{slot}.service.in" for slot in b0x_slots}
     expected_timers = {f"job-kickoff-{slot}.timer" for slot in KICKOFF_SLOTS}
     actual_services = {path.name for path in SYSTEMD_DIR.glob("job-kickoff-*.service")}
+    actual_templates = {
+        path.name for path in SYSTEMD_DIR.glob("job-kickoff-*.service.in")
+    }
     actual_timers = {path.name for path in SYSTEMD_DIR.glob("job-kickoff-*.timer")}
-    if actual_services != expected_services or actual_timers != expected_timers:
+    if (
+        actual_services != expected_services
+        or actual_templates != expected_templates
+        or actual_timers != expected_timers
+    ):
         raise ValueError(
             "kickoff unit inventory is unpaired or contains an unreviewed unit"
         )

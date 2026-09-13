@@ -84,6 +84,8 @@ def test_emits_exact_kickoff_argv_and_json(
         "lane": "lane-a",
         "playbook": "prompts/kr-open-trade.md",
         "slot": "0905",
+        "transport_acknowledged": True,
+        "consumer_execution_evidence": None,
     }
 
 
@@ -288,3 +290,98 @@ def test_kickoff_cli_has_only_the_lane_event_service_dependency() -> None:
     assert app_imports == {"app.services.lane_events"}
     assert "subprocess" not in direct_imports
     assert "app.core.db" not in source_path.read_text(encoding="utf-8")
+
+
+def test_b0x_source_requires_both_default_off_gates(
+    emit_binary: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    argv_path = _configure_emit(monkeypatch, emit_binary, tmp_path)
+    args = [
+        "--lane",
+        "b0x-source",
+        "--slot",
+        "b0x-nudge-kr",
+        "--playbook",
+        "docs/runbooks/b0x-kr-cycle.md",
+        "--date",
+        "2026-09-10",
+    ]
+
+    assert kickoff.main(args, now=NOW) == 0
+    first = _payload(capsys)
+    assert first["enabled"] is False
+    assert first["dry_run"] is True
+    assert not argv_path.exists()
+
+    monkeypatch.setenv("LANE_EVENT_KICKOFF_B0X_ENABLED", "true")
+    assert kickoff.main(args, now=NOW) == 0
+    second = _payload(capsys)
+    assert second["event_id"] == "kickoff-b0x-nudge-kr-2026-09-10"
+    assert second["transport_acknowledged"] is True
+    assert second["consumer_execution_evidence"] is None
+    emitted = json.loads(argv_path.read_text(encoding="utf-8"))
+    assert emitted[1:8] == [
+        "emit",
+        "--kind",
+        "lane.event",
+        "--lane",
+        "b0x-source",
+        "--event-id",
+        "kickoff-b0x-nudge-kr-2026-09-10",
+    ]
+
+
+def test_b0x_harvest_ids_are_tick_scoped_and_never_daily_collapsed() -> None:
+    slot = kickoff.KICKOFF_SLOTS["b0x-harvest"]
+    assert slot.disposition == "observe_only_harvest"
+    assert kickoff.kickoff_event_id("b0x-harvest", "2026-09-10", "0013") == (
+        "kickoff-b0x-harvest-2026-09-10-T0013"
+    )
+    assert kickoff.kickoff_event_id("b0x-harvest", "2026-09-10", "0043") == (
+        "kickoff-b0x-harvest-2026-09-10-T0043"
+    )
+    assert len(kickoff._scheduled_ticks(slot)) == 48
+
+
+def test_b0x_source_model_preserves_original_eleven_exactly() -> None:
+    original = {
+        "crypto-0220": ("02:20", "prompts/crypto-session-trade.md", False),
+        "crypto-0820": ("08:20", "prompts/crypto-session-trade.md", False),
+        "crypto-1420": ("14:20", "prompts/crypto-session-trade.md", False),
+        "crypto-2020": ("20:20", "prompts/crypto-session-trade.md", False),
+        "nxt-prep": ("07:15", "prompts/kr-nxt-prep.md", True),
+        "nxt-open": ("07:55", "prompts/kr-nxt-open.md", True),
+        "0905": ("09:05", "prompts/kr-open-trade.md", True),
+        "1130": ("11:30", "prompts/kr-open-trade.md", True),
+        "1430": ("14:30", "prompts/kr-open-trade.md", True),
+        "nxt-eve": ("15:50", "prompts/kr-open-trade.md", True),
+        "us-2235": ("22:35", "prompts/us-open-trade.md", True),
+    }
+    actual = {
+        name: (slot.oncalendar, slot.playbook, slot.weekdays_only)
+        for name, slot in kickoff.KICKOFF_SLOTS.items()
+        if slot.source == "resident"
+    }
+    assert actual == original
+
+
+def test_b0x_tick_must_be_one_frozen_kst_source_tick() -> None:
+    with pytest.raises(ValueError, match="not scheduled"):
+        kickoff.main(
+            [
+                "--lane",
+                "b0x-source",
+                "--slot",
+                "b0x-nudge-crypto",
+                "--playbook",
+                "docs/runbooks/b0x-crypto-cycle.md",
+                "--date",
+                "2026-09-10",
+                "--tick",
+                "0200",
+            ],
+            now=NOW,
+        )

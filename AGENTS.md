@@ -1,10 +1,22 @@
 # AGENTS.md — 외부 에이전트(Codex 등) 진입점
 
-> **이 파일은 얇은 포인터다. 정본은 `CLAUDE.md`.**
-> 작업을 시작하기 전에 리포지토리 루트의 `CLAUDE.md`를 **전부** 읽어라. 아키텍처, 명령어,
-> 표면별 계약(레저/브로커/MCP), 런북 맵은 모두 거기에 있고, 이 파일과 충돌하면 `CLAUDE.md`가
-> 이긴다. 아래 하드룰은 `CLAUDE.md`에서 추린 요약이며, `CLAUDE.md`를 읽지 못한 경우에도
-> 절대 위반하면 안 되는 최소 집합이다.
+> **이 파일은 얇은 진입점이다. 정본은 `CLAUDE.md`와 아래의 필독 계약 파일이다.**
+> 작업을 시작하기 전에 리포지토리 루트의 `CLAUDE.md`를 **전부** 읽고, 이어서 아래 계약 파일도
+> **전부** 읽어라. 이 파일과 충돌하면 `CLAUDE.md` 및 해당 계약이 이긴다. 아래 하드룰은
+> 어떤 필독 파일도 읽을 수 없는 경우에도 절대 위반하면 안 되는 최소 집합이다.
+
+## 작업 시작 전 필독 계약
+
+먼저 `CLAUDE.md` 전체를 읽고, 이어서 아래 계약 파일 **전부**를 읽어라. 관심 기능 선택 읽기는 허용되지 않는다.
+
+@docs/agent-contracts/mcp-and-analysis-contracts.md
+@docs/agent-contracts/broker-and-ledger-contracts.md
+@docs/agent-contracts/market-data-and-screener-contracts.md
+@docs/agent-contracts/approval-and-shadow-contracts.md
+@docs/agent-contracts/data-model-and-symbol-contracts.md
+@docs/agent-contracts/developer-reference-contracts.md
+
+필독 파일 중 하나라도 없거나 읽을 수 없으면 작업을 중단하라. 찾아보기 표는 탐색 보조일 뿐 필독 면제가 아니다. 문서 속 예시 명령은 실행 승인이나 운영 권한을 부여하지 않는다.
 
 ## 하드룰 — 절대 위반 금지
 

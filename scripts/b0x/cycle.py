@@ -272,6 +272,12 @@ async def run_shadow_cycle(
             labels=labels,
             account_map_path=table_dir,
         )
+        # These zero-valued authority facts are present even when a table or
+        # pre-derivation guard fails.  A zero-order artifact must never rely on
+        # an omitted field being interpreted as proof that no venue/order path
+        # was reached.
+        record["real_orders"] = 0
+        record["live_contact"] = 0
         record["envelope_application"] = SHADOW_ENVELOPE_NOT_APPLIED
         record["touch_rule"] = {
             "id": shadow_lane.TOUCH_RULE_ID,

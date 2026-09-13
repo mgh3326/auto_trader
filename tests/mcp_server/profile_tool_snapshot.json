@@ -309,6 +309,7 @@
       "analyze_stock_batch",
       "buy_ladder_fill_preview",
       "cancel_order",
+      "decision_table_apply",
       "decision_table_validate",
       "discover_buy_candidates_fanout",
       "evaluate_buy_gate_ab_shadow",
@@ -450,6 +451,10 @@
       "update_manual_holdings",
       "update_trade_journal",
       "watch_downside_register_sweep"
+    ],
+    "fill-watch-context": [
+      "fill_watch_context_consume_artifact",
+      "fill_watch_context_outcome_get"
     ],
     "hermes-paper-kis": [
       "analysis_artifact_get",
@@ -838,10 +843,13 @@
       "watch_downside_register_sweep"
     ],
     "shadow-replay": [
-      "get_trading_policy",
-      "investment_report_get_hermes_context",
-      "route_request",
-      "session_bootstrap_pack"
+      "canonical_session_context_read",
+      "deterministic_replay_compare",
+      "emitted_trigger_playbook_read",
+      "identical_input_snapshot_read",
+      "raw_difference_artifact_write",
+      "shadow_report_write",
+      "source_event_observe"
     ],
     "tradingcodex_execution": [
       "buy_ladder_fill_preview",
@@ -1421,6 +1429,7 @@
       "binance_demo_ledger_status",
       "buy_ladder_fill_preview",
       "cancel_order",
+      "decision_table_apply",
       "decision_table_validate",
       "discover_buy_candidates_fanout",
       "evaluate_buy_gate_ab_shadow",
@@ -1600,6 +1609,10 @@
       "us_dual_paper_capability_matrix",
       "us_dual_paper_preview",
       "watch_downside_register_sweep"
+    ],
+    "fill-watch-context": [
+      "fill_watch_context_consume_artifact",
+      "fill_watch_context_outcome_get"
     ],
     "hermes-paper-kis": [
       "analysis_artifact_get",
@@ -2042,10 +2055,13 @@
       "watch_downside_register_sweep"
     ],
     "shadow-replay": [
-      "get_trading_policy",
-      "investment_report_get_hermes_context",
-      "route_request",
-      "session_bootstrap_pack"
+      "canonical_session_context_read",
+      "deterministic_replay_compare",
+      "emitted_trigger_playbook_read",
+      "identical_input_snapshot_read",
+      "raw_difference_artifact_write",
+      "shadow_report_write",
+      "source_event_observe"
     ],
     "tradingcodex_execution": [
       "buy_ladder_fill_preview",

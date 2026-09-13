@@ -15,12 +15,15 @@
 - 출력: `{valid, violations:[{row, rule, expected, actual, severity∈{block,advisory}}], recomputed:{hash, rows:[{scenario_id, price, qty}]}, policy:{version,content_hash}}`. block 1개라도 있으면 `valid=false`.
 - 테스트: 실 결정표 artifact 픽스처(최근 prep artifact 3개 verbatim) + 뮤턴트(price 1tick 어긋남·hash 1바이트·loss guard 위반) 전부 block. 부작용 0 정적 가드(DB write 호출 없음).
 
-## 3. `decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` — 검증된 행을 한 트랜잭션으로 집행
-- 전제: `analysis_artifact_get(artifact_id)`의 표와 `table_hash` 일치 + `decision_table_validate` valid(내부 재호출). 불일치/invalid → fail-closed, 아무것도 안 씀.
-- 동작(행 단위, 순서 보존): `order_proposal_create`(기존 함수 호출, 기존 가드·approval_hash·clientOrderId 규칙 그대로) · `investment_watch_create`(watch 행) · `forecast_save`(forecast 행) · `session_context_append`(1건 요약) · artifact에 `applied:{hash, at, proposal_ids}` 마킹.
-- 멱등: `(artifact_id, table_hash)` 키 — 이미 applied면 no-op + 기존 id 반환(`already_applied=true`). 부분 실패 시 롤백(단일 DB 트랜잭션; proposal_create가 외부 부작용을 갖지 않는 한 — 브로커 전송은 proposal 승인 경로에 남으므로 이 도구는 브로커에 닿지 않는다 = **주문 전송 0**).
-- `dry_run=true` 기본: 생성될 proposal/watch/forecast 미리보기만. `dry_run=false`는 `confirm=true` 필수(기존 mutation 도구 관례).
-- 테스트: 실 artifact 픽스처 → dry_run 미리보기가 실제 apply 결과와 동일 · 멱등 2회 호출 · 중간 실패 롤백 · 브로커 클라이언트 호출 0 정적 가드. allowlist: execution 레인만.
+## 3. `decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` — 검증된 행을 멱등 재개로 집행
+- 전제: `analysis_artifact_get(artifact_id)`의 표와 인자 `table_hash`, payload hash, canonical 재계산 hash가 모두 일치하고 `decision_table_validate` 내부 재호출이 `valid=true`여야 한다. 이 중 하나라도 다르거나 `dry_run=false, confirm!=true`이면 fail-closed이며 아무것도 쓰지 않는다.
+- 동작(행 단위, 순서 보존): **apply v1 writer는** 기존 `order_proposal_create`(기존 가드·approval_hash·clientOrderId 규칙 그대로)와 `investment_watch_create` 두 가지다. `apply_kind=forecast`는 apply 범위 밖이므로 writer를 호출하지 않고 아래의 명시 skip으로 끝난다. forecast 기록은 해당 세션이 직접 `forecast_save`를 호출할 때만 남긴다. `session_context_append`는 행 종류가 아니라 **apply 1회당** 모든 행 처리가 끝난 뒤 남기는 요약 1건이다. 제안 rungs는 v1.1 `{rung,price_min,price_max,qty,tick}`에서 proposal `{rung_index,side,quantity,limit_price,notional}`으로 명시 매핑하며, pinned 가격만 `limit_price`로 쓴다. 직접 브로커 호출은 없고 주문 전송은 기존 승인 경로에만 남는다.
+- 비원자성: 이 coordinator는 단일 트랜잭션이 아니며 proposal/watch writer는 각자 커밋한다. 따라서 부분 적용은 정상 상태이고 같은 artifact ID·hash 재호출로 완료한다. 이미 커밋된 proposal의 Telegram 승인 카드는 이 도구가 롤백하거나 회수할 수 없으므로, 행 마커는 각 성공 writer 직후 저장한다.
+- v1.1 additive 행 종류 정본: `schema_version`은 v1.1을 유지한다. `action.apply_kind`는 `proposal|watch|forecast`이고 생략 시 proposal이다. 단 canonical `action.watch` 또는 `action.forecast` 키가 있는데 판별자가 없으면 `ambiguous_apply_kind`로 해당 행을 fail-closed하며 proposal로 바꾸지 않는다. watch 행은 `action.watch{symbol,watch_condition,valid_until,trigger_checklist?}`이고 `watch_condition`은 기존 플레이북 스키마를 그대로 쓴다. forecast 행은 `action.forecast{symbol,direction,horizon,decision_bucket,review_date}`를 쓴다. `kind`·`action_type`·`type`·`watch_config`·`forecast_config` 별칭은 없다. v1.2에서 판별자를 필수화하는 일은 별건이다.
+- forecast 범위 제외(ESC-4): `forecast_save`는 `instrument_type`, typed `forecast_target`, `probability`를 요구하지만 위 v1.1 additive forecast 행에는 정본 target/probability 매핑이 없다. 확률이나 target을 발명해 채점되는 `trade_forecasts`에 넣지 않기 위해, `apply_kind=forecast` 행은 `status="skipped"`, `reason="unsupported_apply_kind"`, 행 `scenario_id`, 그리고 세션이 직접 `forecast_save`를 호출하라는 hint를 응답 `rows[]`와 `skipped[]`에 남긴다. 이는 `invalid_row_mapping`(proposal/watch 형식 오류)과 다르며, forecast writer 호출·마커 저장·resume 잔여 판정이 0이고 supported 행의 `complete=true`를 막지 않는다. 따라서 apply v1은 proposal/watch만 집행한다.
+- 멱등 재개: prep artifact는 UUID/version/payload 불변이다. 별도 `kr-nxt-apply-<date>:<parent_artifact_uuid>:<table_hash>` artifact에 `schema="kr-nxt-apply-record/v1"`, `parent_artifact_uuid`, `table_hash`, `rows:{scenario_id:{proposal_id|watch_id,at}}`, `complete`, `at`를 저장한다. 따라서 같은 거래일의 서로 다른 표도 서로의 marker를 덮어쓰지 않고, `(parent_artifact_uuid, table_hash)`가 같은 record만 재개 대상으로 삼는다. 이미 마킹된 행은 skip하고 나머지 **supported** 행만 다시 시도한다. 행 실패는 뒤 행을 막지 않고 `failed`로 남으며 재호출로 재시도한다. forecast skip은 설계상 제외이므로 미적용 잔여가 아니다. 모든 supported 행과 요약이 끝나야 `complete=true`; 그 뒤 호출은 `already_applied=true` no-op이다. 기존 date-only record는 동일 identity를 증명할 때만 read-only fallback으로 읽으며 신규 저장에는 쓰지 않는다.
+- `dry_run=true` 기본: writer, summary, apply record 모두 쓰지 않는 미리보기다. `dry_run=false`는 `confirm=true` 필수(기존 mutation 도구 관례).
+- 테스트: 실 artifact 응답 모양 픽스처 → dry_run 무쓰기 · 멱등 2회 호출 · 부분 실패 뒤 재개 · prep artifact 불변 · rung 매핑 · 브로커 클라이언트 import/적재 0 정적·동적 가드. allowlist: helmsman/navigator의 default operator surface만(읽기 전용·자동 스폰 닫힌 세계·외부 BrokerAdapter 표면 제외).
 
 ## 4. `proposal_revalidate(market, proposal_ids?: list, dry_run=true)` — 기존 제안 재판정 라벨링
 - 목적: crypto §0 "제안 11건 전수 재평가"의 결정론 부분. 각 제안을 라이브가·정책·보유/현금·원장 상태 대비 재판정.
@@ -34,7 +37,7 @@
 - 기대: 하루 Opus 세션 9~10 → 3, Opus 컨텍스트 내 도구 응답 50%↓, tick/사이징 결정론 오류 0.
 
 ## 구현 순서·이슈
-ROB-A `session_bootstrap_pack`(1주, 위험 최소) → ROB-B `decision_table_validate` → ROB-C `decision_table_apply` → ROB-D `proposal_revalidate`. 각 이슈 = 캡틴 1건, 검증자 Opus high, 실 artifact/응답 픽스처 필수. 스키마 변경 = C의 artifact `applied` 마킹(기존 JSON payload 내 필드, 마이그레이션 0).
+ROB-A `session_bootstrap_pack`(1주, 위험 최소) → ROB-B `decision_table_validate` → ROB-C `decision_table_apply` → ROB-D `proposal_revalidate`. 각 이슈 = 캡틴 1건, 검증자 Opus high, 실 artifact/응답 픽스처 필수. C의 재개 상태는 prep payload가 아닌 별도 apply artifact에만 기록하며, 마이그레이션은 0이다.
 
 ## Canonical decision-table shape v1.1
 

@@ -59,14 +59,18 @@ Profile → tool surface mapping
   registered set is narrower.
 
 "shadow-replay" (McpProfile.SHADOW_REPLAY):
-  ROB-697 M1 — frozen-context replay. Registers
-  investment_report_get_hermes_context (read-only) + get_trading_policy +
-  route_request + session_bootstrap_pack, then returns before the "Always"
-  block. Deliberately omits
-  every live-fetch tool (market_data/analysis/news/fundamentals), every
-  mutation/order tool, and the 4 Hermes WRITE tools — this is the load-bearing
-  validity guard so a headless replay session cannot leak live market data or
-  persist anything.
+  Task 191 closed-world B0X observation/replay. Registers the exact seven
+  supplied-artifact capabilities in shadow_replay_registration, then returns
+  before the "Always" block. No compatibility aliases or broad registrars are
+  reachable.
+
+"fill-watch-context" (McpProfile.FILL_WATCH_CONTEXT):
+  #137 Phase 0 closed-world artifact surface. Registers exactly
+  fill_watch_context_consume_artifact (independently default-off) and
+  fill_watch_context_outcome_get, then returns before the "Always" block.
+  Account reads, broker/gateway calls, credential/OAuth paths, proposal/report/
+  watch mutation, signatures/capabilities, shell, bootstrap, and scheduler
+  surfaces are physically absent.
 
 "analysis_readonly" (McpProfile.ANALYSIS_READONLY):
   Codex/headless read/analysis allowlist only. Registers operating briefing,
@@ -128,16 +132,21 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.dead_tools import without_dead_tools
+from app.mcp_server.tooling.decision_table_apply_registration import (
+    register_decision_table_apply_tools,
+)
 from app.mcp_server.tooling.downside_watch_registration import (
     register_downside_watch_tools,
 )
 from app.mcp_server.tooling.execution_ledger_events import (
     register_execution_ledger_event_tools,
 )
+from app.mcp_server.tooling.fill_watch_context_registration import (
+    register_fill_watch_context_tools,
+)
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_hermes_handlers import (
-    register_hermes_context_read_only,
     register_investment_hermes_tools,
 )
 from app.mcp_server.tooling.investment_reports_handlers import (
@@ -193,6 +202,9 @@ from app.mcp_server.tooling.session_bootstrap_registration import (
 )
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
+)
+from app.mcp_server.tooling.shadow_replay_registration import (
+    register_shadow_replay_tools,
 )
 from app.mcp_server.tooling.toss_manual_activity_tools import (
     register_toss_manual_activity_tools,
@@ -299,15 +311,18 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     mcp = without_dead_tools(mcp, profile.value)
 
     if profile is McpProfile.SHADOW_REPLAY:
-        # ROB-697 M1 — frozen-context replay ONLY: read the bundle + policy +
-        # lane procedure. Deliberately NO live-fetch (market_data/analysis/
-        # news), NO mutation, NO report-write. The agent returns its decision
-        # as JSON; it does not persist. This early return is the load-bearing
-        # validity guard, so it must come before the "Always" block below.
-        register_hermes_context_read_only(mcp)  # investment_report_get_hermes_context
-        register_trading_policy_tools(mcp)  # get_trading_policy (versioned thresholds)
-        register_route_request_tools(mcp)  # route_request (lane procedure)
-        register_bootstrap_pack()
+        # Task 191: exact seven-function observation/replay boundary.  This
+        # early return is the physical privilege boundary; the broad Always
+        # block and every account/mutation registrar remain unreachable.
+        register_shadow_replay_tools(mcp)
+        return
+
+    if profile is McpProfile.FILL_WATCH_CONTEXT:
+        # #137 Phase 0 — closed world before the broad "Always" block. The
+        # two artifact/outcome tools are the entire surface; no account,
+        # broker, proposal, watch, credential, shell, or bootstrap tool can
+        # leak in by registration order.
+        register_fill_watch_context_tools(mcp)
         return
 
     if profile is McpProfile.ANALYSIS_READONLY:
@@ -385,6 +400,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     )
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
+    # ROB-1349: the KR NXT helmsman/navigator consumer reaches the deployed
+    # default operator surface. Other broad profiles are not evidence of this
+    # role binding, so the persistence coordinator stays fail-closed here.
+    if profile is McpProfile.DEFAULT:
+        register_decision_table_apply_tools(mcp)
     register_operating_briefing_tools(mcp)
     # ROB-646 — read-only policy thresholds + version stamp; always registered
     # so every profile can cite the stamp when recording a verdict.

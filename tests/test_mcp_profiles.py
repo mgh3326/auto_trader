@@ -498,6 +498,8 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # *proposal*; it holds no order-mutation tool at all, so this row is the
     # empty set and any future addition here is a visible diff.
     McpProfile.WATCH_REPRICING: set(),
+    # FILL_WATCH_CONTEXT is a closed-world, context-only consumer profile.
+    McpProfile.FILL_WATCH_CONTEXT: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -551,6 +553,8 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         # ROB-1286 — allowlist-only and early-returns before the "Always"
         # research block, like the other closed-world profiles above.
         McpProfile.WATCH_REPRICING,
+        # FILL_WATCH_CONTEXT is its own two-tool, context-only closed world.
+        McpProfile.FILL_WATCH_CONTEXT,
     )
 ]
 

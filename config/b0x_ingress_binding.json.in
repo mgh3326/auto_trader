@@ -1,0 +1,60 @@
+{
+  "schema": "b0x-ingress/v1",
+  "status": "DRAFT_NOT_INSTALLED",
+  "lane": "@B0X_INGRESS_LANE@",
+  "http": {
+    "base_url": "@HANDOFFKEEP_HTTP_BASE_URL@",
+    "credential_source": "@HANDOFFKEEP_CREDENTIAL_SOURCE@",
+    "credential_headers": [
+      {
+        "header": "@HANDOFFKEEP_CREDENTIAL_HEADER_ONE@",
+        "env_key": "@HANDOFFKEEP_CREDENTIAL_ENV_KEY_ONE@"
+      },
+      {
+        "header": "@HANDOFFKEEP_CREDENTIAL_HEADER_TWO@",
+        "env_key": "@HANDOFFKEEP_CREDENTIAL_ENV_KEY_TWO@"
+      }
+    ],
+    "timeout_seconds": 5,
+    "page_limit": 200,
+    "max_response_bytes": 1048576,
+    "max_row_bytes": 65536,
+    "max_text_bytes": 2048
+  },
+  "runtime": {
+    "state_db": "@B0X_INGRESS_STATE_DB@",
+    "lock_path": "@B0X_INGRESS_LOCK_PATH@",
+    "owner": "@B0X_INGRESS_OS_OWNER@",
+    "group": "@B0X_INGRESS_OS_GROUP@",
+    "binding_mode": "@B0X_INGRESS_BINDING_MODE@",
+    "state_mode": "@B0X_INGRESS_STATE_MODE@",
+    "lock_mode": "@B0X_INGRESS_LOCK_MODE@",
+    "poll_budget_seconds": 20,
+    "max_pages_per_run": 8
+  },
+  "gates": {
+    "ingress_enabled": false,
+    "dispatch_enabled": false,
+    "source_enabled": false
+  },
+  "activation": {
+    "start_after_id": null,
+    "activation_at": null,
+    "source_binding_epoch": null,
+    "code_head": null,
+    "binding_install_receipt": null,
+    "source_quiescence_receipt": null,
+    "backlog_count": null,
+    "backlog_min_id": null,
+    "backlog_max_id": null
+  },
+  "route_readback": {
+    "verified": false,
+    "lane": "@B0X_INGRESS_LANE@",
+    "sink": true,
+    "unique_owner": false,
+    "owner_machine": "@B0X_INGRESS_OWNER_MACHINE@",
+    "sink_record": "@B0X_INGRESS_SINK_RECORD@",
+    "receipt": null
+  }
+}

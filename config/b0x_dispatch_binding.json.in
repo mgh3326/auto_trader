@@ -1,0 +1,120 @@
+{
+  "version": "b0x-dispatch/v1",
+  "status": "DRAFT_NOT_INSTALLED",
+  "active": false,
+  "gates": {
+    "ingress_enabled": false,
+    "dispatch_enabled": false,
+    "source_enabled": false
+  },
+  "owner": {
+    "machine": "INSTALLER_INPUT_OWNER_MACHINE",
+    "id": "INSTALLER_INPUT_OWNER_ID",
+    "epoch": "INSTALLER_INPUT_OWNER_EPOCH",
+    "lane": "INSTALLER_INPUT_LANE"
+  },
+  "runtime": {
+    "state_db": "/ABSOLUTE/INSTALLER_INPUT/shared-state.sqlite3",
+    "lock_path": "/ABSOLUTE/INSTALLER_INPUT/stable-dispatch.lock",
+    "auto_trader_root": "/ABSOLUTE/INSTALLER_INPUT/auto-trader",
+    "auto_trader_head": "0000000000000000000000000000000000000000",
+    "python": "/ABSOLUTE/INSTALLER_INPUT/python",
+    "uv": "/ABSOLUTE/INSTALLER_INPUT/uv",
+    "prefect_root": "/ABSOLUTE/INSTALLER_INPUT/prefect",
+    "prefect_head": "0000000000000000000000000000000000000000",
+    "prefect_python": "/ABSOLUTE/INSTALLER_INPUT/prefect-python",
+    "observation_root": "/ABSOLUTE/INSTALLER_INPUT/observations"
+  },
+  "policy": {
+    "checkout": "/ABSOLUTE/INSTALLER_INPUT/isolated-policy-checkout",
+    "repo_identity": "INSTALLER_INPUT_POLICY_REPO_IDENTITY",
+    "approved_ref": "refs/remotes/origin/INSTALLER_INPUT_APPROVED_REF",
+    "table_subtree": "policy-tables",
+    "output_root": "/ABSOLUTE/INSTALLER_INPUT/isolated-policy-checkout/policy-tables",
+    "projection_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "approved_non_table_tree_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "isolation_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "receipt_root": "/ABSOLUTE/INSTALLER_INPUT/policy-receipts",
+    "git_identity_source": "INSTALLER_INPUT_EXISTING_GIT_IDENTITY_SOURCE",
+    "credential_source": "INSTALLER_INPUT_EXISTING_CREDENTIAL_SOURCE"
+  },
+  "runners": {
+    "kr_observation": {
+      "ready": false,
+      "table_dir": "/ABSOLUTE/INSTALLER_INPUT/isolated-policy-checkout/policy-tables",
+      "output_root": "/ABSOLUTE/INSTALLER_INPUT/observations",
+      "environment_ref": "/ABSOLUTE/INSTALLER_INPUT/kr-environment-reference",
+      "writer_lock_path": "/ABSOLUTE/INSTALLER_INPUT/observations/.kiwoom_mock.writer.lock",
+      "account_ref": "INSTALLER_INPUT_KR_ACCOUNT_REF",
+      "lower_lock_owner_receipt": "INSTALLER_INPUT_KR_LOWER_LOCK_RECEIPT",
+      "no_incomplete_attempt_receipt": "INSTALLER_INPUT_KR_NO_INCOMPLETE_ATTEMPT_RECEIPT"
+    },
+    "us_observation": {
+      "ready": false,
+      "table_dir": "/ABSOLUTE/INSTALLER_INPUT/isolated-policy-checkout/policy-tables",
+      "output_root": "/ABSOLUTE/INSTALLER_INPUT/observations",
+      "environment_ref": "/ABSOLUTE/INSTALLER_INPUT/us-environment-reference",
+      "writer_lock_path": "/ABSOLUTE/INSTALLER_INPUT/observations/.alpaca_paper_lab.writer.lock",
+      "account_ref": "INSTALLER_INPUT_US_ACCOUNT_REF",
+      "lower_lock_owner_receipt": "INSTALLER_INPUT_US_LOWER_LOCK_RECEIPT",
+      "no_incomplete_attempt_receipt": "INSTALLER_INPUT_US_NO_INCOMPLETE_ATTEMPT_RECEIPT"
+    },
+    "crypto_shadow": {
+      "ready": false,
+      "table_dir": "/ABSOLUTE/INSTALLER_INPUT/isolated-policy-checkout/policy-tables",
+      "output_root": "/ABSOLUTE/INSTALLER_INPUT/observations",
+      "environment_ref": "/ABSOLUTE/INSTALLER_INPUT/crypto-environment-reference",
+      "writer_lock_path": "/ABSOLUTE/INSTALLER_INPUT/observations/.upbit_shadow.writer.lock",
+      "account_ref": "INSTALLER_INPUT_CRYPTO_ACCOUNT_REF",
+      "lower_lock_owner_receipt": "INSTALLER_INPUT_CRYPTO_LOWER_LOCK_RECEIPT",
+      "no_incomplete_attempt_receipt": "INSTALLER_INPUT_CRYPTO_NO_INCOMPLETE_ATTEMPT_RECEIPT"
+    }
+  },
+  "source_runners": {
+    "b0x-nudge-kr": "kr_observation",
+    "b0x-nudge-us": "us_observation",
+    "b0x-nudge-crypto": "crypto_shadow",
+    "b0x-table-kr": "policy_table_build_kr",
+    "b0x-table-us": "policy_table_build_us",
+    "b0x-harvest": "harvest_observe_only"
+  },
+  "source_owners": {
+    "kr_policy": {
+      "selected": "INSTALLER_INPUT_ONE_OWNER",
+      "direct_scheduled_enabled": false,
+      "queued_dispatch_enabled": false
+    },
+    "us_policy": {
+      "selected": "INSTALLER_INPUT_ONE_OWNER",
+      "direct_scheduled_enabled": false,
+      "queued_dispatch_enabled": false
+    },
+    "crypto_policy": {
+      "selected": "crypto_pipeline",
+      "crypto_pipeline_enabled": false
+    }
+  },
+  "account_contract": {
+    "version": "INSTALLER_INPUT_APPROVED_PROJECTION_VERSION",
+    "source_accounts": {
+      "b0x-nudge-kr": "INSTALLER_INPUT_KR_ACCOUNT_REF",
+      "b0x-nudge-us": "INSTALLER_INPUT_US_ACCOUNT_REF",
+      "b0x-nudge-crypto": "INSTALLER_INPUT_CRYPTO_ACCOUNT_REF"
+    },
+    "single_writer_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "account_contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "install_receipt": {
+    "id": "INSTALLER_INPUT_INSTALL_RECEIPT",
+    "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "owner_fence_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "ready_receipt": {
+    "id": "INSTALLER_INPUT_READY_RECEIPT",
+    "code_head": "0000000000000000000000000000000000000000",
+    "ingress_binding_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "route_sink_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "source_owner_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "no_other_host_owner_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

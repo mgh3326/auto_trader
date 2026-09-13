@@ -1,0 +1,95 @@
+{
+  "_fixture_provenance": {
+    "kind": "constructed_from_merged_prompt_skeleton",
+    "decision_table": "constructed_from_merged_prompt_skeleton",
+    "source": "tests/fixtures/decision_table_validate/kr-nxt-decision-table-v11-happy-path.json",
+    "real_artifact_claim": false
+  },
+  "response": {
+    "success": true,
+    "artifact": {
+      "id": 1349,
+      "artifact_uuid": "11111111-1111-4111-8111-111111111111",
+      "market": "kr",
+      "kind": "session_summary",
+      "title": "Constructed v1.1 decision table",
+      "symbols": ["196170"],
+      "as_of": "2026-09-05T08:00:00+09:00",
+      "valid_until": null,
+      "session_label": "kr-nxt-prep",
+      "correlation_id": "kr-nxt-prep-2026-09-05",
+      "account_scope": null,
+      "content_hash": "fixture-only",
+      "version": 1,
+      "readiness_label": "ready_for_order_review",
+      "is_stale": false,
+      "created_by": "codex",
+      "created_at": "2026-09-05T08:00:00+09:00",
+      "payload": {
+        "schema_version": "kr-nxt-decision-table/v1.1",
+        "correlation_id": "kr-nxt-prep-2026-09-05",
+        "trading_date": "2026-09-05",
+        "market": "kr",
+        "valid_window": {
+          "starts_at": "08:00 KST",
+          "ends_at": "08:50 KST"
+        },
+        "decision_table": {
+          "no_match_action": "no_proposal",
+          "extensions": ["common_conditions"],
+          "common_conditions": {"market": "kr"},
+          "rows": [
+            {
+              "scenario_id": "constructed-v11-196170-breakeven-reserve-trim",
+              "priority": 1,
+              "symbols": ["196170"],
+              "conditions": [
+                {
+                  "metric": "live_price_band",
+                  "source": "get_quote(symbol,market='kr').price",
+                  "operator": "between",
+                  "value": {"min_inclusive": 302820, "max_exclusive": 312090},
+                  "max_age_seconds": 300
+                },
+                {
+                  "metric": "position_quantity",
+                  "source": "get_holdings.accounts[toss_live].positions[196170].quantity",
+                  "operator": "eq",
+                  "value": 9,
+                  "max_age_seconds": 300
+                },
+                {
+                  "metric": "position_avg_buy_price",
+                  "source": "get_holdings.accounts[toss_live].positions[196170].avg_buy_price",
+                  "operator": "eq",
+                  "value": 309000,
+                  "max_age_seconds": 300
+                }
+              ],
+              "action": {
+                "proposal_action": "place",
+                "account_mode": "toss_live",
+                "side": "sell",
+                "order_type": "limit",
+                "rungs": [
+                  {
+                    "rung": 1,
+                    "price_min": 315000,
+                    "price_max": 315000,
+                    "qty": 1,
+                    "tick": 500,
+                    "formula": "fixed anchor; KRX sell-side ceil; zero discretion"
+                  }
+                ],
+                "required_thesis_fields": ["scenario_id", "decision_table_hash"]
+              },
+              "invalidation": []
+            }
+          ]
+        },
+        "decision_table_hash": "5ac9d92b13742a723c89e95e7373ecc3a3d2f35b91ea85afcb273dde0863e620"
+      },
+      "payload_size_bytes": 1741
+    }
+  }
+}

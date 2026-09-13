@@ -206,6 +206,8 @@ async def test_missing_table_yields_zero_orders(tmp_path: Path, out_dir: Path) -
     )
     assert outcome.zero_order_reason == "table_missing"
     assert outcome.order_count == 0
+    assert outcome.record["real_orders"] == 0
+    assert outcome.record["live_contact"] == 0
     assert outcome.artifact_path is not None
 
 

@@ -20,6 +20,15 @@ import sentry_sdk
 # paper_cohort_kill_switch handler is preserved but has no active registration.
 NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
+        frozenset({"fill-watch-context"}),
+        frozenset(
+            {
+                "fill_watch_context_consume_artifact",
+                "fill_watch_context_outcome_get",
+            }
+        ),
+    ),
+    (
         frozenset(
             {
                 "account_read",
@@ -31,7 +40,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "hermes-paper-kis",
                 "kiwoom",
                 "kiwoom_kr",
-                "shadow-replay",
                 "tradingcodex_execution",
                 "us-paper",
                 "watch_repricing",
@@ -100,7 +108,6 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "kiwoom",
                 "db-paper",
                 "default",
-                "shadow-replay",
                 "kiwoom_kr",
                 "us-paper",
                 "hermes-paper-kis",
@@ -110,6 +117,20 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         frozenset(
             {
                 "investment_report_get_hermes_context",
+            }
+        ),
+    ),
+    (
+        frozenset({"shadow-replay"}),
+        frozenset(
+            {
+                "canonical_session_context_read",
+                "deterministic_replay_compare",
+                "emitted_trigger_playbook_read",
+                "identical_input_snapshot_read",
+                "raw_difference_artifact_write",
+                "shadow_report_write",
+                "source_event_observe",
             }
         ),
     ),

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run auto_trader kickoff lane event b0x-table-us
+
+[Timer]
+# Persistent=false: a missed kickoff must never be replayed after its window.
+OnCalendar=Mon..Fri *-*-* 22:00:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kickoff-b0x-table-us.service
+
+[Install]
+WantedBy=timers.target

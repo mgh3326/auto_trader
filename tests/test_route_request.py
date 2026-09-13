@@ -362,6 +362,10 @@ class TestRouteRequestRegisteredEveryProfile:
             not in (
                 McpProfile.ACCOUNT_READ,
                 McpProfile.ALPACA_PAPER_CLEAN,
+                # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
+                McpProfile.FILL_WATCH_CONTEXT,
+                # SHADOW_REPLAY is an exact seven-tool observation-only world.
+                McpProfile.SHADOW_REPLAY,
             )
         ],
     )

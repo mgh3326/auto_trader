@@ -29,6 +29,10 @@ Usage
         --dump-raw /tmp/raw.json --out-dir /tmp/pt-a
     uv run python -m scripts.build_policy_table --market crypto \\
         --replay-raw /tmp/raw.json --out-dir /tmp/pt-b
+
+    # Prefect-owned timestamp artifacts must not touch the slot-worker pointer.
+    uv run python -m scripts.build_policy_table --market crypto \\
+        --out-dir /isolated/policy-tables --preserve-latest-pointer
 """
 
 from __future__ import annotations
@@ -63,6 +67,21 @@ _SHARED_OPERATOR_OUT_DIR_WARNING: Final[str] = (
     f"({DEFAULT_OUT_DIR}); this is the Prefect-owned policy-tables destination. "
     "Pass an explicit isolated --out-dir for manual builds."
 )
+
+
+def _replace_latest_pointer(latest_link: Path, json_path: Path) -> None:
+    """Replace a builder-owned latest pointer; preserve mode never calls this."""
+
+    if latest_link.is_symlink() or latest_link.exists():
+        latest_link.unlink()
+    latest_link.symlink_to(json_path.name)
+
+
+def _latest_pointer_last_good(latest_link: Path) -> str | None:
+    """Read a builder-owned latest pointer; preserve mode never calls this."""
+
+    return str(latest_link.resolve()) if latest_link.exists() else None
+
 
 # The exact D3 engine module files this job reuses (not reimplements). Their
 # content hashes are stamped into every artifact so a reviewer can confirm
@@ -245,24 +264,40 @@ async def _run(args: argparse.Namespace) -> int:
         json_path.write_bytes(artifact_bytes)
         md_path.write_text(summary_md)
 
-        if latest_link.is_symlink() or latest_link.exists():
-            latest_link.unlink()
-        latest_link.symlink_to(json_path.name)
+        if not args.preserve_latest_pointer:
+            _replace_latest_pointer(latest_link, json_path)
         if stale_marker.exists():
             stale_marker.unlink()
 
         print(f"OK json={json_path} md={md_path}")
+        print(
+            "BUILD_OUTPUT_JSON="
+            + json.dumps(
+                {
+                    "json": str(json_path.resolve(strict=True)),
+                    "latest_pointer_updated": not args.preserve_latest_pointer,
+                    "summary": str(md_path.resolve(strict=True)),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
         print(f"policy_table_hash={payload['stamps']['policy_table_hash']}")
         print(f"json_sha256={sha256_of_bytes(artifact_bytes)}")
         return 0
     except Exception as exc:  # noqa: BLE001 — top-level CLI failure boundary
+        if args.preserve_latest_pointer:
+            last_good_artifact = None
+            latest_pointer_disposition = "unconsulted_slot_worker_owned"
+        else:
+            last_good_artifact = _latest_pointer_last_good(latest_link)
+            latest_pointer_disposition = "consulted_builder_owned"
         stale_marker.write_text(
             json.dumps(
                 {
                     "stale_since": datetime.now(UTC).isoformat(),
-                    "last_good_artifact": (
-                        str(latest_link.resolve()) if latest_link.exists() else None
-                    ),
+                    "last_good_artifact": last_good_artifact,
+                    "latest_pointer_disposition": latest_pointer_disposition,
                     "error": f"{type(exc).__name__}: {exc}",
                 },
                 indent=2,
@@ -307,7 +342,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="use this filename timestamp instead of now() (testing only)",
     )
+    parser.add_argument(
+        "--preserve-latest-pointer",
+        action="store_true",
+        help=(
+            "write timestamped crypto artifacts without reading, replacing, or "
+            "removing latest-crypto.json (installer-owned Prefect path only)"
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.preserve_latest_pointer and args.market != "crypto":
+        parser.error("--preserve-latest-pointer is valid only for market=crypto")
     _warn_if_shared_operator_out_dir(args.out_dir)
     return args
 

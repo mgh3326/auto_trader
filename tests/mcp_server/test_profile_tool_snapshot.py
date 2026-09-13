@@ -1,4 +1,4 @@
-"""Frozen actual-registration inventories, initially 14 profiles / 228 tools.
+"""Frozen actual-registration inventories, initially 15 profiles / 230 tools.
 
 The JSON is reviewed data, never recalculated from runtime allowlists during
 tests. Update only the changed profile when an intentional surface change lands.

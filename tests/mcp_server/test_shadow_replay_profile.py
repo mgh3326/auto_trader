@@ -1,14 +1,4 @@
-"""ROB-697 M1 — shadow-replay MCP profile (live-tool denial guard).
-
-The ``shadow-replay`` profile is the load-bearing validity guard for the A'
-shadow replay harness: a headless replay session must be able to read the
-frozen Hermes decision context, the versioned trading policy, and the
-advisory lane router — and NOTHING ELSE. No live-fetch tool
-(market_data/analysis/news/fundamentals), no order/mutation tool, and none
-of the 4 Hermes WRITE tools may be reachable through this profile, or a
-replay could leak live market data / persist state and invalidate the
-experiment.
-"""
+"""Exact closed-world shadow-replay profile inventory."""
 
 from __future__ import annotations
 
@@ -21,10 +11,13 @@ from app.mcp_server.tooling.registry import register_all_tools
 from tests._mcp_tooling_support import DummyMCP
 
 _ALLOWED = {
-    "investment_report_get_hermes_context",
-    "get_trading_policy",
-    "route_request",
-    "session_bootstrap_pack",
+    "canonical_session_context_read",
+    "source_event_observe",
+    "emitted_trigger_playbook_read",
+    "identical_input_snapshot_read",
+    "shadow_report_write",
+    "deterministic_replay_compare",
+    "raw_difference_artifact_write",
 }
 _FORBIDDEN = {
     "get_quote",

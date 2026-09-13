@@ -1,0 +1,45 @@
+{
+  "source_digests": {
+    "mock_policy_section_sha256": "8c93f3f3cb6c5689a56e1a16abba9aa1faabc6428e58cfa9b4115a82ab5fc97a",
+    "operator_contract_sha256": "e9871b876cda420b543c3e74991044af9f8ce2af757a064931d962c9aa726511"
+  },
+  "field_comparison": {
+    "account_and_market_mapping": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "approved_order_path": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "execution_envelopes_and_thresholds": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "scoring_and_promotion_prohibitions": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "slot_market_weekend_and_playbook_semantics": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "sole_writer_and_strategy_authority": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "strategy_order_exceptions": {
+      "result": "matched",
+      "conflicts": []
+    },
+    "temporary_coexistence_constraint": {
+      "result": "matched",
+      "conflicts": []
+    }
+  },
+  "portability_guards": {
+    "effect": "transport_and_install_inputs_only",
+    "order_authority_changed": false,
+    "shadow_order_authority": false
+  }
+}

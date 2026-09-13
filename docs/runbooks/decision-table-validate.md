@@ -63,4 +63,110 @@ required three-way procedural comparison: report-header hash,
 must all be the same table. This tool does not access artifact storage or compare
 those external records.
 
-## 3. Reserved for ROB-1349
+## 3. Applying a validated table (ROB-1349)
+
+이 도구는 원자적이지 않다. 부분 적용은 정상 상태이며 재호출로 완주한다. 텔레그램 승인 카드는 되돌릴 수 없다.
+
+`decision_table_apply(artifact_id, table_hash, dry_run=true, confirm=false)` is
+a default-profile helmsman/navigator persistence coordinator, not a broker
+tool. It creates only proposals, watches, and one session-context summary
+through their existing writers. Apply v1 has proposal and watch
+writers only: a forecast row is skipped, and the session must call
+`forecast_save` directly if it has a real target and probability. It is
+deliberately absent from
+read-only, auto-spawned closed-world, and external BrokerAdapter profiles. A
+proposal writer can independently commit and then perform post-commit Telegram
+work, so this tool must never promise a cross-writer rollback.
+
+Before any write it performs this fail-closed sequence:
+
+1. Fetch the artifact with `analysis_artifact_get`; a missing artifact returns
+   `artifact_not_found`.
+2. Require a decision-table envelope in its payload; otherwise it returns
+   `not_a_decision_table`.
+3. Require the argument hash, payload `decision_table_hash`, and canonical
+   recomputation to match; otherwise it returns `table_hash_mismatch` with all
+   three values.
+4. Re-run `decision_table_validate(payload, market)`; a non-valid result returns
+   `table_invalid` and its violations unchanged.
+5. For real application require literal `confirm=true`; otherwise return
+   `confirm_required`.
+6. Derive the table-scoped apply-record key
+   `kr-nxt-apply-<YYYY-MM-DD>:<parent_artifact_uuid>:<table_hash>` and read
+   that record. An exact completed `(parent_artifact_uuid, table_hash)` match
+   returns `already_applied=true` without invoking any writer. A pre-scope,
+   date-only record is read only as a legacy fallback when its payload proves
+   that same exact identity.
+
+The prep artifact is immutable. The resume state is a separate analysis
+artifact with
+`correlation_id="kr-nxt-apply-<YYYY-MM-DD>:<parent_artifact_uuid>:<table_hash>"`
+and this payload:
+
+```json
+{
+  "schema": "kr-nxt-apply-record/v1",
+  "parent_artifact_uuid": "...",
+  "table_hash": "...",
+  "rows": {
+    "scenario-id": {"proposal_id": "...", "at": "..."}
+  },
+  "complete": false,
+  "at": "..."
+}
+```
+
+`rows` may instead hold `watch_id`. The tool lists metadata for that exact,
+table-scoped correlation ID and resumes only when both parent UUID and hash
+match. A changed hash is a new table and starts with no row markers. After every
+successful row it updates the separate record; failed rows remain unmarked,
+while later rows continue in original table order.
+
+### Multiple tables on one trading date
+
+Two prep artifacts on the same trading date always receive different apply
+records because both the prep artifact UUID and the exact table hash are part of
+the correlation key. Applying table B cannot overwrite or hide table A's row
+markers; replaying A reads A's own record and produces no duplicate proposal or
+Telegram approval card. The old date-only key is only a read-only compatibility
+fallback for a payload that proves the same table identity, and new saves never
+write it.
+
+`action.apply_kind` is the v1.1 additive canonical row discriminator:
+`proposal`, `watch`, or `forecast`; `schema_version` remains v1.1. Omission
+means proposal for legacy rows. A canonical `action.watch` or
+`action.forecast` payload without `apply_kind` is instead
+`ambiguous_apply_kind`: apply does not invoke a row writer and never silently
+turns that intent into a proposal. v1.2 mandatory-discriminator work is
+separate.
+
+The only canonical auxiliary payloads are
+`action.watch{symbol,watch_condition,valid_until,trigger_checklist?}` (where
+`watch_condition` uses the existing playbook schema) and
+`action.forecast{symbol,direction,horizon,decision_bucket,review_date}`.
+`kind`, `action_type`, `type`, `watch_config`, and `forecast_config` are not
+accepted aliases. There are two apply-v1 row writers—proposal and watch.
+`session_context_append` is not a row kind: it records exactly one summary per
+apply invocation after the rows have been processed.
+
+`forecast_save` additionally requires an `instrument_type`, typed
+`forecast_target`, and `probability`. The v1.1 additive forecast payload has
+no ratified deterministic mapping for the target or probability. ESC-4
+therefore excludes forecast from apply v1: an `apply_kind=forecast` row is
+`skipped` with `reason="unsupported_apply_kind"`, its `scenario_id`, and a
+hint to call `forecast_save` directly from the current session. It never calls
+that writer, creates no row marker, does not count as an unmarked resume
+remainder, and does not block `complete=true` for supported rows.
+`invalid_row_mapping` remains reserved for malformed proposal/watch mappings,
+not for this unsupported apply kind.
+
+Operators should first use the default `dry_run=true` and review the row
+statuses. For an accepted table call again with `dry_run=false, confirm=true`.
+If any supported row reports `failed` or `complete=false`, correct only the
+external writer problem and repeat the identical artifact ID and table hash:
+durable markers cause completed rows to be reported as `skipped`, and only
+unmarked supported rows are attempted again. An
+`unsupported_apply_kind` forecast skip is not a retry target; create it with a
+direct `forecast_save` session call only when the session has a genuine typed
+target and probability. Do not edit or resave the prep artifact to force a
+retry.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Run auto_trader kickoff lane event b0x-nudge-crypto
+
+[Timer]
+# Persistent=false: a missed kickoff must never be replayed after its window.
+OnCalendar=*-*-* 01:00:00 Asia/Seoul
+OnCalendar=*-*-* 05:00:00 Asia/Seoul
+OnCalendar=*-*-* 09:00:00 Asia/Seoul
+OnCalendar=*-*-* 13:00:00 Asia/Seoul
+OnCalendar=*-*-* 17:00:00 Asia/Seoul
+OnCalendar=*-*-* 21:00:00 Asia/Seoul
+Persistent=false
+RandomizedDelaySec=0
+Unit=job-kickoff-b0x-nudge-crypto.service
+
+[Install]
+WantedBy=timers.target
