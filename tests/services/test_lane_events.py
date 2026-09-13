@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,9 @@ def test_emit_collapses_command_exceptions() -> None:
     def os_error(_argv: list[str]) -> Any:
         raise OSError
 
+    def timeout(_argv: list[str]) -> Any:
+        raise subprocess.TimeoutExpired("panewire emit", timeout=1.0)
+
     config = LaneEventConfig()
     assert emit_lane_event(
         "lane-a", "event-1", "handoff", config=config, command=missing_binary
@@ -160,16 +164,22 @@ def test_emit_collapses_command_exceptions() -> None:
     assert emit_lane_event(
         "lane-a", "event-1", "handoff", config=config, command=os_error
     ) == LaneEmitResult("failed", None, "os_error")
+    assert emit_lane_event(
+        "lane-a", "event-1", "handoff", config=config, command=timeout
+    ) == LaneEmitResult("failed", None, "timeout")
 
 
 def test_emit_collapses_environment_read_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls: list[tuple[str, ...]] = []
+
     def unavailable_hostname() -> str:
         raise OSError("hostname unavailable")
 
-    def command(_argv: list[str]) -> Any:
-        raise AssertionError("environment failure must prevent command execution")
+    def command(argv: list[str]) -> Any:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(lane_events.socket, "gethostname", unavailable_hostname)
     try:
@@ -183,6 +193,7 @@ def test_emit_collapses_environment_read_errors(
     except OSError as error:
         result = error
     assert result == LaneEmitResult("failed", None, "os_error")
+    assert calls == []
 
 
 def test_sanitize_lane_event_text_controls_whitespace_and_utf8_boundaries() -> None:

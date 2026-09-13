@@ -20,7 +20,11 @@ from app.services.fill_event_handoff.service import (
     in_regular_rep_window,
     next_rep,
 )
-from app.services.lane_events import LANE_EVENT_TEXT_LIMIT, LaneEventConfig
+from app.services.lane_events import (
+    LANE_EVENT_TEXT_LIMIT,
+    LaneEmitResult,
+    LaneEventConfig,
+)
 from scripts import fill_event_handoff as handoff_cli
 
 
@@ -446,9 +450,13 @@ def test_lane_event_emitted_skips_herdr_discovery(
     def command(_argv: list[str]) -> subprocess.CompletedProcess[str]:
         raise AssertionError("lane event success must not discover herdr panes")
 
-    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        lane_commands.append(tuple(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    def emit(
+        lane: str, event_id: str, text: str, *, config: LaneEventConfig
+    ) -> LaneEmitResult:
+        lane_commands.append((lane, event_id, text))
+        return LaneEmitResult("emitted", 0, None)
+
+    monkeypatch.setattr(handoff_service, "emit_lane_event", emit)
 
     result = asyncio.run(
         FillHandoffRunner(
@@ -459,13 +467,12 @@ def test_lane_event_emitted_skips_herdr_discovery(
                 lane_event=LaneEventConfig(binary="panewire", host="host-a"),
             ),
             command=command,
-            lane_event_command=lane_event_command,
         ).run(_Db())
     )
     assert result["pushed"] == 1
     assert result["duplicate"] == 0
     assert result["fallback"] == []
-    assert lane_commands[0][7] == "execution_ledger:1"
+    assert lane_commands[0][1] == "execution_ledger:1"
 
 
 def test_lane_event_duplicate_skips_herdr_discovery(
@@ -477,10 +484,12 @@ def test_lane_event_duplicate_skips_herdr_discovery(
     def command(_argv: list[str]) -> subprocess.CompletedProcess[str]:
         raise AssertionError("duplicate lane event must not discover herdr panes")
 
-    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            argv, 2, stdout="", stderr="emit: duplicate event_id"
-        )
+    def emit(
+        _lane: str, event_id: str, text: str, *, config: LaneEventConfig
+    ) -> LaneEmitResult:
+        return LaneEmitResult("duplicate", 2, None)
+
+    monkeypatch.setattr(handoff_service, "emit_lane_event", emit)
 
     result = asyncio.run(
         FillHandoffRunner(
@@ -491,7 +500,6 @@ def test_lane_event_duplicate_skips_herdr_discovery(
                 lane_event=LaneEventConfig(binary="panewire", host="host-a"),
             ),
             command=command,
-            lane_event_command=lane_event_command,
         ).run(_Db())
     )
     assert result["duplicate"] == 1
@@ -505,18 +513,19 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
     call_order: list[str] = []
-    clock = iter((0.0, 1.0))
 
     def command(argv: list[str]) -> subprocess.CompletedProcess[str]:
         assert argv == ["herdr", "agent", "list"]
         call_order.append("herdr-list")
         return subprocess.CompletedProcess(argv, 0, stdout='{"agents": []}', stderr="")
 
-    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    def emit(
+        _lane: str, event_id: str, text: str, *, config: LaneEventConfig
+    ) -> LaneEmitResult:
         call_order.append("emit")
-        started_at = next(clock)
-        assert next(clock) >= started_at + 1.0
-        raise subprocess.TimeoutExpired(argv, timeout=1.0)
+        return LaneEmitResult("failed", None, "timeout")
+
+    monkeypatch.setattr(handoff_service, "emit_lane_event", emit)
 
     async def post(url: str, _body: dict[str, Any]) -> dict[str, Any]:
         if url.endswith("/filter"):
@@ -539,7 +548,6 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
                 ),
             ),
             command=command,
-            lane_event_command=lane_event_command,
             now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
             http_post=post,
         ).run(_Db())
@@ -557,16 +565,20 @@ def test_lane_event_id_stays_fill_event_key_when_seen_state_is_reset(
     _write_empty_handoff_state(tmp_path)
     event_ids: list[str] = []
 
-    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        event_ids.append(argv[argv.index("--event-id") + 1])
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    def emit(
+        _lane: str, event_id: str, text: str, *, config: LaneEventConfig
+    ) -> LaneEmitResult:
+        event_ids.append(event_id)
+        return LaneEmitResult("emitted", 0, None)
+
+    monkeypatch.setattr(handoff_service, "emit_lane_event", emit)
 
     config = HandoffConfig(
         state_dir=tmp_path,
         lane_events={"crypto": "lane-a"},
         lane_event=LaneEventConfig(binary="panewire", host="host-a"),
     )
-    runner = FillHandoffRunner(config, lane_event_command=lane_event_command)
+    runner = FillHandoffRunner(config)
     asyncio.run(runner.run(_Db()))
     _write_empty_handoff_state(tmp_path)
     asyncio.run(runner.run(_Db()))
@@ -583,9 +595,13 @@ def test_dry_run_never_starts_lane_event_emit(
     _write_empty_handoff_state(tmp_path)
     lane_commands: list[tuple[str, ...]] = []
 
-    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        lane_commands.append(tuple(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    def emit(
+        _lane: str, event_id: str, text: str, *, config: LaneEventConfig
+    ) -> LaneEmitResult:
+        lane_commands.append(("emit",))
+        return LaneEmitResult("emitted", 0, None)
+
+    monkeypatch.setattr(handoff_service, "emit_lane_event", emit)
 
     asyncio.run(
         FillHandoffRunner(
@@ -595,7 +611,6 @@ def test_dry_run_never_starts_lane_event_emit(
                 lane_events={"crypto": "lane-a"},
                 lane_event=LaneEventConfig(binary="panewire", host="host-a"),
             ),
-            lane_event_command=lane_event_command,
         ).run(_Db())
     )
     assert lane_commands == []
