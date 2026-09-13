@@ -98,6 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def main_async(
     *, since_ledger_id: int | None = None, dry_run: bool = False
 ) -> dict[str, Any]:
+    lane_events = _lanes(os.getenv("FILL_HANDOFF_LANES"))
     config = HandoffConfig(
         state_dir=Path(
             os.getenv("FILL_HANDOFF_STATE_DIR", "/var/lib/fill-event-handoff")
@@ -113,8 +114,8 @@ async def main_async(
         discord_webhook=os.getenv("DISCORD_FILL_HANDOFF_WEBHOOK"),
         since_ledger_id=since_ledger_id,
         dry_run=dry_run,
-        lane_events=_lanes(os.getenv("FILL_HANDOFF_LANES")),
-        lane_event=_lane_event_config(),
+        lane_events=lane_events,
+        lane_event=_lane_event_config() if lane_events else None,
     )
     async with AsyncSessionLocal() as db:
         return await FillHandoffRunner(config, http_post=_post).run(db)
