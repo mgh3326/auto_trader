@@ -15,7 +15,13 @@ import pytest
 
 pytestmark = pytest.mark.asyncio
 
-NOW = datetime(2026, 6, 14, tzinfo=UTC)
+# ROB-559 / task209: NOW must track wall-clock at test-run time (not a fixed
+# calendar date) since it feeds rows that list_live_orders_for_symbol's default
+# `days=90` cutoff filters against `datetime.now(UTC)` at query time. A fixed
+# past NOW eventually falls outside the window and the test self-invalidates
+# with the passage of real time. 30 days gives ample margin on both sides of
+# the 90-day cutoff.
+NOW = datetime.now(UTC) - timedelta(days=30)
 
 
 def _tok() -> str:
