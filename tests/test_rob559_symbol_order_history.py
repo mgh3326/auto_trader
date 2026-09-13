@@ -28,11 +28,19 @@ def _tok() -> str:
     return uuid.uuid4().hex[:8].upper()
 
 
-def _live(symbol: str, market: str, *, status="accepted", created_at=None, **kw):
+def _live(
+    symbol: str,
+    market: str,
+    *,
+    status="accepted",
+    created_at=None,
+    trade_date=None,
+    **kw,
+):
     from app.models.review import LiveOrderLedger
 
     return LiveOrderLedger(
-        trade_date=NOW,
+        trade_date=trade_date if trade_date is not None else NOW,
         broker="upbit" if market == "crypto" else "kis",
         account_scope="upbit_live" if market == "crypto" else "kis_live",
         market=market,
@@ -49,11 +57,11 @@ def _live(symbol: str, market: str, *, status="accepted", created_at=None, **kw)
     )
 
 
-def _kis(symbol: str, *, status="accepted", created_at=None, **kw):
+def _kis(symbol: str, *, status="accepted", created_at=None, trade_date=None, **kw):
     from app.models.review import KISLiveOrderLedger
 
     return KISLiveOrderLedger(
-        trade_date=NOW,
+        trade_date=trade_date if trade_date is not None else NOW,
         symbol=symbol,
         instrument_type="equity_kr",
         side=kw.get("side", "buy"),
@@ -67,11 +75,19 @@ def _kis(symbol: str, *, status="accepted", created_at=None, **kw):
     )
 
 
-def _toss(symbol: str, market: str, *, status="accepted", created_at=None, **kw):
+def _toss(
+    symbol: str,
+    market: str,
+    *,
+    status="accepted",
+    created_at=None,
+    trade_date=None,
+    **kw,
+):
     from app.models.review import TossLiveOrderLedger
 
     return TossLiveOrderLedger(
-        trade_date=NOW,
+        trade_date=trade_date if trade_date is not None else NOW,
         broker="toss",
         account_mode="toss_live",
         operation_kind="place",
@@ -306,3 +322,103 @@ async def test_us_cross_ledger_ordering_with_per_ledger_overflow(session) -> Non
     views = await list_live_orders_for_symbol(session, "us", t, limit=3)
     # global created_at desc, truncated to 3 → offsets 0,1,2 (live, toss, live)
     assert [v.order_no for v in views] == [nos[0], nos[1], nos[2]]
+
+
+# task218 — filter-column coverage: the `days` window must filter on
+# `created_at`, not `trade_date`. Each test plants one IN row (created_at
+# inside the window, trade_date far outside) and one OUT row (created_at
+# outside, trade_date inside) so swapping the filtered column flips the result.
+
+
+async def test_days_cutoff_filters_created_at_live_ledger(session) -> None:
+    from app.services.investment_reports.linked_orders import (
+        list_live_orders_for_symbol,
+    )
+
+    pair = f"KRW-{_tok()}"
+    in_no = f"in-{uuid.uuid4().hex[:8]}"
+    out_no = f"out-{uuid.uuid4().hex[:8]}"
+    session.add(
+        _live(
+            pair,
+            "crypto",
+            order_no=in_no,
+            created_at=datetime.now(UTC) - timedelta(days=3),
+            trade_date=datetime.now(UTC) - timedelta(days=400),
+        )
+    )
+    session.add(
+        _live(
+            pair,
+            "crypto",
+            order_no=out_no,
+            created_at=datetime.now(UTC) - timedelta(days=400),
+            trade_date=datetime.now(UTC) - timedelta(days=3),
+        )
+    )
+    await session.flush()
+
+    views = await list_live_orders_for_symbol(session, "crypto", pair, days=90)
+    assert [v.order_no for v in views] == [in_no]
+
+
+async def test_days_cutoff_filters_created_at_kis_ledger(session) -> None:
+    from app.services.investment_reports.linked_orders import (
+        list_live_orders_for_symbol,
+    )
+
+    t = _tok()
+    in_no = f"in-{uuid.uuid4().hex[:8]}"
+    out_no = f"out-{uuid.uuid4().hex[:8]}"
+    session.add(
+        _kis(
+            t,
+            order_no=in_no,
+            created_at=datetime.now(UTC) - timedelta(days=3),
+            trade_date=datetime.now(UTC) - timedelta(days=400),
+        )
+    )
+    session.add(
+        _kis(
+            t,
+            order_no=out_no,
+            created_at=datetime.now(UTC) - timedelta(days=400),
+            trade_date=datetime.now(UTC) - timedelta(days=3),
+        )
+    )
+    await session.flush()
+
+    views = await list_live_orders_for_symbol(session, "kr", t, days=90)
+    assert [v.order_no for v in views] == [in_no]
+
+
+async def test_days_cutoff_filters_created_at_toss_ledger(session) -> None:
+    from app.services.investment_reports.linked_orders import (
+        list_live_orders_for_symbol,
+    )
+
+    t = _tok()
+    in_no = f"in-{uuid.uuid4().hex[:8]}"
+    out_no = f"out-{uuid.uuid4().hex[:8]}"
+    session.add(
+        _toss(
+            t,
+            "us",
+            broker_order_id=in_no,
+            created_at=datetime.now(UTC) - timedelta(days=3),
+            trade_date=datetime.now(UTC) - timedelta(days=400),
+        )
+    )
+    session.add(
+        _toss(
+            t,
+            "us",
+            broker_order_id=out_no,
+            created_at=datetime.now(UTC) - timedelta(days=400),
+            trade_date=datetime.now(UTC) - timedelta(days=3),
+        )
+    )
+    await session.flush()
+
+    views = await list_live_orders_for_symbol(session, "us", t, days=90)
+    assert [v.order_no for v in views] == [in_no]
