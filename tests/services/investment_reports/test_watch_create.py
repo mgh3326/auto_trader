@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
@@ -144,3 +145,145 @@ async def test_direct_watch_create_rejects_auto_execute_mock(
                 )
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# task99 — top-level action_mode surface + silent-downgrade removal
+# ---------------------------------------------------------------------------
+
+
+def _crypto_watch_payload(**overrides) -> dict:
+    """Anonymized crypto watch payload shaped like a real operator request."""
+    payload = {
+        "created_by": "operator-session",
+        "market": "crypto",
+        "symbol": "KRW-BTC",
+        "intent": "buy_review",
+        "rationale": "weekly support retest watch",
+        "watch_condition": {
+            "metric": "price",
+            "operator": "below",
+            "threshold": 150000000,
+        },
+        "valid_until": (now_kst() + timedelta(days=7)).isoformat(),
+        "trigger_checklist": ["confirm daily close"],
+        "max_action": {"side": "buy", "krw_cap": 300000},
+        "metadata": {"source": "weekly-review"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("top", "nested", "expected"),
+    [
+        (None, None, "notify_only"),
+        ("notify_only", None, "notify_only"),
+        ("approval_required", None, "approval_required"),
+        (None, "notify_only", "notify_only"),
+        (None, "approval_required", "approval_required"),
+        (None, "preview_only", "preview_only"),
+        ("notify_only", "notify_only", "notify_only"),
+        ("approval_required", "approval_required", "approval_required"),
+    ],
+)
+def test_watch_create_request_resolves_action_mode(
+    top: str | None, nested: str | None, expected: str
+) -> None:
+    condition: dict = {"metric": "price", "operator": "below", "threshold": 150000000}
+    if nested is not None:
+        condition["action_mode"] = nested
+    request = CreateInvestmentWatchRequest.model_validate(
+        _crypto_watch_payload(watch_condition=condition, action_mode=top)
+    )
+
+    assert request.watch_condition.action_mode == expected
+
+
+@pytest.mark.parametrize(
+    ("top", "nested"),
+    [
+        ("notify_only", "approval_required"),
+        ("approval_required", "notify_only"),
+    ],
+)
+def test_watch_create_request_rejects_action_mode_conflict(
+    top: str, nested: str
+) -> None:
+    condition = {
+        "metric": "price",
+        "operator": "below",
+        "threshold": 150000000,
+        "action_mode": nested,
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        CreateInvestmentWatchRequest.model_validate(
+            _crypto_watch_payload(watch_condition=condition, action_mode=top)
+        )
+
+    assert "action_mode_conflict" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("bad_mode", ["auto_execute_mock", "preview_only"])
+def test_watch_create_request_top_level_action_mode_rejects_execution_modes(
+    bad_mode: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        CreateInvestmentWatchRequest.model_validate(
+            _crypto_watch_payload(action_mode=bad_mode)
+        )
+
+
+def test_watch_create_request_approval_required_needs_max_action() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        CreateInvestmentWatchRequest.model_validate(
+            _crypto_watch_payload(action_mode="approval_required", max_action={})
+        )
+
+    assert "max_action_required" in str(exc_info.value)
+
+
+def test_watch_create_request_nested_approval_required_needs_max_action() -> None:
+    condition = {
+        "metric": "price",
+        "operator": "below",
+        "threshold": 150000000,
+        "action_mode": "approval_required",
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        CreateInvestmentWatchRequest.model_validate(
+            _crypto_watch_payload(watch_condition=condition, max_action={})
+        )
+
+    assert "max_action_required" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_direct_watch_create_persists_top_level_action_mode(
+    session: AsyncSession,
+) -> None:
+    request = _request(
+        watch_condition=WatchConditionPayload(
+            metric="price", operator="above", threshold=70000
+        ),
+        action_mode="approval_required",
+    )
+    alert, idempotent = await DirectWatchCreateService(session).create(request)
+
+    assert idempotent is False
+    assert alert.action_mode == "approval_required"
+    assert alert.max_action == {"side": "buy", "cash_fraction": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_direct_watch_create_defaults_to_notify_only(
+    session: AsyncSession,
+) -> None:
+    request = _request(
+        watch_condition=WatchConditionPayload(
+            metric="price", operator="above", threshold=70000
+        ),
+    )
+    alert, _ = await DirectWatchCreateService(session).create(request)
+
+    assert alert.action_mode == "notify_only"

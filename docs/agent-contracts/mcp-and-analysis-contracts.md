@@ -35,6 +35,16 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 - `max_action`: structured execution-plan JSON for watch items. `account_mode` is required when `max_action` is present; it also requires `side` and exactly one of `quantity` or `notional`; optional keys include `amount_krw`, `limit_price`, `limit_price_hint`, and `ladder_level`.
 - Do not send `planned_action` as an item key. Hermes payloads derive `planned_action` from `max_action`.
 
+`investment_watch_create` additionally takes a **top-level** `action_mode`
+(`notify_only`/`approval_required` only — `preview_only`/`auto_execute_mock`
+are nested-`watch_condition`-only). Top-level and an explicitly-sent
+`watch_condition.action_mode` must agree; a mismatch is rejected with
+`error="action_mode_conflict"` rather than silently coerced. An effective
+`approval_required` also requires non-empty `max_action`
+(`error="max_action_required"`, `required_fields=["max_action"]`). Both
+rejections are single-response dicts on the MCP create path; existing rows,
+the scanner, and reprocessing paths are unaffected.
+
 ### Hermes Report Generation (ROB-287)
 
 `auto_trader`는 결정적 evidence + persistence 레이어, Hermes는 LLM reasoning + composition. 4개 MCP tool (`investment_report_prepare_bundle` / `..._get_hermes_context` / `investment_stage_artifacts_ingest_from_hermes` / `..._create_from_hermes_composition`) 와 동일 surface를 HTTP transport로도 제공.

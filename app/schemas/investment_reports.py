@@ -72,6 +72,9 @@ WatchCombineLiteral = Literal["and"]
 WatchActionModeLiteral = Literal[
     "notify_only", "preview_only", "approval_required", "auto_execute_mock"
 ]
+# Top-level ``investment_watch_create`` action_mode is deliberately narrower
+# than nested ``watch_condition.action_mode`` — execution modes stay nested-only.
+WatchCreateActionModeLiteral = Literal["notify_only", "approval_required"]
 
 # ROB-455 — order-lifecycle verbs. ``cancel`` / ``reprice`` express adjustment
 # outcomes the demo previously faked with deny + decision_note. The verb is the
@@ -724,8 +727,34 @@ class CreateInvestmentWatchRequest(BaseModel):
     max_action: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    action_mode: WatchCreateActionModeLiteral | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _resolve_action_mode(self) -> CreateInvestmentWatchRequest:
+        nested_explicit = "action_mode" in self.watch_condition.model_fields_set
+        if (
+            self.action_mode is not None
+            and nested_explicit
+            and self.watch_condition.action_mode != self.action_mode
+        ):
+            raise ValueError(
+                "action_mode_conflict: top-level action_mode "
+                f"{self.action_mode!r} disagrees with "
+                f"watch_condition.action_mode {self.watch_condition.action_mode!r}"
+            )
+        if self.action_mode is not None:
+            self.watch_condition.action_mode = self.action_mode
+        if (
+            self.watch_condition.action_mode == "approval_required"
+            and not self.max_action
+        ):
+            raise ValueError(
+                "max_action_required: action_mode='approval_required' "
+                "requires a non-empty max_action"
+            )
+        return self
 
     @field_validator("created_by", "symbol", "rationale")
     @classmethod

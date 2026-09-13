@@ -17,6 +17,7 @@ from datetime import timedelta
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling import investment_reports_handlers as _reports_handlers
@@ -220,6 +221,109 @@ async def test_investment_watch_create_direct_persists_active_alert(
     assert response["alert"]["metadata"]["source"] == "tcx-smoke"
     assert response["alert"]["source_report_uuid"] is None
     assert response["alert"]["source_item_uuid"] is None
+
+
+@pytest.mark.asyncio
+async def test_investment_watch_create_top_level_action_mode(
+    session: AsyncSession,
+) -> None:
+    """task99 — top-level action_mode reaches the alert row unchanged."""
+    response = await investment_watch_create_impl(
+        created_by="operator-session",
+        market="crypto",
+        symbol="KRW-BTC",
+        intent="buy_review",
+        rationale="weekly support retest watch",
+        watch_condition={
+            "metric": "price",
+            "operator": "below",
+            "threshold": 150000000,
+        },
+        valid_until=future_datetime().isoformat(),
+        trigger_checklist=["confirm daily close"],
+        max_action={"side": "buy", "krw_cap": 300000},
+        action_mode="approval_required",
+    )
+
+    assert response["success"] is True
+    assert response["alert"]["action_mode"] == "approval_required"
+    assert response["alert"]["max_action"] == {"side": "buy", "krw_cap": 300000}
+    assert response["alert"]["metadata"]["source_tool"] == "investment_watch_create"
+
+
+@pytest.mark.asyncio
+async def test_investment_watch_create_rejects_action_mode_conflict(
+    session: AsyncSession,
+) -> None:
+    """task99 — disagreeing top-level/nested modes must not silently resolve."""
+    response = await investment_watch_create_impl(
+        created_by="operator-session",
+        market="crypto",
+        symbol="KRW-BTC",
+        intent="buy_review",
+        rationale="weekly support retest watch",
+        watch_condition={
+            "metric": "price",
+            "operator": "below",
+            "threshold": 150000000,
+            "action_mode": "notify_only",
+        },
+        valid_until=future_datetime().isoformat(),
+        max_action={"side": "buy", "krw_cap": 300000},
+        action_mode="approval_required",
+    )
+
+    assert response["success"] is False
+    assert response["error"] == "action_mode_conflict"
+    assert "required_fields" in response
+
+
+@pytest.mark.asyncio
+async def test_investment_watch_create_approval_required_needs_max_action(
+    session: AsyncSession,
+) -> None:
+    """task99 — approval_required with an empty max_action is rejected."""
+    response = await investment_watch_create_impl(
+        created_by="operator-session",
+        market="crypto",
+        symbol="KRW-BTC",
+        intent="buy_review",
+        rationale="weekly support retest watch",
+        watch_condition={
+            "metric": "price",
+            "operator": "below",
+            "threshold": 150000000,
+        },
+        valid_until=future_datetime().isoformat(),
+        action_mode="approval_required",
+    )
+
+    assert response["success"] is False
+    assert response["error"] == "max_action_required"
+    assert response["required_fields"] == ["max_action"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_mode", ["auto_execute_mock", "preview_only"])
+async def test_investment_watch_create_top_level_rejects_execution_modes(
+    session: AsyncSession, bad_mode: str
+) -> None:
+    """task99 — execution-flavored modes are not accepted at the top level."""
+    with pytest.raises(ValidationError):
+        await investment_watch_create_impl(
+            created_by="operator-session",
+            market="crypto",
+            symbol="KRW-BTC",
+            intent="buy_review",
+            rationale="weekly support retest watch",
+            watch_condition={
+                "metric": "price",
+                "operator": "below",
+                "threshold": 150000000,
+            },
+            valid_until=future_datetime().isoformat(),
+            action_mode=bad_mode,
+        )
 
 
 @pytest.mark.asyncio
