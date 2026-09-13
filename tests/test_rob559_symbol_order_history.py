@@ -29,7 +29,13 @@ def _tok() -> str:
 
 
 def _live(
-    symbol: str, market: str, *, status="accepted", created_at=None, trade_date=None, **kw
+    symbol: str,
+    market: str,
+    *,
+    status="accepted",
+    created_at=None,
+    trade_date=None,
+    **kw,
 ):
     from app.models.review import LiveOrderLedger
 
@@ -70,7 +76,13 @@ def _kis(symbol: str, *, status="accepted", created_at=None, trade_date=None, **
 
 
 def _toss(
-    symbol: str, market: str, *, status="accepted", created_at=None, trade_date=None, **kw
+    symbol: str,
+    market: str,
+    *,
+    status="accepted",
+    created_at=None,
+    trade_date=None,
+    **kw,
 ):
     from app.models.review import TossLiveOrderLedger
 
