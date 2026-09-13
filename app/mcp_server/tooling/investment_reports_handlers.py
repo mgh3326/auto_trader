@@ -994,6 +994,36 @@ async def investment_watch_recommend_impl(
 # ---------------------------------------------------------------------------
 # investment_watch_create (ROB-768)
 # ---------------------------------------------------------------------------
+def _watch_create_rejection(exc: ValidationError) -> dict[str, Any]:
+    """Single-response error contract for the two watch-create rejections.
+
+    ``action_mode_conflict`` and ``max_action_required`` come back as a dict so
+    the caller sees every violation at once; unrelated ValidationErrors keep
+    propagating exactly as before.
+    """
+    messages = [str(err.get("msg", "")) for err in exc.errors()]
+    if any("action_mode_conflict" in msg for msg in messages):
+        return {
+            "success": False,
+            "error": "action_mode_conflict",
+            "required_fields": ["action_mode"],
+            "detail": (
+                "top-level action_mode and watch_condition.action_mode "
+                "disagree; pass one value or make them equal"
+            ),
+        }
+    if any("max_action_required" in msg for msg in messages):
+        return {
+            "success": False,
+            "error": "max_action_required",
+            "required_fields": ["max_action"],
+            "detail": (
+                "action_mode='approval_required' requires a non-empty max_action"
+            ),
+        }
+    raise exc
+
+
 async def investment_watch_create_impl(
     created_by: str,
     market: str,
@@ -1006,6 +1036,7 @@ async def investment_watch_create_impl(
     max_action: dict | None = None,
     metadata: dict | None = None,
     idempotency_key: str | None = None,
+    action_mode: str | None = None,
 ) -> dict[str, Any]:
     """ROB-768 — create an active watch alert directly, bypassing the
     investment_report_create / investment_report_activate_watch flow.
@@ -1013,22 +1044,30 @@ async def investment_watch_create_impl(
     Requires explicit ``created_by`` provenance; ``valid_until`` must be a
     future timezone-aware ISO8601 string. The persisted alert is a
     notify/approval watch only — never an automatic order instruction.
+
+    ``action_mode`` (top-level) accepts ``notify_only``/``approval_required``
+    and must agree with an explicit ``watch_condition.action_mode`` when both
+    are given. ``approval_required`` also requires a non-empty ``max_action``.
     """
-    request = CreateInvestmentWatchRequest.model_validate(
-        {
-            "created_by": created_by,
-            "market": market,
-            "symbol": symbol,
-            "intent": intent,
-            "rationale": rationale,
-            "watch_condition": watch_condition,
-            "valid_until": valid_until,
-            "trigger_checklist": trigger_checklist or [],
-            "max_action": max_action or {},
-            "metadata": metadata or {},
-            "idempotency_key": idempotency_key,
-        }
-    )
+    try:
+        request = CreateInvestmentWatchRequest.model_validate(
+            {
+                "created_by": created_by,
+                "market": market,
+                "symbol": symbol,
+                "intent": intent,
+                "rationale": rationale,
+                "watch_condition": watch_condition,
+                "valid_until": valid_until,
+                "trigger_checklist": trigger_checklist or [],
+                "max_action": max_action or {},
+                "metadata": metadata or {},
+                "idempotency_key": idempotency_key,
+                "action_mode": action_mode,
+            }
+        )
+    except ValidationError as exc:
+        return _watch_create_rejection(exc)
     async with AsyncSessionLocal() as db:
         alert, idempotent = await DirectWatchCreateService(db).create(request)
         await db.commit()

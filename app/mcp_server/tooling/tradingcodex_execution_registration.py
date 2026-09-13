@@ -411,6 +411,7 @@ def _register_watch_write_tools(mcp: FastMCP) -> None:
         max_action: dict | None = None,
         metadata: dict | None = None,
         idempotency_key: str | None = None,
+        action_mode: str | None = None,
     ) -> dict[str, Any]:
         label = _clean_label(created_by)
         if label is None:
@@ -429,6 +430,7 @@ def _register_watch_write_tools(mcp: FastMCP) -> None:
             max_action=max_action,
             metadata=metadata,
             idempotency_key=idempotency_key,
+            action_mode=action_mode,
         )
 
 

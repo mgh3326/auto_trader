@@ -1527,6 +1527,13 @@ Parameters:
 - `max_action`: optional planned-action envelope for downstream approval context.
 - `metadata`: optional audit metadata merged into alert `metadata`.
 - `idempotency_key`: optional caller key. Omit to use the deterministic direct-watch key.
+- `action_mode`: optional top-level mode, `notify_only` or `approval_required`
+  only (execution modes stay nested-only). When both this and
+  `watch_condition.action_mode` are sent they must be equal — a disagreement is
+  rejected with `error="action_mode_conflict"` instead of silently downgrading.
+  `approval_required` (top-level or nested) requires a non-empty `max_action`;
+  otherwise the call returns `error="max_action_required"` with
+  `required_fields=["max_action"]`.
 
 Response:
 - `success`
