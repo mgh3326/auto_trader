@@ -180,11 +180,14 @@ class FillHandoffRunner:
         *,
         command: Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
         | None = None,
+        lane_event_command: Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+        | None = None,
         now: Callable[[], datetime] | None = None,
         http_post: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
         | None = None,
     ) -> None:
         self.config, self.command = config, command or self._command
+        self.lane_event_command = lane_event_command
         self.now, self.http_post = now or (lambda: datetime.now(UTC)), http_post
 
     @staticmethod
@@ -435,6 +438,7 @@ class FillHandoffRunner:
                         event_id=str(fill["event_key"]),
                         text=prompt,
                         config=self.config.lane_event or LaneEventConfig(),
+                        command=self.lane_event_command,
                     )
                     if lane_result.outcome == "emitted":
                         pushed = 1

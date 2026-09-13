@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import stat
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -43,37 +42,6 @@ def _fill(ledger_id: int) -> dict[str, Any]:
         "correlation_id": "c-1",
         "filled_at": "2026-09-03T00:00:00+00:00",
     }
-
-
-@pytest.fixture
-def lane_emit_binary(tmp_path: Path) -> Path:
-    binary = tmp_path / "fake_panewire_emit.py"
-    binary.write_text(
-        """#!/usr/bin/env python3
-import json
-import os
-import sys
-import time
-
-log_path = os.environ.get("LANE_EVENT_TEST_CALL_LOG")
-if log_path:
-    with open(log_path, "a", encoding="utf-8") as log_file:
-        log_file.write("emit\\n")
-dump_path = os.environ.get("LANE_EVENT_TEST_ARGV")
-if dump_path:
-    with open(dump_path, "w", encoding="utf-8") as dump_file:
-        json.dump(sys.argv, dump_file)
-mode = os.environ.get("LANE_EVENT_TEST_MODE", "success")
-if mode == "duplicate":
-    print("emit: duplicate event_id", file=sys.stderr)
-    raise SystemExit(2)
-if mode == "hang":
-    time.sleep(30)
-""",
-        encoding="utf-8",
-    )
-    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-    return binary
 
 
 def _prepare_runner_dependencies(
@@ -418,12 +386,10 @@ def test_handoff_lane_event_text_matches_legacy_prompt_and_compacts_large_fill()
 
 
 def test_lanes_unset_never_starts_emit_and_preserves_herdr_delivery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_emit_binary: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("LANE_EVENT_TEST_ARGV", str(argv_file))
     calls: list[tuple[str, ...]] = []
 
     def command(argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -456,7 +422,6 @@ def test_lanes_unset_never_starts_emit_and_preserves_herdr_delivery(
             HandoffConfig(
                 state_dir=tmp_path,
                 herdr_targets=("local:operator",),
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary)),
             ),
             command=command,
         ).run(_Db())
@@ -468,20 +433,22 @@ def test_lanes_unset_never_starts_emit_and_preserves_herdr_delivery(
         "duplicate": 0,
         "fallback": [],
     }
-    assert not argv_file.exists()
     assert calls[0] == ("herdr", "agent", "list")
 
 
 def test_lane_event_emitted_skips_herdr_discovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_emit_binary: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("LANE_EVENT_TEST_ARGV", str(argv_file))
+    lane_commands: list[tuple[str, ...]] = []
 
     def command(_argv: list[str]) -> subprocess.CompletedProcess[str]:
         raise AssertionError("lane event success must not discover herdr panes")
+
+    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        lane_commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     result = asyncio.run(
         FillHandoffRunner(
@@ -489,26 +456,31 @@ def test_lane_event_emitted_skips_herdr_discovery(
                 state_dir=tmp_path,
                 herdr_targets=("local:operator",),
                 lane_events={"crypto": "lane-a"},
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary)),
+                lane_event=LaneEventConfig(binary="panewire", host="host-a"),
             ),
             command=command,
+            lane_event_command=lane_event_command,
         ).run(_Db())
     )
     assert result["pushed"] == 1
     assert result["duplicate"] == 0
     assert result["fallback"] == []
-    assert json.loads(argv_file.read_text(encoding="utf-8"))[7] == "execution_ledger:1"
+    assert lane_commands[0][7] == "execution_ledger:1"
 
 
 def test_lane_event_duplicate_skips_herdr_discovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_emit_binary: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
-    monkeypatch.setenv("LANE_EVENT_TEST_MODE", "duplicate")
 
     def command(_argv: list[str]) -> subprocess.CompletedProcess[str]:
         raise AssertionError("duplicate lane event must not discover herdr panes")
+
+    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv, 2, stdout="", stderr="emit: duplicate event_id"
+        )
 
     result = asyncio.run(
         FillHandoffRunner(
@@ -516,9 +488,10 @@ def test_lane_event_duplicate_skips_herdr_discovery(
                 state_dir=tmp_path,
                 herdr_targets=("local:operator",),
                 lane_events={"crypto": "lane-a"},
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary)),
+                lane_event=LaneEventConfig(binary="panewire", host="host-a"),
             ),
             command=command,
+            lane_event_command=lane_event_command,
         ).run(_Db())
     )
     assert result["duplicate"] == 1
@@ -527,28 +500,29 @@ def test_lane_event_duplicate_skips_herdr_discovery(
 
 
 def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_emit_binary: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
-    call_log = tmp_path / "calls.log"
-    monkeypatch.setenv("LANE_EVENT_TEST_MODE", "hang")
-    monkeypatch.setenv("LANE_EVENT_TEST_CALL_LOG", str(call_log))
-
-    def append_call(name: str) -> None:
-        with call_log.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"{name}\n")
+    call_order: list[str] = []
+    clock = iter((0.0, 1.0))
 
     def command(argv: list[str]) -> subprocess.CompletedProcess[str]:
         assert argv == ["herdr", "agent", "list"]
-        append_call("herdr-list")
+        call_order.append("herdr-list")
         return subprocess.CompletedProcess(argv, 0, stdout='{"agents": []}', stderr="")
+
+    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        call_order.append("emit")
+        started_at = next(clock)
+        assert next(clock) >= started_at + 1.0
+        raise subprocess.TimeoutExpired(argv, timeout=1.0)
 
     async def post(url: str, _body: dict[str, Any]) -> dict[str, Any]:
         if url.endswith("/filter"):
-            append_call("prefect-filter")
+            call_order.append("prefect-filter")
             return {"items": [{"id": "deployment-id"}]}
-        append_call("prefect-create")
+        call_order.append("prefect-create")
         return {"id": "flow-id"}
 
     result = asyncio.run(
@@ -560,9 +534,12 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
                 prefect_api_url="http://prefect",
                 kick_deployments={"crypto": "crypto-deployment"},
                 lane_events={"crypto": "lane-a"},
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary), timeout_s=1.0),
+                lane_event=LaneEventConfig(
+                    binary="panewire", host="host-a", timeout_s=1.0
+                ),
             ),
             command=command,
+            lane_event_command=lane_event_command,
             now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
             http_post=post,
         ).run(_Db())
@@ -570,44 +547,45 @@ def test_lane_event_timeout_falls_back_to_herdr_before_prefect(
     assert result["fallback"] == ["timeout"]
     assert result["pushed"] == 0
     assert result["kicked"] == 1
-    call_order = call_log.read_text(encoding="utf-8").splitlines()
-    assert call_order in (
-        ["emit", "herdr-list", "prefect-filter", "prefect-create"],
-        ["herdr-list", "prefect-filter", "prefect-create"],
-    )
+    assert call_order == ["emit", "herdr-list", "prefect-filter", "prefect-create"]
 
 
 def test_lane_event_id_stays_fill_event_key_when_seen_state_is_reset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_emit_binary: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("LANE_EVENT_TEST_ARGV", str(argv_file))
+    event_ids: list[str] = []
+
+    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        event_ids.append(argv[argv.index("--event-id") + 1])
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
     config = HandoffConfig(
         state_dir=tmp_path,
         lane_events={"crypto": "lane-a"},
-        lane_event=LaneEventConfig(binary=str(lane_emit_binary)),
+        lane_event=LaneEventConfig(binary="panewire", host="host-a"),
     )
-    runner = FillHandoffRunner(config)
+    runner = FillHandoffRunner(config, lane_event_command=lane_event_command)
     asyncio.run(runner.run(_Db()))
-    first_event_id = json.loads(argv_file.read_text(encoding="utf-8"))[7]
     _write_empty_handoff_state(tmp_path)
     asyncio.run(runner.run(_Db()))
-    second_event_id = json.loads(argv_file.read_text(encoding="utf-8"))[7]
-    assert (first_event_id, second_event_id) == (
+    assert tuple(event_ids) == (
         "execution_ledger:1",
         "execution_ledger:1",
     )
 
 
 def test_dry_run_never_starts_lane_event_emit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_emit_binary: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_runner_dependencies(monkeypatch, [_fill(1)])
     _write_empty_handoff_state(tmp_path)
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("LANE_EVENT_TEST_ARGV", str(argv_file))
+    lane_commands: list[tuple[str, ...]] = []
+
+    def lane_event_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        lane_commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     asyncio.run(
         FillHandoffRunner(
@@ -615,11 +593,12 @@ def test_dry_run_never_starts_lane_event_emit(
                 state_dir=tmp_path,
                 dry_run=True,
                 lane_events={"crypto": "lane-a"},
-                lane_event=LaneEventConfig(binary=str(lane_emit_binary)),
-            )
+                lane_event=LaneEventConfig(binary="panewire", host="host-a"),
+            ),
+            lane_event_command=lane_event_command,
         ).run(_Db())
     )
-    assert not argv_file.exists()
+    assert lane_commands == []
 
 
 def test_cli_lane_event_environment_and_validation(
@@ -667,10 +646,42 @@ def test_cli_lane_event_environment_and_validation(
     monkeypatch.setenv("FILL_HANDOFF_LANES", '{"nxt":"lane-a"}')
     assert handoff_cli.main() == 1
     assert "ValueError" in capsys.readouterr().err
-    monkeypatch.setenv("FILL_HANDOFF_LANES", "")
+    monkeypatch.setenv("FILL_HANDOFF_LANES", '{"crypto":"lane-a"}')
     monkeypatch.setenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "1")
     with pytest.raises(ValueError, match="greater than 1"):
-        handoff_cli._lane_event_config()
+        asyncio.run(handoff_cli.main_async())
+
+
+def test_cli_non_lane_mode_skips_invalid_emitter_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[HandoffConfig] = []
+
+    class Runner:
+        def __init__(self, config: HandoffConfig, **_kwargs: object) -> None:
+            captured.append(config)
+
+        async def run(self, _db: object) -> dict[str, Any]:
+            return {"ok": True}
+
+    class Session:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(handoff_cli, "FillHandoffRunner", Runner)
+    monkeypatch.setattr(handoff_cli, "AsyncSessionLocal", lambda: Session())
+    monkeypatch.setenv("FILL_HANDOFF_LANES", "")
+    monkeypatch.setenv("FILL_HANDOFF_EMIT_TIMEOUT_S", "not-a-timeout")
+    try:
+        result = asyncio.run(handoff_cli.main_async())
+    except ValueError as error:
+        result = error
+    assert result == {"ok": True}
+    assert captured[0].lane_events == {}
+    assert captured[0].lane_event is None
 
 
 def test_fill_handoff_emitter_namespace_priority(

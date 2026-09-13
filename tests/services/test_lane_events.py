@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.services import lane_events
 from app.services.lane_events import (
     LANE_EVENT_TEXT_LIMIT,
     LaneEmitResult,
@@ -159,6 +160,29 @@ def test_emit_collapses_command_exceptions() -> None:
     assert emit_lane_event(
         "lane-a", "event-1", "handoff", config=config, command=os_error
     ) == LaneEmitResult("failed", None, "os_error")
+
+
+def test_emit_collapses_environment_read_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable_hostname() -> str:
+        raise OSError("hostname unavailable")
+
+    def command(_argv: list[str]) -> Any:
+        raise AssertionError("environment failure must prevent command execution")
+
+    monkeypatch.setattr(lane_events.socket, "gethostname", unavailable_hostname)
+    try:
+        result = emit_lane_event(
+            "lane-a",
+            "event-1",
+            "handoff",
+            config=LaneEventConfig(host=""),
+            command=command,
+        )
+    except OSError as error:
+        result = error
+    assert result == LaneEmitResult("failed", None, "os_error")
 
 
 def test_sanitize_lane_event_text_controls_whitespace_and_utf8_boundaries() -> None:

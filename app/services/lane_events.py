@@ -104,47 +104,62 @@ def emit_lane_event(
     command: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
 ) -> LaneEmitResult:
     """Emit one idempotent lane event and collapse every failure to a safe result."""
-    if not LANE_PATTERN.fullmatch(lane):
-        return LaneEmitResult("failed", None, "invalid_lane")
-    if not _valid_event_id(event_id):
-        return LaneEmitResult("failed", None, "invalid_event_id")
+    try:
+        if not LANE_PATTERN.fullmatch(lane):
+            return LaneEmitResult("failed", None, "invalid_lane")
+        if not _valid_event_id(event_id):
+            return LaneEmitResult("failed", None, "invalid_event_id")
 
-    sanitized = sanitize_lane_event_text(text)
-    if not sanitized:
-        return LaneEmitResult("failed", None, "empty_text")
+        sanitized = sanitize_lane_event_text(text)
+        if not sanitized:
+            return LaneEmitResult("failed", None, "empty_text")
 
-    host = config.host or socket.gethostname()
-    inbox_root = config.inbox_root or str(Path("~/work/herdr-inbox").expanduser())
-    timeout = f"{max(1, int(config.timeout_s) - 1)}s"
-    argv = [
-        config.binary,
-        "emit",
-        "--kind",
-        "lane.event",
-        "--lane",
-        lane,
-        "--event-id",
-        event_id,
-        "--text",
-        sanitized,
-        "--host",
-        host,
-    ]
-    if config.pane:
-        argv.extend(("--pane", config.pane))
-    argv.extend(("--inbox-root", inbox_root, "--timeout", timeout))
+        host = config.host or socket.gethostname()
+        inbox_root = config.inbox_root or str(Path("~/work/herdr-inbox").expanduser())
+        timeout = f"{max(1, int(config.timeout_s) - 1)}s"
+        argv = [
+            config.binary,
+            "emit",
+            "--kind",
+            "lane.event",
+            "--lane",
+            lane,
+            "--event-id",
+            event_id,
+            "--text",
+            sanitized,
+            "--host",
+            host,
+        ]
+        if config.pane:
+            argv.extend(("--pane", config.pane))
+        argv.extend(("--inbox-root", inbox_root, "--timeout", timeout))
 
-    def run(command_argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            list(command_argv),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=config.timeout_s,
-        )
+        def run(command_argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                list(command_argv),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=config.timeout_s,
+            )
+
+    except Exception:  # noqa: BLE001 - lane delivery is always best effort
+        return LaneEmitResult("failed", None, "os_error")
 
     try:
         completed = (command or run)(argv)
+        if completed.returncode == 0:
+            return LaneEmitResult("emitted", completed.returncode, None)
+        if completed.returncode == 2 and "duplicate event_id" in (
+            completed.stderr or ""
+        ):
+            return LaneEmitResult("duplicate", completed.returncode, None)
+        if completed.returncode == 2:
+            return LaneEmitResult("failed", completed.returncode, "usage")
+        return LaneEmitResult(
+            "failed", completed.returncode, f"exit_{completed.returncode}"
+        )
     except FileNotFoundError:
         return LaneEmitResult("failed", None, "binary_not_found")
     except subprocess.TimeoutExpired:
@@ -153,13 +168,3 @@ def emit_lane_event(
         return LaneEmitResult("failed", None, "os_error")
     except Exception:  # noqa: BLE001 - lane delivery is always best effort
         return LaneEmitResult("failed", None, "os_error")
-
-    if completed.returncode == 0:
-        return LaneEmitResult("emitted", completed.returncode, None)
-    if completed.returncode == 2 and "duplicate event_id" in (completed.stderr or ""):
-        return LaneEmitResult("duplicate", completed.returncode, None)
-    if completed.returncode == 2:
-        return LaneEmitResult("failed", completed.returncode, "usage")
-    return LaneEmitResult(
-        "failed", completed.returncode, f"exit_{completed.returncode}"
-    )
