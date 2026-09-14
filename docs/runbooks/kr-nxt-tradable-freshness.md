@@ -90,10 +90,13 @@ print("\n".join([p.hostname, str(p.port), p.username or "",
 export PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD
 ```
 
-🔴 **Do not hardcode `-h`, and do not run psql without it either.** `ENV_FILE` is
-the single source for this runbook's DB target; a hardcoded host silently stops
-tracking DSN changes, and a bare `psql -d auto_trader` connects to the **local
-Mac postgres** and measures the wrong database (observed 2026-09-15). The
+🔴 **Never run psql without a host, and never hardcode one.** Every psql command
+below takes its target from the `PG*` variables exported above — that is the
+"with a host" case, and it is why none of them pass `-h`. `ENV_FILE` is the
+single source for this runbook's DB target; a hardcoded host silently stops
+tracking DSN changes, and a bare `psql -d auto_trader` with no `PG*` exported
+connects to the **local Mac postgres** and measures the wrong database
+(observed 2026-09-15). The
 password reaches libpq through the environment only — never through `argv`, and
 it is never printed.
 
