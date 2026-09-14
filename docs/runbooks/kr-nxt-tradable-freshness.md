@@ -95,7 +95,8 @@ it is never printed.
 Confirm the target before you read anything (prints no secret):
 
 ```bash
-[ -n "$PGHOST" ] && [ -n "$PGPORT" ] || echo "STOP: PGHOST/PGPORT not derived from ENV_FILE"
+: "${PGHOST:?not derived from ENV_FILE — re-run the export block}"
+: "${PGPORT:?not derived from ENV_FILE — re-run the export block}"
 psql -X -c '\conninfo'
 ```
 
@@ -236,6 +237,15 @@ Success requires:
 - no missing Toss stocks were reported
 
 Do not create a live proposal or send an order merely to test freshness.
+
+### 6. Clear the connection credentials
+
+```bash
+unset PGPASSWORD
+```
+
+The other `PG*` variables are harmless to leave set; `PGPASSWORD` should not
+outlive the procedure in an interactive shell.
 
 ## Failure modes
 
