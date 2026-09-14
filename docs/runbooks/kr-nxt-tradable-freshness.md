@@ -71,10 +71,79 @@ cd /Users/mgh3326/work/auto_trader.nxtfresh
 export ENV_FILE=/Users/mgh3326/services/auto_trader/shared/.env.prod.native
 ```
 
+Then derive the psql connection **from that same `ENV_FILE`**:
+
+```bash
+{ read -r PGHOST; read -r PGPORT; read -r PGUSER
+  read -r PGDATABASE; read -r PGPASSWORD; } < <(python3 -c '
+import sys, urllib.parse as u
+vals = [l.split("=", 1)[1].strip() for l in open(sys.argv[1])
+        if l.startswith("DATABASE_URL=")]
+if len(vals) != 1:
+    raise SystemExit(f"expected exactly one DATABASE_URL line, found {len(vals)}")
+p = u.urlparse(vals[0].replace("+asyncpg", ""))
+if not p.hostname or not p.port:
+    raise SystemExit("DATABASE_URL must carry an explicit host and port")
+print("\n".join([p.hostname, str(p.port), p.username or "",
+                 p.path.lstrip("/"), u.unquote(p.password or "")]))
+' "$ENV_FILE")
+export PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD
+```
+
+🔴 **Do not hardcode `-h`, and do not run psql without it either.** `ENV_FILE` is
+the single source for this runbook's DB target; a hardcoded host silently stops
+tracking DSN changes, and a bare `psql -d auto_trader` connects to the **local
+Mac postgres** and measures the wrong database (observed 2026-09-15). The
+password reaches libpq through the environment only — never through `argv`, and
+it is never printed.
+
+Confirm the target before you read anything (prints no secret):
+
+```bash
+: "${PGHOST:?not derived from ENV_FILE}" && : "${PGPORT:?not derived from ENV_FILE}" &&
+psql -X -tAc "SELECT inet_server_port(), current_database(),
+  (SELECT count(*) FROM kr_symbol_universe),
+  (SELECT max(updated_at)::date FROM kr_symbol_universe)"
+```
+
+🔴 The guard and the query are **one `&&` chain on purpose**. `${VAR:?}` alone
+aborts only its own command; in a pasted block the next line still runs. Chaining
+makes a failed derivation skip the query.
+
+Read the four fields. Compare **`inet_server_port()` against your `$PGPORT`** and
+the row count against the table below:
+
+| | server port | `kr_symbol_universe` | `max(updated_at)` |
+|---|---|---|---|
+| **Serving DB (correct)** | matches `$PGPORT` from `ENV_FILE` | **4007** | recent (2026-09-14) |
+| **Mac-local (wrong)** | **5432** | **4004** | **2026-09-01**, frozen |
+
+🔴 **Stop on any of these:** server port `5432`, row count `4004`, or an
+`updated_at` that has not moved in days. The Mac-local server is a pre-migration
+leftover, frozen since 2026-09-01; the serving DB moves.
+
+🔴 **Do not check for a socket, and do not use `inet_server_addr()`.** The
+Mac-local server also listens on TCP `127.0.0.1:5432`, so a socket-versus-host
+rule passes a wrong connection; and the serving DB reports `127.0.0.1` through
+the tunnel, so an address rule flags a correct one. **Do not parse `\conninfo`
+prose** — it is localized (`호스트=` / `포트=` under a Korean locale), so literal
+English matches never fire.
+
+🔴 The derivation refuses a file with **more than one `DATABASE_URL` line**.
+`dotenv` (which the app reaches through pydantic-settings `env_file=`) resolves a
+duplicate key to the **last** value; a first-match reader would silently pick the
+**first**. That is the original incident's shape — the app writing one database
+while the runbook reads another — so the runbook stops instead of choosing.
+
+🔴 The Mac-local server holds a same-named `auto_trader` with the same schema and
+a **near-identical row count** (4004 vs 4007 on 2026-09-15). A wrong connection
+returns plausible numbers with no error — which is why this check is mandatory
+and why a command exit code alone is not sufficient evidence.
+
 ### 1. Read-only preflight
 
 ```bash
-psql -X -v ON_ERROR_STOP=1 -P pager=off -d auto_trader -c "
+psql -X -v ON_ERROR_STOP=1 -P pager=off -c "
 BEGIN TRANSACTION READ ONLY;
 SELECT clock_timestamp() AS checked_at,
        count(*) FILTER (WHERE is_active) AS active_rows,
@@ -173,7 +242,7 @@ operator must not substitute the KR universe command.
 Re-run the read-only preflight, then verify the incident symbol:
 
 ```bash
-psql -X -v ON_ERROR_STOP=1 -P pager=off -d auto_trader -c "
+psql -X -v ON_ERROR_STOP=1 -P pager=off -c "
 BEGIN TRANSACTION READ ONLY;
 SELECT symbol, nxt_eligible, nxt_trading_suspended,
        toss_master_updated_at, updated_at,
@@ -191,6 +260,17 @@ Success requires:
 - no missing Toss stocks were reported
 
 Do not create a live proposal or send an order merely to test freshness.
+
+### 6. Clear the connection credentials
+
+```bash
+unset PGPASSWORD PGHOST PGPORT PGUSER PGDATABASE
+```
+
+🔴 **Unset all of them, not just the password.** While `PGHOST`/`PGPORT`/
+`PGDATABASE` stay exported, every later `psql` in that shell goes to the serving
+database instead of whatever the next command intended — the original incident
+in reverse. This runbook is read-only; the next command in your shell may not be.
 
 ## Failure modes
 
