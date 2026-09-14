@@ -64,12 +64,20 @@ returned before minting a nonce or starting the Telegram dispatch ledger.
 - Record the dry-run and commit packets in the operator log. A command exit
   code alone is not sufficient evidence.
 
-Use only this worktree:
+Start from the canonical repo:
 
 ```bash
-cd /Users/mgh3326/work/auto_trader.nxtfresh
+cd /Users/mgh3326/work/auto_trader
 export ENV_FILE=/Users/mgh3326/services/auto_trader/shared/.env.prod.native
 ```
+
+🔴 **Run this from the canonical repo, not a per-issue worktree.** An earlier
+revision pointed at `auto_trader.nxtfresh`, which is a temporary worktree: it
+carries whatever branch that issue is on, and `CLAUDE.md` makes it a
+`git worktree remove` target once its PR merges. A runbook that has to survive
+its own cleanup cannot start with a path that disappears. The canonical repo is
+pinned to `main`, and `ENV_FILE` is absolute, so this step does not depend on a
+worktree's `.env` symlink either.
 
 Then derive the psql connection **from that same `ENV_FILE`**:
 
