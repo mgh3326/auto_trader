@@ -79,7 +79,9 @@ import sys, urllib.parse as u
 dsn = next(l.split("=", 1)[1].strip() for l in open(sys.argv[1])
            if l.startswith("DATABASE_URL="))
 p = u.urlparse(dsn.replace("+asyncpg", ""))
-print("\t".join([p.hostname or "", str(p.port or 5432), p.username or "",
+if not p.hostname or not p.port:
+    raise SystemExit("DATABASE_URL must carry an explicit host and port")
+print("\t".join([p.hostname, str(p.port), p.username or "",
                  p.path.lstrip("/"), u.unquote(p.password or "")]))
 ' "$ENV_FILE")
 export PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD
@@ -95,27 +97,39 @@ it is never printed.
 Confirm the target before you read anything (prints no secret):
 
 ```bash
-: "${PGHOST:?not derived from ENV_FILE — re-run the export block}"
-: "${PGPORT:?not derived from ENV_FILE — re-run the export block}"
-psql -X -c '\conninfo'
+: "${PGHOST:?not derived from ENV_FILE}" && : "${PGPORT:?not derived from ENV_FILE}" &&
+psql -X -tAc "SELECT inet_server_port(), current_database(),
+  (SELECT count(*) FROM kr_symbol_universe),
+  (SELECT max(updated_at)::date FROM kr_symbol_universe)"
 ```
 
-`\conninfo` must name a **host and port**, not a socket:
+🔴 The guard and the query are **one `&&` chain on purpose**. `${VAR:?}` alone
+aborts only its own command; in a pasted block the next line still runs. Chaining
+makes a failed derivation skip the query.
 
-| | `\conninfo` reports | `kr_symbol_universe` |
-|---|---|---|
-| Serving DB (correct) | `host="…" port="25432"` — the host from `ENV_FILE` | 4007 |
-| Mac-local postgres (wrong) | `socket="/tmp" port="5432"` | 4004 |
+Read the four fields. Compare **`inet_server_port()` against your `$PGPORT`** and
+the row count against the table below:
 
-🔴 Stop if it reports a **socket** — the derivation failed and psql fell back to
-the Mac-local server. Do not use `inet_server_addr()` for this check: the serving
-DB reports `127.0.0.1` through the tunnel, so an address-based rule flags a
-correct connection.
+| | server port | `kr_symbol_universe` | `max(updated_at)` |
+|---|---|---|---|
+| **Serving DB (correct)** | matches `$PGPORT` from `ENV_FILE` | **4007** | recent (2026-09-14) |
+| **Mac-local (wrong)** | **5432** | **4004** | **2026-09-01**, frozen |
+
+🔴 **Stop on any of these:** server port `5432`, row count `4004`, or an
+`updated_at` that has not moved in days. The Mac-local server is a pre-migration
+leftover, frozen since 2026-09-01; the serving DB moves.
+
+🔴 **Do not check for a socket, and do not use `inet_server_addr()`.** The
+Mac-local server also listens on TCP `127.0.0.1:5432`, so a socket-versus-host
+rule passes a wrong connection; and the serving DB reports `127.0.0.1` through
+the tunnel, so an address rule flags a correct one. **Do not parse `\conninfo`
+prose** — it is localized (`호스트=` / `포트=` under a Korean locale), so literal
+English matches never fire.
 
 🔴 The Mac-local server holds a same-named `auto_trader` with the same schema and
 a **near-identical row count** (4004 vs 4007 on 2026-09-15). A wrong connection
-therefore returns plausible numbers with no error — which is why this check is
-mandatory and why a command exit code alone is not sufficient evidence.
+returns plausible numbers with no error — which is why this check is mandatory
+and why a command exit code alone is not sufficient evidence.
 
 ### 1. Read-only preflight
 
