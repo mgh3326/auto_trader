@@ -76,9 +76,11 @@ Then derive the psql connection **from that same `ENV_FILE`**:
 ```bash
 IFS=$'\t' read -r PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD < <(python3 -c '
 import sys, urllib.parse as u
-dsn = next(l.split("=", 1)[1].strip() for l in open(sys.argv[1])
-           if l.startswith("DATABASE_URL="))
-p = u.urlparse(dsn.replace("+asyncpg", ""))
+vals = [l.split("=", 1)[1].strip() for l in open(sys.argv[1])
+        if l.startswith("DATABASE_URL=")]
+if len(vals) != 1:
+    raise SystemExit(f"expected exactly one DATABASE_URL line, found {len(vals)}")
+p = u.urlparse(vals[0].replace("+asyncpg", ""))
 if not p.hostname or not p.port:
     raise SystemExit("DATABASE_URL must carry an explicit host and port")
 print("\t".join([p.hostname, str(p.port), p.username or "",
@@ -125,6 +127,12 @@ rule passes a wrong connection; and the serving DB reports `127.0.0.1` through
 the tunnel, so an address rule flags a correct one. **Do not parse `\conninfo`
 prose** — it is localized (`호스트=` / `포트=` under a Korean locale), so literal
 English matches never fire.
+
+🔴 The derivation refuses a file with **more than one `DATABASE_URL` line**.
+`dotenv` (which the app reaches through pydantic-settings `env_file=`) resolves a
+duplicate key to the **last** value; a first-match reader would silently pick the
+**first**. That is the original incident's shape — the app writing one database
+while the runbook reads another — so the runbook stops instead of choosing.
 
 🔴 The Mac-local server holds a same-named `auto_trader` with the same schema and
 a **near-identical row count** (4004 vs 4007 on 2026-09-15). A wrong connection
