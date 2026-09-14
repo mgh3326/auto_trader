@@ -364,6 +364,7 @@ tests/test_mcp_server_auth.py
 tests/test_mcp_server_env_utils.py
 tests/test_mcp_server_main.py
 tests/test_mcp_timeout_middleware.py
+tests/test_mcp_tool_call_log_middleware.py
 tests/test_mcp_toss_order_variants.py
 tests/test_mcp_toss_signals.py
 tests/test_mcp_user_settings_tools.py

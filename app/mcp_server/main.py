@@ -45,6 +45,9 @@ from app.mcp_server.lifecycle import (  # noqa: E402
 )
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
 from app.mcp_server.timeout_middleware import ToolTimeoutMiddleware  # noqa: E402
+from app.mcp_server.tool_call_log_middleware import (  # noqa: E402
+    ToolCallLogMiddleware,
+)
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
@@ -161,7 +164,11 @@ mcp = FastMCP(
     lifespan=build_server_lifespan(),
 )
 
-# Caller identity is outermost so the Sentry middleware can attach the resolved
+# Invocation logging is outermost so every tools/call leaves one name-carrying
+# Loki line even when an inner middleware (e.g. the timeout budget) ends the call.
+# It only reads the tool name, so it needs nothing the inner middlewares resolve.
+mcp.add_middleware(ToolCallLogMiddleware(profile=_mcp_profile))
+# Caller identity is next so the Sentry middleware can attach the resolved
 # consumer before the request-scoped contextvars are reset.
 mcp.add_middleware(CallerIdentityMiddleware())
 mcp.add_middleware(McpToolCallSentryMiddleware())

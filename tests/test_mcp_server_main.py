@@ -199,6 +199,18 @@ def _load_main_module(
     fake_timeout_middleware = ModuleType("app.mcp_server.timeout_middleware")
     fake_timeout_middleware.__dict__["ToolTimeoutMiddleware"] = _RealTTM
 
+    # Same reason as ToolTimeoutMiddleware above: the fake app.mcp_server package
+    # has __path__ = [], so the all-tools invocation logger needs an explicit stub.
+    # Use the real class so the outermost-middleware assertion stays meaningful.
+    from app.mcp_server.tool_call_log_middleware import (
+        ToolCallLogMiddleware as _RealTCLM,
+    )
+
+    fake_tool_call_log_middleware = ModuleType(
+        "app.mcp_server.tool_call_log_middleware"
+    )
+    fake_tool_call_log_middleware.__dict__["ToolCallLogMiddleware"] = _RealTCLM
+
     env_utils_module = _load_env_utils_module()
 
     monkeypatch.setitem(sys.modules, "fastmcp", fake_fastmcp)
@@ -220,6 +232,11 @@ def _load_main_module(
     monkeypatch.setitem(sys.modules, "app.mcp_server.lifecycle", fake_lifecycle)
     monkeypatch.setitem(
         sys.modules, "app.mcp_server.timeout_middleware", fake_timeout_middleware
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.mcp_server.tool_call_log_middleware",
+        fake_tool_call_log_middleware,
     )
 
     if auth_token:
@@ -249,14 +266,18 @@ class TestMcpServerMain:
     def test_registers_caller_identity_middleware_before_sentry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _, mcp, _, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
-        # Caller identity is outermost so Sentry sees its request context; the
-        # ToolTimeoutMiddleware remains innermost and Sentry still wraps it.
-        assert calls[:2] == ["caller-identity-middleware", "middleware"]
-        assert type(calls[2]).__name__ == "ToolTimeoutMiddleware"
-        assert len(calls) == 3
+        # Tool-call logging is outermost so every tools/call is recorded even when
+        # an inner middleware ends it; caller identity is next so Sentry sees its
+        # request context; the ToolTimeoutMiddleware remains innermost and Sentry
+        # still wraps it. fastmcp reverses the list, so first-added = outermost.
+        assert type(calls[0]).__name__ == "ToolCallLogMiddleware"
+        assert calls[0]._profile == module._mcp_profile.value
+        assert calls[1:3] == ["caller-identity-middleware", "middleware"]
+        assert type(calls[3]).__name__ == "ToolTimeoutMiddleware"
+        assert len(calls) == 4
 
     def test_non_integer_log_level_falls_back_to_info(
         self, monkeypatch: pytest.MonkeyPatch
