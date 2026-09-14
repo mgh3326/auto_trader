@@ -74,7 +74,8 @@ export ENV_FILE=/Users/mgh3326/services/auto_trader/shared/.env.prod.native
 Then derive the psql connection **from that same `ENV_FILE`**:
 
 ```bash
-IFS=$'\t' read -r PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD < <(python3 -c '
+{ read -r PGHOST; read -r PGPORT; read -r PGUSER
+  read -r PGDATABASE; read -r PGPASSWORD; } < <(python3 -c '
 import sys, urllib.parse as u
 vals = [l.split("=", 1)[1].strip() for l in open(sys.argv[1])
         if l.startswith("DATABASE_URL=")]
@@ -83,7 +84,7 @@ if len(vals) != 1:
 p = u.urlparse(vals[0].replace("+asyncpg", ""))
 if not p.hostname or not p.port:
     raise SystemExit("DATABASE_URL must carry an explicit host and port")
-print("\t".join([p.hostname, str(p.port), p.username or "",
+print("\n".join([p.hostname, str(p.port), p.username or "",
                  p.path.lstrip("/"), u.unquote(p.password or "")]))
 ' "$ENV_FILE")
 export PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD
@@ -263,11 +264,13 @@ Do not create a live proposal or send an order merely to test freshness.
 ### 6. Clear the connection credentials
 
 ```bash
-unset PGPASSWORD
+unset PGPASSWORD PGHOST PGPORT PGUSER PGDATABASE
 ```
 
-The other `PG*` variables are harmless to leave set; `PGPASSWORD` should not
-outlive the procedure in an interactive shell.
+🔴 **Unset all of them, not just the password.** While `PGHOST`/`PGPORT`/
+`PGDATABASE` stay exported, every later `psql` in that shell goes to the serving
+database instead of whatever the next command intended — the original incident
+in reverse. This runbook is read-only; the next command in your shell may not be.
 
 ## Failure modes
 
