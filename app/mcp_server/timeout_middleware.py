@@ -79,9 +79,10 @@ class ToolTimeoutMiddleware(Middleware):
     """Bound each ``tools/call`` with a per-tool time budget.
 
     Registered LAST in main.py so it is the innermost middleware (wraps the tool).
-    Caller identity is outermost and Sentry sits immediately inside it, so timeout
-    ``ToolError`` exceptions retain both caller and tool-call context (fastmcp 3.2.0
-    reverses the middleware list, so first-added = outermost).
+    Tool-call logging is outermost (so a call ended by this budget is still
+    recorded), caller identity comes next, and Sentry sits immediately inside it,
+    so timeout ``ToolError`` exceptions retain both caller and tool-call context
+    (fastmcp 3.2.0 reverses the middleware list, so first-added = outermost).
     """
 
     def __init__(
