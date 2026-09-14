@@ -71,10 +71,55 @@ cd /Users/mgh3326/work/auto_trader.nxtfresh
 export ENV_FILE=/Users/mgh3326/services/auto_trader/shared/.env.prod.native
 ```
 
+Then derive the psql connection **from that same `ENV_FILE`**:
+
+```bash
+IFS=$'\t' read -r PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD < <(python3 -c '
+import sys, urllib.parse as u
+dsn = next(l.split("=", 1)[1].strip() for l in open(sys.argv[1])
+           if l.startswith("DATABASE_URL="))
+p = u.urlparse(dsn.replace("+asyncpg", ""))
+print("\t".join([p.hostname or "", str(p.port or 5432), p.username or "",
+                 p.path.lstrip("/"), u.unquote(p.password or "")]))
+' "$ENV_FILE")
+export PGHOST PGPORT PGUSER PGDATABASE PGPASSWORD
+```
+
+🔴 **Do not hardcode `-h`, and do not run psql without it either.** `ENV_FILE` is
+the single source for this runbook's DB target; a hardcoded host silently stops
+tracking DSN changes, and a bare `psql -d auto_trader` connects to the **local
+Mac postgres** and measures the wrong database (observed 2026-09-15). The
+password reaches libpq through the environment only — never through `argv`, and
+it is never printed.
+
+Confirm the target before you read anything (prints no secret):
+
+```bash
+[ -n "$PGHOST" ] && [ -n "$PGPORT" ] || echo "STOP: PGHOST/PGPORT not derived from ENV_FILE"
+psql -X -c '\conninfo'
+```
+
+`\conninfo` must name a **host and port**, not a socket:
+
+| | `\conninfo` reports | `kr_symbol_universe` |
+|---|---|---|
+| Serving DB (correct) | `host="…" port="25432"` — the host from `ENV_FILE` | 4007 |
+| Mac-local postgres (wrong) | `socket="/tmp" port="5432"` | 4004 |
+
+🔴 Stop if it reports a **socket** — the derivation failed and psql fell back to
+the Mac-local server. Do not use `inet_server_addr()` for this check: the serving
+DB reports `127.0.0.1` through the tunnel, so an address-based rule flags a
+correct connection.
+
+🔴 The Mac-local server holds a same-named `auto_trader` with the same schema and
+a **near-identical row count** (4004 vs 4007 on 2026-09-15). A wrong connection
+therefore returns plausible numbers with no error — which is why this check is
+mandatory and why a command exit code alone is not sufficient evidence.
+
 ### 1. Read-only preflight
 
 ```bash
-psql -X -v ON_ERROR_STOP=1 -P pager=off -d auto_trader -c "
+psql -X -v ON_ERROR_STOP=1 -P pager=off -c "
 BEGIN TRANSACTION READ ONLY;
 SELECT clock_timestamp() AS checked_at,
        count(*) FILTER (WHERE is_active) AS active_rows,
@@ -173,7 +218,7 @@ operator must not substitute the KR universe command.
 Re-run the read-only preflight, then verify the incident symbol:
 
 ```bash
-psql -X -v ON_ERROR_STOP=1 -P pager=off -d auto_trader -c "
+psql -X -v ON_ERROR_STOP=1 -P pager=off -c "
 BEGIN TRANSACTION READ ONLY;
 SELECT symbol, nxt_eligible, nxt_trading_suspended,
        toss_master_updated_at, updated_at,
