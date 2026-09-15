@@ -40,6 +40,7 @@ tests/mcp_server/test_profile_tool_snapshot.py
 tests/mcp_server/test_proposal_revalidate.py
 tests/mcp_server/test_rob1311_r2_blockers.py
 tests/mcp_server/test_shadow_replay_profile.py
+tests/mcp_server/test_tool_call_observability.py
 tests/mcp_server/test_watch_events_list_recent_tool.py
 tests/mcp_server/tooling/test_crypto_live_routing.py
 tests/mcp_server/tooling/test_get_holdings_n1_residuals.py

@@ -43,6 +43,42 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     `save_position_intake_retrospective`
   - Other calls use `other`; join stages with caller/session/run/correlation and report/artifact/proposal identifiers rather than raw symbols.
 
+## Observability (container logs / Loki)
+
+- Every `tools/call` emits exactly one INFO line via `ToolCallLogMiddleware`
+  (`app/mcp_server/tool_call_log_middleware.py`), registered **outermost** so the
+  call is recorded even when an inner middleware (the timeout budget) ends it:
+
+  ```
+  08:39:36 [INFO] mcp.tool.called tool=kis_live_place_order profile=default
+  ```
+
+  Loki aggregation by container and tool:
+
+  ```logql
+  sum by (container, tool) (
+    count_over_time({container=~"at-mcp-.*"} |= "mcp.tool.called" | logfmt [24h])
+  )
+  ```
+
+- 🔴 **Put identifying values in the message string, never in `extra`.** The root
+  formatter configured in `main()` is `"%(asctime)s [%(levelname)s] %(message)s"`,
+  which renders the message only — anything attached through `extra` is dropped
+  before the line leaves the process. The pre-existing niche observation
+  (`tooling/niche.py`) attaches the tool name that way, which is why its shipped
+  line is a bare `[WARNING] mcp.niche_tool_called` with no tool in it. Keep the
+  `key=value` shape so Loki's `logfmt` parser can extract the fields.
+- Only the tool name and the `MCP_PROFILE` reach these log lines. Arguments and
+  results never do — they carry symbols, quantities, prices and account
+  identifiers. (Sanitized arguments go to Sentry context, not to stdout.)
+- The `mcp.niche` Sentry tag is owned by `tooling/niche.py` and marks only the
+  audited C group. The invocation log covers every tool and deliberately does not
+  touch that tag.
+- Observation must never change a tool's outcome: this middleware sits in front of
+  live-order tools, so its whole body (attribute read and `logger` call alike) is
+  inside one `except Exception`. `BaseException` is not caught — cancellation and
+  interpreter exit still propagate. See #2049 for the failure mode this prevents.
+
 ## Tools
 
 ### News Tools (Pre-Market Briefing Pipeline)
