@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 
+from app.routers import execution_ledger_ingest as ingest_module
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.schemas.execution_ledger_ingest import ExecutionLedgerFillIngestRequest
 from app.services.execution_ledger import fill_ingest as fill_ingest_module
 from app.services.execution_ledger.fill_ingest import commit_fill
 from app.services.fill_event_handoff import bundle as bundle_module
@@ -182,12 +184,14 @@ def test_disabled_gate_does_not_parse_outbound_configuration(
 ) -> None:
     monkeypatch.setenv("FILL_HANDOFF_LANES", "not-json")
     monkeypatch.setenv("FILL_HANDOFF_BATCH_LIMIT", "not-an-int")
+    monkeypatch.setenv("FILL_HANDOFF_LOOKBACK_IDS", "not-an-int")
     monkeypatch.setenv("FILL_HANDOFF_SINK_TIMEOUT_S", "not-a-float")
 
-    lanes, _sink, batch_limit, timeout = _delivery_runtime(False)
+    lanes, _sink, batch_limit, lookback_ids, timeout = _delivery_runtime(False)
 
     assert lanes == {}
     assert batch_limit == 500
+    assert lookback_ids == 256
     assert timeout == 3.0
 
 
@@ -341,8 +345,12 @@ async def test_only_evidenced_broker_risk_pushes_and_is_deduped(
 
 
 class _ExplodingSink:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def send(self, lane: str, event_id: str, text: str) -> bool:
         del lane, event_id, text
+        self.calls += 1
         raise RuntimeError("synthetic sink failure")
 
 
@@ -386,7 +394,14 @@ async def test_runner_is_fail_open_for_sink_exception_and_thirty_second_stall(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_commit_fill_result_and_latency_are_independent_of_handoff_sink() -> None:
+@pytest.mark.parametrize("writer", ["commit_fill", "http_ingest"])
+@pytest.mark.parametrize("sink_kind", ["exception", "stall_30s"])
+async def test_ledger_write_result_and_latency_are_independent_of_active_handoff_sink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer: str,
+    sink_kind: str,
+) -> None:
     class Session:
         commits = 0
 
@@ -399,6 +414,9 @@ async def test_commit_fill_result_and_latency_are_independent_of_handoff_sink() 
         async def commit(self) -> None:
             self.commits += 1
 
+        def begin_nested(self) -> Session:
+            return self
+
     class Repo:
         def __init__(self, db: Session) -> None:
             self.db = db
@@ -407,9 +425,20 @@ async def test_commit_fill_result_and_latency_are_independent_of_handoff_sink() 
             assert fill.broker_order_id == "order-1"
             return "inserted", 42
 
-    poison_sink = _SleepingSink()
-    _unused_runner = FillHandoffBundleRunner(
-        BundleConfig(state_dir=Path("unused"), lanes={"crypto": "opa-crypto"}),
+    async def no_downstream(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(ingest_module, "ExecutionLedgerRepository", Repo)
+    monkeypatch.setattr(ingest_module, "run_post_upsert_downstream", no_downstream)
+    _write_state(tmp_path)
+    poison_sink = _ExplodingSink() if sink_kind == "exception" else _SleepingSink()
+    runner = FillHandoffBundleRunner(
+        BundleConfig(
+            state_dir=tmp_path,
+            lanes={"crypto": "opa-crypto"},
+            sink_timeout_s=0.01,
+        ),
         sink=poison_sink,
     )
     fill = ExecutionLedgerUpsert(
@@ -429,17 +458,37 @@ async def test_commit_fill_result_and_latency_are_independent_of_handoff_sink() 
         source="websocket",
     )
 
-    started = time.monotonic()
-    result = await commit_fill(
-        fill,
-        session_factory=Session,
-        repository_cls=Repo,  # type: ignore[arg-type]
+    handoff_task = asyncio.create_task(
+        runner.run(
+            object(),  # type: ignore[arg-type]
+            fill_source=_Source([_fill(1)], "ledger_id"),
+            watch_source=_WatchSource([]),
+            evidence_source=_Evidence(),
+        )
     )
+    await asyncio.sleep(0)
+
+    started = time.monotonic()
+    if writer == "commit_fill":
+        result = await commit_fill(
+            fill,
+            session_factory=Session,
+            repository_cls=Repo,  # type: ignore[arg-type]
+        )
+    else:
+        response = await ingest_module.ingest_execution_ledger_fills(
+            ExecutionLedgerFillIngestRequest(
+                fills=[fill.model_dump()], source="fillwire"
+            ),
+            Session(),  # type: ignore[arg-type]
+        )
+        result = (response.results[0].status, response.results[0].row_id)
     elapsed = time.monotonic() - started
+    await handoff_task
 
     assert result == ("inserted", 42)
     assert elapsed < 0.1
-    assert poison_sink.calls == 0
+    assert poison_sink.calls == 1
     fill_ingest_source = inspect.getsource(fill_ingest_module)
     assert "fill_event_handoff" not in fill_ingest_source
 
