@@ -41,14 +41,16 @@ FILL_EVENT_HANDOFF_ENABLED = "FILL_EVENT_HANDOFF_ENABLED"
 # Accepted true tokens are intentionally explicit and test-pinned. Everything
 # else (including unset, empty, 0, false, and off) is disabled.
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-_STATE_VERSION = 3
+_STATE_VERSION = 4
 
-# PostgreSQL sequence ids can be allocated before a transaction becomes
-# visible. Re-reading the preceding 256 ids covers up to 256 concurrent
-# allocation/commit inversions while remaining below the 500-row new-event
-# batch. Lookback and new rows are queried separately, so neither starves the
-# other. Deployments may tune this down to zero or up to the repository cap.
+# This 256-id bound is an empirical operational choice, not a PostgreSQL
+# guarantee. Visibility inversions wider than the configured bound remain a
+# known limitation. Lookback and new rows are queried separately so neither
+# starves the other.
 DEFAULT_LOOKBACK_IDS = 256
+STALL_NOTICE_AFTER_PASSES = 3  # Three retries distinguish a persistent stall.
+_LEGACY_STATE_DIR = "/var/lib/fill-event-handoff"
+_BUNDLE_STATE_DIR = "/var/lib/fill-handoff-bundle"
 
 
 def handoff_enabled() -> bool:
@@ -328,16 +330,30 @@ class FillHandoffBundleRunner:
             )
             return False
 
-    @staticmethod
-    def _purge_seen(state: dict[str, Any], now_ts: float) -> None:
+    def _purge_seen(self, state: dict[str, Any], now_ts: float) -> None:
         cutoff = now_ts - DEDUP_WINDOW.total_seconds()
-        for name in ("seen", "risk_seen"):
-            values = state.setdefault(name, {})
-            state[name] = {
-                str(key): float(value)
-                for key, value in values.items()
-                if float(value) >= cutoff
-            }
+        fill_floor = max(
+            0, int(state.get("fill_watermark", 0)) - self.config.lookback_ids
+        )
+        watch_floor = max(
+            0, int(state.get("watch_watermark", 0)) - self.config.lookback_ids
+        )
+        seen = state.setdefault("seen", {})
+        state["seen"] = {
+            str(key): value
+            for key, value in seen.items()
+            if _keep_seen_value(
+                value,
+                id_floor=watch_floor if str(key).startswith("watch:") else fill_floor,
+                legacy_cutoff=cutoff,
+            )
+        }
+        risks = state.setdefault("risk_seen", {})
+        state["risk_seen"] = {
+            str(key): value
+            for key, value in risks.items()
+            if _keep_seen_value(value, id_floor=fill_floor, legacy_cutoff=cutoff)
+        }
 
     async def _seed_or_catch_up(
         self,
@@ -405,11 +421,24 @@ class FillHandoffBundleRunner:
             "fill_bundles": 0,
             "watch_bundles": 0,
             "risk_pushes": 0,
+            "stalled_passes": 0,
+            "stalled_head_id": None,
+            "stall_notices": 0,
             "errors": [],
         }
 
         with HandoffState(self.config.state_dir) as locked:
             state = locked.data
+            if (
+                not locked.is_new
+                and "watermark" in state
+                and "fill_watermark" not in state
+            ):
+                raise RuntimeError(
+                    "legacy and bundle handoff runners cannot share state_dir; "
+                    f"keep legacy {_LEGACY_STATE_DIR} separate from bundle "
+                    f"{_BUNDLE_STATE_DIR}"
+                )
             state["version"] = _STATE_VERSION
             state.setdefault("fill_watermark", 0)
             state.setdefault("watch_watermark", 0)
@@ -419,6 +448,11 @@ class FillHandoffBundleRunner:
             state.setdefault("fill_lookback_armed", not locked.is_new)
             state.setdefault("watch_lookback_armed", not locked.is_new)
             state.setdefault("risk_seen", {})
+            state.setdefault("seen_floor", {"fill": 0, "watch": 0})
+            state.setdefault("fill_stalled_passes", 0)
+            state.setdefault("fill_stalled_head_id", None)
+            state.setdefault("watch_stalled_passes", 0)
+            state.setdefault("watch_stalled_head_id", None)
             self._purge_seen(state, self.now().timestamp())
             outcome["errors"].extend(
                 await self._seed_or_catch_up(
@@ -446,6 +480,11 @@ class FillHandoffBundleRunner:
             locked.save()
             outcome["fill_watermark"] = int(state["fill_watermark"])
             outcome["watch_watermark"] = int(state["watch_watermark"])
+            fill_stalls = int(state["fill_stalled_passes"])
+            watch_stalls = int(state["watch_stalled_passes"])
+            stalled_kind = "fill" if fill_stalls >= watch_stalls else "watch"
+            outcome["stalled_passes"] = max(fill_stalls, watch_stalls)
+            outcome["stalled_head_id"] = state[f"{stalled_kind}_stalled_head_id"]
             return outcome
 
     async def _run_fills(
@@ -473,7 +512,7 @@ class FillHandoffBundleRunner:
             return
 
         now_ts = self.now().timestamp()
-        risk_seen: dict[str, float] = state["risk_seen"]
+        risk_seen: dict[str, Any] = state["risk_seen"]
         for fill in rows:
             try:
                 judgements = await self.detector.detect(fill, source=evidence)
@@ -483,20 +522,33 @@ class FillHandoffBundleRunner:
                 continue
             for judgement in judgements:
                 if judgement.dedupe_id in risk_seen:
+                    _refresh_seen_value(
+                        risk_seen,
+                        judgement.dedupe_id,
+                        row_id=int(fill["ledger_id"]),
+                        now_ts=now_ts,
+                    )
                     continue
                 if await self._push(judgement):
-                    risk_seen[judgement.dedupe_id] = now_ts
+                    risk_seen[judgement.dedupe_id] = {
+                        "id": int(fill["ledger_id"]),
+                        "ts": now_ts,
+                    }
                     outcome["risk_pushes"] += 1
 
         resolved: set[int] = set()
         grouped: dict[str, dict[str, list[Mapping[str, Any]]]] = defaultdict(
             lambda: defaultdict(list)
         )
-        seen: dict[str, float] = state["seen"]
+        seen: dict[str, Any] = state["seen"]
+        seen_floor = int(state["seen_floor"].get("fill", 0))
         for fill in rows:
             row_id = int(fill["ledger_id"])
             key = _fill_dedupe_key(fill)
-            if key in seen:
+            if row_id <= seen_floor and row_id != state.get("fill_stalled_head_id"):
+                resolved.add(row_id)
+            elif key in seen:
+                _refresh_seen_value(seen, key, row_id=row_id, now_ts=now_ts)
                 resolved.add(row_id)
             else:
                 grouped[str(fill["market"])][key].append(fill)
@@ -515,12 +567,25 @@ class FillHandoffBundleRunner:
             ):
                 outcome["fill_bundles"] += 1
                 for key, values in by_key.items():
-                    seen[key] = now_ts
+                    seen[key] = {
+                        "id": max(int(value["ledger_id"]) for value in values),
+                        "ts": now_ts,
+                    }
                     resolved.update(int(value["ledger_id"]) for value in values)
 
-        state["fill_watermark"] = _advance_watermark(
-            int(state["fill_watermark"]), rows, resolved, id_key="ledger_id"
+        current = int(state["fill_watermark"])
+        advanced = _advance_watermark(current, rows, resolved, id_key="ledger_id")
+        state["fill_watermark"] = advanced
+        unresolved = _first_unresolved(rows, resolved, id_key="ledger_id")
+        await self._record_stall(
+            state,
+            outcome,
+            kind="fill",
+            current=current,
+            advanced=advanced,
+            unresolved=unresolved,
         )
+        _trim_seen(state, kind="fill", maximum=self._seen_cap())
 
     async def _run_watches(
         self,
@@ -563,11 +628,15 @@ class FillHandoffBundleRunner:
         grouped: dict[str, dict[str, list[Mapping[str, Any]]]] = defaultdict(
             lambda: defaultdict(list)
         )
-        seen: dict[str, float] = state["seen"]
+        seen: dict[str, Any] = state["seen"]
+        seen_floor = int(state["seen_floor"].get("watch", 0))
         for event in rows:
             row_id = int(event["event_id"])
             key = _watch_dedupe_key(event)
-            if key in seen:
+            if row_id <= seen_floor and row_id != state.get("watch_stalled_head_id"):
+                resolved.add(row_id)
+            elif key in seen:
+                _refresh_seen_value(seen, key, row_id=row_id, now_ts=now_ts)
                 resolved.add(row_id)
             else:
                 grouped[str(event["market"])][key].append(event)
@@ -586,7 +655,10 @@ class FillHandoffBundleRunner:
             ):
                 outcome["watch_bundles"] += 1
                 for key, values in by_key.items():
-                    seen[key] = now_ts
+                    seen[key] = {
+                        "id": max(int(value["event_id"]) for value in values),
+                        "ts": now_ts,
+                    }
                     resolved.update(int(value["event_id"]) for value in values)
 
         advanced = _advance_watch_cursor(cursor, rows, resolved)
@@ -594,6 +666,115 @@ class FillHandoffBundleRunner:
         state["watch_delivered_at"] = (
             None if advanced.delivered_at is None else advanced.delivered_at.isoformat()
         )
+        unresolved = _first_unresolved(rows, resolved, id_key="event_id")
+        await self._record_stall(
+            state,
+            outcome,
+            kind="watch",
+            current=cursor,
+            advanced=advanced,
+            unresolved=unresolved,
+        )
+        _trim_seen(state, kind="watch", maximum=self._seen_cap())
+
+    def _seen_cap(self) -> int:
+        return self.config.lookback_ids * 4
+
+    async def _record_stall(
+        self,
+        state: dict[str, Any],
+        outcome: dict[str, Any],
+        *,
+        kind: str,
+        current: int | WatchCursor,
+        advanced: int | WatchCursor,
+        unresolved: Mapping[str, Any] | None,
+    ) -> None:
+        passes_key = f"{kind}_stalled_passes"
+        head_key = f"{kind}_stalled_head_id"
+        if unresolved is None or advanced != current:
+            state[passes_key] = 0
+            state[head_key] = None
+            return
+        id_key = "ledger_id" if kind == "fill" else "event_id"
+        head_id = int(unresolved[id_key])
+        previous = state.get(head_key)
+        state[passes_key] = (
+            int(state.get(passes_key, 0)) + 1 if previous == head_id else 1
+        )
+        state[head_key] = head_id
+        passes = int(state[passes_key])
+        if passes < STALL_NOTICE_AFTER_PASSES:
+            return
+        market = str(unresolved["market"])
+        lane = self.config.lanes.get(market)
+        if lane is None:
+            outcome["errors"].append(f"{kind}_stall_lane_missing:{market}")
+            return
+        text = f"[{kind}] 보류 1건 id={head_id} ({passes}패스 연속 미해결)"
+        # A stall notice is ordinary lane content, never an immediate push.
+        event_id = _event_id(f"{kind}-stalled", market, [f"{head_id}:{passes}"])
+        if await self._send(lane, event_id, text):
+            outcome["stall_notices"] = int(outcome.get("stall_notices", 0)) + 1
+
+
+def _seen_id(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    row_id = value.get("id")
+    if isinstance(row_id, bool) or not isinstance(row_id, int) or row_id < 0:
+        return None
+    return row_id
+
+
+def _keep_seen_value(value: Any, *, id_floor: int, legacy_cutoff: float) -> bool:
+    row_id = _seen_id(value)
+    if row_id is not None:
+        return row_id >= id_floor
+    try:
+        return float(value) >= legacy_cutoff
+    except (TypeError, ValueError):
+        return False
+
+
+def _refresh_seen_value(
+    values: dict[str, Any], key: str, *, row_id: int, now_ts: float
+) -> None:
+    previous = _seen_id(values.get(key))
+    values[key] = {"id": max(row_id, previous or 0), "ts": now_ts}
+
+
+def _first_unresolved(
+    rows: Sequence[Mapping[str, Any]], resolved: set[int], *, id_key: str
+) -> Mapping[str, Any] | None:
+    return next(
+        (
+            row
+            for row in sorted(rows, key=lambda value: int(value[id_key]))
+            if int(row[id_key]) not in resolved
+        ),
+        None,
+    )
+
+
+def _trim_seen(state: dict[str, Any], *, kind: str, maximum: int) -> None:
+    seen: dict[str, Any] = state["seen"]
+    candidates = sorted(
+        (
+            (row_id, str(key))
+            for key, value in seen.items()
+            if (str(key).startswith("watch:")) == (kind == "watch")
+            if (row_id := _seen_id(value)) is not None
+        )
+    )
+    excess = len(candidates) - maximum
+    if excess <= 0:
+        return
+    evicted = candidates[:excess]
+    for _, key in evicted:
+        seen.pop(key, None)
+    floors = state.setdefault("seen_floor", {"fill": 0, "watch": 0})
+    floors[kind] = max(int(floors.get(kind, 0)), max(row_id for row_id, _ in evicted))
 
 
 def _advance_watermark(
