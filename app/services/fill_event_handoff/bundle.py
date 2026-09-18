@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentWatchEvent
@@ -39,7 +39,7 @@ from .state import HandoffState
 
 FILL_EVENT_HANDOFF_ENABLED = "FILL_EVENT_HANDOFF_ENABLED"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-_STATE_VERSION = 2
+_STATE_VERSION = 3
 
 
 def handoff_enabled() -> bool:
@@ -89,11 +89,19 @@ class FillEventSource(Protocol):
 
 
 class WatchAlertSource(Protocol):
-    async def high_watermark(self) -> int: ...
+    async def high_watermark(self) -> WatchCursor: ...
 
     async def list_after(
-        self, after_id: int, *, limit: int
+        self, cursor: WatchCursor, *, limit: int
     ) -> Sequence[Mapping[str, Any]]: ...
+
+
+@dataclass(frozen=True)
+class WatchCursor:
+    """Delivery-order cursor; ``delivered_at=None`` supports legacy id seeds."""
+
+    delivered_at: datetime | None
+    event_id: int
 
 
 class DbFillEventSource:
@@ -117,29 +125,53 @@ class DbFillEventSource:
 
 
 class DbWatchAlertSource:
-    """Read-only projection of delivered watch events, keyed by row id."""
+    """Read-only projection of watch events in durable delivery order."""
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def high_watermark(self) -> int:
+    async def high_watermark(self) -> WatchCursor:
         result = await self._db.execute(
-            select(func.max(InvestmentWatchEvent.id)).where(
-                InvestmentWatchEvent.delivery_status == "delivered"
+            select(InvestmentWatchEvent.delivered_at, InvestmentWatchEvent.id)
+            .where(
+                InvestmentWatchEvent.delivery_status == "delivered",
+                InvestmentWatchEvent.delivered_at.is_not(None),
             )
+            .order_by(
+                InvestmentWatchEvent.delivered_at.desc(),
+                InvestmentWatchEvent.id.desc(),
+            )
+            .limit(1)
         )
-        return int(result.scalar_one() or 0)
+        row = result.first()
+        if row is None:
+            return WatchCursor(None, 0)
+        return WatchCursor(row.delivered_at, int(row.id))
 
     async def list_after(
-        self, after_id: int, *, limit: int
+        self, cursor: WatchCursor, *, limit: int
     ) -> Sequence[Mapping[str, Any]]:
+        if cursor.delivered_at is None:
+            after_cursor = InvestmentWatchEvent.id > cursor.event_id
+        else:
+            after_cursor = or_(
+                InvestmentWatchEvent.delivered_at > cursor.delivered_at,
+                and_(
+                    InvestmentWatchEvent.delivered_at == cursor.delivered_at,
+                    InvestmentWatchEvent.id > cursor.event_id,
+                ),
+            )
         result = await self._db.execute(
             select(InvestmentWatchEvent)
             .where(
-                InvestmentWatchEvent.id > after_id,
+                after_cursor,
                 InvestmentWatchEvent.delivery_status == "delivered",
+                InvestmentWatchEvent.delivered_at.is_not(None),
             )
-            .order_by(InvestmentWatchEvent.id.asc())
+            .order_by(
+                InvestmentWatchEvent.delivered_at.asc(),
+                InvestmentWatchEvent.id.asc(),
+            )
             .limit(max(1, min(int(limit), 500)))
         )
         return [_watch_dict(row) for row in result.scalars().all()]
@@ -187,6 +219,11 @@ def _watch_dedupe_key(event: Mapping[str, Any]) -> str:
     return f"watch:{event['idempotency_key']}"
 
 
+def _fill_dedupe_key(fill: Mapping[str, Any]) -> str:
+    """Retain the existing content key while isolating account and venue."""
+    return f"{fill['account_mode']}:{fill['venue']}:{dedupe_key(fill)}"
+
+
 def _event_id(kind: str, market: str, keys: Sequence[str]) -> str:
     material = "\n".join(keys).encode("utf-8")
     digest = hashlib.sha256(material).hexdigest()[:16]
@@ -198,7 +235,7 @@ def _render_fill_bundle(market: str, fills: Sequence[Mapping[str, Any]]) -> str:
     lines.extend(
         "- ledger_id={ledger_id} dedupe_key={key} {symbol} {side} "
         "{filled_qty}@{filled_price} {currency} {filled_notional}".format(
-            key=dedupe_key(fill), **fill
+            key=_fill_dedupe_key(fill), **fill
         )
         for fill in fills
     )
@@ -300,24 +337,39 @@ class FillHandoffBundleRunner:
         enabled: bool,
     ) -> list[str]:
         errors: list[str] = []
-        if enabled and not new_state:
-            return errors
-        for name, source, configured in (
-            ("fill", fill_source, self.config.since_fill_id),
-            ("watch", watch_source, self.config.since_watch_id),
-        ):
-            key = f"{name}_watermark"
-            if new_state and configured is not None:
-                state[key] = configured
-                continue
+        if new_state and self.config.since_fill_id is not None:
+            state["fill_watermark"] = self.config.since_fill_id
+            state["fill_initialized"] = True
+        elif not enabled or not state["fill_initialized"]:
             try:
-                high_watermark = await source.high_watermark()
+                fill_high = await fill_source.high_watermark()
             except Exception:  # noqa: BLE001 - one source cannot break the other
-                errors.append(f"{name}_high_watermark_failed")
-                _safe_warning("fill handoff high-water read failed: source=%s", name)
-                continue
-            if not enabled or new_state:
-                state[key] = max(int(state.get(key, 0)), int(high_watermark))
+                errors.append("fill_high_watermark_failed")
+                _safe_warning("fill handoff high-water read failed: source=fill")
+            else:
+                state["fill_watermark"] = max(
+                    int(state.get("fill_watermark", 0)), int(fill_high)
+                )
+                state["fill_initialized"] = True
+
+        if new_state and self.config.since_watch_id is not None:
+            state["watch_watermark"] = self.config.since_watch_id
+            state["watch_delivered_at"] = None
+            state["watch_initialized"] = True
+        elif not enabled or not state["watch_initialized"]:
+            try:
+                watch_high = await watch_source.high_watermark()
+            except Exception:  # noqa: BLE001 - one source cannot break the other
+                errors.append("watch_high_watermark_failed")
+                _safe_warning("fill handoff high-water read failed: source=watch")
+            else:
+                state["watch_watermark"] = int(watch_high.event_id)
+                state["watch_delivered_at"] = (
+                    None
+                    if watch_high.delivered_at is None
+                    else watch_high.delivered_at.isoformat()
+                )
+                state["watch_initialized"] = True
         return errors
 
     async def run(
@@ -345,6 +397,9 @@ class FillHandoffBundleRunner:
             state["version"] = _STATE_VERSION
             state.setdefault("fill_watermark", 0)
             state.setdefault("watch_watermark", 0)
+            state.setdefault("watch_delivered_at", None)
+            state.setdefault("fill_initialized", not locked.is_new)
+            state.setdefault("watch_initialized", not locked.is_new)
             state.setdefault("risk_seen", {})
             self._purge_seen(state, self.now().timestamp())
             outcome["errors"].extend(
@@ -356,14 +411,16 @@ class FillHandoffBundleRunner:
                     enabled=enabled,
                 )
             )
-            if locked.is_new or not enabled:
+            if not enabled:
                 locked.save()
                 outcome["fill_watermark"] = int(state["fill_watermark"])
                 outcome["watch_watermark"] = int(state["watch_watermark"])
                 return outcome
 
-            await self._run_fills(state, outcome, fills, evidence)
-            await self._run_watches(state, outcome, watches)
+            if state["fill_initialized"]:
+                await self._run_fills(state, outcome, fills, evidence)
+            if state["watch_initialized"]:
+                await self._run_watches(state, outcome, watches)
             locked.save()
             outcome["fill_watermark"] = int(state["fill_watermark"])
             outcome["watch_watermark"] = int(state["watch_watermark"])
@@ -410,7 +467,7 @@ class FillHandoffBundleRunner:
         seen: dict[str, float] = state["seen"]
         for fill in rows:
             row_id = int(fill["ledger_id"])
-            key = dedupe_key(fill)
+            key = _fill_dedupe_key(fill)
             if key in seen:
                 resolved.add(row_id)
             else:
@@ -444,11 +501,12 @@ class FillHandoffBundleRunner:
         source: WatchAlertSource,
     ) -> None:
         try:
-            rows = list(
-                await source.list_after(
-                    int(state["watch_watermark"]), limit=self.config.batch_limit
-                )
+            delivered_at = state.get("watch_delivered_at")
+            cursor = WatchCursor(
+                None if delivered_at is None else datetime.fromisoformat(delivered_at),
+                int(state["watch_watermark"]),
             )
+            rows = list(await source.list_after(cursor, limit=self.config.batch_limit))
         except Exception:  # noqa: BLE001 - fill delivery remains committed
             outcome["errors"].append("watch_read_failed")
             _safe_warning("fill handoff watch read failed")
@@ -485,8 +543,10 @@ class FillHandoffBundleRunner:
                     seen[key] = now_ts
                     resolved.update(int(value["event_id"]) for value in values)
 
-        state["watch_watermark"] = _advance_watermark(
-            int(state["watch_watermark"]), rows, resolved, id_key="event_id"
+        advanced = _advance_watch_cursor(cursor, rows, resolved)
+        state["watch_watermark"] = advanced.event_id
+        state["watch_delivered_at"] = (
+            None if advanced.delivered_at is None else advanced.delivered_at.isoformat()
         )
 
 
@@ -506,6 +566,23 @@ def _advance_watermark(
     return watermark
 
 
+def _advance_watch_cursor(
+    current: WatchCursor,
+    rows: Sequence[Mapping[str, Any]],
+    resolved: set[int],
+) -> WatchCursor:
+    cursor = current
+    for row in rows:
+        row_id = int(row["event_id"])
+        if row_id not in resolved:
+            break
+        delivered_at = row.get("delivered_at")
+        if delivered_at is None:
+            break
+        cursor = WatchCursor(datetime.fromisoformat(str(delivered_at)), row_id)
+    return cursor
+
+
 __all__ = [
     "BundleConfig",
     "DbFillEventSource",
@@ -516,5 +593,6 @@ __all__ = [
     "NullLaneEventSink",
     "PanewireLaneEventSink",
     "WatchAlertSource",
+    "WatchCursor",
     "handoff_enabled",
 ]

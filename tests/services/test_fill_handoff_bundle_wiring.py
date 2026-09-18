@@ -19,7 +19,9 @@ from app.services.fill_event_handoff.broker_risk import BrokerRiskJudgement
 from app.services.fill_event_handoff.bundle import (
     BundleConfig,
     FillHandoffBundleRunner,
+    WatchCursor,
 )
+from scripts.fill_handoff_bundle import _delivery_runtime
 
 
 def _fill(ledger_id: int, *, order_id: str | None = None) -> dict[str, Any]:
@@ -78,17 +80,61 @@ class _Source:
         return [row for row in self.rows if int(row[self.id_key]) > after_id][:limit]
 
 
+class _FlakyHighWaterSource(_Source):
+    def __init__(self, rows: list[dict[str, Any]], id_key: str) -> None:
+        super().__init__(rows, id_key)
+        self.high_calls = 0
+
+    async def high_watermark(self) -> int:
+        self.high_calls += 1
+        if self.high_calls == 1:
+            raise RuntimeError("synthetic high-water failure")
+        return await super().high_watermark()
+
+
+class _WatchSource:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+
+    async def high_watermark(self) -> WatchCursor:
+        if not self.rows:
+            return WatchCursor(None, 0)
+        row = max(
+            self.rows,
+            key=lambda value: (str(value["delivered_at"]), int(value["event_id"])),
+        )
+        return WatchCursor(
+            datetime.fromisoformat(str(row["delivered_at"])), int(row["event_id"])
+        )
+
+    async def list_after(
+        self, cursor: WatchCursor, *, limit: int
+    ) -> list[dict[str, Any]]:
+        if cursor.delivered_at is None:
+            rows = [row for row in self.rows if int(row["event_id"]) > cursor.event_id]
+        else:
+            marker = (cursor.delivered_at.isoformat(), cursor.event_id)
+            rows = [
+                row
+                for row in self.rows
+                if (str(row["delivered_at"]), int(row["event_id"])) > marker
+            ]
+        return sorted(
+            rows, key=lambda value: (str(value["delivered_at"]), value["event_id"])
+        )[:limit]
+
+
 class _Evidence:
     async def list_fills_for_order(self, **_kwargs: object) -> list[dict[str, Any]]:
         return []
 
     async def list_rungs_for_broker_order(
-        self, _broker_order_id: str
+        self, **_kwargs: object
     ) -> list[dict[str, Any]]:
         return []
 
     async def list_cancel_proposals_for_target(
-        self, _target_broker_order_id: str
+        self, **_kwargs: object
     ) -> list[dict[str, Any]]:
         return []
 
@@ -120,6 +166,7 @@ def _write_state(path: Path) -> None:
                 "watermark": 0,
                 "fill_watermark": 0,
                 "watch_watermark": 0,
+                "watch_delivered_at": None,
                 "seen": {},
                 "risk_seen": {},
                 "cooldowns": {},
@@ -127,6 +174,21 @@ def _write_state(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+@pytest.mark.unit
+def test_disabled_gate_does_not_parse_outbound_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FILL_HANDOFF_LANES", "not-json")
+    monkeypatch.setenv("FILL_HANDOFF_BATCH_LIMIT", "not-an-int")
+    monkeypatch.setenv("FILL_HANDOFF_SINK_TIMEOUT_S", "not-a-float")
+
+    lanes, _sink, batch_limit, timeout = _delivery_runtime(False)
+
+    assert lanes == {}
+    assert batch_limit == 500
+    assert timeout == 3.0
 
 
 @pytest.mark.unit
@@ -146,7 +208,7 @@ async def test_disabled_gate_catches_up_without_any_outbound_call(
     result = await runner.run(
         object(),  # type: ignore[arg-type]
         fill_source=_Source([_fill(1), _fill(2), _fill(3)], "ledger_id"),
-        watch_source=_Source([_watch(1), _watch(2), _watch(3)], "event_id"),
+        watch_source=_WatchSource([_watch(1), _watch(2), _watch(3)]),
         evidence_source=_Evidence(),
     )
 
@@ -170,7 +232,7 @@ async def test_enabled_groups_three_fills_and_three_watches_once_and_dedupes(
     fills = [_fill(1), _fill(2), _fill(3)]
     watches = [_watch(1), _watch(2), _watch(3)]
     fill_source = _Source(fills, "ledger_id")
-    watch_source = _Source(watches, "event_id")
+    watch_source = _WatchSource(watches)
     sink = _Sink()
     runner = FillHandoffBundleRunner(
         BundleConfig(state_dir=tmp_path, lanes={"crypto": "opa-crypto"}),
@@ -260,19 +322,21 @@ async def test_only_evidenced_broker_risk_pushes_and_is_deduped(
     result = await runner.run(
         object(),  # type: ignore[arg-type]
         fill_source=source,
-        watch_source=_Source([], "event_id"),
+        watch_source=_WatchSource([]),
         evidence_source=_Evidence(),
     )
     assert result["risk_pushes"] == 1
     assert len(notifier.calls) == 1
     assert notifier.calls[0].evidence
 
-    await runner.run(
+    source.rows.append(_fill(3, order_id="risk-order"))
+    replay = await runner.run(
         object(),  # type: ignore[arg-type]
         fill_source=source,
-        watch_source=_Source([], "event_id"),
+        watch_source=_WatchSource([]),
         evidence_source=_Evidence(),
     )
+    assert replay["risk_pushes"] == 0
     assert len(notifier.calls) == 1
 
 
@@ -313,7 +377,7 @@ async def test_runner_is_fail_open_for_sink_exception_and_thirty_second_stall(
     result = await runner.run(
         object(),  # type: ignore[arg-type]
         fill_source=_Source([_fill(1)], "ledger_id"),
-        watch_source=_Source([], "event_id"),
+        watch_source=_WatchSource([]),
         evidence_source=_Evidence(),
     )
     assert time.monotonic() - started < 0.5
@@ -378,3 +442,134 @@ async def test_commit_fill_result_and_latency_are_independent_of_handoff_sink() 
     assert poison_sink.calls == 0
     fill_ingest_source = inspect.getsource(fill_ingest_module)
     assert "fill_event_handoff" not in fill_ingest_source
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_cursors_are_honored_on_first_enabled_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
+    sink = _Sink()
+    runner = FillHandoffBundleRunner(
+        BundleConfig(
+            state_dir=tmp_path,
+            lanes={"crypto": "opa-crypto"},
+            since_fill_id=0,
+            since_watch_id=0,
+        ),
+        sink=sink,
+    )
+
+    result = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=_Source([_fill(1)], "ledger_id"),
+        watch_source=_WatchSource([_watch(1)]),
+        evidence_source=_Evidence(),
+    )
+
+    assert result["fill_bundles"] == 1
+    assert result["watch_bundles"] == 1
+    assert len(sink.calls) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_new_state_high_water_failure_never_replays_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
+    fills = _FlakyHighWaterSource([_fill(1), _fill(2)], "ledger_id")
+    sink = _Sink()
+    runner = FillHandoffBundleRunner(
+        BundleConfig(
+            state_dir=tmp_path,
+            lanes={"crypto": "opa-crypto"},
+            since_watch_id=0,
+        ),
+        sink=sink,
+    )
+
+    first = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=fills,
+        watch_source=_WatchSource([]),
+        evidence_source=_Evidence(),
+    )
+    second = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=fills,
+        watch_source=_WatchSource([]),
+        evidence_source=_Evidence(),
+    )
+
+    assert first["errors"] == ["fill_high_watermark_failed"]
+    assert first["fill_bundles"] == 0
+    assert second["fill_watermark"] == 2
+    assert second["fill_bundles"] == 0
+    assert sink.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fill_dedupe_is_isolated_by_account_and_venue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
+    _write_state(tmp_path)
+    live = _fill(1, order_id="same-order")
+    mock = dict(
+        live,
+        ledger_id=2,
+        fill_seq=2,
+        account_mode="mock",
+        venue="upbit-mock",
+    )
+    sink = _Sink()
+    runner = FillHandoffBundleRunner(
+        BundleConfig(state_dir=tmp_path, lanes={"crypto": "opa-crypto"}), sink=sink
+    )
+
+    await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=_Source([live, mock], "ledger_id"),
+        watch_source=_WatchSource([]),
+        evidence_source=_Evidence(),
+    )
+
+    fill_text = next(text for _, _, text in sink.calls if text.startswith("[fill]"))
+    assert fill_text.splitlines()[0] == "[fill] crypto 2건"
+    assert "live:upbit:" in fill_text
+    assert "mock:upbit-mock:" in fill_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_watch_cursor_does_not_skip_a_lower_id_delivered_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
+    _write_state(tmp_path)
+    first = dict(_watch(11), delivered_at="2026-09-18T08:00:00+00:00")
+    watches = _WatchSource([first])
+    sink = _Sink()
+    runner = FillHandoffBundleRunner(
+        BundleConfig(state_dir=tmp_path, lanes={"crypto": "opa-crypto"}), sink=sink
+    )
+
+    await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=_Source([], "ledger_id"),
+        watch_source=watches,
+        evidence_source=_Evidence(),
+    )
+    watches.rows.append(dict(_watch(10), delivered_at="2026-09-18T08:01:00+00:00"))
+    second = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=_Source([], "ledger_id"),
+        watch_source=watches,
+        evidence_source=_Evidence(),
+    )
+
+    assert second["watch_bundles"] == 1
+    assert any("event_id=10" in text for _, _, text in sink.calls)

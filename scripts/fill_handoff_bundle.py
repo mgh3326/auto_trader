@@ -65,17 +65,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def main_async(
-    *,
-    state_dir: Path,
-    since_fill_id: int | None = None,
-    since_watch_id: int | None = None,
-) -> dict[str, Any]:
-    from app.core.db import AsyncSessionLocal
-
+def _delivery_runtime(enabled: bool) -> tuple[dict[str, str], Any, int, float]:
+    if not enabled:
+        # The master gate owns the whole outbound configuration surface. This
+        # lets a disabled catch-up run advance durable cursors even if stale
+        # delivery variables are malformed.
+        return {}, NullLaneEventSink(), 500, 3.0
     lanes = _lanes(os.getenv("FILL_HANDOFF_LANES"))
-    # Constructing this adapter opens no socket/process. The master gate in the
-    # runner is checked before its send method can be reached.
     sink = (
         PanewireLaneEventSink(
             lane_event_config_from_env(
@@ -85,12 +81,30 @@ async def main_async(
         if lanes
         else NullLaneEventSink()
     )
+    return (
+        lanes,
+        sink,
+        int(os.getenv("FILL_HANDOFF_BATCH_LIMIT", "500")),
+        float(os.getenv("FILL_HANDOFF_SINK_TIMEOUT_S", "3")),
+    )
+
+
+async def main_async(
+    *,
+    state_dir: Path,
+    since_fill_id: int | None = None,
+    since_watch_id: int | None = None,
+) -> dict[str, Any]:
+    from app.core.db import AsyncSessionLocal
+
+    enabled = handoff_enabled()
+    lanes, sink, batch_limit, sink_timeout_s = _delivery_runtime(enabled)
     runner = FillHandoffBundleRunner(
         BundleConfig(
             state_dir=state_dir,
             lanes=lanes,
-            batch_limit=int(os.getenv("FILL_HANDOFF_BATCH_LIMIT", "500")),
-            sink_timeout_s=float(os.getenv("FILL_HANDOFF_SINK_TIMEOUT_S", "3")),
+            batch_limit=batch_limit,
+            sink_timeout_s=sink_timeout_s,
             since_fill_id=since_fill_id,
             since_watch_id=since_watch_id,
         ),
