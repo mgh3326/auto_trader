@@ -89,11 +89,21 @@ class BrokerRiskEvidenceSource(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def list_rungs_for_broker_order(
-        self, broker_order_id: str
+        self,
+        *,
+        broker_order_id: str,
+        proposal_account_mode: str,
+        proposal_market: str,
+        symbol: str,
     ) -> list[dict[str, Any]]: ...
 
     async def list_cancel_proposals_for_target(
-        self, target_broker_order_id: str
+        self,
+        *,
+        target_broker_order_id: str,
+        proposal_account_mode: str,
+        proposal_market: str,
+        symbol: str,
     ) -> list[dict[str, Any]]: ...
 
 
@@ -119,11 +129,22 @@ class SqlAlchemyEvidenceSource:
         return [sanitize_fill(row) for row in result.scalars().all()]
 
     async def list_rungs_for_broker_order(
-        self, broker_order_id: str
+        self,
+        *,
+        broker_order_id: str,
+        proposal_account_mode: str,
+        proposal_market: str,
+        symbol: str,
     ) -> list[dict[str, Any]]:
         result = await self._db.execute(
             select(OrderProposalRung)
-            .where(OrderProposalRung.broker_order_id == broker_order_id)
+            .join(OrderProposal, OrderProposal.id == OrderProposalRung.proposal_pk)
+            .where(
+                OrderProposalRung.broker_order_id == broker_order_id,
+                OrderProposal.account_mode == proposal_account_mode,
+                OrderProposal.market == proposal_market,
+                OrderProposal.symbol == symbol,
+            )
             .order_by(OrderProposalRung.id.asc())
         )
         return [
@@ -146,13 +167,21 @@ class SqlAlchemyEvidenceSource:
         ]
 
     async def list_cancel_proposals_for_target(
-        self, target_broker_order_id: str
+        self,
+        *,
+        target_broker_order_id: str,
+        proposal_account_mode: str,
+        proposal_market: str,
+        symbol: str,
     ) -> list[dict[str, Any]]:
         result = await self._db.execute(
             select(OrderProposal)
             .where(
                 OrderProposal.action == "cancel",
                 OrderProposal.target_broker_order_id == target_broker_order_id,
+                OrderProposal.account_mode == proposal_account_mode,
+                OrderProposal.market == proposal_market,
+                OrderProposal.symbol == symbol,
             )
             .order_by(OrderProposal.id.asc())
         )
@@ -181,6 +210,25 @@ def _decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _proposal_scope(fill: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    """Translate ledger scope into the proposal ledger's closed vocabulary."""
+    market = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}.get(
+        str(fill.get("market"))
+    )
+    broker = str(fill.get("broker"))
+    ledger_mode = str(fill.get("account_mode"))
+    account_mode = {
+        ("upbit", "live"): "upbit",
+        ("kis", "live"): "kis_live",
+        ("kis", "mock"): "kis_mock",
+        ("toss", "live"): "toss_live",
+    }.get((broker, ledger_mode))
+    symbol = str(fill.get("symbol", ""))
+    if market is None or account_mode is None or not symbol:
+        return None
+    return account_mode, market, symbol
 
 
 class BrokerRiskDetector:
@@ -274,7 +322,16 @@ class BrokerRiskDetector:
     async def _detect_state_unknown(
         self, fill: Mapping[str, Any], *, source: BrokerRiskEvidenceSource
     ) -> BrokerRiskJudgement | None:
-        rungs = await source.list_rungs_for_broker_order(str(fill["broker_order_id"]))
+        scope = _proposal_scope(fill)
+        if scope is None:
+            return None
+        account_mode, market, symbol = scope
+        rungs = await source.list_rungs_for_broker_order(
+            broker_order_id=str(fill["broker_order_id"]),
+            proposal_account_mode=account_mode,
+            proposal_market=market,
+            symbol=symbol,
+        )
         unverified = [rung for rung in rungs if rung["state"] == _UNVERIFIED_RUNG_STATE]
         if not unverified:
             return None
@@ -289,6 +346,9 @@ class BrokerRiskDetector:
             evidence={
                 "ledger_id": int(fill["ledger_id"]),
                 "broker_order_id": fill["broker_order_id"],
+                "proposal_account_mode": account_mode,
+                "proposal_market": market,
+                "symbol": symbol,
                 "rung_ids": [int(rung["rung_id"]) for rung in unverified],
                 "proposal_pks": [int(rung["proposal_pk"]) for rung in unverified],
                 "void_reasons": [rung["void_reason"] for rung in unverified],
@@ -304,8 +364,15 @@ class BrokerRiskDetector:
     async def _detect_cancel_failed(
         self, fill: Mapping[str, Any], *, source: BrokerRiskEvidenceSource
     ) -> BrokerRiskJudgement | None:
+        scope = _proposal_scope(fill)
+        if scope is None:
+            return None
+        account_mode, market, symbol = scope
         proposals = await source.list_cancel_proposals_for_target(
-            str(fill["broker_order_id"])
+            target_broker_order_id=str(fill["broker_order_id"]),
+            proposal_account_mode=account_mode,
+            proposal_market=market,
+            symbol=symbol,
         )
         failed = [
             proposal
@@ -325,6 +392,9 @@ class BrokerRiskDetector:
             evidence={
                 "ledger_id": int(fill["ledger_id"]),
                 "broker_order_id": fill["broker_order_id"],
+                "proposal_account_mode": account_mode,
+                "proposal_market": market,
+                "symbol": symbol,
                 "proposal_row_ids": [int(p["proposal_row_id"]) for p in failed],
                 "proposal_ids": [p["proposal_id"] for p in failed],
                 "lifecycle_states": [p["lifecycle_state"] for p in failed],

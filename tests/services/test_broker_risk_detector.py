@@ -38,18 +38,22 @@ class _Evidence:
         self.fills: list[dict[str, Any]] = []
         self.rungs: list[dict[str, Any]] = []
         self.cancels: list[dict[str, Any]] = []
+        self.rung_scope: dict[str, object] | None = None
+        self.cancel_scope: dict[str, object] | None = None
 
     async def list_fills_for_order(self, **_kwargs: object) -> list[dict[str, Any]]:
         return self.fills
 
     async def list_rungs_for_broker_order(
-        self, _broker_order_id: str
+        self, **kwargs: object
     ) -> list[dict[str, Any]]:
+        self.rung_scope = kwargs
         return self.rungs
 
     async def list_cancel_proposals_for_target(
-        self, _target_broker_order_id: str
+        self, **kwargs: object
     ) -> list[dict[str, Any]]:
+        self.cancel_scope = kwargs
         return self.cancels
 
 
@@ -95,10 +99,19 @@ async def test_order_state_unknown_has_rung_and_proposal_evidence() -> None:
     assert unknown.evidence == {
         "ledger_id": 10,
         "broker_order_id": "order-1",
+        "proposal_account_mode": "upbit",
+        "proposal_market": "crypto",
+        "symbol": "BTC",
         "rung_ids": [31],
         "proposal_pks": [9],
         "void_reasons": ["broker_result_ambiguous"],
         "correlation_ids": ["corr-9"],
+    }
+    assert source.rung_scope == {
+        "broker_order_id": "order-1",
+        "proposal_account_mode": "upbit",
+        "proposal_market": "crypto",
+        "symbol": "BTC",
     }
 
 
@@ -123,6 +136,12 @@ async def test_cancel_failed_has_dispatch_evidence() -> None:
     assert failed.evidence["proposal_row_ids"] == [41]
     assert failed.evidence["approval_dispatch_states"] == ["partial_failed"]
     assert failed.evidence["approval_dispatch_failure_codes"] == ["telegram_timeout"]
+    assert source.cancel_scope == {
+        "target_broker_order_id": "order-1",
+        "proposal_account_mode": "upbit",
+        "proposal_market": "crypto",
+        "symbol": "BTC",
+    }
 
 
 @pytest.mark.unit
