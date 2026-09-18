@@ -421,6 +421,7 @@ class FillHandoffBundleRunner:
             "fill_bundles": 0,
             "watch_bundles": 0,
             "risk_pushes": 0,
+            "seen_size": {"fill": 0, "watch": 0},
             "stalled_passes": 0,
             "stalled_head_id": None,
             "stall_notices": 0,
@@ -448,12 +449,12 @@ class FillHandoffBundleRunner:
             state.setdefault("fill_lookback_armed", not locked.is_new)
             state.setdefault("watch_lookback_armed", not locked.is_new)
             state.setdefault("risk_seen", {})
-            state.setdefault("seen_floor", {"fill": 0, "watch": 0})
             state.setdefault("fill_stalled_passes", 0)
             state.setdefault("fill_stalled_head_id", None)
             state.setdefault("watch_stalled_passes", 0)
             state.setdefault("watch_stalled_head_id", None)
             self._purge_seen(state, self.now().timestamp())
+            outcome["seen_size"] = _seen_sizes(state["seen"])
             outcome["errors"].extend(
                 await self._seed_or_catch_up(
                     state,
@@ -480,6 +481,7 @@ class FillHandoffBundleRunner:
             locked.save()
             outcome["fill_watermark"] = int(state["fill_watermark"])
             outcome["watch_watermark"] = int(state["watch_watermark"])
+            outcome["seen_size"] = _seen_sizes(state["seen"])
             fill_stalls = int(state["fill_stalled_passes"])
             watch_stalls = int(state["watch_stalled_passes"])
             stalled_kind = "fill" if fill_stalls >= watch_stalls else "watch"
@@ -541,13 +543,10 @@ class FillHandoffBundleRunner:
             lambda: defaultdict(list)
         )
         seen: dict[str, Any] = state["seen"]
-        seen_floor = int(state["seen_floor"].get("fill", 0))
         for fill in rows:
             row_id = int(fill["ledger_id"])
             key = _fill_dedupe_key(fill)
-            if row_id <= seen_floor and row_id != state.get("fill_stalled_head_id"):
-                resolved.add(row_id)
-            elif key in seen:
+            if key in seen:
                 _refresh_seen_value(seen, key, row_id=row_id, now_ts=now_ts)
                 resolved.add(row_id)
             else:
@@ -585,7 +584,13 @@ class FillHandoffBundleRunner:
             advanced=advanced,
             unresolved=unresolved,
         )
-        _trim_seen(state, kind="fill", maximum=self._seen_cap())
+        await self._record_seen_pressure(
+            state,
+            outcome,
+            kind="fill",
+            rows=rows,
+            unresolved=unresolved,
+        )
 
     async def _run_watches(
         self,
@@ -629,13 +634,10 @@ class FillHandoffBundleRunner:
             lambda: defaultdict(list)
         )
         seen: dict[str, Any] = state["seen"]
-        seen_floor = int(state["seen_floor"].get("watch", 0))
         for event in rows:
             row_id = int(event["event_id"])
             key = _watch_dedupe_key(event)
-            if row_id <= seen_floor and row_id != state.get("watch_stalled_head_id"):
-                resolved.add(row_id)
-            elif key in seen:
+            if key in seen:
                 _refresh_seen_value(seen, key, row_id=row_id, now_ts=now_ts)
                 resolved.add(row_id)
             else:
@@ -675,10 +677,57 @@ class FillHandoffBundleRunner:
             advanced=advanced,
             unresolved=unresolved,
         )
-        _trim_seen(state, kind="watch", maximum=self._seen_cap())
+        await self._record_seen_pressure(
+            state,
+            outcome,
+            kind="watch",
+            rows=rows,
+            unresolved=unresolved,
+        )
 
-    def _seen_cap(self) -> int:
-        return self.config.lookback_ids * 4
+    async def _record_seen_pressure(
+        self,
+        state: dict[str, Any],
+        outcome: dict[str, Any],
+        *,
+        kind: str,
+        rows: Sequence[Mapping[str, Any]],
+        unresolved: Mapping[str, Any] | None,
+    ) -> None:
+        sizes = _seen_sizes(state["seen"])
+        outcome["seen_size"] = sizes
+        size = sizes[kind]
+        threshold = self.config.lookback_ids * 4
+        if size <= threshold:
+            return
+
+        outcome["errors"].append(f"{kind}_seen_size_exceeded")
+        text = (
+            f"[{kind}] 경고 seen_size={size} "
+            f"(lookback_ids*4={threshold} 초과; 억제 기록 유지)"
+        )
+        anchor = unresolved or next(
+            (row for row in rows if str(row["market"]) in self.config.lanes), None
+        )
+        if anchor is None:
+            _safe_warning("fill handoff %s", text)
+            return
+        market = str(anchor["market"])
+        lane = self.config.lanes.get(market)
+        if lane is None:
+            _safe_warning("fill handoff %s", text)
+            return
+        id_key = "ledger_id" if kind == "fill" else "event_id"
+        warning_key = (
+            f"{int(anchor[id_key])}:{int(state[f'{kind}_stalled_passes'])}:"
+            f"{size}:{threshold}"
+        )
+        # Memory pressure is ordinary lane content, never an immediate push.
+        await self._send(
+            lane,
+            _event_id(f"{kind}-seen-size", market, [warning_key]),
+            text,
+        )
 
     async def _record_stall(
         self,
@@ -744,6 +793,11 @@ def _refresh_seen_value(
     values[key] = {"id": max(row_id, previous or 0), "ts": now_ts}
 
 
+def _seen_sizes(seen: Mapping[str, Any]) -> dict[str, int]:
+    watch = sum(1 for key in seen if str(key).startswith("watch:"))
+    return {"fill": len(seen) - watch, "watch": watch}
+
+
 def _first_unresolved(
     rows: Sequence[Mapping[str, Any]], resolved: set[int], *, id_key: str
 ) -> Mapping[str, Any] | None:
@@ -755,26 +809,6 @@ def _first_unresolved(
         ),
         None,
     )
-
-
-def _trim_seen(state: dict[str, Any], *, kind: str, maximum: int) -> None:
-    seen: dict[str, Any] = state["seen"]
-    candidates = sorted(
-        (
-            (row_id, str(key))
-            for key, value in seen.items()
-            if (str(key).startswith("watch:")) == (kind == "watch")
-            if (row_id := _seen_id(value)) is not None
-        )
-    )
-    excess = len(candidates) - maximum
-    if excess <= 0:
-        return
-    evicted = candidates[:excess]
-    for _, key in evicted:
-        seen.pop(key, None)
-    floors = state.setdefault("seen_floor", {"fill": 0, "watch": 0})
-    floors[kind] = max(int(floors.get(kind, 0)), max(row_id for row_id, _ in evicted))
 
 
 def _advance_watermark(

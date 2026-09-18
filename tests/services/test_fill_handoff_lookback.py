@@ -237,6 +237,62 @@ async def test_late_visible_lower_fill_id_is_emitted_exactly_once(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lookback_ids", [0, 1, 256])
+async def test_never_sent_lower_fill_id_is_emitted_once_during_hol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lookback_ids: int,
+) -> None:
+    monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
+    legacy_floor = {"fill": 100, "watch": 100}
+    _write_state(tmp_path, seen_floor=legacy_floor)
+    source = _FillSource(
+        [
+            _fill(1000, market="crypto"),
+            _fill(1001, market="kr", symbol="005930"),
+        ]
+    )
+    sink = _SelectiveSink({1000})
+    runner = FillHandoffBundleRunner(
+        BundleConfig(
+            state_dir=tmp_path,
+            lanes={"crypto": "opa-crypto", "kr": "opa-kr", "us": "opa-us"},
+            lookback_ids=lookback_ids,
+        ),
+        sink=sink,
+    )
+
+    first = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=source,
+        watch_source=_WatchSource([]),
+        evidence_source=_Evidence(),
+    )
+    source.rows.insert(0, _fill(50, market="us", symbol="AAPL"))
+    second = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=source,
+        watch_source=_WatchSource([]),
+        evidence_source=_Evidence(),
+    )
+    third = await runner.run(
+        object(),  # type: ignore[arg-type]
+        fill_source=source,
+        watch_source=_WatchSource([]),
+        evidence_source=_Evidence(),
+    )
+
+    texts = "\n".join(text for _, _, text in sink.calls)
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert first["fill_watermark"] == 0
+    assert texts.count("ledger_id=50 ") == 1
+    assert second["fill_bundles"] == 1
+    assert third["fill_bundles"] == 0
+    assert state["seen_floor"] == legacy_floor
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_same_timestamp_lower_watch_id_is_emitted_exactly_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -287,7 +343,7 @@ async def test_fill_seen_id_survives_24h_while_row_remains_in_lookback(
     monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
     _write_state(tmp_path)
     clock = _Clock(datetime(2026, 9, 18, 8, tzinfo=UTC))
-    source = _FillSource([_fill(10)])
+    source = _FillSource([_fill(10), _fill(11)])
     sink = _Sink()
     runner = FillHandoffBundleRunner(
         BundleConfig(state_dir=tmp_path, lanes={"crypto": "opa-crypto"}),
@@ -313,6 +369,7 @@ async def test_fill_seen_id_survives_24h_while_row_remains_in_lookback(
     assert first["fill_bundles"] == 1
     assert second["fill_bundles"] == 0
     assert texts.count("ledger_id=10") == 1
+    assert texts.count("ledger_id=11") == 1
 
 
 @pytest.mark.unit
@@ -544,7 +601,7 @@ async def test_bundle_rejects_legacy_runner_state_directory(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_seen_is_bounded_and_records_evicted_id_floor(
+async def test_seen_pressure_is_reported_without_eviction_or_bundle_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FILL_EVENT_HANDOFF_ENABLED", "true")
@@ -563,33 +620,40 @@ async def test_seen_is_bounded_and_records_evicted_id_floor(
         sink=sink,
     )
 
-    await runner.run(
+    first = await runner.run(
         object(),  # type: ignore[arg-type]
         fill_source=source,
         watch_source=_WatchSource([]),
         evidence_source=_Evidence(),
     )
+    first_state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+
+    assert first["seen_size"] == {"fill": 4, "watch": 0}
+    assert first["errors"] == []
+    assert len(first_state["seen"]) == 4
+    assert "seen_floor" not in first_state
+
     source.rows.append(_fill(6, market="kr"))
-    await runner.run(
+    second = await runner.run(
         object(),  # type: ignore[arg-type]
         fill_source=source,
         watch_source=_WatchSource([]),
         evidence_source=_Evidence(),
     )
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    warning = "[fill] 경고 seen_size=5 (lookback_ids*4=4 초과; 억제 기록 유지)"
+    texts = [text for _, _, text in sink.calls]
+    regular_text = next(text for text in texts if "ledger_id=6 " in text)
 
-    assert len(state["seen"]) <= 4
-    assert state["seen_floor"]["fill"] == 2
-
-    # The stalled head remains retryable even though it is below seen_floor.
-    await runner.run(
-        object(),  # type: ignore[arg-type]
-        fill_source=source,
-        watch_source=_WatchSource([]),
-        evidence_source=_Evidence(),
+    assert second["seen_size"] == {"fill": 5, "watch": 0}
+    assert second["errors"] == ["fill_seen_size_exceeded"]
+    assert texts.count(warning) == 1
+    assert regular_text.startswith("[fill] kr 1건\n")
+    assert regular_text.endswith(
+        "지난 창 이후 체결을 검토하고 조정·추가 여부를 판단하라."
     )
-    texts = "\n".join(text for _, _, text in sink.calls)
-    assert texts.count("ledger_id=1") == 3
+    assert len(state["seen"]) == 5
+    assert "seen_floor" not in state
 
 
 @pytest.mark.unit
