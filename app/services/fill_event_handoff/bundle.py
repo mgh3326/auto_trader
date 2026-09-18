@@ -38,8 +38,17 @@ from .service import DEDUP_WINDOW, dedupe_key
 from .state import HandoffState
 
 FILL_EVENT_HANDOFF_ENABLED = "FILL_EVENT_HANDOFF_ENABLED"
+# Accepted true tokens are intentionally explicit and test-pinned. Everything
+# else (including unset, empty, 0, false, and off) is disabled.
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _STATE_VERSION = 3
+
+# PostgreSQL sequence ids can be allocated before a transaction becomes
+# visible. Re-reading the preceding 256 ids covers up to 256 concurrent
+# allocation/commit inversions while remaining below the 500-row new-event
+# batch. Lookback and new rows are queried separately, so neither starves the
+# other. Deployments may tune this down to zero or up to the repository cap.
+DEFAULT_LOOKBACK_IDS = 256
 
 
 def handoff_enabled() -> bool:
@@ -188,6 +197,7 @@ class BundleConfig:
     state_dir: Path
     lanes: Mapping[str, str] = field(default_factory=dict)
     batch_limit: int = 500
+    lookback_ids: int = DEFAULT_LOOKBACK_IDS
     sink_timeout_s: float = 3.0
     since_fill_id: int | None = None
     since_watch_id: int | None = None
@@ -280,6 +290,8 @@ class FillHandoffBundleRunner:
     ) -> None:
         if config.batch_limit < 1 or config.batch_limit > 500:
             raise ValueError("batch_limit must be between 1 and 500")
+        if config.lookback_ids < 0 or config.lookback_ids > 500:
+            raise ValueError("lookback_ids must be between 0 and 500")
         if config.sink_timeout_s <= 0:
             raise ValueError("sink_timeout_s must be positive")
         self.config = config
@@ -340,6 +352,7 @@ class FillHandoffBundleRunner:
         if new_state and self.config.since_fill_id is not None:
             state["fill_watermark"] = self.config.since_fill_id
             state["fill_initialized"] = True
+            state["fill_lookback_armed"] = True
         elif not enabled or not state["fill_initialized"]:
             try:
                 fill_high = await fill_source.high_watermark()
@@ -351,11 +364,13 @@ class FillHandoffBundleRunner:
                     int(state.get("fill_watermark", 0)), int(fill_high)
                 )
                 state["fill_initialized"] = True
+                state["fill_lookback_armed"] = False
 
         if new_state and self.config.since_watch_id is not None:
             state["watch_watermark"] = self.config.since_watch_id
             state["watch_delivered_at"] = None
             state["watch_initialized"] = True
+            state["watch_lookback_armed"] = True
         elif not enabled or not state["watch_initialized"]:
             try:
                 watch_high = await watch_source.high_watermark()
@@ -370,6 +385,7 @@ class FillHandoffBundleRunner:
                     else watch_high.delivered_at.isoformat()
                 )
                 state["watch_initialized"] = True
+                state["watch_lookback_armed"] = False
         return errors
 
     async def run(
@@ -400,6 +416,8 @@ class FillHandoffBundleRunner:
             state.setdefault("watch_delivered_at", None)
             state.setdefault("fill_initialized", not locked.is_new)
             state.setdefault("watch_initialized", not locked.is_new)
+            state.setdefault("fill_lookback_armed", not locked.is_new)
+            state.setdefault("watch_lookback_armed", not locked.is_new)
             state.setdefault("risk_seen", {})
             self._purge_seen(state, self.now().timestamp())
             outcome["errors"].extend(
@@ -417,10 +435,14 @@ class FillHandoffBundleRunner:
                 outcome["watch_watermark"] = int(state["watch_watermark"])
                 return outcome
 
-            if state["fill_initialized"]:
+            if state["fill_initialized"] and state["fill_lookback_armed"]:
                 await self._run_fills(state, outcome, fills, evidence)
-            if state["watch_initialized"]:
+            elif state["fill_initialized"]:
+                state["fill_lookback_armed"] = True
+            if state["watch_initialized"] and state["watch_lookback_armed"]:
                 await self._run_watches(state, outcome, watches)
+            elif state["watch_initialized"]:
+                state["watch_lookback_armed"] = True
             locked.save()
             outcome["fill_watermark"] = int(state["fill_watermark"])
             outcome["watch_watermark"] = int(state["watch_watermark"])
@@ -434,11 +456,17 @@ class FillHandoffBundleRunner:
         evidence: BrokerRiskEvidenceSource,
     ) -> None:
         try:
-            rows = list(
+            watermark = int(state["fill_watermark"])
+            lookback_rows = (
                 await source.list_after(
-                    int(state["fill_watermark"]), limit=self.config.batch_limit
+                    max(0, watermark - self.config.lookback_ids),
+                    limit=self.config.lookback_ids,
                 )
+                if self.config.lookback_ids
+                else ()
             )
+            new_rows = await source.list_after(watermark, limit=self.config.batch_limit)
+            rows = _merge_rows(lookback_rows, new_rows, id_key="ledger_id")
         except Exception:  # noqa: BLE001 - watch processing must still proceed
             outcome["errors"].append("fill_read_failed")
             _safe_warning("fill handoff fill read failed")
@@ -506,7 +534,25 @@ class FillHandoffBundleRunner:
                 None if delivered_at is None else datetime.fromisoformat(delivered_at),
                 int(state["watch_watermark"]),
             )
-            rows = list(await source.list_after(cursor, limit=self.config.batch_limit))
+            lookback_rows = (
+                await source.list_after(
+                    WatchCursor(
+                        None,
+                        max(0, cursor.event_id - self.config.lookback_ids),
+                    ),
+                    limit=self.config.lookback_ids,
+                )
+                if self.config.lookback_ids
+                else ()
+            )
+            new_rows = await source.list_after(cursor, limit=self.config.batch_limit)
+            rows = _merge_rows(lookback_rows, new_rows, id_key="event_id")
+            rows.sort(
+                key=lambda value: (
+                    str(value.get("delivered_at") or ""),
+                    int(value["event_id"]),
+                )
+            )
         except Exception:  # noqa: BLE001 - fill delivery remains committed
             outcome["errors"].append("watch_read_failed")
             _safe_warning("fill handoff watch read failed")
@@ -566,6 +612,17 @@ def _advance_watermark(
     return watermark
 
 
+def _merge_rows(
+    lookback_rows: Sequence[Mapping[str, Any]],
+    new_rows: Sequence[Mapping[str, Any]],
+    *,
+    id_key: str,
+) -> list[Mapping[str, Any]]:
+    """Merge overlapping reads by durable row id without filtering content."""
+    by_id = {int(row[id_key]): row for row in (*lookback_rows, *new_rows)}
+    return [by_id[row_id] for row_id in sorted(by_id)]
+
+
 def _advance_watch_cursor(
     current: WatchCursor,
     rows: Sequence[Mapping[str, Any]],
@@ -579,7 +636,12 @@ def _advance_watch_cursor(
         delivered_at = row.get("delivered_at")
         if delivered_at is None:
             break
-        cursor = WatchCursor(datetime.fromisoformat(str(delivered_at)), row_id)
+        candidate = WatchCursor(datetime.fromisoformat(str(delivered_at)), row_id)
+        if cursor.delivered_at is None or (
+            candidate.delivered_at,
+            candidate.event_id,
+        ) > (cursor.delivered_at, cursor.event_id):
+            cursor = candidate
     return cursor
 
 
@@ -587,6 +649,7 @@ __all__ = [
     "BundleConfig",
     "DbFillEventSource",
     "DbWatchAlertSource",
+    "DEFAULT_LOOKBACK_IDS",
     "FillEventSource",
     "FillHandoffBundleRunner",
     "LaneEventSink",

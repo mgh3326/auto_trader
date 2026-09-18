@@ -219,6 +219,7 @@ tests/services/test_broker_risk_detector.py
 tests/services/test_downside_watch_service.py
 tests/services/test_enrichment_negative_cache.py
 tests/services/test_fill_handoff_bundle_wiring.py
+tests/services/test_fill_handoff_lookback.py
 tests/services/test_kis_mock_lifecycle_service.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_live_correlation.py
