@@ -484,10 +484,11 @@ async def test_ledger_write_result_and_latency_are_independent_of_active_handoff
         )
         result = (response.results[0].status, response.results[0].row_id)
     elapsed = time.monotonic() - started
-    await handoff_task
 
     assert result == ("inserted", 42)
     assert elapsed < 0.1
+    await asyncio.wait({handoff_task})
+    assert handoff_task.exception() is None
     assert poison_sink.calls == 1
     fill_ingest_source = inspect.getsource(fill_ingest_module)
     assert "fill_event_handoff" not in fill_ingest_source
