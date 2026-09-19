@@ -6,11 +6,18 @@ evidence, and the same inputs always produce the same JSON-compatible result.
 No clock, database, network, broker mutation, or fallback screener is reachable
 from here.
 
-Every gate is answered against ``decision_at``: evidence that did not exist at
-the decision clock cannot prove the state at that decision (ROB-1158 r2).
-Local sync/observation clocks are retrieval provenance only and are never
-authority. Provider-origin identity and publication/effective clocks are required
-for any "proven" claim.
+Every gate is answered against ``decision_at``: evidence that did not exist at the
+decision clock cannot prove the state at that decision (ROB-1172). The three
+gates that blocked the 07-29 run now have proof paths:
+
+* metadata authority — :mod:`app.services.krb1_metadata_authority`
+* full-universe completion — :mod:`app.services.krb1_completion_manifest`
+  (local reconcile) plus :mod:`app.services.krb1_completion_finality`
+  (provider finality; unwired, so it blocks)
+* full-universe denominator — :mod:`app.services.krb1_universe_denominator`
+  (external listed count; unwired, so it blocks)
+* target-session base price — :mod:`app.services.krb1_reference_price_evidence`
+  behind the fail-closed :mod:`app.services.krb1_reference_exception_adapter`
 """
 
 from __future__ import annotations
@@ -19,25 +26,46 @@ import datetime as dt
 from dataclasses import asdict, dataclass
 from typing import Literal
 
+from app.services.krb1_completion_finality import (
+    ProviderFinalityAttestation,
+    evaluate_provider_finality,
+)
+from app.services.krb1_completion_manifest import (
+    KIS_DAILY_ENDPOINT,
+    KIS_DAILY_TR_ID,
+    KRX_DAILY_COMPLETION_CUTOFF,
+    CompletionManifest,
+    evaluate_completion_manifest,
+)
+from app.services.krb1_gate_result import KST, kst_datetime, to_kst
+from app.services.krb1_metadata_authority import (
+    AUTHORITATIVE_METADATA_SOURCES,
+    MetadataAuthoritySnapshot,
+    SymbolMetadata,
+    evaluate_metadata_authority,
+)
+from app.services.krb1_quote_timestamp_capture import (
+    QuoteTimestampCapture,
+    evaluate_quote_timestamp_capture,
+)
+from app.services.krb1_reference_price_evidence import (
+    AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES,
+    ReferencePriceExceptionRecord,
+    evaluate_reference_price_exception_coverage,
+    excluded_pending_opening_call_symbols,
+    is_tradable_reference_price,
+)
+from app.services.krb1_universe_denominator import (
+    ExternalUniverseDenominator,
+    evaluate_universe_denominator,
+)
+
 Market = Literal["KOSPI", "KOSDAQ"]
 GateStatus = Literal["proven", "unprovable"]
 
 MARKETS: tuple[Market, Market] = ("KOSPI", "KOSDAQ")
 ACTIVE_LISTING_STATUS = "ACTIVE"
 STANDARD_STOCK_SECURITY_TYPE = "STOCK"
-KIS_PRICE_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-price"
-KIS_PRICE_TR_ID = "FHKST01010100"
-KIS_DAILY_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-KIS_DAILY_TR_ID = "FHKST03010100"
-
-# No provider in the repository currently emits this evidence. The identifier is
-# intentionally narrow so a caller-supplied generic screener cannot satisfy the
-# gate. Wiring a real source is a separate reviewed change.
-AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES = frozenset({"krx_official_base_price"})
-AUTHORITATIVE_METADATA_SOURCES = frozenset({"toss_openapi"})
-AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES = frozenset({"krx_official_listed_count"})
-KST = dt.timezone(dt.timedelta(hours=9))
-KRX_DAILY_COMPLETION_CUTOFF = dt.time(15, 35)
 KRX_SESSION_OPEN = dt.time(9, 0)
 QUOTE_EVIDENCE_AT_OR_AFTER = dt.time(15, 30)
 
@@ -53,8 +81,11 @@ class UniverseRow:
     listing_status: str | None
     list_date: dt.date | None
     krx_trading_suspended: bool | None
-    # Retrieval provenance, never authority. These describe *our* sync of the
-    # master into the database, not anything the provider asserted.
+    # 🔴 Retrieval provenance, never authority (ROB-1172 D4). These describe *our*
+    # sync of the master into the database (`kr_symbol_universe.toss_master_updated_at`),
+    # not anything the provider asserted. The authority claim lives entirely in
+    # ``metadata_authority_snapshot``; a gate that reads these as authority is
+    # saying "we synced today", which is the substitution A1 removed.
     db_sync_source: str | None
     db_sync_observed_at: dt.datetime | None
 
@@ -75,94 +106,44 @@ class CandleRow:
 
 
 @dataclass(frozen=True, slots=True)
-class ReferenceExceptionEvidence:
-    symbol: str
-    effective_session: dt.date
-    is_exception: bool | None
-    source: str
-    source_as_of: dt.datetime
-    # Provider-origin publication/retrieval clocks. Both must precede decision_at.
-    published_at: dt.datetime | None = None
-    retrieved_at: dt.datetime | None = None
-    raw_reference_price: str | None = None
-    raw_reason_code: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class CompletedBarEvidence:
     # ``symbol`` is the symbol we *requested*: request context, not identity.
     symbol: str
     endpoint: str
     tr_id: str
-    # Provider-origin identity from the same daily response. The KIS daily
-    # response carries no symbol field, so this is None in practice and the gate
-    # stays unprovable. Request context must not stand in for it.
+    # 🔴 ``raw_symbol`` must come from the provider response. #1729 accepted the
+    # requested symbol as the evidence identity, which means the response never
+    # confirmed which instrument it described — we filled that in ourselves. The
+    # KIS daily response carries no symbol field, so this is ``None`` in practice
+    # and the gate stays unprovable. That is the correct state, not a bug to patch
+    # with the request context (E1).
     raw_symbol: str | None
     raw_business_date: str | None
     raw_close: str | None
     raw_volume: str | None
     raw_value: str | None
     observed_at: dt.datetime
-    raw_open: str | None = None
-    raw_high: str | None = None
-    raw_low: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class QuoteTimestampEvidence:
-    symbol: str
-    endpoint: str
-    tr_id: str
-    raw_symbol: str | None
-    raw_business_date: str | None
-    raw_execution_time: str | None
-    raw_last_price: str | None
-    # When the evidence was captured; must precede decision_at.
-    captured_at: dt.datetime | None = None
-    wrapper_price_as_of: str | None = None
-    wrapper_price_freshness: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class MetadataAuthoritySnapshot:
-    """In-memory authority attestation injected by the caller."""
-
-    source: str
-    market: str
-    symbol_count: int
-    provider_published_at: dt.datetime | None
-    provider_effective_session: dt.date | None
-    retrieved_at: dt.datetime
-    raw_payload_sha256: str
-
-
-@dataclass(frozen=True, slots=True)
-class ExternalUniverseDenominator:
-    """In-memory external listed-count attestation injected by the caller."""
-
-    market: str
-    session_date: dt.date
-    source: str
-    listed_count: int
-    published_at: dt.datetime
-    retrieved_at: dt.datetime
 
 
 @dataclass(frozen=True, slots=True)
 class SelectorInput:
     as_of_session: dt.date
     target_session: dt.date
-    # The clock the decision is taken at. Every evidence clock must precede it.
+    # The clock the decision is taken at. Every evidence clock must precede it;
+    # evidence backfilled afterwards is not proof of the state at this moment.
     decision_at: dt.datetime
     expected_universe_counts: dict[Market, int]
     universe_rows: tuple[UniverseRow, ...]
     candle_rows: tuple[CandleRow, ...]
-    reference_exception_evidence: tuple[ReferenceExceptionEvidence, ...] = ()
+    reference_price_exception_records: tuple[ReferencePriceExceptionRecord, ...] = ()
     completed_bar_evidence: tuple[CompletedBarEvidence, ...] = ()
-    quote_timestamp_evidence: tuple[QuoteTimestampEvidence, ...] = ()
-    metadata_authority_snapshots: tuple[MetadataAuthoritySnapshot, ...] = ()
+    quote_timestamp_evidence: tuple[QuoteTimestampCapture, ...] = ()
+    metadata_snapshots: tuple[MetadataAuthoritySnapshot, ...] = ()
+    completion_manifests: tuple[CompletionManifest, ...] = ()
+    provider_finality_attestations: tuple[ProviderFinalityAttestation, ...] = ()
     external_universe_denominators: tuple[ExternalUniverseDenominator, ...] = ()
     reference_source_unavailable_reason: str | None = None
+    finality_source_unavailable_reason: str | None = None
     universe_denominator_source_unavailable_reason: str | None = None
 
 
@@ -234,16 +215,6 @@ def _examples(symbols: list[str], limit: int = 20) -> list[str]:
     return symbols[:limit]
 
 
-def _valid_hhmmss(value: str | None) -> bool:
-    if value is None or len(value) != 6 or not value.isdigit():
-        return False
-    try:
-        dt.time(int(value[0:2]), int(value[2:4]), int(value[4:6]))
-    except ValueError:
-        return False
-    return True
-
-
 def _parse_nonnegative_int_string(value: str | None) -> int | None:
     if value is None or not value.isdigit():
         return None
@@ -263,24 +234,24 @@ def _observed_after_daily_completion(
     )
 
 
-def _is_aware(value: dt.datetime) -> bool:
-    return value.tzinfo is not None and value.utcoffset() is not None
-
-
-def _kst_datetime(date: dt.date, time: dt.time) -> dt.datetime:
-    return dt.datetime.combine(date, time).replace(tzinfo=KST)
-
-
 def _completed_bar_matches(
     candle: CandleRow,
     evidence: CompletedBarEvidence,
     decision_at: dt.datetime,
 ) -> bool:
-    if not _is_aware(decision_at):
+    if not isinstance(decision_at, dt.datetime) or (
+        decision_at.tzinfo is None or decision_at.utcoffset() is None
+    ):
         return False
-    if not _is_aware(evidence.observed_at) or evidence.observed_at > decision_at:
+    if (
+        evidence.observed_at.tzinfo is None
+        or evidence.observed_at.utcoffset() is None
+        or evidence.observed_at > decision_at
+    ):
         return False
     if evidence.raw_symbol is None or evidence.raw_symbol != candle.symbol:
+        # Provider-origin identity absent (or disagreeing) -> unprovable. The
+        # requested symbol cannot stand in for it.
         return False
     return (
         evidence.symbol == candle.symbol
@@ -389,257 +360,24 @@ def _completed_bar_gate(
     )
 
 
-def _quote_timestamp_gate(
-    *,
-    symbol: str,
-    as_of_session: dt.date,
-    decision_at: dt.datetime,
-    evidence: QuoteTimestampEvidence | None,
-) -> dict[str, object]:
-    if evidence is None:
-        return _gate(
-            "unprovable",
-            "selected_quote_raw_timestamp_missing",
-            symbol=symbol,
-            wrapper_fields_are_insufficient=True,
-        )
-    raw_date = evidence.raw_business_date
-    raw_time = evidence.raw_execution_time
-    expected_date = as_of_session.strftime("%Y%m%d")
-    if not _is_aware(decision_at):
-        return _gate(
-            "unprovable",
-            "selected_quote_actual_raw_timestamp_unproven",
-            raw_evidence=_row_dict(evidence),
-            wrapper_fields_are_insufficient=True,
-            required_capture_upper_bound_decision_at=_iso(decision_at),
-        )
-    captured_valid = (
-        evidence.captured_at is not None
-        and _is_aware(evidence.captured_at)
-        and evidence.captured_at <= decision_at
-    )
-    raw_execution_dt: dt.datetime | None = None
-    if (
-        raw_date
-        and raw_time
-        and len(raw_date) == 8
-        and len(raw_time) == 6
-        and _valid_hhmmss(raw_time)
-    ):
-        try:
-            raw_execution_dt = dt.datetime.strptime(
-                raw_date + raw_time, "%Y%m%d%H%M%S"
-            ).replace(tzinfo=KST)
-        except ValueError:
-            raw_execution_dt = None
-
-    raw_dt_valid = (
-        raw_execution_dt is not None
-        and raw_execution_dt <= decision_at
-        and (
-            evidence.captured_at is None
-            or not _is_aware(evidence.captured_at)
-            or raw_execution_dt <= evidence.captured_at
-        )
-    )
-    raw_fields_proven = (
-        evidence.symbol == symbol
-        and evidence.raw_symbol == symbol
-        and evidence.endpoint == KIS_PRICE_ENDPOINT
-        and evidence.tr_id == KIS_PRICE_TR_ID
-        and raw_date == expected_date
-        and _valid_hhmmss(raw_time)
-        and raw_time is not None
-        and raw_time >= "153000"
-        and captured_valid
-        and raw_dt_valid
-    )
-    if not raw_fields_proven:
-        return _gate(
-            "unprovable",
-            "selected_quote_actual_raw_timestamp_unproven",
-            raw_evidence=_row_dict(evidence),
-            wrapper_fields_are_insufficient=True,
-            required_raw_fields=["stck_bsop_date", "stck_cntg_hour"],
-            required_session=expected_date,
-            required_time_at_or_after="153000",
-            required_capture_upper_bound_decision_at=decision_at.isoformat(),
-        )
-    return _gate(
-        "proven",
-        "selected_quote_actual_raw_timestamp_proven",
-        raw_evidence=_row_dict(evidence),
-    )
-
-
-def _decision_clock_gate(selector_input: SelectorInput) -> dict[str, object]:
-    """Bound the decision clock so no gate can be satisfied retroactively."""
-    decision_at = selector_input.decision_at
-    as_of_session = selector_input.as_of_session
-    target_session = selector_input.target_session
-    required = {
-        "required_timezone_aware": True,
-        "required_at_or_after_kst": _kst_datetime(
-            as_of_session, KRX_DAILY_COMPLETION_CUTOFF
-        ).isoformat(),
-        "required_before_kst": _kst_datetime(
-            target_session, KRX_SESSION_OPEN
-        ).isoformat(),
-    }
-    if not _is_aware(decision_at):
-        return _gate(
-            "unprovable",
-            "decision_at_must_be_timezone_aware",
-            decision_at=_iso(decision_at),
-            **required,
-        )
-    if decision_at < _kst_datetime(as_of_session, KRX_DAILY_COMPLETION_CUTOFF):
-        return _gate(
-            "unprovable",
-            "decision_at_before_completed_session_cutoff",
-            decision_at=decision_at.isoformat(),
-            **required,
-        )
-    if decision_at >= _kst_datetime(target_session, KRX_SESSION_OPEN):
-        return _gate(
-            "unprovable",
-            "decision_at_not_before_target_session_open",
-            decision_at=decision_at.isoformat(),
-            **required,
-        )
-    return _gate(
-        "proven",
-        "decision_clock_within_selection_window",
-        decision_at=decision_at.isoformat(),
-        **required,
-    )
-
-
-def _metadata_authority_snapshot_gate(
-    *,
-    market: str,
-    active_rows: list[UniverseRow],
-    as_of_session: dt.date,
-    decision_at: dt.datetime,
-    snapshots: tuple[MetadataAuthoritySnapshot, ...],
-) -> dict[str, object]:
-    """Provider-origin metadata authority. Local sync clock is not admissible."""
-    common = {
-        "market": market,
-        "required_as_of_session": as_of_session.isoformat(),
-        "required_provider_clock_upper_bound_decision_at": _iso(decision_at),
-    }
-    if not _is_aware(decision_at):
-        return _gate(
-            "unprovable",
-            "decision_at_must_be_timezone_aware",
-            **common,
-        )
-    market_snapshots = [s for s in snapshots if s.market == market]
-    if not market_snapshots:
-        return _gate(
-            "unprovable",
-            "authoritative_metadata_snapshot_missing",
-            authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
-            **common,
-        )
-    if len(market_snapshots) > 1:
-        return _gate(
-            "unprovable",
-            "metadata_authority_snapshot_ambiguous_duplicate",
-            snapshot_count=len(market_snapshots),
-            **common,
-        )
-    snapshot = market_snapshots[0]
-    if snapshot.source not in AUTHORITATIVE_METADATA_SOURCES:
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_source_not_authoritative",
-            snapshot_source=snapshot.source,
-            authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
-            **common,
-        )
-    if snapshot.provider_published_at is None or not _is_aware(
-        snapshot.provider_published_at
-    ):
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_provider_authority_clock_missing",
-            **common,
-        )
-    if snapshot.provider_published_at > decision_at:
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_provider_published_after_decision_at",
-            provider_published_at=snapshot.provider_published_at.isoformat(),
-            **common,
-        )
-    if (
-        snapshot.provider_effective_session is None
-        or snapshot.provider_effective_session < as_of_session
-    ):
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_provider_effective_session_before_selection_session",
-            provider_effective_session=_iso(snapshot.provider_effective_session),
-            **common,
-        )
-    if snapshot.provider_effective_session > as_of_session:
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_provider_effective_session_after_selection_session",
-            provider_effective_session=_iso(snapshot.provider_effective_session),
-            **common,
-        )
-    if snapshot.retrieved_at is None or not _is_aware(snapshot.retrieved_at):
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_retrieved_at_missing_or_naive",
-            **common,
-        )
-    if snapshot.retrieved_at > decision_at:
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_retrieved_after_decision_at",
-            retrieved_at=snapshot.retrieved_at.isoformat(),
-            **common,
-        )
-    if snapshot.provider_published_at > snapshot.retrieved_at:
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_published_after_retrieved",
-            provider_published_at=snapshot.provider_published_at.isoformat(),
-            retrieved_at=snapshot.retrieved_at.isoformat(),
-            **common,
-        )
-    actual_count = len([row for row in active_rows if row.exchange == market])
-    if snapshot.symbol_count != actual_count:
-        return _gate(
-            "unprovable",
-            "metadata_snapshot_symbol_count_mismatch",
-            snapshot_count=snapshot.symbol_count,
-            actual_count=actual_count,
-            **common,
-        )
-    return _gate(
-        "proven",
-        "metadata_authority_snapshot_proven",
-        source=snapshot.source,
-        symbol_count=snapshot.symbol_count,
-        **common,
-    )
-
-
 def _row_sync_provenance_gate(
     *,
     active_rows: list[UniverseRow],
     market: str,
     as_of_session: dt.date,
     decision_at: dt.datetime,
+    decision_at_comparable: bool,
     snapshot_gate: dict[str, object],
 ) -> dict[str, object]:
-    """Row-level DB sync provenance. Explicitly **not** an authority claim."""
+    """Row-level DB sync provenance. Explicitly **not** an authority claim.
+
+    What this can prove: we recorded when and from where the master rows were
+    synced into the database, that clock is comparable, and it precedes the
+    decision. What it cannot prove — and no longer claims — is that the provider
+    asserted anything about the session; that is
+    ``metadata_authority_snapshot``'s job, and this gate refuses to pass unless
+    that gate is proven.
+    """
     common = {
         "sync_clock_is_retrieval_provenance_not_authority": True,
         "authority_claim_delegated_to": "metadata_authority_snapshot",
@@ -654,10 +392,9 @@ def _row_sync_provenance_gate(
             provider_snapshot_reason=snapshot_gate.get("reason"),
             **common,
         )
-    market_rows = [row for row in active_rows if row.exchange == market]
     missing = sorted(
         row.symbol
-        for row in market_rows
+        for row in active_rows
         if row.db_sync_observed_at is None or not row.db_sync_source
     )
     if missing:
@@ -670,10 +407,12 @@ def _row_sync_provenance_gate(
         )
     unusable = sorted(
         row.symbol
-        for row in market_rows
+        for row in active_rows
         if row.db_sync_observed_at is not None
         and (
-            not _is_aware(row.db_sync_observed_at)
+            not decision_at_comparable
+            or row.db_sync_observed_at.tzinfo is None
+            or row.db_sync_observed_at.utcoffset() is None
             or row.db_sync_observed_at > decision_at
         )
     )
@@ -688,9 +427,9 @@ def _row_sync_provenance_gate(
         )
     stale = sorted(
         row.symbol
-        for row in market_rows
+        for row in active_rows
         if row.db_sync_observed_at is not None
-        and row.db_sync_observed_at.astimezone(KST).date() < as_of_session
+        and to_kst(row.db_sync_observed_at).date() < as_of_session
     )
     if stale:
         return _gate(
@@ -703,127 +442,54 @@ def _row_sync_provenance_gate(
     return _gate(
         "proven",
         "metadata_row_sync_provenance_within_decision_clock",
-        checked_count=len(market_rows),
+        checked_count=len(active_rows),
         **common,
     )
 
 
-def _universe_denominator_gate(
-    *,
-    market: str,
-    as_of_session: dt.date,
-    decision_at: dt.datetime,
-    actual_count: int,
-    expected_count: int | None,
-    external_denominators: tuple[ExternalUniverseDenominator, ...],
-    unavailable_reason: str | None,
-) -> dict[str, object]:
-    """Coverage denominator must come from outside the same DB read."""
-    common = {
-        "market": market,
-        "required_as_of_session": as_of_session.isoformat(),
-        "required_clock_upper_bound_decision_at": _iso(decision_at),
-        "same_transaction_count_is_not_independent_evidence": True,
+def _decision_clock_gate(selector_input: SelectorInput) -> dict[str, object]:
+    """Bound the decision clock so no gate can be satisfied retroactively."""
+    decision_at = selector_input.decision_at
+    as_of_session = selector_input.as_of_session
+    target_session = selector_input.target_session
+    required = {
+        "required_timezone_aware": True,
+        "required_at_or_after_kst": kst_datetime(
+            as_of_session, KRX_DAILY_COMPLETION_CUTOFF
+        ).isoformat(),
+        "required_before_kst": kst_datetime(
+            target_session, KRX_SESSION_OPEN
+        ).isoformat(),
     }
-    if unavailable_reason:
-        return _gate(
-            "unprovable",
-            "universe_denominator_external_basis_unproven",
-            defect="external_denominator_source_not_wired",
-            source_unavailable_reason=unavailable_reason,
-            **common,
-        )
-    if not _is_aware(decision_at):
-        return _gate(
-            "unprovable",
-            "decision_at_must_be_timezone_aware",
-            **common,
-        )
-    market_denominators = [d for d in external_denominators if d.market == market]
-    if not market_denominators:
-        return _gate(
-            "unprovable",
-            "universe_denominator_external_basis_unproven",
-            defect="no_external_denominator_for_market_session",
-            **common,
-        )
-    if len(market_denominators) > 1:
-        return _gate(
-            "unprovable",
-            "universe_denominator_external_basis_unproven",
-            defect="duplicate_external_denominator_for_market",
-            **common,
-        )
-    denominator = market_denominators[0]
-    if denominator.source not in AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES:
-        return _gate(
-            "unprovable",
-            "universe_denominator_source_not_authoritative",
-            source=denominator.source,
-            authoritative_sources=sorted(AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES),
-            **common,
-        )
-    if denominator.session_date != as_of_session:
-        return _gate(
-            "unprovable",
-            "universe_denominator_session_mismatch",
-            session_date=_iso(denominator.session_date),
-            **common,
-        )
-    if denominator.published_at is None or not _is_aware(denominator.published_at):
-        return _gate(
-            "unprovable",
-            "universe_denominator_published_at_missing_or_naive",
-            **common,
-        )
-    if denominator.published_at > decision_at:
-        return _gate(
-            "unprovable",
-            "universe_denominator_published_after_decision_at",
-            published_at=denominator.published_at.isoformat(),
-            **common,
-        )
-    if denominator.retrieved_at is None or not _is_aware(denominator.retrieved_at):
-        return _gate(
-            "unprovable",
-            "universe_denominator_retrieved_at_missing_or_naive",
-            **common,
-        )
-    if denominator.retrieved_at > decision_at:
-        return _gate(
-            "unprovable",
-            "universe_denominator_retrieved_after_decision_at",
-            retrieved_at=denominator.retrieved_at.isoformat(),
-            **common,
-        )
-    if denominator.published_at > denominator.retrieved_at:
-        return _gate(
-            "unprovable",
-            "universe_denominator_published_after_retrieved",
-            published_at=denominator.published_at.isoformat(),
-            retrieved_at=denominator.retrieved_at.isoformat(),
-            **common,
-        )
-    if (
-        denominator.listed_count <= 0
-        or denominator.listed_count != actual_count
-        or (expected_count is not None and denominator.listed_count != expected_count)
+    if not isinstance(decision_at, dt.datetime) or (
+        decision_at.tzinfo is None or decision_at.utcoffset() is None
     ):
         return _gate(
             "unprovable",
-            "universe_denominator_disagrees_with_external_basis",
-            external_count=denominator.listed_count,
-            actual_count=actual_count,
-            expected_count=expected_count,
-            source=denominator.source,
-            **common,
+            "decision_at_must_be_timezone_aware",
+            decision_at=_iso(decision_at),
+            **required,
+        )
+    if decision_at < kst_datetime(as_of_session, KRX_DAILY_COMPLETION_CUTOFF):
+        return _gate(
+            "unprovable",
+            "decision_at_before_completed_session_cutoff",
+            decision_at=decision_at.isoformat(),
+            **required,
+        )
+    if decision_at >= kst_datetime(target_session, KRX_SESSION_OPEN):
+        return _gate(
+            "unprovable",
+            "decision_at_not_before_target_session_open",
+            decision_at=decision_at.isoformat(),
+            **required,
         )
     return _gate(
         "proven",
-        "universe_denominator_external_basis_proven",
-        external_count=denominator.listed_count,
-        source=denominator.source,
-        **common,
+        "decision_clock_within_pre_target_session_window",
+        decision_at=decision_at.isoformat(),
+        decision_at_kst=to_kst(decision_at).isoformat(),
+        **required,
     )
 
 
@@ -839,7 +505,7 @@ def select_krb1_p0_liquidity_candidates(
     _universe_index, universe_duplicates = _index_unique(selector_input.universe_rows)
     candle_index, candle_duplicates = _index_unique(selector_input.candle_rows)
     reference_index, reference_duplicates = _index_unique(
-        selector_input.reference_exception_evidence
+        selector_input.reference_price_exception_records
     )
     completed_index, completed_duplicates = _index_unique(
         selector_input.completed_bar_evidence
@@ -847,9 +513,16 @@ def select_krb1_p0_liquidity_candidates(
     quote_index, quote_duplicates = _index_unique(
         selector_input.quote_timestamp_evidence
     )
-    metadata_index, metadata_duplicates = _index_unique(
-        selector_input.metadata_authority_snapshots,
+    metadata_snapshot_index, metadata_snapshot_duplicates = _index_unique(
+        selector_input.metadata_snapshots,
         symbol_getter="market",
+    )
+    manifest_index = {
+        manifest.market: manifest for manifest in selector_input.completion_manifests
+    }
+    decision_at = selector_input.decision_at
+    decision_at_comparable = isinstance(decision_at, dt.datetime) and (
+        decision_at.tzinfo is not None and decision_at.utcoffset() is not None
     )
 
     duplicate_evidence = {
@@ -858,10 +531,9 @@ def select_krb1_p0_liquidity_candidates(
         "reference_exception": reference_duplicates,
         "completed_bar": completed_duplicates,
         "quote_timestamp": quote_duplicates,
-        "metadata_authority": metadata_duplicates,
+        "metadata_snapshot": metadata_snapshot_duplicates,
     }
     global_gates: dict[str, dict[str, object]] = {}
-    global_gates["decision_clock"] = _decision_clock_gate(selector_input)
     if selector_input.target_session <= selector_input.as_of_session:
         global_gates["session_order"] = _gate(
             "unprovable",
@@ -889,6 +561,7 @@ def select_krb1_p0_liquidity_candidates(
         global_gates["unique_evidence_rows"] = _gate(
             "proven", "evidence_rows_unique", duplicates=duplicate_evidence
         )
+    global_gates["decision_clock"] = _decision_clock_gate(selector_input)
 
     market_results: dict[str, dict[str, object]] = {}
     pending_candidates: list[dict[str, object]] = []
@@ -901,6 +574,70 @@ def select_krb1_p0_liquidity_candidates(
         gates: dict[str, dict[str, object]] = {}
         expected_count = selector_input.expected_universe_counts.get(market)
         actual_count = len(rows)
+        # 🔴 F-04: the expected denominator must not come from the same read as the
+        # rows it validates. #1729's CLI took count(*) and the rows from one
+        # transaction on one table, so a truncated universe shrank both sides
+        # together and still proved "full coverage" — the count proved itself.
+        # The independent basis available here is the append-only metadata snapshot:
+        # captured earlier, hash-chained, and bound to the provider payload. Its
+        # symbol_count is what the denominator must agree with.
+        sealed_snapshot = metadata_snapshot_index.get(market)
+        sealed_count = sealed_snapshot.symbol_count if sealed_snapshot else None
+        if sealed_count is None:
+            gates["universe_snapshot_coverage"] = _gate(
+                "unprovable",
+                "universe_denominator_has_no_sealed_basis",
+                expected_count=expected_count,
+                actual_count=actual_count,
+                required_basis="append-only metadata snapshot symbol_count",
+                same_transaction_count_is_not_independent_evidence=True,
+            )
+        elif expected_count is None or expected_count != actual_count:
+            gates["universe_snapshot_coverage"] = _gate(
+                "unprovable",
+                "full_universe_snapshot_coverage_mismatch",
+                expected_count=expected_count,
+                actual_count=actual_count,
+                sealed_count=sealed_count,
+            )
+        elif sealed_count != actual_count:
+            gates["universe_snapshot_coverage"] = _gate(
+                "unprovable",
+                "universe_denominator_disagrees_with_sealed_basis",
+                expected_count=expected_count,
+                actual_count=actual_count,
+                sealed_count=sealed_count,
+                same_transaction_count_is_not_independent_evidence=True,
+            )
+        else:
+            gates["universe_snapshot_coverage"] = _gate(
+                "proven",
+                "full_universe_snapshot_coverage_proven",
+                expected_count=expected_count,
+                actual_count=actual_count,
+                sealed_count=sealed_count,
+                denominator_basis="append-only metadata snapshot symbol_count",
+            )
+
+        # 🔴 F-INT-03: the sealed snapshot above catches a truncation that happens
+        # *after* a snapshot exists. It cannot catch the first snapshot: if the
+        # database was already short when it was captured, expected == actual ==
+        # sealed and every number agrees. Sealing records when we knew a number, not
+        # that the number was the whole market — so full coverage additionally
+        # requires a denominator from outside our own read. No such source is wired
+        # (ROB-1175), so this gate fails closed and the run reports the denominator
+        # as unprovable instead of notarizing its own shortfall.
+        gates["universe_denominator_external_basis"] = evaluate_universe_denominator(
+            denominators=selector_input.external_universe_denominators,
+            market=market,
+            session_date=selector_input.as_of_session,
+            decision_at=decision_at,
+            sealed_count=sealed_count,
+            actual_count=actual_count,
+            source_unavailable_reason=(
+                selector_input.universe_denominator_source_unavailable_reason
+            ),
+        ).as_dict()
 
         active_rows = [row for row in rows if row.is_active]
         missing_metadata = [
@@ -927,30 +664,42 @@ def select_krb1_p0_liquidity_candidates(
                 missing_count=0,
             )
 
-        snapshot_gate = _metadata_authority_snapshot_gate(
+        gates["metadata_authority_snapshot"] = evaluate_metadata_authority(
+            snapshot=metadata_snapshot_index.get(market),
             market=market,
-            active_rows=active_rows,
+            rows=tuple(
+                SymbolMetadata(
+                    symbol=row.symbol,
+                    exchange=row.exchange,
+                    security_type=row.security_type,
+                    is_common_share=row.is_common_share,
+                    listing_status=row.listing_status,
+                    list_date=row.list_date,
+                    krx_trading_suspended=row.krx_trading_suspended,
+                )
+                for row in rows
+            ),
             as_of_session=selector_input.as_of_session,
-            decision_at=selector_input.decision_at,
-            snapshots=selector_input.metadata_authority_snapshots,
-        )
-        gates["metadata_authority_snapshot"] = snapshot_gate
+            decision_at=decision_at,
+        ).as_dict()
+
+        # 🔴 D4: the sibling gate no longer treats our DB sync clock as authority.
+        # It used to require `row.metadata_as_of >= as_of_session` and accept
+        # `metadata_source == "toss_openapi"` — but that clock is
+        # `kr_symbol_universe.toss_master_updated_at` (when *we* synced) and the
+        # source label was derived from that same column being non-null, so the
+        # check was tautological. Its `proven` therefore asserted
+        # "metadata authoritative as of the selection session" on the strength of
+        # "we synced today". Authority is now delegated to the provider snapshot
+        # gate; what remains here is retrieval provenance, bounded above by the
+        # decision clock, and it is labelled as such in the evidence.
         gates["metadata_authority_as_of"] = _row_sync_provenance_gate(
             active_rows=active_rows,
             market=market,
             as_of_session=selector_input.as_of_session,
-            decision_at=selector_input.decision_at,
-            snapshot_gate=snapshot_gate,
-        )
-
-        gates["universe_snapshot_coverage"] = _universe_denominator_gate(
-            market=market,
-            as_of_session=selector_input.as_of_session,
-            decision_at=selector_input.decision_at,
-            actual_count=actual_count,
-            expected_count=expected_count,
-            external_denominators=selector_input.external_universe_denominators,
-            unavailable_reason=selector_input.universe_denominator_source_unavailable_reason,
+            decision_at=decision_at,
+            decision_at_comparable=decision_at_comparable,
+            snapshot_gate=gates["metadata_authority_snapshot"],
         )
 
         if missing_metadata:
@@ -1059,28 +808,20 @@ def select_krb1_p0_liquidity_candidates(
 
         missing_completed_evidence = sorted(coverage_symbols - set(completed_index))
         invalid_completed_evidence: list[str] = []
-        identity_missing_symbols: list[str] = []
         if coverage_proven:
             for symbol in sorted(coverage_symbols & set(completed_index)):
                 candle = candle_index.get(symbol)
                 evidence = completed_index[symbol]
-                if not isinstance(candle, CandleRow) or not isinstance(
-                    evidence, CompletedBarEvidence
-                ):
-                    invalid_completed_evidence.append(symbol)
-                    continue
-                if evidence.raw_symbol is None:
-                    identity_missing_symbols.append(symbol)
-                    continue
-                if not _completed_bar_matches(
-                    candle, evidence, selector_input.decision_at
+                if (
+                    not isinstance(candle, CandleRow)
+                    or not isinstance(evidence, CompletedBarEvidence)
+                    or not _completed_bar_matches(candle, evidence, decision_at)
                 ):
                     invalid_completed_evidence.append(symbol)
         if (
             not coverage_proven
             or missing_completed_evidence
             or invalid_completed_evidence
-            or identity_missing_symbols
         ):
             gates["completed_session_raw_completion"] = _gate(
                 "unprovable",
@@ -1093,11 +834,10 @@ def select_krb1_p0_liquidity_candidates(
                 missing_examples=_examples(missing_completed_evidence),
                 invalid_count=len(invalid_completed_evidence),
                 invalid_examples=_examples(invalid_completed_evidence),
-                identity_missing_count=len(identity_missing_symbols),
-                identity_missing_examples=_examples(identity_missing_symbols),
-                request_context_symbol_is_not_identity=True,
                 coverage_prerequisite_proven=coverage_proven,
                 ingested_at_alone_is_insufficient=True,
+                local_match_is_not_provider_finality=True,
+                request_context_symbol_is_not_identity=True,
             )
         else:
             gates["completed_session_raw_completion"] = _gate(
@@ -1107,60 +847,50 @@ def select_krb1_p0_liquidity_candidates(
                 tr_id=KIS_DAILY_TR_ID,
                 required_observation_cutoff_kst="15:35:00",
                 checked_count=len(coverage_symbols),
+                local_match_is_not_provider_finality=True,
             )
 
+        gates["completed_session_local_reconcile"] = evaluate_completion_manifest(
+            manifest=manifest_index.get(market),
+            market=market,
+            session_date=selector_input.as_of_session,
+            universe_symbols=coverage_symbols,
+            decision_at=decision_at,
+        ).as_dict()
+
+        # 🔴 A3: the second axis. Local agreement above says the stored rows match
+        # the raw response; it says nothing about the provider declaring this
+        # revision final. Absent an attestation this fails closed, and no amount of
+        # local reconciliation can substitute for it.
+        gates["completed_session_provider_finality"] = evaluate_provider_finality(
+            attestations=selector_input.provider_finality_attestations,
+            market=market,
+            session_date=selector_input.as_of_session,
+            decision_at=decision_at,
+            local_reconcile_proven=(
+                gates["completed_session_local_reconcile"]["status"] == "proven"
+            ),
+            source_unavailable_reason=(
+                selector_input.finality_source_unavailable_reason
+            ),
+        ).as_dict()
+
         preliminary_symbols = {row.symbol for row in preliminary}
-        missing_reference = sorted(preliminary_symbols - set(reference_index))
-        invalid_reference: list[str] = []
-        for symbol in sorted(preliminary_symbols & set(reference_index)):
-            evidence = reference_index[symbol]
-            if not isinstance(evidence, ReferenceExceptionEvidence):
-                invalid_reference.append(symbol)
-                continue
-            if (
-                not _is_aware(selector_input.decision_at)
-                or evidence.effective_session != selector_input.target_session
-                or evidence.is_exception is None
-                or evidence.source not in AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES
-                or not _is_aware(evidence.source_as_of)
-                or evidence.source_as_of.date() != selector_input.target_session
-                or evidence.published_at is None
-                or not _is_aware(evidence.published_at)
-                or evidence.published_at > selector_input.decision_at
-                or evidence.retrieved_at is None
-                or not _is_aware(evidence.retrieved_at)
-                or evidence.retrieved_at > selector_input.decision_at
-                or evidence.published_at > evidence.retrieved_at
-                or _parse_nonnegative_int_string(evidence.raw_reference_price)
-                in {
-                    None,
-                    0,
-                }
-                or not evidence.raw_reason_code
-            ):
-                invalid_reference.append(symbol)
-        if missing_reference or invalid_reference or not preliminary_symbols:
-            gates["reference_price_exception_coverage"] = _gate(
-                "unprovable",
-                "target_session_reference_price_exception_unproven",
-                target_session=selector_input.target_session.isoformat(),
-                required_authoritative_sources=sorted(
-                    AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES
+        gates["reference_price_exception_coverage"] = (
+            evaluate_reference_price_exception_coverage(
+                records=tuple(
+                    record
+                    for record in selector_input.reference_price_exception_records
+                    if record.symbol in preliminary_symbols
                 ),
-                expected_count=len(preliminary_symbols),
-                missing_count=len(missing_reference),
-                missing_examples=_examples(missing_reference),
-                invalid_count=len(invalid_reference),
-                invalid_examples=_examples(invalid_reference),
-                fallback_forbidden=True,
-            )
-        else:
-            gates["reference_price_exception_coverage"] = _gate(
-                "proven",
-                "target_session_reference_price_exception_coverage_proven",
-                target_session=selector_input.target_session.isoformat(),
-                checked_count=len(preliminary_symbols),
-            )
+                required_symbols=preliminary_symbols,
+                target_session=selector_input.target_session,
+                decision_at=decision_at,
+                source_unavailable_reason=(
+                    selector_input.reference_source_unavailable_reason
+                ),
+            ).as_dict()
+        )
 
         pre_reference_ranked = sorted(
             (
@@ -1188,13 +918,59 @@ def select_krb1_p0_liquidity_candidates(
         reference_gate_proven = (
             gates["reference_price_exception_coverage"]["status"] == "proven"
         )
+        # 🔴 A4/E4: symbols whose base price is set by the target session's opening
+        # call leave the ranking population. In this sealed child, if the *global*
+        # rank #1 is one of them the run fails closed — promoting #2 would silently
+        # change the selection rule from "rank #1 of the eligible universe" to
+        # "rank #1 of the positively-proven subset", which is a different contract
+        # reserved for a future pre-registered child.
+        deferred_symbols = set(
+            excluded_pending_opening_call_symbols(
+                records=tuple(
+                    record
+                    for record in selector_input.reference_price_exception_records
+                    if record.symbol in preliminary_symbols
+                ),
+                target_session=selector_input.target_session,
+                decision_at=decision_at,
+            )
+        )
+        global_rank_one = (
+            pre_reference_ranked[0][0].symbol if pre_reference_ranked else None
+        )
+        if global_rank_one is not None and global_rank_one in deferred_symbols:
+            gates["ranked_candidate"] = _gate(
+                "unprovable",
+                "global_rank_one_excluded_pending_opening_call",
+                market=market,
+                global_rank_one=global_rank_one,
+                excluded_pending_opening_call=_examples(sorted(deferred_symbols)),
+                automatic_promotion_of_rank_two_forbidden=True,
+                positively_proven_subset_ranking_requires_future_child=True,
+            )
+            market_results[market] = {
+                "gates": gates,
+                "counts": {
+                    "universe": len(rows),
+                    "active": len(active_rows),
+                    "coverage_universe": len(coverage_rows),
+                    "pre_reference_eligible": len(preliminary),
+                    "post_reference_eligible": 0,
+                    "excluded_pending_opening_call": len(deferred_symbols),
+                },
+                "pre_reference_rank_head": pre_reference_head,
+            }
+            continue
+
         final_ranked: list[tuple[UniverseRow, CandleRow]] = []
         if reference_gate_proven:
             for row in preliminary:
                 evidence = reference_index[row.symbol]
-                assert isinstance(evidence, ReferenceExceptionEvidence)
+                assert isinstance(evidence, ReferencePriceExceptionRecord)
                 candle = candle_index.get(row.symbol)
-                if evidence.is_exception is False and isinstance(candle, CandleRow):
+                if is_tradable_reference_price(evidence) and isinstance(
+                    candle, CandleRow
+                ):
                     final_ranked.append((row, candle))
             final_ranked.sort(key=lambda item: (-item[1].value, item[0].symbol))
 
@@ -1224,20 +1000,21 @@ def select_krb1_p0_liquidity_candidates(
                     completed_index.get(selected_row.symbol), CompletedBarEvidence
                 )
                 else None,
-                decision_at=selector_input.decision_at,
+                decision_at,
             )
-            quote_gate = _quote_timestamp_gate(
-                symbol=selected_row.symbol,
-                as_of_session=selector_input.as_of_session,
-                decision_at=selector_input.decision_at,
-                evidence=(
+            quote_gate = evaluate_quote_timestamp_capture(
+                capture=(
                     quote_index.get(selected_row.symbol)
                     if isinstance(
-                        quote_index.get(selected_row.symbol), QuoteTimestampEvidence
+                        quote_index.get(selected_row.symbol), QuoteTimestampCapture
                     )
                     else None
                 ),
-            )
+                symbol=selected_row.symbol,
+                session_date=selector_input.as_of_session,
+                decision_at=decision_at,
+                at_or_after=QUOTE_EVIDENCE_AT_OR_AFTER,
+            ).as_dict()
             gates["completed_close"] = completed_gate
             gates["selected_quote_raw_timestamp"] = quote_gate
             raw_limit_price = (85 * selected_candle.close) // 100
@@ -1248,8 +1025,18 @@ def select_krb1_p0_liquidity_candidates(
                     "quantity": 1,
                     "universe_row": _row_dict(selected_row),
                     "candle_row": _row_dict(selected_candle),
-                    "reference_exception_evidence": _row_dict(
+                    "reference_price_exception_record": _row_dict(
                         reference_index[selected_row.symbol]
+                    ),
+                    "metadata_authority_snapshot": (
+                        metadata_snapshot_index[market].as_evidence()
+                        if market in metadata_snapshot_index
+                        else None
+                    ),
+                    "local_reconcile_manifest": (
+                        manifest_index[market].as_evidence()
+                        if market in manifest_index
+                        else None
                     ),
                     "completed_bar_evidence": (
                         _row_dict(completed_index[selected_row.symbol])
@@ -1308,6 +1095,7 @@ def select_krb1_p0_liquidity_candidates(
                 "coverage_universe": len(coverage_rows),
                 "pre_reference_eligible": len(preliminary),
                 "post_reference_eligible": len(final_ranked),
+                "excluded_pending_opening_call": len(deferred_symbols),
             },
             "pre_reference_rank_head": pre_reference_head,
         }
@@ -1360,7 +1148,34 @@ def select_krb1_p0_liquidity_candidates(
         "fallback_used": False,
         "as_of_session": selector_input.as_of_session.isoformat(),
         "target_session": selector_input.target_session.isoformat(),
-        "decision_at": selector_input.decision_at.isoformat(),
+        "decision_at": _iso(selector_input.decision_at),
+        "evidence_clock_contract": {
+            "upper_bound": "every evidence clock must be <= decision_at",
+            "metadata": (
+                "provider_published_at <= retrieved_at <= decision_at "
+                "AND provider_effective_session == as_of_session; "
+                "the DB sync clock is retrieval "
+                "provenance and never authority"
+            ),
+            "completion_local_reconcile": (
+                "observed_at in [session 15:35 KST, decision_at] "
+                "and finalized_at <= decision_at; local agreement only"
+            ),
+            "completion_provider_finality": (
+                "provider must declare the daily revision final with "
+                "declared_final_at <= retrieved_at <= decision_at; "
+                "local reconcile can never substitute for it"
+            ),
+            "reference_price": (
+                "effective_session == target_session "
+                "AND published_at <= decision_at AND retrieved_at <= decision_at"
+            ),
+            "quote_timestamp": (
+                "raw stck_bsop_date + stck_cntg_hour only, <= decision_at; "
+                "wrapper price_as_of/price_freshness are never evidence"
+            ),
+            "late_backfill_is_not_proof_of_state_at_decision_at": True,
+        },
         "selection_rule": {
             "markets": list(MARKETS),
             "quantity_each": 1,
@@ -1368,13 +1183,6 @@ def select_krb1_p0_liquidity_candidates(
             "raw_limit_price": "(85 * completed_close) // 100",
             "tick_floor": "(raw // tick) * tick",
             "integer_arithmetic_only": True,
-        },
-        "evidence_clock_contract": {
-            "late_backfill_is_not_proof_of_state_at_decision_at": True,
-            "metadata": "provider_published_at <= retrieved_at <= decision_at; provider_effective_session == as_of_session",
-            "completion": "observed_at <= decision_at; raw_symbol from provider response",
-            "reference": "published_at <= decision_at; retrieved_at <= decision_at",
-            "quote": "captured_at <= decision_at; raw business_date/time from provider response",
         },
         "global_gates": global_gates,
         "market_results": market_results,
@@ -1384,17 +1192,20 @@ def select_krb1_p0_liquidity_candidates(
 
 
 __all__ = [
+    "AUTHORITATIVE_METADATA_SOURCES",
     "AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES",
-    "AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES",
     "CandleRow",
     "CompletedBarEvidence",
-    "ExternalUniverseDenominator",
+    "CompletionManifest",
+    "ProviderFinalityAttestation",
     "MARKETS",
     "MetadataAuthoritySnapshot",
-    "QuoteTimestampEvidence",
-    "ReferenceExceptionEvidence",
+    "QUOTE_EVIDENCE_AT_OR_AFTER",
+    "QuoteTimestampCapture",
+    "ReferencePriceExceptionRecord",
     "STANDARD_STOCK_TICK_TABLES",
     "SelectorInput",
+    "SymbolMetadata",
     "TickBand",
     "UniverseRow",
     "select_krb1_p0_liquidity_candidates",

@@ -17,6 +17,9 @@ ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_liquidity_selector \
 ```
 
 `--target-session`을 생략하면 XKRX calendar의 다음 세션을 결정적으로 사용한다.
+`--decision-at`은 필수다(offset 포함 ISO-8601). 모든 증거 시계가 이 시각 이하여야 하며,
+이후에 채워진 증거는 그 시점 상태의 증명으로 인정되지 않는다(ROB-1172).
+gate 증거 준비 절차는 `docs/runbooks/krb1-p0-gate-proof-path.md`에 있다.
 
 ## 종료 코드
 
@@ -34,10 +37,11 @@ timestamp gate를 각각 `proven` 또는 `unprovable`로 출력한다. quote tim
 `price_freshness`는 gate를 통과시키지 못한다.
 
 완료세션은 row 존재나 `ingested_at`만으로 증명하지 않는다. coverage universe 전
-종목의 KIS raw 일봉(`stck_bsop_date`, `stck_clpr`, `acml_vol`,
-`acml_tr_pbmn`)이 DB row와 일치하고, 각 응답의 관측 provenance가 당일 15:35 KST
-이후여야 한다. 전수 evidence를 효율적으로 공급하는 authoritative batch source가
-배선되기 전에는 이 gate가 `unprovable`인 것이 정상이다.
+종목의 KIS raw 일봉(`stck_bsop_date`, `stck_oprc`, `stck_hgpr`, `stck_lwpr`,
+`stck_clpr`, `acml_vol`, `acml_tr_pbmn`)이 DB row와 일치하고, 각 응답의 관측
+provenance가 당일 15:35 KST 이후이며 `decision_at` 이하여야 한다. 전수 reconcile은
+`scripts/krb1_p0_completed_session_oneshot.py`가 만드는 append-only completion
+manifest가 공급한다(ROB-1172 AC2).
 
 지정가는 정수 연산만 사용한다.
 
@@ -48,8 +52,9 @@ price = (raw // tick) * tick
 
 CLI의 DB transaction은 `REPEATABLE READ READ ONLY`이며 외부 호출도 KIS quotation GET
 두 종류뿐이다. 주문 preview/place/cancel, DB write, journal append, scheduler 연결은
-없다.
+없다. gate 증거 stream에 대한 append는 서비스 레이어(`krb1_evidence_chain`)를 경유한다.
 
 현재 repository에는 07-30 기준가 예외를 전수 증명하는 권위 source가 배선되어 있지
-않다. source가 없는 동안 해당 gate는 `unprovable`이며 selector는 후보를 반환하지
-않는다.
+않다. `app/services/krb1_reference_exception_adapter.py`는 그 사실을 기계적으로
+강제하는 fail-closed stub이며, source가 없는 동안 해당 gate는 `unprovable`이고
+selector는 후보를 반환하지 않는다.

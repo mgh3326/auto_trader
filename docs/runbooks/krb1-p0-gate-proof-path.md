@@ -1,0 +1,337 @@
+# KR-B1 P0-3 selector gate 증명 경로 (ROB-1172)
+
+07-29 16:37 selector 실행은 데이터가 충분했는데도 `fail_closed` 로 후보 0건을 냈다
+(KOSPI coverage 2,100/2,100 · 3,921행 · 16:30 이후 537행 · duplicate 0). 막은 것은
+데이터가 아니라 **증명 수단의 부재**였다. 이 문서는 3개 gate 를 증명할 수 있는 경로와,
+증명 못 하면 그대로 막히는 계약을 정리한다.
+
+**게이트는 완화되지 않았다.** 상한(`<= decision_at`)이 추가됐고, 권위 source allowlist·
+raw provenance 요구·전수 coverage 요구는 그대로다.
+
+## 0. decision_at — 모든 gate 의 상한
+
+selector 는 `--decision-at` (offset 포함 ISO-8601) 를 필수로 받는다. 모든 증거 시계는
+`decision_at` 이하여야 하고, `decision_at` 자체도 다음 창 안에 있어야 한다.
+
+```
+as_of_session 15:35 KST  <=  decision_at  <  target_session 09:00 KST
+```
+
+| 실패 사유 | 의미 |
+|---|---|
+| `decision_at_must_be_timezone_aware` | naive 시계는 비교 자체가 추측이다 |
+| `decision_at_before_completed_session_cutoff` | 완료 세션이 아직 없다 |
+| `decision_at_not_before_target_session_open` | 이미 대상 세션이 열렸다 |
+
+**늦게 채우는 것은 그 시점 상태의 증명이 아니다.** 07-30 metadata 로 07-29 결정을 정당화하는
+경로는 상한으로 차단된다.
+
+## 1. AC1 — Toss authoritative metadata snapshot (append-only)
+
+```bash
+ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_metadata_snapshot_capture \
+  --as-of-session 2026-07-29 \
+  --decision-at 2026-07-29T18:00:00+09:00
+```
+
+🔴 **회수 시각은 권위 시계가 아니다 (2026-07-30 08:33 교정).** 초기 구현은 provider clock
+부재를 `metadata_as_of = retrieved_at` 로 메우고 `authority_clock_source=http_retrieval`
+라벨을 붙였다. 그러면 **07-28 vintage 본문을 07-29 에 GET 만 해도 07-29 기준 권위로
+통과**한다 — 이 gate 가 잡아야 할 stale 그 자체다. 라벨은 권위를 만들지 않는다.
+
+지금 계약:
+
+- 권위 시계는 **provider 응답 필드에서만** 나온다. `ProviderAuthorityClock` 은
+  publication 시각·effective session 각각의 **필드명 + 원문 문자열**을 함께 보존하고,
+  로컬 시계로는 구성 자체가 불가능하다(빈 필드명·naive 시각 거부).
+- 추출은 `extract_provider_authority_clock()` 뿐이며 **envelope 레벨만** 본다. 행 단위
+  clock 은 universe-scope 권위가 아니므로 거부한다.
+- `PROVIDER_PUBLISHED_AT_FIELDS` / `PROVIDER_EFFECTIVE_SESSION_FIELDS` 는 **빈 집합**이다.
+  wired Toss `/api/v1/stocks` 투영(`TossStockInfo`)에 publication/effective 시계가 없고
+  `parse_toss_response` 가 envelope 을 bare row list 로 풀어버린다. 따라서 이 capture 는
+  현재 **fail-closed 가 정상**이며(`provider_authority_clock_absent`) 아무것도 append 하지
+  않는다. 두 집합을 채우는 것은 provider 계약을 실측 확인한 뒤의 **별도 리뷰 변경**이고
+  설정 토글이 아니다.
+- 보존 항목: `raw_payload_sha256` · `raw_payload_bytes` · provider clock(필드명·원문 포함) ·
+  `retrieved_at`(회수 시계, `retrieval_clock_is_not_authority: true` 로 라벨) ·
+  `universe_metadata_hash` · `symbol_count` · chain provenance.
+- 저장: `var/research/krb1/p0_gate_evidence/toss_metadata_snapshot.jsonl`
+  (hash-chain append-only, 봉인 캠페인 저널과 **별도 genesis**).
+- 저장 스키마는 `krb1.p0_3.metadata_authority.v2`. v1 row(회수-시계-권위)를 읽으면
+  **예외로 거부**한다 — 조용히 읽으면 결함이 되살아난다.
+- gate `metadata_authority_snapshot` 강제 조건:
+
+```
+source in {toss_openapi}
+provider clock 존재 (부재 → metadata_snapshot_provider_authority_clock_missing)
+universe_metadata_hash == 선택 시점 metadata 행에서 재계산한 hash
+as_of_session <= provider_effective_session <= decision_at 날짜   (하한: provider 세션 기준)
+provider_published_at <= retrieved_at <= decision_at              ← 🔴 상한
+chain provenance (stream_id / chain_index >= 2 / chain_hash) 존재
+```
+
+- gate `metadata_authority_as_of` 는 **권위 gate 가 아니다** (D4). 이 gate 가 보는
+  `db_sync_observed_at` 은 DB `kr_symbol_universe.toss_master_updated_at`, 즉 **우리가 마스터를
+  동기화한 시각**이다. 이전 구현은 이 값의 하한(`>= as_of_session`)과
+  "그 컬럼이 non-null 이면 source=toss_openapi" 라는 **동어반복** 검사로
+  `metadata_authoritative_as_of_selection_session` 을 출고했다 — 실제로 증명한 것은
+  "우리가 오늘 sync 했다" 뿐이었다. 지금은:
+  ```
+  권위 판정은 metadata_authority_snapshot 로 위임 (그 gate 가 proven 이 아니면 이 gate 도 막힌다)
+  db_sync_observed_at 은 retrieval provenance 로만 기록 (sync_clock_is_retrieval_provenance_not_authority)
+  상한 db_sync_observed_at <= decision_at · 하한 >= as_of_session (권위 아닌 가용성 조건)
+  ```
+  사유: `metadata_row_authority_requires_provider_snapshot` ·
+  `metadata_row_sync_provenance_missing` · `metadata_row_sync_clock_after_decision_at` ·
+  `metadata_row_sync_clock_stale_for_selection_session`.
+- provider clock 의 **필드명**은 선언된 allowlist 에 있어야 한다 (`..._field_not_declared`).
+  이 교차검증이 없으면 "회수 시계는 권위가 아니다"가 명명 관습으로만 지켜진다 —
+  누구나 `published_at_field="retrieved_at"` 로 라벨만 붙여 통과시킬 수 있었다.
+  extractor 는 선언 필드가 **2개 이상 존재하면 source conflict 로 fail-close** 하고,
+  effective session 은 **bare YYYY-MM-DD 만** 인정한다(타임스탬프 절단 금지).
+- Toss 가 비활성(`TOSS_API_ENABLED` 미설정)이면 capture 는
+  `toss_authoritative_master_source_unavailable` 로 fail-closed 한다.
+
+## 2. AC2 — completion manifest (KIS raw daily ↔ DB exact reconcile)
+
+```bash
+# 15:35 KST 이후에만. 스케줄러 등록 없음 — 수동 one-shot.
+ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_completed_session_oneshot \
+  --as-of-session 2026-07-29 \
+  --decision-at 2026-07-29T18:00:00+09:00
+```
+
+- endpoint `/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` ·
+  TR `FHKST03010100` 을 전 종목에 GET 하고, 종목별로 raw OHLCV·거래대금 문자열을
+  DB row 와 **정수 exact** 비교한다 (float 강제 변환 없음).
+- manifest 에 들어가는 것: endpoint · TR ID · raw session(`stck_bsop_date`) ·
+  raw OHLCV·value · 종목별 `observed_at` · manifest `finalized_at` · `universe_hash` ·
+  종목별 reconcile status.
+- 저장: `var/research/krb1/p0_gate_evidence/completion_manifest.jsonl`.
+- gate `completed_session_completion_manifest` 강제 조건:
+
+```
+universe_hash == coverage universe 로 재계산한 hash   (부분 sweep 위장 불가)
+reconciled_count == symbol_count, mismatch/missing/extra == 0
+first_observed_at >= as_of_session 15:35 KST
+last_observed_at <= decision_at
+last_observed_at <= finalized_at <= decision_at
+manifest_hash == detail 재계산 hash
+chain provenance 존재
+```
+
+- `row_count` 나 `ingested_at` 은 완료 증명이 아니다 (07-29 32행/07:40/volume=0 장전
+  스냅샷 사례). 재upsert 로 갱신되는 값이라 단독으로는 아무것도 못 증명한다.
+- 15:35 전에 실행하면 `completed_session_raw_collection_before_daily_completion_cutoff`,
+  `decision_at` 이후에 시작하면 `sweep_started_after_decision_at` 로 막힌다.
+
+## 3. AC3 — 기준가 evidence 모델 분리
+
+기존 모델은 단일 `source_as_of` 에 `source_as_of >= target_session` 을 요구해서
+**구조적으로 충족 불가**였다 (07-29 18:00 결정이 07-30 스냅샷을 들고 있을 수 없다).
+분리된 모델은 서로 다른 두 시계를 각각 요구한다.
+
+```
+effective_session == target_session
+AND published_at <= decision_at
+AND retrieved_at <= decision_at
+AND published_at <= retrieved_at
+```
+
+`ReferencePriceExceptionRecord` = symbol · effective_session · is_exception ·
+source · published_at · retrieved_at · raw_reference_price · raw_reason_code ·
+raw_payload_sha256. 권위 source allowlist 는 `{krx_official_base_price}` 그대로이고,
+전수 coverage·raw provenance 요구도 그대로다. 즉 요구 강도는 낮아지지 않았고, **결정 이전
+공표**라는 충족 가능한 형태로 바뀌었을 뿐이다.
+
+## 4. AC4 — reference-exception adapter 는 막는 stub
+
+KRX/KIS 공식 source 가 배선되기 전까지 `app/services/krb1_reference_exception_adapter.py`
+는 어떤 입력에도 다음을 반환한다.
+
+```
+status = "unprovable"
+reason = "authoritative_target_session_reference_exception_source_not_wired"
+records = ()
+```
+
+막는 방향임을 보장하는 장치:
+
+- `ReferenceExceptionFetchResult.__post_init__` 이 records 비어있지 않음 · status/reason
+  변경 · `source_wired=True` 를 **예외로 거부**한다 (통과 결과를 만들 수 없다).
+- env·settings·flag·override kwarg 경로가 없다. 가드 테스트가 AST 로 `os`/config import,
+  `environ`/`getenv`, `ReferencePriceExceptionRecord` 생성, `is_exception=` 전달을 전수
+  스캔한다.
+- selector 는 adapter 의 `reason` 을 받아 `reference_source_unavailable_reason` 으로
+  넣고, caller 가 유효한 record 를 함께 넣어도 **source 미배선 사유가 우선**해서 막힌다.
+- 동시에 "gate 자체가 영구 불가"가 아님을 증명한다: 권위 record 를 직접 넣으면 gate 는
+  `proven` 이 된다 (`test_gate_is_satisfiable_in_principle_so_the_block_is_attributable`).
+  그래서 현재의 fail-close 는 **source 부재 탓**으로 귀속 가능하다.
+
+실 source 를 배선하려면 `ReferenceExceptionSource` protocol 을 구현하는 별도 리뷰 변경이
+필요하다. stub 를 손대는 것이 아니다.
+
+## 5. AC5 — 장중 quote timestamp 원문 캡처 (GET-only)
+
+```bash
+ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_quote_timestamp_capture \
+  --symbols 005930 000660
+```
+
+- 인정되는 timestamp 증거는 KIS 원문 `stck_bsop_date` + `stck_cntg_hour` 뿐이다.
+  wrapper `price_as_of` / `price_freshness` / `is_stale_price` 는 **non-evidence 로
+  라벨링해 기록**만 한다.
+- ROB-1121 witness: wrapper 가 `fresh` 를 주장하는데 원문이 없거나 어긋나면
+  `rob1121_wrapper_witness.reasons` 에 사유를 남긴다
+  (`wrapper_claims_fresh_without_raw_broker_timestamp`,
+  `wrapper_price_as_of_is_not_raw_broker_timestamp`,
+  `wrapper_price_as_of_tracks_local_capture_clock`).
+  `compute_is_stale` 은 `as_of.date() != trading_date` 비교라 장중 항상 fresh 다.
+- gate 는 원문 시각이 `>= 15:30:00 KST` (inclusive) 이고 `<= decision_at` 일 때만 proven.
+  🔴 **이 하한의 의미 (E2)**: close 이후 quote observation 의 **최소 시각**일 뿐이다.
+  provider finality 도, daily completion 도 증명하지 않는다. C5 의 15:35 one-shot cutoff
+  (완료 batch 적재 시각)와도, §6.2 의 provider-finality 축과도 **분리해서** 읽어야 한다.
+  세 값은 서로 대체하지 않는다.
+- 저장: `var/research/krb1/p0_gate_evidence/quote_timestamp_capture.jsonl`.
+
+## 6. 실행 순서
+
+```
+1) 장중(선택)  quote_timestamp_capture           — GET-only, ROB-1121 원문 확보
+2) 15:35 이후  completed_session_oneshot         — 전수 raw + local reconcile manifest
+3) decision 전 metadata_snapshot_capture          — Toss 권위 snapshot
+4) 결정 시점   krb1_p0_liquidity_selector --decision-at ...
+```
+
+selector 는 1~3 의 append-only 증거를 읽어 gate 를 판정한다. 하나라도 없거나 시계가
+`decision_at` 을 넘으면 `selected_candidates=[]` + exit 2 다. **fallback·수동 종목·
+volume-rank 대체는 금지다.**
+
+## 6.0 D1 판정 — Toss 에는 적격 metadata source 가 없다 (2026-07-30)
+
+canonical OpenAPI(`https://openapi.tossinvest.com/openapi-docs/latest/openapi.json`,
+3.1.0 / v1.2.5, 27 paths) 전수 조사 결과 **`NO_ADMISSIBLE_TOSS_SOURCE`**.
+market-data/stock-info/market-info 14개 endpoint 어느 것도 같은 full-universe metadata
+snapshot 안에서 publication clock · effective session · revision/PIT · positive/negative
+coverage 를 함께 제공하지 않는다. 전 스키마(70개)에서 publication/effective/revision 계열
+property 는 `InvestorTradingRecord.updatedAt`(투자자 매매대금) ·
+`ExchangeRateResponse.validFrom/validUntil`(환율) 둘뿐이고, `StockInfo` 의 날짜 필드는
+`listDate`/`delistDate`(상장·폐지일) 뿐이다 — D1 이 대체 증거로 명시 기각한 값이다.
+→ `PROVIDER_*_FIELDS` 는 빈 집합 유지. 근거는
+`~/work/herdr-inbox/rob1172-d1d2d4d5-2026-07-30.md` §D1.
+
+## 6.2 A3 반영 — completion 은 두 축이다 (2026-07-30 E3)
+
+```
+completed_session_local_reconcile     DB ↔ raw daily 의 exact local 비교 + coverage + 관측창
+completed_session_provider_finality   provider 가 그 daily revision 을 final 이라 보증한 증거
+```
+🔴 **local reconcile 은 provider finality 가 아니다.** 두 비교 대상 모두 "이것이 확정본이다"라고
+말한 적 없는 표면을 우리가 읽은 값이므로, 둘이 일치한다는 것은 일관성의 증거일 뿐이다.
+그래서 사유 문자열도 `local_full_universe_exact_reconcile_proven` ·
+`full_universe_raw_daily_local_match_proven` 로 정정했다 — "completion 증명" 을 주장하지 않는다.
+
+provider finality attestation 은 `app/services/krb1_completion_finality.py` 의 **fail-closed
+stub** 이 담당하며 배선된 source 가 없어 항상 `unprovable` 이다
+(`provider_daily_ohlcv_finality_source_not_wired`). attestation 은 revision 식별자와
+correction policy 를 함께 요구한다 — 그것 없이는 "final" 에 의미가 없다.
+
+🔴 Toss `investor-trading.updatedAt` 은 **쓸 수 없다**. 실제로 잠정↔확정 의미를 갖지만
+KRX 투자자 매매대금 도메인 한정이며, daily OHLCV 에 쓰는 것은 도메인 혼용이다.
+`FORBIDDEN_CROSS_DOMAIN_SOURCES` 로 생성 자체를 거부한다. KRX 공식 operational source 배선은
+별도 source-contract 이슈다.
+
+## 6.3 A4 반영 — 기준가 numeric 과 determination method 분리 (2026-07-30 E4)
+
+```
+NORMAL_PRIOR_CLOSE · PRECOMPUTED_THEORETICAL   numeric reference price 필수
+TARGET_DAY_OPENING_CALL                        method 는 positive classification.
+   decision cutoff 까지 숫자가 없으면 ranking 전 제외 — 🔴 기다리지도, 추정하지도 않는다
+   숫자를 갖고 있으면 오히려 defect
+   (numeric_reference_price_before_opening_call_determination)
+UNKNOWN · 미인식 method · source conflict       run-level fail-close
+```
+🔴 **현 sealed child 에서는 global rank #1 이 제외되면 run fail-close 다**
+(`global_rank_one_excluded_pending_opening_call`). #2 자동 승격 금지 —
+"positively-proven subset 내 rank #1" 은 별도 사전등록·hash 를 가진 미래 append-only child
+에서만 가능하다. is_exception=True 로 인한 제외는 ROB-1158 봉인 규칙 그대로 유지한다
+(그건 증명 실패가 아니라 권위가 확인한 예외이므로 애초에 eligible population 밖이다).
+
+## 6.1 🔴 미해결로 남은 것 (2026-07-30 08:33 교정)
+
+이 문서는 **A1·A2 반영분까지**다. 다음 두 건은 아직 닫히지 않았고, 운영자 결정 대기다.
+
+```
+A3  completion 을 local_reconcile / provider_finality 로 분리
+    → §2 의 exact reconcile 은 local consistency·coverage 증거다.
+      provider 가 정규장 row 를 확정본으로 선언했다는 계약·end marker·correction
+      semantics 는 만들지 못한다. 현재 wired 표면에 그 필드가 없다
+      (RawDailyBar 에 revision/finality 자리 없음, rt_cd 는 전송 성공코드).
+      → completed_session 계열 gate 의 proven 을 finality 증명으로 읽지 마라.
+    상태: B5(#1729 소유 gate 스코프) 결정 대기
+
+A4  기준가 evidence 를 actual numeric price 와 determination method 로 분리
+    (NORMAL_PRIOR_CLOSE / PRECOMPUTED_THEORETICAL / TARGET_DAY_OPENING_CALL / UNKNOWN)
+    → 현재 §3 은 모든 record 에 raw_reference_price 를 요구한다. target-day opening
+      call 로 기준가가 정해지는 종목(감자·재상장·변경상장)은 전일 18:00 에 숫자가
+      존재하지 않으므로, 그런 종목이 1건이라도 eligible 하면 시장 전체가 영구
+      unprovable 이다.
+    상태: B1~B3(숫자 면제·제외 vs fail-close·UNKNOWN 처분) 운영자 amendment 대기
+```
+
+## 6.4 F-INT-01~04 반영 — 통합 적대검증 회송 수정 (2026-07-30)
+
+통합 적대검증(`verify-rob1744-integrated-2026-07-30.md`)이 4건의 HIGH 거짓 통과를 냈다.
+전부 **통과 조건을 넓히지 않고 막는 방향**으로 닫았다.
+
+```
+F-INT-01  기각된 operator attestation 이 provider finality 를 proven 으로 만들었다
+   (FINALITY_SOURCE_WIRED=False · raw_payload_sha256='not-a-sha256' 인데 proven)
+   → ① FINALITY_SOURCE_WIRED=False 면 어떤 입력도 proven 불가 (값 경계 포함)
+     ② ADMISSIBLE_FINALITY_SOURCES = 빈 집합(allowlist) +
+        REFUSED_SELF_ASSERTED_SOURCES 에 operator_attestation 명시 거부
+        — 생성 시점(ProviderFinalityNotWired)과 gate 판정 양쪽에서
+     ③ raw_payload_sha256 은 64자 hex 만 — 생성 시점 ValueError + gate defect
+   E1/D1 근거: 운영자 서명은 provider publication/effective clock 이라는 외부 사실을
+   만들지 못한다. 별도 study/amendment 없이 fallback 사용 금지.
+
+F-INT-02  identity 없는 completion manifest v1 을 reader 가 계속 proven 으로 읽었다
+   (⑦ canonical regression 과 같은 원인: detail shape 를 바꾸고 schema label 유지)
+   → SCHEMA_VERSION v1 → v2. universe/manifest hash 에 schema_version 이 들어가므로
+     v1 record 는 애초에 새 계약을 만족할 수 없다. 추가로
+     ① manifest_from_row 가 v1/미지 label 을 ValueError 로 거부 (RETIRED_SCHEMA_VERSIONS)
+     ② detail 마다 provider_raw_symbol / request_context_symbol_is_not_identity 필수
+     ③ evaluate_completion_manifest 가 **읽기 시점에** identity 를 재확인
+        (detail 없음·불완전·null identity·symbol 불일치 → unprovable)
+   소급 승격 없음. 기존 v1 stream 은 운영상 새 stream 으로 시작한다(§6.1 F5 와 동일).
+
+F-INT-03  sealed denominator 의 **최초 생성**이 이미 잘린 DB 를 자기증명했다
+   → app/services/krb1_universe_denominator.py 신설. 새 gate
+     universe_denominator_external_basis 가 market 별로 외부 상장종목수 attestation 을
+     요구하고, 그것이 sealed_count·actual_count 와 모두 일치해야 proven 이다.
+     🔴 외부 근거(KRX 공식 종목수)는 ROB-1175 별건이라 **아무 source 도 배선하지 않았다**:
+     EXTERNAL_DENOMINATOR_SOURCE_WIRED=False · 빈 allowlist ·
+     REFUSED_SELF_REFERENTIAL_SOURCES(우리 rows·sealed count·operator) 거부.
+     즉 지금은 항상 unprovable — 없는 증거를 만들지 않고 막았다.
+     sealing 은 "언제 알았는지"를 증명하고 "그게 전체였는지"는 증명하지 않는다.
+
+F-INT-04  D1 의 빈 allowlist 를 새 public 경계가 인자로 교체할 수 있었다
+   → evaluate_metadata_authority · snapshot_row · append_metadata_snapshot ·
+     extract_provider_authority_clock 의 declared_*_fields 인자 **제거**.
+     계약은 모듈 상수(PROVIDER_PUBLISHED_AT_FIELDS / PROVIDER_EFFECTIVE_SESSION_FIELDS)뿐.
+     test 전용 seam = monkeypatch(모듈 속성) — 프로덕션 호출 경로에는 존재하지 않는다.
+     signature 가드 테스트가 field/allowlist/declared 파라미터 재도입을 막는다.
+```
+
+회귀 앵커: 신규 mutant 12종(P01~P12) 전부 CAUGHT, CONTROL SURVIVED. 검증자 신규 mutant
+`N06_F02_MANIFEST` 는 SURVIVED → CAUGHT 로 전환됐고, #1729 계열 11종은 그대로 CAUGHT.
+
+## 7. 안전 경계
+
+```
+read-only / GET-only. 주문·preview·place·cancel·DB write·journal append 없음.
+DB 접근은 REPEATABLE READ READ ONLY 트랜잭션.
+쓰기는 gate evidence chain append 하나뿐이며 서비스 레이어 경유(AGENTS.md #5).
+scheduleless — TaskIQ/cron/Prefect 등록 없음(AGENTS.md #6). 가드 테스트가 스캔한다.
+봉인 캠페인 저널(krb1_p0_journal)에는 append 하지 않는다 — 운영자 전용.
+```
