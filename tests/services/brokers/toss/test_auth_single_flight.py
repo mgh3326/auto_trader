@@ -64,6 +64,7 @@ class _Settings:
     toss_api_client_id: str | None = "client-id"
     toss_api_client_secret: SecretStr | None = SecretStr("client-secret")
     toss_api_base_url: str | None = "https://openapi.tossinvest.com"
+    broker_token_issuance_mode: str = "self"
 
 
 @pytest.fixture
@@ -103,6 +104,17 @@ async def test_from_settings_missing_credentials_raises_names_only() -> None:
     assert "TOSS_API_CLIENT_ID" in message
     assert "TOSS_API_CLIENT_SECRET" in message
     assert "client-secret" not in message
+
+
+async def test_from_settings_gatewayd_allows_empty_secret() -> None:
+    manager = auth.TossOAuthTokenManager.from_settings(
+        _Settings(
+            toss_api_client_secret=None,
+            broker_token_issuance_mode="gatewayd",
+        )
+    )
+
+    assert manager._client_secret.get_secret_value() == ""
 
 
 async def test_concurrent_cold_start_issues_exactly_once(fake_redis, monkeypatch):
