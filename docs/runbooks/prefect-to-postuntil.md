@@ -3,8 +3,8 @@
 This is the 2026-09-04 Prefect deployment inventory (54 deployments). The
 inventory snapshot itself lives outside this repository; the checked-in
 authorities for current timer state are
-`tests/fixtures/ncp_job_timers_prefect_argv.json` and the `ops/ncp/systemd/`
-unit tree, both enforced by `scripts/ncp_job_timers_check.py`. It is a
+`tests/fixtures/ncp_job_timers_prefect_argv.json` and the `job-*` unit tree
+under `ops/ncp/systemd/`, both enforced by `scripts/ncp_job_timers_check.py`. It is a
 migration map, not a cutover: the first pass itself paused, deleted, or
 changed no Prefect deployment and installed no NCP unit. Salvaged from PR
 #2040 (document only; its checker script and tests were not carried over) and
