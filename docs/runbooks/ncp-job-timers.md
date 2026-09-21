@@ -101,7 +101,7 @@ migration contract.
 | Prefect deployment(s) | Evidence | exclusion reason |
 | --- | --- | --- |
 | daily market events | `market_events_ingestion.py:132-191`; `market_events.py:286-505,585-645` | its `interval=timedelta(days=1)` has no cron/`OnCalendar` mapping; it runs pre/post `python -c` row-count DB SELECTs to derive inserted/updated and success; it calculates the KST rolling date window every run; and its failure/recovery path is Discord embeds plus host statefiles with throttle/dedupe. A bash wrapper would be a rewrite, not a faithful migration. |
-| Mac server mode (10m, hourly, manual), Mac health smoke (10m, manual), result freshness, runtime monitor, Prefect watchdog, Kanban monitor, honcho watchdog | `prefect-to-postuntil.md:29-43` | external Mac/process flows, interval/manual schedule, or non-`scripts.<module>` execution; not an NCP auto_trader container argv |
+| Mac server mode (10m, hourly, manual), Mac health smoke (10m, manual), result freshness, runtime monitor, Prefect watchdog, Kanban monitor, honcho watchdog | `prefect-to-postuntil.md:67-84` | external Mac/process flows, interval/manual schedule, or non-`scripts.<module>` execution; not an NCP auto_trader container argv |
 | Binance Demo scalping | `binance_demo_scalping.py:38-52` | separate operator safety review; no migration while demo execution authority is unresolved |
 
 This is 12 excluded B entries and 9 safe static timer pairs. KIS reconcile,
@@ -153,5 +153,6 @@ surface as part of a cutover or rollback.
 - Class D: retain until their orchestration/notification state machine has a
   durable non-Prefect owner.
 - Class E: retain or retire only after the owning operator confirms it is unused.
-- `docs/runbooks/prefect-to-postuntil.md` is planned in PR #2040; do not treat it
-  as a document present on `main` yet.
+- The full 54-deployment inventory and migration map is
+  `docs/runbooks/prefect-to-postuntil.md` (salvaged from PR #2040, document
+  only), including a "Status on main" refresh table.
