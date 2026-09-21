@@ -57,9 +57,10 @@ async def commit_fill(
 ) -> tuple[UpsertStatus, int]:
     """Durably upsert one fill through the repository and commit it.
 
-    This is the only ledger write both the websocket monitor and the HTTP
-    ingest route use, so the ``(broker, account_mode, venue, broker_order_id,
-    fill_seq)`` idempotency key stays identical on both paths.
+    The websocket monitor uses this helper. The HTTP ingest route calls the
+    same repository directly inside per-item savepoints; both paths therefore
+    preserve the repository's ``(broker, account_mode, venue,
+    broker_order_id, fill_seq)`` idempotency key.
     """
     factory = session_factory or AsyncSessionLocal
     repo_cls = repository_cls or ExecutionLedgerRepository
