@@ -41,6 +41,7 @@ tests/models/test_investment_symbol_intermediate_reports_model.py
 tests/models/test_research_run_models.py
 tests/models/test_symbol_news_relevance_model.py
 tests/models/test_trading_decision_models.py
+tests/research/test_alpaca_timestamp_consumption_contract.py
 tests/research/test_kr_backfill_build_clients.py
 tests/research/test_kr_backfill_hard_ratio_guards.py
 tests/research/test_kr_backfill_surface_runtime.py
