@@ -150,3 +150,44 @@ def test_every_report_stage_watch_tool_is_allowed_read_or_denied():
         f"미분류 report/stage/watch 도구: {sorted(unclassified)} → "
         "ALLOWED_REPORT_READS(읽기) 또는 .claude/settings.readonly.json deny(쓰기)로 분류하라"
     )
+
+
+# task388 트리아지 readonly deny 즉시 조임 (decision/2026-09-18/four-approvals §3).
+# bypassPermissions 셸 이스케이프·외부 커넥터 표면을 막는 임시 조임. mcp__claude_ai_* 는
+# 반드시 deny 첫 항목이어야 한다.
+TASK388_NEW_DENY_ENTRIES = (
+    "mcp__claude_ai_*",
+    "mcp__plugin_sentry_sentry",
+    "mcp__cordglean",
+    "Monitor",
+    "Workflow",
+    "SendMessage",
+    "ListAgents",
+    "CronCreate",
+    "ScheduleWakeup",
+    "RemoteTrigger",
+    "EnterWorktree",
+    "DesignSync",
+    "WebFetch",
+    "PushNotification",
+)
+
+# 설계된 권한 보호: 트리아지가 실제 쓰는 도구·설계된 MCP 쓰기는 deny 되면 안 된다.
+TASK388_PROTECTED_FROM_DENY = (
+    "Task",
+    "Agent",
+    "mcp__auto_trader_local__order_proposal_create",
+)
+
+
+def test_task388_new_deny_entries_present_and_claude_ai_wildcard_first():
+    deny = _deny()
+    assert deny[0] == "mcp__claude_ai_*"
+    missing = [e for e in TASK388_NEW_DENY_ENTRIES if e not in deny]
+    assert not missing, f"deny-list 누락 task388 항목: {missing}"
+
+
+def test_task388_protected_tools_are_not_denied():
+    deny = _deny()
+    leaked = [e for e in TASK388_PROTECTED_FROM_DENY if e in deny]
+    assert not leaked, f"보호 대상이 deny-list 에 있음: {leaked}"
