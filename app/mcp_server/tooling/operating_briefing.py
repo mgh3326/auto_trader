@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from app.core.db import AsyncSessionLocal
@@ -32,6 +33,9 @@ from app.services.trade_journal.negative_class import (
     load_negative_class_health,
 )
 from app.services.trading_policy_service import policy_version_stamp
+
+_CONSTRAINT_CONTEXT_LOOKBACK_DAYS = 3
+_CONSTRAINT_CONTEXT_LIMIT = 100
 
 
 def _normalize_watch_symbol(symbol: str | None, market: str | None) -> str | None:
@@ -239,12 +243,32 @@ async def _recent_session_context(
         limit=max(1, min(int(limit), 100)),
         include_market_wide=True,
     )
+    # Constraints are a separate, short-lived operator instruction surface.
+    # Keep this query independent of the general recent-entry window so normal
+    # session churn cannot evict an active constraint before the next session.
+    constraint_rows = await service.get_recent(
+        market=market,  # type: ignore[arg-type]
+        account_scope=account_scope,  # type: ignore[arg-type]
+        kst_date_from=(
+            now_kst().date() - timedelta(days=_CONSTRAINT_CONTEXT_LOOKBACK_DAYS - 1)
+        ),
+        entry_type="constraint",
+        limit=_CONSTRAINT_CONTEXT_LIMIT,
+        include_market_wide=True,
+    )
     return {
         "count": len(rows),
         "entries": [
             SessionContextResponse.model_validate(row).model_dump(mode="json")
             for row in rows
         ],
+        "constraints": {
+            "count": len(constraint_rows),
+            "entries": [
+                SessionContextResponse.model_validate(row).model_dump(mode="json")
+                for row in constraint_rows
+            ],
+        },
     }
 
 

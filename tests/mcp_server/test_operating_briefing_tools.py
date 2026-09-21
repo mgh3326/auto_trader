@@ -239,6 +239,198 @@ async def test_get_operating_briefing_composes_all_sections(
 
 
 @pytest.mark.asyncio
+async def test_get_operating_briefing_keeps_recent_constraints_beyond_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-1346: constraints survive ordinary session-context churn.
+
+    The fake service models 11 newer ordinary entries plus three constraints.
+    The normal section must retain its exact 10-entry limit, while the separate
+    constraint section exposes only the two rows inside its three-KST-day window.
+    """
+    from zoneinfo import ZoneInfo
+
+    from app.mcp_server.tooling import operating_briefing as ob
+    from app.services.trade_journal import aggregates as aggregate_service
+
+    fixed_now = datetime(2026, 9, 4, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    def make_entry(
+        *,
+        row_id: int,
+        title: str,
+        entry_type: str,
+        kst_date,
+        created_at: datetime,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=row_id,
+            entry_uuid=uuid.uuid4(),
+            kst_date=kst_date,
+            market="kr",
+            account_scope="kis_live",
+            entry_type=entry_type,
+            title=title,
+            body=f"{title} body",
+            refs={},
+            created_by="operator",
+            session_label=None,
+            created_at=created_at,
+        )
+
+    ordinary_rows = [
+        make_entry(
+            row_id=index,
+            title=f"ordinary-{index}",
+            entry_type="next_action",
+            kst_date=fixed_now.date(),
+            created_at=fixed_now - timedelta(seconds=index),
+        )
+        for index in range(1, 12)
+    ]
+    constraint_rows = [
+        make_entry(
+            row_id=101,
+            title="constraint-newer",
+            entry_type="constraint",
+            kst_date=fixed_now.date(),
+            created_at=fixed_now - timedelta(minutes=5),
+        ),
+        make_entry(
+            row_id=102,
+            title="constraint-older",
+            entry_type="constraint",
+            kst_date=fixed_now.date() - timedelta(days=2),
+            created_at=fixed_now - timedelta(minutes=6),
+        ),
+        make_entry(
+            row_id=103,
+            title="constraint-expired",
+            entry_type="constraint",
+            kst_date=fixed_now.date() - timedelta(days=3),
+            created_at=fixed_now - timedelta(minutes=7),
+        ),
+    ]
+    all_rows = ordinary_rows + constraint_rows
+    session_context_calls: list[dict] = []
+
+    class FakeSessionContextService:
+        def __init__(self, _db) -> None:
+            pass
+
+        async def get_recent(self, **kwargs):
+            session_context_calls.append(kwargs)
+            rows = all_rows
+            if entry_type := kwargs.get("entry_type"):
+                rows = [row for row in rows if row.entry_type == entry_type]
+            if kst_date_from := kwargs.get("kst_date_from"):
+                rows = [row for row in rows if row.kst_date >= kst_date_from]
+            return sorted(
+                rows,
+                key=lambda row: (row.created_at, row.id),
+                reverse=True,
+            )[: kwargs["limit"]]
+
+    class FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+    async def fake_holdings(**kwargs):
+        return {
+            "filters": {"market": kwargs["market"]},
+            "total_accounts": 0,
+            "total_positions": 0,
+            "summary": {},
+            "accounts": [],
+            "errors": [],
+        }
+
+    class EmptyPendingSnapshot:
+        orders: list[dict] = []
+        as_of = fixed_now.isoformat()
+        freshness_status = "fresh"
+        unavailable_reason = None
+        account_scope = "kis_live"
+
+    async def fake_pending(db, *, market, account_scope):
+        assert market == "kr"
+        assert account_scope == "kis_live"
+        return EmptyPendingSnapshot()
+
+    async def fake_latest_report(db, *, market, account_scope):
+        return None
+
+    async def fake_analysis_artifacts(db, *, market, limit=10):
+        return {"count": 0, "artifacts": []}
+
+    async def fake_active_watches(**kwargs):
+        return {"count": 0, "active_watches": []}
+
+    async def fake_account_costs():
+        return None
+
+    async def fake_negative_class_health(db, *, market, now):
+        return SimpleNamespace(to_dict=lambda: {"status": "ok"})
+
+    async def fake_scoreboard(db, *, market, cohort):
+        return {"cohort": cohort, "market": market}
+
+    monkeypatch.setattr(ob, "AsyncSessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(ob, "SessionContextService", FakeSessionContextService)
+    monkeypatch.setattr(ob, "now_kst", lambda: fixed_now)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
+    monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
+    monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
+    monkeypatch.setattr(ob, "_recent_analysis_artifacts", fake_analysis_artifacts)
+    monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
+    monkeypatch.setattr(ob, "get_account_costs_setting", fake_account_costs)
+    monkeypatch.setattr(ob, "load_negative_class_health", fake_negative_class_health)
+    monkeypatch.setattr(ob, "policy_version_stamp", lambda: {"version": "test"})
+    monkeypatch.setattr(aggregate_service, "build_trading_scoreboard", fake_scoreboard)
+
+    result = await ob.get_operating_briefing_impl(
+        market="kr",
+        account_scope="kis_live",
+        session_context_limit=10,
+    )
+
+    assert len(all_rows) == 14
+    assert result["session_context"]["count"] == 10
+    assert len(result["session_context"]["entries"]) == 10
+    assert all(
+        entry["entry_type"] != "constraint"
+        for entry in result["session_context"]["entries"]
+    )
+    constraints = result["session_context"].get("constraints")
+    assert constraints is not None
+    assert constraints["count"] == 2
+    assert [entry["title"] for entry in constraints["entries"]] == [
+        "constraint-newer",
+        "constraint-older",
+    ]
+    assert all(entry["entry_type"] == "constraint" for entry in constraints["entries"])
+    assert session_context_calls == [
+        {
+            "market": "kr",
+            "account_scope": "kis_live",
+            "limit": 10,
+            "include_market_wide": True,
+        },
+        {
+            "market": "kr",
+            "account_scope": "kis_live",
+            "kst_date_from": fixed_now.date() - timedelta(days=2),
+            "entry_type": "constraint",
+            "limit": 100,
+            "include_market_wide": True,
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_operating_briefing_surfaces_per_account_routability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
