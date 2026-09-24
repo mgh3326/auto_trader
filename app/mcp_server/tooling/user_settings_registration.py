@@ -29,6 +29,9 @@ def register_user_settings_tools(mcp: FastMCP) -> None:
         description=(
             "Set a user setting value by key (upsert). "
             "Supported operator-maintained keys include 'manual_cash' and 'account_costs'. "
+            "For 'manual_cash' the value must be {\"amount\": <whole KRW 0..10000000000>} "
+            '(optional "accounts" [{name, amount}] summing to amount); invalid values '
+            "are rejected and the stored source is always 'mcp_set_user_setting'. "
             "Creates or updates the setting and returns the serialized result with key, value, and updated_at."
         ),
     )(set_user_setting)

@@ -9,6 +9,7 @@
 - API 서비스 클라이언트
 - 데이터 구조
 - Trading Policy YAML 단일 소스 (ROB-646)
+- manual_cash 설정 화면 (#671)
 
 ## 기준 원문 계약
 
@@ -135,6 +136,18 @@ DB Tables:
 - **KR 1주 예외 (§664)**: `buy.per_symbol_notional_krw_range.one_share_exception`(`absolute_ceiling_krw` 10,000,000 · `max_deep_rungs` 1)은 US §139차 미러다. 코드 소비자는 `decision_table_validate` 하나뿐(`app/services/decision_table_validate/one_share_exception.py`) — 매수·1주·`price_max` ≤ 상한·정규 KRX 코드 단일 심볼·파킹 allowlist 심볼(459580/357870) 아님·행의 계좌/심볼에 **정확히 결속된** `position_quantity eq 0` 조건 1개·그 밖에는 **엄격한 무(無)자유텍스트 문법**(ASCII·Cc/Cf 금지, 닫힌 키, scenario_id·condition source 는 정확한 템플릿, invalidation 빈 리스트, thesis 필드 닫힌 enum, sector_concentration 숫자만, 값은 타입이 있는 숫자/bool)·표 전체(정규화 키) 심볼당 매수 rung 1개일 때만 밴드 초과를 허용한다(보유 침묵은 신규 진입이 아니다; 문법 정본은 `docs/runbooks/decision-table-validate.md`). per-order 자동승인 캡(KR 2,000,000)은 불변이며 초과 1주는 카드로 강등된다. 스키마는 밴드 `unit` 과 같은 통화의 상한 키 하나만 허용한다.
 - **관할**: 판단 임계값/decision rule 전용. fail-closed 코드 가드(손실매도/ladder/RSI 스코어링)·`symbol_trade_settings`(라이브 사이징)·`trade_profile`(dead)와 분리. migration 0.
 
+
+### manual_cash 설정 화면 (#671)
+
+`user_settings.manual_cash`(`MCP_USER_ID` 행)는 `get_available_capital_impl` 의 가용자금 합계와 §177차 `buy.deployment_cap` 분모의 **파킹 항**이다. `/invest/settings/manual-cash` 가 운영자 입력 전용 편집 화면이다.
+
+- **서비스**: `app/services/manual_cash_settings.py` — 검증(0 이상 정수 KRW, 계좌당·합계 ≤ `MANUAL_CASH_MAX_KRW`=100억, bool/float/NaN/Infinity/문자열 거부) · stale 규칙 단일 정의(`MANUAL_CASH_STALE_AFTER`=3일, `portfolio_cash._is_stale_manual_cash` 가 위임) · 저장
+- **라우터**: `app/routers/invest_manual_cash.py` — GET(세션 인증) / PUT(`require_admin`, `/invest/api/*` CSRF). 🔴 쓰기 대상은 로그인 사용자 행이 아니라 capital read 가 읽는 `MCP_USER_ID` 행이다.
+- **저장 형태**: `{"amount": <합계 int>, "accounts": [{name, amount}], "source": "operator_confirmed", "origin", "confirmed_by_user_id", "confirmed_at"}` — JSONB 라 마이그레이션 0. 기존 reader 는 `amount` 만 읽는다.
+- 🔴 **서버 강제 가드**: 저장값 대비 50% **초과** 변경(또는 없음/0/판독불가 → 양수)은 `confirm_large_change=true`(StrictBool) 없으면 409 `confirm_required`. `expected_updated_at` 불일치(MCP 등 다른 경로가 먼저 갱신)는 409 `stale_form`. 행이 없던 상태에서의 최초 저장은 `INSERT … ON CONFLICT DO NOTHING` 이라 그 사이 다른 경로가 먼저 넣은 행을 덮어쓰지 않고 `stale_form`. 모두 쓰기 0. 확인 대화상자의 초기 포커스는 '취소'(Enter 오확정 방지).
+- **자동 추정·잔고 prefill 금지**: 행은 운영자가 마지막으로 저장한 breakdown 에서만 채운다.
+- **reader 경화**: 저장된 `amount` 가 0~`MANUAL_CASH_MAX_KRW` 정수가 아니면(NaN/Infinity/음수/소수/상한 초과/판독불가) `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화. 어떤 경로로 들어온 행이든 파킹 항은 상한을 넘지 못한다.
+- MCP `set_user_setting("manual_cash", …)` 경로는 남아 있으나 같은 금액 규칙(0~100억 정수, 정수 float 는 int 로 정규화, `accounts` 는 합계 일치)으로 검증되고, 호출자가 넣은 출처 키(`source`/`origin`/`confirmed_*`)는 버린 뒤 `source="mcp_set_user_setting"` 로 찍는다 — 이 경로는 `operator_confirmed` 를 사칭할 수 없다. 단 50% 확인·`expected_updated_at` 가드는 화면 경로 전용이다. 다른 키는 영향 없음.
 
 ## 유지 규약
 

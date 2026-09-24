@@ -56,6 +56,7 @@ tests/routers/test_execution_ledger_ingest_downstream.py
 tests/routers/test_invest_artifacts_router.py
 tests/routers/test_invest_forecasts_router.py
 tests/routers/test_invest_loss_cut_approvals.py
+tests/routers/test_invest_manual_cash.py
 tests/routers/test_invest_open_orders_router.py
 tests/routers/test_market_calendar_router.py
 tests/routers/test_mock_auto_read_model.py

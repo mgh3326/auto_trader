@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -35,6 +34,10 @@ from app.services.deployment_cap import (
     resolve_parking_balance_krw,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
+from app.services.manual_cash_settings import (
+    is_manual_cash_stale,
+    parse_stored_amount,
+)
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
 _KIS_MOCK_CASH_ACCOUNTS = frozenset({"kis", "kis_domestic", "kis_overseas"})
@@ -399,17 +402,12 @@ async def get_usd_krw_rate() -> float:
 
 
 def _is_stale_manual_cash(updated_at_iso: str | None) -> bool:
-    """Check if manual cash is stale (older than 3 days)."""
-    if not updated_at_iso:
-        return True
-    try:
-        updated_at = datetime.fromisoformat(updated_at_iso)
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=UTC)
-        cutoff = now_kst() - timedelta(days=3)
-        return updated_at < cutoff
-    except (ValueError, TypeError):
-        return True
+    """Check if manual cash is stale (older than 3 days).
+
+    The rule itself lives in ``app.services.manual_cash_settings`` so the
+    /invest settings screen shows exactly what this read applies (#671).
+    """
+    return is_manual_cash_stale(updated_at_iso, now=now_kst())
 
 
 async def get_available_capital_impl(
@@ -490,11 +488,17 @@ async def get_available_capital_impl(
             manual_setting = await get_manual_cash_setting()
             if manual_setting is not None:
                 value = manual_setting.get("value", {})
-                amount = (
-                    float(value.get("amount", 0.0)) if isinstance(value, dict) else 0.0
-                )
                 updated_at = manual_setting.get("updated_at")
                 stale_warning = _is_stale_manual_cash(updated_at)
+                # #671: an absent amount keeps its historical meaning (0), but
+                # a present amount that is not a finite, non-negative number
+                # (NaN/Infinity/negative/garbage written through a generic
+                # settings path) must never enter the orderable total or the
+                # deployment-cap parking term. It is surfaced, not summed.
+                has_amount = isinstance(value, dict) and "amount" in value
+                parsed_amount = parse_stored_amount(value)
+                amount_invalid = has_amount and parsed_amount is None
+                amount = 0.0 if parsed_amount is None else float(parsed_amount)
 
                 # ROB-467: stale manual cash is no longer trustworthy as
                 # deployable capital. Keep it visible for transparency, but
@@ -504,9 +508,12 @@ async def get_available_capital_impl(
                     "amount": amount,
                     "updated_at": updated_at,
                     "stale_warning": stale_warning,
-                    "included_in_total": not stale_warning,
+                    "included_in_total": not stale_warning and not amount_invalid,
                 }
-                if stale_warning:
+                if amount_invalid:
+                    manual_cash_result["invalid_amount"] = True
+                    errors.append({"source": "manual_cash", "error": "invalid_amount"})
+                elif stale_warning:
                     manual_cash_excluded_krw += amount
                 else:
                     total_orderable_krw += amount
