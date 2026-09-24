@@ -44,6 +44,117 @@ class TestBuildHoldingsSummary:
         assert result["total_profit_loss"] == 100
         assert result["total_profit_rate"] == pytest.approx(5.0, rel=1e-3)
         assert result["position_count"] == 1
+        assert result["unpriced_position_count"] == 0
+        assert result["unpriced_buy_amount"] == 0
+
+    def test_profit_loss_matches_evaluation_minus_buy_when_row_profit_missing(
+        self,
+    ) -> None:
+        # Issue #236 reproduction fixture (2026-09-14 observation): a
+        # broker-sourced KR position reports profit_loss, while a manual
+        # position carries buy/evaluation but profit_loss=None. Before the fix
+        # the summary summed only populated per-position profit_loss values,
+        # reporting -6,696,447 / -7.62% while buy/evaluation implied
+        # +12,056,958 / +13.72%.
+        positions = [
+            {
+                "symbol": "005930",
+                "name": "KIS KR holding",
+                "avg_buy_price": 30_000_000 / 400,
+                "quantity": 400,
+                "evaluation_amount": 23_303_553,
+                "profit_loss": -6_696_447,
+                "profit_rate": -22.32,
+            },
+            {
+                "symbol": "000660",
+                "name": "pension manual KR holding",
+                "avg_buy_price": 57_880_000 / 694,
+                "quantity": 694,
+                "evaluation_amount": 76_633_405,
+                "profit_loss": None,
+                "profit_rate": None,
+            },
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_buy_amount"] == 87_880_000
+        assert result["total_evaluation"] == 99_936_958
+        assert result["total_profit_loss"] == pytest.approx(12_056_958.0)
+        assert result["total_profit_rate"] == pytest.approx(13.72)
+        assert result["unpriced_position_count"] == 0
+
+    def test_profit_loss_excludes_unpriced_cost_without_fabricating_loss(
+        self,
+    ) -> None:
+        # A position without evaluation_amount is unpriced: its cost must not
+        # be counted as a loss, and the excluded cost is disclosed.
+        positions = [
+            {
+                "symbol": "005930",
+                "name": "priced",
+                "avg_buy_price": 1000,
+                "quantity": 10,
+                "evaluation_amount": 11_000,
+                "profit_loss": 900,
+                "profit_rate": 9.0,
+            },
+            {
+                "symbol": "999999",
+                "name": "unpriced",
+                "avg_buy_price": 2000,
+                "quantity": 5,
+                "evaluation_amount": None,
+                "profit_loss": None,
+                "profit_rate": None,
+            },
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_buy_amount"] == 20_000
+        assert result["total_evaluation"] == 11_000
+        # Invariant: profit == evaluation - (buy - unpriced_buy) = 11000 - 10000.
+        assert result["unpriced_position_count"] == 1
+        assert result["unpriced_buy_amount"] == 10_000
+        assert result["total_profit_loss"] == pytest.approx(1000.0)
+        assert result["total_profit_rate"] == pytest.approx(10.0)
+
+    def test_profit_loss_sign_matches_evaluation_minus_buy(self) -> None:
+        # Even when the broker-reported row profit disagrees in sign with
+        # evaluation minus buy, the summary must follow the same-object totals.
+        positions = [
+            {
+                "symbol": "005930",
+                "name": "net-fee broker P&L",
+                "avg_buy_price": 1000,
+                "quantity": 10,
+                "evaluation_amount": 10_500,
+                "profit_loss": -100,
+                "profit_rate": -1.0,
+            }
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_profit_loss"] == pytest.approx(500.0)
+        assert result["total_profit_loss"] > 0
+        assert result["total_profit_rate"] == pytest.approx(5.0)
+
+    def test_all_unpriced_positions_yield_null_profit(self) -> None:
+        positions = [
+            {
+                "symbol": "999999",
+                "name": "unpriced",
+                "avg_buy_price": 2000,
+                "quantity": 5,
+                "evaluation_amount": None,
+                "profit_loss": None,
+                "profit_rate": None,
+            }
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_buy_amount"] == 10_000
+        assert result["total_evaluation"] == 0
+        assert result["total_profit_loss"] is None
+        assert result["total_profit_rate"] is None
+        assert result["unpriced_position_count"] == 1
+        assert result["unpriced_buy_amount"] == 10_000
 
 
 class TestRecalculateProfitFields:

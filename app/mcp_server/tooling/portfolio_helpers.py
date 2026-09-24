@@ -15,6 +15,7 @@ from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES,
     normalize_position_symbol,
     to_float,
+    to_optional_float,
 )
 
 
@@ -122,19 +123,42 @@ def build_holdings_summary(
             "total_profit_rate": None,
             "position_count": len(positions),
             "weights": None,
+            "unpriced_position_count": len(positions),
+            "unpriced_buy_amount": total_buy_amount,
         }
+
+    # Summary P&L must be derivable from the buy/evaluation totals in the same
+    # object. Per-position ``profit_loss`` is populated only for sources that
+    # report it (broker APIs), while buy/evaluation cover every position, so
+    # summing ``profit_loss`` mixes populations and can contradict the totals.
+    # Derive P&L as evaluation minus cost over the priced subset and disclose
+    # the unpriced remainder so the identity stays reconcilable.
+    priced_positions = [
+        position
+        for position in positions
+        if to_optional_float(position.get("evaluation_amount")) is not None
+    ]
+    unpriced_position_count = len(positions) - len(priced_positions)
+    unpriced_buy_amount = round(
+        sum(
+            to_float(position.get("avg_buy_price")) * to_float(position.get("quantity"))
+            for position in positions
+            if to_optional_float(position.get("evaluation_amount")) is None
+        ),
+        2,
+    )
+    priced_buy_amount = round(total_buy_amount - unpriced_buy_amount, 2)
 
     total_evaluation = round(
         sum(to_float(position.get("evaluation_amount")) for position in positions),
         2,
     )
-    total_profit_loss = round(
-        sum(to_float(position.get("profit_loss")) for position in positions),
-        2,
+    total_profit_loss = (
+        round(total_evaluation - priced_buy_amount, 2) if priced_positions else None
     )
     total_profit_rate = (
-        round((total_profit_loss / total_buy_amount) * 100, 2)
-        if total_buy_amount > 0
+        round((total_profit_loss / priced_buy_amount) * 100, 2)
+        if total_profit_loss is not None and priced_buy_amount > 0
         else None
     )
 
@@ -160,6 +184,8 @@ def build_holdings_summary(
         "total_profit_rate": total_profit_rate,
         "position_count": len(positions),
         "weights": weights,
+        "unpriced_position_count": unpriced_position_count,
+        "unpriced_buy_amount": unpriced_buy_amount,
     }
 
 
