@@ -91,6 +91,20 @@ describe("ManualCashSettingsContent", () => {
     expect(amountInput(1)).toHaveValue("");
   });
 
+  it("labels an MCP-written value as not operator-confirmed", () => {
+    renderContent(data(view({ source: "mcp_set_user_setting" })));
+    expect(screen.getByTestId("manual-cash-source")).toHaveTextContent("MCP 입력 (운영자 화면 확인 아님)");
+    expect(screen.getByTestId("manual-cash-source")).not.toHaveTextContent("운영자 확인 ");
+  });
+
+  it("explains an invalid stored amount is excluded and zeroed", () => {
+    renderContent(data(view({ amount: null, amount_valid: false, accounts: [] })));
+    const banner = screen.getByTestId("manual-cash-invalid");
+    expect(banner).toHaveTextContent("10,000,000,000원 이하 정수가 아님");
+    expect(banner).toHaveTextContent("deployment_cap 파킹 항은 0");
+    expect(screen.getByTestId("manual-cash-current-amount")).toHaveTextContent("읽을 수 없음");
+  });
+
   it.each(["-1", "abc", "1.5", "1e3", "NaN", "Infinity", "10000000001"])(
     "blocks save for invalid amount %s",
     async (raw) => {

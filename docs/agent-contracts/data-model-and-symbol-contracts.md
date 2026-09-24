@@ -145,8 +145,8 @@ DB Tables:
 - **저장 형태**: `{"amount": <합계 int>, "accounts": [{name, amount}], "source": "operator_confirmed", "origin", "confirmed_by_user_id", "confirmed_at"}` — JSONB 라 마이그레이션 0. 기존 reader 는 `amount` 만 읽는다.
 - 🔴 **서버 강제 가드**: 저장값 대비 50% **초과** 변경(또는 없음/0/판독불가 → 양수)은 `confirm_large_change=true`(StrictBool) 없으면 409 `confirm_required`. `expected_updated_at` 불일치(MCP 등 다른 경로가 먼저 갱신)는 409 `stale_form`. 행이 없던 상태에서의 최초 저장은 `INSERT … ON CONFLICT DO NOTHING` 이라 그 사이 다른 경로가 먼저 넣은 행을 덮어쓰지 않고 `stale_form`. 모두 쓰기 0. 확인 대화상자의 초기 포커스는 '취소'(Enter 오확정 방지).
 - **자동 추정·잔고 prefill 금지**: 행은 운영자가 마지막으로 저장한 breakdown 에서만 채운다.
-- **reader 경화**: 저장된 `amount` 가 NaN/Infinity/음수/판독불가면 `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화.
-- MCP `set_user_setting("manual_cash", …)` 경로는 그대로 남아 있으며 이 가드를 거치지 않는다(출처 표시 없음으로 보임).
+- **reader 경화**: 저장된 `amount` 가 0~`MANUAL_CASH_MAX_KRW` 정수가 아니면(NaN/Infinity/음수/소수/상한 초과/판독불가) `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화. 어떤 경로로 들어온 행이든 파킹 항은 상한을 넘지 못한다.
+- MCP `set_user_setting("manual_cash", …)` 경로는 남아 있으나 같은 금액 규칙(0~100억 정수, 정수 float 는 int 로 정규화, `accounts` 는 합계 일치)으로 검증되고, 호출자가 넣은 출처 키(`source`/`origin`/`confirmed_*`)는 버린 뒤 `source="mcp_set_user_setting"` 로 찍는다 — 이 경로는 `operator_confirmed` 를 사칭할 수 없다. 단 50% 확인·`expected_updated_at` 가드는 화면 경로 전용이다. 다른 키는 영향 없음.
 
 ## 유지 규약
 

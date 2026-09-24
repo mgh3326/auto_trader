@@ -22,6 +22,7 @@ the settings screen shows exactly the rule the capital read applies.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -92,7 +93,14 @@ def is_manual_cash_stale(updated_at_iso: str | None, *, now: datetime) -> bool:
 
 
 def parse_stored_amount(value: Any) -> Decimal | None:
-    """Read ``value["amount"]`` as a finite, non-negative Decimal, else None."""
+    """Read ``value["amount"]`` as a whole KRW in ``[0, MANUAL_CASH_MAX_KRW]``.
+
+    Anything else — non-finite, negative, fractional, above the bound, or not a
+    number — is None. The reader applies the same bound as the writers because
+    a row can pre-date them or come from another path; a value that fails here
+    is surfaced as invalid and contributes 0 (a conservative, lower-bound cap),
+    never a huge or ``inf`` parking term.
+    """
 
     if not isinstance(value, dict):
         return None
@@ -103,7 +111,9 @@ def parse_stored_amount(value: Any) -> Decimal | None:
         amount = Decimal(str(raw))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    if not amount.is_finite() or amount < 0:
+    if not amount.is_finite() or amount < 0 or amount > MANUAL_CASH_MAX_KRW:
+        return None
+    if amount != amount.to_integral_value():
         return None
     return amount
 
@@ -120,6 +130,45 @@ def validate_krw_amount(raw: Any, *, field: str) -> int:
             f"{field} must not exceed {MANUAL_CASH_MAX_KRW} KRW"
         )
     return raw
+
+
+SOURCE_MCP_SET_USER_SETTING = "mcp_set_user_setting"
+# Provenance is stamped by the writer, never taken from the caller's JSON.
+_PROVENANCE_KEYS = ("source", "origin", "confirmed_by_user_id", "confirmed_at")
+
+
+def normalize_generic_manual_cash_write(value: Any) -> dict[str, Any]:
+    """Guard ``set_user_setting("manual_cash", …)`` — the generic MCP writer.
+
+    The same amount rules as the settings screen apply (whole KRW, 0..bound;
+    an integral float such as ``29000000.0`` is normalized to int). An optional
+    ``accounts`` breakdown must validate and sum to ``amount``. Caller-supplied
+    provenance keys are dropped and the value is stamped
+    ``source="mcp_set_user_setting"``, so this path can never present itself as
+    ``operator_confirmed``.
+    """
+
+    if not isinstance(value, dict):
+        raise ManualCashValidationError("manual_cash value must be an object")
+    raw_amount = value.get("amount")
+    if (
+        isinstance(raw_amount, float)
+        and math.isfinite(raw_amount)
+        and raw_amount.is_integer()
+    ):
+        raw_amount = int(raw_amount)
+    amount = validate_krw_amount(raw_amount, field="amount")
+    normalized = {k: v for k, v in value.items() if k not in _PROVENANCE_KEYS}
+    normalized["amount"] = amount
+    if "accounts" in value:
+        accounts = validate_accounts(value["accounts"])
+        if sum(account.amount for account in accounts) != amount:
+            raise ManualCashValidationError("accounts must sum to amount")
+        normalized["accounts"] = [
+            {"name": account.name, "amount": account.amount} for account in accounts
+        ]
+    normalized["source"] = SOURCE_MCP_SET_USER_SETTING
+    return normalized
 
 
 def validate_accounts(raw_accounts: Any) -> list[ManualCashAccount]:
@@ -352,6 +401,7 @@ __all__ = [
     "MANUAL_CASH_NAME_MAX_LEN",
     "MANUAL_CASH_STALE_AFTER",
     "ORIGIN_INVEST_SETTINGS_UI",
+    "SOURCE_MCP_SET_USER_SETTING",
     "SOURCE_OPERATOR_CONFIRMED",
     "ManualCashAccount",
     "ManualCashConflictError",
@@ -359,6 +409,7 @@ __all__ = [
     "change_ratio",
     "is_manual_cash_stale",
     "load_manual_cash_row",
+    "normalize_generic_manual_cash_write",
     "parse_stored_amount",
     "requires_large_change_confirmation",
     "save_manual_cash",

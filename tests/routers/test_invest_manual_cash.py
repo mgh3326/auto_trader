@@ -9,6 +9,7 @@ pytest-owned database. Only the broker cash fetch is stubbed.
 from __future__ import annotations
 
 import inspect
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,7 @@ from app.services.deployment_cap import (
 )
 from app.services.manual_cash_settings import (
     MANUAL_CASH_MAX_KRW,
+    SOURCE_MCP_SET_USER_SETTING,
     SOURCE_OPERATOR_CONFIRMED,
 )
 from tests._run_owned_database import validate_run_owned_database_url
@@ -140,6 +142,19 @@ async def _raw_value(user_id: int) -> Any:
                 {"id": user_id},
             )
         ).scalar_one_or_none()
+
+
+async def _write_raw(user_id: int, value: dict[str, Any]) -> None:
+    async with SessionLocal() as session:
+        await session.execute(
+            text(
+                "INSERT INTO user_settings (user_id, key, value) "
+                "VALUES (:id, 'manual_cash', CAST(:value AS jsonb)) "
+                "ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value"
+            ),
+            {"id": user_id, "value": json.dumps(value)},
+        )
+        await session.commit()
 
 
 async def _backdate(user_id: int, delta: timedelta) -> None:
@@ -396,7 +411,10 @@ async def test_stale_form_is_rejected(owner: int, session_user: dict[str, Any]) 
         )
         assert stale.status_code == 409
         assert stale.json()["detail"]["error"] == "stale_form"
-        assert (await _raw_value(owner)) == {"amount": 1_100_000}
+        assert (await _raw_value(owner)) == {
+            "amount": 1_100_000,
+            "source": SOURCE_MCP_SET_USER_SETTING,
+        }
 
         # a form opened when nothing existed cannot overwrite an existing row
         blind = await _put(
@@ -537,17 +555,31 @@ async def test_stale_value_is_shown_stale_and_zeroed_in_deployment_cap(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.parametrize("amount", ["NaN", "Infinity", -5_000_000, "garbage"])
+@pytest.mark.parametrize(
+    "amount",
+    [
+        "NaN",
+        "Infinity",
+        -5_000_000,
+        "garbage",
+        MANUAL_CASH_MAX_KRW + 1,
+        10**30,
+        "1e309",
+        "0.5",
+        1234.5,
+    ],
+)
 async def test_malformed_stored_amount_never_reaches_totals_or_cap(
     owner: int, amount: Any
 ) -> None:
-    # written through the generic MCP settings path, bypassing the UI guards
-    await user_settings_tools.set_user_setting("manual_cash", {"amount": amount})
+    # A row that pre-dates the writer guards (or came from any other path):
+    # written raw, bypassing both the settings screen and set_user_setting.
+    await _write_raw(owner, {"amount": amount})
 
     capital = await _capital()
-    assert capital["manual_cash"]["invalid_amount"] is True
-    assert capital["manual_cash"]["included_in_total"] is False
     assert capital["summary"]["total_orderable_krw"] == pytest.approx(1_000_000)
+    assert capital["manual_cash"].get("invalid_amount") is True
+    assert capital["manual_cash"]["included_in_total"] is False
     assert {"source": "manual_cash", "error": "invalid_amount"} in capital["errors"]
     cap = capital["summary"]["deployment_cap_advisory"]
     assert cap["parking_balance_krw"] == "0"
@@ -591,7 +623,10 @@ async def test_first_save_race_does_not_overwrite_a_concurrent_insert(
     detail = response.json()["detail"]
     assert detail["error"] == "stale_form"
     assert detail["current"]["amount"] == 29_000_000
-    assert await _raw_value(owner) == {"amount": 29_000_000}
+    assert await _raw_value(owner) == {
+        "amount": 29_000_000,
+        "source": SOURCE_MCP_SET_USER_SETTING,
+    }
 
 
 @pytest.mark.integration
@@ -619,3 +654,78 @@ async def test_write_lands_on_mcp_user_row_not_the_admin_row(
         assert cap["parking_balance_krw"] == "3000000"
     finally:
         await _delete_user(other_admin)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"amount": MANUAL_CASH_MAX_KRW + 1},
+        {"amount": 10**30},
+        {"amount": "1e309"},
+        {"amount": "NaN"},
+        {"amount": float("inf")},
+        {"amount": -1},
+        {"amount": 0.5},
+        {"amount": True},
+        {},
+        {"amount": 3_000_000, "accounts": [{"name": "a", "amount": 1}]},
+        "3000000",
+    ],
+)
+async def test_mcp_writer_rejects_invalid_manual_cash_without_write(
+    owner: int, value: Any
+) -> None:
+    await _write_raw(owner, {"amount": 5_000_000})
+    with pytest.raises(ValueError):
+        await user_settings_tools.set_user_setting("manual_cash", value)
+    assert await _raw_value(owner) == {"amount": 5_000_000}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_writer_cannot_forge_operator_confirmed(
+    owner: int, session_user: dict[str, Any]
+) -> None:
+    result = await user_settings_tools.set_user_setting(
+        "manual_cash",
+        {
+            "amount": 29_000_000.0,
+            "source": SOURCE_OPERATOR_CONFIRMED,
+            "origin": "invest_settings_ui",
+            "confirmed_by_user_id": 1,
+            "confirmed_at": "2026-09-24T00:00:00+00:00",
+            "accounts": [
+                {"name": "다올 Fi", "amount": 5_000_000},
+                {"name": "네이버", "amount": 10_000_000},
+                {"name": "애큐온", "amount": 14_000_000},
+            ],
+        },
+    )
+    stored = await _raw_value(owner)
+    assert stored == result["value"]
+    assert stored["amount"] == 29_000_000 and isinstance(stored["amount"], int)
+    assert stored["source"] == SOURCE_MCP_SET_USER_SETTING
+    assert "origin" not in stored and "confirmed_by_user_id" not in stored
+    assert "confirmed_at" not in stored
+
+    _admin(session_user, owner)
+    async with await _client(_app(actor_id=owner)) as client:
+        view = (await _get(client))["manual_cash"]
+    assert view["source"] == SOURCE_MCP_SET_USER_SETTING
+    assert view["amount"] == 29_000_000
+    assert len(view["accounts"]) == 3
+    capital = await _capital()
+    assert capital["summary"]["deployment_cap_advisory"]["parking_balance_krw"] == (
+        "29000000"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_writer_leaves_other_keys_alone(owner: int) -> None:
+    result = await user_settings_tools.set_user_setting(
+        "account_costs", {"anything": "goes", "source": "operator_confirmed"}
+    )
+    assert result["value"] == {"anything": "goes", "source": "operator_confirmed"}

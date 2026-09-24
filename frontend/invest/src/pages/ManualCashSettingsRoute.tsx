@@ -19,6 +19,7 @@ import { useViewport } from "../hooks/useViewport";
 import {
   changeRatio,
   formatKrwAmount,
+  MANUAL_CASH_MAX_KRW,
   parseKrwInput,
   requiresLargeChangeConfirm,
 } from "../manualCashRules";
@@ -77,7 +78,7 @@ function StaleStatus({ view }: { view: ManualCashView }) {
   if (!view.amount_valid) {
     return (
       <div className="manual-cash-banner manual-cash-banner--danger" role="alert" data-testid="manual-cash-invalid">
-        <strong>저장된 금액을 읽을 수 없습니다.</strong> 가용자금 합계에서 제외되고 deployment_cap 파킹 항은 0입니다.
+        <strong>저장된 금액이 유효하지 않습니다</strong> (0 이상 {formatKrwAmount(MANUAL_CASH_MAX_KRW)} 이하 정수가 아님). 가용자금 합계에서 제외되고 deployment_cap 파킹 항은 0입니다.
         새로 입력해 저장하세요.
       </div>
     );
@@ -299,8 +300,10 @@ export function ManualCashSettingsContent({
             <dd data-testid="manual-cash-source">
               {view.source === "operator_confirmed" ? (
                 <Pill tone="accent" size="sm">운영자 확인</Pill>
+              ) : view.source === "mcp_set_user_setting" ? (
+                <Pill tone="warn" size="sm">MCP 입력 (운영자 화면 확인 아님)</Pill>
               ) : view.present ? (
-                <Pill tone="warn" size="sm">출처 표시 없음 (MCP 등)</Pill>
+                <Pill tone="warn" size="sm">출처 표시 없음</Pill>
               ) : (
                 "—"
               )}

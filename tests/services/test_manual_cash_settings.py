@@ -11,9 +11,11 @@ from app.services.manual_cash_settings import (
     MANUAL_CASH_MAX_ACCOUNTS,
     MANUAL_CASH_MAX_KRW,
     MANUAL_CASH_NAME_MAX_LEN,
+    SOURCE_MCP_SET_USER_SETTING,
     ManualCashValidationError,
     change_ratio,
     is_manual_cash_stale,
+    normalize_generic_manual_cash_write,
     parse_stored_amount,
     requires_large_change_confirmation,
     validate_accounts,
@@ -152,6 +154,12 @@ def test_stale_rule_reads_naive_as_utc() -> None:
         ({"amount": 15000000.0}, Decimal("15000000.0")),
         ({"amount": "15000000"}, Decimal("15000000")),
         ({"amount": 0}, Decimal("0")),
+        ({"amount": MANUAL_CASH_MAX_KRW}, Decimal(MANUAL_CASH_MAX_KRW)),
+        ({"amount": MANUAL_CASH_MAX_KRW + 1}, None),
+        ({"amount": 10**30}, None),
+        ({"amount": "1e309"}, None),
+        ({"amount": "0.5"}, None),
+        ({"amount": 1234.5}, None),
         ({"amount": "NaN"}, None),
         ({"amount": float("nan")}, None),
         ({"amount": "Infinity"}, None),
@@ -167,3 +175,47 @@ def test_stale_rule_reads_naive_as_utc() -> None:
 )
 def test_parse_stored_amount(value: object, expected: Decimal | None) -> None:
     assert parse_stored_amount(value) == expected
+
+
+def test_generic_write_stamps_provenance_and_normalizes_integral_float() -> None:
+    out = normalize_generic_manual_cash_write(
+        {"amount": 29000000.0, "source": "operator_confirmed", "note": "kept"}
+    )
+    assert out == {
+        "amount": 29_000_000,
+        "note": "kept",
+        "source": SOURCE_MCP_SET_USER_SETTING,
+    }
+    assert isinstance(out["amount"], int)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"amount": MANUAL_CASH_MAX_KRW + 1},
+        {"amount": float("nan")},
+        {"amount": float("inf")},
+        {"amount": "1000"},
+        {"amount": 0.5},
+        {"amount": -1},
+        {"amount": True},
+        {},
+        None,
+        [1],
+        {"amount": 2, "accounts": [{"name": "a", "amount": 1}]},
+        {"amount": 1, "accounts": []},
+    ],
+)
+def test_generic_write_rejections(value: object) -> None:
+    with pytest.raises(ManualCashValidationError):
+        normalize_generic_manual_cash_write(value)
+
+
+def test_generic_write_accepts_matching_accounts() -> None:
+    out = normalize_generic_manual_cash_write(
+        {
+            "amount": 3,
+            "accounts": [{"name": " a ", "amount": 1}, {"name": "b", "amount": 2}],
+        }
+    )
+    assert out["accounts"] == [{"name": "a", "amount": 1}, {"name": "b", "amount": 2}]
