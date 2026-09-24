@@ -418,6 +418,46 @@ class TestGetPaperOrderHistory:
         assert result["error"].startswith("[Paper] ")
         assert "ghost" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_history_missing_default_account_errors_without_creating(self):
+        """A history read must never write — the default account is not
+        auto-created on the read path (hk #657 read-only lane)."""
+        service = MagicMock()
+        service.get_account_by_name = AsyncMock(return_value=None)
+        service.create_account = AsyncMock()
+
+        fake_session_cm = AsyncMock()
+        fake_session_cm.__aenter__.return_value = MagicMock()
+        fake_session_cm.__aexit__.return_value = None
+
+        with (
+            patch.object(
+                paper_order_handler,
+                "AsyncSessionLocal",
+                return_value=fake_session_cm,
+            ),
+            patch.object(
+                paper_order_handler,
+                "PaperTradingService",
+                return_value=service,
+            ),
+        ):
+            result = await paper_order_handler._get_paper_order_history(
+                symbol=None,
+                status="all",
+                order_id=None,
+                market=None,
+                side=None,
+                days=None,
+                limit=50,
+                paper_account_name=None,
+            )
+
+        assert result["success"] is False
+        assert result["error"].startswith("[Paper] ")
+        assert "default" in result["error"]
+        service.create_account.assert_not_called()
+
 
 class TestPlaceOrderRegistration:
     @pytest.mark.asyncio

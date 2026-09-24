@@ -13,7 +13,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 |---|---:|---:|---:|---:|---:|---:|
 | account_read | 9 | 0 | 1 | 0 | 0 | 10 |
 | alpaca-paper-clean | 8 | 0 | 5 | 0 | 0 | 13 |
-| analysis_readonly | 25 | 1 | 1 | 1 | 1 | 29 |
+| analysis_readonly | 33 | 2 | 4 | 2 | 1 | 42 |
 | crypto | 59 | 3 | 41 | 39 | 1 | 143 |
 | db-paper | 58 | 3 | 35 | 47 | 1 | 144 |
 | default | 80 | 4 | 78 | 42 | 3 | 207 |
@@ -72,7 +72,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | alpaca_paper_ledger_list_recent | alpaca-paper-clean, default, us-paper | app.mcp_server.tooling.alpaca_paper_ledger_read | no | A | 48 | 70 | 1 | 5 | 7 |
 | alpaca_paper_list_assets | alpaca-paper-clean, default, us-paper | app.mcp_server.tooling.alpaca_paper | no | C | 0 | 0 | 0 | 2 | 3 |
 | alpaca_paper_list_fills | alpaca-paper-clean, default, us-paper | app.mcp_server.tooling.alpaca_paper | no | A | 16 | 6 | 0 | 2 | 9 |
-| alpaca_paper_list_orders | alpaca-paper-clean, default, us-paper | app.mcp_server.tooling.alpaca_paper | no | A | 32 | 11 | 0 | 2 | 11 |
+| alpaca_paper_list_orders | alpaca-paper-clean, analysis_readonly, default, us-paper | app.mcp_server.tooling.alpaca_paper | no | A | 32 | 11 | 0 | 2 | 11 |
 | alpaca_paper_list_positions | alpaca-paper-clean, default, us-paper | app.mcp_server.tooling.alpaca_paper | no | A | 56 | 36 | 1 | 2 | 12 |
 | alpaca_paper_preview_order | alpaca-paper-clean, default, us-paper | app.mcp_server.tooling.alpaca_paper_preview | no | C | 0 | 0 | 3 | 2 | 4 |
 | alpaca_paper_reconcile_orders | default, us-paper | app.mcp_server.tooling.alpaca_paper_orders | order | D | 0 | 0 | 0 | 0 | 0 |
@@ -122,8 +122,8 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_earnings_calendar | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | A | 56 | 66 | 11 | 4 | 0 |
 | get_execution_strength | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.market_data_quotes | no | C | 0 | 0 | 0 | 3 | 0 |
 | get_financials | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
-| get_forecast_calibration | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.forecast_tools | no | C | 0 | 0 | 3 | 1 | 0 |
-| get_forecasts | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.forecast_tools | no | A | 840 | 1010 | 2 | 1 | 0 |
+| get_forecast_calibration | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.forecast_tools | no | C | 0 | 0 | 3 | 1 | 0 |
+| get_forecasts | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.forecast_tools | no | A | 840 | 1010 | 2 | 1 | 0 |
 | get_fx_rate | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.fundamentals_handlers | no | A | 168 | 169 | 3 | 0 | 0 |
 | get_holdings | account_read, analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.portfolio_holdings | no | A | 43448 | 42732 | 38 | 5 | 0 |
 | get_holdings_news | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | A | 3352 | 3345 | 1 | 0 | 0 |
@@ -139,12 +139,12 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_market_issues | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.news_handlers | no | C | 0 | 0 | 1 | 1 | 0 |
 | get_market_news | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.news_handlers | no | C | 0 | 0 | 6 | 0 | 0 |
 | get_market_reports | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.market_brief_tools | no | D | 0 | 0 | 0 | 0 | 0 |
-| get_mock_loop_retrospective | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.mock_loop_retro_registration | no | C | 0 | 0 | 0 | 3 | 0 |
+| get_mock_loop_retrospective | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.mock_loop_retro_registration | no | C | 0 | 0 | 0 | 3 | 0 |
 | get_momentum_candidates | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.analysis_registration | no | A | 112 | 132 | 11 | 0 | 0 |
 | get_news | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper, watch_repricing | app.mcp_server.tooling.fundamentals_handlers | no | A | 1960 | 2107 | 6 | 15 | 2 |
 | get_ohlcv | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.market_data_quotes | no | A | 2832 | 2577 | 4 | 1 | 0 |
 | get_operating_briefing | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.operating_briefing | no | A | 87184 | 81531 | 24 | 2 | 1 |
-| get_order_history | account_read, crypto, default, tradingcodex_execution | app.mcp_server.tooling.orders_registration | no | C | 0 | 0 | 0 | 3 | 1 |
+| get_order_history | account_read, analysis_readonly, crypto, default, tradingcodex_execution | app.mcp_server.tooling.orders_registration | no | C | 0 | 0 | 0 | 3 | 1 |
 | get_orderbook | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.market_data_quotes | no | A | 440 | 453 | 18 | 0 | 0 |
 | get_paper_performance | db-paper | app.mcp_server.tooling.paper_analytics_registration | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_paper_trade_log | db-paper | app.mcp_server.tooling.paper_analytics_registration | no | D | 0 | 0 | 0 | 0 | 0 |
@@ -152,7 +152,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_position | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.portfolio_holdings | no | A | 3080 | 5220 | 0 | 5 | 2 |
 | get_quote | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.market_data_quotes | no | A | 9144 | 8057 | 40 | 12 | 6 |
 | get_retail_sentiment | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | C | 0 | 0 | 0 | 6 | 0 |
-| get_retrospective_aggregate | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_retrospective_tools | no | D | 0 | 0 | 0 | 0 | 0 |
+| get_retrospective_aggregate | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_retrospective_tools | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_sector_peers | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_short_interest | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_spike_attribution | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.spike_attribution_registration | no | A | 80 | 65 | 0 | 1 | 0 |
@@ -161,8 +161,8 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_top_stocks | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.analysis_registration | no | A | 72 | 26 | 25 | 1 | 0 |
 | get_toss_ai_signal | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_toss_buy_balance | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
-| get_trade_journal | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_journal_tools | no | B | 8 | 0 | 0 | 0 | 0 |
-| get_trade_retrospectives | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.trade_retrospective_tools | no | A | 256 | 17 | 0 | 0 | 0 |
+| get_trade_journal | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_journal_tools | no | B | 8 | 0 | 0 | 0 | 0 |
+| get_trade_retrospectives | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.trade_retrospective_tools | no | A | 256 | 17 | 0 | 0 | 0 |
 | get_trading_policy | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.trading_policy_tools | no | A | 360 | 228 | 16 | 5 | 1 |
 | get_trading_scoreboard | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trading_scoreboard_tools | no | D | 0 | 0 | 0 | 0 | 0 |
 | get_upbit_altseason | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | A | 600 | 504 | 0 | 3 | 0 |
@@ -194,26 +194,26 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | investment_watch_recommend | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.investment_reports_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
 | investment_watch_void | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.investment_reports_handlers | watch | D | 0 | 0 | 0 | 0 | 0 |
 | kis_live_cancel_order | default, tradingcodex_execution | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 5 | 1 | 0 |
-| kis_live_get_order_history | account_read, default, tradingcodex_execution | app.mcp_server.tooling.orders_kis_variants | no | A | 4360 | 932 | 0 | 2 | 0 |
+| kis_live_get_order_history | account_read, analysis_readonly, default, tradingcodex_execution | app.mcp_server.tooling.orders_kis_variants | no | A | 4360 | 932 | 0 | 2 | 0 |
 | kis_live_modify_order | default | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 5 | 1 | 0 |
 | kis_live_place_order | default, tradingcodex_execution | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 9 | 6 | 1 |
 | kis_live_reconcile_orders | default | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 0 | 8 | 0 |
 | kis_mock_cancel_order | default, hermes-paper-kis | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 0 | 1 | 0 |
-| kis_mock_get_order_history | default, hermes-paper-kis | app.mcp_server.tooling.orders_kis_variants | no | A | 48 | 45 | 2 | 0 | 0 |
+| kis_mock_get_order_history | analysis_readonly, default, hermes-paper-kis | app.mcp_server.tooling.orders_kis_variants | no | A | 48 | 45 | 2 | 0 | 0 |
 | kis_mock_mirror_execute_report | crypto, db-paper, default, hermes-paper-kis, kiwoom, us-paper | app.mcp_server.tooling.mirror_counterfactual_tools | no | C | 0 | 0 | 0 | 2 | 0 |
 | kis_mock_modify_order | default, hermes-paper-kis | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 0 | 1 | 0 |
 | kis_mock_place_order | default, hermes-paper-kis | app.mcp_server.tooling.orders_kis_variants | order | C | 0 | 0 | 7 | 1 | 0 |
 | kis_mock_reconciliation_run | crypto, default | app.mcp_server.tooling.orders_registration | no | C | 0 | 0 | 0 | 3 | 1 |
 | kiwoom_mock_cancel_order | default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | order | C | 0 | 0 | 0 | 1 | 2 |
 | kiwoom_mock_get_order_detail | default, kiwoom, kiwoom_kr | app.mcp_server.tooling.orders_kiwoom_variants | no | C | 0 | 0 | 0 | 2 | 0 |
-| kiwoom_mock_get_order_history | account_read, default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | no | A | 72 | 34 | 1 | 4 | 4 |
+| kiwoom_mock_get_order_history | account_read, analysis_readonly, default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | no | A | 72 | 34 | 1 | 4 | 4 |
 | kiwoom_mock_get_orderable_cash | account_read, default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | no | A | 32 | 68 | 1 | 2 | 2 |
 | kiwoom_mock_get_positions | account_read, default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | no | A | 96 | 91 | 1 | 4 | 2 |
 | kiwoom_mock_modify_order | default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | order | C | 0 | 0 | 0 | 1 | 2 |
 | kiwoom_mock_place_order | default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | order | C | 0 | 0 | 5 | 2 | 3 |
 | kiwoom_mock_preview_order | default, kiwoom, kiwoom_kr, tradingcodex_execution | app.mcp_server.tooling.orders_kiwoom_variants | no | C | 0 | 0 | 2 | 1 | 1 |
 | kiwoom_mock_us_cancel_order | default, kiwoom | app.mcp_server.tooling.orders_kiwoom_us_variants | order | C | 0 | 0 | 0 | 3 | 1 |
-| kiwoom_mock_us_get_order_history | default, kiwoom | app.mcp_server.tooling.orders_kiwoom_us_variants | no | A | 32 | 4 | 0 | 0 | 1 |
+| kiwoom_mock_us_get_order_history | analysis_readonly, default, kiwoom | app.mcp_server.tooling.orders_kiwoom_us_variants | no | A | 32 | 4 | 0 | 0 | 1 |
 | kiwoom_mock_us_get_orderable_cash | default, kiwoom | app.mcp_server.tooling.orders_kiwoom_us_variants | no | B | 24 | 0 | 0 | 1 | 0 |
 | kiwoom_mock_us_get_positions | default, kiwoom | app.mcp_server.tooling.orders_kiwoom_us_variants | no | A | 16 | 4 | 0 | 1 | 1 |
 | kiwoom_mock_us_modify_order | default, kiwoom | app.mcp_server.tooling.orders_kiwoom_us_variants | order | C | 0 | 0 | 0 | 1 | 1 |
@@ -278,7 +278,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | sweep_expired_watches | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.investment_reports_handlers | no | D | 0 | 0 | 0 | 0 | 0 |
 | toss_cancel_order | default, tradingcodex_execution | app.mcp_server.tooling.orders_toss_variants | order | C | 0 | 0 | 1 | 1 | 2 |
 | toss_detect_manual_activity | default | app.mcp_server.tooling.toss_manual_activity_tools | no | C | 0 | 0 | 0 | 3 | 0 |
-| toss_get_order_history | account_read, default, tradingcodex_execution | app.mcp_server.tooling.orders_toss_variants | no | A | 2560 | 14 | 0 | 2 | 0 |
+| toss_get_order_history | account_read, analysis_readonly, default, tradingcodex_execution | app.mcp_server.tooling.orders_toss_variants | no | A | 2560 | 14 | 0 | 2 | 0 |
 | toss_get_orderable_cash | account_read, default, tradingcodex_execution | app.mcp_server.tooling.orders_toss_variants | no | A | 0 | 24 | 0 | 2 | 0 |
 | toss_get_positions | account_read, analysis_readonly, default, tradingcodex_execution | app.mcp_server.tooling.orders_toss_variants | no | A | 184 | 204 | 0 | 2 | 0 |
 | toss_modify_order | default | app.mcp_server.tooling.orders_toss_variants | order | C | 0 | 0 | 0 | 1 | 0 |
@@ -301,7 +301,7 @@ Each `lane-allowlists.draft/<lane>.txt` line is `tool<TAB>basis`; basis is exact
 |---|---|---:|
 | claude-mock | hermes-paper-kis, kiwoom, us-paper | 8 |
 | crypto | crypto, default | 65 |
-| fable-workbench | analysis_readonly | 29 |
+| fable-workbench | analysis_readonly | 42 |
 | fill-handoff | crypto, default | 54 |
 | kr | default | 64 |
 | krb1-cycle | kiwoom | 33 |
@@ -336,3 +336,16 @@ UNLISTED=220
 > default-profile-only, persistence-classified `decision_table_apply` were
 > added after this 2026-09-03 snapshot and were not part of its Sentry usage
 > measurement.
+
+> 2026-09-24 HK #657 postscript: `analysis_readonly` gained thirteen pure-read
+> tools for the fable-strategy research lane — `get_forecasts`,
+> `get_forecast_calibration`, `get_trade_journal`, `get_trade_retrospectives`,
+> `get_retrospective_aggregate`, `get_mock_loop_retrospective`, and the
+> per-broker order-history reads `get_order_history`,
+> `kis_live_get_order_history`, `kis_mock_get_order_history`,
+> `kiwoom_mock_get_order_history`, `kiwoom_mock_us_get_order_history`,
+> `toss_get_order_history`, plus the Alpaca member `alpaca_paper_list_orders`.
+> No mutation tool was added; `forecast_resolve`, the `save_*`/`modify_*`/
+> `update_*` writers, and every order/reconcile name remain forbidden on the
+> profile. `get_retrospective_aggregate` keeps its D classification — it is a
+> reviewed retained-dead exception, now also registered on `analysis_readonly`.

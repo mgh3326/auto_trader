@@ -455,7 +455,18 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
     # (frozen-context read + policy + route_request only, early-return).
     McpProfile.SHADOW_REPLAY: set(),
-    McpProfile.ANALYSIS_READONLY: {"toss_get_positions"},
+    # HK #657 — the fable-strategy lane gains the read-only order-history
+    # family (they are in _ALL_ORDER_TOOL_NAMES via ORDER/KIS/KIWOOM/TOSS sets);
+    # the mutation members of those sets stay forbidden on this profile.
+    McpProfile.ANALYSIS_READONLY: {
+        "toss_get_positions",
+        "get_order_history",
+        "kis_live_get_order_history",
+        "kis_mock_get_order_history",
+        "kiwoom_mock_get_order_history",
+        "kiwoom_mock_us_get_order_history",
+        "toss_get_order_history",
+    },
     # ROB-760 — account_read exposes read-only order-history tools (they are
     # in _ALL_ORDER_TOOL_NAMES via ORDER/KIS_LIVE/TOSS_LIVE sets), so they must
     # be listed here; separate forbidden-surface tests below prove the
@@ -678,8 +689,11 @@ class TestAnalysisReadonlyProfile:
         } <= mcp.tools.keys()
         assert "analysis_artifact_list" not in mcp.tools
         assert "forecast_resolve" not in mcp.tools
-        assert "get_forecasts" not in mcp.tools
-        assert "get_forecast_calibration" not in mcp.tools
+        # HK #657 — the forecast read pair is now on the lane; only the
+        # resolve/save writers differ (forecast_save is the reviewed
+        # created_by-labeled persistence exception).
+        assert "get_forecasts" in mcp.tools
+        assert "get_forecast_calibration" in mcp.tools
 
 
 class TestAccountReadProfile:

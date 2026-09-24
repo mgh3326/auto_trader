@@ -44,19 +44,22 @@ def _paper_error(message: str, *, symbol: str | None = None) -> dict[str, Any]:
 async def _resolve_paper_account(
     service: PaperTradingService,
     name: str | None,
+    *,
+    create: bool = True,
 ) -> PaperAccount:
     """Return the named paper account, auto-creating the default one if missing.
 
     Only the default account is auto-created; an explicit name that does not
     exist raises ValueError so users don't create typo'd ghost accounts.
+    Pass ``create=False`` on read paths — a history read must not write.
     """
     account_name = name or DEFAULT_PAPER_ACCOUNT_NAME
     account = await service.get_account_by_name(account_name)
     if account is not None:
         return account
 
-    if name is not None and name != DEFAULT_PAPER_ACCOUNT_NAME:
-        raise ValueError(f"Paper account '{name}' not found")
+    if not create or (name is not None and name != DEFAULT_PAPER_ACCOUNT_NAME):
+        raise ValueError(f"Paper account '{account_name}' not found")
 
     return await service.create_account(
         name=DEFAULT_PAPER_ACCOUNT_NAME,
@@ -296,7 +299,9 @@ async def _get_paper_order_history(
         async with AsyncSessionLocal() as db:
             service = PaperTradingService(db)
             try:
-                account = await _resolve_paper_account(service, paper_account_name)
+                account = await _resolve_paper_account(
+                    service, paper_account_name, create=False
+                )
             except ValueError as exc:
                 return _paper_error(str(exc), symbol=symbol)
 
