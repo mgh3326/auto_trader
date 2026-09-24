@@ -4,7 +4,7 @@
 // deployment-cap denominator (app/services/deployment_cap.py). Values come
 // from operator input only: rows start from the operator's own last saved
 // breakdown, never from a broker balance or an estimate.
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   fetchManualCash,
   ManualCashSaveError,
@@ -93,7 +93,7 @@ function StaleStatus({ view }: { view: ManualCashView }) {
   }
   return (
     <div className="manual-cash-banner" role="status" data-testid="manual-cash-fresh">
-      <strong>반영 중.</strong> {formatTime(view.stale_at)}에 stale이 됩니다 — 저장 후 {hours}시간(3일)이 지나면
+      <strong>반영 중.</strong> {formatTime(view.stale_at)}이 지나면 stale이 됩니다 — 저장 후 {hours}시간(3일)이 지나면
       가용자금 합계에서 빠지고 deployment_cap 파킹 항이 0이 됩니다.
       {view.amount === 0 ? " (현재 값이 0원이라 파킹 항은 이미 0입니다.)" : null}
     </div>
@@ -114,16 +114,42 @@ function ConfirmDialog({
   busy: boolean;
 }) {
   const ratio = changeRatio(current, next);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Focus starts on "cancel" so a stray Enter (e.g. the one that submitted the
+  // form) can never confirm a typo. Focus returns to the opener on close.
+  // Captured during the first render, before autoFocus moves focus to cancel.
+  const [opener] = useState(() =>
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  useEffect(() => () => opener?.focus(), [opener]);
   return (
     <div className="manual-cash-dialog__backdrop">
       <div
+        ref={dialogRef}
         className="manual-cash-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="manual-cash-confirm-title"
         data-testid="manual-cash-confirm-dialog"
         onKeyDown={(event) => {
-          if (event.key === "Escape") onCancel();
+          if (event.key === "Escape") {
+            onCancel();
+            return;
+          }
+          if (event.key !== "Tab") return;
+          const buttons = Array.from(
+            dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? [],
+          );
+          if (!buttons.length) return;
+          const first = buttons[0];
+          const last = buttons[buttons.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last?.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+          }
         }}
       >
         <h2 id="manual-cash-confirm-title">큰 변경을 확인하세요</h2>
@@ -148,11 +174,10 @@ function ConfirmDialog({
           </div>
         </dl>
         <div className="manual-cash-dialog__actions">
-          <Button type="button" variant="secondary" onClick={onCancel} disabled={busy}>
+          <Button autoFocus type="button" variant="secondary" onClick={onCancel} disabled={busy}>
             취소 · 다시 확인
           </Button>
           <Button
-            autoFocus
             type="button"
             variant="danger"
             onClick={onConfirm}

@@ -152,6 +152,43 @@ describe("ManualCashSettingsContent", () => {
     expect(saveMock).not.toHaveBeenCalled();
   });
 
+  it("focuses cancel so a stray Enter never confirms a typo, traps Tab, and restores focus", async () => {
+    const user = userEvent.setup();
+    renderContent();
+    await user.clear(amountInput(1));
+    await user.type(amountInput(1), "96000000{Enter}"); // Enter submits the form
+    const dialog = screen.getByTestId("manual-cash-confirm-dialog");
+    const cancel = within(dialog).getByRole("button", { name: "취소 · 다시 확인" });
+    const confirm = within(dialog).getByTestId("manual-cash-confirm-save");
+    expect(cancel).toHaveFocus();
+
+    await user.tab();
+    expect(confirm).toHaveFocus();
+    await user.tab();
+    expect(cancel).toHaveFocus(); // wrapped, focus stays inside the dialog
+    await user.tab({ shift: true });
+    expect(confirm).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(cancel).toHaveFocus();
+
+    await user.keyboard("{Enter}"); // a second Enter lands on cancel
+    expect(screen.queryByTestId("manual-cash-confirm-dialog")).toBeNull();
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(amountInput(1)).toHaveFocus(); // focus returns to where it was
+  });
+
+  it("closes on Escape without saving", async () => {
+    const user = userEvent.setup();
+    renderContent();
+    await user.clear(amountInput(1));
+    await user.type(amountInput(1), "96000000");
+    await user.click(screen.getByTestId("manual-cash-save"));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("manual-cash-confirm-dialog")).toBeNull();
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("manual-cash-save")).toHaveFocus();
+  });
+
   it("sends confirm_large_change=true only after the explicit confirm", async () => {
     const user = userEvent.setup();
     saveMock.mockResolvedValue(data(view({ amount: 100_000_000 })));

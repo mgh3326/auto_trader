@@ -143,7 +143,7 @@ DB Tables:
 - **서비스**: `app/services/manual_cash_settings.py` — 검증(0 이상 정수 KRW, 계좌당·합계 ≤ `MANUAL_CASH_MAX_KRW`=100억, bool/float/NaN/Infinity/문자열 거부) · stale 규칙 단일 정의(`MANUAL_CASH_STALE_AFTER`=3일, `portfolio_cash._is_stale_manual_cash` 가 위임) · 저장
 - **라우터**: `app/routers/invest_manual_cash.py` — GET(세션 인증) / PUT(`require_admin`, `/invest/api/*` CSRF). 🔴 쓰기 대상은 로그인 사용자 행이 아니라 capital read 가 읽는 `MCP_USER_ID` 행이다.
 - **저장 형태**: `{"amount": <합계 int>, "accounts": [{name, amount}], "source": "operator_confirmed", "origin", "confirmed_by_user_id", "confirmed_at"}` — JSONB 라 마이그레이션 0. 기존 reader 는 `amount` 만 읽는다.
-- 🔴 **서버 강제 가드**: 저장값 대비 50% **초과** 변경(또는 없음/0/판독불가 → 양수)은 `confirm_large_change=true`(StrictBool) 없으면 409 `confirm_required`. `expected_updated_at` 불일치(MCP 등 다른 경로가 먼저 갱신)는 409 `stale_form`. 둘 다 쓰기 0.
+- 🔴 **서버 강제 가드**: 저장값 대비 50% **초과** 변경(또는 없음/0/판독불가 → 양수)은 `confirm_large_change=true`(StrictBool) 없으면 409 `confirm_required`. `expected_updated_at` 불일치(MCP 등 다른 경로가 먼저 갱신)는 409 `stale_form`. 행이 없던 상태에서의 최초 저장은 `INSERT … ON CONFLICT DO NOTHING` 이라 그 사이 다른 경로가 먼저 넣은 행을 덮어쓰지 않고 `stale_form`. 모두 쓰기 0. 확인 대화상자의 초기 포커스는 '취소'(Enter 오확정 방지).
 - **자동 추정·잔고 prefill 금지**: 행은 운영자가 마지막으로 저장한 breakdown 에서만 채운다.
 - **reader 경화**: 저장된 `amount` 가 NaN/Infinity/음수/판독불가면 `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화.
 - MCP `set_user_setting("manual_cash", …)` 경로는 그대로 남아 있으며 이 가드를 거치지 않는다(출처 표시 없음으로 보임).

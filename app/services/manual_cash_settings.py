@@ -301,15 +301,41 @@ async def save_manual_cash(
         "confirmed_by_user_id": actor_user_id,
         "confirmed_at": _iso(now),
     }
-    upsert = (
-        insert(UserSetting)
-        .values(user_id=owner_user_id, key=MANUAL_CASH_KEY, value=value)
-        .on_conflict_do_update(
-            index_elements=["user_id", "key"],
-            set_={"value": value, "updated_at": func.now()},
-        )
+    stmt = insert(UserSetting).values(
+        user_id=owner_user_id, key=MANUAL_CASH_KEY, value=value
     )
-    await db.execute(upsert)
+    if row is None:
+        # Nothing was there to lock, so a concurrent first write (another form
+        # or the MCP set_user_setting path) may have landed since the SELECT.
+        # Insert only if still absent; never overwrite what someone else wrote
+        # against a baseline this form never saw.
+        inserted = (
+            await db.execute(
+                stmt.on_conflict_do_nothing(
+                    index_elements=["user_id", "key"]
+                ).returning(UserSetting.id)
+            )
+        ).scalar_one_or_none()
+        if inserted is None:
+            await db.rollback()
+            current = serialize_manual_cash(
+                await load_manual_cash_row(db, owner_user_id=owner_user_id),
+                now=now,
+            )
+            await db.rollback()
+            raise ManualCashConflictError(
+                "stale_form",
+                "manual_cash changed since this form was loaded; reload before saving",
+                current=current,
+            )
+    else:
+        # The row is locked FOR UPDATE above; this only ever updates it.
+        await db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["user_id", "key"],
+                set_={"value": value, "updated_at": func.now()},
+            )
+        )
     await db.commit()
 
     saved = await load_manual_cash_row(db, owner_user_id=owner_user_id)

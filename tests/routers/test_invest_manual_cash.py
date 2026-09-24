@@ -553,3 +553,69 @@ async def test_malformed_stored_amount_never_reaches_totals_or_cap(
     assert cap["parking_balance_krw"] == "0"
     assert cap["parking_balance_source"] == PARKING_SOURCE_ABSENT
     assert cap["denominator_krw"] == "1000000"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_first_save_race_does_not_overwrite_a_concurrent_insert(
+    owner: int, session_user: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both writers saw 'absent'; the one that loses must not overwrite."""
+    from app.services import manual_cash_settings
+
+    _admin(session_user, owner)
+    real_load = manual_cash_settings.load_manual_cash_row
+
+    async def load_as_if_before_the_other_insert(
+        db, *, owner_user_id, for_update=False
+    ):
+        if for_update:
+            # Our locking SELECT ran before the other writer committed.
+            await user_settings_tools.set_user_setting(
+                "manual_cash", {"amount": 29_000_000}
+            )
+            return None
+        return await real_load(db, owner_user_id=owner_user_id)
+
+    monkeypatch.setattr(
+        manual_cash_settings, "load_manual_cash_row", load_as_if_before_the_other_insert
+    )
+    async with await _client(_app(actor_id=owner)) as client:
+        response = await _put(
+            client,
+            accounts=[{"name": "파킹", "amount": 290_000_000}],
+            expected_updated_at=None,
+            confirm_large_change=True,
+        )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "stale_form"
+    assert detail["current"]["amount"] == 29_000_000
+    assert await _raw_value(owner) == {"amount": 29_000_000}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_write_lands_on_mcp_user_row_not_the_admin_row(
+    owner: int, session_user: dict[str, Any]
+) -> None:
+    other_admin = await _create_user()
+    try:
+        _admin(session_user, other_admin)
+        async with await _client(_app(actor_id=other_admin)) as client:
+            response = await _put(
+                client,
+                accounts=[{"name": "파킹", "amount": 3_000_000}],
+                expected_updated_at=None,
+                confirm_large_change=True,
+            )
+        assert response.status_code == 200, response.text
+        stored = await _raw_value(owner)
+        assert stored["amount"] == 3_000_000
+        assert stored["confirmed_by_user_id"] == other_admin
+        assert await _raw_value(other_admin) is None
+        capital = await _capital()
+        cap = capital["summary"]["deployment_cap_advisory"]
+        assert cap["parking_balance_krw"] == "3000000"
+    finally:
+        await _delete_user(other_admin)
