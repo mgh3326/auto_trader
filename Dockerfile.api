@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.25
+# syntax=docker/dockerfile:1.27
 
 # ==============================================================================
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
