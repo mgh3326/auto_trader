@@ -9,12 +9,14 @@ used by portfolio_overview_service.py.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES,
     normalize_position_symbol,
     to_float,
+    to_optional_float,
 )
 
 
@@ -122,19 +124,79 @@ def build_holdings_summary(
             "total_profit_rate": None,
             "position_count": len(positions),
             "weights": None,
+            "unpriced_position_count": len(positions),
+            "unpriced_buy_amount": total_buy_amount,
+            "unknown_cost_position_count": 0,
+            "unknown_cost_evaluation_amount": None,
+            "priced_buy_amount": 0,
         }
 
-    total_evaluation = round(
-        sum(to_float(position.get("evaluation_amount")) for position in positions),
+    # Summary P&L must be derivable from the buy/evaluation totals in the same
+    # object. Per-position ``profit_loss`` is populated only for sources that
+    # report it (broker APIs), while buy/evaluation cover every position, so
+    # summing ``profit_loss`` mixes populations and can contradict the totals.
+    # Derive P&L as evaluation minus cost over the computable subset and
+    # disclose the excluded remainders so the identity stays reconcilable:
+    # unpriced (missing or non-finite evaluation) positions never masquerade as
+    # losses, and positions with a valuation but no usable cost basis
+    # (avg*qty non-finite or <= 0, e.g. Upbit external deposits) never
+    # masquerade as pure profit. ``priced_buy_amount`` is the P&L cost basis
+    # and the rate denominator.
+    def _buy_amount(position: dict[str, Any]) -> float:
+        return to_float(position.get("avg_buy_price")) * to_float(
+            position.get("quantity")
+        )
+
+    def _is_priced(position: dict[str, Any]) -> bool:
+        evaluation = to_optional_float(position.get("evaluation_amount"))
+        return evaluation is not None and math.isfinite(evaluation)
+
+    def _has_known_cost(position: dict[str, Any]) -> bool:
+        buy = _buy_amount(position)
+        return math.isfinite(buy) and buy > 0
+
+    unpriced_position_count = sum(1 for p in positions if not _is_priced(p))
+    unpriced_buy_amount = round(
+        sum(_buy_amount(p) for p in positions if not _is_priced(p)), 2
+    )
+    unknown_cost_position_count = sum(
+        1 for p in positions if _is_priced(p) and not _has_known_cost(p)
+    )
+    unknown_cost_evaluation_amount = round(
+        sum(
+            to_float(p.get("evaluation_amount"))
+            for p in positions
+            if _is_priced(p) and not _has_known_cost(p)
+        ),
         2,
     )
-    total_profit_loss = round(
-        sum(to_float(position.get("profit_loss")) for position in positions),
+    computable_positions = [
+        p for p in positions if _is_priced(p) and _has_known_cost(p)
+    ]
+    priced_buy_amount = round(sum(_buy_amount(p) for p in computable_positions), 2)
+
+    # Priced positions have finite evaluations by construction; non-finite
+    # values (NaN/Infinity from upstream strings) are disclosed as unpriced
+    # instead of poisoning the totals.
+    total_evaluation = round(
+        sum(
+            to_float(position.get("evaluation_amount"))
+            for position in positions
+            if _is_priced(position)
+        ),
         2,
+    )
+    total_profit_loss = (
+        round(
+            total_evaluation - unknown_cost_evaluation_amount - priced_buy_amount,
+            2,
+        )
+        if computable_positions
+        else None
     )
     total_profit_rate = (
-        round((total_profit_loss / total_buy_amount) * 100, 2)
-        if total_buy_amount > 0
+        round((total_profit_loss / priced_buy_amount) * 100, 2)
+        if total_profit_loss is not None and priced_buy_amount > 0
         else None
     )
 
@@ -142,7 +204,7 @@ def build_holdings_summary(
     if total_evaluation > 0:
         for position in positions:
             evaluation = to_float(position.get("evaluation_amount"))
-            if evaluation <= 0:
+            if not math.isfinite(evaluation) or evaluation <= 0:
                 continue
             weights.append(
                 {
@@ -160,6 +222,11 @@ def build_holdings_summary(
         "total_profit_rate": total_profit_rate,
         "position_count": len(positions),
         "weights": weights,
+        "unpriced_position_count": unpriced_position_count,
+        "unpriced_buy_amount": unpriced_buy_amount,
+        "unknown_cost_position_count": unknown_cost_position_count,
+        "unknown_cost_evaluation_amount": unknown_cost_evaluation_amount,
+        "priced_buy_amount": priced_buy_amount,
     }
 
 
