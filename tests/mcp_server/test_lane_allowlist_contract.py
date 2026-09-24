@@ -203,3 +203,78 @@ def test_fable_workbench_lane_has_no_write_tools(
     assert not registered_leaks, (
         f"analysis_readonly registers write/mutation tools: {registered_leaks}"
     )
+
+
+@pytest.mark.asyncio
+async def test_fable_get_order_history_paper_route_does_not_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lane-registered get_order_history must not lazily persist.
+
+    The db_simulated/paper route previously reached
+    PaperTradingService.create_account (session.add + commit) when no
+    'default' paper account existed — a write on a read tool. This drives
+    the actual registered handler with the real PaperTradingService over a
+    recording session; any add/commit/flush/delete is a write leak.
+    """
+    from typing import Any, cast
+
+    from app.mcp_server.profiles import McpProfile
+    from app.mcp_server.tooling import paper_order_handler, register_all_tools
+    from tests.mcp_server._registration_recorder import RegistrationRecorder
+
+    recorder = RegistrationRecorder()
+    register_all_tools(cast(Any, recorder), profile=McpProfile.ANALYSIS_READONLY)
+    get_order_history = recorder.tools["get_order_history"]
+
+    ops: list[str] = []
+
+    class _Result:
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    class _RecordingSession:
+        async def execute(self, stmt: Any) -> Any:
+            ops.append("execute")
+            return _Result()
+
+        def add(self, obj: Any) -> None:
+            ops.append("add")
+
+        async def commit(self) -> None:
+            ops.append("commit")
+
+        async def flush(self) -> None:
+            ops.append("flush")
+
+        async def delete(self, obj: Any) -> None:
+            ops.append("delete")
+
+        async def refresh(self, obj: Any) -> None:
+            ops.append("refresh")
+
+        async def close(self) -> None:
+            ops.append("close")
+
+    class _SessionCM:
+        async def __aenter__(self) -> _RecordingSession:
+            return _RecordingSession()
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    monkeypatch.setattr(paper_order_handler, "AsyncSessionLocal", lambda: _SessionCM())
+
+    # Every selector spelling that resolves to the db_simulated route.
+    for call_kwargs in (
+        {"account_mode": "db_simulated"},
+        {"account_mode": "paper"},
+        {"account_mode": "simulated"},
+        {"account_type": "paper"},
+    ):
+        result = await get_order_history(**call_kwargs)
+        assert result["success"] is False, call_kwargs
+        assert "not found" in result["error"], call_kwargs
+
+    writes = sorted(set(ops) & {"add", "commit", "flush", "delete"})
+    assert not writes, f"readonly get_order_history performed session writes: {ops}"
