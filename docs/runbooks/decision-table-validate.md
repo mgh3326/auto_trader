@@ -56,37 +56,61 @@ rung only when **all** hold:
    `[0-9A-Z]`, no padding) that is not a cash-parking allowlist symbol
    (459580/357870 — their raised parking per-order cap would otherwise
    auto-approve a one-share buy above 2,000,000).
-3. The row stays inside the **closed new-entry grammar**
-   (`app/services/decision_table_validate/one_share_exception.py`):
+3. The row stays inside the **strict no-free-text grammar**
+   (`app/services/decision_table_validate/one_share_exception.py`). Every
+   string the row carries is a closed enum or an exact template; every other
+   value is a typed number or bool:
+   - no non-ASCII and no Unicode control/format (Cc/Cf, e.g. zero-width)
+     character anywhere in the row, keys included;
    - row keys ⊆ `scenario_id, priority, symbols, conditions, action,
-     invalidation, sector_concentration` (so no `derivation`, no
-     `matched_tier`); action keys ⊆ `proposal_action, account_mode, side,
-     order_type, rungs, required_thesis_fields, time_in_force,
-     reference_price, minimum_order_amount, apply_kind`; rung keys ⊆
-     `rung, price_min, price_max, qty, tick, formula`; condition keys ⊆
-     `metric, source, operator, value, max_age_seconds`; `invalidation` is a
-     list of strings;
-   - **exactly one** condition has `metric: position_quantity`, and it is the
-     flat proof: `operator: eq`, numeric `value: 0`, and `source` **exactly**
+     invalidation, sector_concentration`; `priority` is an int;
+   - `scenario_id` is exactly `one-share-entry-<symbol>` or
+     `one-share-entry-<symbol>-<1..3 digits>`;
+   - `invalidation` is absent or `[]`;
+   - `sector_concentration` is absent or a dict with numeric values under
+     `projected_pct`, `projected_percent`, `current_pct`, `cap_pct` only;
+   - the action is `proposal_action: place`, `side: buy`, `order_type: limit`,
+     `account_mode` ∈ `kis_live, toss_live, kis_mock, kiwoom_mock`, with optional
+     `time_in_force: DAY`, `apply_kind: proposal`, positive numeric
+     `reference_price` / `minimum_order_amount`, and `required_thesis_fields`
+     ⊆ `scenario_id, decision_table_hash, policy_version` (no duplicates);
+   - rungs carry exactly the integer keys `rung, price_min, price_max, qty,
+     tick` (no `formula`);
+   - every condition carries exactly `metric, source, operator, value,
+     max_age_seconds` (`max_age_seconds` an int in [1, 86400]);
+   - **exactly one** condition is the flat proof: `metric: position_quantity`,
+     `operator: eq`, numeric `value: 0`, and `source` **equal to**
      `get_holdings.accounts[<action.account_mode>].positions[<symbol>].quantity`;
-   - every other condition uses a metric from the closed market-data set
-     (`live_price_band`, `krx_previous_close`, `rsi_14_last_completed_daily_bar`,
-     `fresh_support_s1_price`, … — see `_MARKET_METRICS`), a `source` that is
-     or starts with a market-data tool (`get_quote`, `get_orderbook`,
-     `get_indicators`, `get_support_resistance`, `analyze_stock_batch`,
-     `get_trading_policy`, `get_market_index`, `get_krx_session_health`,
-     `get_news`, `kis_live_get_order_history`, `toss_get_order_history`), and a
-     scalar, scalar list, or `{min,max}_{inclusive,exclusive}` numeric range;
-   - no other key or string in the row (invalidation prose and rung
-     `formula` included) contains a holding-shaped word (`held`, `holding`,
-     `position`, `avg`, `average`, `cost`, `qty`, `quantity`, `share`,
-     `balance`, `owned`, `inventory`, `portfolio`, `보유`, `평단`, `평균단가`,
-     `매입`, `수량`, `잔고`, or a whole segment `hold`/`lot`/`pos`/`unit`).
+   - every other condition's `(metric, source)` **equals** one template:
+
+     | metric | exact `source` | operators | value |
+     |---|---|---|---|
+     | `live_price_band` | `get_quote(symbol,market='kr').price` | `between` | numeric range `{min,max}_{inclusive,exclusive}` |
+     | `krx_previous_close` | `get_quote(symbol,market='kr').previous_close` | `eq lt lte gt gte` | number |
+     | `nxt_tradable` | `get_quote(symbol,market='kr').nxt_tradable` | `eq` | bool |
+     | `premarket_session_change_pct` | `(get_quote(symbol,market='kr').price / get_quote(symbol,market='kr').previous_close - 1) * 100` | `lt lte gt gte` | number |
+     | `rsi_14_last_completed_daily_bar` | `analyze_stock_batch(symbol,quick=false).indicators.rsi.14` | `lt lte gt gte` | number |
+     | `fresh_support_s1_price` | `analyze_stock_batch(symbol,quick=false).support_resistance.supports[0].price` | `eq lt lte gt gte` | number |
+     | `fresh_resistance_r1_price` | `analyze_stock_batch(symbol,quick=false).support_resistance.resistances[0].price` | `eq lt lte gt gte` | number |
+     | `toss_open_orders_count_same_symbol` | `toss_get_order_history(status="open").orders[symbol==sym].length` | `eq` | int |
+     | `kis_open_orders_count_same_symbol` | `kis_live_get_order_history(status="pending",market="kr").orders[symbol==sym].length` | `eq` | int |
+
+   Numbers are JSON numbers, never strings. A new metric or spelling needs a
+   code change to `_MARKET_CONDITIONS` before it can appear on an exception
+   row.
+
+**Product cost:** exception rows cannot carry prose invalidation, rung
+formulas, a matched tier, or any condition outside the template table.
+**Residual limit:** a table that *only lies* — it declares a held symbol flat
+and says nothing else — is not detectable by a pure validator.
 
 Silence about holdings is **not** a new entry. A denied rung keeps
 `sizing_band_violation` with the denial reason in `expected`
-(`row_outside_new_entry_grammar`, `no_bound_flat_position_condition`,
-`held_position_evidence`, `cash_parking_symbol`, …). Once any rung of a symbol
+(`non_ascii_or_control_character`, `row_field_not_in_grammar`,
+`scenario_id_not_template`, `invalidation_not_empty`,
+`sector_concentration_not_numeric_closed`, `action_not_in_grammar`,
+`rung_not_in_grammar`, `thesis_field_not_in_enum`, `condition_not_a_template`,
+`no_bound_flat_position_condition`, `cash_parking_symbol`, …). Once any rung of a symbol
 uses the exception, that symbol may have at most `max_deep_rungs` (1) buy
 rungs across the whole table — every row and account, counted on an
 NFKC/strip/upper-normalized key — else each involved row gets the blocking

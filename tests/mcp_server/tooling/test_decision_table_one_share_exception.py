@@ -19,18 +19,25 @@ from typing import Any
 import pytest
 
 from app.services.decision_table_validate import decision_table_validate
+from app.services.decision_table_validate import one_share_exception as grammar
 from app.services.decision_table_validate import validator as validator_module
 from app.services.decision_table_validate.one_share_exception import (
     DENIED_ABOVE_CEILING,
-    DENIED_HELD_POSITION,
+    DENIED_ACTION,
+    DENIED_CONDITION,
+    DENIED_INVALIDATION,
     DENIED_NO_FLAT_PROOF,
     DENIED_NOT_A_SINGLE_SHARE,
     DENIED_NOT_ONE_SYMBOL,
     DENIED_PARKING_SYMBOL,
-    DENIED_ROW_GRAMMAR,
+    DENIED_ROW_FIELD,
+    DENIED_RUNG,
+    DENIED_SCENARIO_ID,
+    DENIED_SECTOR,
     DENIED_SHARE_WITHIN_BAND,
+    DENIED_TEXT,
+    DENIED_THESIS_FIELDS,
     OneShareException,
-    looks_held,
     new_entry_grammar_denial,
     one_share_exception_denial,
     one_share_exception_for,
@@ -55,7 +62,7 @@ def _canonical_hash(value: dict[str, Any]) -> str:
 
 def _buy_row(
     *,
-    scenario_id: str = "new-entry-000660",
+    scenario_id: str | None = None,
     symbol: str = "000660",
     rungs: list[dict[str, Any]] | None = None,
     account_mode: str = "toss_live",
@@ -63,7 +70,7 @@ def _buy_row(
     conditions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
-        "scenario_id": scenario_id,
+        "scenario_id": scenario_id or f"one-share-entry-{symbol.strip()}",
         "priority": 1,
         "symbols": [symbol],
         "conditions": conditions
@@ -289,8 +296,9 @@ def test_sell_rows_never_consult_the_exception(monkeypatch):
 
 
 def _denial(result: dict[str, Any]) -> str:
-    (violation,) = _sizing(result)
-    return violation["expected"].rsplit("denied: ", 1)[-1]
+    sizing = _sizing(result)
+    assert len(sizing) == 1, result["violations"]
+    return sizing[0]["expected"].rsplit("denied: ", 1)[-1]
 
 
 def _row_with(**changes: Any) -> dict[str, Any]:
@@ -305,8 +313,32 @@ def _row_with(**changes: Any) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# New-entry proof: a closed grammar, not a guess (rounds 1 and 2).
+# New-entry proof: a strict no-free-text grammar (round 4).
+#
+# Every string an exception row may carry is a closed enum or an exact
+# template; every other value is a typed number or bool. Each rule below has
+# its own ASCII-only test group so a mutant of that rule is not masked by the
+# global text check.
 # --------------------------------------------------------------------------
+
+
+def _market(metric: str, value: Any, operator: str | None = None) -> dict[str, Any]:
+    spec = grammar._MARKET_CONDITIONS[metric]
+    return {
+        "metric": metric,
+        "source": spec.source,
+        "operator": operator or sorted(spec.operators)[0],
+        "value": value,
+        "max_age_seconds": 300,
+    }
+
+
+_VALID_VALUE_BY_KIND = {
+    "range": {"min_inclusive": 1700000, "max_exclusive": 1900000},
+    "number": 45.5,
+    "int": 0,
+    "bool": True,
+}
 
 
 def test_explicit_flat_position_is_a_new_entry():
@@ -315,22 +347,25 @@ def test_explicit_flat_position_is_a_new_entry():
     assert _validate(_buy_row(conditions=[float_zero]))["valid"] is True
 
 
-def test_allowlisted_market_conditions_and_neutral_prose_are_fine():
-    rsi = {
-        "metric": "rsi_14_last_completed_daily_bar",
-        "source": "get_indicators(symbol='000660').rsi_14",
-        "operator": "lt",
-        "value": 45,
-        "max_age_seconds": 300,
-    }
-    row = _buy_row()
-    row["conditions"].append(rsi)
-    row["invalidation"] = [
-        "RSI threshold broken upward",
-        "positive catalyst withdrawn",
-        "support S1 moves away",
+def test_every_market_template_is_admitted():
+    conditions = [_flat()] + [
+        _market(metric, _VALID_VALUE_BY_KIND[spec.value_kind])
+        for metric, spec in grammar._MARKET_CONDITIONS.items()
     ]
-    row["action"]["rungs"][0]["formula"] = "tick_floor(S1); KRX buy-side floor"
+    result = _validate(_buy_row(conditions=conditions))
+    assert result["valid"] is True, result["violations"]
+
+
+def test_a_row_using_every_optional_grammar_field_is_admitted():
+    row = _buy_row(scenario_id="one-share-entry-000660-7")
+    row["sector_concentration"] = {"projected_pct": 4.5, "cap_pct": 10}
+    row["action"].update(
+        required_thesis_fields=["scenario_id", "decision_table_hash"],
+        time_in_force="DAY",
+        apply_kind="proposal",
+        reference_price=1850000,
+        minimum_order_amount=1,
+    )
     result = _validate(row)
     assert result["valid"] is True, result["violations"]
 
@@ -341,6 +376,263 @@ def test_silence_about_holdings_is_not_a_new_entry():
     assert _denial(result) == DENIED_NO_FLAT_PROOF
 
 
+# -- the five round-3 inputs (each must be rejected) --------------------------
+
+
+_OWNED = "소유주식수"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"sector_concentration": {_OWNED: 3}},
+        {"action__required_thesis_fields": [f"{_OWNED}=3"]},
+        {"invalidation": [f"{_OWNED} 3이면 추가매수"]},
+    ],
+)
+def test_round3_holding_statements_in_row_fields_are_rejected(changes):
+    result = _validate(_row_with(**changes))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_TEXT
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        f"get_quote(symbol='000660').{_OWNED}",
+        "get_quote(symbol='000660').ho\u200blding.count",
+    ],
+)
+def test_round3_holding_statements_in_a_condition_source_are_rejected(source):
+    condition = {**_market("live_price_band", {"min_inclusive": 1}), "source": source}
+    condition.update(operator="gt", value=0)
+    result = _validate(_buy_row(conditions=[_flat(), condition]))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_TEXT
+
+
+# -- rule: ASCII only, no Cc/Cf anywhere ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"scenario_id": "one-share-entry-000660\u200b"},
+        {"scenario_id": "one-share-entry-000660\x07"},
+        {"action__account_mode": "toss_live\u2060"},
+        {"sector_concentration": {"projected_pct\u200d": 3}},
+        {"action__required_thesis_fields": ["ｓｃｅｎａｒｉｏ_id"]},
+    ],
+)
+def test_non_ascii_or_control_characters_anywhere_deny(changes):
+    result = _validate(_row_with(**changes))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_TEXT
+
+
+# -- rule: closed row fields ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"derivation": {"loss_guard_min_price": 1}},
+        {"matched_tier": "buy.underwater_support_net"},
+        {"lot_context": 3},
+        {"owned_shares": 3},
+        {"priority": "1"},
+        {"priority": True},
+    ],
+)
+def test_row_fields_outside_the_grammar_deny(changes):
+    result = _validate(_row_with(**changes))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_ROW_FIELD
+
+
+# -- rule: scenario_id is a template -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "scenario_id",
+    [
+        "add-to-held-000660",
+        "one-share-entry-000660-owned3",
+        "one-share-entry-000660-1234",
+        "one-share-entry-005930",
+        "one-share-entry-000660-",
+    ],
+)
+def test_scenario_id_must_be_the_template(scenario_id):
+    result = _validate(_buy_row(scenario_id=scenario_id))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_SCENARIO_ID
+
+
+# -- rule: invalidation is empty (the product cost) ----------------------------
+
+
+@pytest.mark.parametrize("invalidation", [["exit if RSI > 70"], [""], "none", {}, None])
+def test_exception_rows_cannot_carry_invalidation(invalidation):
+    result = _validate(_row_with(invalidation=invalidation))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_INVALIDATION
+
+
+def test_invalidation_may_be_absent():
+    row = _buy_row()
+    del row["invalidation"]
+    assert _validate(row)["valid"] is True
+
+
+# -- rule: sector_concentration is numeric under closed keys --------------------
+
+
+@pytest.mark.parametrize(
+    "sector",
+    [
+        {"owned_qty": 3},
+        {"projected_pct": "3"},
+        {"projected_pct": True},
+        {"verdict": "ok"},
+        {"projected_pct": {"owned": 3}},
+        [3],
+        "3",
+    ],
+)
+def test_sector_concentration_must_be_numeric_closed(sector):
+    result = _validate(_row_with(sector_concentration=sector))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_SECTOR
+
+
+# -- rule: the action is exactly a KR limit place buy ---------------------------
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"action__avg_price": 1500000},
+        {"action__owned_qty": 3},
+        {"action__context": {"note": "x"}},
+        {"action__proposal_action": "replace"},
+        {"action__order_type": "market"},
+        {"action__account_mode": "upbit_live"},
+        {"action__time_in_force": "GTC"},
+        {"action__apply_kind": "watch"},
+        {"action__reference_price": "1850000"},
+        {"action__minimum_order_amount": -1},
+    ],
+)
+def test_actions_outside_the_grammar_deny(changes):
+    result = _validate(_row_with(**changes))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_ACTION
+
+
+# -- rule: rungs carry integers only -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra", [{"formula": "tick_floor(S1)"}, {"owned": 3}, {"avg": 1}]
+)
+def test_rungs_carry_no_free_text(extra):
+    rung = {**_rung(1776000, 1776000, qty=1, tick=1000), **extra}
+    result = _validate(_buy_row(rungs=[rung]))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_RUNG
+
+
+# -- rule: required_thesis_fields come from a closed enum -----------------------
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        ["owned_qty"],
+        ["scenario_id", "scenario_id"],
+        "scenario_id",
+        [1],
+        [["scenario_id"]],
+    ],
+)
+def test_thesis_fields_must_come_from_the_enum(fields):
+    result = _validate(_row_with(action__required_thesis_fields=fields))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_THESIS_FIELDS
+
+
+# -- rule: market conditions equal their template exactly -----------------------
+
+
+_TEMPLATE_PRICE = "get_quote(symbol,market='kr').price"
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        # source must EQUAL the template: no suffix, no prefix, no whitespace
+        {"source": _TEMPLATE_PRICE + ".owned_shares"},
+        {"source": _TEMPLATE_PRICE + " "},
+        {"source": "x" + _TEMPLATE_PRICE},
+        {"source": "get_quote(symbol,market='kr').previous_close"},
+        # the metric must be a known template
+        {"metric": "held_qty"},
+        {"metric": "matched_tier_id"},
+        {"metric": ["live_price_band"]},
+        # numbers are numbers, never strings; ranges are closed and numeric
+        {"value": {"min_inclusive": "1700000"}},
+        {"value": {"min_inclusive": 1, "owned": 3}},
+        {"value": {}},
+        {"value": "1700000"},
+        {"value": [1700000, 1900000]},
+        # operators and freshness come from the template too
+        {"operator": "in"},
+        {"max_age_seconds": "300"},
+        {"max_age_seconds": 0},
+        {"max_age_seconds": 86401},
+        {"max_age_seconds": True},
+        {"owned": 3},
+    ],
+)
+def test_market_conditions_must_equal_their_template(override):
+    condition = {
+        **_market("live_price_band", _VALID_VALUE_BY_KIND["range"]),
+        **override,
+    }
+    result = _validate(_buy_row(conditions=[_flat(), condition]))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_CONDITION
+
+
+def test_missing_condition_key_denies():
+    condition = _market("live_price_band", _VALID_VALUE_BY_KIND["range"])
+    del condition["max_age_seconds"]
+    result = _validate(_buy_row(conditions=[_flat(), condition]))
+    assert _denial(result) == DENIED_CONDITION
+
+
+@pytest.mark.parametrize(
+    ("metric", "bad_value"),
+    [
+        ("krx_previous_close", "1776000"),
+        ("krx_previous_close", True),
+        ("nxt_tradable", 1),
+        ("nxt_tradable", "true"),
+        ("toss_open_orders_count_same_symbol", 0.0),
+        ("toss_open_orders_count_same_symbol", "0"),
+        ("rsi_14_last_completed_daily_bar", float("nan")),
+    ],
+)
+def test_template_values_have_their_declared_type(metric, bad_value):
+    result = _validate(_buy_row(conditions=[_flat(), _market(metric, bad_value)]))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_CONDITION
+
+
+# -- rule: exactly one flat proof, bound verbatim ------------------------------
+
+
 @pytest.mark.parametrize(
     "flat_override",
     [
@@ -349,20 +641,13 @@ def test_silence_about_holdings_is_not_a_new_entry():
         {"value": 1},
         {"value": None},
         {"operator": "lte"},
-        {"metric": "Position_Quantity"},
         {"source": None},
         {"source": "get_holdings"},
-        # round 2, BLOCKER 2 — bound to the row's account and symbol exactly
         {"source": "get_holdings.accounts[kis_live].positions[000660].quantity"},
-        {
-            "source": (
-                "get_holdings.accounts[toss_live].positions[005930].quantity # 000660"
-            )
-        },
+        {"source": "get_holdings.accounts[toss_live].positions[005930].quantity"},
         {"source": "get_holdings.accounts[toss_live].positions[000660].quantity "},
-        # round 2, BLOCKER 1 — held data inside the flat condition itself
+        {"max_age_seconds": "300"},
         {"held_qty": 3},
-        {"position_qty": 3},
     ],
 )
 def test_flat_proof_must_be_exact_and_bound_to_this_row(flat_override):
@@ -370,10 +655,13 @@ def test_flat_proof_must_be_exact_and_bound_to_this_row(flat_override):
     flat = {**_flat(), **flat_override}
     result = _validate(_buy_row(conditions=[live_band, flat]))
     assert result["valid"] is False
-    # A mis-cased metric is not the flat metric at all, so it is an unknown
-    # (non-allowlisted) metric; either way the row gets no exception.
-    expected = DENIED_ROW_GRAMMAR if "metric" in flat_override else DENIED_NO_FLAT_PROOF
-    assert _denial(result) == expected
+    assert _denial(result) == DENIED_NO_FLAT_PROOF
+
+
+def test_mis_cased_flat_metric_is_an_unknown_template():
+    flat = {**_flat(), "metric": "Position_Quantity"}
+    result = _validate(_buy_row(conditions=[flat]))
+    assert _denial(result) == DENIED_CONDITION
 
 
 def test_two_position_quantity_conditions_are_not_one_proof():
@@ -382,103 +670,6 @@ def test_two_position_quantity_conditions_are_not_one_proof():
     assert _denial(result) == DENIED_NO_FLAT_PROOF
     result = _validate(_buy_row(conditions=[_flat(), _flat()]))
     assert _denial(result) == DENIED_NO_FLAT_PROOF
-
-
-@pytest.mark.parametrize(
-    "other_condition",
-    [
-        # round 1, BLOCKER 1 and round 2, BLOCKER 2 vocabulary
-        {"metric": "held_qty", "source": "get_holdings", "operator": "gt", "value": 0},
-        {"metric": "current_units", "source": "portfolio[000660]", "operator": "gt"},
-        {"metric": "position_avg_buy_price", "source": "get_holdings", "value": 1},
-        {"metric": "holding_quantity", "source": "get_holdings", "value": 1},
-        {"metric": "matched_tier_id", "source": "get_trading_policy", "value": "x"},
-        # allowlisted metric, but the source is not a market-data tool
-        {"metric": "live_price_band", "source": "get_holdings.positions[000660]"},
-        {"metric": "live_price_band", "source": "session_context", "value": 1},
-        # allowlisted metric and source, but an unknown key or value shape
-        {"metric": "live_price_band", "source": "get_quote", "position": 3},
-        {
-            "metric": "live_price_band",
-            "source": "get_quote",
-            "value": {"min_inclusive": 1, "position_quantity": 3},
-        },
-        {
-            "metric": "live_price_band",
-            "source": "get_quote",
-            "value": [{"position_quantity": 3}],
-        },
-    ],
-)
-def test_conditions_outside_the_closed_grammar_deny(other_condition):
-    condition = {"operator": "eq", "value": 0, "max_age_seconds": 300}
-    condition.update(other_condition)
-    result = _validate(_buy_row(conditions=[_flat(), condition]))
-    assert result["valid"] is False
-    assert _denial(result) == DENIED_ROW_GRAMMAR
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"action__avg_price": 1500000},
-        {"action__position_qty": 3},
-        {"action__context": {"position_quantity": 3}},
-        {"lot_context": 3},
-        {"derivation": {"loss_guard_min_price": 1}},
-        {"matched_tier": "buy.underwater_support_net"},
-        {"invalidation": [{"metric": "held_qty"}]},
-        {"action__rungs": [{**_rung(1776000, 1776000, qty=1, tick=1000), "avg": 1}]},
-    ],
-)
-def test_keys_outside_the_closed_grammar_deny(changes):
-    result = _validate(_row_with(**changes))
-    assert result["valid"] is False
-    assert _denial(result) == DENIED_ROW_GRAMMAR
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"invalidation": ["toss lot 수량·평단 변화"]},
-        {"invalidation": ["보유 종목이면 무효"]},
-        {"invalidation": ["exit if the existing position grows"]},
-        {"invalidation": ["ＨＥＬＤ lot"]},
-        {"scenario_id": "add-to-held-000660"},
-        {"action__required_thesis_fields": ["avg_cost_anchor"]},
-        {"action__time_in_force": "DAY hold"},
-    ],
-)
-def test_holding_words_anywhere_else_in_the_row_deny(changes):
-    result = _validate(_row_with(**changes))
-    assert result["valid"] is False
-    assert _denial(result) == DENIED_HELD_POSITION
-
-
-def test_holding_words_in_a_market_condition_or_formula_deny():
-    quote = {
-        "metric": "live_price_band",
-        "source": "get_quote(symbol='000660') vs portfolio average",
-        "operator": "between",
-        "value": {"min_inclusive": 1700000, "max_exclusive": 1900000},
-        "max_age_seconds": 300,
-    }
-    result = _validate(_buy_row(conditions=[_flat(), quote]))
-    assert _denial(result) == DENIED_HELD_POSITION
-
-    row = _buy_row()
-    row["action"]["rungs"][0]["formula"] = "avg-cost anchor x 0.97"
-    assert _denial(_validate(row)) == DENIED_HELD_POSITION
-
-
-@pytest.mark.parametrize(
-    "text", ["threshold", "positive", "positioning", "unity", "lottery", "costs"]
-)
-def test_second_line_word_matching(text):
-    """Segment words need a whole segment; substrings match anywhere."""
-
-    expected = text in {"positioning", "costs"}
-    assert looks_held(text) is expected
 
 
 def test_two_rungs_in_one_row_exceed_max_deep_rungs():
@@ -492,9 +683,9 @@ def test_two_rungs_in_one_row_exceed_max_deep_rungs():
 
 
 def test_same_symbol_across_rows_and_accounts_shares_one_rung_budget():
-    first = _buy_row(scenario_id="a")
+    first = _buy_row()
     second = _buy_row(
-        scenario_id="b",
+        scenario_id="one-share-entry-000660-2",
         account_mode="kis_live",
         rungs=[_rung(1700000, 1700000, qty=1, tick=1000)],
     )
@@ -509,15 +700,18 @@ def test_same_symbol_across_rows_and_accounts_shares_one_rung_budget():
 
 
 def test_an_in_band_rung_of_an_exception_symbol_still_counts():
-    first = _buy_row(scenario_id="a")
-    second = _buy_row(scenario_id="b", rungs=[_rung(350000, 350000, qty=1, tick=500)])
+    first = _buy_row()
+    second = _buy_row(
+        scenario_id="one-share-entry-000660-2",
+        rungs=[_rung(350000, 350000, qty=1, tick=500)],
+    )
     result = _validate(first, second)
     assert "one_share_exception_rung_limit" in _rules(result)
 
 
 def test_different_symbols_each_get_their_own_rung():
-    first = _buy_row(scenario_id="a", symbol="000660")
-    second = _buy_row(scenario_id="b", symbol="005930")
+    first = _buy_row(symbol="000660")
+    second = _buy_row(symbol="005930")
     result = _validate(first, second)
     assert result["valid"] is True, result["violations"]
 
@@ -539,9 +733,9 @@ def test_cash_parking_symbols_never_take_the_exception(parking_symbol):
 def test_padded_or_widened_symbol_shares_the_rung_budget(variant):
     """Tester round 1, BLOCKER 3: the ledger key is normalized."""
 
-    first = _buy_row(scenario_id="a")
+    first = _buy_row()
     second = _buy_row(
-        scenario_id="b",
+        scenario_id="one-share-entry-000660-2",
         account_mode="kis_live",
         symbol=variant,
         rungs=[_rung(1700000, 1700000, qty=1, tick=1000)],
@@ -636,13 +830,16 @@ def test_exception_reader_is_kr_only():
 
 
 def test_grammar_rejects_non_mapping_shapes():
-    for row in (
-        {"symbols": ["000660"], "action": [], "conditions": []},
-        {"symbols": ["000660"], "action": {"rungs": "x"}, "conditions": []},
-        {"symbols": ["000660"], "action": {"rungs": []}, "conditions": ["x"]},
-        {"symbols": ["000660"], "action": {"rungs": []}, "conditions": {}},
-    ):
-        assert new_entry_grammar_denial(row, "000660") == DENIED_ROW_GRAMMAR
+    base = _buy_row()
+    cases = [
+        ({"action": []}, DENIED_ACTION),
+        ({"action": {**base["action"], "rungs": "x"}}, DENIED_RUNG),
+        ({"action": {**base["action"], "rungs": []}}, DENIED_RUNG),
+        ({"conditions": ["x"]}, DENIED_CONDITION),
+        ({"conditions": {}}, DENIED_CONDITION),
+    ]
+    for change, expected in cases:
+        assert new_entry_grammar_denial({**base, **change}, "000660") == expected
 
 
 def test_overflowing_price_max_never_raises():

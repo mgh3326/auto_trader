@@ -22,22 +22,38 @@ falls back to the ordinary ``sizing_band_violation``):
   denied, because its expanded-mode per-order cap is raised to 10,000,000 and
   the exception would otherwise let a one-share parking buy above 2,000,000
   auto-approve without a card.
-* new entries only, proven by a CLOSED GRAMMAR rather than by guessing what a
-  holding looks like (two tester rounds showed a denylist over free-form JSON
-  always leaks):
+* new entries only, proven by a STRICT NO-FREE-TEXT GRAMMAR. A pure validator
+  cannot read holdings, so it must not accept any field in which a table could
+  also state one: three tester rounds showed that scanning free text for
+  holding words always leaks (another key, another language, a zero-width
+  character). Every string an exception row may carry is owned by this
+  grammar -- a closed enum or an exact template -- and every other value is a
+  typed number or bool:
 
-  - row, action, rung and condition keys come from closed sets (anything else,
-    including ``derivation``, ``matched_tier`` -- which can name a held-lot tier
-    such as ``buy.underwater_support_net`` -- or a nested ``context``, denies);
-  - exactly one condition uses ``metric: position_quantity`` and it is the
-    flat proof: ``operator: eq``, numeric ``value: 0`` and a ``source`` that is
-    EXACTLY ``get_holdings.accounts[<row account_mode>].positions[<symbol>]
-    .quantity`` -- so it cannot point at another account or symbol;
-  - every other condition uses a metric from a closed market-data vocabulary,
-    a source that starts with a market-data tool name, and a scalar, scalar
-    list or numeric range value;
-  - and, as a second line, every other key and string in the row (invalidation
-    prose included) is scanned for holding-shaped words in English and Korean.
+  - no non-ASCII and no Unicode control/format (Cc/Cf) character anywhere in
+    the row, keys included;
+  - closed row / action / rung / condition keys; no ``formula``, no
+    ``derivation``, no ``matched_tier``;
+  - ``scenario_id`` is exactly ``one-share-entry-<symbol>`` or
+    ``one-share-entry-<symbol>-<1..3 digits>``; ``priority`` is an int;
+  - ``invalidation`` is absent or ``[]`` (the product cost: exception rows
+    cannot carry prose invalidation);
+  - ``required_thesis_fields`` is drawn from a closed enum;
+  - ``sector_concentration`` has only numeric leaves under closed keys;
+  - the action is exactly a limit ``place`` ``buy`` on a KR account mode, with
+    optional ``time_in_force: DAY``, ``apply_kind: proposal`` and numeric
+    ``reference_price`` / ``minimum_order_amount``; rungs carry integer
+    ``rung/price_min/price_max/qty/tick`` only;
+  - exactly one ``position_quantity eq 0`` condition whose ``source`` EQUALS
+    ``get_holdings.accounts[<account_mode>].positions[<symbol>].quantity``;
+  - every other condition is one of ``_MARKET_CONDITIONS``: its ``source``
+    EQUALS that metric's template (not a prefix), its operator is from that
+    metric's set, its value has that metric's type (numbers are numbers, never
+    strings), and ``max_age_seconds`` is an int in [1, 86400].
+
+The residual limit is a table that ONLY lies -- it declares a held symbol flat
+and says nothing else. No pure validator can catch that; the live check is the
+helmsman session's condition match before a real apply.
 
 The per-order auto-approve cap is not read here and is not relaxed: an
 exception order above it is still demoted to a human card by
@@ -46,6 +62,7 @@ exception order above it is still demoted to a human card by
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -63,9 +80,16 @@ DENIED_SHARE_WITHIN_BAND = "single_share_not_above_band_ceiling"
 DENIED_ABOVE_CEILING = "above_absolute_ceiling"
 DENIED_NOT_ONE_SYMBOL = "row_not_single_canonical_symbol"
 DENIED_PARKING_SYMBOL = "cash_parking_symbol"
-DENIED_ROW_GRAMMAR = "row_outside_new_entry_grammar"
+DENIED_TEXT = "non_ascii_or_control_character"
+DENIED_ROW_FIELD = "row_field_not_in_grammar"
+DENIED_SCENARIO_ID = "scenario_id_not_template"
+DENIED_INVALIDATION = "invalidation_not_empty"
+DENIED_SECTOR = "sector_concentration_not_numeric_closed"
+DENIED_ACTION = "action_not_in_grammar"
+DENIED_RUNG = "rung_not_in_grammar"
+DENIED_THESIS_FIELDS = "thesis_field_not_in_enum"
+DENIED_CONDITION = "condition_not_a_template"
 DENIED_NO_FLAT_PROOF = "no_bound_flat_position_condition"
-DENIED_HELD_POSITION = "held_position_evidence"
 
 _FLAT_METRIC = "position_quantity"
 _ROW_KEYS = frozenset(
@@ -93,79 +117,79 @@ _ACTION_KEYS = frozenset(
         "apply_kind",
     }
 )
-_RUNG_KEYS = frozenset({"rung", "price_min", "price_max", "qty", "tick", "formula"})
+_KR_ACCOUNT_MODES = frozenset({"kis_live", "toss_live", "kis_mock", "kiwoom_mock"})
+_RUNG_KEYS = frozenset({"rung", "price_min", "price_max", "qty", "tick"})
 _CONDITION_KEYS = frozenset(
     {"metric", "source", "operator", "value", "max_age_seconds"}
 )
 _RANGE_VALUE_KEYS = frozenset(
     {"min_inclusive", "max_inclusive", "min_exclusive", "max_exclusive"}
 )
-# Market-data metrics seen in real KR prep tables that say nothing about a
-# holding. A new metric must be added here deliberately; until then a row using
-# it simply does not get the exception.
-_MARKET_METRICS = frozenset(
-    {
-        "live_price_band",
-        "krx_previous_close",
-        "nxt_premarket_price",
-        "nxt_tradable",
-        "price_source_is_nxt",
-        "abs_rel_diff_quote_vs_nxt_orderbook_mid",
-        "premarket_session_change_pct",
-        "nxt_premarket_change_pct_vs_prev_close",
-        "rsi_14_last_completed_daily_bar",
-        "fresh_support_s1_price",
-        "fresh_support_s2_price",
-        "fresh_resistance_r1_price",
-        "fresh_resistance_r2_price",
-        "crash_day_state_at_decision",
-        "crash_day_trigger_069500_open_gap_pct",
-        "catalyst_basis_recorded",
-        "flow_basis_observed_at_decision",
-        "required_thesis_evidence_present",
-        "policy_frozen_keys",
-        "toss_open_orders_count_same_symbol",
-        "kis_open_orders_count_same_symbol",
-    }
+_THESIS_FIELDS = frozenset({"scenario_id", "decision_table_hash", "policy_version"})
+_SECTOR_KEYS = frozenset(
+    {"projected_pct", "projected_percent", "current_pct", "cap_pct"}
 )
-_MARKET_SOURCE_TOOLS = (
-    "get_quote",
-    "get_orderbook",
-    "get_indicators",
-    "get_support_resistance",
-    "analyze_stock_batch",
-    "get_trading_policy",
-    "get_market_index",
-    "get_krx_session_health",
-    "get_news",
-    "kis_live_get_order_history",
-    "toss_get_order_history",
-)
-# Second line only. Substrings match anywhere in the NFKC/lower-cased text;
-# segment words must equal a whole ``[a-z0-9]`` segment (so "threshold" and
-# "positive" do not trip them).
-_HELD_SUBSTRINGS = (
-    "held",
-    "holding",
-    "position",
-    "avg",
-    "average",
-    "cost",
-    "qty",
-    "quantity",
-    "share",
-    "balance",
-    "owned",
-    "inventory",
-    "portfolio",
-    "보유",
-    "평단",
-    "평균단가",
-    "매입",
-    "수량",
-    "잔고",
-)
-_HELD_SEGMENTS = frozenset({"hold", "lot", "lots", "pos", "unit", "units"})
+_MAX_AGE_SECONDS = 86400
+_ORDER = frozenset({"lt", "lte", "gt", "gte"})
+
+
+@dataclass(frozen=True)
+class _MarketCondition:
+    source: str
+    operators: frozenset[str]
+    value_kind: str  # "range" | "number" | "int" | "bool"
+
+
+# The only non-flat conditions an exception row may carry: exact
+# (metric, source) templates for market data that say nothing about a holding.
+# A prep table must emit these strings verbatim; a new metric or a different
+# spelling needs a code change here before it can appear on an exception row.
+_MARKET_CONDITIONS: dict[str, _MarketCondition] = {
+    "live_price_band": _MarketCondition(
+        "get_quote(symbol,market='kr').price", frozenset({"between"}), "range"
+    ),
+    "krx_previous_close": _MarketCondition(
+        "get_quote(symbol,market='kr').previous_close",
+        _ORDER | {"eq"},
+        "number",
+    ),
+    "nxt_tradable": _MarketCondition(
+        "get_quote(symbol,market='kr').nxt_tradable", frozenset({"eq"}), "bool"
+    ),
+    "premarket_session_change_pct": _MarketCondition(
+        "(get_quote(symbol,market='kr').price"
+        " / get_quote(symbol,market='kr').previous_close - 1) * 100",
+        _ORDER,
+        "number",
+    ),
+    "rsi_14_last_completed_daily_bar": _MarketCondition(
+        "analyze_stock_batch(symbol,quick=false).indicators.rsi.14",
+        _ORDER,
+        "number",
+    ),
+    "fresh_support_s1_price": _MarketCondition(
+        "analyze_stock_batch(symbol,quick=false).support_resistance.supports[0].price",
+        _ORDER | {"eq"},
+        "number",
+    ),
+    "fresh_resistance_r1_price": _MarketCondition(
+        "analyze_stock_batch(symbol,quick=false)"
+        ".support_resistance.resistances[0].price",
+        _ORDER | {"eq"},
+        "number",
+    ),
+    "toss_open_orders_count_same_symbol": _MarketCondition(
+        'toss_get_order_history(status="open").orders[symbol==sym].length',
+        frozenset({"eq"}),
+        "int",
+    ),
+    "kis_open_orders_count_same_symbol": _MarketCondition(
+        'kis_live_get_order_history(status="pending",market="kr")'
+        ".orders[symbol==sym].length",
+        frozenset({"eq"}),
+        "int",
+    ),
+}
 _KRX_CODE = re.compile(r"[0-9A-Z]{6}")
 _PARKING_SYMBOLS = frozenset(scope.symbol for scope in PARKING_ALLOWLIST_SCOPES)
 
@@ -235,135 +259,171 @@ def flat_proof_source(account_mode: str, symbol: str) -> str:
     return f"get_holdings.accounts[{account_mode}].positions[{symbol}].quantity"
 
 
-def looks_held(text: Any) -> bool:
-    if not isinstance(text, str):
-        return False
-    normalized = unicodedata.normalize("NFKC", text).lower()
-    if any(marker in normalized for marker in _HELD_SUBSTRINGS):
-        return True
-    return any(
-        segment in _HELD_SEGMENTS for segment in re.split(r"[^a-z0-9]+", normalized)
+def scenario_id_template(symbol: str) -> re.Pattern[str]:
+    return re.compile(rf"one-share-entry-{symbol}(?:-[0-9]{{1,3}})?")
+
+
+def _is_int(value: Any) -> bool:
+    return type(value) is int
+
+
+def _is_number(value: Any) -> bool:
+    return (type(value) is int) or (type(value) is float and math.isfinite(value))
+
+
+def _clean_text(text: str) -> bool:
+    return text.isascii() and not any(
+        unicodedata.category(char) in ("Cc", "Cf") for char in text
     )
 
 
-def _is_scalar(value: Any) -> bool:
-    return value is None or type(value) in (str, int, float, bool)
+def row_text_is_clean(value: Any) -> bool:
+    """Every key and string below ``value`` is ASCII with no Cc/Cf character."""
+
+    if isinstance(value, Mapping):
+        return all(
+            isinstance(key, str) and _clean_text(key) and row_text_is_clean(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return all(row_text_is_clean(child) for child in value)
+    if isinstance(value, str):
+        return _clean_text(value)
+    return True
 
 
-def _market_condition_ok(condition: Mapping[str, Any]) -> bool:
-    if not set(condition) <= _CONDITION_KEYS:
-        return False
-    if condition.get("metric") not in _MARKET_METRICS:
-        return False
-    source = condition.get("source")
-    if type(source) is not str or not any(
-        source == tool or source.startswith((f"{tool}(", f"{tool}."))
-        for tool in _MARKET_SOURCE_TOOLS
-    ):
-        return False
-    value = condition.get("value")
-    if _is_scalar(value):
-        return True
-    if type(value) is list:
-        return all(_is_scalar(item) for item in value)
-    if type(value) is dict:
-        return set(value) <= _RANGE_VALUE_KEYS and all(
-            _finite_decimal(item) is not None for item in value.values()
+def _value_ok(value: Any, kind: str) -> bool:
+    if kind == "bool":
+        return type(value) is bool
+    if kind == "int":
+        return _is_int(value)
+    if kind == "number":
+        return _is_number(value)
+    if kind == "range":
+        return (
+            type(value) is dict
+            and bool(value)
+            and set(value) <= _RANGE_VALUE_KEYS
+            and all(_is_number(item) for item in value.values())
         )
     return False
 
 
+def _max_age_ok(condition: Mapping[str, Any]) -> bool:
+    max_age = condition.get("max_age_seconds")
+    return _is_int(max_age) and 1 <= max_age <= _MAX_AGE_SECONDS
+
+
 def _is_bound_flat_proof(
-    condition: Mapping[str, Any], account_mode: Any, symbol: str
+    condition: Mapping[str, Any], account_mode: str, symbol: str
 ) -> bool:
     value = condition.get("value")
     return (
-        set(condition) <= _CONDITION_KEYS
+        set(condition) == _CONDITION_KEYS
         and condition.get("metric") == _FLAT_METRIC
         and condition.get("operator") == "eq"
         and type(value) in (int, float)
         and value == 0
-        and type(account_mode) is str
         and condition.get("source") == flat_proof_source(account_mode, symbol)
+        and _max_age_ok(condition)
     )
 
 
-def _strings_and_keys(value: Any) -> list[str]:
-    """Every dict key and string leaf below ``value``."""
+def _market_condition_ok(condition: Mapping[str, Any]) -> bool:
+    metric = condition.get("metric")
+    spec = _MARKET_CONDITIONS.get(metric) if type(metric) is str else None
+    return (
+        spec is not None
+        and set(condition) == _CONDITION_KEYS
+        and condition.get("source") == spec.source
+        and condition.get("operator") in spec.operators
+        and _value_ok(condition.get("value"), spec.value_kind)
+        and _max_age_ok(condition)
+    )
 
-    found: list[str] = []
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            found.append(str(key))
-            found.extend(_strings_and_keys(child))
-    elif isinstance(value, list):
-        for child in value:
-            found.extend(_strings_and_keys(child))
-    elif isinstance(value, str):
-        found.append(value)
-    return found
+
+def _action_denial(action: Any) -> str | None:
+    if type(action) is not dict or not set(action) <= _ACTION_KEYS:
+        return DENIED_ACTION
+    if (
+        action.get("proposal_action") != "place"
+        or action.get("side") != "buy"
+        or action.get("order_type") != "limit"
+        or action.get("account_mode") not in _KR_ACCOUNT_MODES
+        or action.get("time_in_force", "DAY") != "DAY"
+        or action.get("apply_kind", "proposal") != "proposal"
+        or any(
+            key in action and not (_is_number(action[key]) and action[key] > 0)
+            for key in ("reference_price", "minimum_order_amount")
+        )
+    ):
+        return DENIED_ACTION
+    rungs = action.get("rungs")
+    if (
+        type(rungs) is not list
+        or not rungs
+        or not all(
+            type(rung) is dict
+            and set(rung) == _RUNG_KEYS
+            and all(_is_int(rung[key]) for key in _RUNG_KEYS)
+            for rung in rungs
+        )
+    ):
+        return DENIED_RUNG
+    fields = action.get("required_thesis_fields", [])
+    if (
+        type(fields) is not list
+        or len(set(map(str, fields))) != len(fields)
+        or not all(type(field) is str and field in _THESIS_FIELDS for field in fields)
+    ):
+        return DENIED_THESIS_FIELDS
+    return None
 
 
 def new_entry_grammar_denial(row: Mapping[str, Any], symbol: str) -> str | None:
     """``None`` when the row is provably a new entry under the closed grammar."""
 
+    if not row_text_is_clean(row):
+        return DENIED_TEXT
     if not set(row) <= _ROW_KEYS:
-        return DENIED_ROW_GRAMMAR
-    action = row.get("action")
-    conditions = row.get("conditions")
-    invalidation = row.get("invalidation", [])
-    if (
-        type(action) is not dict
-        or not set(action) <= _ACTION_KEYS
-        or type(conditions) is not list
-        or type(invalidation) is not list
-        or not all(type(item) is str for item in invalidation)
+        return DENIED_ROW_FIELD
+    scenario_id = row.get("scenario_id")
+    if type(scenario_id) is not str or not scenario_id_template(symbol).fullmatch(
+        scenario_id
     ):
-        return DENIED_ROW_GRAMMAR
-    rungs = action.get("rungs")
-    if type(rungs) is not list or not all(
-        type(rung) is dict and set(rung) <= _RUNG_KEYS for rung in rungs
-    ):
-        return DENIED_ROW_GRAMMAR
+        return DENIED_SCENARIO_ID
+    if "priority" in row and not _is_int(row["priority"]):
+        return DENIED_ROW_FIELD
+    if "invalidation" in row and row["invalidation"] != []:
+        return DENIED_INVALIDATION
+    if "sector_concentration" in row:
+        sector = row["sector_concentration"]
+        if (
+            type(sector) is not dict
+            or not set(sector) <= _SECTOR_KEYS
+            or not all(_is_number(value) for value in sector.values())
+        ):
+            return DENIED_SECTOR
+    action_denial = _action_denial(row.get("action"))
+    if action_denial is not None:
+        return action_denial
+    account_mode = row["action"]["account_mode"]
 
-    flat_proofs = []
+    conditions = row.get("conditions")
+    if type(conditions) is not list:
+        return DENIED_CONDITION
+    flat_proofs = 0
     for condition in conditions:
         if type(condition) is not dict:
-            return DENIED_ROW_GRAMMAR
+            return DENIED_CONDITION
         if condition.get("metric") == _FLAT_METRIC:
-            if not _is_bound_flat_proof(condition, action.get("account_mode"), symbol):
+            if not _is_bound_flat_proof(condition, account_mode, symbol):
                 return DENIED_NO_FLAT_PROOF
-            flat_proofs.append(condition)
+            flat_proofs += 1
         elif not _market_condition_ok(condition):
-            return DENIED_ROW_GRAMMAR
-    if len(flat_proofs) != 1:
+            return DENIED_CONDITION
+    if flat_proofs != 1:
         return DENIED_NO_FLAT_PROOF
-
-    # Second line: nothing else in the row may talk about a holding. The flat
-    # proof is excluded (it is exactly-matched above); rung numbers are not
-    # text, but a rung's free-text ``formula`` is scanned.
-    scanned: list[str] = []
-    for key, value in row.items():
-        scanned.append(key)
-        if key == "conditions":
-            for condition in conditions:
-                if condition is not flat_proofs[0]:
-                    scanned.extend(_strings_and_keys(condition))
-        elif key == "action":
-            for action_key, action_value in action.items():
-                scanned.append(action_key)
-                if action_key == "rungs":
-                    scanned.extend(
-                        rung["formula"]
-                        for rung in rungs
-                        if isinstance(rung.get("formula"), str)
-                    )
-                else:
-                    scanned.extend(_strings_and_keys(action_value))
-        elif key != "symbols":
-            scanned.extend(_strings_and_keys(value))
-    if any(looks_held(text) for text in scanned):
-        return DENIED_HELD_POSITION
     return None
 
 
@@ -394,20 +454,28 @@ def one_share_exception_denial(
 
 __all__ = [
     "DENIED_ABOVE_CEILING",
-    "DENIED_HELD_POSITION",
+    "DENIED_ACTION",
+    "DENIED_CONDITION",
+    "DENIED_INVALIDATION",
     "DENIED_NO_FLAT_PROOF",
     "DENIED_NOT_ONE_SYMBOL",
     "DENIED_NOT_A_SINGLE_SHARE",
     "DENIED_PARKING_SYMBOL",
-    "DENIED_ROW_GRAMMAR",
+    "DENIED_ROW_FIELD",
+    "DENIED_RUNG",
+    "DENIED_SCENARIO_ID",
+    "DENIED_SECTOR",
     "DENIED_SHARE_WITHIN_BAND",
+    "DENIED_TEXT",
+    "DENIED_THESIS_FIELDS",
     "ONE_SHARE_EXCEPTION_MARKETS",
     "OneShareException",
     "canonical_row_symbol",
     "flat_proof_source",
-    "looks_held",
     "new_entry_grammar_denial",
     "normalized_symbol_key",
     "one_share_exception_denial",
     "one_share_exception_for",
+    "row_text_is_clean",
+    "scenario_id_template",
 ]

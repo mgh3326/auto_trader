@@ -60,7 +60,7 @@ effective_at: >-
   confirmation AND the auto_trader merge freeze lifting.
 live_only_claim: false
 mock_projection_hash_before: "6d5a858ff5cb"   # policy content_hash at 2026-09-08.1 (origin/main 3931fdb3e)
-mock_projection_hash_after: "e2c2a3d369c2"    # policy content_hash at 2026-09-24.1 (round 3; earlier heads: 1d164aa ee9d01057614, 55f6901 bede1cc8dfd6 — only the source prose moved)
+mock_projection_hash_after: "8b044f30df1b"    # policy content_hash at 2026-09-24.1 (round 4; earlier heads: 1d164aa ee9d01057614, 55f6901 bede1cc8dfd6, 86cc9e8 e2c2a3d369c2 — only the source prose moved)
   # Interpretation caveat carried from the protocol memory: whether
   # mock_projection_hash means this raw-YAML content hash is unconfirmed.
   # The ROB-1351 v2 sealed hashes do NOT move:
@@ -111,7 +111,7 @@ evidence: >-
 `decision_table_validate` responses (`validator.py:80`
 `policy_version_stamp()`), the fan-out response
 (`buy_candidate_fanout.py:1285`), and session evidence/forecasts that quote
-`{version, content_hash}` — will read `2026-09-24.1 / e2c2a3d369c2` instead of
+`{version, content_hash}` — will read `2026-09-24.1 / 8b044f30df1b` instead of
 `2026-09-08.1 / 6d5a858ff5cb`. v2 forecast payloads themselves carry the sealed
 `policy_projection_sha256`, not the live version, so they do not split; the
 split is in surrounding session evidence and must be kept as a cohort
@@ -213,18 +213,51 @@ name a held-lot tier. devin-ds41 (round-1 head, kept on record: FAIL, same three
 BLOCKERs) also reported a SHOULD — a scalar-rung `price_max` beyond float range
 raised `OverflowError` from the never-raise validator — fixed in round 3.
 
+## Round-3 independent verification (codex-sol xhigh @ 86cc9e8) — FAIL, fixed in round 4 (final round, cap extended by one by director-1)
+
+Report: `~/work/herdr-inbox/jobs/v664-one-share-codex-r3/report.md`. The
+structural checks held, but **allowed fields could still carry free text stating
+a holding**. Five inputs each got `valid=True`:
+1. `sector_concentration: {"소유주식수": 3}`;
+2. a `get_quote(...).소유주식수` source that passed because only the prefix was checked;
+3. `ho\u200blding` (NFKC keeps zero-width characters);
+4. `required_thesis_fields: ["소유주식수=3"]`;
+5. Korean `소유` in invalidation prose.
+
+**Round 4 (director-1 option A) removes every free-text channel instead of scanning
+it.** On an exception row:
+- no non-ASCII and no Cc/Cf character anywhere, keys included;
+- closed row/action/rung/condition keys, with no `formula`, `derivation` or `matched_tier`;
+- `scenario_id` is exactly `one-share-entry-<symbol>[-<1..3 digits>]`;
+- `invalidation` is absent or `[]`;
+- `required_thesis_fields` ⊆ `{scenario_id, decision_table_hash, policy_version}`;
+- `sector_concentration` has numeric leaves under closed keys only;
+- the action is exactly a KR limit `place` `buy`;
+- every market condition's `(metric, source)` **equals** one exact template, with a typed value (numbers are never strings) and an int `max_age_seconds`;
+- exactly one flat proof, bound verbatim.
+
+The holding-word scan is **dropped**: every string is now grammar-owned, so it
+would prove nothing, and it would false-positive on the template itself
+(`one-share-…`). All 5 round-3 inputs are now tests, each rejected.
+
+**Product cost:** exception rows cannot carry prose invalidation, rung formulas,
+a matched tier, or any condition outside the template table. The prep prompt
+must emit the templates verbatim.
+
 ## Known residual limits of the code boundary
 
-- `decision_table_validate` is pure and cannot read holdings. It trusts the
-  declared `position_quantity eq 0` condition; `decision_table_apply` does not
+- **The residual limit: a table that only lies.** `decision_table_validate` is
+  pure and cannot read holdings. A table that declares a held symbol flat and
+  says nothing else is not caught. It trusts the declared
+  `position_quantity eq 0` condition; `decision_table_apply` does not
   evaluate row conditions either, so the live check is the helmsman session's
   condition match before a real apply. A table that *lies* about a held
   symbol (declares flat while held) is not caught here.
-- The prep prompt (operator repo) must emit exception rows inside the closed
-  grammar (runbook `decision-table-validate.md`), with the exact flat-proof
-  source string; otherwise the exception is never granted (fail-closed; a
-  usability cost, not a safety one). A new market-data metric needs a code
-  change to `_MARKET_METRICS` before it can appear on an exception row.
+- The prep prompt (operator repo) must emit exception rows inside the strict
+  grammar (runbook `decision-table-validate.md`: templates verbatim, empty
+  invalidation, enum thesis fields). Otherwise the exception is never granted.
+  This is fail-closed, so it is a usability cost, not a safety one. A new
+  market-data metric or spelling needs a code change to `_MARKET_CONDITIONS`.
 - The exception is only code-enforced where a decision table is validated.
   Session-written proposals that bypass decision tables were never band-checked
   in code (the band is advisory under ROB-646); for them the exception is a
