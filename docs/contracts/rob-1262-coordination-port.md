@@ -118,11 +118,16 @@ Release is exactly two things:
 - an **attested** owner/key-matched `pg_advisory_unlock` whose boolean is `true`
   for every key, then close; or
 - a **positive termination receipt** bound to the exact backend PID and owner
-  token, for which the actual `pg_terminate_backend` scalar was exact `true`
-  **and** an independent observer then proved that exact PID absent.
+  token, for which the actual `pg_terminate_backend(pid, timeout_ms)` scalar was
+  exact `true` **and** an independent observer then proved that exact PID absent.
+  `timeout_ms` is a positive, bounded constant (#319): with the default `0`,
+  `true` only means SIGTERM was sent and the absence read races the backend's
+  exit; with a positive timeout PostgreSQL answers `true` only after the backend
+  left the process array, so the absence read is a second confirmation.
 
 `close()` and a pool return are **never** termination. An ambiguous driver
-error, `pg_terminate_backend=false` followed by PID absence, or PID absence
+error, `pg_terminate_backend=false` followed by PID absence (including `false`
+because the backend was still exiting when the wait expired), or PID absence
 alone is not a receipt. When neither can be proven, the lease is not marked released
 and an auditable `UnreleasedAuthorityHold` is recorded.
 

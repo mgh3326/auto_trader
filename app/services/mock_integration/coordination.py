@@ -483,8 +483,31 @@ _OWNED_ADVISORY_ROWS_SQL: Final[str] = (
     "objsubid, classid::bigint AS classid, objid::bigint AS objid "
     "FROM pg_locks WHERE locktype = 'advisory' AND pid = :pid"
 )
+# #319: with the default timeout of 0, ``pg_terminate_backend`` returns true as
+# soon as SIGTERM is *sent*, and the absence read that follows races the
+# backend's own exit (#318). A positive timeout makes PostgreSQL wait until the
+# PID has left the process array before it answers true, and answer false with a
+# WARNING if it has not exited by then — so true now means "exited" and the
+# absence read is an independent second confirmation rather than a race. The
+# signature ``pg_terminate_backend(integer, bigint)`` exists since PostgreSQL 14.
+#
+# 5 s bounds the wait inside ``pg_terminate_backend`` itself; it is not an
+# end-to-end bound on ``terminate_backend_session``, which first checks out the
+# observer (the queue pool may wait up to ``DB_POOL_TIMEOUT_S`` for that, and
+# failing to get one is unproven). Callers apply no asyncio timeout, the engine
+# sets no asyncpg ``command_timeout``, and PostgreSQL's default
+# ``statement_timeout`` is 0. A server-side ``statement_timeout`` shorter than
+# this, or a cancellation before both proof checks below have passed, aborts
+# the call, which surfaces as an exception and therefore as an unproven
+# termination — never as success. (A cancellation during the cleanup closes
+# *after* both checks cannot erase the already-built receipt; see below.) An idle backend exits in
+# milliseconds and even one dropping 2000 temp tables exits well inside this
+# bound, so exceeding it signals a genuinely stuck backend, which is exactly
+# when the answer must be "unproven".
+_TERMINATION_WAIT_TIMEOUT_MS: Final[int] = 5_000
 _TERMINATE_BACKEND_SQL: Final[str] = (
-    "SELECT pg_terminate_backend(CAST(:pid AS integer)) AS terminated"
+    "SELECT pg_terminate_backend(CAST(:pid AS integer), CAST(:timeout_ms AS bigint)) "
+    "AS terminated"
 )
 _BACKEND_ALIVE_SQL: Final[str] = (
     "SELECT count(*) AS alive FROM pg_stat_activity WHERE pid = CAST(:pid AS integer)"
@@ -554,8 +577,9 @@ class SqlAlchemyLockAuthority:
     a dedicated session.
 
     ``terminate_backend_session`` proves the result from an **independent
-    observer session**: it runs ``pg_terminate_backend`` against the exact PID and
-    then confirms that PID is absent from ``pg_stat_activity``.  Self-termination
+    observer session**: it runs ``pg_terminate_backend`` against the exact PID with
+    a positive wait, so ``true`` means the backend exited, and then confirms that
+    PID is absent from ``pg_stat_activity``.  Self-termination
     from the dying connection is deliberately not used, because the driver error
     it produces is *ambiguous* — it looks identical to a network blip — and an
     ambiguous error is not a receipt.  Without an observer factory this adapter
@@ -594,14 +618,19 @@ class SqlAlchemyLockAuthority:
         observer = await self._observer_factory()
         try:
             termination = await observer.execute(
-                text(_TERMINATE_BACKEND_SQL), {"pid": expected_pid}
+                text(_TERMINATE_BACKEND_SQL),
+                {"pid": expected_pid, "timeout_ms": _TERMINATION_WAIT_TIMEOUT_MS},
             )
             # ROB-1340: absence after a false termination is not proof that this
-            # call ended the owner. Both positive facts are load-bearing.
+            # call ended the owner. Both positive facts are load-bearing. With a
+            # positive timeout (#319) false also covers "still exiting when the
+            # wait expired", which is unproven, not terminated.
             if termination.scalar_one() is not True:
                 raise BackendSessionTerminationUnproven(
                     "pg_terminate_backend did not return exact true"
                 )
+            # Second, independent confirmation. It runs after the wait above, so
+            # it no longer races the exit; a PID still listed here is unproven.
             alive = await observer.execute(
                 text(_BACKEND_ALIVE_SQL), {"pid": expected_pid}
             )
