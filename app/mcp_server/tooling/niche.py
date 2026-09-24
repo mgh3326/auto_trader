@@ -64,7 +64,15 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
         frozenset({"proposal_revalidate"}),
     ),
     (
-        frozenset({"account_read", "default", "crypto", "tradingcodex_execution"}),
+        frozenset(
+            {
+                "account_read",
+                "analysis_readonly",
+                "default",
+                "crypto",
+                "tradingcodex_execution",
+            }
+        ),
         frozenset(
             {
                 "get_order_history",
@@ -176,12 +184,10 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "get_crypto_profile",
                 "get_crypto_social",
                 "get_execution_strength",
-                "get_forecast_calibration",
                 "get_investment_opinions",
                 "get_latest_market_brief",
                 "get_market_issues",
                 "get_market_news",
-                "get_mock_loop_retrospective",
                 "get_retail_sentiment",
                 "get_theme_events",
                 "get_upbit_index",
@@ -197,6 +203,27 @@ NICHE_GROUPS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
                 "research_session_get",
                 "research_session_list_recent",
                 "watch_downside_register_sweep",
+            }
+        ),
+    ),
+    (
+        # HK #657 — these two C tools also serve analysis_readonly now.
+        frozenset(
+            {
+                "analysis_readonly",
+                "kiwoom",
+                "db-paper",
+                "default",
+                "kiwoom_kr",
+                "us-paper",
+                "hermes-paper-kis",
+                "crypto",
+            }
+        ),
+        frozenset(
+            {
+                "get_forecast_calibration",
+                "get_mock_loop_retrospective",
             }
         ),
     ),

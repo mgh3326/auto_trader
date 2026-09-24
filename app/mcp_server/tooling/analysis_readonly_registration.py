@@ -8,6 +8,13 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
 )
+from app.mcp_server.tooling.alpaca_paper import (
+    ALPACA_PAPER_READONLY_TOOL_NAMES,
+    register_alpaca_paper_tools,
+)
+from app.mcp_server.tooling.alpaca_paper_orders import (
+    ALPACA_PAPER_MUTATING_TOOL_NAMES,
+)
 from app.mcp_server.tooling.analysis_artifact_tools import (
     analysis_artifact_get as _analysis_artifact_get,
 )
@@ -15,9 +22,15 @@ from app.mcp_server.tooling.analysis_artifact_tools import (
     analysis_artifact_save as _analysis_artifact_save,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
-from app.mcp_server.tooling.forecast_registration import register_forecast_tools
+from app.mcp_server.tooling.forecast_registration import (
+    FORECAST_TOOL_NAMES,
+    register_forecast_tools,
+)
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
+from app.mcp_server.tooling.mock_loop_retro_registration import (
+    register_mock_loop_retro_tools,
+)
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
@@ -25,12 +38,23 @@ from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
     LIVE_RECONCILE_TOOL_NAMES,
+    register_kis_live_order_tools,
+    register_kis_mock_order_tools,
 )
 from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_TOOL_NAMES,
 )
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    register as register_kiwoom_mock_us_tools,
+)
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
-from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
+from app.mcp_server.tooling.orders_kiwoom_variants import (
+    register as register_kiwoom_mock_tools,
+)
+from app.mcp_server.tooling.orders_registration import (
+    ORDER_TOOL_NAMES,
+    register_order_tools,
+)
 from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
     register_toss_live_order_tools,
@@ -47,6 +71,14 @@ from app.mcp_server.tooling.session_context_tools import (
 )
 from app.mcp_server.tooling.session_context_tools import (
     session_context_get_recent as _session_context_get_recent,
+)
+from app.mcp_server.tooling.trade_journal_registration import (
+    TRADE_JOURNAL_TOOL_NAMES,
+    register_trade_journal_tools,
+)
+from app.mcp_server.tooling.trade_retrospective_registration import (
+    TRADE_RETROSPECTIVE_TOOL_NAMES,
+    register_trade_retrospective_tools,
 )
 from app.mcp_server.tooling.trading_policy_registration import (
     register_trading_policy_tools,
@@ -89,29 +121,54 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "forecast_save",
     "session_context_append",
     "session_context_get_recent",
+    # HK #657 — pure-read retrospective/forecast/journal and per-broker
+    # order-history surface for the fable-strategy research lane. Every sibling
+    # mutation emitted by the same registrars stays in FORBIDDEN below.
+    "get_forecasts",
+    "get_forecast_calibration",
+    "get_trade_journal",
+    "get_trade_retrospectives",
+    "get_retrospective_aggregate",
+    "get_mock_loop_retrospective",
+    "get_order_history",
+    "kis_live_get_order_history",
+    "kis_mock_get_order_history",
+    "kiwoom_mock_get_order_history",
+    "kiwoom_mock_us_get_order_history",
+    "toss_get_order_history",
+    "alpaca_paper_list_orders",
 }
 
 ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES: set[str] = (
-    ORDER_TOOL_NAMES
-    | KIS_LIVE_ORDER_TOOL_NAMES
-    | KIS_MOCK_ORDER_TOOL_NAMES
+    (ORDER_TOOL_NAMES - {"get_order_history"})
+    | (KIS_LIVE_ORDER_TOOL_NAMES - {"kis_live_get_order_history"})
+    | (KIS_MOCK_ORDER_TOOL_NAMES - {"kis_mock_get_order_history"})
     | LIVE_RECONCILE_TOOL_NAMES
-    | KIWOOM_MOCK_TOOL_NAMES
-    | KIWOOM_MOCK_US_TOOL_NAMES
+    | (KIWOOM_MOCK_TOOL_NAMES - {"kiwoom_mock_get_order_history"})
+    | (KIWOOM_MOCK_US_TOOL_NAMES - {"kiwoom_mock_us_get_order_history"})
     | PAPER_LIMIT_ORDER_TOOL_NAMES
-    | (TOSS_LIVE_ORDER_TOOL_NAMES - {"toss_get_positions"})
+    | (TOSS_LIVE_ORDER_TOOL_NAMES - {"toss_get_positions", "toss_get_order_history"})
+    # forecast_save is the reviewed created_by-labeled persistence exception;
+    # forecast_resolve writes and stays forbidden.
+    | (
+        FORECAST_TOOL_NAMES
+        - {"forecast_save", "get_forecasts", "get_forecast_calibration"}
+    )
+    | (TRADE_JOURNAL_TOOL_NAMES - {"get_trade_journal"})
+    | (
+        TRADE_RETROSPECTIVE_TOOL_NAMES
+        - {"get_trade_retrospectives", "get_retrospective_aggregate"}
+    )
+    | (ALPACA_PAPER_READONLY_TOOL_NAMES - {"alpaca_paper_list_orders"})
+    | ALPACA_PAPER_MUTATING_TOOL_NAMES
     | {
         "analysis_artifact_list",
         "analysis_bundle_create",
-        "forecast_resolve",
-        "get_forecasts",
-        "get_forecast_calibration",
         "get_user_setting",
+        "set_user_setting",
         "update_manual_holdings",
         "get_cash_balance",
         "get_available_capital",
-        "get_order_history",
-        "toss_get_order_history",
         "toss_get_orderable_cash",
         "list_active_watches",
     }
@@ -254,6 +311,19 @@ def register_analysis_readonly_tools(mcp: FastMCP) -> None:
     register_account_routing_tools(filtered)
     register_toss_live_order_tools(filtered)
     register_forecast_tools(filtered)
+    # HK #657 — journal/retrospective/mock-loop reads and the per-broker
+    # order-history family. The filtered proxy drops every sibling mutation
+    # these shared registrars also emit (save_*/modify/update, place/cancel/
+    # modify/preview/reconcile), so only the allowed reads register.
+    register_trade_journal_tools(filtered)
+    register_mock_loop_retro_tools(filtered)
+    register_trade_retrospective_tools(filtered, include_position_intake=False)
+    register_order_tools(filtered)
+    register_kis_live_order_tools(filtered)
+    register_kis_mock_order_tools(filtered)
+    register_kiwoom_mock_tools(filtered)
+    register_kiwoom_mock_us_tools(filtered)
+    register_alpaca_paper_tools(filtered)
     _register_persistence_tools(mcp)
 
 

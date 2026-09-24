@@ -2478,7 +2478,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus **both** typed Kiwoom mock namespaces (no KIS/generic order tools): the eight KR `kiwoom_mock_*` tools and — unconditionally, unlike DEFAULT's `KIWOOM_MOCK_US_ENABLED` gate — the seven US `kiwoom_mock_us_*` tools, four of which are mutations. Prefer `kiwoom_kr` for a KR-only session (ROB-1159). |
 | Kiwoom mock KR-only | `kiwoom_kr` | ROB-1159/1173 least-privilege split of `kiwoom`: default read-only/research surface plus **exactly** the eight KR `kiwoom_mock_*` tools (`kiwoom_mock_get_order_detail` included). The whole profile runs through an independent closed-world exact-set registration proxy (118 base names plus explicitly gated optional sets), and the KR registrar has a nested eight-name proxy. Thus the `kiwoom_mock_us_*` namespace, `kis_mock_mirror_execute_report`, and even a new alias missing from central mutation-name lists are physically absent. Requires `MCP_AUTH_TOKEN` on network transports, and (when `KIWOOM_MOCK_ENABLED=true`) complete mock credentials plus the exact `https://mockapi.kiwoom.com` base URL at startup. |
-| Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
+| Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, the forecast/trade-journal/retrospective reads and the per-broker order-history read family (HK #657), and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
 
@@ -2531,17 +2531,32 @@ Allowed tools:
 - `get_intraday_investor_flow`
 - `analysis_artifact_save`
 - `analysis_artifact_get`
-- `analysis_bundle_get` (only when `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED=true`)
 - `forecast_save`
 - `session_context_append`
 - `session_context_get_recent`
 
+HK #657 read-only additions (no mutation capability):
+- `get_forecasts`
+- `get_forecast_calibration`
+- `get_trade_journal`
+- `get_trade_retrospectives`
+- `get_retrospective_aggregate`
+- `get_mock_loop_retrospective`
+- `get_order_history`
+- `kis_live_get_order_history`
+- `kis_mock_get_order_history`
+- `kiwoom_mock_get_order_history`
+- `kiwoom_mock_us_get_order_history`
+- `toss_get_order_history`
+- `alpaca_paper_list_orders`
+
 Forbidden by physical non-registration:
-- order placement, cancel, modify, history, reconcile, and preview tools
-- KIS live/mock order variants
-- Kiwoom order variants
-- Alpaca/DB paper order surfaces
-- Toss place/modify/cancel/history/orderable-cash/reconcile/preview
+- order placement, cancel, modify, reconcile, and preview tools
+- KIS live/mock order mutations (only the `*_get_order_history` reads register)
+- Kiwoom order mutations (same — only the two history reads register)
+- Alpaca/DB paper order surfaces (only `alpaca_paper_list_orders` registers)
+- Toss place/modify/cancel/orderable-cash/reconcile/preview
+- forecast/journal/retrospective writers (`forecast_resolve`, `save_trade_journal`, `update_trade_journal`, `modify_journal_entry`, `save_trade_retrospective`, `save_position_intake_retrospective`)
 - manual holdings mutation
 - user settings tools
 - watch/admin/report-writing surfaces
