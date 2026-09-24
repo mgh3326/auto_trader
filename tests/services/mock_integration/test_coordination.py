@@ -1677,6 +1677,12 @@ def test_lock_sqlalchemy_authority_rejects_anything_but_a_dedicated_connection()
 # --- B17 · B14 · B15 · B18 --------------------------------------------------
 
 
+def _owner_attests(pid: Any) -> _FakeResult:
+    """The owner connection's answer to ``_OWNER_BACKEND_PID_SQL`` (#622)."""
+
+    return _FakeResult([{"backend_pid": pid}])
+
+
 def _dedicated_connection_double(results: list[Any]) -> Any:
     """A ``MagicMock`` that really is an ``AsyncConnection`` for isinstance."""
 
@@ -1761,7 +1767,7 @@ async def test_lock_adapter_never_closes_the_owner_when_termination_is_unproven(
 ):
     """B14: the owner connection still holds the lock — it must not be returned."""
 
-    owner = _dedicated_connection_double([])
+    owner = _dedicated_connection_double([_owner_attests(4242)])
     if isinstance(observer_results, BaseException):
         observer = MagicMock(spec=AsyncConnection)
         observer.execute = AsyncMock(side_effect=observer_results)
@@ -1787,7 +1793,7 @@ async def test_lock_adapter_never_closes_the_owner_when_termination_is_unproven(
 
 @pytest.mark.asyncio
 async def test_lock_adapter_closes_the_owner_only_after_a_proven_termination():
-    owner = _dedicated_connection_double([])
+    owner = _dedicated_connection_double([_owner_attests(4242)])
     observer = _dedicated_connection_double(
         [_FakeResult([{"terminated": True}]), _FakeResult([{"alive": 0}])]
     )
@@ -1817,6 +1823,93 @@ async def test_lock_adapter_closes_the_owner_only_after_a_proven_termination():
         "timeout_ms": coordination._TERMINATION_WAIT_TIMEOUT_MS,
     }
     assert "CAST(:timeout_ms AS bigint)" in str(sent[0])
+    # #622: the owner attested its own backend before the observer acted.
+    attested = owner.execute.await_args_list[0].args
+    assert str(attested[0]) == coordination._OWNER_BACKEND_PID_SQL
+    assert owner.execute.await_count == 1
+
+
+def test_lock_owner_attestation_sql_is_schema_qualified():
+    """#622: a same-named function earlier on ``search_path`` must not answer."""
+
+    assert coordination._OWNER_BACKEND_PID_SQL == (
+        "SELECT pg_catalog.pg_backend_pid() AS backend_pid"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected_pid", "attested_pid"),
+    [
+        (4242, 4243),
+        (4243, 4242),
+        (1, True),
+        (4242, "4242"),
+        (4242, None),
+    ],
+    ids=["other_pid", "other_pid_reversed", "bool_pid", "str_pid", "null_pid"],
+)
+async def test_lock_adapter_refuses_a_pid_the_owner_does_not_attest(
+    expected_pid: int, attested_pid: Any
+):
+    """#622 F1: a receipt about another backend proves nothing about the lock.
+
+    The foreign backend is never signalled (no observer is even opened), no
+    receipt is produced, and the owner — which still holds the lock — is kept.
+    """
+
+    owner = _dedicated_connection_double([_owner_attests(attested_pid)])
+    observer_factory = AsyncMock()
+    authority = SqlAlchemyLockAuthority(owner, observer_factory=observer_factory)
+
+    with pytest.raises(
+        BackendSessionTerminationUnproven, match="owner connection's own backend"
+    ):
+        await authority.terminate_backend_session(
+            expected_pid=expected_pid, owner_token="lockconn:abc"
+        )
+
+    assert observer_factory.await_count == 0
+    assert owner.execute.await_count == 1
+    assert owner.close.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expected_pid", [0, -4242, True, "4242", 4242.0, None], ids=repr
+)
+async def test_lock_adapter_refuses_a_non_pid_before_touching_any_session(
+    expected_pid: Any,
+):
+    owner = _dedicated_connection_double([])
+    observer_factory = AsyncMock()
+    authority = SqlAlchemyLockAuthority(owner, observer_factory=observer_factory)
+
+    with pytest.raises(BackendSessionTerminationUnproven, match="exact positive"):
+        await authority.terminate_backend_session(
+            expected_pid=expected_pid, owner_token="lockconn:abc"
+        )
+
+    assert owner.execute.await_count == 0
+    assert observer_factory.await_count == 0
+    assert owner.close.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_lock_adapter_failed_owner_attestation_is_unproven():
+    """#622: an owner that cannot answer has not attested anything."""
+
+    owner = _dedicated_connection_double([RuntimeError("connection is closed")])
+    observer_factory = AsyncMock()
+    authority = SqlAlchemyLockAuthority(owner, observer_factory=observer_factory)
+
+    with pytest.raises(RuntimeError, match="connection is closed"):
+        await authority.terminate_backend_session(
+            expected_pid=4242, owner_token="lockconn:abc"
+        )
+
+    assert observer_factory.await_count == 0
+    assert owner.close.await_count == 0
 
 
 def test_lock_termination_waits_for_exit_with_a_bounded_positive_timeout():
@@ -5267,7 +5360,7 @@ async def test_claim_cancelled_ack_attachment_still_reaches_both_writes():
 async def test_lock_close_cancellation_after_absence_keeps_the_receipt(which: str):
     """U4/B37: once absence is proven, cleanup cannot un-prove it."""
 
-    owner = _dedicated_connection_double([])
+    owner = _dedicated_connection_double([_owner_attests(4242)])
     observer = _dedicated_connection_double(
         [_FakeResult([{"terminated": True}]), _FakeResult([{"alive": 0}])]
     )
@@ -6458,6 +6551,74 @@ async def test_lock_real_postgres_termination_timeout_is_unproven_not_a_receipt(
     finally:
         await _wait_until_backend_absent(pid)
         await coordination._close_quietly(owner)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_lock_real_postgres_foreign_pid_never_yields_a_receipt(db_session):
+    """#622: a receipt must be about the owner's backend, not whichever PID was named.
+
+    ``expected_pid`` is caller input. Before #622 the adapter terminated that PID
+    from the observer and, once it was gone, issued a receipt — while the owner
+    backend stayed alive and kept the advisory lock (tester F1:
+    ``receipt_pid=288 owner_pid=287 owner_alive=1 locks=1``). The owner connection
+    must itself attest that ``expected_pid`` is its own ``pg_backend_pid()``;
+    anything else is unproven, and the foreign backend is not even signalled.
+    """
+
+    from sqlalchemy import text as sql_text
+
+    from app.core import db
+
+    key = -622622622622
+    lease = await acquire_physical_account_lease(
+        keys=[key], connection_factory=_open_run_owned_authority
+    )
+    grant = lease.grant
+    bystander = await db.engine.connect()
+    bystander_pid = int(
+        (await bystander.execute(sql_text("SELECT pg_backend_pid()"))).scalar_one()
+    )
+    assert bystander_pid != grant.backend_pid
+    try:
+        with pytest.raises(BackendSessionTerminationUnproven):
+            await lease._connection.terminate_backend_session(
+                expected_pid=bystander_pid, owner_token=grant.connection_token
+            )
+
+        observer = await db.engine.connect()
+        try:
+            alive = await observer.execute(
+                sql_text(
+                    "SELECT pid FROM pg_stat_activity "
+                    "WHERE pid IN (:owner_pid, :bystander_pid) ORDER BY pid"
+                ),
+                {"owner_pid": grant.backend_pid, "bystander_pid": bystander_pid},
+            )
+            # Neither backend was terminated: the bystander was never signalled.
+            assert sorted(int(pid) for pid in alive.scalars().all()) == sorted(
+                [grant.backend_pid, bystander_pid]
+            )
+            locks = await observer.execute(
+                sql_text(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND pid = :pid AND granted"
+                ),
+                {"pid": grant.backend_pid},
+            )
+            assert int(locks.scalar_one()) == 1
+        finally:
+            await observer.close()
+        # The owner still holds the lock, so it must not have been handed back.
+        assert lease._connection._connection.closed is False
+    finally:
+        await coordination._close_quietly(bystander)
+    # The authority is intact: the normal, proven release path still works.
+    await lease.release(grant)
+    successor = await acquire_physical_account_lease(
+        keys=[key], connection_factory=_open_run_owned_authority
+    )
+    await successor.release(successor.grant)
 
 
 @pytest.mark.integration

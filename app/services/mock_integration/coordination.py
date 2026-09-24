@@ -509,6 +509,12 @@ _TERMINATE_BACKEND_SQL: Final[str] = (
     "SELECT pg_terminate_backend(CAST(:pid AS integer), CAST(:timeout_ms AS bigint)) "
     "AS terminated"
 )
+# #622: ``expected_pid`` is caller input. Before anything is signalled, the owner
+# connection itself must attest that it *is* that backend; otherwise a receipt
+# could prove the death of some other session while the real owner stays alive
+# holding the advisory lock. Schema-qualified so a same-named function earlier
+# on ``search_path`` cannot answer in its place.
+_OWNER_BACKEND_PID_SQL: Final[str] = "SELECT pg_catalog.pg_backend_pid() AS backend_pid"
 _BACKEND_ALIVE_SQL: Final[str] = (
     "SELECT count(*) AS alive FROM pg_stat_activity WHERE pid = CAST(:pid AS integer)"
 )
@@ -550,7 +556,11 @@ class LockAuthorityConnection(Protocol):
     or returning a pooled connection does not do that.  An implementation must
     return a :class:`BackendTerminationReceipt` bound to the exact ``expected_pid``
     and ``owner_token``, or **raise** — silently reporting success here would hand
-    a successor an account that is still locked by a live backend.
+    a successor an account that is still locked by a live backend.  The receipt
+    is only meaningful if ``expected_pid`` is this connection's *own* backend, so
+    an implementation must establish that from the owner session itself and
+    raise on any mismatch (#622); proving that some other PID is gone proves
+    nothing about the lock.
     """
 
     async def execute(self, statement: Any, parameters: Any = None, /) -> Any: ...
@@ -576,7 +586,10 @@ class SqlAlchemyLockAuthority:
     sessionmaker, or any pooled facade is rejected rather than quietly treated as
     a dedicated session.
 
-    ``terminate_backend_session`` proves the result from an **independent
+    ``terminate_backend_session`` first has the owner connection attest its own
+    ``pg_backend_pid()`` and refuses unless that is exactly ``expected_pid`` (#622),
+    so the PID it goes on to end is provably the owner's backend and not merely
+    the one a caller named.  It then proves the result from an **independent
     observer session**: it runs ``pg_terminate_backend`` against the exact PID with
     a positive wait, so ``true`` means the backend exited, and then confirms that
     PID is absent from ``pg_stat_activity``.  Self-termination
@@ -614,6 +627,22 @@ class SqlAlchemyLockAuthority:
         if self._observer_factory is None:
             raise BackendSessionTerminationUnproven(
                 "no independent observer session is available to prove termination"
+            )
+        # #622: the receipt claims *this owner's* backend is gone, so the PID we
+        # terminate must be attested by the owner connection itself, before any
+        # observer is opened or any backend is signalled. A mismatch — or a
+        # reconnected owner that now reports a different backend — is unproven,
+        # and the owner, which may still hold the lock, is left untouched. A
+        # failed attestation read raises, which is unproven as well.
+        if type(expected_pid) is not int or expected_pid <= 0:
+            raise BackendSessionTerminationUnproven(
+                "expected_pid is not an exact positive integer"
+            )
+        attestation = await self._connection.execute(text(_OWNER_BACKEND_PID_SQL))
+        attested_pid = attestation.scalar_one()
+        if type(attested_pid) is not int or attested_pid != expected_pid:
+            raise BackendSessionTerminationUnproven(
+                "expected_pid is not the owner connection's own backend"
             )
         observer = await self._observer_factory()
         try:
