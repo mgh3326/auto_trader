@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.shared import MCP_USER_ID
 from app.models.user_settings import UserSetting
+from app.services.manual_cash_settings import (
+    MANUAL_CASH_KEY,
+    normalize_generic_manual_cash_write,
+)
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
@@ -58,6 +62,10 @@ async def set_user_setting(key: str, value: Any) -> dict[str, Any]:
         raise ValueError("key is required")
 
     key = key.strip()
+    if key == MANUAL_CASH_KEY:
+        # manual_cash is the deployment-cap parking term (#671): bounded amount,
+        # writer-stamped provenance. Raises ValueError on an invalid value.
+        value = normalize_generic_manual_cash_write(value)
 
     async with _session_factory()() as session:
         # Use PostgreSQL upsert (INSERT ... ON CONFLICT DO UPDATE)
@@ -96,7 +104,7 @@ async def get_manual_cash_setting() -> dict[str, Any] | None:
     Returns the full setting dict with key, value, and updated_at,
     or None if not set.
     """
-    row = await _get_setting_row("manual_cash")
+    row = await _get_setting_row(MANUAL_CASH_KEY)
     if row is None:
         return None
     return _serialize_setting(row)

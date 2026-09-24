@@ -240,6 +240,7 @@ tests/services/test_kr_preopen_news_brief_service.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_krb1_selector_cli_exit_contract.py
 tests/services/test_loss_cut_policy_and_settings.py
+tests/services/test_manual_cash_settings.py
 tests/services/test_manual_holdings_leftover.py
 tests/services/test_market_events_models.py
 tests/services/test_market_events_prioritization.py
