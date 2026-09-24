@@ -46,3 +46,8 @@ test("router exposes funding advisory list and detail entry points", () => {
   expect(paths).toContain("/funding");
   expect(paths).toContain("/funding/:advisoryId");
 });
+
+test("router exposes the manual_cash settings screen (#671)", () => {
+  const paths = pathsOf((router as any).routes);
+  expect(paths).toContain("/settings/manual-cash");
+});
