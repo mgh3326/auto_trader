@@ -1809,9 +1809,26 @@ async def test_lock_adapter_closes_the_owner_only_after_a_proven_termination():
     )
     assert owner.close.await_count == 1
     assert observer.close.await_count == 1
-    # The PID actually sent to PostgreSQL is the one we were asked to terminate.
+    # The PID actually sent to PostgreSQL is the one we were asked to terminate,
+    # together with the positive wait that makes ``true`` mean "exited" (#319).
     sent = observer.execute.await_args_list[0].args
-    assert sent[1] == {"pid": 4242}
+    assert sent[1] == {
+        "pid": 4242,
+        "timeout_ms": coordination._TERMINATION_WAIT_TIMEOUT_MS,
+    }
+    assert "CAST(:timeout_ms AS bigint)" in str(sent[0])
+
+
+def test_lock_termination_waits_for_exit_with_a_bounded_positive_timeout():
+    """#319: zero would restore signal-sent semantics; unbounded would hang."""
+
+    timeout_ms = coordination._TERMINATION_WAIT_TIMEOUT_MS
+    assert type(timeout_ms) is int
+    assert 0 < timeout_ms <= 30_000
+    assert (
+        "pg_terminate_backend(CAST(:pid AS integer), CAST(:timeout_ms AS bigint))"
+        in coordination._TERMINATE_BACKEND_SQL
+    )
 
 
 @pytest.mark.asyncio
@@ -6313,6 +6330,134 @@ async def test_lock_real_postgres_pg06_stale_grant_cannot_touch_the_new_lock(
         keys=[key], connection_factory=_open_run_owned_authority
     )
     await third.release(third.grant)
+
+
+# #319: committed temp tables are dropped by the dying backend itself, before it
+# leaves ``pg_stat_activity``, so this session stays visible for a measurable
+# while after SIGTERM is delivered. Unmodified code (timeout 0) lost this race
+# 5/5 at 500 tables on PostgreSQL 17; 1000 leaves margin on faster hosts.
+_SLOW_EXIT_TEMP_TABLES = 1000
+
+
+async def _open_slow_exiting_connection() -> Any:
+    """A dedicated session whose exit is observably slower than signal delivery."""
+
+    from sqlalchemy import text as sql_text
+
+    from app.core import db
+
+    connection = await db.engine.connect()
+    await connection.execute(
+        sql_text(
+            f"DO $$BEGIN FOR i IN 1..{_SLOW_EXIT_TEMP_TABLES} LOOP "
+            "EXECUTE format('CREATE TEMP TABLE rob_t319_slow_exit_%s (a int)', i); "
+            "END LOOP; END$$"
+        )
+    )
+    await connection.commit()
+    return connection
+
+
+async def _wait_until_backend_absent(pid: int) -> None:
+    """Test cleanup only: let a dying backend leave before the next test runs."""
+
+    from sqlalchemy import text as sql_text
+
+    from app.core import db
+
+    for _ in range(200):
+        observer = await db.engine.connect()
+        try:
+            alive = await observer.execute(
+                sql_text("SELECT count(*) FROM pg_stat_activity WHERE pid = :pid"),
+                {"pid": pid},
+            )
+            if int(alive.scalar_one()) == 0:
+                return
+        finally:
+            await observer.close()
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"backend {pid} did not exit during test cleanup")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_lock_real_postgres_termination_waits_for_a_slow_exiting_backend(
+    db_session,
+):
+    """#319: exact ``true`` must mean the backend exited, not that SIGTERM was sent.
+
+    With a zero timeout ``pg_terminate_backend`` returns ``true`` as soon as the
+    signal is delivered, and the absence check that follows races the backend's
+    own exit — the #318 main-CI failure. Waiting inside PostgreSQL for the exit
+    turns that check into an independent second confirmation, and the successor
+    below proves the advisory key really was freed at the instant of the receipt.
+    """
+
+    key = -319319319319
+
+    async def slow_exiting_authority() -> SqlAlchemyLockAuthority:
+        return SqlAlchemyLockAuthority(
+            await _open_slow_exiting_connection(),
+            observer_factory=_open_observer_connection,
+        )
+
+    lease = await acquire_physical_account_lease(
+        keys=[key], connection_factory=slow_exiting_authority
+    )
+    grant = lease.grant
+    try:
+        receipt = await lease._connection.terminate_backend_session(
+            expected_pid=grant.backend_pid, owner_token=grant.connection_token
+        )
+    finally:
+        await _wait_until_backend_absent(grant.backend_pid)
+        await coordination._close_quietly(lease._connection)
+    assert receipt == BackendTerminationReceipt(
+        backend_pid=grant.backend_pid,
+        owner_token=grant.connection_token,
+        terminated=True,
+        termination_returned_exact_true=True,
+        observer_pid_absent=True,
+    )
+
+    successor = await acquire_physical_account_lease(
+        keys=[key], connection_factory=_open_run_owned_authority
+    )
+    await successor.release(successor.grant)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_lock_real_postgres_termination_timeout_is_unproven_not_a_receipt(
+    db_session, monkeypatch: pytest.MonkeyPatch
+):
+    """#319: a backend still exiting when the wait expires is not terminated.
+
+    PostgreSQL answers ``false`` (with a WARNING) when the backend outlives the
+    timeout. That is the unproven outcome: no receipt, and the owner connection —
+    which may still hold the lock — is not handed back to the pool.
+    """
+
+    from sqlalchemy import text as sql_text
+
+    monkeypatch.setattr(coordination, "_TERMINATION_WAIT_TIMEOUT_MS", 1)
+    owner = await _open_slow_exiting_connection()
+    pid = int((await owner.execute(sql_text("SELECT pg_backend_pid()"))).scalar_one())
+    authority = SqlAlchemyLockAuthority(
+        owner, observer_factory=_open_observer_connection
+    )
+    try:
+        with pytest.raises(
+            BackendSessionTerminationUnproven, match="did not return exact true"
+        ):
+            await authority.terminate_backend_session(
+                expected_pid=pid, owner_token="lockconn:rob-t319"
+            )
+        assert owner.closed is False
+    finally:
+        await _wait_until_backend_absent(pid)
+        await coordination._close_quietly(owner)
 
 
 @pytest.mark.integration
