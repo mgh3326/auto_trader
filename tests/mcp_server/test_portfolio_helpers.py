@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from app.mcp_server.tooling.portfolio_helpers import (
@@ -251,6 +253,47 @@ class TestBuildHoldingsSummary:
         assert result["unpriced_buy_amount"] == 200
         assert result["unknown_cost_position_count"] == 0
         assert result["unknown_cost_evaluation_amount"] is None
+
+    def test_non_finite_evaluation_is_unpriced_not_propagated(self) -> None:
+        # A NaN/Infinity evaluation has no usable valuation; it is disclosed as
+        # unpriced and must not poison the P&L totals.
+        positions = [
+            {
+                "symbol": "005930",
+                "avg_buy_price": 1000,
+                "quantity": 10,
+                "evaluation_amount": 9000,
+            },
+            {
+                "symbol": "000000",
+                "avg_buy_price": 500,
+                "quantity": 1,
+                "evaluation_amount": "NaN",
+            },
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["unpriced_position_count"] == 1
+        assert result["unpriced_buy_amount"] == 500
+        assert result["total_evaluation"] == 9000
+        assert result["total_profit_loss"] == pytest.approx(-1000.0)
+        assert result["total_profit_rate"] == pytest.approx(-10.0)
+        assert math.isfinite(result["total_profit_loss"])
+
+    def test_non_finite_cost_basis_is_unknown_cost(self) -> None:
+        positions = [
+            {
+                "symbol": "KRW-XRP",
+                "avg_buy_price": "Infinity",
+                "quantity": 300,
+                "evaluation_amount": 500_000,
+            }
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["unknown_cost_position_count"] == 1
+        assert result["unknown_cost_evaluation_amount"] == 500_000
+        assert result["total_evaluation"] == 500_000
+        assert result["total_profit_loss"] is None
+        assert result["total_profit_rate"] is None
 
 
 class TestRecalculateProfitFields:
