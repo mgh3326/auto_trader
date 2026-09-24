@@ -49,21 +49,30 @@ rung's `price_min × qty` against `buy.per_symbol_notional_krw_range`
 ([200,000, 400,000]). Its `one_share_exception` admits an over-band KR buy
 rung only when **all** hold: `qty == 1`; the single share (`price_min`)
 exceeds 400,000; `max(price_min, price_max) <= absolute_ceiling_krw`
-(10,000,000, inclusive); the row names exactly one symbol; and the row carries
-no held-position evidence (an action `avg_price`/`average_cost`/
-`avg_buy_price`/`position_quantity`/`holding_quantity`, or a condition metric
-naming a position/holding/average cost — `position_quantity eq 0` is the one
-affirmative new-entry form). A denied rung keeps `sizing_band_violation` with
-the denial reason in `expected`. Once any rung of a symbol uses the exception,
-that symbol may have at most `max_deep_rungs` (1) buy rungs across the whole
-table — every row and account — else each involved row gets the blocking
+(10,000,000, inclusive); the row's `symbols` list is exactly one canonical KRX
+code (six ASCII `[0-9A-Z]`, no padding); the symbol is not a cash-parking
+allowlist symbol (459580/357870 — their raised parking per-order cap would
+otherwise auto-approve a one-share buy above 2,000,000); the row carries an
+**affirmative** new-entry proof — a condition `metric: position_quantity`,
+`operator: eq`, numeric `value: 0`, whose `source` names the row's symbol
+(e.g. `get_holdings.accounts[toss_live].positions[000660].quantity`); and no
+other row key, action key, condition key, condition metric or condition source
+looks like a holding (`held`, `hold`, `position`, `avg`, `average`, `cost`,
+`lot`, `qty`, `quantity`, `share`, `balance`, `owned`, `inventory`, after
+NFKC/lower-casing). Silence about holdings is **not** a new entry. A denied
+rung keeps `sizing_band_violation` with the denial reason in `expected`. Once
+any rung of a symbol uses the exception, that symbol may have at most
+`max_deep_rungs` (1) buy rungs across the whole table — every row and account,
+counted on an NFKC/strip/upper-normalized key so padded or full-width
+spellings still count — else each involved row gets the blocking
 `one_share_exception_rung_limit`. Sells never consult the exception; the US
-band's exception is not honoured by this validator (unchanged). The
-exception does not touch auto-approval: a one-share order above the KR
-per-order cap (2,000,000) is still demoted to a human card as
-`per_order_cap_exceeded`. Limit: the validator is pure and cannot read
-holdings, so a held symbol whose row omits every position condition is
-indistinguishable from a new entry here. Each
+band's exception is not honoured by this validator (unchanged). The exception
+does not touch auto-approval: a one-share order above the KR per-order cap
+(2,000,000) is still demoted to a human card as `per_order_cap_exceeded`.
+Limit: the validator is pure and cannot read holdings, so it trusts the
+declared `position_quantity eq 0` condition. `decision_table_apply` does not
+evaluate row conditions either; the live check is the helmsman session's
+condition match before `apply(dry_run=false)` (spec §3 workflow). Each
 violation contains the detected table shape and a link
 to the [canonical v1.1 shape](../specs/mcp-session-tools-v1.md#canonical-decision-table-shape-v11).
 

@@ -16,6 +16,7 @@ from typing import Any
 
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.services.decision_table_validate.one_share_exception import (
+    normalized_symbol_key,
     one_share_exception_denial,
     one_share_exception_for,
 )
@@ -960,10 +961,13 @@ def _collect_row_side(
 
 
 def _row_symbols(row: dict[str, Any]) -> list[str]:
+    """Normalized ledger keys, so `000660` and `000660 ` share one budget."""
+
     symbols = row.get("symbols")
     if not isinstance(symbols, list):
         return []
-    return sorted({symbol for symbol in symbols if isinstance(symbol, str)})
+    keys = (normalized_symbol_key(symbol) for symbol in symbols)
+    return sorted({key for key in keys if key is not None})
 
 
 def _validate_one_share_rung_limit(

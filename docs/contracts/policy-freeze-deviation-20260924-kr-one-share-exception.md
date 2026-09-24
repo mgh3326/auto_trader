@@ -49,7 +49,7 @@ affected_policy_keys:
 consumer_paths:
   - app/schemas/trading_policy.py                                  # OneShareExceptionPolicy: KRW ceiling, exactly one ceiling, max_deep_rungs >= 1; PolicyThreshold pins ceiling currency to band unit and ceiling > band high
   - app/services/trading_policy_service.py                         # get_policy_for projection uses model_dump(exclude_none=True): US projection keyset byte-identical
-  - app/services/decision_table_validate/one_share_exception.py    # NEW pure predicate
+  - app/services/decision_table_validate/one_share_exception.py    # NEW pure predicate (reads the closed PARKING_ALLOWLIST_SCOPES constant)
   - app/services/decision_table_validate/validator.py              # _validate_buy_policy honours the exception; _validate_one_share_rung_limit (table-wide max_deep_rungs)
   - app/services/decision_table_apply/service.py                   # unchanged code; re-invokes decision_table_validate, so it inherits the admission
   - get_trading_policy MCP tool / operator-repo session prompts     # read the new block; operator-repo prompt text is out of scope of this PR
@@ -60,7 +60,7 @@ effective_at: >-
   confirmation AND the auto_trader merge freeze lifting.
 live_only_claim: false
 mock_projection_hash_before: "6d5a858ff5cb"   # policy content_hash at 2026-09-08.1 (origin/main 3931fdb3e)
-mock_projection_hash_after: "ee9d01057614"    # policy content_hash at 2026-09-24.1
+mock_projection_hash_after: "bede1cc8dfd6"    # policy content_hash at 2026-09-24.1 (round 2; round-1 head 1d164aa was ee9d01057614)
   # Interpretation caveat carried from the protocol memory: whether
   # mock_projection_hash means this raw-YAML content hash is unconfirmed.
   # The ROB-1351 v2 sealed hashes do NOT move:
@@ -111,7 +111,7 @@ evidence: >-
 `decision_table_validate` responses (`validator.py:80`
 `policy_version_stamp()`), the fan-out response
 (`buy_candidate_fanout.py:1285`), and session evidence/forecasts that quote
-`{version, content_hash}` — will read `2026-09-24.1 / ee9d01057614` instead of
+`{version, content_hash}` — will read `2026-09-24.1 / bede1cc8dfd6` instead of
 `2026-09-08.1 / 6d5a858ff5cb`. v2 forecast payloads themselves carry the sealed
 `policy_projection_sha256`, not the live version, so they do not split; the
 split is in surrounding session evidence and must be kept as a cohort
@@ -145,12 +145,17 @@ stopped and is not affected going forward.
 ## What is NOT changed
 
 - Band value `[200000, 400000]`; the exception never covers a below-band
-  order, a multi-share order, a sell, or a row with held-position evidence.
+  order, a multi-share order, a sell, a row with held-position evidence or
+  without the affirmative flat proof, or a cash-parking symbol.
 - `order_proposals.auto_approve.per_order_cap.kr` = 2,000,000 and
   `daily_cap.kr` = 5,000,000. `auto_approve.py` is not taught the exception:
   a one-share buy above 2,000,000 is demoted to a human card as
   `per_order_cap_exceeded` (`auto_approve.py:877`), asserted by
   `test_over_per_order_cap_one_share_is_valid_and_then_carded_not_rejected`.
+  The one KR buy scope whose per-order cap is raised (cash parking,
+  459580/357870, 10,000,000 in expanded mode) is excluded from the exception,
+  so "above 2,000,000 → card" holds for every symbol the exception admits
+  (`test_cash_parking_symbols_never_take_the_exception`).
 - RSI / support strength / support distance / honest upside / deep band,
   `portfolio.sector_cluster_cap_pct`, `portfolio.max_symbols_per_theme`.
 - No migration, no scheduler, no broker call, no order-path code.
@@ -163,11 +168,37 @@ keeps concentration near 2%, but the `sell.loss_cut` path is still awaiting
 operator approval (087010 open question), so a losing one-share position is
 managed by hand until it is.
 
+## Round-1 independent verification (codex-sol, OpenAI) — FAIL, fixed in round 2
+
+Report: `~/work/herdr-inbox/jobs/v664-one-share-codex/report.md` (head 1d164aa).
+The devin-ds41 verdict is kept on record separately; per director-1, ds41
+alone does not satisfy a T3 gate (hk:doc 2227).
+
+1. *Held evidence by closed list* — `held_qty gt 0` and `action.position_qty`
+   passed. Fix: the exception now requires an **affirmative**
+   `position_quantity eq 0` condition whose `source` names the row's symbol,
+   and any other holding-shaped row key, action key, condition key, metric or
+   source (NFKC/lower-cased substring set) denies it. Silence is not a new
+   entry.
+2. *Parking cross-exception* — `459580`/`357870` one-share at 2,500,000 validated
+   and, in expanded mode, auto-approved under the raised 10,000,000 parking
+   per-order cap with no card. Fix: every `PARKING_ALLOWLIST_SCOPES` symbol is
+   denied the exception (pre-§664 behaviour restored for them).
+3. *Rung budget keyed on raw strings* — `000660` / `000660 ` each got a rung;
+   `['000660','000660']` counted as one symbol. Fix: the exception requires the
+   raw `symbols` list to be exactly one canonical six-character ASCII KRX
+   code, and the table-wide budget is keyed on NFKC+strip+upper.
+
 ## Known residual limits of the code boundary
 
-- `decision_table_validate` is pure and cannot read holdings. A held symbol
-  whose row omits every position/avg-cost/holding condition is
-  indistinguishable from a new entry and would be admitted.
+- `decision_table_validate` is pure and cannot read holdings. It trusts the
+  declared `position_quantity eq 0` condition; `decision_table_apply` does not
+  evaluate row conditions either, so the live check is the helmsman session's
+  condition match before a real apply. A table that *lies* about a held
+  symbol (declares flat while held) is not caught here.
+- The prep prompt (operator repo) must emit the `position_quantity eq 0`
+  condition on exception rows, otherwise the exception is never granted
+  (fail-closed; a usability cost, not a safety one).
 - The exception is only code-enforced where a decision table is validated.
   Session-written proposals that bypass decision tables were never band-checked
   in code (the band is advisory under ROB-646); for them the exception is a

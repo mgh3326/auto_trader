@@ -23,8 +23,10 @@ from app.services.decision_table_validate import validator as validator_module
 from app.services.decision_table_validate.one_share_exception import (
     DENIED_ABOVE_CEILING,
     DENIED_HELD_POSITION,
+    DENIED_NO_FLAT_PROOF,
     DENIED_NOT_A_SINGLE_SHARE,
     DENIED_NOT_ONE_SYMBOL,
+    DENIED_PARKING_SYMBOL,
     DENIED_SHARE_WITHIN_BAND,
     OneShareException,
     one_share_exception_denial,
@@ -71,7 +73,8 @@ def _buy_row(
                 "operator": "between",
                 "value": {"min_inclusive": 1700000, "max_exclusive": 1900000},
                 "max_age_seconds": 300,
-            }
+            },
+            _flat(symbol),
         ],
         "action": {
             "proposal_action": "place",
@@ -83,6 +86,20 @@ def _buy_row(
             else [_rung(1776000, 1776000, qty=1, tick=1000)],
         },
         "invalidation": [],
+    }
+
+
+def _flat(symbol: str = "000660", account_mode: str = "toss_live") -> dict[str, Any]:
+    """The affirmative new-entry proof the exception requires."""
+
+    return {
+        "metric": "position_quantity",
+        "source": (
+            f"get_holdings.accounts[{account_mode}].positions[{symbol}].quantity"
+        ),
+        "operator": "eq",
+        "value": 0,
+        "max_age_seconds": 300,
     }
 
 
@@ -279,10 +296,68 @@ def test_sell_rows_never_consult_the_exception(monkeypatch):
     ],
 )
 def test_rows_with_held_position_evidence_are_denied(held_condition):
+    """Held evidence wins even next to a valid flat proof."""
+
     condition = {"source": "get_holdings", "max_age_seconds": 300, **held_condition}
-    result = _validate(_buy_row(conditions=[condition]))
+    result = _validate(_buy_row(conditions=[_flat(), condition]))
     assert result["valid"] is False
     assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+
+
+@pytest.mark.parametrize(
+    "held_condition",
+    [
+        # tester round 1, BLOCKER 1 — spellings outside the old closed list
+        {"metric": "held_qty", "source": "get_holdings", "operator": "gt", "value": 0},
+        {"metric": "lot_size_now", "source": "x", "operator": "gt", "value": 0},
+        {"metric": "Shares-Owned", "source": "x", "operator": "gt", "value": 0},
+        {"metric": "live_price_band", "source": "get_holdings.positions[000660]"},
+        {"metric": "ＨＥＬＤ", "source": "x", "operator": "gt", "value": 0},
+    ],
+)
+def test_any_holding_shaped_metric_or_source_is_held_evidence(held_condition):
+    condition = {"max_age_seconds": 300, **held_condition}
+    result = _validate(_buy_row(conditions=[_flat(), condition]))
+    assert result["valid"] is False
+    assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+
+
+@pytest.mark.parametrize("key", ["position_qty", "held_quantity", "lot_context"])
+def test_any_holding_shaped_action_or_row_key_is_held_evidence(key):
+    on_action = _buy_row()
+    on_action["action"][key] = 3
+    on_row = _buy_row()
+    on_row[key] = 3
+    for row in (on_action, on_row):
+        result = _validate(row)
+        assert result["valid"] is False
+        assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+
+
+@pytest.mark.parametrize(
+    "flat_override",
+    [
+        {"value": "0"},
+        {"value": False},
+        {"value": 1},
+        {"operator": "lte"},
+        {"metric": "Position_Quantity"},
+        {"source": "get_holdings.accounts[toss_live].positions[005930].quantity"},
+        {"source": None},
+    ],
+)
+def test_flat_proof_must_be_exact_and_about_this_symbol(flat_override):
+    live_band = _buy_row()["conditions"][0]
+    flat = {**_flat(), **flat_override}
+    result = _validate(_buy_row(conditions=[live_band, flat]))
+    assert result["valid"] is False
+
+
+def test_silence_about_holdings_is_not_a_new_entry():
+    live_band = _buy_row()["conditions"][0]
+    result = _validate(_buy_row(conditions=[live_band]))
+    assert result["valid"] is False
+    assert DENIED_NO_FLAT_PROOF in _sizing(result)[0]["expected"]
 
 
 def test_avg_price_on_the_action_is_held_evidence():
@@ -294,14 +369,10 @@ def test_avg_price_on_the_action_is_held_evidence():
 
 
 def test_explicit_flat_position_is_a_new_entry():
-    condition = {
-        "metric": "position_quantity",
-        "source": "get_holdings",
-        "operator": "eq",
-        "value": 0,
-        "max_age_seconds": 300,
-    }
-    result = _validate(_buy_row(conditions=[condition]))
+    result = _validate(_buy_row(conditions=[_flat()]))
+    assert result["valid"] is True, result["violations"]
+    float_zero = {**_flat(), "value": 0.0}
+    result = _validate(_buy_row(conditions=[float_zero]))
     assert result["valid"] is True, result["violations"]
 
 
@@ -344,6 +415,46 @@ def test_different_symbols_each_get_their_own_rung():
     second = _buy_row(scenario_id="b", symbol="005930")
     result = _validate(first, second)
     assert result["valid"] is True, result["violations"]
+
+
+@pytest.mark.parametrize("parking_symbol", ["459580", "357870"])
+def test_cash_parking_symbols_never_take_the_exception(parking_symbol):
+    """Tester round 1, BLOCKER 2: parking's raised 10M cap must not combine."""
+
+    row = _buy_row(
+        symbol=parking_symbol,
+        rungs=[_rung(2500000, 2500000, qty=1, tick=1000)],
+    )
+    result = _validate(row)
+    assert result["valid"] is False
+    assert DENIED_PARKING_SYMBOL in _sizing(result)[0]["expected"]
+
+
+@pytest.mark.parametrize("variant", ["000660 ", " 000660", "０００６６０", "000660\t"])
+def test_padded_or_widened_symbol_shares_the_rung_budget(variant):
+    """Tester round 1, BLOCKER 3: the ledger key is normalized."""
+
+    first = _buy_row(scenario_id="a")
+    second = _buy_row(
+        scenario_id="b",
+        account_mode="kis_live",
+        symbol=variant,
+        rungs=[_rung(1700000, 1700000, qty=1, tick=1000)],
+    )
+    result = _validate(first, second)
+    assert result["valid"] is False
+    assert "one_share_exception_rung_limit" in _rules(result)
+
+
+@pytest.mark.parametrize(
+    "symbols", [["000660", "000660"], ["000660 "], ["0006600"], [660], []]
+)
+def test_exception_needs_exactly_one_canonical_symbol(symbols):
+    row = _buy_row()
+    row["symbols"] = symbols
+    result = _validate(row)
+    assert result["valid"] is False
+    assert DENIED_NOT_ONE_SYMBOL in _sizing(result)[0]["expected"]
 
 
 def test_multi_symbol_row_is_denied():
@@ -408,8 +519,15 @@ def test_exception_reader_is_kr_only():
     assert one_share_exception_for("kr", {"one_share_exception": raw}) == (
         OneShareException(ceiling=Decimal("10000000"), max_deep_rungs=1)
     )
+    # A US-shaped block (the real shipped one) must still read as "no exception".
+    us_block = get_policy_for("us", "buy")["thresholds"][
+        "buy.per_symbol_notional_usd_range"
+    ]
+    assert us_block["one_share_exception"]["enabled"] is True
+    assert one_share_exception_for("us", us_block) is None
+    both = {**raw, "absolute_ceiling_usd": 10000}
     for market in ("us", "crypto", None):
-        assert one_share_exception_for(market, {"one_share_exception": raw}) is None
+        assert one_share_exception_for(market, {"one_share_exception": both}) is None
 
 
 def test_row_without_conditions_has_no_position_evidence():
