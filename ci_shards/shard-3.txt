@@ -193,6 +193,7 @@ tests/services/order_proposals/callback_inbox/test_retry_and_recovery_semantics.
 tests/services/order_proposals/callback_inbox/test_telegram_identifier_boundary.py
 tests/services/order_proposals/callback_inbox/test_worker_concurrency.py
 tests/services/order_proposals/callback_inbox/test_worker_outcomes.py
+tests/services/order_proposals/test_auto_approve_audit_reason_vocabulary.py
 tests/services/order_proposals/test_cash_funding_exemption.py
 tests/services/order_proposals/test_no_repository_imports.py
 tests/services/order_proposals/test_payload.py
