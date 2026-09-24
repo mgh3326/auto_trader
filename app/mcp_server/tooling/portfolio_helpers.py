@@ -105,16 +105,31 @@ def format_filter_threshold(value: float) -> str:
     return f"{value:g}"
 
 
+def _finite_buy_amount(position: dict[str, Any]) -> float | None:
+    """Return ``avg_buy_price * quantity``, or ``None`` when it is not finite.
+
+    Upstream strings such as ``"NaN"``/``"Infinity"`` parse to non-finite
+    floats, and ``inf * 0`` is ``NaN``; such a cost basis is unknown and must
+    never be summed into a buy-amount total (#634).
+    """
+    avg_buy_price = to_float(position.get("avg_buy_price"))
+    quantity = to_float(position.get("quantity"))
+    if not (math.isfinite(avg_buy_price) and math.isfinite(quantity)):
+        return None
+    buy_amount = avg_buy_price * quantity
+    return buy_amount if math.isfinite(buy_amount) else None
+
+
 def build_holdings_summary(
     positions: list[dict[str, Any]], include_current_price: bool
 ) -> dict[str, Any]:
-    total_buy_amount = round(
-        sum(
-            to_float(position.get("avg_buy_price")) * to_float(position.get("quantity"))
-            for position in positions
-        ),
-        2,
-    )
+    # Positions whose cost basis is non-finite are excluded from every
+    # buy-amount total and disclosed via ``non_finite_cost_position_count``,
+    # mirroring #236's handling of non-finite evaluations (unpriced) and
+    # non-finite cost in the P&L subset (unknown_cost).
+    buy_amounts = [_finite_buy_amount(position) for position in positions]
+    non_finite_cost_position_count = sum(1 for buy in buy_amounts if buy is None)
+    total_buy_amount = round(sum(buy for buy in buy_amounts if buy is not None), 2)
 
     if not include_current_price:
         return {
@@ -129,6 +144,7 @@ def build_holdings_summary(
             "unknown_cost_position_count": 0,
             "unknown_cost_evaluation_amount": None,
             "priced_buy_amount": 0,
+            "non_finite_cost_position_count": non_finite_cost_position_count,
         }
 
     # Summary P&L must be derivable from the buy/evaluation totals in the same
@@ -142,22 +158,22 @@ def build_holdings_summary(
     # (avg*qty non-finite or <= 0, e.g. Upbit external deposits) never
     # masquerade as pure profit. ``priced_buy_amount`` is the P&L cost basis
     # and the rate denominator.
-    def _buy_amount(position: dict[str, Any]) -> float:
-        return to_float(position.get("avg_buy_price")) * to_float(
-            position.get("quantity")
-        )
-
     def _is_priced(position: dict[str, Any]) -> bool:
         evaluation = to_optional_float(position.get("evaluation_amount"))
         return evaluation is not None and math.isfinite(evaluation)
 
     def _has_known_cost(position: dict[str, Any]) -> bool:
-        buy = _buy_amount(position)
-        return math.isfinite(buy) and buy > 0
+        buy = _finite_buy_amount(position)
+        return buy is not None and buy > 0
 
     unpriced_position_count = sum(1 for p in positions if not _is_priced(p))
     unpriced_buy_amount = round(
-        sum(_buy_amount(p) for p in positions if not _is_priced(p)), 2
+        sum(
+            buy
+            for p, buy in zip(positions, buy_amounts, strict=True)
+            if not _is_priced(p) and buy is not None
+        ),
+        2,
     )
     unknown_cost_position_count = sum(
         1 for p in positions if _is_priced(p) and not _has_known_cost(p)
@@ -173,7 +189,14 @@ def build_holdings_summary(
     computable_positions = [
         p for p in positions if _is_priced(p) and _has_known_cost(p)
     ]
-    priced_buy_amount = round(sum(_buy_amount(p) for p in computable_positions), 2)
+    priced_buy_amount = round(
+        sum(
+            buy
+            for p, buy in zip(positions, buy_amounts, strict=True)
+            if buy is not None and _is_priced(p) and _has_known_cost(p)
+        ),
+        2,
+    )
 
     # Priced positions have finite evaluations by construction; non-finite
     # values (NaN/Infinity from upstream strings) are disclosed as unpriced
@@ -227,6 +250,7 @@ def build_holdings_summary(
         "unknown_cost_position_count": unknown_cost_position_count,
         "unknown_cost_evaluation_amount": unknown_cost_evaluation_amount,
         "priced_buy_amount": priced_buy_amount,
+        "non_finite_cost_position_count": non_finite_cost_position_count,
     }
 
 
