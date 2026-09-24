@@ -497,8 +497,10 @@ _OWNED_ADVISORY_ROWS_SQL: Final[str] = (
 # failing to get one is unproven). Callers apply no asyncio timeout, the engine
 # sets no asyncpg ``command_timeout``, and PostgreSQL's default
 # ``statement_timeout`` is 0. A server-side ``statement_timeout`` shorter than
-# this, or a cancellation, aborts the call, which surfaces as an exception and
-# therefore as an unproven termination — never as success. An idle backend exits in
+# this, or a cancellation before both proof checks below have passed, aborts
+# the call, which surfaces as an exception and therefore as an unproven
+# termination — never as success. (A cancellation during the cleanup closes
+# *after* both checks cannot erase the already-built receipt; see below.) An idle backend exits in
 # milliseconds and even one dropping 2000 temp tables exits well inside this
 # bound, so exceeding it signals a genuinely stuck backend, which is exactly
 # when the answer must be "unproven".
