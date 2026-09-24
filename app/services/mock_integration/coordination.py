@@ -491,11 +491,14 @@ _OWNED_ADVISORY_ROWS_SQL: Final[str] = (
 # absence read is an independent second confirmation rather than a race. The
 # signature ``pg_terminate_backend(integer, bigint)`` exists since PostgreSQL 14.
 #
-# 5 s bounds the only wait on this path: callers apply no asyncio timeout, the
-# engine sets no asyncpg ``command_timeout``, and PostgreSQL's default
+# 5 s bounds the wait inside ``pg_terminate_backend`` itself; it is not an
+# end-to-end bound on ``terminate_backend_session``, which first checks out the
+# observer (the queue pool may wait up to ``DB_POOL_TIMEOUT_S`` for that, and
+# failing to get one is unproven). Callers apply no asyncio timeout, the engine
+# sets no asyncpg ``command_timeout``, and PostgreSQL's default
 # ``statement_timeout`` is 0. A server-side ``statement_timeout`` shorter than
-# this cancels the call, which surfaces as an exception and therefore as an
-# unproven termination — never as success. An idle backend exits in
+# this, or a cancellation, aborts the call, which surfaces as an exception and
+# therefore as an unproven termination — never as success. An idle backend exits in
 # milliseconds and even one dropping 2000 temp tables exits well inside this
 # bound, so exceeding it signals a genuinely stuck backend, which is exactly
 # when the answer must be "unproven".
