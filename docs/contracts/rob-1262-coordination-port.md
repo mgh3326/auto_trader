@@ -124,6 +124,12 @@ Release is exactly two things:
   `true` only means SIGTERM was sent and the absence read races the backend's
   exit; with a positive timeout PostgreSQL answers `true` only after the backend
   left the process array, so the absence read is a second confirmation.
+  Before either step, the **owner connection itself** must attest via
+  `pg_catalog.pg_backend_pid()` that it is exactly that PID (#622). The PID is
+  caller input; terminating some other backend and proving *it* absent says
+  nothing about the owner, which would stay alive holding the lock. A mismatch,
+  a non-integer answer, or a failed attestation read is unproven: no observer is
+  opened, no backend is signalled, and the owner connection is not closed.
 
 `close()` and a pool return are **never** termination. An ambiguous driver
 error, `pg_terminate_backend=false` followed by PID absence (including `false`
