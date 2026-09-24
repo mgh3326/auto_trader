@@ -27,11 +27,13 @@ from app.services.decision_table_validate.one_share_exception import (
     DENIED_NOT_A_SINGLE_SHARE,
     DENIED_NOT_ONE_SYMBOL,
     DENIED_PARKING_SYMBOL,
+    DENIED_ROW_GRAMMAR,
     DENIED_SHARE_WITHIN_BAND,
     OneShareException,
+    looks_held,
+    new_entry_grammar_denial,
     one_share_exception_denial,
     one_share_exception_for,
-    row_has_position_evidence,
 )
 from app.services.order_proposals.auto_approve import (
     evaluate_auto_approve_eligibility,
@@ -286,52 +288,57 @@ def test_sell_rows_never_consult_the_exception(monkeypatch):
     assert _sizing(result) == []
 
 
-@pytest.mark.parametrize(
-    "held_condition",
-    [
-        {"metric": "position_quantity", "operator": "eq", "value": 3},
-        {"metric": "position_quantity", "operator": "gte", "value": 0},
-        {"metric": "position_avg_buy_price", "operator": "eq", "value": 1500000},
-        {"metric": "holding_quantity", "operator": "gt", "value": 0},
-    ],
-)
-def test_rows_with_held_position_evidence_are_denied(held_condition):
-    """Held evidence wins even next to a valid flat proof."""
-
-    condition = {"source": "get_holdings", "max_age_seconds": 300, **held_condition}
-    result = _validate(_buy_row(conditions=[_flat(), condition]))
-    assert result["valid"] is False
-    assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+def _denial(result: dict[str, Any]) -> str:
+    (violation,) = _sizing(result)
+    return violation["expected"].rsplit("denied: ", 1)[-1]
 
 
-@pytest.mark.parametrize(
-    "held_condition",
-    [
-        # tester round 1, BLOCKER 1 — spellings outside the old closed list
-        {"metric": "held_qty", "source": "get_holdings", "operator": "gt", "value": 0},
-        {"metric": "lot_size_now", "source": "x", "operator": "gt", "value": 0},
-        {"metric": "Shares-Owned", "source": "x", "operator": "gt", "value": 0},
-        {"metric": "live_price_band", "source": "get_holdings.positions[000660]"},
-        {"metric": "ＨＥＬＤ", "source": "x", "operator": "gt", "value": 0},
-    ],
-)
-def test_any_holding_shaped_metric_or_source_is_held_evidence(held_condition):
-    condition = {"max_age_seconds": 300, **held_condition}
-    result = _validate(_buy_row(conditions=[_flat(), condition]))
-    assert result["valid"] is False
-    assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+def _row_with(**changes: Any) -> dict[str, Any]:
+    row = _buy_row()
+    for dotted, value in changes.items():
+        target = row
+        *path, leaf = dotted.split("__")
+        for key in path:
+            target = target[key]
+        target[leaf] = value
+    return row
 
 
-@pytest.mark.parametrize("key", ["position_qty", "held_quantity", "lot_context"])
-def test_any_holding_shaped_action_or_row_key_is_held_evidence(key):
-    on_action = _buy_row()
-    on_action["action"][key] = 3
-    on_row = _buy_row()
-    on_row[key] = 3
-    for row in (on_action, on_row):
-        result = _validate(row)
-        assert result["valid"] is False
-        assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+# --------------------------------------------------------------------------
+# New-entry proof: a closed grammar, not a guess (rounds 1 and 2).
+# --------------------------------------------------------------------------
+
+
+def test_explicit_flat_position_is_a_new_entry():
+    assert _validate(_buy_row(conditions=[_flat()]))["valid"] is True
+    float_zero = {**_flat(), "value": 0.0}
+    assert _validate(_buy_row(conditions=[float_zero]))["valid"] is True
+
+
+def test_allowlisted_market_conditions_and_neutral_prose_are_fine():
+    rsi = {
+        "metric": "rsi_14_last_completed_daily_bar",
+        "source": "get_indicators(symbol='000660').rsi_14",
+        "operator": "lt",
+        "value": 45,
+        "max_age_seconds": 300,
+    }
+    row = _buy_row()
+    row["conditions"].append(rsi)
+    row["invalidation"] = [
+        "RSI threshold broken upward",
+        "positive catalyst withdrawn",
+        "support S1 moves away",
+    ]
+    row["action"]["rungs"][0]["formula"] = "tick_floor(S1); KRX buy-side floor"
+    result = _validate(row)
+    assert result["valid"] is True, result["violations"]
+
+
+def test_silence_about_holdings_is_not_a_new_entry():
+    live_band = _buy_row()["conditions"][0]
+    result = _validate(_buy_row(conditions=[live_band]))
+    assert _denial(result) == DENIED_NO_FLAT_PROOF
 
 
 @pytest.mark.parametrize(
@@ -340,40 +347,138 @@ def test_any_holding_shaped_action_or_row_key_is_held_evidence(key):
         {"value": "0"},
         {"value": False},
         {"value": 1},
+        {"value": None},
         {"operator": "lte"},
         {"metric": "Position_Quantity"},
-        {"source": "get_holdings.accounts[toss_live].positions[005930].quantity"},
         {"source": None},
+        {"source": "get_holdings"},
+        # round 2, BLOCKER 2 — bound to the row's account and symbol exactly
+        {"source": "get_holdings.accounts[kis_live].positions[000660].quantity"},
+        {
+            "source": (
+                "get_holdings.accounts[toss_live].positions[005930].quantity # 000660"
+            )
+        },
+        {"source": "get_holdings.accounts[toss_live].positions[000660].quantity "},
+        # round 2, BLOCKER 1 — held data inside the flat condition itself
+        {"held_qty": 3},
+        {"position_qty": 3},
     ],
 )
-def test_flat_proof_must_be_exact_and_about_this_symbol(flat_override):
+def test_flat_proof_must_be_exact_and_bound_to_this_row(flat_override):
     live_band = _buy_row()["conditions"][0]
     flat = {**_flat(), **flat_override}
     result = _validate(_buy_row(conditions=[live_band, flat]))
     assert result["valid"] is False
+    # A mis-cased metric is not the flat metric at all, so it is an unknown
+    # (non-allowlisted) metric; either way the row gets no exception.
+    expected = DENIED_ROW_GRAMMAR if "metric" in flat_override else DENIED_NO_FLAT_PROOF
+    assert _denial(result) == expected
 
 
-def test_silence_about_holdings_is_not_a_new_entry():
-    live_band = _buy_row()["conditions"][0]
-    result = _validate(_buy_row(conditions=[live_band]))
+def test_two_position_quantity_conditions_are_not_one_proof():
+    held = {**_flat(), "value": 3}
+    result = _validate(_buy_row(conditions=[_flat(), held]))
+    assert _denial(result) == DENIED_NO_FLAT_PROOF
+    result = _validate(_buy_row(conditions=[_flat(), _flat()]))
+    assert _denial(result) == DENIED_NO_FLAT_PROOF
+
+
+@pytest.mark.parametrize(
+    "other_condition",
+    [
+        # round 1, BLOCKER 1 and round 2, BLOCKER 2 vocabulary
+        {"metric": "held_qty", "source": "get_holdings", "operator": "gt", "value": 0},
+        {"metric": "current_units", "source": "portfolio[000660]", "operator": "gt"},
+        {"metric": "position_avg_buy_price", "source": "get_holdings", "value": 1},
+        {"metric": "holding_quantity", "source": "get_holdings", "value": 1},
+        {"metric": "matched_tier_id", "source": "get_trading_policy", "value": "x"},
+        # allowlisted metric, but the source is not a market-data tool
+        {"metric": "live_price_band", "source": "get_holdings.positions[000660]"},
+        {"metric": "live_price_band", "source": "session_context", "value": 1},
+        # allowlisted metric and source, but an unknown key or value shape
+        {"metric": "live_price_band", "source": "get_quote", "position": 3},
+        {
+            "metric": "live_price_band",
+            "source": "get_quote",
+            "value": {"min_inclusive": 1, "position_quantity": 3},
+        },
+        {
+            "metric": "live_price_band",
+            "source": "get_quote",
+            "value": [{"position_quantity": 3}],
+        },
+    ],
+)
+def test_conditions_outside_the_closed_grammar_deny(other_condition):
+    condition = {"operator": "eq", "value": 0, "max_age_seconds": 300}
+    condition.update(other_condition)
+    result = _validate(_buy_row(conditions=[_flat(), condition]))
     assert result["valid"] is False
-    assert DENIED_NO_FLAT_PROOF in _sizing(result)[0]["expected"]
+    assert _denial(result) == DENIED_ROW_GRAMMAR
 
 
-def test_avg_price_on_the_action_is_held_evidence():
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"action__avg_price": 1500000},
+        {"action__position_qty": 3},
+        {"action__context": {"position_quantity": 3}},
+        {"lot_context": 3},
+        {"derivation": {"loss_guard_min_price": 1}},
+        {"matched_tier": "buy.underwater_support_net"},
+        {"invalidation": [{"metric": "held_qty"}]},
+        {"action__rungs": [{**_rung(1776000, 1776000, qty=1, tick=1000), "avg": 1}]},
+    ],
+)
+def test_keys_outside_the_closed_grammar_deny(changes):
+    result = _validate(_row_with(**changes))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_ROW_GRAMMAR
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"invalidation": ["toss lot 수량·평단 변화"]},
+        {"invalidation": ["보유 종목이면 무효"]},
+        {"invalidation": ["exit if the existing position grows"]},
+        {"invalidation": ["ＨＥＬＤ lot"]},
+        {"scenario_id": "add-to-held-000660"},
+        {"action__required_thesis_fields": ["avg_cost_anchor"]},
+        {"action__time_in_force": "DAY hold"},
+    ],
+)
+def test_holding_words_anywhere_else_in_the_row_deny(changes):
+    result = _validate(_row_with(**changes))
+    assert result["valid"] is False
+    assert _denial(result) == DENIED_HELD_POSITION
+
+
+def test_holding_words_in_a_market_condition_or_formula_deny():
+    quote = {
+        "metric": "live_price_band",
+        "source": "get_quote(symbol='000660') vs portfolio average",
+        "operator": "between",
+        "value": {"min_inclusive": 1700000, "max_exclusive": 1900000},
+        "max_age_seconds": 300,
+    }
+    result = _validate(_buy_row(conditions=[_flat(), quote]))
+    assert _denial(result) == DENIED_HELD_POSITION
+
     row = _buy_row()
-    row["action"]["avg_price"] = 1500000
-    result = _validate(row)
-    assert result["valid"] is False
-    assert DENIED_HELD_POSITION in _sizing(result)[0]["expected"]
+    row["action"]["rungs"][0]["formula"] = "avg-cost anchor x 0.97"
+    assert _denial(_validate(row)) == DENIED_HELD_POSITION
 
 
-def test_explicit_flat_position_is_a_new_entry():
-    result = _validate(_buy_row(conditions=[_flat()]))
-    assert result["valid"] is True, result["violations"]
-    float_zero = {**_flat(), "value": 0.0}
-    result = _validate(_buy_row(conditions=[float_zero]))
-    assert result["valid"] is True, result["violations"]
+@pytest.mark.parametrize(
+    "text", ["threshold", "positive", "positioning", "unity", "lottery", "costs"]
+)
+def test_second_line_word_matching(text):
+    """Segment words need a whole segment; substrings match anywhere."""
+
+    expected = text in {"positioning", "costs"}
+    assert looks_held(text) is expected
 
 
 def test_two_rungs_in_one_row_exceed_max_deep_rungs():
@@ -530,8 +635,23 @@ def test_exception_reader_is_kr_only():
         assert one_share_exception_for(market, {"one_share_exception": both}) is None
 
 
-def test_row_without_conditions_has_no_position_evidence():
-    assert row_has_position_evidence({"action": {}}) is False
+def test_grammar_rejects_non_mapping_shapes():
+    for row in (
+        {"symbols": ["000660"], "action": [], "conditions": []},
+        {"symbols": ["000660"], "action": {"rungs": "x"}, "conditions": []},
+        {"symbols": ["000660"], "action": {"rungs": []}, "conditions": ["x"]},
+        {"symbols": ["000660"], "action": {"rungs": []}, "conditions": {}},
+    ):
+        assert new_entry_grammar_denial(row, "000660") == DENIED_ROW_GRAMMAR
+
+
+def test_overflowing_price_max_never_raises():
+    """ds41 round 1 SHOULD: a pure validator must not raise to its caller."""
+
+    row = _buy_row()
+    row["action"]["rungs"] = {"price_min": 1776000, "price_max": 10**400, "qty": 1}
+    result = _validate(row)
+    assert DENIED_ABOVE_CEILING in _sizing(result)[0]["expected"]
 
 
 def test_unreadable_price_max_cannot_prove_the_ceiling():

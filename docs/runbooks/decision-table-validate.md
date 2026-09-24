@@ -47,32 +47,57 @@ gets the blocking `schema_version_mismatch`.
 **KR one-share exception (§664).** `sizing_band_violation` checks each buy
 rung's `price_min × qty` against `buy.per_symbol_notional_krw_range`
 ([200,000, 400,000]). Its `one_share_exception` admits an over-band KR buy
-rung only when **all** hold: `qty == 1`; the single share (`price_min`)
-exceeds 400,000; `max(price_min, price_max) <= absolute_ceiling_krw`
-(10,000,000, inclusive); the row's `symbols` list is exactly one canonical KRX
-code (six ASCII `[0-9A-Z]`, no padding); the symbol is not a cash-parking
-allowlist symbol (459580/357870 — their raised parking per-order cap would
-otherwise auto-approve a one-share buy above 2,000,000); the row carries an
-**affirmative** new-entry proof — a condition `metric: position_quantity`,
-`operator: eq`, numeric `value: 0`, whose `source` names the row's symbol
-(e.g. `get_holdings.accounts[toss_live].positions[000660].quantity`); and no
-other row key, action key, condition key, condition metric or condition source
-looks like a holding (`held`, `hold`, `position`, `avg`, `average`, `cost`,
-`lot`, `qty`, `quantity`, `share`, `balance`, `owned`, `inventory`, after
-NFKC/lower-casing). Silence about holdings is **not** a new entry. A denied
-rung keeps `sizing_band_violation` with the denial reason in `expected`. Once
-any rung of a symbol uses the exception, that symbol may have at most
-`max_deep_rungs` (1) buy rungs across the whole table — every row and account,
-counted on an NFKC/strip/upper-normalized key so padded or full-width
-spellings still count — else each involved row gets the blocking
+rung only when **all** hold:
+
+1. `qty == 1`, the single share (`price_min`) exceeds 400,000, and
+   `max(price_min, price_max) <= absolute_ceiling_krw` (10,000,000,
+   inclusive; an unreadable or overflowing `price_max` is judged above it).
+2. The row's `symbols` list is exactly one canonical KRX code (six ASCII
+   `[0-9A-Z]`, no padding) that is not a cash-parking allowlist symbol
+   (459580/357870 — their raised parking per-order cap would otherwise
+   auto-approve a one-share buy above 2,000,000).
+3. The row stays inside the **closed new-entry grammar**
+   (`app/services/decision_table_validate/one_share_exception.py`):
+   - row keys ⊆ `scenario_id, priority, symbols, conditions, action,
+     invalidation, sector_concentration` (so no `derivation`, no
+     `matched_tier`); action keys ⊆ `proposal_action, account_mode, side,
+     order_type, rungs, required_thesis_fields, time_in_force,
+     reference_price, minimum_order_amount, apply_kind`; rung keys ⊆
+     `rung, price_min, price_max, qty, tick, formula`; condition keys ⊆
+     `metric, source, operator, value, max_age_seconds`; `invalidation` is a
+     list of strings;
+   - **exactly one** condition has `metric: position_quantity`, and it is the
+     flat proof: `operator: eq`, numeric `value: 0`, and `source` **exactly**
+     `get_holdings.accounts[<action.account_mode>].positions[<symbol>].quantity`;
+   - every other condition uses a metric from the closed market-data set
+     (`live_price_band`, `krx_previous_close`, `rsi_14_last_completed_daily_bar`,
+     `fresh_support_s1_price`, … — see `_MARKET_METRICS`), a `source` that is
+     or starts with a market-data tool (`get_quote`, `get_orderbook`,
+     `get_indicators`, `get_support_resistance`, `analyze_stock_batch`,
+     `get_trading_policy`, `get_market_index`, `get_krx_session_health`,
+     `get_news`, `kis_live_get_order_history`, `toss_get_order_history`), and a
+     scalar, scalar list, or `{min,max}_{inclusive,exclusive}` numeric range;
+   - no other key or string in the row (invalidation prose and rung
+     `formula` included) contains a holding-shaped word (`held`, `holding`,
+     `position`, `avg`, `average`, `cost`, `qty`, `quantity`, `share`,
+     `balance`, `owned`, `inventory`, `portfolio`, `보유`, `평단`, `평균단가`,
+     `매입`, `수량`, `잔고`, or a whole segment `hold`/`lot`/`pos`/`unit`).
+
+Silence about holdings is **not** a new entry. A denied rung keeps
+`sizing_band_violation` with the denial reason in `expected`
+(`row_outside_new_entry_grammar`, `no_bound_flat_position_condition`,
+`held_position_evidence`, `cash_parking_symbol`, …). Once any rung of a symbol
+uses the exception, that symbol may have at most `max_deep_rungs` (1) buy
+rungs across the whole table — every row and account, counted on an
+NFKC/strip/upper-normalized key — else each involved row gets the blocking
 `one_share_exception_rung_limit`. Sells never consult the exception; the US
-band's exception is not honoured by this validator (unchanged). The exception
-does not touch auto-approval: a one-share order above the KR per-order cap
-(2,000,000) is still demoted to a human card as `per_order_cap_exceeded`.
-Limit: the validator is pure and cannot read holdings, so it trusts the
-declared `position_quantity eq 0` condition. `decision_table_apply` does not
-evaluate row conditions either; the live check is the helmsman session's
-condition match before `apply(dry_run=false)` (spec §3 workflow). Each
+band's exception is not honoured by this validator (unchanged). Auto-approval
+is untouched: a one-share order above the KR per-order cap (2,000,000) is
+demoted to a human card as `per_order_cap_exceeded`. Limit: the validator is
+pure and cannot read holdings, so it trusts the declared flat proof.
+`decision_table_apply` does not evaluate row conditions either; the live check
+is the helmsman session's condition match before `apply(dry_run=false)` (spec
+§3 workflow). Each
 violation contains the detected table shape and a link
 to the [canonical v1.1 shape](../specs/mcp-session-tools-v1.md#canonical-decision-table-shape-v11).
 

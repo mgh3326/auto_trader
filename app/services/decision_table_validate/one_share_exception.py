@@ -12,23 +12,32 @@ falls back to the ordinary ``sizing_band_violation``):
 * KR only. The US band also declares an exception, but the validator has never
   honoured it; changing that is a separate operator decision, not part of #664.
 * buys only -- the caller never consults it for a sell.
-* new entries only, proven affirmatively: the row must carry a
-  ``position_quantity eq 0`` condition sourced from the row's own symbol, and
-  ANY other position-/holding-/lot-/cost-/quantity-shaped condition metric,
-  condition source, row key or action key denies it. A validator that cannot
-  read holdings must not infer "new entry" from silence (tester round 1,
-  BLOCKER 1: ``held_qty`` / ``action.position_qty`` slipped a closed list).
-* not a cash-parking symbol: every symbol in ``PARKING_ALLOWLIST_SCOPES`` is
-  denied, because its expanded-mode per-order cap is raised to 10,000,000 and
-  the exception would otherwise let a one-share parking buy above 2,000,000
-  auto-approve without a card (tester round 1, BLOCKER 2).
-* exactly one share, and the single share must itself exceed the band ceiling.
-* the rung's worst-case notional (``price_max`` x 1) must not exceed
-  ``absolute_ceiling_krw``.
+* exactly one share, the single share itself above the band ceiling, and the
+  rung's worst-case notional (``price_max`` x 1) within ``absolute_ceiling_krw``.
 * the row's ``symbols`` list holds exactly one canonical KRX code (six ASCII
   ``[0-9A-Z]``, no padding), and at most ``max_deep_rungs`` buy rungs exist for
   that symbol across the whole table -- counted on a normalized key so padded or
-  full-width spellings in other rows still count (tester round 1, BLOCKER 3).
+  full-width spellings in other rows still count.
+* not a cash-parking symbol: every symbol in ``PARKING_ALLOWLIST_SCOPES`` is
+  denied, because its expanded-mode per-order cap is raised to 10,000,000 and
+  the exception would otherwise let a one-share parking buy above 2,000,000
+  auto-approve without a card.
+* new entries only, proven by a CLOSED GRAMMAR rather than by guessing what a
+  holding looks like (two tester rounds showed a denylist over free-form JSON
+  always leaks):
+
+  - row, action, rung and condition keys come from closed sets (anything else,
+    including ``derivation``, ``matched_tier`` -- which can name a held-lot tier
+    such as ``buy.underwater_support_net`` -- or a nested ``context``, denies);
+  - exactly one condition uses ``metric: position_quantity`` and it is the
+    flat proof: ``operator: eq``, numeric ``value: 0`` and a ``source`` that is
+    EXACTLY ``get_holdings.accounts[<row account_mode>].positions[<symbol>]
+    .quantity`` -- so it cannot point at another account or symbol;
+  - every other condition uses a metric from a closed market-data vocabulary,
+    a source that starts with a market-data tool name, and a scalar, scalar
+    list or numeric range value;
+  - and, as a second line, every other key and string in the row (invalidation
+    prose included) is scanned for holding-shaped words in English and Korean.
 
 The per-order auto-approve cap is not read here and is not relaxed: an
 exception order above it is still demoted to a human card by
@@ -52,31 +61,111 @@ ONE_SHARE_EXCEPTION_MARKETS = frozenset(_CEILING_FIELD_BY_MARKET)
 DENIED_NOT_A_SINGLE_SHARE = "not_a_single_share"
 DENIED_SHARE_WITHIN_BAND = "single_share_not_above_band_ceiling"
 DENIED_ABOVE_CEILING = "above_absolute_ceiling"
-DENIED_HELD_POSITION = "held_position_evidence"
-DENIED_NO_FLAT_PROOF = "no_affirmative_flat_position_condition"
 DENIED_NOT_ONE_SYMBOL = "row_not_single_canonical_symbol"
 DENIED_PARKING_SYMBOL = "cash_parking_symbol"
+DENIED_ROW_GRAMMAR = "row_outside_new_entry_grammar"
+DENIED_NO_FLAT_PROOF = "no_bound_flat_position_condition"
+DENIED_HELD_POSITION = "held_position_evidence"
 
 _FLAT_METRIC = "position_quantity"
-# Substrings of a normalized key/metric/source that look like a holding. The
-# list is broad on purpose: a false positive only costs the exception (the
-# rung falls back to the band), a false negative admits a held-symbol add.
-_HELD_MARKERS = (
+_ROW_KEYS = frozenset(
+    {
+        "scenario_id",
+        "priority",
+        "symbols",
+        "conditions",
+        "action",
+        "invalidation",
+        "sector_concentration",
+    }
+)
+_ACTION_KEYS = frozenset(
+    {
+        "proposal_action",
+        "account_mode",
+        "side",
+        "order_type",
+        "rungs",
+        "required_thesis_fields",
+        "time_in_force",
+        "reference_price",
+        "minimum_order_amount",
+        "apply_kind",
+    }
+)
+_RUNG_KEYS = frozenset({"rung", "price_min", "price_max", "qty", "tick", "formula"})
+_CONDITION_KEYS = frozenset(
+    {"metric", "source", "operator", "value", "max_age_seconds"}
+)
+_RANGE_VALUE_KEYS = frozenset(
+    {"min_inclusive", "max_inclusive", "min_exclusive", "max_exclusive"}
+)
+# Market-data metrics seen in real KR prep tables that say nothing about a
+# holding. A new metric must be added here deliberately; until then a row using
+# it simply does not get the exception.
+_MARKET_METRICS = frozenset(
+    {
+        "live_price_band",
+        "krx_previous_close",
+        "nxt_premarket_price",
+        "nxt_tradable",
+        "price_source_is_nxt",
+        "abs_rel_diff_quote_vs_nxt_orderbook_mid",
+        "premarket_session_change_pct",
+        "nxt_premarket_change_pct_vs_prev_close",
+        "rsi_14_last_completed_daily_bar",
+        "fresh_support_s1_price",
+        "fresh_support_s2_price",
+        "fresh_resistance_r1_price",
+        "fresh_resistance_r2_price",
+        "crash_day_state_at_decision",
+        "crash_day_trigger_069500_open_gap_pct",
+        "catalyst_basis_recorded",
+        "flow_basis_observed_at_decision",
+        "required_thesis_evidence_present",
+        "policy_frozen_keys",
+        "toss_open_orders_count_same_symbol",
+        "kis_open_orders_count_same_symbol",
+    }
+)
+_MARKET_SOURCE_TOOLS = (
+    "get_quote",
+    "get_orderbook",
+    "get_indicators",
+    "get_support_resistance",
+    "analyze_stock_batch",
+    "get_trading_policy",
+    "get_market_index",
+    "get_krx_session_health",
+    "get_news",
+    "kis_live_get_order_history",
+    "toss_get_order_history",
+)
+# Second line only. Substrings match anywhere in the NFKC/lower-cased text;
+# segment words must equal a whole ``[a-z0-9]`` segment (so "threshold" and
+# "positive" do not trip them).
+_HELD_SUBSTRINGS = (
     "held",
-    "hold",
+    "holding",
     "position",
-    "pos_",
     "avg",
     "average",
     "cost",
-    "lot",
     "qty",
     "quantity",
     "share",
     "balance",
     "owned",
     "inventory",
+    "portfolio",
+    "보유",
+    "평단",
+    "평균단가",
+    "매입",
+    "수량",
+    "잔고",
 )
+_HELD_SEGMENTS = frozenset({"hold", "lot", "lots", "pos", "unit", "units"})
 _KRX_CODE = re.compile(r"[0-9A-Z]{6}")
 _PARKING_SYMBOLS = frozenset(scope.symbol for scope in PARKING_ALLOWLIST_SCOPES)
 
@@ -142,62 +231,140 @@ def canonical_row_symbol(row: Mapping[str, Any]) -> str | None:
     return symbol if _KRX_CODE.fullmatch(symbol) else None
 
 
-def _looks_held(text: Any) -> bool:
+def flat_proof_source(account_mode: str, symbol: str) -> str:
+    return f"get_holdings.accounts[{account_mode}].positions[{symbol}].quantity"
+
+
+def looks_held(text: Any) -> bool:
     if not isinstance(text, str):
         return False
-    normalized = re.sub(r"[^a-z0-9]+", "_", unicodedata.normalize("NFKC", text).lower())
-    return any(marker in normalized for marker in _HELD_MARKERS)
-
-
-def _is_affirmative_flat_condition(condition: Mapping[str, Any], symbol: str) -> bool:
-    """Exactly ``position_quantity eq 0`` read from this symbol's holdings."""
-
-    value = condition.get("value")
-    source = condition.get("source")
-    return (
-        condition.get("metric") == _FLAT_METRIC
-        and condition.get("operator") == "eq"
-        and type(value) in (int, float)
-        and value == 0
-        and isinstance(source, str)
-        and symbol in source
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    if any(marker in normalized for marker in _HELD_SUBSTRINGS):
+        return True
+    return any(
+        segment in _HELD_SEGMENTS for segment in re.split(r"[^a-z0-9]+", normalized)
     )
 
 
-def row_has_position_evidence(row: Mapping[str, Any]) -> bool:
-    """Any holding-shaped key, metric or source outside the flat proof."""
+def _is_scalar(value: Any) -> bool:
+    return value is None or type(value) in (str, int, float, bool)
 
-    symbol = canonical_row_symbol(row) or ""
-    if any(_looks_held(key) for key in row if key != "conditions"):
-        return True
-    action = row.get("action")
-    if isinstance(action, Mapping) and any(_looks_held(key) for key in action):
-        return True
-    conditions = row.get("conditions")
-    if not isinstance(conditions, list):
+
+def _market_condition_ok(condition: Mapping[str, Any]) -> bool:
+    if not set(condition) <= _CONDITION_KEYS:
         return False
-    for condition in conditions:
-        if not isinstance(condition, Mapping):
-            continue
-        if symbol and _is_affirmative_flat_condition(condition, symbol):
-            continue
-        if any(_looks_held(key) for key in condition) or any(
-            _looks_held(condition.get(field)) for field in ("metric", "source")
-        ):
-            return True
+    if condition.get("metric") not in _MARKET_METRICS:
+        return False
+    source = condition.get("source")
+    if type(source) is not str or not any(
+        source == tool or source.startswith((f"{tool}(", f"{tool}."))
+        for tool in _MARKET_SOURCE_TOOLS
+    ):
+        return False
+    value = condition.get("value")
+    if _is_scalar(value):
+        return True
+    if type(value) is list:
+        return all(_is_scalar(item) for item in value)
+    if type(value) is dict:
+        return set(value) <= _RANGE_VALUE_KEYS and all(
+            _finite_decimal(item) is not None for item in value.values()
+        )
     return False
 
 
-def row_has_flat_position_proof(row: Mapping[str, Any]) -> bool:
-    symbol = canonical_row_symbol(row)
-    conditions = row.get("conditions")
-    if symbol is None or not isinstance(conditions, list):
-        return False
-    return any(
-        isinstance(condition, Mapping)
-        and _is_affirmative_flat_condition(condition, symbol)
-        for condition in conditions
+def _is_bound_flat_proof(
+    condition: Mapping[str, Any], account_mode: Any, symbol: str
+) -> bool:
+    value = condition.get("value")
+    return (
+        set(condition) <= _CONDITION_KEYS
+        and condition.get("metric") == _FLAT_METRIC
+        and condition.get("operator") == "eq"
+        and type(value) in (int, float)
+        and value == 0
+        and type(account_mode) is str
+        and condition.get("source") == flat_proof_source(account_mode, symbol)
     )
+
+
+def _strings_and_keys(value: Any) -> list[str]:
+    """Every dict key and string leaf below ``value``."""
+
+    found: list[str] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            found.append(str(key))
+            found.extend(_strings_and_keys(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_strings_and_keys(child))
+    elif isinstance(value, str):
+        found.append(value)
+    return found
+
+
+def new_entry_grammar_denial(row: Mapping[str, Any], symbol: str) -> str | None:
+    """``None`` when the row is provably a new entry under the closed grammar."""
+
+    if not set(row) <= _ROW_KEYS:
+        return DENIED_ROW_GRAMMAR
+    action = row.get("action")
+    conditions = row.get("conditions")
+    invalidation = row.get("invalidation", [])
+    if (
+        type(action) is not dict
+        or not set(action) <= _ACTION_KEYS
+        or type(conditions) is not list
+        or type(invalidation) is not list
+        or not all(type(item) is str for item in invalidation)
+    ):
+        return DENIED_ROW_GRAMMAR
+    rungs = action.get("rungs")
+    if type(rungs) is not list or not all(
+        type(rung) is dict and set(rung) <= _RUNG_KEYS for rung in rungs
+    ):
+        return DENIED_ROW_GRAMMAR
+
+    flat_proofs = []
+    for condition in conditions:
+        if type(condition) is not dict:
+            return DENIED_ROW_GRAMMAR
+        if condition.get("metric") == _FLAT_METRIC:
+            if not _is_bound_flat_proof(condition, action.get("account_mode"), symbol):
+                return DENIED_NO_FLAT_PROOF
+            flat_proofs.append(condition)
+        elif not _market_condition_ok(condition):
+            return DENIED_ROW_GRAMMAR
+    if len(flat_proofs) != 1:
+        return DENIED_NO_FLAT_PROOF
+
+    # Second line: nothing else in the row may talk about a holding. The flat
+    # proof is excluded (it is exactly-matched above); rung numbers are not
+    # text, but a rung's free-text ``formula`` is scanned.
+    scanned: list[str] = []
+    for key, value in row.items():
+        scanned.append(key)
+        if key == "conditions":
+            for condition in conditions:
+                if condition is not flat_proofs[0]:
+                    scanned.extend(_strings_and_keys(condition))
+        elif key == "action":
+            for action_key, action_value in action.items():
+                scanned.append(action_key)
+                if action_key == "rungs":
+                    scanned.extend(
+                        rung["formula"]
+                        for rung in rungs
+                        if isinstance(rung.get("formula"), str)
+                    )
+                else:
+                    scanned.extend(_strings_and_keys(action_value))
+        elif key != "symbols":
+            scanned.extend(_strings_and_keys(value))
+    if any(looks_held(text) for text in scanned):
+        return DENIED_HELD_POSITION
+    return None
 
 
 def one_share_exception_denial(
@@ -222,11 +389,7 @@ def one_share_exception_denial(
         return DENIED_NOT_ONE_SYMBOL
     if symbol in _PARKING_SYMBOLS:
         return DENIED_PARKING_SYMBOL
-    if row_has_position_evidence(row):
-        return DENIED_HELD_POSITION
-    if not row_has_flat_position_proof(row):
-        return DENIED_NO_FLAT_PROOF
-    return None
+    return new_entry_grammar_denial(row, symbol)
 
 
 __all__ = [
@@ -236,13 +399,15 @@ __all__ = [
     "DENIED_NOT_ONE_SYMBOL",
     "DENIED_NOT_A_SINGLE_SHARE",
     "DENIED_PARKING_SYMBOL",
+    "DENIED_ROW_GRAMMAR",
     "DENIED_SHARE_WITHIN_BAND",
     "ONE_SHARE_EXCEPTION_MARKETS",
     "OneShareException",
     "canonical_row_symbol",
+    "flat_proof_source",
+    "looks_held",
+    "new_entry_grammar_denial",
     "normalized_symbol_key",
     "one_share_exception_denial",
     "one_share_exception_for",
-    "row_has_flat_position_proof",
-    "row_has_position_evidence",
 ]

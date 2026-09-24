@@ -60,7 +60,7 @@ effective_at: >-
   confirmation AND the auto_trader merge freeze lifting.
 live_only_claim: false
 mock_projection_hash_before: "6d5a858ff5cb"   # policy content_hash at 2026-09-08.1 (origin/main 3931fdb3e)
-mock_projection_hash_after: "bede1cc8dfd6"    # policy content_hash at 2026-09-24.1 (round 2; round-1 head 1d164aa was ee9d01057614)
+mock_projection_hash_after: "e2c2a3d369c2"    # policy content_hash at 2026-09-24.1 (round 3; earlier heads: 1d164aa ee9d01057614, 55f6901 bede1cc8dfd6 — only the source prose moved)
   # Interpretation caveat carried from the protocol memory: whether
   # mock_projection_hash means this raw-YAML content hash is unconfirmed.
   # The ROB-1351 v2 sealed hashes do NOT move:
@@ -111,7 +111,7 @@ evidence: >-
 `decision_table_validate` responses (`validator.py:80`
 `policy_version_stamp()`), the fan-out response
 (`buy_candidate_fanout.py:1285`), and session evidence/forecasts that quote
-`{version, content_hash}` — will read `2026-09-24.1 / bede1cc8dfd6` instead of
+`{version, content_hash}` — will read `2026-09-24.1 / e2c2a3d369c2` instead of
 `2026-09-08.1 / 6d5a858ff5cb`. v2 forecast payloads themselves carry the sealed
 `policy_projection_sha256`, not the live version, so they do not split; the
 split is in surrounding session evidence and must be kept as a cohort
@@ -189,6 +189,30 @@ alone does not satisfy a T3 gate (hk:doc 2227).
    raw `symbols` list to be exactly one canonical six-character ASCII KRX
    code, and the table-wide budget is keyed on NFKC+strip+upper.
 
+## Round-2 independent verification (codex-sol, fresh session @ 55f6901) — FAIL, fixed in round 3
+
+Report: `~/work/herdr-inbox/jobs/v664-one-share-codex-r2/report.md`. The
+round-1 fixes held (parking and symbol-key BLOCKERs did not reproduce), but
+the round-1 held-evidence fix was still a **denylist over free-form JSON**:
+
+1. held data *inside* the flat condition (`held_qty: 3` / `position_qty: 3`
+   next to `position_quantity eq 0`) was skipped with the flat condition;
+2. the flat proof was bound only by `symbol in source`, so a proof about
+   another account, or about `005930` with `# 000660` appended, passed; and
+   `current_units gt 0` / `portfolio[000660]` and a nested
+   `action.context.position_quantity` escaped the token list.
+
+Round 3 replaces the heuristic with a **closed new-entry grammar**
+(allowlisted row/action/rung/condition keys; exactly one flat proof whose
+source equals `get_holdings.accounts[<account_mode>].positions[<symbol>].quantity`
+verbatim; every other condition from a closed market-data metric set with a
+market-data tool source and scalar/range value), keeping the English+Korean
+holding-word scan only as a second line over every other key and string.
+`matched_tier` and the `matched_tier_id` metric are excluded because they can
+name a held-lot tier. devin-ds41 (round-1 head, kept on record: FAIL, same three
+BLOCKERs) also reported a SHOULD — a scalar-rung `price_max` beyond float range
+raised `OverflowError` from the never-raise validator — fixed in round 3.
+
 ## Known residual limits of the code boundary
 
 - `decision_table_validate` is pure and cannot read holdings. It trusts the
@@ -196,9 +220,11 @@ alone does not satisfy a T3 gate (hk:doc 2227).
   evaluate row conditions either, so the live check is the helmsman session's
   condition match before a real apply. A table that *lies* about a held
   symbol (declares flat while held) is not caught here.
-- The prep prompt (operator repo) must emit the `position_quantity eq 0`
-  condition on exception rows, otherwise the exception is never granted
-  (fail-closed; a usability cost, not a safety one).
+- The prep prompt (operator repo) must emit exception rows inside the closed
+  grammar (runbook `decision-table-validate.md`), with the exact flat-proof
+  source string; otherwise the exception is never granted (fail-closed; a
+  usability cost, not a safety one). A new market-data metric needs a code
+  change to `_MARKET_METRICS` before it can appear on an exception row.
 - The exception is only code-enforced where a decision table is validated.
   Session-written proposals that bypass decision tables were never band-checked
   in code (the band is advisory under ROB-646); for them the exception is a

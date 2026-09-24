@@ -854,7 +854,9 @@ def _validate_buy_policy(
             # An unreadable price_max cannot prove the ceiling holds, so it
             # is judged at the ceiling's far side rather than skipped.
             worst_price = (
-                _decimal(price_max) if _is_number(price_max) else exception.ceiling + 1
+                _decimal(price_max)
+                if _is_readable_number(price_max)
+                else exception.ceiling + 1
             )
             denial = one_share_exception_denial(
                 row=row,
@@ -1141,6 +1143,20 @@ def _is_number(value: Any) -> bool:
         and not isinstance(value, bool)
         and math.isfinite(float(value))
     )
+
+
+def _is_readable_number(value: Any) -> bool:
+    """``_is_number`` that never raises: an int too large for a float is unreadable.
+
+    The one-share exception reads ``price_max`` on every rung encoding, including
+    scalar rungs whose integer can exceed the float range; the validator must
+    not raise to an MCP caller (tester round 1, SHOULD).
+    """
+
+    try:
+        return _is_number(value)
+    except OverflowError:
+        return False
 
 
 def _decimal(value: Any) -> Decimal:
