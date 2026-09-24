@@ -11,6 +11,7 @@ import app.schemas.trading_policy as policy_schema
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.schemas.trading_policy import (
     CrashDayNewEntryHoldException,
+    OneShareExceptionPolicy,
     PreplannedSupportLadderPolicy,
     SupportReserveNetDecisionRule,
     TradingPolicyDocument,
@@ -85,6 +86,56 @@ _S139_ALLOWED_POLICY_DELTAS = (
         10000,
     ),
 )
+
+
+# §664 (2026-09-24) — the KR new-entry one-share exception is the only delta
+# on buy.per_symbol_notional_krw_range: an additive one_share_exception block
+# and a semantics sentence appended to the unchanged original. The band value
+# itself is NOT a delta. Historical closed-equivalence tests call
+# _strip_s664_kr_one_share_exception, which pins the exact block and wording
+# before restoring the pre-§664 form, so a silent widening fails there.
+_S664_KR_BAND_KEY = "buy.per_symbol_notional_krw_range"
+_S664_KR_ONE_SHARE_EXCEPTION = {
+    "enabled": True,
+    "absolute_ceiling_krw": 10000000,
+    "max_deep_rungs": 1,
+}
+_S664_KR_BAND_BASE_SEMANTICS = (
+    "per-symbol order sizing for new entries (policy threshold, not account "
+    "balance; KR lane only)"
+)
+_S664_KR_BAND_SEMANTICS_SUFFIX = (
+    "; one_share_exception mirrors the US §139차 rule — a new-entry symbol "
+    "whose single share exceeds the band upper bound may enter with exactly one "
+    "share, bounded by orderable cash and the KR per-order auto-approve cap "
+    "(2,000,000; above it the order is carded, not rejected)"
+)
+
+
+def _strip_s664_kr_one_share_exception(current: dict, baseline: dict) -> None:
+    """Pin the §664 delta on a current threshold dict and undo it in place.
+
+    Works on both raw YAML dicts (no ``one_share_exception`` key in the
+    baseline) and model dumps (baseline key present as ``None``).
+    """
+
+    exception = {
+        key: value
+        for key, value in current["one_share_exception"].items()
+        if value is not None
+    }
+    assert exception == _S664_KR_ONE_SHARE_EXCEPTION
+    assert baseline.get("one_share_exception") is None
+    assert current["value"] == baseline["value"] == [200000, 400000]
+    assert baseline["semantics"] == _S664_KR_BAND_BASE_SEMANTICS
+    assert current["semantics"] == (
+        _S664_KR_BAND_BASE_SEMANTICS + _S664_KR_BAND_SEMANTICS_SUFFIX
+    )
+    current["semantics"] = baseline["semantics"]
+    if "one_share_exception" in baseline:
+        current["one_share_exception"] = baseline["one_share_exception"]
+    else:
+        del current["one_share_exception"]
 
 
 def _raw() -> dict:
@@ -261,8 +312,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-08.1"
-    assert policy_content_hash() == "6d5a858ff5cb"
+    assert doc.version == "2026-09-24.1"
+    assert policy_content_hash() == "8b044f30df1b"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -276,7 +327,7 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     current = _raw()
     doc = TradingPolicyDocument.model_validate(current)
 
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-24.1"
     assert doc.cash_proxy.exit_intent == "cash_funding"
     assert doc.cash_proxy.symbol_list_duplicated_here is False
     assert doc.cash_proxy.exempt_gates == [
@@ -470,7 +521,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-08.1"
+    assert current["version"] == "2026-09-24.1"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -518,7 +569,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-08.1"
+    assert current["version"] == "2026-09-24.1"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -661,7 +712,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-24.1"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1582,6 +1633,10 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
         "one_share_exception": None,
     }
     del current_dump["thresholds"]["screen.independent_support_source_count_min"]
+    _strip_s664_kr_one_share_exception(
+        current_dump["thresholds"][_S664_KR_BAND_KEY],
+        baseline_dump["thresholds"][_S664_KR_BAND_KEY],
+    )
     current_dump["thresholds"]["screen.support_within_pct"]["semantics"] = (
         baseline_dump["thresholds"]["screen.support_within_pct"]["semantics"]
     )
@@ -1901,6 +1956,84 @@ def test_us_notional_usd_range_one_share_exception_missing_required_field_reject
     ]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+def test_s664_kr_notional_range_parses_with_krw_one_share_exception():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    kr_range = doc.thresholds[_S664_KR_BAND_KEY]
+    exception = kr_range.one_share_exception
+    assert kr_range.value == [200000, 400000]
+    assert kr_range.unit == "krw"
+    assert exception is not None
+    assert exception.model_dump(exclude_none=True) == _S664_KR_ONE_SHARE_EXCEPTION
+    assert exception.absolute_ceiling_unit == "krw"
+    assert exception.absolute_ceiling == 10000000
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # the ceiling must be in the band's own currency
+        lambda exc: exc.update(absolute_ceiling_usd=exc.pop("absolute_ceiling_krw")),
+        # exactly one ceiling
+        lambda exc: exc.update(absolute_ceiling_usd=10000),
+        lambda exc: exc.pop("absolute_ceiling_krw"),
+        # a ceiling at or under the band ceiling is incoherent
+        lambda exc: exc.update(absolute_ceiling_krw=400000),
+        lambda exc: exc.update(absolute_ceiling_krw=0),
+        lambda exc: exc.update(absolute_ceiling_krw=float("nan")),
+        lambda exc: exc.update(max_deep_rungs=0),
+        lambda exc: exc.update(unknown=1),
+    ],
+)
+def test_s664_malformed_kr_one_share_exception_is_rejected(mutate):
+    raw = _raw()
+    mutate(raw["thresholds"][_S664_KR_BAND_KEY]["one_share_exception"])
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s664_exception_model_requires_exactly_one_ceiling_on_its_own():
+    """The model rejects two ceilings even before the band's unit is checked."""
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        OneShareExceptionPolicy.model_validate(
+            {
+                "enabled": True,
+                "absolute_ceiling_usd": 10000,
+                "absolute_ceiling_krw": 10000000,
+                "max_deep_rungs": 1,
+            }
+        )
+
+
+def test_s664_exception_on_a_non_band_threshold_is_rejected():
+    raw = _raw()
+    raw["thresholds"]["screen.rsi_max"]["one_share_exception"] = dict(
+        _S664_KR_ONE_SHARE_EXCEPTION
+    )
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s664_changes_no_cap_gate_or_concentration_value():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    auto_approve = doc.order_proposals.auto_approve
+    assert auto_approve.per_order_cap == {"kr": 2000000, "us": 1500, "crypto": 5000000}
+    assert auto_approve.daily_cap == {"kr": 5000000, "us": 20000, "crypto": 10000000}
+    for key, expected in {
+        **_S147_INVARIANT_BUY_GATES,
+        **_S147_INVARIANT_SIZING_AND_CAPS,
+        "screen.support_strength_min": "moderate",
+    }.items():
+        assert doc.thresholds[key].value == expected, key
+
+
+def test_s664_source_records_the_relaxation_and_its_counter_evidence():
+    source = _raw()["source"]
+    assert "§664 KR new-entry one-share exception 2026-09-24" in source
+    assert "This IS a sizing relaxation and is recorded as one" in source
+    assert "5-10x a standard tranche loss" in source
 
 
 # ---------------------------------------------------------------------------
@@ -2597,7 +2730,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-24.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3221,7 +3354,12 @@ def test_s139_leaves_the_crypto_and_kr_approval_caps_untouched():
         _policy_path_set(current_auto, suffix, baseline_value)
     assert current_auto == baseline_auto
 
-    # The new-coin discovery gates §139차 promises not to touch.
+    # The new-coin discovery gates §139차 promises not to touch. §664 later
+    # adds the KR one-share exception; it is pinned and stripped, not ignored.
+    _strip_s664_kr_one_share_exception(
+        current["thresholds"][_S664_KR_BAND_KEY],
+        deepcopy(baseline["thresholds"][_S664_KR_BAND_KEY]),
+    )
     for key in (
         "buy.deep_limit_pct_range",
         "buy.per_symbol_notional_krw_range",
@@ -3311,6 +3449,8 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             assert cur["one_share_exception"]["absolute_ceiling_usd"] == 10000
             assert base["one_share_exception"]["absolute_ceiling_usd"] == 700
             cur["one_share_exception"] = base["one_share_exception"]
+        if key == _S664_KR_BAND_KEY:
+            _strip_s664_kr_one_share_exception(cur, base)
         if key == "screen.support_within_pct":
             assert cur["semantics"] == "support must be within this distance"
             cur["semantics"] = base["semantics"]
@@ -3380,7 +3520,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-24.1"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history

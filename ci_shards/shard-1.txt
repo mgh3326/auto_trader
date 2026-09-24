@@ -31,6 +31,7 @@ tests/mcp_server/test_session_bootstrap_pack.py
 tests/mcp_server/test_shared_converters.py
 tests/mcp_server/test_trading_policy_tool.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
+tests/mcp_server/tooling/test_decision_table_one_share_exception.py
 tests/mcp_server/tooling/test_decision_table_validate.py
 tests/mcp_server/tooling/test_fx_pnl.py
 tests/mcp_server/tooling/test_kis_live_reconcile_tool.py
