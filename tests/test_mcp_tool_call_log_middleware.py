@@ -16,9 +16,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.mcp_server.tool_call_log_middleware import (
+    MAX_FIELD_CHARS,
     TOOL_CALL_MESSAGE,
     UNKNOWN_TOOL_NAME,
     ToolCallLogMiddleware,
+    sanitize_log_field,
 )
 
 pytestmark = [pytest.mark.unit]
@@ -180,3 +182,116 @@ async def test_arguments_and_results_never_reach_the_log(caplog) -> None:
     for leaked in ("005930", "71200", "order_id", "quantity", "filled_price"):
         assert leaked not in caplog.text, leaked
     assert TOOL_CALL_MESSAGE.split(" ", 1)[0] in caplog.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Log-injection vectors (#329). An unregistered name reaches ``_observe``
+# verbatim before dispatch rejects the call, so each case asserts the *exact*
+# rendered message: removing the sanitization turns these RED via assertion,
+# not via an exception.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_name", "expected_field"),
+    [
+        # Duplicate key: a space + ``key=`` would forge a second logfmt pair.
+        ("x tool=spoofed", "x\\x20tool\\x3dspoofed"),
+        ("known_tool profile=admin", "known_tool\\x20profile\\x3dadmin"),
+        # Forged record: an embedded newline would print a second fake line.
+        (
+            "ignored\n08:00:00 [INFO] mcp.tool.called tool=fake",
+            "ignored\\n08:00:00\\x20[INFO]\\x20mcp.tool.called\\x20tool\\x3dfake",
+        ),
+        # Control characters: tab, CR, NUL.
+        ("tab\tfield=admin\rCR\x00NUL", "tab\\tfield\\x3dadmin\\rCR\\x00NUL"),
+        # Unicode line separator (str.splitlines breaks on it too).
+        ("unicode💥\u2028separate", "unicode💥\\u2028separate"),
+        # printf-style literals must stay inert text.
+        ("percent%s%(name)s", "percent\\x25s\\x25(name)s"),
+    ],
+)
+async def test_untrusted_tool_name_is_escaped(
+    caplog, raw_name: str, expected_field: str
+) -> None:
+    middleware = ToolCallLogMiddleware(profile="default")
+
+    async def call_next(ctx):
+        return "ok"
+
+    caplog.set_level(logging.INFO)
+    assert await middleware.on_call_tool(_ctx(raw_name), call_next) == "ok"
+    # Exactly one record, and the escaped original is still identifiable.
+    assert _lines(caplog) == [
+        (logging.INFO, f"mcp.tool.called tool={expected_field} profile=default")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_name_longer_than_the_cap_is_cut_and_marked(caplog) -> None:
+    middleware = ToolCallLogMiddleware(profile="default")
+    raw_name = "L" * (MAX_FIELD_CHARS * 3)
+
+    async def call_next(ctx):
+        return "ok"
+
+    caplog.set_level(logging.INFO)
+    await middleware.on_call_tool(_ctx(raw_name), call_next)
+    [(levelno, message)] = _lines(caplog)
+    assert levelno == logging.INFO
+    assert message == (
+        "mcp.tool.called tool="
+        + "L" * MAX_FIELD_CHARS
+        + f"…(+{MAX_FIELD_CHARS * 2}) profile=default"
+    )
+
+
+@pytest.mark.asyncio
+async def test_untrusted_profile_value_is_escaped_too(caplog) -> None:
+    """``profile`` is a public-constructor ``Any`` — same injection surface."""
+    middleware = ToolCallLogMiddleware(profile="blue\nprofile=admin")
+
+    async def call_next(ctx):
+        return "ok"
+
+    caplog.set_level(logging.INFO)
+    await middleware.on_call_tool(_ctx("get_quote"), call_next)
+    assert _lines(caplog) == [
+        (
+            logging.INFO,
+            "mcp.tool.called tool=get_quote profile=blue\\nprofile\\x3dadmin",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("plain_name-1.2", "plain_name-1.2"),
+        ("", ""),
+        ("a b", "a\\x20b"),
+        ("a=b", "a\\x3db"),
+        ('a"b', "a\\x22b"),
+        ("a\\b", "a\\\\b"),
+        ("a\vb\fc\rd", "a\\x0bb\\x0cc\\rd"),
+        ("a\u2028b\u2029c", "a\\u2028b\\u2029c"),
+        ("a\u0085b\x1b[31mc", "a\\x85b\\x1b[31mc"),
+        ("a\u00a0b\u2003c", "a\\xa0b\\u2003c"),
+        ("한글 도구", "한글\\x20도구"),
+        (None, "None"),
+        (123, "123"),
+    ],
+)
+def test_sanitize_log_field_escapes_structural_characters(
+    raw: object, expected: str
+) -> None:
+    assert sanitize_log_field(raw) == expected
+
+
+def test_sanitize_log_field_never_raises_for_unstringable_value() -> None:
+    class Exploding:
+        def __str__(self) -> str:
+            raise RuntimeError("no repr")
+
+    assert sanitize_log_field(Exploding()) == "unreadable"
