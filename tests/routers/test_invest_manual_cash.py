@@ -663,6 +663,7 @@ async def test_write_lands_on_mcp_user_row_not_the_admin_row(
     [
         {"amount": MANUAL_CASH_MAX_KRW + 1},
         {"amount": 10**30},
+        {"amount": 1e30},
         {"amount": "1e309"},
         {"amount": "NaN"},
         {"amount": float("inf")},
@@ -681,6 +682,25 @@ async def test_mcp_writer_rejects_invalid_manual_cash_without_write(
     with pytest.raises(ValueError):
         await user_settings_tools.set_user_setting("manual_cash", value)
     assert await _raw_value(owner) == {"amount": 5_000_000}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_writer_accepts_exactly_the_shared_bound(owner: int) -> None:
+    # #675 AC: 10,000,000,000 is accepted through the MCP writer, the bound is
+    # the one shared constant (10_000_000_000 KRW), and the provenance stamp is
+    # still the MCP writer's own.
+    assert MANUAL_CASH_MAX_KRW == 10_000_000_000
+    result = await user_settings_tools.set_user_setting(
+        "manual_cash", {"amount": MANUAL_CASH_MAX_KRW}
+    )
+    assert result["value"]["amount"] == MANUAL_CASH_MAX_KRW
+    assert isinstance(result["value"]["amount"], int)
+    assert result["value"]["source"] == SOURCE_MCP_SET_USER_SETTING
+    assert await _raw_value(owner) == {
+        "amount": MANUAL_CASH_MAX_KRW,
+        "source": SOURCE_MCP_SET_USER_SETTING,
+    }
 
 
 @pytest.mark.integration

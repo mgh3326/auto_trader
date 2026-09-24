@@ -6,6 +6,7 @@ from app.mcp_server.tooling.user_settings_tools import (
     get_user_setting,
     set_user_setting,
 )
+from app.services.manual_cash_settings import MANUAL_CASH_MAX_KRW
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -29,7 +30,8 @@ def register_user_settings_tools(mcp: FastMCP) -> None:
         description=(
             "Set a user setting value by key (upsert). "
             "Supported operator-maintained keys include 'manual_cash' and 'account_costs'. "
-            "For 'manual_cash' the value must be {\"amount\": <whole KRW 0..10000000000>} "
+            "For 'manual_cash' the value must be "
+            f'{{"amount": <whole KRW 0..{MANUAL_CASH_MAX_KRW}>}} '
             '(optional "accounts" [{name, amount}] summing to amount); invalid values '
             "are rejected and the stored source is always 'mcp_set_user_setting'. "
             "Creates or updates the setting and returns the serialized result with key, value, and updated_at."
