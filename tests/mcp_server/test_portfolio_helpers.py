@@ -79,9 +79,11 @@ class TestBuildHoldingsSummary:
         result = build_holdings_summary(positions, include_current_price=True)
         assert result["total_buy_amount"] == 87_880_000
         assert result["total_evaluation"] == 99_936_958
+        assert result["priced_buy_amount"] == 87_880_000
         assert result["total_profit_loss"] == pytest.approx(12_056_958.0)
         assert result["total_profit_rate"] == pytest.approx(13.72)
         assert result["unpriced_position_count"] == 0
+        assert result["unknown_cost_position_count"] == 0
 
     def test_profit_loss_excludes_unpriced_cost_without_fabricating_loss(
         self,
@@ -111,9 +113,10 @@ class TestBuildHoldingsSummary:
         result = build_holdings_summary(positions, include_current_price=True)
         assert result["total_buy_amount"] == 20_000
         assert result["total_evaluation"] == 11_000
-        # Invariant: profit == evaluation - (buy - unpriced_buy) = 11000 - 10000.
+        # Invariant: profit == evaluation - priced_buy = 11000 - 10000.
         assert result["unpriced_position_count"] == 1
         assert result["unpriced_buy_amount"] == 10_000
+        assert result["priced_buy_amount"] == 10_000
         assert result["total_profit_loss"] == pytest.approx(1000.0)
         assert result["total_profit_rate"] == pytest.approx(10.0)
 
@@ -155,6 +158,99 @@ class TestBuildHoldingsSummary:
         assert result["total_profit_rate"] is None
         assert result["unpriced_position_count"] == 1
         assert result["unpriced_buy_amount"] == 10_000
+
+    def test_unknown_cost_position_disclosed_not_counted_as_profit(self) -> None:
+        # avg_buy_price <= 0 (e.g. Upbit external deposit / airdrop projected
+        # with averageCost=None -> 0.0): the position's value is disclosed but
+        # its evaluation is not silently counted as profit.
+        positions = [
+            {
+                "symbol": "005930",
+                "name": "priced",
+                "avg_buy_price": 1000,
+                "quantity": 10,
+                "evaluation_amount": 11_000,
+                "profit_loss": 1000,
+                "profit_rate": 10.0,
+            },
+            {
+                "symbol": "KRW-XRP",
+                "name": "external deposit",
+                "avg_buy_price": 0,
+                "quantity": 300,
+                "evaluation_amount": 900_000,
+                "profit_loss": None,
+                "profit_rate": None,
+            },
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_buy_amount"] == 10_000
+        assert result["total_evaluation"] == 911_000
+        # Invariant: profit = eval - unknown_cost_eval - priced_buy.
+        assert result["unknown_cost_position_count"] == 1
+        assert result["unknown_cost_evaluation_amount"] == 900_000
+        assert result["unpriced_position_count"] == 0
+        assert result["priced_buy_amount"] == 10_000
+        assert result["total_profit_loss"] == pytest.approx(1000.0)
+        assert result["total_profit_rate"] == pytest.approx(10.0)
+
+    def test_unknown_cost_only_positions_yield_null_profit(self) -> None:
+        positions = [
+            {
+                "symbol": "KRW-XRP",
+                "name": "external deposit",
+                "avg_buy_price": 0,
+                "quantity": 300,
+                "evaluation_amount": 500_000,
+                "profit_loss": None,
+                "profit_rate": None,
+            }
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_profit_loss"] is None
+        assert result["total_profit_rate"] is None
+        assert result["unknown_cost_position_count"] == 1
+        assert result["unknown_cost_evaluation_amount"] == 500_000
+
+    def test_eval_zero_position_is_priced_as_total_loss(self) -> None:
+        # evaluation_amount=0 (e.g. delisted) is a real valuation, not
+        # "unpriced" — the position counts as a full loss.
+        positions = [
+            {
+                "symbol": "000000",
+                "name": "delisted",
+                "avg_buy_price": 1000,
+                "quantity": 10,
+                "evaluation_amount": 0,
+                "profit_loss": -10_000,
+                "profit_rate": -100.0,
+            }
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_profit_loss"] == pytest.approx(-10_000.0)
+        assert result["total_profit_rate"] == pytest.approx(-100.0)
+        assert result["unpriced_position_count"] == 0
+
+    def test_empty_positions_profit_is_none(self) -> None:
+        result = build_holdings_summary([], include_current_price=True)
+        assert result["total_evaluation"] == 0
+        assert result["total_profit_loss"] is None
+        assert result["total_profit_rate"] is None
+        assert result["unpriced_position_count"] == 0
+        assert result["unpriced_buy_amount"] == 0
+        assert result["unknown_cost_position_count"] == 0
+
+    def test_no_current_price_branch_reports_all_unpriced(self) -> None:
+        positions = [
+            {"symbol": "005930", "avg_buy_price": 100, "quantity": 2},
+        ]
+        result = build_holdings_summary(positions, include_current_price=False)
+        assert result["total_evaluation"] is None
+        assert result["total_profit_loss"] is None
+        assert result["unpriced_position_count"] == 1
+        assert result["unpriced_buy_amount"] == 200
+        assert result["unknown_cost_position_count"] == 0
+        assert result["unknown_cost_evaluation_amount"] is None
 
 
 class TestRecalculateProfitFields:

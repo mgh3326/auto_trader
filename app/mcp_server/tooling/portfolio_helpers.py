@@ -125,36 +125,60 @@ def build_holdings_summary(
             "weights": None,
             "unpriced_position_count": len(positions),
             "unpriced_buy_amount": total_buy_amount,
+            "unknown_cost_position_count": 0,
+            "unknown_cost_evaluation_amount": None,
+            "priced_buy_amount": 0,
         }
 
     # Summary P&L must be derivable from the buy/evaluation totals in the same
     # object. Per-position ``profit_loss`` is populated only for sources that
     # report it (broker APIs), while buy/evaluation cover every position, so
     # summing ``profit_loss`` mixes populations and can contradict the totals.
-    # Derive P&L as evaluation minus cost over the priced subset and disclose
-    # the unpriced remainder so the identity stays reconcilable.
-    priced_positions = [
-        position
-        for position in positions
-        if to_optional_float(position.get("evaluation_amount")) is not None
-    ]
-    unpriced_position_count = len(positions) - len(priced_positions)
+    # Derive P&L as evaluation minus cost over the computable subset and
+    # disclose the excluded remainders so the identity stays reconcilable:
+    # unpriced (no evaluation) positions never masquerade as losses, and
+    # positions with a valuation but no cost basis (avg*qty <= 0, e.g. Upbit
+    # external deposits) never masquerade as pure profit. ``priced_buy_amount``
+    # is the P&L cost basis and the rate denominator.
+    def _buy_amount(position: dict[str, Any]) -> float:
+        return to_float(position.get("avg_buy_price")) * to_float(
+            position.get("quantity")
+        )
+
+    def _is_priced(position: dict[str, Any]) -> bool:
+        return to_optional_float(position.get("evaluation_amount")) is not None
+
+    unpriced_position_count = sum(1 for p in positions if not _is_priced(p))
     unpriced_buy_amount = round(
+        sum(_buy_amount(p) for p in positions if not _is_priced(p)), 2
+    )
+    unknown_cost_position_count = sum(
+        1 for p in positions if _is_priced(p) and _buy_amount(p) <= 0
+    )
+    unknown_cost_evaluation_amount = round(
         sum(
-            to_float(position.get("avg_buy_price")) * to_float(position.get("quantity"))
-            for position in positions
-            if to_optional_float(position.get("evaluation_amount")) is None
+            to_float(p.get("evaluation_amount"))
+            for p in positions
+            if _is_priced(p) and _buy_amount(p) <= 0
         ),
         2,
     )
-    priced_buy_amount = round(total_buy_amount - unpriced_buy_amount, 2)
+    computable_positions = [
+        p for p in positions if _is_priced(p) and _buy_amount(p) > 0
+    ]
+    priced_buy_amount = round(sum(_buy_amount(p) for p in computable_positions), 2)
 
     total_evaluation = round(
         sum(to_float(position.get("evaluation_amount")) for position in positions),
         2,
     )
     total_profit_loss = (
-        round(total_evaluation - priced_buy_amount, 2) if priced_positions else None
+        round(
+            total_evaluation - unknown_cost_evaluation_amount - priced_buy_amount,
+            2,
+        )
+        if computable_positions
+        else None
     )
     total_profit_rate = (
         round((total_profit_loss / priced_buy_amount) * 100, 2)
@@ -186,6 +210,9 @@ def build_holdings_summary(
         "weights": weights,
         "unpriced_position_count": unpriced_position_count,
         "unpriced_buy_amount": unpriced_buy_amount,
+        "unknown_cost_position_count": unknown_cost_position_count,
+        "unknown_cost_evaluation_amount": unknown_cost_evaluation_amount,
+        "priced_buy_amount": priced_buy_amount,
     }
 
 
