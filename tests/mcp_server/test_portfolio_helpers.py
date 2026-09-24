@@ -296,6 +296,290 @@ class TestBuildHoldingsSummary:
         assert result["total_profit_rate"] is None
 
 
+_NON_FINITE_VALUES = [
+    pytest.param("NaN", id="nan_str"),
+    pytest.param("Infinity", id="pos_inf_str"),
+    pytest.param("-Infinity", id="neg_inf_str"),
+    pytest.param(float("nan"), id="nan_float"),
+    pytest.param(math.inf, id="pos_inf_float"),
+    pytest.param(-math.inf, id="neg_inf_float"),
+]
+
+
+def _finite_row(symbol: str, evaluation: float | None) -> dict:
+    return {
+        "symbol": symbol,
+        "avg_buy_price": 1000,
+        "quantity": 10,
+        "evaluation_amount": evaluation,
+    }
+
+
+def _assert_finite_number(value: object) -> None:
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    assert math.isfinite(value)
+
+
+class TestHoldingsSummaryNonFiniteCost:
+    """#634: a non-finite ``avg_buy_price``/``quantity`` must not reach the
+    buy-amount totals. The row is excluded from ``total_buy_amount`` and
+    ``unpriced_buy_amount`` and counted in ``non_finite_cost_position_count``,
+    mirroring #236 (non-finite evaluation -> unpriced, non-finite cost ->
+    unknown_cost; disclosed, never summed)."""
+
+    @pytest.mark.parametrize("field", ["avg_buy_price", "quantity"])
+    @pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+    @pytest.mark.parametrize("include_current_price", [True, False])
+    def test_non_finite_unpriced_row_excluded_from_buy_totals(
+        self, field: str, bad: object, include_current_price: bool
+    ) -> None:
+        # Unpriced row (no evaluation): before #634 its NaN/Inf cost reached
+        # both total_buy_amount and unpriced_buy_amount.
+        bad_row = _finite_row("BAD", None)
+        bad_row[field] = bad
+        positions = [_finite_row("OK", 12_000), bad_row]
+        result = build_holdings_summary(positions, include_current_price)
+
+        _assert_finite_number(result["total_buy_amount"])
+        _assert_finite_number(result["unpriced_buy_amount"])
+        assert result["total_buy_amount"] == 10_000
+        assert result["non_finite_cost_position_count"] == 1
+        assert result["position_count"] == 2
+        if include_current_price:
+            assert result["unpriced_position_count"] == 1
+            assert result["unpriced_buy_amount"] == 0
+            assert result["priced_buy_amount"] == 10_000
+            assert result["total_profit_loss"] == pytest.approx(2000.0)
+        else:
+            assert result["unpriced_position_count"] == 2
+            assert result["unpriced_buy_amount"] == 10_000
+
+    @pytest.mark.parametrize("field", ["avg_buy_price", "quantity"])
+    @pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+    def test_non_finite_priced_row_excluded_from_total_buy(
+        self, field: str, bad: object
+    ) -> None:
+        # Priced row with non-finite cost stays unknown_cost (#236) and is now
+        # also kept out of total_buy_amount.
+        bad_row = _finite_row("BAD", 7_000)
+        bad_row[field] = bad
+        positions = [_finite_row("OK", 12_000), bad_row]
+        result = build_holdings_summary(positions, include_current_price=True)
+
+        _assert_finite_number(result["total_buy_amount"])
+        assert result["total_buy_amount"] == 10_000
+        assert result["unpriced_buy_amount"] == 0
+        assert result["non_finite_cost_position_count"] == 1
+        assert result["unknown_cost_position_count"] == 1
+        assert result["unknown_cost_evaluation_amount"] == 7_000
+        assert result["priced_buy_amount"] == 10_000
+        assert result["total_evaluation"] == 19_000
+        assert result["total_profit_loss"] == pytest.approx(2000.0)
+
+    @pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+    @pytest.mark.parametrize("include_current_price", [True, False])
+    def test_both_fields_non_finite(
+        self, bad: object, include_current_price: bool
+    ) -> None:
+        bad_row = {
+            "symbol": "BAD",
+            "avg_buy_price": bad,
+            "quantity": bad,
+            "evaluation_amount": None,
+        }
+        positions = [_finite_row("OK", None), bad_row]
+        result = build_holdings_summary(positions, include_current_price)
+        _assert_finite_number(result["total_buy_amount"])
+        _assert_finite_number(result["unpriced_buy_amount"])
+        assert result["total_buy_amount"] == 10_000
+        assert result["unpriced_buy_amount"] == 10_000
+        assert result["non_finite_cost_position_count"] == 1
+
+    @pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+    @pytest.mark.parametrize("include_current_price", [True, False])
+    def test_zero_quantity_with_non_finite_price(
+        self, bad: object, include_current_price: bool
+    ) -> None:
+        # inf * 0 is NaN; a zero quantity does not rescue an unknown price.
+        positions = [
+            _finite_row("OK", None),
+            {"symbol": "BAD", "avg_buy_price": bad, "quantity": 0},
+        ]
+        result = build_holdings_summary(positions, include_current_price)
+        _assert_finite_number(result["total_buy_amount"])
+        _assert_finite_number(result["unpriced_buy_amount"])
+        assert result["total_buy_amount"] == 10_000
+        assert result["unpriced_buy_amount"] == 10_000
+        assert result["non_finite_cost_position_count"] == 1
+
+    @pytest.mark.parametrize("include_current_price", [True, False])
+    def test_zero_quantity_finite_price_is_not_flagged(
+        self, include_current_price: bool
+    ) -> None:
+        positions = [
+            _finite_row("OK", None),
+            {"symbol": "ZERO", "avg_buy_price": 1000, "quantity": 0},
+        ]
+        result = build_holdings_summary(positions, include_current_price)
+        assert result["total_buy_amount"] == 10_000
+        assert result["unpriced_buy_amount"] == 10_000
+        assert result["unpriced_position_count"] == 2
+        assert result["non_finite_cost_position_count"] == 0
+
+    def test_finite_overflow_product_is_excluded(self) -> None:
+        # Both inputs finite but the product overflows to inf.
+        positions = [
+            _finite_row("OK", None),
+            {"symbol": "HUGE", "avg_buy_price": 1e200, "quantity": 1e200},
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        _assert_finite_number(result["total_buy_amount"])
+        assert result["total_buy_amount"] == 10_000
+        assert result["unpriced_buy_amount"] == 10_000
+        assert result["non_finite_cost_position_count"] == 1
+
+    @pytest.mark.parametrize("include_current_price", [True, False])
+    def test_mixed_finite_and_non_finite_rows(
+        self, include_current_price: bool
+    ) -> None:
+        positions = [
+            _finite_row("P1", 11_000),  # priced, buy 10_000
+            {
+                "symbol": "P2",
+                "avg_buy_price": 250,
+                "quantity": 4,
+                "evaluation_amount": 900,
+            },  # priced, buy 1_000
+            {
+                "symbol": "U1",
+                "avg_buy_price": 300,
+                "quantity": 5,
+                "evaluation_amount": None,
+            },  # unpriced, buy 1_500
+            {
+                "symbol": "X1",
+                "avg_buy_price": "NaN",
+                "quantity": 3,
+                "evaluation_amount": None,
+            },
+            {
+                "symbol": "X2",
+                "avg_buy_price": 10,
+                "quantity": math.inf,
+                "evaluation_amount": 50,
+            },
+            {
+                "symbol": "X3",
+                "avg_buy_price": -math.inf,
+                "quantity": 2,
+                "evaluation_amount": "Infinity",
+            },
+            {
+                "symbol": "X4",
+                "avg_buy_price": "Infinity",
+                "quantity": 0,
+                "evaluation_amount": None,
+            },
+        ]
+        result = build_holdings_summary(positions, include_current_price)
+        _assert_finite_number(result["total_buy_amount"])
+        _assert_finite_number(result["unpriced_buy_amount"])
+        assert result["total_buy_amount"] == 12_500
+        assert result["non_finite_cost_position_count"] == 4
+        assert result["position_count"] == 7
+        if include_current_price:
+            # U1, X1, X3 (non-finite evaluation), X4 are unpriced; only U1
+            # has a finite cost to disclose.
+            assert result["unpriced_position_count"] == 4
+            assert result["unpriced_buy_amount"] == 1_500
+            assert result["unknown_cost_position_count"] == 1  # X2
+            assert result["unknown_cost_evaluation_amount"] == 50
+            assert result["priced_buy_amount"] == 11_000
+            assert result["total_evaluation"] == 11_950
+            assert result["total_profit_loss"] == pytest.approx(900.0)
+        else:
+            assert result["unpriced_position_count"] == 7
+            assert result["unpriced_buy_amount"] == 12_500
+
+    @pytest.mark.parametrize("include_current_price", [True, False])
+    def test_finite_rows_byte_identical_to_pre_fix_formula(
+        self, include_current_price: bool
+    ) -> None:
+        positions = [
+            {
+                "symbol": "A",
+                "avg_buy_price": 0.1,
+                "quantity": 3,
+                "evaluation_amount": 0.35,
+            },
+            {
+                "symbol": "B",
+                "avg_buy_price": "71234.567",
+                "quantity": "13",
+                "evaluation_amount": None,
+            },
+            {
+                "symbol": "C",
+                "avg_buy_price": 1e-9,
+                "quantity": 7,
+                "evaluation_amount": 1,
+            },
+            {
+                "symbol": "D",
+                "avg_buy_price": None,
+                "quantity": 5,
+                "evaluation_amount": None,
+            },
+            {
+                "symbol": "E",
+                "avg_buy_price": -3.3,
+                "quantity": 2,
+                "evaluation_amount": None,
+            },
+            {
+                "symbol": "F",
+                "avg_buy_price": 88_000,
+                "quantity": 0.123456,
+                "evaluation_amount": 10_000,
+            },
+        ]
+
+        def _buy(p: dict) -> float:
+            def _f(v: object) -> float:
+                return 0.0 if v in (None, "") else float(v)  # type: ignore[arg-type]
+
+            return _f(p.get("avg_buy_price")) * _f(p.get("quantity"))
+
+        expected_total = round(sum(_buy(p) for p in positions), 2)
+        result = build_holdings_summary(positions, include_current_price)
+        assert repr(result["total_buy_amount"]) == repr(expected_total)
+        assert result["non_finite_cost_position_count"] == 0
+        if include_current_price:
+            expected_unpriced = round(
+                sum(_buy(p) for p in positions if p["evaluation_amount"] is None),
+                2,
+            )
+        else:
+            expected_unpriced = expected_total
+        assert repr(result["unpriced_buy_amount"]) == repr(expected_unpriced)
+
+    def test_all_rows_non_finite_totals_are_zero(self) -> None:
+        positions = [
+            {
+                "symbol": "X",
+                "avg_buy_price": "NaN",
+                "quantity": 1,
+                "evaluation_amount": None,
+            },
+        ]
+        result = build_holdings_summary(positions, include_current_price=True)
+        assert result["total_buy_amount"] == 0
+        assert result["unpriced_buy_amount"] == 0
+        assert result["unpriced_position_count"] == 1
+        assert result["non_finite_cost_position_count"] == 1
+        assert result["total_profit_loss"] is None
+
+
 class TestRecalculateProfitFields:
     def test_no_current_price_clears_fields(self) -> None:
         position: dict = {
