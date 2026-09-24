@@ -8,6 +8,7 @@ fails loudly instead of silently dropping a key.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import Annotated, Literal
 
@@ -40,13 +41,49 @@ class OneShareExceptionPolicy(BaseModel):
     price exceeds a USD notional band's ceiling, allow exactly one share
     instead of blocking the entry outright. absolute_ceiling_usd still hard-
     blocks ultra-high-priced symbols (BRK.A/NVR-class); max_deep_rungs caps
-    additional averaging-down exposure on exception entries."""
+    additional averaging-down exposure on exception entries.
+
+    §664 (2026-09-24) adds the KR mirror: the ceiling is carried in the band's
+    own currency, so exactly one of ``absolute_ceiling_usd`` /
+    ``absolute_ceiling_krw`` is present and ``PolicyThreshold`` pins it to the
+    band's ``unit``."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
-    absolute_ceiling_usd: float
-    max_deep_rungs: int
+    absolute_ceiling_usd: float | None = None
+    absolute_ceiling_krw: float | None = None
+    max_deep_rungs: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _exactly_one_positive_ceiling(self) -> OneShareExceptionPolicy:
+        ceilings = [
+            value
+            for value in (self.absolute_ceiling_usd, self.absolute_ceiling_krw)
+            if value is not None
+        ]
+        if len(ceilings) != 1:
+            raise ValueError(
+                "one_share_exception requires exactly one of "
+                "absolute_ceiling_usd / absolute_ceiling_krw"
+            )
+        if not math.isfinite(ceilings[0]) or ceilings[0] <= 0:
+            raise ValueError("one_share_exception ceiling must be finite and > 0")
+        return self
+
+    @property
+    def absolute_ceiling_unit(self) -> str:
+        return "usd" if self.absolute_ceiling_usd is not None else "krw"
+
+    @property
+    def absolute_ceiling(self) -> float:
+        ceiling = (
+            self.absolute_ceiling_usd
+            if self.absolute_ceiling_usd is not None
+            else self.absolute_ceiling_krw
+        )
+        assert ceiling is not None  # guaranteed by the model validator
+        return ceiling
 
 
 class PolicyThreshold(BaseModel):
@@ -58,6 +95,28 @@ class PolicyThreshold(BaseModel):
     semantics: str
     of: int | None = None
     one_share_exception: OneShareExceptionPolicy | None = None
+
+    @model_validator(mode="after")
+    def _one_share_exception_matches_band(self) -> PolicyThreshold:
+        exception = self.one_share_exception
+        if exception is None:
+            return self
+        if exception.absolute_ceiling_unit != self.unit:
+            raise ValueError(
+                f"one_share_exception ceiling unit {exception.absolute_ceiling_unit} "
+                f"does not match the band unit {self.unit}"
+            )
+        if not (
+            isinstance(self.value, list)
+            and len(self.value) == 2
+            and self.value[0] <= self.value[1]
+        ):
+            raise ValueError("one_share_exception requires a [low, high] band value")
+        if exception.absolute_ceiling <= self.value[1]:
+            raise ValueError(
+                "one_share_exception ceiling must exceed the band upper bound"
+            )
+        return self
 
 
 class PolicyDecisionRuleTier(BaseModel):

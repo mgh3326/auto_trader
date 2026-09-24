@@ -175,7 +175,9 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             "semantics": spec.semantics,
             "of": spec.of,
             "one_share_exception": (
-                spec.one_share_exception.model_dump()
+                # exclude_none keeps each band's projection to its own
+                # currency's ceiling key (§664 added the KRW field).
+                spec.one_share_exception.model_dump(exclude_none=True)
                 if spec.one_share_exception is not None
                 else None
             ),

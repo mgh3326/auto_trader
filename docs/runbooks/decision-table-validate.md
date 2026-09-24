@@ -34,14 +34,36 @@ The tool reports these rules: `table_not_object`, `missing_decision_table`,
 `rungs_price_bounds_inverted`, `rungs_price_not_tick_aligned`,
 `rungs_missing_field`, `price_recompute_mismatch`,
 `qty_recompute_mismatch`, `tick_grid_violation`, `sizing_band_violation`,
-`deep_limit_violation`, `loss_guard_violation`, `below_min_order_amount`,
+`one_share_exception_rung_limit`, `deep_limit_violation`,
+`loss_guard_violation`, `below_min_order_amount`,
 `same_day_chain_or_opposite_order`, `sector_concentration`, and
 `invalid_parent_correlation_id`. v1 is accepted only with the advisory
 `schema_version_deprecated_v1` until 2026-09-12; any other schema version
 gets the blocking `schema_version_mismatch`.
 
 `unknown_top_level_key`, `extensions_entry_absent`, and
-`sector_concentration` are advisory; every other listed rule blocks. Each
+`sector_concentration` are advisory; every other listed rule blocks.
+
+**KR one-share exception (§664).** `sizing_band_violation` checks each buy
+rung's `price_min × qty` against `buy.per_symbol_notional_krw_range`
+([200,000, 400,000]). Its `one_share_exception` admits an over-band KR buy
+rung only when **all** hold: `qty == 1`; the single share (`price_min`)
+exceeds 400,000; `max(price_min, price_max) <= absolute_ceiling_krw`
+(10,000,000, inclusive); the row names exactly one symbol; and the row carries
+no held-position evidence (an action `avg_price`/`average_cost`/
+`avg_buy_price`/`position_quantity`/`holding_quantity`, or a condition metric
+naming a position/holding/average cost — `position_quantity eq 0` is the one
+affirmative new-entry form). A denied rung keeps `sizing_band_violation` with
+the denial reason in `expected`. Once any rung of a symbol uses the exception,
+that symbol may have at most `max_deep_rungs` (1) buy rungs across the whole
+table — every row and account — else each involved row gets the blocking
+`one_share_exception_rung_limit`. Sells never consult the exception; the US
+band's exception is not honoured by this validator (unchanged). The
+exception does not touch auto-approval: a one-share order above the KR
+per-order cap (2,000,000) is still demoted to a human card as
+`per_order_cap_exceeded`. Limit: the validator is pure and cannot read
+holdings, so a held symbol whose row omits every position condition is
+indistinguishable from a new entry here. Each
 violation contains the detected table shape and a link
 to the [canonical v1.1 shape](../specs/mcp-session-tools-v1.md#canonical-decision-table-shape-v11).
 
