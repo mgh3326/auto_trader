@@ -15,6 +15,13 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.services.order_proposals.cash_funding_exemption import (
+    CASH_FUNDING_REJECT_REASONS,
+)
+from app.services.order_proposals.parking_allowlist import (
+    PARKING_EXPOSURE_UNAVAILABLE_REASONS,
+)
+
 AUTO_APPROVE_REJECTIONS_KEY = "auto_approve_rejections"
 AUTO_APPROVE_CAP_OBSERVATIONS_KEY = "cap_observations"
 AUTO_APPROVE_NOT_EVALUATED_KEY = "auto_approve_not_evaluated"
@@ -74,6 +81,11 @@ _NUMERIC_INPUT_KEYS = frozenset(
         "round_trip_cost",
         "net_pnl",
         "pending_rung_count",
+        # §163차/§173 cumulative parking meter. Without these a
+        # `parking_cap_exceeded` row cannot show how close the account was.
+        "parking_exposure_before",
+        "parking_exposure_after",
+        "parking_cap",
     }
 )
 _ENUM_INPUT_VALUES = {
@@ -91,7 +103,25 @@ _ENUM_INPUT_VALUES = {
     "target_evidence": frozenset(
         {"order_id_missing", "snapshot_missing", "snapshot_mismatch"}
     ),
+    # §163차/§173 -- why the cumulative parking meter could not be read. The
+    # classifier adds `not_supplied` (no reading passed) and `invalid_exposure`
+    # (a reading that is not a finite non-negative amount) to the meter's own
+    # closed vocabulary. For a Toss scope, `account_identity_unavailable` is
+    # the proposal's `broker_account_id` not naming the configured account.
+    "parking_exposure_reason": frozenset(
+        PARKING_EXPOSURE_UNAVAILABLE_REASONS | {"not_supplied", "invalid_exposure"}
+    ),
+    "parking_currency": frozenset({"USD", "KRW"}),
+    # §S177 -- the cash-funding boundary's own closed verdict vocabulary.
+    "cash_funding_reason": CASH_FUNDING_REJECT_REASONS,
+    "cash_funding_cumulative_reason": frozenset({"unmeasured"}),
 }
+# Sub-reasons rendered next to the reason code on the manual approval card.
+_CARD_DETAIL_REASON_KEYS = (
+    "parking_exposure_reason",
+    "cash_funding_reason",
+    "cash_funding_cumulative_reason",
+)
 _BOOLEAN_INPUT_KEYS = frozenset(
     {
         "eligibility_error",
@@ -113,6 +143,8 @@ _KNOWN_REASON_CODES = frozenset(
         "approval_required_tag",
         "auto_veto_thesis_missing",
         "breakeven_band",
+        "cash_funding_boundary_failed",
+        "cash_funding_cumulative_cap_exceeded",
         "daily_cap_exceeded",
         "distance_below_minimum",
         "eligibility_error",
@@ -122,6 +154,8 @@ _KNOWN_REASON_CODES = frozenset(
         "marketable_not_resting",
         "multi_rung_requires_approval",
         "order_type_not_limit",
+        "parking_cap_exceeded",
+        "parking_exposure_unavailable",
         "per_order_cap_exceeded",
         "preview_guard_failed",
         "price_or_quantity_missing",
@@ -488,7 +522,19 @@ def build_auto_approve_rejection_card_block(source_asof: Any) -> str | None:
     latest = attempts[-1]
     lines = ["*자동 승인 제외*"]
     for rung in latest["rungs"][:3]:
-        lines.append(f"- #{rung['rung_index'] + 1}: `{rung['reason_code']}`")
+        line = f"- #{rung['rung_index'] + 1}: `{rung['reason_code']}`"
+        # Closed-enum sub-reasons only (already filtered by the projection).
+        detail = next(
+            (
+                rung["inputs"][key]
+                for key in _CARD_DETAIL_REASON_KEYS
+                if key in rung["inputs"]
+            ),
+            None,
+        )
+        if detail is not None:
+            line += f" / `{detail}`"
+        lines.append(line)
         matches = rung["inputs"].get("tag_matches", [])
         for match in matches[:2]:
             location = match["field"] + match["path"][1:]
