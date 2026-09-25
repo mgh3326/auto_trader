@@ -113,6 +113,11 @@ async def _read_kis_market(*, market: str) -> list[LivePositionObservation]:
             continue
         held = _require_quantity(row.get(held_field), field="broker_held")
         raw_sellable = row.get("ord_psbl_qty")
+        if market == "us" and (raw_sellable is None or not str(raw_sellable).strip()):
+            # KIS overseas holdings use this field in real broker responses.
+            # Do not apply the fallback to KR: an absent KR sellable remains
+            # unavailable evidence rather than a quantity substitution.
+            raw_sellable = row.get("ovrs_ord_psbl_qty")
         if raw_sellable is None or not str(raw_sellable).strip():
             raise BrokerObservationUnavailable("KIS sellable quantity is unavailable")
         sellable = _require_quantity(raw_sellable, field="broker_sellable")
@@ -374,6 +379,7 @@ async def read_protected_position_settings(
         snapshot = heads_by_key.get(key)
         observed = observations.get(key)
         failure = failures.get((key.account_scope, key.market))
+        successful_absence = False
         protected = (
             snapshot.protected_quantity if snapshot is not None else Decimal("0")
         )
@@ -384,14 +390,28 @@ async def read_protected_position_settings(
             failure = "protection_mode_unavailable"
 
         if observed is None:
-            observed = LivePositionObservation(
-                key=key,
-                name=key.symbol,
-                held=None,
-                sellable=None,
-                observed_at=None,
-                error=failure,
-            )
+            if failure is None:
+                # A successful source response that omits a durable protected
+                # head is a real zero-position observation. It is distinct
+                # from a source failure, which must remain unverified so a
+                # transient empty response cannot soften a declaration.
+                successful_absence = True
+                observed = LivePositionObservation(
+                    key=key,
+                    name=key.symbol,
+                    held=Decimal("0"),
+                    sellable=Decimal("0"),
+                    observed_at=_observed_now(),
+                )
+            else:
+                observed = LivePositionObservation(
+                    key=key,
+                    name=key.symbol,
+                    held=None,
+                    sellable=None,
+                    observed_at=None,
+                    error=failure,
+                )
 
         state, headroom = _state_from_observation(
             snapshot=snapshot, observation=observed
@@ -403,6 +423,7 @@ async def read_protected_position_settings(
             observed.error is None
             and observed.held is not None
             and observed.sellable is not None
+            and not successful_absence
         ):
             try:
                 projection = await headroom_for_observation(

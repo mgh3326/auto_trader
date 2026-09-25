@@ -238,6 +238,44 @@ async def test_read_exposes_unverified_not_synthetic_zero(
 
 
 @pytest.mark.asyncio
+async def test_get_exposes_orphan_shortfall_as_warning_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def read_rows(_db):
+        return [
+            {
+                "account_scope": "kis_live",
+                "market": "kr",
+                "symbol": "TORPHAN728",
+                "name": "이전 종목코드",
+                "protected_quantity": "4",
+                "broker_held": "0",
+                "broker_sellable": "0",
+                "headroom": "0",
+                "state": "shortfall",
+                "mode": "off",
+                "read_error": None,
+                "revision": 3,
+                "latest_revision": None,
+                "history_url": f"{URL}/kis_live/kr/TORPHAN728/history",
+                "broker_observed_at": "2026-09-26T00:00:00+00:00",
+            }
+        ]
+
+    monkeypatch.setattr(protected_router, "read_protected_position_settings", read_rows)
+    async with await _client(_app(role=UserRole.viewer)) as client:
+        response = await client.get(URL)
+    assert response.status_code == 200
+    row = response.json()["positions"][0]
+    assert row["protected_quantity"] == "4"
+    assert row["broker_held"] == "0"
+    assert row["broker_sellable"] == "0"
+    assert row["headroom"] == "0"
+    assert row["state"] == "shortfall"
+    assert row["read_error"] is None
+
+
+@pytest.mark.asyncio
 async def test_preview_requires_confirmation_with_fresh_evidence_and_bad_quantity_is_422(
     session_user: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -276,6 +314,50 @@ async def test_preview_requires_confirmation_with_fresh_evidence_and_bad_quantit
     }
     assert too_large.status_code == 422
     assert too_large.json()["detail"]["error"] == "protected_quantity_exceeds_held"
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_stale_current_and_first_declaration_tokens_before_broker(
+    session_user: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _require_db()
+    actor_id = 728009
+    _admin(session_user, actor_id)
+    calls = 0
+
+    async def broker(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return _observation()
+
+    monkeypatch.setattr(protected_router, "fresh_broker_observation", broker)
+    symbol = f"TPREVIEWSTALE{uuid4().hex[:6].upper()}"
+    async with await _client(_app(actor_id=actor_id)) as client:
+        declared = await _put(client, symbol, **_body(quantity="6"))
+        assert declared.status_code == 200, declared.text
+        calls = 0
+        stale_first_declaration = await _put(
+            client,
+            symbol,
+            **_body(quantity="7", expected_revision=None, confirmed=False),
+        )
+        stale_current = await _put(
+            client,
+            symbol,
+            **_body(quantity="7", expected_revision=0, confirmed=False),
+        )
+        current = await _put(
+            client,
+            symbol,
+            **_body(quantity="7", expected_revision=1, confirmed=False),
+        )
+    assert stale_first_declaration.status_code == 409
+    assert stale_first_declaration.json()["detail"]["error"] == "stale_form"
+    assert stale_current.status_code == 409
+    assert stale_current.json()["detail"]["error"] == "stale_form"
+    assert current.status_code == 409
+    assert current.json()["detail"]["error"] == "confirm_required"
+    assert calls == 1
 
 
 @pytest.mark.asyncio

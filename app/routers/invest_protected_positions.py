@@ -109,6 +109,7 @@ async def _preview_or_reject(
     market: str,
     symbol: str,
     new_quantity: Decimal,
+    expected_revision: int | None,
 ) -> dict[str, Any]:
     """Freshly render a non-mutating confirmation preview.
 
@@ -123,13 +124,29 @@ async def _preview_or_reject(
         market=market,
         symbol=symbol,
     )
+    current = await ProtectedQuantityService(db).get(key=key)
+    if current is None:
+        if expected_revision is not None:
+            raise _conflict(
+                "stale_form",
+                "protected position was not present at the expected revision",
+            )
+    elif expected_revision != current.revision:
+        raise _conflict(
+            "stale_form",
+            "protected position changed since this form was loaded",
+            current_revision=current.revision,
+            current_protected_quantity=format(current.protected_quantity, "f"),
+        )
+
+    # This pre-confirmation read is for display only. The confirmed save below
+    # creates a separate lazy provider that reads after the advisory lock.
     observation = await fresh_broker_observation(key=key)
     if new_quantity > observation.held:
         raise _unprocessable(
             "protected_quantity_exceeds_held",
             "protected_quantity must not exceed fresh broker held quantity",
         )
-    current = await ProtectedQuantityService(db).get(key=key)
     previous_quantity = (
         current.protected_quantity if current is not None else Decimal("0")
     )
@@ -231,6 +248,7 @@ async def put_protected_position(
                 market=key.market,
                 symbol=key.symbol,
                 new_quantity=new_quantity,
+                expected_revision=request.expected_revision,
             )
         except BrokerObservationUnavailable as exc:
             raise _unprocessable("broker_read_failed", str(exc)) from exc
