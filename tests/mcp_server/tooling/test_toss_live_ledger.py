@@ -132,7 +132,11 @@ async def test_original_place_terminal_lookup_requires_reconciled_cancel_evidenc
 
 
 async def _seed_toss_resting_proposal(
-    db_session, *, broker_order_id: str, correlation_id: str
+    db_session,
+    *,
+    broker_order_id: str,
+    correlation_id: str,
+    auto_approved: bool = False,
 ):
     from datetime import UTC, datetime
 
@@ -148,6 +152,18 @@ async def _seed_toss_resting_proposal(
         order_type="limit",
         proposer="projection-test",
         rungs=[RungInput(0, "buy", Decimal("2"), Decimal("190"), None)],
+        source_asof=(
+            {
+                "auto_approved": {
+                    "policy_version": "projection-test",
+                    "approved_at": datetime.now(UTC).isoformat(),
+                    "eligibility": [],
+                    "outcomes": ["submitted_resting"],
+                }
+            }
+            if auto_approved
+            else None
+        ),
     )
     now = datetime.now(UTC)
     for state in ("revalidating", "approved", "submitting"):
@@ -173,7 +189,9 @@ async def _proposal_rung(db_session, proposal_id):
     return rungs[0]
 
 
-async def _proposal_accepted_row(db_session, *, suffix: str):
+async def _proposal_accepted_row(
+    db_session, *, suffix: str, auto_approved: bool = False
+):
     unique = uuid4().hex
     broker_order_id = f"ord-proposal-{suffix}-{unique}"
     correlation_id = f"corr-proposal-{suffix}-{unique}"
@@ -181,6 +199,7 @@ async def _proposal_accepted_row(db_session, *, suffix: str):
         db_session,
         broker_order_id=broker_order_id,
         correlation_id=correlation_id,
+        auto_approved=auto_approved,
     )
     row = await TossLiveOrderLedgerService(db_session).record_send(
         operation_kind="place",
@@ -2380,11 +2399,14 @@ async def test_partially_filled_rung_expires_preserving_qty(db_session):
 async def test_resting_rung_partial_fill_then_expired_preserves_qty(db_session):
     """CodeRabbit Major on #691: a resting rung that never saw the fill and is
     swept in the same reconcile pass must keep the partial quantity — the
-    pre-terminal fill projection covers expired as well as cancelled."""
+    pre-terminal fill projection covers expired as well as cancelled.  The
+    account-wide auto-submission freeze interlock must also be written: it is
+    the fail-closed gate that a skipped fill projection would leave absent."""
     from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
 
     proposal_id, row = await _proposal_accepted_row(
-        db_session, suffix="resting-partial-expired"
+        db_session, suffix="resting-partial-expired", auto_approved=True
     )
     outcome = await _reconcile_with_evidence(
         mod,
@@ -2405,6 +2427,11 @@ async def test_resting_rung_partial_fill_then_expired_preserves_qty(db_session):
     }
     assert rung.state == "expired"
     assert rung.filled_qty == Decimal("0.5")
+
+    group, _ = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    freeze = group.source_asof["auto_approved"]["toss_auto_submission_freeze"]
+    assert freeze["state"] == "frozen"
+    assert freeze["filled_qty"] == "0.5"
 
     refreshed = await db_session.get(TossLiveOrderLedger, row.id)
     assert refreshed.status == "expired"
@@ -2456,3 +2483,57 @@ async def test_terminal_expired_repair_preserves_resting_rung_qty(db_session):
     }
     assert rung.state == "expired"
     assert rung.filled_qty == Decimal("0.5")
+
+
+async def test_real_batch_source_404_falls_back_to_anomaly_not_expired(db_session):
+    """Tester SHOULD on #691: drive the real TossBatchEvidenceSource (not a
+    stubbed build) with a client whose get_order raises 404.  The order is
+    absent from both OPEN and CLOSED broker pages AND unknown to the
+    single-order fallback — the row must land on anomaly/requires_manual_review,
+    never expired."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.brokers.toss.dto import TossOrdersPage
+    from app.services.brokers.toss.errors import (
+        TossApiResponseError,
+        TossErrorEnvelope,
+    )
+
+    row = await _accepted(db_session, market="kr")
+    err = TossApiResponseError(
+        TossErrorEnvelope(
+            request_id="ray-404-real",
+            code="order-not-found",
+            message="no such order",
+            data=None,
+        ),
+        status_code=404,
+    )
+
+    class _EmptyBrokerClient:
+        async def list_orders(self, **_kwargs):
+            return TossOrdersPage(orders=[], next_cursor=None, has_next=False)
+
+        async def get_order(self, _order_id):
+            raise err
+
+        async def aclose(self):
+            return None
+
+    with patch.object(
+        mod.TossReadClient,
+        "from_settings",
+        new=staticmethod(lambda: _EmptyBrokerClient()),
+    ):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    assert out["counts"] == {"anomaly": 1}
+    item = out["reconciled"][0]
+    assert item["verdict"] == "anomaly"
+    assert item["action"] == "requires_manual_review"
+    assert item["requires_manual_review"] is True
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "anomaly"
+    assert refreshed.status != "expired"
+    assert refreshed.expired_at is None
+    assert refreshed.requires_manual_review is True

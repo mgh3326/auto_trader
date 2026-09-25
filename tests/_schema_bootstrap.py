@@ -1902,13 +1902,14 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ",
     # create_all renders the ORM CheckConstraint through the ck_ naming
     # convention; the alembic-era literal name is covered for DBs that were
-    # migrated rather than create_all'd.
+    # migrated rather than create_all'd. The re-added constraint uses the
+    # canonical ck_ spelling so migrated and create_all schemas converge.
     "ALTER TABLE review.toss_live_order_ledger "
     "DROP CONSTRAINT IF EXISTS toss_live_ledger_status",
     "ALTER TABLE review.toss_live_order_ledger "
     "DROP CONSTRAINT IF EXISTS ck_toss_live_order_ledger_toss_live_ledger_status",
     "ALTER TABLE review.toss_live_order_ledger "
-    "ADD CONSTRAINT toss_live_ledger_status CHECK (status IN ("
+    "ADD CONSTRAINT ck_toss_live_order_ledger_toss_live_ledger_status CHECK (status IN ("
     "'accepted','rejected','pending','partial','filled','cancelled',"
     "'replaced','cancel_rejected','replace_rejected','anomaly','expired'))",
 )

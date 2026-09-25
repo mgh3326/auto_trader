@@ -16,7 +16,8 @@ name ``toss_live_ledger_status``, while ``Base.metadata.create_all`` renders
 the same constraint through the ``ck_%(table_name)s_%(constraint_name)s``
 naming convention as ``ck_toss_live_order_ledger_toss_live_ledger_status``.
 The drop therefore covers both spellings with IF EXISTS, and the recreated
-constraint is pinned to the literal migration-era name via ``op.f``.
+constraint is pinned via ``op.f`` to the ORM-canonical ``ck_`` spelling so
+migrated and create_all schemas converge on one name.
 
 Downgrade note: if any row already carries status='expired', the recreated
 CHECK will reject it — downgrade only after such rows are resolved.
@@ -37,10 +38,10 @@ depends_on: str | Sequence[str] | None = None
 
 _TABLE = "toss_live_order_ledger"
 _SCHEMA = "review"
-_CONSTRAINT = "toss_live_ledger_status"
+_CONSTRAINT = "ck_toss_live_order_ledger_toss_live_ledger_status"
 _CONSTRAINT_NAMES = (
     _CONSTRAINT,
-    "ck_toss_live_order_ledger_toss_live_ledger_status",
+    "toss_live_ledger_status",
 )
 _STATUS_WITH_EXPIRED = (
     "'accepted','rejected','pending','partial','filled','cancelled',"
