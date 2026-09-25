@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260925_task691_toss_expired"
+HEAD_REVISION = "20260925_task711_nhplug_ledger"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -114,6 +114,7 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.buy_gate_ab_collection_epoch_v2",
     "review.kiwoom_coordination_lifecycle",
     "review.fill_watch_context_outcomes",
+    "review.nhplug_mock_order_ledger",
 )
 
 

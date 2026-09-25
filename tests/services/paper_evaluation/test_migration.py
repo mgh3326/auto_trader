@@ -276,6 +276,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "funding_advisories",
                 "external_cash_declarations",
                 "fill_watch_context_outcomes",
+                "nhplug_mock_order_ledger",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
 

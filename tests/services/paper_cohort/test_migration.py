@@ -278,6 +278,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "buy_gate_ab_collection_epoch_v2",
                 "kiwoom_coordination_lifecycle",
                 "fill_watch_context_outcomes",
+                "nhplug_mock_order_ledger",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
             # Funding advisory is later than this reconstructed boundary. Drop

@@ -34,6 +34,7 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_READ_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
+from app.mcp_server.tooling.orders_nhplug_mock_variants import NHPLUG_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -303,6 +304,8 @@ PREVIEW_REVALIDATION_TOOLS: frozenset[str] = frozenset(
         "buy_ladder_fill_preview",
         "kiwoom_mock_preview_order",
         "kiwoom_mock_us_preview_order",
+        # #711: offline limit-order preview (no network, no ledger row).
+        "nhplug_mock_preview_order",
         "sell_ladder_fill_preview",
         "toss_preview_order",
     }
@@ -314,6 +317,8 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
         "kis_live_reconcile_orders",
         "kis_mock_reconciliation_run",
         "live_reconcile_orders",
+        # #711: reads the NH mock listings; writes review.nhplug_mock_order_ledger.
+        "nhplug_mock_reconcile_orders",
         "paper_reconcile_orders",
         "toss_reconcile_orders",
     }
@@ -333,6 +338,10 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "kiwoom_mock_get_order_detail",
         "kiwoom_mock_get_orderable_cash",
         "kiwoom_mock_get_positions",
+        # #711: NH mock read-only helpers (unioned via NHPLUG_MOCK_TOOL_NAMES).
+        "nhplug_mock_get_open_orders",
+        "nhplug_mock_get_order_history",
+        "nhplug_mock_get_positions",
         "toss_get_order_history",
         "toss_get_orderable_cash",
         "toss_get_positions",
@@ -353,6 +362,8 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
+    # #711: NH namuh mock tools (default-off, DEFAULT profile only).
+    | NHPLUG_MOCK_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
     # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
     # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES

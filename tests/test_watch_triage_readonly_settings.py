@@ -57,6 +57,12 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "kiwoom_mock_us_place_order",
         "kiwoom_mock_us_cancel_order",
         "kiwoom_mock_us_modify_order",
+        # #711 NHPLUG Stage 2 mock-account order surface.
+        "nhplug_mock_preview_order",
+        "nhplug_mock_place_order",
+        "nhplug_mock_cancel_order",
+        "nhplug_mock_modify_order",
+        "nhplug_mock_reconcile_orders",
         "live_reconcile_orders",
         "investment_report_create",
         "investment_report_add_items",
