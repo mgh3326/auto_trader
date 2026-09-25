@@ -103,6 +103,32 @@ Step 3 — probe ">7-day dead-order visibility" (read-only, answers the inferred
 
     MCP get_order_history(market="us", symbol=<one stuck symbol>, status="all", days=90, account_mode="kis_live")  (or kis_live_get_order_history) — if the dead order appears with nccs_qty=0/status expired, Fix A's wider window is sufficient; if not, the gap is broker-side depth. For the KR residual shape (Fix B prerequisite): a raw inquire_daily_order_domestic read on the exact order date of a known partially-filled-then-swept order still inside the ~90-day depth — note the normalized get_order_history path does not expose rjct_qty, so this probe must read the raw TR fields (rjct_qty, rmn_qty, tot_ccld_qty).
 
+## Q7 — KIS_LIVE_AUTO_RECONCILE_ENABLED=true yet 219 rungs stuck (director scope addition, post-tester)
+
+Operator-desk observed the flag is set on NCP while Toss flags are unset. From code only:
+
+**Where the flag is consumed.** `app/core/config.py:822-823` defines `KIS_LIVE_AUTO_RECONCILE_ENABLED` and `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED`, both default False. Consumers: (a) the paused TaskIQ task `app/tasks/kis_live_reconcile_tasks.py:25,30` — BOTH flags must be true or it returns `{"status":"paused"}` without touching the kernel; (b) `scripts/kis_live_auto_reconcile.py:44-46` — gates only `--apply`; dry-run is ungated. The flag alone never schedules anything.
+
+**Which scheduler runs it.** None in this repo. `kis_live.reconcile_periodic` is registered with the worker but carries **no `schedule=` label** (pinned by `tests/tasks/test_kis_live_reconcile_tasks.py:13-14`). Recurrence is owned by the external robin-prefect-automations repo. The only in-repo invokers are the operator CLI and the ops-kick HTTP endpoint `/trading/api/ops/tasks/kis_live.reconcile_periodic/kick` — which is pinned to `dry_run=True` (`app/services/ops_task_kick/registry.py:108-110`: "always supplies dry_run=True", no apply switch). `docs/runbooks/prefect-to-postuntil.md:170-174` states the reported Prefect deployment **has failed since 2026-06-11 while the safety-review gate is unset** — explicitly "operator decision pending, not a timer candidate", excluded from the postuntil timer cutover.
+
+**What it reconciles.** `kis_live_reconcile_orders_impl` — KR domestic only (`kis_live_order_ledger`, TTTC8001R domestic daily orders). Open statuses accepted/pending/partial, `created_at ASC` with kernel default limit=100. It covers only the KR-domestic subset of the 219 extract rows; US/overseas rows live in `live_order_ledger` via `live_reconcile_orders_impl` and **have no periodic task at all**.
+
+**Why it can silently do nothing** (all consistent with "flag=true but zero movement"):
+1. Nobody kicks it — no schedule label, Prefect deployment failed/paused, ops-kick is manual.
+2. `KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` unset → returns paused even when ENABLED=true (operator-desk listed only the ENABLED flag; this second gate's value is unknown).
+3. Invoked via ops-kick → forced `dry_run=True`, books nothing by design.
+4. Even a live run: oldest-first limit=100 starvation plus per-row noops (`noop_no_evidence` + manual review, `noop_pending`, `partial` never closes) — the four gaps above. A scheduled non-dry run would also hit the ~90-day inquiry cap on aged rows and could burn hundreds of TTTC8001R calls while converging nothing.
+
+**Read-only checks for operator-desk on NCP** (no builder access):
+1. `echo $KIS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED` (and `docker exec <api/worker> env | grep KIS_LIVE_AUTO_RECONCILE`) — prove the second gate.
+2. `systemctl list-timers --all | grep -iE 'reconcil|kis'` and `crontab -l` — prove no in-repo/systemd recurrence exists.
+3. In robin-prefect-automations / Prefect UI: deployment for the reconcile flow — status paused?, last run time, last run state (expected: failing since 2026-06-11 per the runbook).
+4. Worker log grep: `docker logs <worker> | grep -E 'kis_live\.reconcile_periodic|KIS_LIVE_AUTO_RECONCILE'` — distinguish "never invoked" vs "invoked and returned paused" vs "invoked and ran the kernel" (kernel logs candidate-scan counts).
+5. TaskIQ result backend (Redis) — last result payload for `kis_live.reconcile_periodic`: `paused` vs kernel `counts` dict.
+6. DB-side: `max(updated_at)` on `kis_live_order_ledger` open rows vs deployment timeline — last-run evidence that any non-dry pass ever touched them.
+
+Note: this section was added after the round-3 tester PASS (@9d80091) under director scope addition; its file:line claims follow the same evidence standard.
+
 ## Commands run + rc (this session, all read-only, repo-local)
 
 - git status / git log / git show e9477c7 --stat / git rev-parse HEAD — rc 0
