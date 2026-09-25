@@ -112,11 +112,7 @@ from app.services.portfolio_snapshot import (
 from app.services.portfolio_snapshot_cache import (
     get_shared_portfolio_snapshot_cache,
 )
-from app.services.protected_quantity_service import (
-    ProtectedQuantityService,
-    ProtectedQuantityValidationError,
-    apply_position_protection,
-)
+from app.services.protected_quantity_service import apply_position_protection
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
     TossPortfolioPosition,
@@ -136,7 +132,6 @@ if TYPE_CHECKING:
 
 PORTFOLIO_TOOL_NAMES: set[str] = {
     "get_holdings",
-    "get_protected_positions",
     "get_position",
     "get_cash_balance",
     "get_available_capital",
@@ -1871,58 +1866,6 @@ async def _update_manual_holdings_impl(
         }
 
 
-def _protected_position_to_output(position: Any) -> dict[str, Any]:
-    """Serialize immutable read evidence without turning decimals into floats."""
-
-    return {
-        "account_scope": position.key.account_scope,
-        "market": position.key.market,
-        "symbol": position.key.symbol,
-        "protected_quantity": format(position.protected_quantity, "f"),
-        "revision": position.revision,
-        "last_confirmed_broker_held": format(
-            position.last_confirmed_broker_held,
-            "f",
-        ),
-        "last_confirmed_at": position.last_confirmed_at.isoformat(),
-        "updated_by_user_id": position.updated_by_user_id,
-        "updated_at": position.updated_at.isoformat(),
-    }
-
-
-async def _get_protected_positions_impl(
-    *, account_scope: str | None = None
-) -> dict[str, Any]:
-    """Read protection heads only; no MCP path can mutate them."""
-
-    try:
-        async with AsyncSessionLocal() as db:
-            positions = await ProtectedQuantityService(db).list(
-                account_scope=account_scope,
-            )
-    except ProtectedQuantityValidationError:
-        return {
-            "success": False,
-            "error_code": "invalid_protection_scope",
-            "positions": [],
-        }
-    except Exception:
-        # Do not leak backend or database details through this broadly exposed
-        # read tool. Live sell guards independently fail closed on the same
-        # lookup failure at their send boundary.
-        return {
-            "success": False,
-            "error_code": "protection_state_unavailable",
-            "positions": [],
-        }
-    return {
-        "success": True,
-        "positions": [
-            _protected_position_to_output(position) for position in positions
-        ],
-    }
-
-
 def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_holdings",
@@ -2000,20 +1943,6 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         if not explicit_selector and toss_api_scoped:
             response["account_mode"] = TOSS_API_PROVENANCE
         return response
-
-    @mcp.tool(
-        name="get_protected_positions",
-        description=(
-            "Read current long-term protected quantity declarations for live "
-            "broker account scopes. This is read-only and returns exact decimal "
-            "strings, revisions, and fresh-confirmation evidence; it cannot "
-            "create, change, release, or reconfirm a declaration."
-        ),
-    )
-    async def get_protected_positions(
-        account_scope: str | None = None,
-    ) -> dict[str, Any]:
-        return await _get_protected_positions_impl(account_scope=account_scope)
 
     @mcp.tool(
         name="get_position",
@@ -2147,7 +2076,6 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
 __all__ = [
     "PORTFOLIO_TOOL_NAMES",
     "_register_portfolio_tools_impl",
-    "_get_protected_positions_impl",
     "_collect_portfolio_positions",
     "_get_indicators_impl",
     "_get_holdings_impl",
