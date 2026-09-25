@@ -320,6 +320,8 @@ def _protection_hold_result(
     cancel_result: dict[str, Any],
     block: Any,
     phase: str,
+    error_code: str | None = None,
+    message: str | None = None,
 ) -> dict[str, Any]:
     """Return a safe, explicit no-send result without mutating protection P."""
 
@@ -338,11 +340,13 @@ def _protection_hold_result(
         detail["error"] = "Protected quantity floor blocks cancellation and reorder."
     if block is not None:
         detail.update(block.payload())
-    elif isinstance(cancel_result.get("error_code"), str):
+    elif isinstance(error_code or cancel_result.get("error_code"), str):
         # Q15 has no arithmetic block object, but callers must still receive
         # the closed fail-closed reason rather than a misleading floor error.
-        detail["error_code"] = cancel_result["error_code"]
-        if isinstance(cancel_result.get("error"), str):
+        detail["error_code"] = error_code or cancel_result["error_code"]
+        if message is not None:
+            detail["error"] = message
+        elif isinstance(cancel_result.get("error"), str):
             detail["error"] = cancel_result["error"]
     return detail
 
@@ -599,18 +603,31 @@ async def cancel_and_reorder(
         # reservation while a fill races in.  Re-read H/S inside the same lease
         # and with no remaining-order allowance before the replacement POST.
         if protection_lease is not None and protection_lease.active:
-            (
-                fresh_sellable,
-                fresh_held,
-                sellable_observed,
-            ) = await _fresh_upbit_sell_position(market)
-            decision = await protection_lease.evaluate(
-                quantity=new_quantity,
-                kind="new",
-                fresh_broker_sellable=fresh_sellable,
-                fresh_broker_held=fresh_held,
-                sellable_observed=sellable_observed,
-            )
+            try:
+                (
+                    fresh_sellable,
+                    fresh_held,
+                    sellable_observed,
+                ) = await _fresh_upbit_sell_position(market)
+                decision = await protection_lease.evaluate(
+                    quantity=new_quantity,
+                    kind="new",
+                    fresh_broker_sellable=fresh_sellable,
+                    fresh_broker_held=fresh_held,
+                    sellable_observed=sellable_observed,
+                )
+            except Exception:  # noqa: BLE001 - cancellation has already succeeded
+                return _protection_hold_result(
+                    original_order=original_order,
+                    cancel_result=cancel_result[0],
+                    block=None,
+                    phase="post_cancel",
+                    error_code="protection_state_unavailable",
+                    message=(
+                        "Protected position state is unavailable; "
+                        "replacement withheld after cancellation."
+                    ),
+                )
             if not decision.allowed:
                 return _protection_hold_result(
                     original_order=original_order,

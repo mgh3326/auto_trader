@@ -1504,7 +1504,7 @@ async def _modify_upbit(
                 "dry_run": dry_run,
                 "message": "Order modified via cancel and reorder",
             }
-        if result.get("reorder_withheld"):
+        if result.get("reorder_withheld") or result.get("protection_phase"):
             protection_detail = {
                 key: result[key]
                 for key in (
@@ -1520,7 +1520,11 @@ async def _modify_upbit(
             }
             return {
                 "success": False,
-                "status": "cancelled_reorder_withheld",
+                "status": (
+                    "cancelled_reorder_withheld"
+                    if result.get("reorder_withheld")
+                    else "failed"
+                ),
                 "order_id": order_id,
                 "symbol": normalized_symbol,
                 "market": _normalize_market_type_to_external(market_type),

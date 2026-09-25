@@ -15,6 +15,13 @@ substitute for that evidence.
 
 This feature registers no scheduler, task, cron job, or automatic remediation.
 
+Every live sell consults the protected-position table even while its scope
+mode is off. Under the approved Q15 rule, a missing table or failed lookup
+refuses the sell because the service cannot know which symbols are protected.
+Off preserves existing sell sizing and disables protection arithmetic; it is
+not a database-outage bypass. The operator desk must apply the migration after
+a backup and before starting application code that contains this guard.
+
 ## What is protected
 
 One current declaration is keyed by account scope, market, and canonical

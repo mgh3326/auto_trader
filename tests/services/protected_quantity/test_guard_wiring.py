@@ -801,6 +801,129 @@ async def test_g4_upbit_post_cancel_block_withholds_reorder(
     assert lease.release_calls == 1
 
 
+@pytest.mark.parametrize("failure_point", ["fresh_read", "evaluation"])
+@pytest.mark.asyncio
+async def test_g4_upbit_post_cancel_evidence_failure_reports_cancelled_order(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    import app.services.brokers.upbit.orders as upbit_orders
+
+    original_order = {
+        "uuid": "order-1",
+        "state": "wait",
+        "ord_type": "limit",
+        "side": "ask",
+        "market": "KRW-BTC",
+        "remaining_volume": "40",
+    }
+    lease = _Lease([])
+    evaluate = AsyncMock(
+        side_effect=[
+            ProtectionDecision(True, "covered", Decimal("40")),
+            *(
+                [RuntimeError("drift evidence unavailable")]
+                if failure_point == "evaluation"
+                else []
+            ),
+        ]
+    )
+    monkeypatch.setattr(lease, "evaluate", evaluate)
+    cancel = AsyncMock(return_value=[{"uuid": "order-1", "state": "cancel"}])
+    place_sell = AsyncMock()
+    monkeypatch.setattr(
+        upbit_orders, "fetch_order_detail", AsyncMock(return_value=original_order)
+    )
+    monkeypatch.setattr(
+        upbit_orders, "prepare_live_sell_lease", AsyncMock(return_value=lease)
+    )
+    monkeypatch.setattr(
+        upbit_orders,
+        "_fresh_upbit_sell_position",
+        AsyncMock(
+            side_effect=[
+                (60, 100, True),
+                (
+                    RuntimeError("fresh balance unavailable")
+                    if failure_point == "fresh_read"
+                    else (100, 100, True)
+                ),
+            ]
+        ),
+    )
+    monkeypatch.setattr(upbit_orders, "cancel_orders", cancel)
+    monkeypatch.setattr(upbit_orders, "place_sell_order", place_sell)
+
+    result = await upbit_orders.cancel_and_reorder(
+        "order-1", new_price=56_000_000, new_quantity=40
+    )
+
+    cancel.assert_awaited_once_with(["order-1"])
+    place_sell.assert_not_awaited()
+    assert evaluate.await_count == (1 if failure_point == "fresh_read" else 2)
+    assert result["cancel_result"]["state"] == "cancel"
+    assert "error" not in result["cancel_result"]
+    assert result["new_order"] is None
+    assert result["reorder_withheld"] is True
+    assert result["protection_phase"] == "post_cancel"
+    assert result["error_code"] == "protection_state_unavailable"
+    assert lease.release_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_g4_upbit_pre_cancel_hold_keeps_error_code_at_mcp_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import orders_modify_cancel as modify
+
+    original_order = {
+        "uuid": "order-1",
+        "state": "wait",
+        "ord_type": "limit",
+        "side": "ask",
+        "market": "KRW-BTC",
+        "price": "56000000",
+        "remaining_volume": "40",
+    }
+    monkeypatch.setattr(
+        modify.upbit_service,
+        "fetch_order_detail",
+        AsyncMock(return_value=original_order),
+    )
+    monkeypatch.setattr(
+        modify, "_live_sell_reprice_floor_error", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        modify.upbit_service,
+        "cancel_and_reorder",
+        AsyncMock(
+            return_value={
+                "original_order": original_order,
+                "cancel_result": {"success": False, "error": "Protected floor blocks"},
+                "new_order": None,
+                "protection_phase": "pre_cancel",
+                "reorder_withheld": False,
+                "error_code": "protected_quantity_exceeded",
+                "protected_quantity": "60",
+                "broker_sellable": "100",
+                "headroom": "40",
+                "quantity": "41",
+            }
+        ),
+    )
+
+    result = await modify._modify_upbit(
+        "order-1", "KRW-BTC", "crypto", 56_000_000, 41, False
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["protection_phase"] == "pre_cancel"
+    assert result["reorder_withheld"] is False
+    assert result["error_code"] == "protected_quantity_exceeded"
+    assert result["headroom"] == "40"
+
+
 @pytest.mark.asyncio
 async def test_g4_upbit_holds_protection_lease_through_reorder_response(
     monkeypatch: pytest.MonkeyPatch,

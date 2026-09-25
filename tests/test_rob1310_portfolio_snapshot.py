@@ -1119,6 +1119,42 @@ def test_cached_home_projection_preserves_legacy_mcp_contracts() -> None:
     assert manual["account_name"] == "Toss 수동"
 
 
+@pytest.mark.unit
+def test_snapshot_tactical_quantity_uses_raw_broker_evidence_in_shadow() -> None:
+    from app.services.portfolio_snapshot import portfolio_snapshot_to_mcp_positions
+
+    response = _legacy_projection_home_response()
+    holding = next(row for row in response.holdings if row.symbol == "005930")
+    holding.sellableQuantity = 100.0
+    holding.brokerSellableQuantity = 100.0
+    holding.protectedQuantity = 60.0
+    holding.protectionState = "covered"
+
+    position = next(
+        row
+        for row in portfolio_snapshot_to_mcp_positions(response)
+        if row["symbol"] == "005930"
+    )
+    assert position["sellable_quantity"] == 100.0
+    assert position["tactical_sellable_quantity"] == 40.0
+
+    holding.protectionState = "unverified"
+    position = next(
+        row
+        for row in portfolio_snapshot_to_mcp_positions(response)
+        if row["symbol"] == "005930"
+    )
+    assert position["tactical_sellable_quantity"] == 0.0
+
+    holding.brokerSellableQuantity = None
+    position = next(
+        row
+        for row in portfolio_snapshot_to_mcp_positions(response)
+        if row["symbol"] == "005930"
+    )
+    assert position["tactical_sellable_quantity"] is None
+
+
 def _source_contract_home_response():
     from app.schemas.invest_home import Account, CashAmounts, Holding
 
