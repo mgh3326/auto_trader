@@ -721,6 +721,7 @@ async def _converge_kis_proposal_rung(
     swallowed — the rung projection is idempotent, so a later rerun repairs
     the ledger row without double-converging.
     """
+    from app.models.order_proposals import OrderProposalRung
     from app.services.order_proposals import OrderProposalsService
 
     terminal_state = {
@@ -754,30 +755,48 @@ async def _converge_kis_proposal_rung(
             # unrelated rung sharing the order number — then close with
             # filled_qty=None so the service preserves the partial audit value
             # on the terminal rung.
+            close_filled_qty: Decimal | None = None
             if (
                 ledger_status in {"cancelled", "expired"}
                 and filled_qty
                 and filled_qty > 0
             ):
-                await service.record_fill_evidence_for_rung(
-                    rung_id=rung_id,
-                    correlation_id=row.correlation_id,
-                    broker_order_id=row.order_no,
-                    idempotency_key=row.idempotency_key,
-                    filled_qty=filled_qty,
-                    terminal_state="partially_filled",
-                    now=datetime.datetime.now(datetime.UTC),
-                    account_mode="kis_live",
-                    symbol=row.symbol,
-                    market=row.instrument_type,
-                )
+                current = (
+                    await db.execute(
+                        select(
+                            OrderProposalRung.state, OrderProposalRung.filled_qty
+                        ).where(OrderProposalRung.id == rung_id)
+                    )
+                ).one_or_none()
+                if current is not None and current.state == "partially_filled":
+                    # The rung already holds a booked partial — a
+                    # partially_filled self-transition is illegal, so the
+                    # terminal close carries the larger booked qty instead.
+                    close_filled_qty = max(
+                        filled_qty, current.filled_qty or Decimal("0")
+                    )
+                else:
+                    await service.record_fill_evidence_for_rung(
+                        rung_id=rung_id,
+                        correlation_id=row.correlation_id,
+                        broker_order_id=row.order_no,
+                        idempotency_key=row.idempotency_key,
+                        filled_qty=filled_qty,
+                        terminal_state="partially_filled",
+                        now=datetime.datetime.now(datetime.UTC),
+                        account_mode="kis_live",
+                        symbol=row.symbol,
+                        market=row.instrument_type,
+                    )
             rung = await service.record_fill_evidence_for_rung(
                 rung_id=rung_id,
                 correlation_id=row.correlation_id,
                 broker_order_id=row.order_no,
                 idempotency_key=row.idempotency_key,
                 filled_qty=(
-                    None if terminal_state in {"cancelled", "expired"} else filled_qty
+                    close_filled_qty
+                    if terminal_state in {"cancelled", "expired"}
+                    else filled_qty
                 ),
                 terminal_state=terminal_state,
                 now=datetime.datetime.now(datetime.UTC),
