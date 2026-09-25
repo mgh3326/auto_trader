@@ -27,16 +27,7 @@ _SEND_TARGETS = frozenset(
         "modify_order",
     }
 )
-_SEND_MODULES = (
-    "app/mcp_server/tooling/order_execution.py",
-    "app/mcp_server/tooling/orders_modify_cancel.py",
-    "app/mcp_server/tooling/orders_toss_variants.py",
-    "app/services/kis_trading_service.py",
-    "app/services/brokers/upbit/orders.py",
-    "app/services/brokers/kis/client.py",
-    "app/services/brokers/kis/domestic_orders.py",
-    "app/services/brokers/kis/overseas_orders.py",
-)
+_SEND_TREES = ("app", "scripts")
 
 
 def _send_callers(relative_path: str) -> Counter[str]:
@@ -203,6 +194,39 @@ _CALLER_CLASSIFICATION = {
         "same_order_retry",
         1,
     ),
+    "app/mcp_server/tooling/orders_kiwoom_us_variants.py:register.place:place_sell_order": (
+        "mock_only",
+        1,
+    ),
+    "app/mcp_server/tooling/orders_kiwoom_us_variants.py:register.modify:modify_order": (
+        "mock_only",
+        1,
+    ),
+    "app/mcp_server/tooling/orders_kiwoom_variants.py:_kiwoom_mock_place_order_impl:place_sell_order": (
+        "mock_only",
+        1,
+    ),
+    "app/mcp_server/tooling/orders_kiwoom_variants.py:_kiwoom_mock_modify_confirmed_impl:modify_order": (
+        "mock_only",
+        1,
+    ),
+    "app/routers/screener.py:screener_order:place_order": ("g1", 1),
+    "app/services/trade_journal/mirror_counterfactual.py:execute_mirror_order_plans:place_order": (
+        "g1",
+        1,
+    ),
+    "scripts/b0x/kr/kiwoom.py:ReadOnlyKiwoomMockAccount.place_limit_sell:place_sell_order": (
+        "mock_only",
+        1,
+    ),
+    "scripts/kis_mock_overseas_holdings_delta_smoke.py:_cleanup_and_verify:sell_overseas_stock": (
+        "mock_only",
+        1,
+    ),
+    "scripts/kiwoom_mock_us_smoke.py:run_probe:place_sell_order": (
+        "mock_only",
+        1,
+    ),
 }
 
 
@@ -220,8 +244,11 @@ def _function_source(relative_path: str, name: str) -> str:
 
 def test_g6_ast_sender_callers_are_completely_classified() -> None:
     actual: Counter[str] = Counter()
-    for relative_path in _SEND_MODULES:
-        actual.update(_send_callers(relative_path))
+    # Derive the module inventory from source. A new send caller in a new
+    # module must fail the exact classification below until reviewed.
+    for tree in _SEND_TREES:
+        for source_path in sorted((ROOT / tree).rglob("*.py")):
+            actual.update(_send_callers(source_path.relative_to(ROOT).as_posix()))
 
     expected = Counter(
         {caller: count for caller, (_, count) in _CALLER_CLASSIFICATION.items()}
