@@ -227,6 +227,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     "DROP COLUMN void_reason_group"
                 )
             )
+            # ROB-691 expired_at is later than this reconstructed boundary.
+            # Current metadata already contains the nullable column, so drop
+            # it and let the migration add it back (the widened status CHECK
+            # is recreated by the migration itself).
+            await connection.execute(
+                text("ALTER TABLE review.toss_live_order_ledger DROP COLUMN expired_at")
+            )
             # B1 loss-cut approval is later than this reconstructed boundary.
             # Remove its current-head tables and additive columns so the head
             # upgrade exercises the migration instead of colliding with

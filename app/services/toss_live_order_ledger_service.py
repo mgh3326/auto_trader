@@ -314,7 +314,9 @@ class TossLiveOrderLedgerService:
             )
             .where(
                 TossLiveOrderLedger.operation_kind == "place",
-                TossLiveOrderLedger.status.in_(("filled", "cancelled", "rejected")),
+                TossLiveOrderLedger.status.in_(
+                    ("filled", "cancelled", "rejected", "expired")
+                ),
                 OrderProposal.account_mode == "toss_live",
                 OrderProposal.symbol == TossLiveOrderLedger.symbol,
                 or_(
@@ -444,12 +446,15 @@ class TossLiveOrderLedgerService:
         fx_rate_source: str | None = None,
         fx_pnl_accuracy: str | None = None,
         raw_response: dict[str, Any] | None = None,
+        expired_at: datetime | None = None,
     ) -> None:
         row = await self._db.get(TossLiveOrderLedger, ledger_id)
         if row is None:
             return
         row.status = status
         row.broker_status = broker_status
+        if expired_at is not None:
+            row.expired_at = expired_at
         if filled_qty is not None:
             row.filled_qty = filled_qty
         if avg_fill_price is not None:

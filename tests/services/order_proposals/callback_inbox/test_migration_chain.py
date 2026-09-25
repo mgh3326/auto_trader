@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260908_task137_ctx_outcomes"
+HEAD_REVISION = "20260925_task691_toss_expired"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -154,6 +154,16 @@ async def scratch_database() -> AsyncIterator[str]:
                     text(
                         "ALTER TABLE review.order_proposal_rungs "
                         "DROP COLUMN void_reason_group"
+                    )
+                )
+                # ROB-691 expired_at is later than this reconstructed
+                # boundary.  Current metadata already contains the nullable
+                # column, so drop it and let the migration add it back (the
+                # widened status CHECK is recreated by the migration itself).
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.toss_live_order_ledger "
+                        "DROP COLUMN expired_at"
                     )
                 )
         finally:

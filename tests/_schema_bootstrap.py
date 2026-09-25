@@ -98,7 +98,10 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v45 (ROB-1351): append-only ROB-1301 termination, ROB-1351 v2 registration,
 # and intentionally-empty future v2 epoch tables (all ORM tables via
 # create_all), plus their mutation-rejection triggers.
-SCHEMA_BOOTSTRAP_VERSION = 45
+# v46 (ROB-691): review.toss_live_order_ledger expired_at column + 'expired'
+# status CHECK widening, mirrored in _DDL_STATEMENTS; the bump forces one
+# re-bootstrap of persistent local test DBs.
+SCHEMA_BOOTSTRAP_VERSION = 46
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1894,6 +1897,21 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.buy_gate_ab_collection_epoch_v2 "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_buy_gate_ab_lifecycle_mutation()",
+    # ---- ROB-691: Toss DAY-expiry terminal status + broker timestamp ----
+    "ALTER TABLE review.toss_live_order_ledger "
+    "ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ",
+    # create_all renders the ORM CheckConstraint through the ck_ naming
+    # convention; the alembic-era literal name is covered for DBs that were
+    # migrated rather than create_all'd. The re-added constraint uses the
+    # canonical ck_ spelling so migrated and create_all schemas converge.
+    "ALTER TABLE review.toss_live_order_ledger "
+    "DROP CONSTRAINT IF EXISTS toss_live_ledger_status",
+    "ALTER TABLE review.toss_live_order_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_toss_live_order_ledger_toss_live_ledger_status",
+    "ALTER TABLE review.toss_live_order_ledger "
+    "ADD CONSTRAINT ck_toss_live_order_ledger_toss_live_ledger_status CHECK (status IN ("
+    "'accepted','rejected','pending','partial','filled','cancelled',"
+    "'replaced','cancel_rejected','replace_rejected','anomaly','expired'))",
 )
 
 

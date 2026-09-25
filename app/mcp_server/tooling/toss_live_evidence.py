@@ -25,6 +25,9 @@ class TossFillEvidence:
     settlement_date: date | None
     raw_order: dict[str, Any]
     reason: str
+    # Broker DAY-expiry timestamp (Toss ``canceledAt``). Populated only when the
+    # evidence classifies the order as expired; never a local clock value.
+    expired_at: datetime | None = None
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -43,6 +46,34 @@ def _to_date(value: Any) -> date | None:
         return date.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+def _to_datetime(value: Any) -> datetime | None:
+    """Parse a broker timestamp fail-closed (None when absent/unparseable)."""
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        # Toss order timestamps are KST wall-clock when the offset is omitted.
+        parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    return parsed
+
+
+def _is_day_sweep(order: Any, broker_status: str, canceled_at: Any) -> bool:
+    """ROB-691 — Toss reports a broker-swept DAY order as REJECTED+canceledAt.
+
+    All three clauses are required evidence: the terminal broker status, the
+    DAY time-in-force, and the broker's own cancellation timestamp.  Absence of
+    any one of them must NOT classify expiry (fail-closed).
+    """
+    return (
+        broker_status == "REJECTED"
+        and str(getattr(order, "time_in_force", "") or "").upper() == "DAY"
+        and canceled_at is not None
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -84,11 +115,19 @@ def classify_toss_order_evidence(order: Any) -> TossFillEvidence:
     tax = _to_decimal(execution.get("tax"))
     fee_total = (commission or Decimal("0")) + (tax or Decimal("0"))
     settlement_date = _to_date(execution.get("settlementDate"))
+    canceled_at = _to_datetime(getattr(order, "canceled_at", None))
+    day_swept = _is_day_sweep(order, broker_status, canceled_at)
 
     if filled_qty > 0 and avg_price and avg_price > 0:
         if broker_status == "FILLED":
             local_status = "filled"
             verdict = "filled"
+        elif day_swept:
+            # Partially filled, then the DAY sweep took the residual.  The fill
+            # delta still books through the normal path; only the terminal
+            # classification is expiry.
+            local_status = "expired"
+            verdict = "partial"
         elif broker_status == "REPLACED":
             local_status = "replaced"
             verdict = "partial"
@@ -113,9 +152,13 @@ def classify_toss_order_evidence(order: Any) -> TossFillEvidence:
             settlement_date=settlement_date,
             raw_order=_raw_order(order),
             reason=f"{broker_status} {filled_qty}@{avg_price}",
+            expired_at=canceled_at if local_status == "expired" else None,
         )
 
-    if broker_status in {"PENDING", "PARTIAL_FILLED"}:
+    if day_swept:
+        verdict = "expired"
+        local_status = "expired"
+    elif broker_status in {"PENDING", "PARTIAL_FILLED"}:
         verdict = "pending"
         local_status = "pending"
     elif broker_status == "CANCELED":
@@ -148,7 +191,12 @@ def classify_toss_order_evidence(order: Any) -> TossFillEvidence:
         fee_total=fee_total,
         settlement_date=settlement_date,
         raw_order=_raw_order(order),
-        reason=f"{broker_status} no executable fill evidence",
+        reason=(
+            "DAY order swept by broker"
+            if local_status == "expired"
+            else f"{broker_status} no executable fill evidence"
+        ),
+        expired_at=canceled_at if local_status == "expired" else None,
     )
 
 
