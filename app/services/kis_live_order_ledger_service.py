@@ -129,8 +129,10 @@ class KISLiveOrderLedgerService:
         if not exhausted and scanned >= scan_cap:
             scan["note"] = (
                 "scan_cap reached before exhausting the terminal scan — "
-                "unreached rows remain; the bound is per-pass so rerun "
-                "reconcile to continue"
+                "unreached rows remain. The cursor restarts at the first row "
+                "every pass, so a prefix of unprojectable rows beyond the cap "
+                "starves candidates on every pass; resolve the anomalies or "
+                "raise limit"
             )
         for row in candidates:
             self._db.expunge(row)

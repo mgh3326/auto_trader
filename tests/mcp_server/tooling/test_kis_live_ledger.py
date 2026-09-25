@@ -1883,3 +1883,221 @@ async def test_beyond_reach_rows_are_deprioritized_not_dropped(db_session):
     assert coverage["beyond_evidence_reach"] == 2
     assert coverage["unscanned"] == 0
     assert coverage["truncated"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_terminal_repair_updates_booked_partial_on_already_partial_rung(
+    db_session,
+):
+    """ROB-719 gap C: pre-projection on an already-partially_filled rung.
+
+    When the rung already carries a booked partial (partially_filled), the
+    terminal pre-projection must refresh the audit qty in place rather than
+    attempt an illegal partially_filled -> partially_filled transition, and
+    the terminal close must then keep that qty.
+    """
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.services.order_proposals import OrderProposalsService
+
+    suffix = uuid4().hex
+    order_no = f"KIS-ROB719-PRE-{suffix[:12]}"
+    correlation_id = f"live:kis_live:rob719-pre-{suffix[:12]}"
+    service, proposal_id = await _rob719_proposal_rung(
+        db_session,
+        suffix=suffix,
+        symbol="214150",
+        correlation_id=correlation_id,
+        broker_order_id=order_no,
+        quantity="3",
+    )
+    # A prior fill pass already booked 1 of 3 onto the rung.
+    _, rungs = await service.get_proposal(proposal_id)
+    await service.record_fill_evidence_for_rung(
+        rung_id=rungs[0].id,
+        correlation_id=correlation_id,
+        broker_order_id=order_no,
+        idempotency_key=f"idem-{suffix}",
+        filled_qty=Decimal("1"),
+        terminal_state="partially_filled",
+        now=datetime.now(UTC),
+        account_mode="kis_live",
+        symbol="214150",
+        market="equity_kr",
+    )
+    # Commit releases the rung lock before reconcile opens its own session.
+    await db_session.commit()
+    ledger_id = await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=3.0,
+        price=50000.0,
+        amount=150000.0,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=correlation_id,
+    )
+    # The ledger booked a later, larger partial (2 of 3) before the cancel.
+    await kl._update_ledger_outcome(
+        ledger_id=ledger_id, status="partial", filled_qty=Decimal("2")
+    )
+    await kl._update_ledger_outcome(ledger_id=ledger_id, status="cancelled")
+
+    with patch.object(
+        kl, "run_resting_rung_sweep", AsyncMock(return_value={"swept": 0})
+    ):
+        result = await kl.kis_live_reconcile_orders_impl(dry_run=False)
+
+    repair = result["proposal_projection_repair"]
+    assert repair["candidates"] == 1
+    assert repair["converged"] == 1
+    assert repair["failed"] == 0
+    _, rungs = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    assert rungs[0].state == "cancelled"
+    assert rungs[0].filled_qty == Decimal("2")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_terminal_repair_reports_cap_when_prefix_exceeds_scan_cap(
+    db_session,
+):
+    """ROB-719 gap D: a cap-bound pass says so instead of silently truncating.
+
+    More unprojectable rows (accepting-rung evidence conflicts) than the
+    scan cap: the candidate behind the prefix is not reached this pass and
+    the report must mark cap_reached with a note.
+    """
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+
+    suffix = uuid4().hex
+    for i in range(12):
+        corr_x = f"live:kis_live:rob719-capx{i}-{suffix[:8]}"
+        corr_y = f"live:kis_live:rob719-capy{i}-{suffix[:8]}"
+        await _rob719_proposal_rung(
+            db_session,
+            suffix=f"capx{i}-{suffix}",
+            symbol="214150",
+            correlation_id=corr_x,
+            broker_order_id=f"KIS-ROB719-CAPX{i}-{suffix[:8]}",
+        )
+        await _rob719_proposal_rung(
+            db_session,
+            suffix=f"capy{i}-{suffix}",
+            symbol="214150",
+            correlation_id=corr_y,
+            broker_order_id=f"KIS-ROB719-CAPY{i}-{suffix[:8]}",
+        )
+        await kl._save_kis_live_order_ledger(
+            symbol="214150",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=50000.0,
+            amount=50000.0,
+            currency="KRW",
+            order_no=f"KIS-ROB719-CAPY{i}-{suffix[:8]}",
+            order_time="090000",
+            krx_fwdg_ord_orgno=None,
+            status="cancelled",
+            response_code="0",
+            response_message=None,
+            raw_response={},
+            reason=None,
+            thesis="test",
+            strategy="test",
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes=None,
+            exit_reason=None,
+            indicators_snapshot=None,
+            correlation_id=corr_x,
+        )
+    real_corr = f"live:kis_live:rob719-capend-{suffix[:8]}"
+    real_odno = f"KIS-ROB719-CAPEND-{suffix[:8]}"
+    await _rob719_proposal_rung(
+        db_session,
+        suffix=f"capend-{suffix}",
+        symbol="214150",
+        correlation_id=real_corr,
+        broker_order_id=real_odno,
+    )
+    await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=50000.0,
+        amount=50000.0,
+        currency="KRW",
+        order_no=real_odno,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="filled",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=real_corr,
+    )
+
+    # limit=1 => scan_cap=10; the prefix of 12 conflicts exceeds it, so the
+    # real candidate (highest ledger id) is not reached this pass.
+    result = await kl.kis_live_reconcile_orders_impl(dry_run=False, limit=1)
+
+    repair = result["proposal_projection_repair"]
+    assert repair["candidates"] == 0
+    assert repair["scan"]["scanned"] == 10
+    assert repair["scan"]["cap_reached"] is True
+    assert "scan_cap reached" in repair["scan"]["note"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dry_run_repair_reports_skipped_scan(db_session):
+    """ROB-719 gap D: the dry-run repair payload carries a scan stub."""
+    from app.mcp_server.tooling import kis_live_ledger as kl
+
+    result = await kl.kis_live_reconcile_orders_impl(dry_run=True)
+    assert result["proposal_projection_repair"] == {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+        "anomalies": {},
+        "scan": {"skipped": "dry_run"},
+    }

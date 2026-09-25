@@ -4220,6 +4220,19 @@ class OrderProposalsService:
             filled_qty=filled_qty,
             now=now,
         )
+        if locked.state == terminal_state:
+            # Repeated non-terminal evidence on the already-validated rung
+            # (e.g. a larger booked partial carried by terminal evidence on a
+            # partially_filled rung): refresh audit fields in place rather
+            # than attempt an illegal self-transition — mirrors
+            # record_fill_evidence.
+            if (
+                filled_qty is not None
+                and locked.filled_qty is not None
+                and filled_qty <= Decimal(str(locked.filled_qty))
+            ):
+                return None
+            return await self._repo.update_rung(locked, **audit)
         return await self._transition_locked_rung(
             group, locked, new_state=terminal_state, **audit
         )
