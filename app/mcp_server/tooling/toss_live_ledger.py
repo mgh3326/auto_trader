@@ -307,10 +307,15 @@ async def _converge_toss_proposal_rung(
             )
             if rung_id is None:
                 return None
-            # A broker-confirmed cancel may carry a final cumulative partial fill.
-            # Project that quantity first, then cancel with filled_qty=None so the
-            # service preserves the partial audit value on the terminal rung.
-            if ledger_status == "cancelled" and filled_qty and filled_qty > 0:
+            # A broker-confirmed cancel or DAY-expiry sweep may carry a final
+            # cumulative partial fill.  Project that quantity first, then close
+            # with filled_qty=None so the service preserves the partial audit
+            # value on the terminal rung.
+            if (
+                ledger_status in {"cancelled", "expired"}
+                and filled_qty
+                and filled_qty > 0
+            ):
                 await service.record_fill_evidence(
                     correlation_id=getattr(row, "correlation_id", None),
                     broker_order_id=row.broker_order_id,

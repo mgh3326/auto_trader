@@ -2375,3 +2375,84 @@ async def test_partially_filled_rung_expires_preserving_qty(db_session):
     assert expired["proposal_rung"]["proposal_rung_state"] == "expired"
     assert rung.state == "expired"
     assert rung.filled_qty == Decimal("0.5")
+
+
+async def test_resting_rung_partial_fill_then_expired_preserves_qty(db_session):
+    """CodeRabbit Major on #691: a resting rung that never saw the fill and is
+    swept in the same reconcile pass must keep the partial quantity — the
+    pre-terminal fill projection covers expired as well as cancelled."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(
+        db_session, suffix="resting-partial-expired"
+    )
+    outcome = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(
+            verdict="partial",
+            local_status="expired",
+            filled_qty="0.5",
+            expired_at=_REGULAR_SWEEP_AT,
+        ),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+
+    assert outcome["action"] == "booked"
+    assert outcome["proposal_rung"] == {
+        "converged": True,
+        "proposal_rung_state": "expired",
+    }
+    assert rung.state == "expired"
+    assert rung.filled_qty == Decimal("0.5")
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "expired"
+    assert refreshed.filled_qty == Decimal("0.5")
+    assert refreshed.expired_at == _REGULAR_SWEEP_AT
+
+
+async def test_terminal_expired_repair_preserves_resting_rung_qty(db_session):
+    """The repair pass feeds row.status/row.filled_qty into the same converge;
+    an expired ledger row with a booked partial fill must not drop the rung
+    quantity either."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(
+        db_session, suffix="repair-expired-partial"
+    )
+    row.status = "expired"
+    row.filled_qty = Decimal("0.5")
+    row.expired_at = _REGULAR_SWEEP_AT
+    await db_session.commit()
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 1,
+        "converged": 1,
+        "failed": 0,
+        "anomalies": {},
+    }
+    assert rung.state == "expired"
+    assert rung.filled_qty == Decimal("0.5")
