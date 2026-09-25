@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -606,10 +606,57 @@ async def _load_ledger_row(ledger_id: int) -> KISLiveOrderLedger:
         return row
 
 
+# ROB-719 gap D — documented scan order for the open-row candidate scan:
+# evidence-reachable rows first (a probeable order_no whose KST order date is
+# still inside the TTTC8001R lookback), beyond-reach rows only in leftover
+# slots, created_at ASC + id ASC inside each tier.  The previous plain
+# created_at ASC let permanently unresolvable oldest rows occupy every limit
+# slot on every pass, so newer resolvable rows were never scanned.
+_KR_OPEN_SCAN_ORDER = (
+    "evidence-reachable first (order_no present, KST order date inside the "
+    "90-day TTTC8001R lookback), then created_at ASC, id ASC; beyond-reach "
+    "rows fill only leftover slots"
+)
+
+
+def _kr_evidence_reach_cutoff() -> datetime.datetime:
+    """``created_at`` lower bound for rows still probeable by TTTC8001R.
+
+    ``_live_daily_order_window`` probes the exact order date and clamps at
+    ``_LIVE_DAILY_ORDER_LOOKBACK_DAYS`` back; a row whose order date is older
+    than the earliest probeable date queries a wrong (clamped) date and can
+    never return evidence.  Order date is the row's KST ``created_at`` date
+    (``_order_date_kst``), so reachability is a ``created_at`` cutoff.
+    """
+    today = datetime.datetime.now(_KST).date()
+    earliest = today - datetime.timedelta(days=_LIVE_DAILY_ORDER_LOOKBACK_DAYS - 1)
+    return datetime.datetime.combine(earliest, datetime.time.min, tzinfo=_KST)
+
+
+def _kr_beyond_reach_clause() -> Any:
+    """Open rows that can never produce broker evidence this scan.
+
+    A missing/blank ``order_no`` makes ``classify_fill_evidence`` return NONE
+    forever, and an order date older than the TTTC8001R lookback falls outside
+    the probeable window.  Both are permanently unresolvable — they must not
+    occupy limit slots ahead of reachable rows.
+    """
+    return or_(
+        KISLiveOrderLedger.order_no.is_(None),
+        func.trim(KISLiveOrderLedger.order_no) == "",
+        KISLiveOrderLedger.created_at < _kr_evidence_reach_cutoff(),
+    )
+
+
 async def _list_open_ledger_rows(
     *, symbol: str | None, order_no: str | None, limit: int
 ) -> list[KISLiveOrderLedger]:
-    """Non-terminal live ledger rows (accepted/pending) needing reconcile."""
+    """Non-terminal live ledger rows (accepted/pending) needing reconcile.
+
+    Scan order is the aged ``_KR_OPEN_SCAN_ORDER`` — rows beyond the broker
+    evidence reach are deprioritized instead of being allowed to starve the
+    scan (ROB-719 gap D).
+    """
     async with _order_session_factory()() as db:
         stmt = select(KISLiveOrderLedger).where(
             KISLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
@@ -618,7 +665,11 @@ async def _list_open_ledger_rows(
             stmt = stmt.where(KISLiveOrderLedger.symbol == symbol)
         if order_no:
             stmt = stmt.where(KISLiveOrderLedger.order_no == order_no)
-        stmt = stmt.order_by(KISLiveOrderLedger.created_at.asc()).limit(limit)
+        stmt = stmt.order_by(
+            _kr_beyond_reach_clause().asc(),
+            KISLiveOrderLedger.created_at.asc(),
+            KISLiveOrderLedger.id.asc(),
+        ).limit(limit)
         rows = list((await db.execute(stmt)).scalars().all())
         for r in rows:
             db.expunge(r)
@@ -640,13 +691,37 @@ async def _count_open_ledger_rows(*, symbol: str | None, order_no: str | None) -
         return int((await db.execute(stmt)).scalar_one())
 
 
+async def _count_beyond_reach_ledger_rows(
+    *, symbol: str | None, order_no: str | None
+) -> int:
+    """Open rows beyond broker evidence reach (ROB-719 gap D reporting)."""
+    async with _order_session_factory()() as db:
+        stmt = (
+            select(func.count())
+            .select_from(KISLiveOrderLedger)
+            .where(KISLiveOrderLedger.status.in_(("accepted", "pending", "partial")))
+            .where(_kr_beyond_reach_clause())
+        )
+        if symbol:
+            stmt = stmt.where(KISLiveOrderLedger.symbol == symbol)
+        if order_no:
+            stmt = stmt.where(KISLiveOrderLedger.order_no == order_no)
+        return int((await db.execute(stmt)).scalar_one())
+
+
 async def _converge_kis_proposal_rung(
     row: KISLiveOrderLedger,
     *,
     ledger_status: str,
     filled_qty: Decimal | None,
 ) -> dict[str, Any] | None:
-    """Project committed KIS terminal evidence in an independent session."""
+    """Project broker-verified KIS terminal evidence in an independent session.
+
+    Runs on broker evidence even if the ledger outcome write above was
+    swallowed — the rung projection is idempotent, so a later rerun repairs
+    the ledger row without double-converging.
+    """
+    from app.models.order_proposals import OrderProposalRung
     from app.services.order_proposals import OrderProposalsService
 
     terminal_state = {
@@ -672,13 +747,56 @@ async def _converge_kis_proposal_rung(
             )
             if rung_id is None:
                 return None
+            # A broker-confirmed cancel or DAY-expiry sweep may carry a final
+            # booked partial fill (e.g. _mark_ledger_cancelled preserves
+            # filled_qty).  Project that quantity onto the SAME validated rung
+            # — record_fill_evidence re-picks a rung by broker id without a
+            # symbol/market scope, which can attribute the partial to an
+            # unrelated rung sharing the order number.  The terminal close then
+            # carries close_filled_qty (None unless the rung was already
+            # partially_filled) so the service preserves the larger booked qty.
+            close_filled_qty: Decimal | None = None
+            if (
+                ledger_status in {"cancelled", "expired"}
+                and filled_qty
+                and filled_qty > 0
+            ):
+                current = (
+                    await db.execute(
+                        select(
+                            OrderProposalRung.state, OrderProposalRung.filled_qty
+                        ).where(OrderProposalRung.id == rung_id)
+                    )
+                ).one_or_none()
+                if current is not None and current.state == "partially_filled":
+                    # The rung already holds a booked partial — a
+                    # partially_filled self-transition is illegal, so the
+                    # terminal close carries the larger booked qty instead.
+                    close_filled_qty = max(
+                        filled_qty, current.filled_qty or Decimal("0")
+                    )
+                else:
+                    await service.record_fill_evidence_for_rung(
+                        rung_id=rung_id,
+                        correlation_id=row.correlation_id,
+                        broker_order_id=row.order_no,
+                        idempotency_key=row.idempotency_key,
+                        filled_qty=filled_qty,
+                        terminal_state="partially_filled",
+                        now=datetime.datetime.now(datetime.UTC),
+                        account_mode="kis_live",
+                        symbol=row.symbol,
+                        market=row.instrument_type,
+                    )
             rung = await service.record_fill_evidence_for_rung(
                 rung_id=rung_id,
                 correlation_id=row.correlation_id,
                 broker_order_id=row.order_no,
                 idempotency_key=row.idempotency_key,
                 filled_qty=(
-                    None if terminal_state in {"cancelled", "expired"} else filled_qty
+                    close_filled_qty
+                    if terminal_state in {"cancelled", "expired"}
+                    else filled_qty
                 ),
                 terminal_state=terminal_state,
                 now=datetime.datetime.now(datetime.UTC),
@@ -707,7 +825,7 @@ async def _repair_terminal_kis_proposal_projections(
 ) -> dict[str, int]:
     """Idempotently repair KIS terminal ledger rows skipped by the open scan."""
     async with _order_session_factory()() as db:
-        rows, anomalies = await KISLiveOrderLedgerService(
+        rows, anomalies, scan = await KISLiveOrderLedgerService(
             db
         ).list_terminal_projection_candidates(
             symbol=symbol, order_id=order_id, limit=limit
@@ -717,6 +835,7 @@ async def _repair_terminal_kis_proposal_projections(
         "converged": 0,
         "failed": 0,
         "anomalies": anomalies,
+        "scan": scan,
     }
     for row in rows:
         result = await _converge_kis_proposal_rung(
@@ -779,6 +898,17 @@ async def _reconcile_one_ledger_row(
             )
             if not dry_run:
                 await _update_ledger_outcome(ledger_id=row.id, status=expiry)
+                # ROB-719 gap C: converge the proposal rung in the same pass —
+                # previously expiry evidence needed a second non-dry pass (the
+                # terminal repair pre-pass) or the rung sweep to reach the
+                # rung, because this branch returned before any projection.
+                converged = await _converge_kis_proposal_rung(
+                    row,
+                    ledger_status=expiry,
+                    filled_qty=getattr(row, "filled_qty", None),
+                )
+                if converged is not None:
+                    base["proposal_rung"] = converged
             return base
         base["action"] = "noop_pending"
         return base
@@ -917,7 +1047,13 @@ async def kis_live_reconcile_orders_impl(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Reconcile accepted/pending live KR orders against broker fill evidence."""
-    projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
+    projection_repair = {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+        "anomalies": {},
+        "scan": {"skipped": "dry_run"},
+    }
     if not dry_run:
         projection_repair = await _repair_terminal_kis_proposal_projections(
             symbol=symbol, order_id=order_id, limit=limit
@@ -928,6 +1064,9 @@ async def kis_live_reconcile_orders_impl(
     rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
     try:
         open_total = await _count_open_ledger_rows(symbol=symbol, order_no=order_id)
+        beyond_reach = await _count_beyond_reach_ledger_rows(
+            symbol=symbol, order_no=order_id
+        )
         rows = await _list_open_ledger_rows(
             symbol=symbol, order_no=order_id, limit=limit
         )
@@ -982,6 +1121,8 @@ async def kis_live_reconcile_orders_impl(
             oldest_scanned_at=_scanned_oldest,
             newest_scanned_at=_scanned_newest,
             now=datetime.datetime.now(datetime.UTC),
+            scan_order=_KR_OPEN_SCAN_ORDER,
+            probeable_open=open_total - beyond_reach,
         ),
         "message": message,
     }

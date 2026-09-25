@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["candidate_scan_coverage", "run_resting_rung_sweep", "scanned_row_bounds"]
 
-# Every open-row candidate scan in the three reconcile kernels uses this order.
+# The Toss open-row candidate scan still uses this order.  The KIS KR and
+# US/crypto kernels moved to an evidence-reach aging order (ROB-719) and pass
+# their own ``scan_order`` text to ``candidate_scan_coverage``.
 _SCAN_ORDER = "created_at ASC (oldest-first)"
 
 
@@ -100,23 +102,40 @@ def candidate_scan_coverage(
     oldest_scanned_at: datetime.datetime | None = None,
     newest_scanned_at: datetime.datetime | None = None,
     now: datetime.datetime | None = None,
+    scan_order: str = _SCAN_ORDER,
+    probeable_open: int | None = None,
 ) -> dict[str, Any]:
     """Describe what a limited candidate scan did NOT look at (AC3).
 
-    The reconcile candidate scans order by ``created_at ASC`` and cut at
-    ``limit``.  When the open population exceeds the limit, the *oldest* rows
-    occupy every slot on every pass — and those are precisely the rows already
-    past the broker's lookback window, so they never resolve and never yield
-    their slot.  Newer, resolvable rows are then never scanned at all.
+    The reconcile candidate scans cut at ``limit``.  Without aging the order
+    was plain ``created_at ASC`` and the *oldest* rows occupied every slot on
+    every pass — precisely the rows already past the broker's lookback window,
+    so they never resolved and never yielded their slot.  Newer, resolvable
+    rows were then never scanned at all.
+
+    ROB-719 replaced that order with evidence-reach aging on the KIS kernels:
+    rows that can still produce broker evidence sort first and rows provably
+    beyond the broker's lookback depth fill only leftover slots.  Callers that
+    run an aged scan pass ``scan_order`` plus ``probeable_open`` (the number of
+    open rows still inside evidence reach) so the shortfall splits into:
+
+    * ``unreached_probeable`` — reachable rows that overflowed the limit.  A
+      real backlog: it drains as earlier open rows resolve or age out.
+    * ``unreached_beyond_reach`` — rows beyond the broker's documented evidence
+      depth, deliberately deprioritized.  They cannot produce evidence; they
+      need operator review, not more scan slots.
+
+    When ``probeable_open`` is None the caller could not supply the split (the
+    Toss scan still scans oldest-first) and the note keeps describing the
+    original persistent-starvation mechanics.
 
     Silently returning "reconciled N" while M rows were never looked at reads as
     full coverage.  This makes the shortfall explicit in the payload.
 
     The shortfall is reported as **starvation, not backlog**, because that is
     what it measures.  A backlog drains: next pass reaches what this pass
-    missed.  This does not — the scan re-selects the same oldest rows every
-    time, so the unreached set is stable and the newest rows are unreachable for
-    as long as the slot holders stay open.  Two extra facts make that legible
+    missed.  The oldest-first scan did not — it re-selected the same oldest
+    rows every time.  Two extra facts make that legible
     without a second query, when the caller can supply them:
 
     * ``unreached_created_after`` — the newest ``created_at`` this pass actually
@@ -125,10 +144,6 @@ def candidate_scan_coverage(
     * ``oldest_scanned_age_days`` — how long the row holding slot #1 has been
       sitting there.  A large number is the direct evidence that the holders do
       not turn over.
-
-    A fair-rotation scan (or a per-row last-attempt column) is the actual fix and
-    needs a migration, so it is out of this PR's scope; surfacing the number is
-    what keeps the gap from reading as coverage in the meantime.
     """
     if open_total is None:
         return {
@@ -136,7 +151,7 @@ def candidate_scan_coverage(
             "limit": limit,
             "open_total": None,
             "truncated": None,
-            "scan_order": _SCAN_ORDER,
+            "scan_order": scan_order,
         }
     unscanned = max(0, open_total - scanned)
     coverage: dict[str, Any] = {
@@ -145,8 +160,18 @@ def candidate_scan_coverage(
         "open_total": open_total,
         "unscanned": unscanned,
         "truncated": unscanned > 0,
-        "scan_order": _SCAN_ORDER,
+        "scan_order": scan_order,
     }
+    unreached_probeable: int | None = None
+    unreached_beyond_reach: int | None = None
+    if probeable_open is not None:
+        probeable_scanned = min(scanned, max(0, probeable_open))
+        unreached_probeable = max(0, probeable_open - probeable_scanned)
+        unreached_beyond_reach = unscanned - unreached_probeable
+        coverage["probeable_open"] = probeable_open
+        coverage["beyond_evidence_reach"] = max(0, open_total - probeable_open)
+        coverage["unreached_probeable"] = unreached_probeable
+        coverage["unreached_beyond_reach"] = unreached_beyond_reach
     if unscanned == 0:
         return coverage
 
@@ -156,18 +181,35 @@ def candidate_scan_coverage(
         age_days = max(0, (now - oldest_scanned_at).days)
     coverage["unreached_created_after"] = frontier
     coverage["oldest_scanned_age_days"] = age_days
-    coverage["note"] = (
-        f"{unscanned} open row(s) were never scanned this pass (limit={limit}); "
-        f"the scan is {_SCAN_ORDER}, so the same oldest rows refill every slot "
-        "on every pass and this shortfall is persistent, not a draining backlog"
-        + (f" — nothing created after {frontier} is reached" if frontier else "")
-        + (
-            f", while the row holding slot #1 has been open {age_days} day(s)"
-            if age_days is not None
-            else ""
+    if probeable_open is None:
+        coverage["note"] = (
+            f"{unscanned} open row(s) were never scanned this pass (limit={limit}); "
+            f"the scan is {_SCAN_ORDER}, so the same oldest rows refill every slot "
+            "on every pass and this shortfall is persistent, not a draining backlog"
+            + (f" — nothing created after {frontier} is reached" if frontier else "")
+            + (
+                f", while the row holding slot #1 has been open {age_days} day(s)"
+                if age_days is not None
+                else ""
+            )
+            + ". Raising `limit` is required for them to be reached at all; fair "
+            "rotation (a per-row last-attempt column) needs a migration and is "
+            "tracked separately."
         )
-        + ". Raising `limit` is required for them to be reached at all; fair "
-        "rotation (a per-row last-attempt column) needs a migration and is "
-        "tracked separately."
-    )
+    else:
+        coverage["note"] = (
+            f"{unscanned} open row(s) were never scanned this pass (limit={limit}); "
+            f"the scan is {scan_order}"
+            + (f" — nothing created after {frontier} is reached" if frontier else "")
+            + (
+                f", while the row holding slot #1 has been open {age_days} day(s)"
+                if age_days is not None
+                else ""
+            )
+            + f". {unreached_probeable} unreached row(s) are still inside the "
+            "broker evidence window (a real backlog that drains as earlier open "
+            f"rows resolve or age out) and {unreached_beyond_reach} sit beyond "
+            "the broker evidence reach — permanently unresolvable rows that are "
+            "deliberately deprioritized rather than allowed to fill every slot."
+        )
     return coverage

@@ -216,6 +216,104 @@ async def test_us_adapter_keeps_actual_open_order_pending() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_us_adapter_anchors_history_window_on_row_order_date() -> None:
+    """ROB-719 gap A: the TTTS3035R inquiry is anchored on the row's order
+    date, not a fixed now-7d window.
+
+    The Step3 probe showed KIS retains ~90 days of overseas order history
+    (16/16 stuck GOOGL orders back to 07-17 visible); the adapter must
+    therefore probe ``order_date-1 .. today`` (the -1d absorbs broker
+    ``ord_dt`` vs UTC ``trade_date`` skew) so a weeks-old order still
+    produces evidence.  A row with no derivable date falls back to the
+    recent 7-day window — strictly narrower, fail-closed.
+    """
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import live_order_evidence as ev
+
+    captured: list[dict] = []
+
+    async def _fake_history(**kwargs):
+        captured.append(kwargs)
+        return [
+            _row(
+                odno="US-OLD-1",
+                pdno="GOOGL",
+                ft_ord_qty="1",
+                ft_ccld_qty="1",
+                ft_ccld_unpr3="170.0",
+            )
+        ]
+
+    fake_kis = SimpleNamespace(
+        inquire_daily_order_overseas=AsyncMock(side_effect=_fake_history)
+    )
+
+    class _Row:
+        symbol = "GOOGL"
+        exchange = "NASD"
+        order_no = "US-OLD-1"
+
+        def __init__(self, trade_date):
+            self.trade_date = trade_date
+
+    order_dt = datetime.now(UTC) - timedelta(days=70)
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=fake_kis),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+    ):
+        await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row(order_dt))
+
+    assert len(captured) == 1
+    assert captured[0]["start_date"] == (order_dt.date() - timedelta(days=1)).strftime(
+        "%Y%m%d"
+    )
+    assert captured[0]["end_date"] == datetime.now().strftime("%Y%m%d")
+
+    # A row older than the documented depth clamps the window start at
+    # today-89d — it is probed but cannot match, staying fail-closed.
+    captured.clear()
+    ancient_dt = datetime.now(UTC) - timedelta(days=120)
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=fake_kis),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+    ):
+        await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row(ancient_dt))
+
+    assert captured[0]["start_date"] == (datetime.now() - timedelta(days=89)).strftime(
+        "%Y%m%d"
+    )
+
+    # No derivable order date → the narrow recent window (unchanged callers).
+    captured.clear()
+
+    class _RowNoDate:
+        symbol = "GOOGL"
+        exchange = "NASD"
+        order_no = "US-OLD-1"
+        trade_date = None
+        created_at = None
+
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=fake_kis),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+    ):
+        await ev.UsOverseasEvidenceAdapter().fetch_evidence(_RowNoDate())
+
+    assert captured[0]["start_date"] == (datetime.now() - timedelta(days=7)).strftime(
+        "%Y%m%d"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_us_adapter_preserves_partial_fill_when_expired_row_has_fill_evidence() -> (
     None
 ):

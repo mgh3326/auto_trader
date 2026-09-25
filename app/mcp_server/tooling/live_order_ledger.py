@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
@@ -180,6 +180,73 @@ async def _count_open_live_ledger_rows(
         return int((await db.execute(stmt)).scalar_one())
 
 
+# ROB-719 gap D+A — mirrors the UsOverseasEvidenceAdapter evidence window:
+# ``_find_us_order_in_recent_history`` (orders_modify_cancel.py) probes
+# TTTS3035R over an order-date-anchored window bounded by the documented
+# ~90-day depth (operator probe 2026-09-25 returned orders back to 07-17), so
+# a KIS row older than that can never produce evidence.
+_KIS_US_HISTORY_LOOKBACK_DAYS = 90
+
+# Documented scan order for the open-row candidate scan (ROB-719 gap D):
+# evidence-reachable rows first (order_no present; KIS rows inside the
+# ~90-day TTTS3035R history window), beyond-reach rows only in leftover
+# slots, created_at ASC + id ASC inside each tier.
+_US_OPEN_SCAN_ORDER = (
+    "evidence-reachable first (order_no present; kis rows inside the "
+    "~90-day TTTS3035R history window), then created_at ASC, id ASC; "
+    "beyond-reach rows fill only leftover slots"
+)
+
+
+def _live_beyond_reach_clause() -> Any:
+    """Open rows that can never produce broker evidence this scan.
+
+    A missing/blank ``order_no`` is unmatchable for every adapter, and a KIS
+    row older than ``_KIS_US_HISTORY_LOOKBACK_DAYS`` sits outside the adapter's
+    evidence window.  Upbit rows have no history-depth cap — only the missing
+    key deprioritizes them.
+    """
+    # The adapter's probe window is date-granular (order_date-1 .. today,
+    # bounded by the ~90-day depth) while this cutoff is an exact timestamp,
+    # so a row right at the boundary may still be probeable but ranks beyond
+    # reach — ordering-only, conservative side.
+    kis_cutoff = datetime.now(UTC) - timedelta(days=_KIS_US_HISTORY_LOOKBACK_DAYS)
+    return or_(
+        LiveOrderLedger.order_no.is_(None),
+        func.trim(LiveOrderLedger.order_no) == "",
+        and_(
+            LiveOrderLedger.broker == "kis",
+            LiveOrderLedger.created_at < kis_cutoff,
+        ),
+    )
+
+
+async def _count_beyond_reach_live_ledger_rows(
+    *,
+    market: str | None,
+    broker: str | None,
+    symbol: str | None,
+    order_no: str | None,
+) -> int:
+    """Open rows beyond broker evidence reach (ROB-719 gap D reporting)."""
+    async with _order_session_factory()() as db:
+        stmt = (
+            select(func.count())
+            .select_from(LiveOrderLedger)
+            .where(LiveOrderLedger.status.in_(("accepted", "pending", "partial")))
+            .where(_live_beyond_reach_clause())
+        )
+        if market:
+            stmt = stmt.where(LiveOrderLedger.market == market)
+        if broker:
+            stmt = stmt.where(LiveOrderLedger.broker == broker)
+        if symbol:
+            stmt = stmt.where(LiveOrderLedger.symbol == symbol)
+        if order_no:
+            stmt = stmt.where(LiveOrderLedger.order_no == order_no)
+        return int((await db.execute(stmt)).scalar_one())
+
+
 async def _list_open_live_ledger_rows(
     *,
     market: str | None,
@@ -188,6 +255,7 @@ async def _list_open_live_ledger_rows(
     order_no: str | None,
     limit: int,
 ) -> list[LiveOrderLedger]:
+    """Open rows in the aged ``_US_OPEN_SCAN_ORDER`` (ROB-719 gap D)."""
     async with _order_session_factory()() as db:
         stmt = select(LiveOrderLedger).where(
             LiveOrderLedger.status.in_(("accepted", "pending", "partial"))
@@ -200,7 +268,11 @@ async def _list_open_live_ledger_rows(
             stmt = stmt.where(LiveOrderLedger.symbol == symbol)
         if order_no:
             stmt = stmt.where(LiveOrderLedger.order_no == order_no)
-        stmt = stmt.order_by(LiveOrderLedger.created_at.asc()).limit(limit)
+        stmt = stmt.order_by(
+            _live_beyond_reach_clause().asc(),
+            LiveOrderLedger.created_at.asc(),
+            LiveOrderLedger.id.asc(),
+        ).limit(limit)
         rows = list((await db.execute(stmt)).scalars().all())
         for r in rows:
             db.expunge(r)
@@ -326,6 +398,21 @@ async def _reconcile_one_live_row(
 
     if evidence.verdict == FillVerdict.PENDING:
         base["action"] = "noop_pending"
+        if evidence.reason_code:
+            base["reason_code"] = evidence.reason_code
+        if evidence.reason_code == "not_found":
+            # ROB-719 gap A: the order is absent from the broker's evidence
+            # window — for KIS US an order-date-anchored TTTS3035R probe
+            # bounded by the ~90-day depth, so an order older than that (or
+            # one without a derivable order date) looks identical to a
+            # genuinely live one.  Absence is still not expiry evidence and
+            # the ledger stays open, but the silent noop made aged-out DAY
+            # orders invisible forever; flag them so dry-runs and review
+            # queues can see the cohort.
+            base["requires_manual_review"] = True
+            base["reason"] = evidence.detail or (
+                "order not found in broker evidence window"
+            )
         return base
 
     if evidence.verdict == FillVerdict.EXPIRED:
@@ -564,6 +651,9 @@ async def live_reconcile_orders_impl(
         open_total = await _count_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id
         )
+        beyond_reach = await _count_beyond_reach_live_ledger_rows(
+            market=market, broker=broker, symbol=symbol, order_no=order_id
+        )
         rows = await _list_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id, limit=limit
         )
@@ -602,6 +692,8 @@ async def live_reconcile_orders_impl(
             oldest_scanned_at=scanned_oldest,
             newest_scanned_at=scanned_newest,
             now=datetime.now(UTC),
+            scan_order=_US_OPEN_SCAN_ORDER,
+            probeable_open=open_total - beyond_reach,
         ),
         "message": f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}",
     }
