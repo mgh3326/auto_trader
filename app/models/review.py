@@ -652,7 +652,8 @@ class TossLiveOrderLedger(Base):
         CheckConstraint(
             "status IN ("
             "'accepted','rejected','pending','partial','filled','cancelled',"
-            "'replaced','cancel_rejected','replace_rejected','anomaly'"
+            "'replaced','cancel_rejected','replace_rejected','anomaly',"
+            "'expired'"
             ")",
             name="toss_live_ledger_status",
         ),
@@ -728,6 +729,9 @@ class TossLiveOrderLedger(Base):
     trade_id: Mapped[int | None] = mapped_column(BigInteger)
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    # ROB-691 — broker DAY-expiry timestamp (Toss canceledAt), populated only
+    # when broker evidence classifies the order as expired.
+    expired_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))

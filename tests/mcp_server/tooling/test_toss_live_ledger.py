@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -207,7 +208,13 @@ async def _proposal_accepted_row(db_session, *, suffix: str):
     return proposal_id, row
 
 
-def _toss_evidence(*, verdict: str, local_status: str, filled_qty: str):
+def _toss_evidence(
+    *,
+    verdict: str,
+    local_status: str,
+    filled_qty: str,
+    expired_at: datetime | None = None,
+):
     from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
 
     return TossFillEvidence(
@@ -222,6 +229,7 @@ def _toss_evidence(*, verdict: str, local_status: str, filled_qty: str):
         settlement_date=None,
         raw_order={"status": local_status.upper()},
         reason=verdict,
+        expired_at=expired_at,
     )
 
 
@@ -2019,3 +2027,351 @@ def test_toss_execution_ledger_fill_seq_changes_by_delta():
     assert first.filled_qty == Decimal("1")
     assert second.filled_qty == Decimal("0.5")
     assert first.fill_seq != second.fill_seq
+
+
+# ---------------------------------------------------------------------------
+# ROB-691 — Toss KR DAY-expiry sweep end-to-end (fixture-only, no network).
+# Toss reports a broker-swept DAY order as REJECTED + canceledAt; the ledger
+# row must converge to status='expired' carrying the broker timestamp, and a
+# broker with no record must stay unresolved — never expired.
+# ---------------------------------------------------------------------------
+
+
+def _kr_swept_order(
+    *,
+    canceled_at: str,
+    filled_qty: str = "0",
+    avg_price: str | None = None,
+    order_id: str = "ord-kr-buy",
+    status: str = "REJECTED",
+    time_in_force: str = "DAY",
+):
+    """Hand-recorded Toss order-history fixture (mirrors the parsed DTO)."""
+    from types import SimpleNamespace
+
+    execution = {"filledQuantity": Decimal(filled_qty)}
+    if avg_price is not None:
+        execution["averageFilledPrice"] = Decimal(avg_price)
+    return SimpleNamespace(
+        order_id=order_id,
+        symbol="034020",
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force=time_in_force,
+        status=status,
+        price=Decimal("85000"),
+        quantity=Decimal("3"),
+        order_amount=None,
+        currency="KRW",
+        ordered_at="2026-09-24T09:05:00+09:00",
+        canceled_at=canceled_at,
+        execution=execution,
+    )
+
+
+def _classifying_source(order):
+    """Evidence source stub that runs the REAL classifier on a fixture."""
+    from app.mcp_server.tooling.toss_live_evidence import (
+        classify_toss_order_evidence,
+    )
+
+    source = AsyncMock()
+    source.evidence_for = AsyncMock(
+        side_effect=lambda _row: classify_toss_order_evidence(order)
+    )
+    return source
+
+
+_KST = ZoneInfo("Asia/Seoul")
+_REGULAR_SWEEP_AT = datetime(2026, 9, 24, 15, 33, 12, 123456, tzinfo=_KST)
+_NXT_SWEEP_AT = datetime(2026, 9, 24, 20, 4, 31, tzinfo=_KST)
+
+
+async def test_day_sweep_1533_marks_ledger_expired_with_broker_timestamp(
+    db_session,
+):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    outcome = await mod._reconcile_one_toss_row(
+        row,
+        dry_run=False,
+        evidence_source=_classifying_source(
+            _kr_swept_order(canceled_at="2026-09-24T15:33:12.123456+09:00")
+        ),
+    )
+
+    assert outcome["verdict"] == "expired"
+    assert outcome["action"] == "marked_expired"
+    assert outcome["expired_at"] == "2026-09-24T15:33:12.123456+09:00"
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "expired"
+    assert refreshed.broker_status == "REJECTED"
+    assert refreshed.expired_at is not None
+    assert refreshed.expired_at == _REGULAR_SWEEP_AT
+    assert refreshed.reconciled_at is not None
+    assert refreshed.raw_response["canceledAt"] == "2026-09-24T15:33:12.123456+09:00"
+
+
+async def test_day_sweep_2004_nxt_marks_ledger_expired(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    outcome = await mod._reconcile_one_toss_row(
+        row,
+        dry_run=False,
+        evidence_source=_classifying_source(
+            _kr_swept_order(canceled_at="2026-09-24T20:04:31+09:00")
+        ),
+    )
+
+    assert outcome["action"] == "marked_expired"
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "expired"
+    assert refreshed.expired_at == _NXT_SWEEP_AT
+
+
+async def test_expired_dry_run_writes_nothing(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    outcome = await mod._reconcile_one_toss_row(
+        row,
+        dry_run=True,
+        evidence_source=_classifying_source(
+            _kr_swept_order(canceled_at="2026-09-24T15:33:12+09:00")
+        ),
+    )
+
+    assert outcome["verdict"] == "expired"
+    assert outcome["action"] == "marked_expired"
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "accepted"
+    assert refreshed.expired_at is None
+    assert refreshed.reconciled_at is None
+
+
+async def test_partial_fill_then_sweep_books_delta_and_marks_expired(db_session):
+    """Mutant guard: a swept order carrying fills must still book the fill —
+    treating it as a zero-fill expiry leaves filled_qty NULL and goes RED."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    source = _classifying_source(
+        _kr_swept_order(
+            canceled_at="2026-09-24T15:33:12.123456+09:00",
+            filled_qty="1",
+            avg_price="85000",
+        )
+    )
+    with ExitStack() as stack:
+        for booking_patch in _projection_booking_patches(mod):
+            stack.enter_context(booking_patch)
+        outcome = await mod._reconcile_one_toss_row(
+            row, dry_run=False, evidence_source=source
+        )
+
+    assert outcome["action"] == "booked"
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "expired"
+    assert refreshed.filled_qty == Decimal("1")
+    assert refreshed.avg_fill_price == Decimal("85000")
+    assert refreshed.expired_at is not None
+    assert refreshed.expired_at == _REGULAR_SWEEP_AT
+
+
+async def test_booked_partial_row_converges_to_expired_preserving_qty(db_session):
+    """An already-booked partial row swept at DAY expiry closes as expired
+    with the booked quantity intact (delta <= 0 noop path)."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    partial = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="partial", local_status="partial", filled_qty="1"),
+    )
+    assert partial["action"] == "booked"
+    await db_session.refresh(row)
+    assert row.status == "partial"
+
+    outcome = await mod._reconcile_one_toss_row(
+        row,
+        dry_run=False,
+        evidence_source=_classifying_source(
+            _kr_swept_order(
+                canceled_at="2026-09-24T15:33:12.123456+09:00",
+                filled_qty="1",
+                avg_price="85000",
+            )
+        ),
+    )
+
+    assert outcome["action"] == "noop_already_booked"
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "expired"
+    assert refreshed.filled_qty == Decimal("1")
+    assert refreshed.expired_at is not None
+
+
+async def test_expired_rerun_is_noop_without_broker_call(db_session):
+    """Mutant guard: dropping the terminal guard re-fetches evidence and
+    rewrites reconciled_at — both assertions go RED without the guard."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    first = await mod._reconcile_one_toss_row(
+        row,
+        dry_run=False,
+        evidence_source=_classifying_source(
+            _kr_swept_order(canceled_at="2026-09-24T15:33:12.123456+09:00")
+        ),
+    )
+    assert first["action"] == "marked_expired"
+    await db_session.refresh(row)
+    first_reconciled_at = row.reconciled_at
+    assert row.status == "expired"
+
+    spy_source = _classifying_source(
+        _kr_swept_order(canceled_at="2026-09-24T15:33:12.123456+09:00")
+    )
+    second = await mod._reconcile_one_toss_row(
+        row, dry_run=False, evidence_source=spy_source
+    )
+
+    assert second["action"] == "noop_terminal"
+    spy_source.evidence_for.assert_not_called()
+    await db_session.refresh(row)
+    assert row.status == "expired"
+    assert row.reconciled_at == first_reconciled_at
+    assert row.expired_at == _REGULAR_SWEEP_AT
+
+
+async def test_impl_second_run_never_scans_expired_row(db_session):
+    """Impl-level idempotency: a terminal row leaves the list_open scan set."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    row = await _accepted(db_session, market="kr")
+    await mod._reconcile_one_toss_row(
+        row,
+        dry_run=False,
+        evidence_source=_classifying_source(
+            _kr_swept_order(canceled_at="2026-09-24T15:33:12+09:00")
+        ),
+    )
+
+    spy = AsyncMock(return_value={"verdict": "skipped", "action": "noop_terminal"})
+    with patch.object(mod, "_reconcile_one_toss_row", new=spy):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    spy.assert_not_called()
+    assert out["reconciled"] == []
+
+
+async def test_unknown_to_broker_is_manual_review_never_expired(db_session):
+    """Mutant guard: a broker 404 (no record) must surface as an unresolved
+    manual-review anomaly.  Classifying absence as expired goes RED."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.brokers.toss.errors import (
+        TossApiResponseError,
+        TossErrorEnvelope,
+    )
+
+    row = await _accepted(db_session, market="kr")
+    err = TossApiResponseError(
+        TossErrorEnvelope(
+            request_id="ray-404",
+            code="order-not-found",
+            message="no such order",
+            data=None,
+        ),
+        status_code=404,
+    )
+
+    class _MissingSource:
+        window_from = "2026-09-24"
+        window_to = "2026-09-25"
+        closed_pages_capped = False
+        single_fetch_count = 1
+
+        async def evidence_for(self, _row):
+            raise err
+
+        async def aclose(self):
+            return None
+
+    with patch.object(
+        mod.TossBatchEvidenceSource,
+        "build",
+        new=AsyncMock(return_value=_MissingSource()),
+    ):
+        out = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    assert out["counts"] == {"anomaly": 1}
+    item = out["reconciled"][0]
+    assert item["verdict"] == "anomaly"
+    assert item["action"] == "requires_manual_review"
+    assert item["requires_manual_review"] is True
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.status == "anomaly"
+    assert refreshed.status != "expired"
+    assert refreshed.expired_at is None
+    assert refreshed.requires_manual_review is True
+
+
+async def test_expired_projects_resting_rung_to_expired(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="expired")
+    outcome = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(
+            verdict="expired",
+            local_status="expired",
+            filled_qty="0",
+            expired_at=_REGULAR_SWEEP_AT,
+        ),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+
+    assert outcome["action"] == "marked_expired"
+    assert outcome["proposal_rung"] == {
+        "converged": True,
+        "proposal_rung_state": "expired",
+    }
+    assert rung.state == "expired"
+
+
+async def test_partially_filled_rung_expires_preserving_qty(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(
+        db_session, suffix="partial-expired"
+    )
+    await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="partial", local_status="partial", filled_qty="0.5"),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert rung.state == "partially_filled"
+    assert rung.filled_qty == Decimal("0.5")
+
+    await db_session.refresh(row)
+    expired = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(
+            verdict="expired",
+            local_status="expired",
+            filled_qty="0",
+            expired_at=_REGULAR_SWEEP_AT,
+        ),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+
+    assert expired["proposal_rung"]["proposal_rung_state"] == "expired"
+    assert rung.state == "expired"
+    assert rung.filled_qty == Decimal("0.5")

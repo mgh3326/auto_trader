@@ -270,7 +270,13 @@ async def _converge_toss_proposal_rung(
     """Project committed Toss evidence in an independent committed session."""
     from app.services.order_proposals import OrderProposalsService
 
-    if ledger_status not in {"partial", "filled", "cancelled", "rejected"}:
+    if ledger_status not in {
+        "partial",
+        "filled",
+        "cancelled",
+        "rejected",
+        "expired",
+    }:
         return None
 
     try:
@@ -322,6 +328,7 @@ async def _converge_toss_proposal_rung(
                 # submitted.  `expired` is the legal evidence-grounded rung
                 # terminal state from resting/partially_filled.
                 "rejected": "expired",
+                "expired": "expired",
             }[ledger_status]
             rung = await service.record_fill_evidence_for_rung(
                 rung_id=rung_id,
@@ -390,6 +397,14 @@ async def _repair_terminal_toss_proposal_projections(
     return report
 
 
+# ROB-691 — a row already classified expired is terminal.  Re-reconciling it
+# must be a no-op: no broker call, no rewrite, no reconciled_at churn.  Other
+# terminal statuses keep their existing re-entry semantics (e.g. a filled row
+# re-fed identical evidence resolves through the qty-delta noop_already_booked
+# path).
+_TOSS_TERMINAL_LEDGER_STATUSES = frozenset({"expired"})
+
+
 async def _reconcile_one_toss_row(
     row: TossLiveOrderLedger,
     *,
@@ -406,6 +421,11 @@ async def _reconcile_one_toss_row(
         "symbol": row.symbol,
         "operation_kind": row.operation_kind,
     }
+    if row.status in _TOSS_TERMINAL_LEDGER_STATUSES:
+        base["verdict"] = "skipped"
+        base["local_status"] = row.status
+        base["action"] = "noop_terminal"
+        return base
     if evidence_source is not None:
         evidence = await evidence_source.evidence_for(row)
     else:
@@ -444,10 +464,11 @@ async def _reconcile_one_toss_row(
                     status=evidence.local_status,
                     broker_status=evidence.broker_status,
                     raw_response=evidence.raw_order,
+                    expired_at=evidence.expired_at,
                 )
         return base
 
-    if evidence.verdict == "none":
+    if evidence.verdict in {"none", "expired"}:
         base["action"] = f"marked_{evidence.local_status}"
         if not dry_run:
             # The auto-veto path owns a locked proposal rung and uses this
@@ -472,7 +493,12 @@ async def _reconcile_one_toss_row(
                     tax=evidence.tax,
                     settlement_date=evidence.settlement_date,
                     raw_response=evidence.raw_order,
+                    expired_at=evidence.expired_at,
                 )
+        if evidence.verdict == "expired":
+            base["expired_at"] = (
+                evidence.expired_at.isoformat() if evidence.expired_at else None
+            )
         return base
 
     broker_cum = evidence.filled_qty
@@ -485,7 +511,9 @@ async def _reconcile_one_toss_row(
 
     if not dry_run and project_proposal_rungs:
         projection_status = (
-            "cancelled" if evidence.local_status == "cancelled" else evidence.verdict
+            evidence.local_status
+            if evidence.local_status in {"cancelled", "expired"}
+            else evidence.verdict
         )
         converged = await _converge_toss_proposal_rung(
             row,
@@ -509,7 +537,10 @@ async def _reconcile_one_toss_row(
                     tax=evidence.tax,
                     settlement_date=evidence.settlement_date,
                     raw_response=evidence.raw_order,
+                    expired_at=evidence.expired_at,
                 )
+        if evidence.expired_at is not None:
+            base["expired_at"] = evidence.expired_at.isoformat()
         return base
 
     if dry_run:
@@ -627,6 +658,7 @@ async def _reconcile_one_toss_row(
                 fx_rate_source=fx_summary.get("fx_rate_source"),
                 fx_pnl_accuracy=fx_summary.get("fx_pnl_accuracy"),
                 raw_response=evidence.raw_order,
+                expired_at=evidence.expired_at,
             )
             base.update(fx_summary)
         else:
@@ -647,6 +679,7 @@ async def _reconcile_one_toss_row(
                 fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
                 fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
                 raw_response=evidence.raw_order,
+                expired_at=evidence.expired_at,
             )
             if fx_capture:
                 base["buy_fx_rate"] = (
@@ -659,6 +692,8 @@ async def _reconcile_one_toss_row(
         "status": execution_status,
         "id": execution_ledger_id,
     }
+    if evidence.expired_at is not None:
+        base["expired_at"] = evidence.expired_at.isoformat()
     base["action"] = "booked"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
