@@ -1887,15 +1887,24 @@ async def test_beyond_reach_rows_are_deprioritized_not_dropped(db_session):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rung_partial_qty", "ledger_partial_qty", "expected_qty"),
+    [("1", "2", "2"), ("3", "2", "3")],
+    ids=["refreshes-larger-ledger-qty", "stale-ledger-qty-does-not-regress"],
+)
 async def test_terminal_repair_updates_booked_partial_on_already_partial_rung(
     db_session,
+    rung_partial_qty,
+    ledger_partial_qty,
+    expected_qty,
 ):
     """ROB-719 gap C: pre-projection on an already-partially_filled rung.
 
     When the rung already carries a booked partial (partially_filled), the
-    terminal pre-projection must refresh the audit qty in place rather than
-    attempt an illegal partially_filled -> partially_filled transition, and
-    the terminal close must then keep that qty.
+    terminal projection must skip the illegal partially_filled ->
+    partially_filled self-transition and the close must carry the larger
+    booked qty: a fresher ledger partial refreshes the rung, a stale or
+    equal one never regresses it.
     """
     from datetime import UTC, datetime
     from decimal import Decimal
@@ -1923,7 +1932,7 @@ async def test_terminal_repair_updates_booked_partial_on_already_partial_rung(
         correlation_id=correlation_id,
         broker_order_id=order_no,
         idempotency_key=f"idem-{suffix}",
-        filled_qty=Decimal("1"),
+        filled_qty=Decimal(rung_partial_qty),
         terminal_state="partially_filled",
         now=datetime.now(UTC),
         account_mode="kis_live",
@@ -1959,9 +1968,9 @@ async def test_terminal_repair_updates_booked_partial_on_already_partial_rung(
         indicators_snapshot=None,
         correlation_id=correlation_id,
     )
-    # The ledger booked a later, larger partial (2 of 3) before the cancel.
+    # The ledger booked its own observed partial before the cancel.
     await kl._update_ledger_outcome(
-        ledger_id=ledger_id, status="partial", filled_qty=Decimal("2")
+        ledger_id=ledger_id, status="partial", filled_qty=Decimal(ledger_partial_qty)
     )
     await kl._update_ledger_outcome(ledger_id=ledger_id, status="cancelled")
 
@@ -1976,7 +1985,7 @@ async def test_terminal_repair_updates_booked_partial_on_already_partial_rung(
     assert repair["failed"] == 0
     _, rungs = await OrderProposalsService(db_session).get_proposal(proposal_id)
     assert rungs[0].state == "cancelled"
-    assert rungs[0].filled_qty == Decimal("2")
+    assert rungs[0].filled_qty == Decimal(expected_qty)
 
 
 @pytest.mark.unit

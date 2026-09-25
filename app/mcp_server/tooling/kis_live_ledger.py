@@ -752,9 +752,9 @@ async def _converge_kis_proposal_rung(
             # filled_qty).  Project that quantity onto the SAME validated rung
             # — record_fill_evidence re-picks a rung by broker id without a
             # symbol/market scope, which can attribute the partial to an
-            # unrelated rung sharing the order number — then close with
-            # filled_qty=None so the service preserves the partial audit value
-            # on the terminal rung.
+            # unrelated rung sharing the order number.  The terminal close then
+            # carries close_filled_qty (None unless the rung was already
+            # partially_filled) so the service preserves the larger booked qty.
             close_filled_qty: Decimal | None = None
             if (
                 ledger_status in {"cancelled", "expired"}
