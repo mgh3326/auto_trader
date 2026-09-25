@@ -1,11 +1,11 @@
 # #711 — NHPLUG 모의계좌 주문 송신 경로 상태 기계 (설계)
 
-- 상태: **설계 문서 r3 — 코드 변경 0.** 재구현은 이 문서가 승인된 뒤 별도 PR 에서 한다.
+- 상태: **설계 문서 r4 — 코드 변경 0.** 재구현은 이 문서가 승인된 뒤 별도 PR 에서 한다.
 - 입력: 운영자 결정 A(2026-09-26 — PR #2100 은 열린 채 보류, 송신 경로 설계를 먼저 쓴다),
   운영자 결정 `decision/2026-09-25/nhplug-stage2-mock`(모의계좌 한정 · 지정가 주문·정정·취소 · 레저·reconcile ·
   시장가/실계좌/스케줄러/배정 제외), 독립 tester 보고 r1–r4 의 BLOCKER 13건(`herdr-inbox/jobs/
   711-nhplug-stage2-20260925-1235/tester-report-r{1,2,3,4}.md`), 이 문서의 독립 리뷰 r1(`design-review-r1.md`,
-  BLOCKER 5 · MAJOR 3)과 r2(`design-review-r2.md`, BLOCKER 4 · MAJOR 4).
+  BLOCKER 5 · MAJOR 3), r2(`design-review-r2.md`, BLOCKER 4 · MAJOR 4), r3(`design-review-r3.md`, BLOCKER 4 · MAJOR 1).
 - 개정 r2(리뷰 r1 + director-1 결정): B1 lease·fence·프로세스 소멸 증명 없이는 재주문 차단 해제 금지 · B2 인바운드
   멱등키 + DB 예약 + 운영자 전용 두 번째 주문 · B3 송신 시작 가능 이후 예외는 전부 `uncertain`(접수번호는 증거로만) ·
   B4 "주문 없음 증명" 코드 목록은 비어 있음(벤더 문서 인용) · B5 속성 일치는 운영자 확인 후보 · M6 자기 전이 표 ·
@@ -17,6 +17,11 @@
   R6 단계별 타임아웃 합을 총 상한으로 쓰지 않음 — 종단 기한 + 안전성은 "첫 쓰기 기한 < lease 만료" 부등식에만 의존 ·
   R7 같은 키 재시도가 아직 `intent` 인 행을 이어받아 claim · R8 운영자 전이(T9h·T14·T15)는 별도 DB 역할만 넣을 수 있는
   1회용 운영자 승인 행을 요구.
+- 개정 r4(리뷰 r3 지적만, director-1 방향, §6.4): Q1 fence 이후 정리·기록까지 하나의 예외 경계 · Q2 T6/T9a 는 엔드포인트별
+  성공 증명 코드가 있어야만 — 벤더가 문서화한 코드가 없어 목록이 비어 있으므로 번호가 있어도 `uncertain`(번호는 증거) ·
+  Q3 `accepted` 계열 상태는 양수이고 같은 `broker_order_id`·`ack_order_id` 를 NULL 이 통과할 수 없는 CHECK 로 요구(§5.5 의
+  잘못된 주장 정정) · Q4 계좌 최초 등록 시 DB 에 등록된 모든 보존 키 버전의 바인딩을 한 트랜잭션에서 삽입 · Q5 T9h 는
+  dispatcher 가 송신 단계를 떠났음이 증명된 뒤에만.
 - 기준 코드: 보류 중인 PR #2100 head `b945ccc76`(브랜치 `task711-nhplug-stage2`). `file:line` 은 이 커밋에서 읽었다.
 - 벤더 사실(공개 krstock OpenAPI "API명세서 260911" · 벤더 SDK `PLUG-OpenAPI/nhplug-sdk` `572a908` 소스, 실호출 0):
   주문 본문(`cashBuy`/`cashSell`/`modify`/`cancel` 의 `Input_0`)에 **클라이언트 주문 ID·멱등키 필드가 없다**.
@@ -31,9 +36,9 @@
 
 | 규칙 | 내용 |
 |---|---|
-| **S1 상태 기계** | 행은 `intent → claimed → sending → {accepted, uncertain} → reconciled` 만 지난다(`rejected` 는 §4.3 의 빈 목록 때문에 현재 도달 불가). 합법 전이는 §2.3·§2.4 표가 전부이며 DB 트리거가 강제한다. |
+| **S1 상태 기계** | 행은 `intent → claimed → sending → {accepted, uncertain} → reconciled` 만 지난다. `rejected`(T7)와 응답만으로의 `accepted`(T6·T9a)는 §4.3 의 두 목록이 비어 있어 현재 도달 불가이며, `accepted` 는 reconcile 의 자기 번호 증명(T9b) 또는 운영자 확인(T9h)으로만 된다. 합법 전이는 §2.3·§2.4 표가 전부이며 DB 트리거가 강제한다. |
 | **S2 본문 = claim 행** | 본문을 정하는 모든 필드는 intent 행에 고정되고, 본문은 claim 된 행에서 순수 함수로만 만든다. 송신 API 는 수량·가격·범위·계좌를 받지 않는다. DB 생성 컬럼 `body_digest`(§3.3 인코딩·골든 벡터)가 intent 필드·claim 조건·전송 바이트를 묶는다. |
-| **S3 송신 시작 가능 이후 = uncertain** | `sending` fence 커밋 이후의 모든 예외·비정상 결과(연결 종료·`aclose()`·취소·프로세스 사망·부정 응답 포함)는 `uncertain` 이다. 읽은 접수번호는 증거 컬럼에만 남고, 늦게 읽혀도 한 번 기록된다(T8e). `withdrawn` 은 fence **이전**에만 가능하다. |
+| **S3 송신 시작 가능 이후 = uncertain** | `sending` fence 커밋 이후의 모든 예외·비정상 결과(연결 종료·`aclose()`·취소·프로세스 사망·부정 응답·성공 증명 코드 없는 응답 포함)는 `uncertain` 이다. 정리(소켓 종료) 실패도 같은 경계 안이다. 읽은 접수번호는 증거 컬럼에만 남고, 늦게 읽혀도 한 번 기록된다(T8e). `withdrawn` 은 fence **이전**에만 가능하다. |
 | **S4 단일 사용 claim** | claim 은 조건부 UPDATE 하나로만 얻고 즉시 커밋한다. 같은 행의 재생·새 요청 ID·두 번째 클라이언트·동시 호출·다른 digest·다른 계좌는 0행이다. 토큰·lease 신원은 되돌릴 수 없다. |
 | **S5 요청 단위 멱등** | 호출자가 준 멱등키로 같은 요청은 같은 행(또는 미송신이 증명된 뒤의 다음 시도)으로 수렴한다. 멱등·예약·중복 UNIQUE 는 키 회전에도 변하지 않는 `account_ref` 위에 걸리고 관련 컬럼은 전부 NOT NULL 이다. 같은 본문의 같은 날 재주문은 운영자 승인 행이 있어야만 만든다. |
 | **S6 부재는 증거가 아니다** | 빈 배열·블록 누락·13578·오류형·미완료 페이지는 "미체결 없음"이 아니다. 종결 상태는 양성 증거 두 개로만 기록한다. 속성만 같은 목록 행은 후보일 뿐이다. |
@@ -65,7 +70,7 @@ r2(BLOCKER 4·MAJOR 4, §6.3)를 거쳤다. 공통 원인은 한 가지다 — *
 | `withdrawn` | fence 이전 거부로 닫힘 | 미송신 확정 | 아니오 | 예 |
 | `claimed` | 단일 사용 claim + lease 신원 커밋. 본문 고정, 송신 전 검사 중 | 미송신 확정 | 예 | 아니오 |
 | `sending` | fence 커밋. 이후 첫 바이트가 나갈 수 있음 | 알 수 없음 | 예 | 아니오 |
-| `accepted` | 송신 절차가 예외 없이 끝났고 `mkt_orr_no` 를 읽음, 또는 §4.5 증명 | 접수 | 아니오 | 아니오 |
+| `accepted` | 송신 절차가 예외 없이 끝났고 성공 증명 코드(§4.3, 현재 없음) + `mkt_orr_no`, 또는 §4.5 증명 | 접수 | 아니오 | 아니오 |
 | `rejected` | §4.3 "주문 없음 증명" 코드일 때만 — **목록이 비어 있어 현재 도달 불가** | 거부 증명 | 아니오 | 예 |
 | `uncertain` | fence 이후 그 밖의 모든 결과 | 알 수 없음 | 예 | 아니오 |
 | `open` / `partially_filled` | reconcile 이 양성 두 소스로 확인한 미체결 | 접수 | 아니오 | 아니오 |
@@ -96,20 +101,20 @@ b945ccc 이름 대응: `intent=submitting`, `withdrawn=not_submitted`, `claimed�
 | T3 | `intent → claimed` | D | §5.3 claim SQL | `claim_token`, `claimed_at`, `claim_deadline`, lease 신원(§4.6) |
 | T4 | `claimed → withdrawn` | D | `state='claimed' AND claim_token=:t AND sending_at IS NULL` + 타입 `PreSendRefusal` | `withdraw_reason` |
 | T5 | `claimed → sending` (**fence**) | D | §5.4 fence SQL(`state='claimed'`, 토큰, `now() < claim_deadline`) | `sending_at`, `lease_expires_at` — 단독 커밋, 그 뒤 첫 쓰기 게이트(§4.1) |
-| T6 | `sending → accepted` | D | `state='sending' AND claim_token=:t` + 송신 절차(컨텍스트 종료 포함)가 예외 없이 끝남 + `mkt_orr_no>0` 읽음 | `broker_order_id`, `ack_order_id`, `lease_closed_at` |
+| T6 | `sending → accepted` | D | `state='sending' AND claim_token=:t` + 송신 절차(정리 포함)가 예외 없이 끝남 + §4.3 성공 술어(HTTP 200 · `rsp_cd ∈ SUCCESS_PROOF_CODES[path]` · `mkt_orr_no>0`) — **목록이 비어 현재 도달 불가**. 트리거: `rsp_cd` 가 DB 표 `review.nhplug_success_proof_code(path, rsp_cd)` 에 있어야 함 | `broker_order_id`=`ack_order_id`, `ack_source='response'`, `success_rsp_cd`, `lease_closed_at`, `dispatcher_done_at` |
 | T7 | `sending → rejected` | D | 위 + 응답 코드가 해당 엔드포인트의 "주문 없음 증명" 목록(§4.3, 현재 빈 집합)에 있음 | 응답 코드, `lease_closed_at` |
-| T8 | `sending → uncertain` | D | `state='sending' AND claim_token=:t`, 그 밖의 모든 결과·예외 | `uncertain_reason`, 읽었으면 `ack_evidence_order_id`, `lease_closed_at` |
+| T8 | `sending → uncertain` | D | `state='sending' AND claim_token=:t`, 그 밖의 모든 결과·예외(번호가 있어도 성공 증명 코드가 없으면 여기) | `uncertain_reason`, 읽었으면 `ack_evidence_order_id`, `lease_closed_at`, `dispatcher_done_at` |
 | T8v | `sending → uncertain` | V | `state='sending' AND lease_expires_at < now()` | `uncertain_reason='lease_expired_without_result'`, `lease_closed_at` (= lease 취소) |
-| T8e | `uncertain → uncertain` | D | `claim_token=:t AND ack_evidence_order_id IS NULL`(T8v 가 먼저 닫은 뒤 D 가 늦게 읽은 번호) | `ack_evidence_order_id`, `late_result_at` — 한 번만 |
-| T9a | `uncertain → accepted` | D | `claim_token=:t` + T6 조건을 만족하는 늦은 결과 + (`ack_evidence_order_id` 가 NULL 이거나 같은 번호) | `broker_order_id`, `ack_order_id` |
-| T9b | `uncertain → accepted` | R | §4.5(1) 자기 접수번호 증명: `ack_evidence_order_id` 와 **같은 번호**의 완전한 전체 조회 행 + 속성 일치. 트리거: `NEW.broker_order_id = OLD.ack_evidence_order_id AND NEW.reconcile_state='verified'` | `broker_order_id`, 증거 JSON |
-| T9h | `uncertain → accepted` | H | §4.5(2) 운영자가 후보를 확인. 트리거: 종류 `bind_candidate` 승인 행이 이 행·이 번호와 일치하고 미소비, 번호 ∈ `candidate_order_ids` | `broker_order_id`, `resolution_authorization_id` |
+| T8e | `uncertain → uncertain` | D | `claim_token=:t AND ack_evidence_order_id IS NULL`(T8v 가 먼저 닫은 뒤 D 가 늦게 읽은 번호) | `ack_evidence_order_id`, `late_result_at`, `dispatcher_done_at` — 한 번만 |
+| T9a | `uncertain → accepted` | D | `claim_token=:t AND dispatcher_done_at IS NULL` + T6 성공 술어를 만족하는 늦은 결과(**현재 도달 불가**) + (`ack_evidence_order_id` 가 NULL 이거나 같은 번호) | `broker_order_id`=`ack_order_id`, `ack_source='response'`, `success_rsp_cd`, `dispatcher_done_at` |
+| T9b | `uncertain → accepted` | R | §4.5(1) 자기 접수번호 증명: `ack_evidence_order_id` 와 **같은 번호**의 완전한 전체 조회 행 + 속성 일치. 트리거: `NEW.broker_order_id = NEW.ack_order_id = OLD.ack_evidence_order_id AND NEW.ack_source='own_evidence' AND NEW.reconcile_state='verified'` | `broker_order_id`=`ack_order_id`, `ack_source`, 증거 JSON |
+| T9h | `uncertain → accepted` | H | §4.5(2) 운영자가 후보를 확인 + **dispatcher 가 송신 단계를 떠났음이 증명됨**(§4.5(2): `dispatcher_done_at IS NOT NULL` 또는 승인 행의 `dispatcher_gone_proof=true`). 트리거: 종류 `bind_candidate` 승인 행이 이 행·이 번호와 일치하고 미소비, 번호 ∈ `candidate_order_ids`, `OLD.ack_evidence_order_id` 가 NULL 이거나 같은 번호, 위 조건 | `broker_order_id`=`ack_order_id`, `ack_source='operator'`, `resolution_authorization_id` |
 | T10 | `claimed → withdrawn` | V | `claim_deadline < now() AND sending_at IS NULL` | `withdraw_reason='claim_deadline_passed'` |
 | T10i | `intent → withdrawn` | V | `claim_token IS NULL AND created_at < now() − T_intent_stale` | `withdraw_reason='stale_intent'` |
 | T11 | `accepted/open/partially_filled → open/partially_filled/filled/cancelled/modified` | R | §4.4 양성 두 소스 | 증거 JSON, 수량 |
 | T12 | 취소·정정 요청 행 `accepted → confirmed` | R | 자기 `ack_order_id` + 원주문 목록 행의 반영 수량 | 증거 JSON |
 | T13 | `accepted/open/partially_filled/uncertain → anomaly` | R | 모순 증거(심볼 불일치, 같은 번호·다른 속성 등). `intent`·`claimed`·`sending` 에서는 불가. `uncertain` 에서는 `ack_evidence_order_id` 와 같은 번호의 목록 행이 있을 때만(주문 존재의 양성 증거) | 수동 검토 |
-| T13d | `uncertain → anomaly` | D | `claim_token=:t` + 늦게 읽은 번호가 기록된 `ack_evidence_order_id` 와 다름 | 두 번호, 수동 검토 |
+| T13d | `uncertain → anomaly` | D | `claim_token=:t AND dispatcher_done_at IS NULL` + 늦게 읽은 번호가 기록된 `ack_evidence_order_id` 와 다름 | `conflicting_order_id`, `dispatcher_done_at`, 수동 검토 |
 | T14 | `uncertain → abandoned` | H | §4.6 차단 해제 조건 전부 + 종류 `abandon` 승인 행 | `resolution_authorization_id`, 사유 |
 
 `T15`(운영자 전용 두 번째 주문)는 새 행의 T1 변형이다(§5.2·§5.8: `duplicate_of`, 양의 `duplicate_ordinal`, 종류
@@ -120,6 +125,10 @@ D 의 T6/T8 은 자기 lease 반납, V 의 T8v 는 취소다. 별도 취소 전�
 `state NOT IN ('intent','claimed','sending','withdrawn') ⇒ lease_closed_at IS NOT NULL` 을 강제한다(§5.5). lease 가 닫혀도 같은
 토큰의 결과 **기록**(T8e·T9a·T13d)은 막지 않는다 — lease 는 송신을 막는 장치이고, 기록은 증거를 보존한다.
 
+**dispatcher 완료 표시(r4).** D 의 결과 기록(T6·T7·T8·T8e·T9a·T13d)은 한 디스패치의 **마지막** 쓰기이고, 같은 UPDATE 에서
+`dispatcher_done_at = now()` 를 쓴다(NULL→값 한 번). 그 뒤 D 는 이 행에 더 쓰지 않는다. T8v 는 이 값을 쓰지 않는다 —
+V 는 D 가 아직 결과를 들고 있을 수 있음을 모르기 때문이다. T8e·T9a·T13d 는 `dispatcher_done_at IS NULL` 을 조건으로 한다.
+
 ### 2.4 같은 상태 자기 전이(M6)
 
 트리거는 `(old.state, new.state)` 가 §2.3 에 없으면 거부하되, 아래 자기 전이는 **표에 적힌 컬럼만** 바뀔 때 허용한다.
@@ -127,7 +136,7 @@ D 의 T6/T8 은 자기 lease 반납, V 의 T8v 는 취소다. 별도 취소 전�
 | 상태 | 바뀔 수 있는 컬럼 | 조건 |
 |---|---|---|
 | `intent`, `claimed`, `sending` | 없음 | — |
-| `uncertain` | (a) `candidate_order_ids`, `requires_manual_review`, `manual_review_reason`, `last_reconcile`, `reconcile_state`(verified 제외) — R 또는 H · (b) T8e: `ack_evidence_order_id`(NULL→값 한 번), `late_result_at`(NULL→값 한 번) — D | (b) 는 OLD 값이 NULL 일 때만 |
+| `uncertain` | (a) `candidate_order_ids`, `requires_manual_review`, `manual_review_reason`, `last_reconcile`, `reconcile_state`(verified 제외) — R 또는 H · (b) T8e: `ack_evidence_order_id`(NULL→값 한 번), `late_result_at`(NULL→값 한 번), `dispatcher_done_at`(NULL→값 한 번) — D, 또는 번호 없는 늦은 결과면 `dispatcher_done_at` 만 | (b) 는 OLD 값이 NULL 일 때만 |
 | `accepted`, `open`, `partially_filled` | `reconcile_state`, `last_reconcile`, `requires_manual_review`, `manual_review_reason`; 증거·수량 컬럼(`filled_qty`·`avg_fill_price`·`open_qty`·`cancelled_qty`·`evidence`)은 `NEW.reconcile_state='verified'` 일 때만 | R |
 | 종결 상태 | 없음(`anomaly` 의 `manual_review_reason` 추가 기록만 H 허용) | — |
 
@@ -241,10 +250,16 @@ CREATE FUNCTION review.nhplug_body_digest_v1(op text, side text, sym text, qty b
   로그·응답에 나오지 않는다.
 - **해석 `resolve_account_ref(act_no)`** — 이번 송신에서 `/n2/acctinfo` 로 검증한 `acct_type=03` 계좌번호에 대해, 보존된
   **모든** 키 버전으로 바인딩을 계산해 한 트랜잭션에서 조회한다.
-  1. 찾은 행이 전부 같은 `account_ref` 를 가리키고 현재 버전 행이 있으면 그 값.
-  2. 옛 버전에서만 찾았으면 같은 트랜잭션에서 현재 버전 행을 추가(원자적 이관)하고 그 값.
-  3. 어느 버전에서도 못 찾았으면 새 `account_ref` 와 현재 버전 행을 만든다. 동시 생성은 PK 충돌로 하나만 남고 진 쪽은 재조회한다.
-  4. 서로 다른 `account_ref` 를 찾으면 `account_binding_conflict` 로 멈춘다(fail-closed).
+  0. **보존 버전 집합은 DB 가 정한다(r4).** 추가 전용 표 `review.nhplug_mock_key_version(key_version PK, created_at)` 가 보존 버전의
+     정본이다. 해석 트랜잭션은 먼저 `pg_advisory_xact_lock_shared(K_REG)` 를 잡고 이 표를 읽는다. 표의 버전 중 하나라도 이
+     프로세스에 키가 없으면 `key_version_unavailable` 로 멈춘다(fail-closed). 새 버전 추가는 `pg_advisory_xact_lock(K_REG)`
+     (배타)을 잡은 운영자 트랜잭션에서만 하므로, 동시에 해석하는 모든 프로세스는 **같은 버전 집합**을 본다. 버전 행은 삭제·수정 불가.
+  1. 찾은 행이 전부 같은 `account_ref` 를 가리키고 모든 보존 버전 행이 있으면 그 값.
+  2. 일부 버전에서만 찾았으면 같은 트랜잭션에서 **빠진 모든 보존 버전** 행을 같은 `account_ref` 로 추가(원자적 이관)하고 그 값.
+  3. 어느 버전에서도 못 찾았으면 새 `account_ref` 를 만들고 **모든 보존 버전의 바인딩 행을 같은 트랜잭션에서** 삽입한다. 같은
+     계좌를 동시에 처음 등록하는 두 트랜잭션은 같은 버전 집합을 쓰므로 반드시 같은 `(key_version, binding)` PK 에서 충돌하고,
+     진 쪽은 롤백 후 재조회해 이긴 쪽의 `account_ref` 를 쓴다. 그래서 한 계좌가 두 `account_ref` 로 갈라질 수 없다.
+  4. 서로 다른 `account_ref` 를 찾으면 `account_binding_conflict` 로 멈춘다(fail-closed). 규칙 0·3 아래에서는 도달하지 않아야 하는 방어선이다.
 - 그래서 키를 회전해도 같은 계좌는 같은 `account_ref` 이고, 멱등·예약·중복 UNIQUE 와 `body_digest` 가 그대로 유지된다.
 - T1 은 해석 결과를 저장하고, T3 은 D 가 방금 해석한 값을 WHERE 에 넣는다(RETURNING 은 계좌번호를 돌려주지 않는다).
   D 는 일치한 경우에만 그 계좌번호로 본문을 만든다.
@@ -268,22 +283,28 @@ transport = GatedTransport(retries=0, follow_redirects=False)  # 새 연결 풀,
 t0      = clock_boottime()                                     # fence UPDATE 를 보내기 **전에** 읽는다
 fence   = ledger.fence(claim.token)                            # T5 단독 커밋; 결과 불명·0행 → 보내지 않고 종료
 transport.arm(first_write_deadline = t0 + D_START)             # 게이트 무장
-parsed  = None
-try:                                                           # ← 이 줄부터 모든 것이 uncertain 경계
-    async with asyncio.timeout_at(loop_deadline(t0 + D_SEND)):  # 종단 기한: send + 응답 읽기
-        async with httpx.AsyncClient(transport=transport) as http:     # 컨텍스트 진입·종료 모두 경계 안
-            response = await http.send(request)                # 첫 애플리케이션 쓰기 직전에 게이트가 동기 검사
-            parsed   = read_and_parse(response)                # 접수번호를 읽으면 evidence 로 보관
-    outcome = ACCEPTED if parsed.order_no else UNCERTAIN(parsed.reason)
-except BaseException as exc:
-    outcome = UNCERTAIN(category(exc), ack_evidence=parsed.order_no if parsed else None)
-    await shield(ledger.record(claim.token, outcome))          # T8, 행이 이미 uncertain 이면 T8e/T13d
-    raise
-finally:
-    await transport.hard_close(timeout=D_CLOSE)                # 정리 상한; 초과 시 소켓 강제 종료
-await ledger.record(claim.token, outcome)                      # T6 또는 T8 (이미 uncertain 이면 T9a/T8e/T13d)
+parsed, meta, failure = None, None, None
+try:                                                           # ← 하나의 경계: fence 이후의 모든 일(정리 포함)
+    try:
+        async with asyncio.timeout_at(loop_deadline(t0 + D_SEND)):  # 종단 기한: send + 응답 읽기
+            async with httpx.AsyncClient(transport=transport) as http: # 컨텍스트 진입·종료 모두 경계 안
+                response = await http.send(request)            # 첫 애플리케이션 쓰기 직전에 게이트가 동기 검사
+                meta, parsed = response_meta(response), read_and_parse(response)   # 번호를 읽으면 evidence
+    finally:
+        await transport.hard_close(timeout=D_CLOSE)            # 정리도 같은 경계 안 — 실패하면 아래 except 로
+except BaseException as exc:                                   # 취소·정리 실패·알 수 없는 예외 전부
+    failure = exc
+outcome = classify(path, meta, parsed, failure)                # 순수·전역(total) 함수, 예외를 던지지 않는다(§4.3)
+await shield(ledger.record_final(claim.token, outcome))        # T6/T8, 이미 uncertain 이면 T9a/T8e/T13d; 제한된 재시도
+if failure is not None:
+    raise failure
 ```
 
+- **하나의 예외 경계(r4).** fence 커밋 뒤의 송신·응답 읽기·클라이언트 종료·`hard_close` 는 모두 바깥 `try` 안에 있고, 그
+  바깥에는 결과 계산(`classify`, 예외 없음)과 기록 하나만 있다. 그래서 정리 실패·취소가 기록을 건너뛸 수 없고, 이미 읽은 번호는
+  항상 `outcome` 에 실린다. 기록 `record_final` 은 `shield` 아래에서 lease 만료 전까지 제한된 재시도를 한다. **남는 한계:** DB 에
+  끝내 쓰지 못하면 행은 `sending` 에 남아 V 의 T8v 로 `uncertain` 이 되고, 읽은 번호는 DB 에 남지 않는다(구조화 로그에만 행
+  ID 와 함께 남긴다). 이 경우도 방향은 "미해결·재주문 차단"이지 중복 송신이 아니며, 해소는 후보·운영자 절차(§4.5)로 한다.
 - **첫 쓰기 게이트.** `GatedTransport` 는 네트워크 백엔드를 감싼다. TLS 가 올라간 뒤 스트림의 **첫 애플리케이션 데이터
   쓰기 호출 안에서**, 실제 쓰기 시스템 호출 바로 앞에 `clock_boottime() < t0 + D_START` 를 동기로 검사하고(사이에 await
   없음) 넘으면 쓰지 않고 `FirstWriteDeadlineExceeded` 를 던진다. 연결 획득·TCP·TLS 대기는 모두 게이트 앞이다. 연결은
@@ -309,8 +330,8 @@ await ledger.record(claim.token, outcome)                      # T6 또는 T8 (�
 | T3 실패 | 이미 claim·요청 ID 다름·digest·`account_ref` 불일치 | `ClaimRejected` — **행 불변** |
 | T3~T5 | 호스트·계좌·지정가·digest 재검사 실패, 전송 계층 생성 실패, 토큰 발급 실패 | T4 `withdrawn` |
 | T5 결과 불명 | 커밋 중 DB 오류 | 보내지 않음. `sending` 이면 V: T8v |
-| T5 이후 전부 | 첫 쓰기 기한 초과, 종단 기한 초과, 타임아웃, 연결 거부·리셋, TLS, 3xx(리다이렉트 금지), 4xx/5xx, 읽기 오류, JSON 아님, 객체 아님, 부정 응답 코드(§4.3), 성공 코드+번호 없음, **컨텍스트 종료·`aclose()` 오류(번호를 이미 읽었어도)**, `CancelledError`·`KeyboardInterrupt`·`SystemExit`, 알 수 없는 예외 | T8 `uncertain` (+ 읽은 번호는 `ack_evidence_order_id`; 이미 T8v 였으면 T8e) |
-| T5 이후 정상 완료 + 번호 | 컨텍스트 종료까지 예외 없음 | T6 `accepted`(이미 T8v 였으면 T9a) |
+| T5 이후 전부 | 첫 쓰기 기한 초과, 종단 기한 초과, 타임아웃, 연결 거부·리셋, TLS, 3xx(리다이렉트 금지), 4xx/5xx, 읽기 오류, JSON 아님, 객체 아님, 부정 응답 코드(§4.3, 번호가 있어도), 성공 증명 코드 없는 응답(번호가 있어도 — 현재 모든 응답), **컨텍스트 종료·`aclose()`·`hard_close` 오류(번호를 이미 읽었어도)**, `CancelledError`·`KeyboardInterrupt`·`SystemExit`, 알 수 없는 예외 | T8 `uncertain` (+ 읽은 번호는 `ack_evidence_order_id`; 이미 T8v 였으면 T8e) |
+| T5 이후 정상 완료 + 성공 증명 코드 + 번호 | 정리까지 예외 없음, `rsp_cd ∈ SUCCESS_PROOF_CODES[path]` — **목록이 비어 현재 도달 불가** | T6 `accepted`(이미 T8v 였으면 T9a) |
 | 프로세스 사망 | kill, OOM | V: T8v |
 
 - operations 의 분류는 **`ClaimRejected`·`PreSendRefusal` 만 송신 전**이고 그 밖은 전부 uncertain 이다(`operations.py:467`
@@ -318,13 +339,35 @@ await ledger.record(claim.token, outcome)                      # T6 또는 T8 (�
 - 호출자 응답: `uncertain` 은 `success=false, status="uncertain", reconcile_required=true, retry_allowed=false` 와
   `ack_evidence_order_id`(있으면), 멱등키를 돌려준다. 같은 멱등키 재호출은 같은 행을 돌려줄 뿐 보내지 않는다(§5.2).
 
-### 4.3 부정 응답(B4)
+### 4.3 응답 판정 — 두 증명 목록(B4·r4)
+
+`classify(path, meta, parsed, failure)` 는 순수·전역 함수다(어떤 입력에도 예외 없음):
+
+```
+if failure is None and meta.http_status == 200 and parsed.shape_ok
+   and parsed.rsp_cd in SUCCESS_PROOF_CODES[path] and parsed.order_no is positive int:   -> ACCEPTED(order_no, rsp_cd)
+if failure is None and meta.http_status == 200 and parsed.shape_ok
+   and parsed.rsp_cd in NO_ORDER_PROOF_CODES[path] and parsed.order_no is None:           -> REJECTED(rsp_cd)
+otherwise                                                                                 -> UNCERTAIN(reason, ack_evidence=parsed.order_no if any)
+```
+
+- **성공 증명 목록 `SUCCESS_PROOF_CODES[path]` — 네 경로 모두 빈 집합.** 벤더 명세는 주문 네 경로에 `200` 응답 스키마만 두고
+  성공 코드를 정의하지 않으며, `x-response-status` 는 성공 판정을 "기대한 `Output_N` 블록에 값이 있는지 → `rsp_msg` 문구가
+  완료를 뜻하는지, `rsp_cd` 는 로그·문의용으로 보관"으로 안내한다. 자유 문구(`rsp_msg`) 해석은 자동 판정 근거로 쓰지 않는다.
+  그래서 번호가 있는 응답도 지금은 전부 `uncertain` + `ack_evidence_order_id` 이고, `accepted` 는 reconcile 의 T9b(자기 번호가
+  완전한 목록에 보임)로 된다. 운영상 결과: 모든 주문이 첫 reconcile 까지 그 종목·방향의 예약을 쥔다.
+- 목록은 코드가 아니라 **DB 표** `review.nhplug_success_proof_code(path, rsp_cd, citation, approved_by, created_at)` 이다. INSERT 는 운영자
+  역할(§5.8)만 가능하고, 트리거가 `ack_source='response'` 인 `accepted` 전이에서 `success_rsp_cd` 가 이 표의 (경로, 코드)인지 검사한다.
+  코드를 추가하려면 벤더 문서 인용(또는 벤더 확인서)과 운영자 승인을 함께 남긴다. 스모크에서 관찰된 코드만으로는 넣지 않는다.
+
+#### 부정 응답
 
 - 엔드포인트별 "주문이 생성되지 않았음을 증명하는 코드" 목록 `NO_ORDER_PROOF_CODES[path]` 를 둔다. **현재 네 경로 모두
   빈 집합**이다. 근거: 벤더 명세 `x-response-status`(서문 인용)와 네 주문 경로의 응답 정의에 그런 코드가 없고, 벤더 SDK
   가 코드 판정을 명시적으로 거부한다. 코드를 추가하려면 벤더 문서의 인용(또는 벤더 확인서)과 운영자 승인을 함께 남긴다.
 - 따라서 비성공 코드 + 번호 없음은 `uncertain` 이다(T7 은 목록이 비어 있는 동안 도달 불가). 운영상 결과: 주문가능금액 부족 같은
   확실해 보이는 거부도 §4.5–4.6 절차로 닫힐 때까지 그 종목·방향의 새 주문을 막는다 — 멱등키 없는 벤더에서 중복 송신보다 나은 쪽이다.
+- 부정 코드인데 번호가 함께 온 응답은 `rejected` 도 `accepted` 도 아닌 `uncertain` + `ack_evidence_order_id` 다.
 
 ### 4.4 reconcile — 부재는 증거가 아니다
 
@@ -338,6 +381,8 @@ await ledger.record(claim.token, outcome)                      # T6 또는 T8 (�
   우리 취소 요청 행의 `ack_order_id` · `modified` = 전체 조회 행의 정정 수량 + 우리 정정 요청의 `ack_order_id` + 원주문을 가리키는
   후속 행 · `confirmed` = 자기 `ack_order_id` + 원주문 행의 반영 수량. `ack_evidence_order_id`(uncertain 증거)는 `ack_order_id`
   가 아니므로 이 규칙의 근거가 되지 않는다(T9b 로 `accepted` 가 된 뒤에만 `broker_order_id` 로 추적).
+  위 규칙의 "우리 `ack_order_id`" 는 `ack_source` 가 `response`·`own_evidence`(우리 응답에서 읽은 번호)이거나 `operator`(운영자가
+  이 요청의 주문임을 확인하고 승인 행으로 기록)인 값이다. 출처는 증거 JSON 에 함께 남는다.
 - 수량 산술: `filled + open + cancelled + modified == order_qty` 가 아니면 `unknown`. 미체결 조회에 남아 있는데 전체 조회가
   종결이라 하면 `source_disagreement`.
 
@@ -349,6 +394,10 @@ await ledger.record(claim.token, outcome)                      # T6 또는 T8 (�
 2. **속성 후보(자동 바인딩 금지).** 번호 증거가 없으면 속성(종목·방향·수량·가격·원주문, 주문 시각이 `[sending_at − ε,
    sending_at + D_START + ε]` 안)이 같은 행은 `candidate_order_ids` 에 **기록만** 한다(자기 전이, §2.4). 후보가 하나여도 자동으로
    `accepted` 가 되지 않는다. 운영자가 HTS/앱에서 그 주문이 이 요청임을 확인하고 `bind_candidate` 승인 행을 넣은 경우에만 T9h.
+   **T9h 는 dispatcher 가 송신 단계를 떠났음이 증명된 뒤에만(r4):** (a) `dispatcher_done_at IS NOT NULL`(D 가 마지막 기록을 마침 —
+   그 뒤 D 는 이 행에 쓰지 않으므로 늦은 번호가 바인딩과 충돌할 수 없다), 또는 (b) 승인 행이 §4.6 ③ 과 같은 lease 호스트
+   프로세스 소멸 증명을 담아 `dispatcher_gone_proof=true` 인 경우. 어느 쪽도 아니면 트리거가 거부한다. D 가 살아 있는 동안
+   운영자 바인딩이 앞서는 경쟁은 이 조건으로 없어진다.
 3. 후보가 없거나 여럿이면 `uncertain` 을 유지하고 수동 검토를 표시한다. "보이지 않음"은 "보내지 않음"이 아니다.
 
 ### 4.6 재주문 차단 해제(B1·R2)
@@ -438,18 +487,23 @@ UPDATE review.nhplug_mock_order_ledger
    AND sending_at IS NULL AND now() < claim_deadline
 RETURNING id;
 
--- T6/T8 (D): lease 반납을 같은 문장에서
-UPDATE review.nhplug_mock_order_ledger SET state = :result, lease_closed_at = now(), ...
+-- T6/T8 (D): lease 반납과 dispatcher 완료를 같은 문장에서
+UPDATE review.nhplug_mock_order_ledger
+   SET state = :result, lease_closed_at = now(), dispatcher_done_at = now(), ...   -- T6: ack_source='response', success_rsp_cd
  WHERE id = :row_id AND claim_token = :token AND state = 'sending';
--- 0행이면(V 가 먼저 T8v) 같은 토큰으로 T9a / T8e / T13d 중 하나:
-UPDATE ... SET state = 'accepted', broker_order_id = :n, ack_order_id = :n            -- T9a
- WHERE id = :row_id AND claim_token = :token AND state = 'uncertain'
+-- 0행이면(V 가 먼저 T8v) 같은 토큰으로 T9a / T8e / T13d 중 하나 (모두 dispatcher_done_at IS NULL 조건):
+UPDATE ... SET state = 'accepted', broker_order_id = :n, ack_order_id = :n,            -- T9a (현재 도달 불가)
+               ack_source = 'response', success_rsp_cd = :code, dispatcher_done_at = now()
+ WHERE id = :row_id AND claim_token = :token AND state = 'uncertain' AND dispatcher_done_at IS NULL
    AND (ack_evidence_order_id IS NULL OR ack_evidence_order_id = :n);
-UPDATE ... SET ack_evidence_order_id = :n, late_result_at = now()                      -- T8e
- WHERE id = :row_id AND claim_token = :token AND state = 'uncertain' AND ack_evidence_order_id IS NULL;
-UPDATE ... SET state = 'anomaly', manual_review_reason = 'ack_evidence_mismatch', ...  -- T13d
- WHERE id = :row_id AND claim_token = :token AND state = 'uncertain'
+UPDATE ... SET ack_evidence_order_id = :n, late_result_at = now(), dispatcher_done_at = now()   -- T8e
+ WHERE id = :row_id AND claim_token = :token AND state = 'uncertain' AND dispatcher_done_at IS NULL
+   AND ack_evidence_order_id IS NULL;
+UPDATE ... SET state = 'anomaly', conflicting_order_id = :n, dispatcher_done_at = now(),       -- T13d
+               manual_review_reason = 'ack_evidence_mismatch'
+ WHERE id = :row_id AND claim_token = :token AND state = 'uncertain' AND dispatcher_done_at IS NULL
    AND ack_evidence_order_id IS NOT NULL AND ack_evidence_order_id <> :n;
+-- 번호 없는 늦은 결과(예: 정리 실패만 남음)는 dispatcher_done_at 만 채운다(자기 전이, §2.4).
 
 -- T8v (V): lease 취소를 같은 문장에서
 UPDATE review.nhplug_mock_order_ledger
@@ -463,11 +517,13 @@ UPDATE review.nhplug_mock_order_ledger
 |---|---|
 | NOT NULL | `client_request_id`, `account_ref`, `idempotency_key`, `attempt_no`, `order_date`, `operation_kind`, `side`, `symbol`, `body_schema_version`, `body_digest`, `duplicate_ordinal`, `state`, `reconcile_state`, `requires_manual_review`, `created_at` |
 | UNIQUE | `client_request_id`, `claim_token`, `(order_date, broker_order_id)`, `second_order_authorization_id`, `resolution_authorization_id`, §5.2 부분 UNIQUE 3개 |
-| CHECK | `state` 목록 · §3.1 컬럼 형식과 조작별 NULL 조합 · `(claim_token IS NULL) = (claimed_at IS NULL)` · `state='intent' ⇒ claim_token IS NULL` · `state NOT IN ('intent','withdrawn') ⇒ claim_token IS NOT NULL` · `sending_at IS NOT NULL ⇒ claim_token IS NOT NULL AND lease_expires_at IS NOT NULL` · `state IN ('sending','accepted','uncertain','abandoned','open','partially_filled','filled','cancelled','modified','confirmed') ⇒ sending_at IS NOT NULL` · `state='withdrawn' ⇒ sending_at IS NULL` · **`state NOT IN ('intent','claimed','sending','withdrawn') AND sending_at IS NOT NULL ⇒ lease_closed_at IS NOT NULL`** · `state='sending' ⇒ lease_closed_at IS NULL` · §5.2 중복·승인 CHECK · `ack_order_id IS NULL OR ack_order_id = broker_order_id` · `filled_qty ≤ quantity` · 지정가·KRX·모의 고정. 모든 CHECK 의 입력 컬럼이 NOT NULL 이거나 `IS NULL`/`IS NOT NULL` 로만 쓰여 SQL `UNKNOWN` 통과가 없다 |
+| CHECK | `state` 목록 · §3.1 컬럼 형식과 조작별 NULL 조합 · `(claim_token IS NULL) = (claimed_at IS NULL)` · `state='intent' ⇒ claim_token IS NULL` · `state NOT IN ('intent','withdrawn') ⇒ claim_token IS NOT NULL` · `sending_at IS NOT NULL ⇒ claim_token IS NOT NULL AND lease_expires_at IS NOT NULL` · `state IN ('sending','accepted','uncertain','abandoned','open','partially_filled','filled','cancelled','modified','confirmed') ⇒ sending_at IS NOT NULL` · `state='withdrawn' ⇒ sending_at IS NULL` · **`state NOT IN ('intent','claimed','sending','withdrawn') AND sending_at IS NOT NULL ⇒ lease_closed_at IS NOT NULL`** · `state='sending' ⇒ lease_closed_at IS NULL` · §5.2 중복·승인 CHECK · 지정가·KRX·모의 고정 · **식별자(r4)**: `state NOT IN ('accepted','open','partially_filled','filled','cancelled','modified','confirmed') OR (broker_order_id IS NOT NULL AND ack_order_id IS NOT NULL AND ack_source IS NOT NULL AND broker_order_id ~ '^[1-9][0-9]{0,9}$' AND ack_order_id = broker_order_id)` · `state NOT IN ('intent','claimed','sending','withdrawn','uncertain','abandoned','rejected') OR (broker_order_id IS NULL AND ack_order_id IS NULL AND ack_source IS NULL)` · `ack_order_id IS NOT DISTINCT FROM broker_order_id` · `ack_source IS NULL OR ack_source IN ('response','own_evidence','operator')` · `ack_source IS DISTINCT FROM 'response' OR success_rsp_cd IS NOT NULL` · `ack_source IS DISTINCT FROM 'operator' OR resolution_authorization_id IS NOT NULL` · **수량(r4)**: `filled_qty IS NULL OR (quantity IS NOT NULL AND filled_qty >= 0 AND filled_qty <= quantity)` |
 | **BEFORE INSERT 트리거** | `state='intent'` 만. claim·fence·lease·결과·증거·수량·후보 컬럼 전부 NULL, `reconcile_state='pending'`, `requires_manual_review=false`. **일반 T1**: `duplicate_ordinal=0 AND duplicate_of IS NULL AND second_order_authorization_id IS NULL`, `resolution_authorization_id IS NULL` · **T15**: `duplicate_of` 가 가리키는 행을 `FOR UPDATE` 로 잠그고, 그 행이 `duplicate_ordinal=0` 인 뿌리이며 같은 `account_ref`·`order_date`·`body_digest` 이고 `withdrawn` 이 아님을 확인한 뒤 `duplicate_ordinal = (그 뿌리 묶음의 최대값) + 1` 을 **트리거가** 쓴다(호출자 값 무시) · 승인 행이 종류 `second_order`, 같은 뿌리·digest·계좌·날짜, 미소비여야 하고 트리거가 소비 처리한다 |
-| **BEFORE UPDATE 트리거** | (old,new) 상태 쌍이 §2.3 에 없고 §2.4 자기 전이도 아니면 거부 · 본문 필드·`account_ref`·`idempotency_key`·`attempt_no`·`client_request_id`·`duplicate_*`·`second_order_authorization_id` 는 `NEW.x IS DISTINCT FROM OLD.x` 이면 거부(NULL→값 포함) · `claim_token`·`claimed_at`·`claim_deadline`·lease 신원·`sending_at`·`lease_expires_at`·`lease_closed_at`·`ack_evidence_order_id`·`late_result_at`·`resolution_authorization_id` 는 NULL 에서 한 번만 채워지고 이후 불변 · 증거·수량 컬럼은 `NEW.reconcile_state='verified'` 일 때만 변경 · T9b·T9h·T14 는 §2.3 의 트리거 조건(자기 번호 일치 또는 `resolution_authorization_id` 가 가리키는 일치·미소비 승인 행)을 검사하고 승인 행을 소비 처리 · `resolution_authorization_id` 는 T9h·T14 에서만 채워진다 · 종결 상태 불변 |
+| **BEFORE UPDATE 트리거** | (old,new) 상태 쌍이 §2.3 에 없고 §2.4 자기 전이도 아니면 거부 · 본문 필드·`account_ref`·`idempotency_key`·`attempt_no`·`client_request_id`·`duplicate_*`·`second_order_authorization_id` 는 `NEW.x IS DISTINCT FROM OLD.x` 이면 거부(NULL→값 포함) · `claim_token`·`claimed_at`·`claim_deadline`·lease 신원·`sending_at`·`lease_expires_at`·`lease_closed_at`·`ack_evidence_order_id`·`late_result_at`·`resolution_authorization_id`·`dispatcher_done_at`·`conflicting_order_id`·`ack_source`·`success_rsp_cd` 는 NULL 에서 한 번만 채워지고 이후 불변 · 증거·수량 컬럼은 `NEW.reconcile_state='verified'` 일 때만 변경 · T9b·T9h·T14 는 §2.3 의 트리거 조건(자기 번호 일치 또는 `resolution_authorization_id` 가 가리키는 일치·미소비 승인 행)을 검사하고 승인 행을 소비 처리 · `resolution_authorization_id` 는 T9h·T14 에서만 채워진다 · 종결 상태 불변 |
+| **CHECK 의 NULL 규칙(r4 정정)** | r3 의 "모든 CHECK 가 `UNKNOWN` 을 통과시키지 않는다"는 주장은 **틀렸다**: `ack_order_id IS NULL OR ack_order_id = broker_order_id` 는 `broker_order_id` 가 NULL 이면 `UNKNOWN` 이 되어 통과하고, `filled_qty <= quantity` 도 한쪽이 NULL 이면 통과한다. PostgreSQL CHECK 는 `UNKNOWN` 을 통과로 본다. r4 규칙: 모든 CHECK 는 "상태가 해당 없음(`state NOT IN (…)`, `state` 는 NOT NULL) **OR** (필요한 컬럼 각각 `IS NOT NULL` AND 비교)" 형태로 쓰고, 비교 연산자의 피연산자는 NOT NULL 컬럼이거나 같은 AND 안에서 `IS NOT NULL` 로 먼저 묶이거나 `IS [NOT] DISTINCT FROM` 이다. `false AND UNKNOWN = false` 이므로 NULL 이 섞인 행은 위반이 된다. T-DB-7 이 각 CHECK 의 nullable 피연산자마다 NULL 을 넣어 위반을 단언한다 |
+| **accepted 전이 가드(r4)** | 트리거: `→ accepted` 는 `ack_source` 별로 — `response`: OLD.state 가 `sending`(T6) 또는 `uncertain` 이고 `OLD.dispatcher_done_at IS NULL`(T9a), `(path, success_rsp_cd)` 가 성공 증명 표에 있음, `OLD.ack_evidence_order_id` 가 NULL 이거나 같은 번호 · `own_evidence`: OLD.state=`uncertain`, `NEW.broker_order_id = OLD.ack_evidence_order_id`, `NEW.reconcile_state='verified'`(T9b) · `operator`: OLD.state=`uncertain`, 일치·미소비 `bind_candidate` 승인 행, `OLD.ack_evidence_order_id IS NULL OR = NEW.broker_order_id`, `OLD.dispatcher_done_at IS NOT NULL OR 승인 행.dispatcher_gone_proof`(T9h). 그 밖은 거부 |
 | DELETE | 거부 |
-| 계좌 등록부 | §3.4 두 테이블은 INSERT 만(UPDATE·DELETE 트리거 거부) |
+| 계좌 등록부 | §3.4 세 테이블(`account_ref`, `account_binding`, `key_version`)은 INSERT 만(UPDATE·DELETE 트리거 거부). `key_version` INSERT 는 운영자 역할만 |
 
 ### 5.6 동시성·세션
 
@@ -499,12 +555,13 @@ UPDATE review.nhplug_mock_order_ledger
 ### 5.8 운영자 승인 행(R8)
 
 - 테이블 `review.nhplug_mock_operator_authorization`: `id`, `kind`(`second_order`/`bind_candidate`/`abandon`), `target_row_id`,
-  기대 값(`account_ref`, `order_date`, `body_digest`, 후보 번호), `evidence`(T14 소멸 증명 출력 등), `operator_id`, `reason`,
+  기대 값(`account_ref`, `order_date`, `body_digest`, 후보 번호), `evidence`(T14 소멸 증명 출력 등), `dispatcher_gone_proof` bool(T9h 에서 §4.5(2)(b) 를 쓸 때 true, 증명은 `evidence` 에), `operator_id`, `reason`,
   `created_at`, `consumed_by_row_id`, `consumed_at`. 모든 컬럼 NOT NULL(소비 두 컬럼 제외).
 - **DB 역할.** INSERT 권한은 운영자 전용 역할 `nhplug_operator` 에만 있다. 애플리케이션(MCP 서버) 역할은 SELECT 만 가진다.
   소비 처리(`consumed_*` 를 NULL→값 한 번)는 레저 트리거가 `SECURITY DEFINER` 함수로 한다. 승인 행은 UPDATE(소비 외)·DELETE 거부.
 - 그래서 서비스 버그나 MCP 경로는 T9h·T14·T15 에 필요한 승인 행을 만들 수 없고, 한 승인으로 두 행을 움직일 수도 없다.
-- 한계: DB 는 T14 소멸 증명의 **내용**을 검증하지 못한다 — 증명은 lease 호스트의 CLI 가 기계로 수행하고 결과를 `evidence` 에 남긴다.
+- 성공 증명 표(§4.3)와 키 버전 표(§3.4)의 INSERT 도 같은 운영자 역할 전용이다.
+- 한계: DB 는 T14·T9h(b) 소멸 증명의 **내용**을 검증하지 못한다 — 증명은 lease 호스트의 CLI 가 기계로 수행하고 결과를 `evidence` 에 남긴다.
 
 ---
 
@@ -526,7 +583,7 @@ UPDATE review.nhplug_mock_order_ledger
 | 10 | r2 | 커밋된 레저 행 없이 송신 | S1·S4 claim 된 행에서만 송신 | T-CLAIM-1 |
 | 11 | r3 | 복제 가능한 in-process intent·로컬 소비 | S4 DB claim + S2 + S5 멱등키·예약 + 불변 트리거 | T-CLAIM-2..6, T-IDEM-1..8 |
 | 12 | r4 | 정정 범위가 claim 밖 인자 | §3.1 `amend_scope` 고정·digest·바이트 재검사, 인자 제거 | T-BODY-2, T-CLAIM-5 |
-| 13 | r4 | POST 후 `aclose()` 오류가 `not_submitted` | S3·§4.1–4.2 경계·분류 반전·트리거 | T-UNC-1..4 |
+| 13 | r4 | POST 후 `aclose()` 오류가 `not_submitted` | S3·§4.1–4.2 하나의 경계(정리 포함, r4)·분류 반전·트리거 | T-UNC-1..5 |
 
 ### 6.2 설계 리뷰 r1 지적 8건
 
@@ -554,6 +611,16 @@ UPDATE review.nhplug_mock_order_ledger
 | 7 MAJOR T1 커밋 후 사망 시 같은 키 재시도가 영원히 막힘 | R7: §5.2 규칙표 — `intent` 이어받기, 전부 `withdrawn` 이면 새 시도 | T-IDEM-6..7 |
 | 8 MAJOR T15 계보·주체 증명 부족 | R8: §5.5 T15 트리거(뿌리·묶음 일치, 트리거 계산 ordinal), §5.8 운영자 DB 역할 전용 1회용 승인 행 | T-AUTH-1..3 |
 
+### 6.4 설계 리뷰 r3 지적 5건(r4)
+
+| 지적 | 반영 | 테스트 |
+|---|---|---|
+| 1 BLOCKER `hard_close` 실패가 기록을 건너뜀 | Q1: §4.1 fence 이후 송신·읽기·종료·`hard_close` 를 하나의 바깥 `try` 로, 그 밖에는 예외 없는 `classify` + `shield` 된 기록 하나. DB 기록 자체 실패의 한계 명시 | T-UNC-5 |
+| 2 BLOCKER 번호 있는 부정 응답이 `accepted` | Q2: §4.3 `classify` 규범 — T6/T9a 는 `SUCCESS_PROOF_CODES[path]`(DB 표, 운영자 역할만, 벤더 인용 필수)가 있어야 함. 벤더가 성공 코드를 문서화하지 않아 **빈 집합** → 번호가 있어도 `uncertain` + 증거 | T-NEG-1, T-SUCC-1 |
+| 3 BLOCKER 식별자 없는 `accepted`·CHECK 의 NULL 통과 | Q3: §5.5 상태별 식별자 CHECK(양수·같음·NOT NULL), `IS NOT DISTINCT FROM`, 수량 CHECK 재작성, `ack_source` 별 accepted 전이 가드, r3 의 잘못된 주장 정정 | T-DB-7 |
+| 4 BLOCKER 혼합 버전 동시 최초 등록이 계좌를 가름 | Q4: §3.4 보존 버전 집합의 정본을 DB 표로, 공유/배타 advisory lock, 최초 등록 시 모든 보존 버전 바인딩을 한 트랜잭션에서 삽입 → 동시 생성자는 같은 PK 에서 충돌 | T-ROT-3 |
+| 5 MAJOR T9h 가 진행 중 D 의 늦은 번호를 가림 | Q5: `dispatcher_done_at`(D 의 마지막 기록이 씀), T9h 는 그 값 또는 소멸 증명(`dispatcher_gone_proof`)이 있어야 함, T8e/T9a/T13d 는 `dispatcher_done_at IS NULL` 조건 | T-CAND-3 |
+
 ---
 
 ## 7. 재구현 필수 테스트 (요구 6)
@@ -571,6 +638,7 @@ RED** 여야 하며, 변이는 테스트 파일에 기계적으로 선언한다(
 - **T-DB-5** 본문 필드 NULL→값(예: `amend_scope` 나중 채우기) 거부.
 - **T-DB-6** `lease_closed_at` 없이 `sending` 에서 나가는 UPDATE 거부(CHECK).
 - **T-NULL-1** `idempotency_key`·`duplicate_ordinal`·`account_ref`·`attempt_no` 가 NULL 인 직접 INSERT 거부. 변이: NOT NULL 제거 → 같은 본문 두 행이 차례로 들어가 둘 다 claim·송신되는 시나리오가 GREEN 이 되어 RED.
+- **T-DB-7** CHECK 의 NULL 열거(r4): 식별자·수량 CHECK 의 nullable 피연산자마다 NULL 을 넣은 INSERT/UPDATE 가 위반. 직접 쓴 잘못된 T6 — `accepted` 인데 `broker_order_id`·`ack_order_id` 둘 다 NULL · `ack_order_id` 만 있음 · 두 값이 다름 · `0`/비숫자 · `ack_source` 없음 · `response` 인데 `success_rsp_cd` 가 표에 없음 — 전부 거부. 변이: r3 의 `ack_order_id IS NULL OR …` 복원 → RED.
 - **T-MIG-1** 마이그레이션 upgrade → ORM 과 제약·인덱스·트리거·함수·역할 권한까지 동일 → downgrade → upgrade(일회용 DB).
 
 ### 7.2 digest(§3.3)
@@ -598,7 +666,8 @@ RED** 여야 하며, 변이는 테스트 파일에 기계적으로 선언한다(
 - **T-IDEM-8** 같은 키로 이어받기 두 개 동시 → claim 1개, 송신 1회.
 - **T-ROT-1** 키 v1 로 `uncertain` 행 생성 → 키 v2 로 회전 → 같은 키·같은 본문 재시도: 같은 `account_ref`, 예약·멱등 충돌, 송신 0. 등록부에 v2 바인딩이 원자적으로 추가됨.
 - **T-ROT-2** 키 v1 로 `accepted`(응답 유실) → 회전 → 같은 키 재시도 송신 0 · 새 키·같은 본문 → 중복 규칙 거부. 변이: 해석이 현재 버전만 조회 → RED. 서로 다른 `account_ref` 를 가리키는 두 버전 → `account_binding_conflict`.
-- **T-AUTH-1** 애플리케이션 역할로 승인 행 INSERT → 권한 오류. 승인 행 없이 T9h/T14/T15 → 트리거 거부.
+- **T-ROT-3** 혼합 버전 동시 최초 등록(r4): 키 버전 표에 v1·v2, 두 세션이 같은 새 계좌를 동시에 해석(`gather`, 커밋 전 대기 지점 주입) → `account_ref` 1개, 바인딩은 v1·v2 모두 같은 ref. 표의 버전 키가 없는 프로세스 → `key_version_unavailable`, 쓰기 0. 해석이 공유 잠금을 쥔 동안 버전 추가는 대기. 변이: 현재 버전 바인딩만 삽입 → 두 ref 로 갈라져 RED.
+- **T-AUTH-1** 애플리케이션 역할로 승인 행 INSERT → 권한 오류. 성공 증명 표·키 버전 표 INSERT 도 권한 오류. 승인 행 없이 T9h/T14/T15 → 트리거 거부.
 - **T-AUTH-2** T15 에서 다른 계좌·다른 날짜·다른 digest·뿌리가 아닌 행을 가리키는 `duplicate_of`, 호출자가 넣은 임의 ordinal → 거부 또는 트리거 값으로 덮임.
 - **T-AUTH-3** 한 승인 행으로 두 번째 전이 → 거부(1회용). 종류가 다른 승인 행 → 거부.
 
@@ -608,7 +677,9 @@ RED** 여야 하며, 변이는 테스트 파일에 기계적으로 선언한다(
   같은 멱등키 재호출은 송신 0. 변이: 컨텍스트 종료를 경계 밖으로 · 번호 읽음 시 `accepted` 유지 → 각각 RED.
 - **T-UNC-3** fence 이후 알 수 없는 예외 → `uncertain`(분류 반전). 변이: "그 밖 = 송신 전" 복원 → RED.
 - **T-UNC-4** `CancelledError`/`KeyboardInterrupt` 가 `send()` 중 → `uncertain` 기록 후 재발생.
-- **T-NEG-1** 가짜 브로커가 주문을 기록한 뒤 비성공 코드·번호 없음 응답 → `uncertain`(`rejected` 아님), `NO_ORDER_PROOF_CODES` 가 빈 집합임을 단언.
+- **T-NEG-1** 가짜 브로커가 주문을 기록한 뒤 비성공 코드·번호 없음 응답 → `uncertain`(`rejected` 아님), `NO_ORDER_PROOF_CODES` 가 빈 집합임을 단언. **부정 코드 + 번호**(r4) → `uncertain` + `ack_evidence_order_id`, `accepted` 아님.
+- **T-SUCC-1** 성공 모양의 200 + 번호, 성공 증명 표가 비어 있음 → `uncertain` + 증거(T6 아님), 이후 R 의 T9b 로 `accepted`. 테스트 픽스처가 운영자 역할로 (경로, 코드)를 넣으면 같은 응답 → T6. 다른 경로의 코드 → `uncertain`. `classify` 는 임의 입력(퍼징)에 예외를 던지지 않는다. 변이: "번호만 있으면 ACCEPTED" 복원 → RED.
+- **T-UNC-5** 번호를 읽고 클라이언트가 정상 종료된 뒤 `hard_close` 가 `OSError`/취소를 던짐 → 행 `uncertain` + `ack_evidence_order_id`(T8), V 가 먼저 T8v 한 경우 → T8e. 기록 DB 쓰기 실패 주입 → 행 `sending` 유지 후 V: T8v, 추가 송신 0. 변이: `hard_close` 를 바깥 경계 뒤 `finally` 로 → RED.
 - **T-EVID-1** 번호를 읽은 뒤 `aclose()` 가 멈춘 사이 V 가 T8v → D 의 close 예외 → T8e 로 `ack_evidence_order_id` 기록 → R 의 T9b 로 해소 가능. 변이: T8e 제거 → 번호 유실로 RED.
 - **T-EVID-2** T8e 뒤 다른 번호의 늦은 결과 → T13d `anomaly`. 같은 번호의 정상 결과 → T9a.
 - **T-LEASE-1** T5 커밋 결과 불명(커밋 예외 주입) → 송신 0, 이후 V: T8v.
@@ -626,6 +697,7 @@ RED** 여야 하며, 변이는 테스트 파일에 기계적으로 선언한다(
 - **T-CAND-1** uncertain(번호 증거 없음) + 관계없는 동일 속성 주문 1건이 목록에 등장 → 후보로만 기록, 상태 `uncertain` 유지, 예약 유지.
   변이: 유일 후보 자동 `accepted` → RED.
 - **T-CAND-2** 번호 증거 + 같은 번호 목록 행 → T9b `accepted`. 번호는 같지만 속성 불일치 → `anomaly`.
+- **T-CAND-3** V 의 T8v 뒤 D 가 아직 응답 대기 중(`dispatcher_done_at` NULL), R 이 후보 123 기록 → 소멸 증명 없는 `bind_candidate` 승인 행으로 T9h → 트리거 거부. D 가 늦게 번호 456 을 읽음 → T8e(`ack_evidence_order_id=456`, `dispatcher_done_at` 채움) → 123 으로 T9h → 거부(자기 증거 번호와 다름), 456 이 목록에 보이면 R 의 T9b. D 가 번호 없이 끝남(`dispatcher_done_at` 만 채움) → 123 으로 T9h 허용. `dispatcher_done_at` 이 채워진 뒤 D 의 추가 쓰기는 0행. `dispatcher_gone_proof=true` 승인 행이면 D 미완료여도 T9h 허용. 변이: T9h 의 dispatcher 조건 또는 증거 번호 일치 조건 제거 → RED.
 
 ### 7.7 게이트·계좌·호스트·스모크(회귀 방지)
 - **T-GATE-1..3** `NHPLUG_MOCK_ENABLED` 정확히 `"true"` · FastMCP 와이어 `Client.call_tool` 에서 `0/1/"true"` 거부 · 계약 서브클래스·`dry_run=True`·`confirm` 비-True 거부.
@@ -649,6 +721,7 @@ RED** 여야 하며, 변이는 테스트 파일에 기계적으로 선언한다(
 5. **Q5 부분 UNIQUE 예약의 범위.** "종목·방향당 진행 중 하나"는 래더를 순차 실행으로 만든다. 모의계좌 범위에서는 안전을 우선한다.
 6. **Q6 PR #2100 처리.** 승인 후 재구현 PR 을 새 브랜치로 만들고 #2100 을 닫을지, 갱신할지.
 7. **Q7 dispatcher 배치.** 소멸 증명 (c) 는 호스트 수준 `/proc` 가시성이 필요하다. dispatcher 를 컨테이너에서 돌리면 T14 CLI 를 호스트 권한으로 돌릴 수 있어야 한다.
+8. **Q8 성공 증명 코드.** 벤더에 주문 네 경로의 성공 `rsp_cd` 를 문서로 확인받으면 §4.3 표에 넣어 T6 을 켤 수 있다. 그 전에는 모든 주문이 첫 reconcile 까지 `uncertain`(예약 보유)이다 — 모의계좌 범위에서는 운영자가 수용 여부를 정한다.
 
 ## 9. 범위 밖
 
