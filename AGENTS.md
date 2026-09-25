@@ -76,12 +76,20 @@
 13. **screener pick log**: `buy_candidate_fanout` 안에서 쓰지 마라 (no-write
     계약). 관측 레코더는 바깥, `SCREENER_PICK_LOG_ENABLED` 기본 false,
     fail-open, 스케줄러 금지. 가격은 exact decimal 문자열.
-14. **NHPLUG 모의 read-only (Stage 1)**: 데이터는 `moapi.nhplug.com:8443`만,
-    `/n2/acctinfo`의 `acct_type=03` allowlist만 사용하며, build 후 scheme·host·port와
-    `act_no`를 send 직전에 재검증한다. 동일 계좌번호의 상충 type 응답은 거부한다. 운영 OAuth 호스트는 `nhplug/auth.py`의
-    token/revoke 2 path 예외뿐이다. `NHPLUG_MOCK_ENABLED` default false 유지,
-    vendor SDK·`NHPLUG_BASE_URL`/`NHPLUG_AUTH_URL`·주문 endpoint/TR 추가 금지.
-    주문 메서드/MCP/레저/reconcile/스케줄러는 Stage 1 범위 밖이다.
+14. **NHPLUG 모의계좌 Stage 2 (#711, 운영자 결정 2026-09-25)**: 승인 범위 원문 —
+    "NH나무 **모의계좌 한정**: 잔고·포지션·미체결·체결 조회 + **지정가(limit)** 주문·정정·
+    취소 + 레저·reconcile. kiwoom_mock 어댑터 미러." / "제외: 실계좌 전부, 시장가 주문,
+    스케줄러 등록(별도 승인), 계좌 배정(연동 완료 후 별도 결정)." 유지 경계(완화 금지): 데이터는
+    `moapi.nhplug.com:8443`만, build 후 scheme·host·port와 `act_no`를 send 직전에 재검증한다.
+    `/n2/acctinfo`의 `acct_type=03` allowlist만 사용하고 동일 계좌번호의 상충 type 응답과
+    01/02는 거부한다. 운영 OAuth 호스트는 `nhplug/auth.py`의 token/revoke 2 path 예외뿐이다.
+    `NHPLUG_MOCK_ENABLED` default false + 주문 mutation은 per-call `dry_run=False`·`confirm=True`
+    이중 게이트. vendor SDK·`NHPLUG_BASE_URL`/`NHPLUG_AUTH_URL` 금지, `follow_redirects=False`
+    명시. fill은 evidence-first, `review.nhplug_mock_order_ledger` 쓰기는
+    `NHPlugMockLedgerService` 경유만. 주문 path는 `nhplug/client.py`의 KRX 4개
+    (cashBuy/cashSell/modify/cancel)뿐 — 시장가·신용·예약·SOR/NXT 추가 금지. 빈 배열·오류형
+    미체결 응답은 "미체결 없음"이 아니다(두 조회 소스 합의 없으면 `unknown`). 스케줄러 등록·
+    레인 allowlist 배정 금지.
 15. **Kiwoom ACCEPTANCE authority cessation (ROB-1340)**: confirmed BUY·cancel·reconcile은
     하나의 PostgreSQL coordination scope에서만 수행한다. cancel 직전 ownership 상실 시
     취소를 보내지 말고 cycle JSON live-order-risk를 먼저 append한 뒤 기존 Telegram

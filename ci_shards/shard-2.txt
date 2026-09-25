@@ -30,6 +30,7 @@ tests/mcp_server/test_kis_live_status_lifecycle.py
 tests/mcp_server/test_kis_live_tool_descriptions.py
 tests/mcp_server/test_kis_mock_shadow_order_history.py
 tests/mcp_server/test_market_quote_snapshot_tools.py
+tests/mcp_server/test_nhplug_mock_tools.py
 tests/mcp_server/test_research_pipeline_read_tools.py
 tests/mcp_server/test_shadow_replay_profile.py
 tests/mcp_server/tooling/test_buy_candidate_fanout.py
@@ -178,6 +179,7 @@ tests/services/market_events/test_earnings_decision_time.py
 tests/services/market_valuation_snapshots/test_normalized_market_cap.py
 tests/services/market_valuation_snapshots/test_repository_latest_for_symbols.py
 tests/services/naver_finance/test_investor_detail_cache_wiring.py
+tests/services/nhplug_mock/test_ledger_and_operations.py
 tests/services/order_proposals/callback_inbox/test_attempt_budget_cross_field.py
 tests/services/order_proposals/callback_inbox/test_enqueue_deadline.py
 tests/services/order_proposals/callback_inbox/test_gates_and_registration.py

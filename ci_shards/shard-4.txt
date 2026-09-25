@@ -117,6 +117,8 @@ tests/services/brokers/binance/test_ws_client.py
 tests/services/brokers/kis/test_account_cash_timeout.py
 tests/services/brokers/kis/test_live_order_expiry_session.py
 tests/services/brokers/nhplug/test_client.py
+tests/services/brokers/nhplug/test_order_evidence.py
+tests/services/brokers/nhplug/test_stage2_client_orders.py
 tests/services/brokers/paper/test_adapter_registry.py
 tests/services/brokers/paper/test_capabilities.py
 tests/services/brokers/paper/test_safety_guards.py
@@ -157,6 +159,7 @@ tests/services/mock_integration/test_authority_cessation.py
 tests/services/mock_integration/test_coordination.py
 tests/services/mock_integration/test_kis_coordination_adapter.py
 tests/services/mock_integration/test_rob1266_us_readiness_contract.py
+tests/services/nhplug_mock/test_reconcile_plan.py
 tests/services/order_proposals/callback_inbox/test_attempt_exhaustion.py
 tests/services/order_proposals/callback_inbox/test_crash_points.py
 tests/services/order_proposals/callback_inbox/test_data_minimization.py

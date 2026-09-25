@@ -1,4 +1,13 @@
-"""Static stage-one guard for the NHPLUG read-only broker boundary."""
+"""Static guard for the NHPLUG mock broker boundary (Stage 1 reads + Stage 2 orders).
+
+Stage 2 (#711, operator decision 2026-09-25) narrows the Stage 1 "no order
+surface at all" rule to an exact, reviewed exception: the four KRX order paths
+(cash buy/sell, modify, cancel) may appear only as literals in ``client.py``,
+mutation-named functions may exist only in ``client.py`` and
+``order_evidence.py``, and every public client mutation must call the
+per-call send-authorization check first.  Credit, reserved, SOR, US/global
+order routes, and the known order TR codes stay forbidden everywhere.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services.brokers.nhplug.client import ALLOWED_MUTATION_PATHS
 from app.services.brokers.nhplug.contracts import DryRunConfirmContract
 from app.services.brokers.nhplug.live_quotes import (
     ALLOWED_DATA_PATHS,
@@ -24,6 +34,14 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_DIR = REPO_ROOT / "app" / "services" / "brokers" / "nhplug"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "nhplug_mock_smoke.py"
 LIVE_QUOTES_MODULE = RUNTIME_DIR / "live_quotes.py"
+CLIENT_MODULE = RUNTIME_DIR / "client.py"
+STAGE2_SOURCES = (
+    REPO_ROOT / "app" / "services" / "nhplug_mock" / "operations.py",
+    REPO_ROOT / "app" / "services" / "nhplug_mock" / "reconcile_plan.py",
+    REPO_ROOT / "app" / "services" / "nhplug_mock" / "ledger_service.py",
+    REPO_ROOT / "app" / "mcp_server" / "tooling" / "orders_nhplug_mock_variants.py",
+    REPO_ROOT / "scripts" / "nhplug_mock_order_smoke.py",
+)
 
 _PRODUCTION_HOST_RE = re.compile(
     r"(?<![\w.\-])api\.nhplug\.com\.?(?![\w\-])", re.IGNORECASE
@@ -41,6 +59,36 @@ _FORBIDDEN_ORDER_TEXT = (
     "SCSOS61801A",
     "SCSOS61808A",
     "SCSOS61809A",
+)
+# Stage 2: the only order literals anywhere, and only inside client.py.
+_STAGE2_ORDER_PATHS = frozenset(
+    {
+        "/krstock/order/v1/cashBuy",
+        "/krstock/order/v1/cashSell",
+        "/krstock/order/v1/modify",
+        "/krstock/order/v1/cancel",
+    }
+)
+_STAGE2_ORDER_PATH_OWNER = "client.py"
+# Forbidden in every file including client.py: out-of-scope order kinds.
+_ALWAYS_FORBIDDEN_ORDER_TEXT = (
+    "/usstock/order/",
+    "/gbstock/order/",
+    "/krstock/trading/",
+    "/usstock/trading/",
+    "creditBuy",
+    "creditSell",
+    "reservedOrder",
+    "reservedCancel",
+    "SCSOS61803A",
+    "SCSOS61801A",
+    "SCSOS61808A",
+    "SCSOS61809A",
+)
+# Modules that may define mutation-named functions (reviewed Stage 2 surface).
+_STAGE2_MUTATION_NAME_MODULES = frozenset({"client.py", "order_evidence.py"})
+_CLIENT_MUTATION_METHODS = frozenset(
+    {"submit_limit_order", "modify_limit_order", "cancel_order"}
 )
 _FORBIDDEN_MUTATION_FRAGMENTS = (
     "order",
@@ -343,11 +391,12 @@ def _assert_package_pins_follow_redirects(package_sources: tuple[Path, ...]) -> 
 
 
 def _assert_package_exposes_no_mutation_methods(
-    package_sources: tuple[Path, ...],
+    package_sources: tuple[Path, ...], *, stage2_exempt: frozenset[str] = frozenset()
 ) -> None:
     offenders = {
         f"{path.name}:{node.name}"
         for path in package_sources
+        if path.name not in stage2_exempt
         for node in ast.walk(
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         )
@@ -373,10 +422,22 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
             permits_production_host=(
                 package_dir == RUNTIME_DIR and path.name in _LIVE_HOST_OWNER_FILENAMES
             ),
+            permits_stage2_order_paths=(
+                package_dir == RUNTIME_DIR and path.name == _STAGE2_ORDER_PATH_OWNER
+            ),
         )
     _assert_package_has_no_oauth_imports(package_sources)
     _assert_package_pins_follow_redirects(package_sources)
-    _assert_package_exposes_no_mutation_methods(package_sources)
+    _assert_package_exposes_no_mutation_methods(
+        package_sources,
+        stage2_exempt=(
+            _STAGE2_MUTATION_NAME_MODULES if package_dir == RUNTIME_DIR else frozenset()
+        ),
+    )
+    if package_dir == RUNTIME_DIR:
+        _assert_client_mutations_authorize_first(
+            CLIENT_MODULE.read_text(encoding="utf-8")
+        )
     if package_dir == RUNTIME_DIR:
         _assert_live_quote_source_safe(
             LIVE_QUOTES_MODULE.read_text(encoding="utf-8"),
@@ -385,14 +446,17 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
 
 
 def _assert_stage_one_source_safe(
-    source: str, *, filename: str, permits_production_host: bool = False
+    source: str,
+    *,
+    filename: str,
+    permits_production_host: bool = False,
+    permits_stage2_order_paths: bool = False,
 ) -> None:
     """Fail with AssertionError for every unsafe source-level escape hatch.
 
-    The order rule is intentionally stronger than a future gated-dispatch rule:
-    this stage has no order dispatcher at all, so every known order endpoint/TR
-    is forbidden.  A future stage must explicitly narrow this guard alongside
-    an independently reviewed dry-run/confirm implementation.
+    Every known order endpoint/TR is forbidden, except that the single
+    Stage 2 owner (``client.py``) may name exactly the four reviewed KRX
+    order paths.  Credit/reserved/US/TR order text is forbidden everywhere.
     """
 
     tree = ast.parse(source, filename=filename)
@@ -409,8 +473,83 @@ def _assert_stage_one_source_safe(
     assert not any(
         forbidden.casefold() in literal.casefold()
         for literal in literals
-        for forbidden in _FORBIDDEN_ORDER_TEXT
-    ), "stage-one source contains an out-of-scope order endpoint or TR"
+        for forbidden in _ALWAYS_FORBIDDEN_ORDER_TEXT
+    ), "source contains an out-of-scope order endpoint or TR"
+    order_literals = [
+        literal
+        for literal in literals
+        if any(
+            forbidden.casefold() in literal.casefold()
+            for forbidden in _FORBIDDEN_ORDER_TEXT
+        )
+    ]
+    if permits_stage2_order_paths:
+        assert set(order_literals) <= _STAGE2_ORDER_PATHS, (
+            "stage-two owner contains a non-allowlisted order endpoint"
+        )
+    else:
+        assert not order_literals, (
+            "source outside the stage-two owner contains an order endpoint or TR"
+        )
+
+
+def _assert_client_mutations_authorize_first(source: str) -> None:
+    """Every public client mutation checks per-call authorization first."""
+
+    tree = ast.parse(source, filename="client.py")
+    methods = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+    }
+    assert _CLIENT_MUTATION_METHODS <= set(methods), "client mutation surface changed"
+    public_mutations = {
+        name
+        for name in methods
+        if not name.startswith("_")
+        and any(
+            fragment in name.lower()
+            for fragment in ("order", "buy", "sell", "modify", "cancel", "submit")
+        )
+        and name not in {"fetch_order_listing_page"}  # read-only listing
+    }
+    assert public_mutations == _CLIENT_MUTATION_METHODS, (
+        f"unreviewed client mutation method: {sorted(public_mutations)!r}"
+    )
+    for name in _CLIENT_MUTATION_METHODS:
+        body = [
+            statement
+            for statement in methods[name].body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+            )
+        ]
+        first = body[0] if body else None
+        assert (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Call)
+            and isinstance(first.value.func, ast.Name)
+            and first.value.func.id == "_assert_send_authorized"
+        ), f"{name} does not check per-call send authorization first"
+        assert any(
+            isinstance(node, ast.Attribute) and node.attr == "_post_mutation"
+            for node in ast.walk(methods[name])
+        ), f"{name} does not dispatch through _post_mutation"
+    post = methods["_post_mutation"]
+    called = [
+        node.func.id
+        for node in ast.walk(post)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    for guard in (
+        "_assert_mock_enabled",
+        "_assert_mutation_path",
+        "_assert_resolved_mock_request",
+        "_assert_built_account",
+        "_assert_limit_only_body",
+    ):
+        assert guard in called, f"_post_mutation lost {guard}"
 
 
 def _imports_mock_runtime(tree: ast.AST) -> list[str]:
@@ -491,6 +630,89 @@ def test_entire_nhplug_package_obeys_every_stage_one_static_guard() -> None:
     )
 
 
+@pytest.mark.parametrize("path", STAGE2_SOURCES, ids=lambda p: p.name)
+def test_stage2_orchestration_sources_name_no_endpoint_host_or_sdk(path: Path) -> None:
+    """Order endpoints stay physically inside client.py's checked dispatcher."""
+
+    _assert_stage_one_source_safe(path.read_text(encoding="utf-8"), filename=path.name)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assert not _httpx_client_constructions(tree), f"{path.name} builds an HTTP client"
+
+
+def test_stage2_order_paths_are_exactly_the_client_mutation_allowlist() -> None:
+    assert ALLOWED_MUTATION_PATHS == _STAGE2_ORDER_PATHS
+    client_literals = set(
+        _literal_strings(ast.parse(CLIENT_MODULE.read_text(encoding="utf-8")))
+    )
+    assert _STAGE2_ORDER_PATHS <= client_literals
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        'PATH = "/krstock/order/v1/creditBuy"\n',
+        'PATH = "/krstock/order/v1/reservedOrder"\n',
+        'PATH = "/gbstock/order/v1/buy"\n',
+        'PATH = "/krstock/order/v1/cashBuyX"\n',
+        'TR = "SCSOS61803A"\n',
+    ),
+)
+def test_stage2_owner_still_rejects_out_of_scope_order_text(source: str) -> None:
+    with pytest.raises(AssertionError, match="order endpoint"):
+        _assert_stage_one_source_safe(
+            source, filename="client.py", permits_stage2_order_paths=True
+        )
+
+
+def test_stage2_order_path_outside_owner_is_rejected() -> None:
+    with pytest.raises(AssertionError, match="outside the stage-two owner"):
+        _assert_stage_one_source_safe(
+            'PATH = "/krstock/order/v1/cancel"\n', filename="operations.py"
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "old", "new"),
+    (
+        (
+            "authorization check removed",
+            "        _assert_send_authorized(authorization)\n        if side ==",
+            "        if side ==",
+        ),
+        (
+            "pre-send host recheck removed",
+            "            _assert_resolved_mock_request(request, allowed_paths=ALLOWED_MUTATION_PATHS)\n",
+            "",
+        ),
+        (
+            "pre-send body recheck removed",
+            "            _assert_limit_only_body(path, _built_input(request))\n",
+            "",
+        ),
+    ),
+)
+def test_client_mutation_static_mutants_fail(label: str, old: str, new: str) -> None:
+    source = CLIENT_MODULE.read_text(encoding="utf-8")
+    assert old in source, f"mutant anchor missing: {label}"
+    with pytest.raises(AssertionError):
+        mutated = source.replace(old, new, 1)
+        _assert_client_mutations_authorize_first(mutated)
+        # Body/host recheck removal keeps one call site; require both sites.
+        tree = ast.parse(mutated)
+        post = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_post_mutation"
+        )
+        calls = [
+            node.func.id
+            for node in ast.walk(post)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        assert calls.count("_assert_limit_only_body") == 2
+        assert "_assert_resolved_mock_request" in calls
+
+
 @pytest.mark.parametrize(
     ("label", "source", "filename"),
     (
@@ -539,12 +761,19 @@ def test_static_guard_mutants_fail_with_assertion_error(
 
     with pytest.raises(AssertionError, match="forbidden|only scoped|order"):
         _assert_stage_one_source_safe(source, filename=filename)
+    # The Stage 2 owner exception does not rescue a host, SDK, or override
+    # mutant, nor an order literal outside the four exact paths.
+    if "cashBuy" not in source or "SCSOS" in source:
+        with pytest.raises(AssertionError, match="forbidden|only scoped|order"):
+            _assert_stage_one_source_safe(
+                source, filename=filename, permits_stage2_order_paths=True
+            )
 
 
 def test_only_scoped_runtime_modules_own_the_production_host() -> None:
     owners = [
         path.name
-        for path in _runtime_sources()
+        for path in _runtime_sources() + STAGE2_SOURCES
         if any(
             _PRODUCTION_HOST_RE.search(literal)
             for literal in _literal_strings(ast.parse(path.read_text(encoding="utf-8")))
@@ -680,11 +909,15 @@ def test_nested_auth_named_file_cannot_claim_the_production_host_exception(
         _assert_entire_package_is_stage_one_safe(tmp_path)
 
 
-def test_dry_run_confirm_contract_is_typed_but_has_no_dispatch_consumer() -> None:
+def test_dry_run_confirm_contract_authorizes_only_the_exact_confirmed_pair() -> None:
     default = DryRunConfirmContract()
     assert default.dry_run is True
     assert default.confirm is False
+    assert default.authorizes_send is False
     default.assert_dispatch_allowed()
     with pytest.raises(ValueError):
         DryRunConfirmContract(dry_run=False, confirm=False).assert_dispatch_allowed()
     DryRunConfirmContract(dry_run=False, confirm=True).assert_dispatch_allowed()
+    assert DryRunConfirmContract(dry_run=False, confirm=True).authorizes_send is True
+    assert DryRunConfirmContract(dry_run=True, confirm=True).authorizes_send is False
+    assert DryRunConfirmContract(dry_run=0, confirm=1).authorizes_send is False  # type: ignore[arg-type]

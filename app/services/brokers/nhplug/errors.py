@@ -39,3 +39,21 @@ class NHPlugMockBrokerRejected(NHPlugMockError):
         super().__init__(
             f"NHPLUG mock broker rejected the read request (code={response_code})"
         )
+
+
+class NHPlugMockOrderRefused(NHPlugMockError):
+    """Raised before token resolution or send for an out-of-scope order request.
+
+    Stage 2 permits only confirmed KRX limit orders, modifications, and
+    cancellations on the broker-verified mock account.  Every refusal raised as
+    this type is provably pre-dispatch: no request reached the socket.
+    """
+
+
+class NHPlugMockDispatchUncertain(NHPlugMockError):
+    """A mutation request may have reached the broker; the outcome is unknown.
+
+    Raised for every failure at or after ``send`` on an order path.  Callers
+    must treat the order as possibly accepted, record it for reconciliation,
+    and never retry automatically.
+    """

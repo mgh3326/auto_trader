@@ -98,6 +98,7 @@ tests/scripts/test_futures_demo_confirm_reconcile.py
 tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_native_retirement.py
+tests/scripts/test_nhplug_mock_order_smoke.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_run_research_run_refresh_script.py
@@ -133,6 +134,7 @@ tests/services/brokers/binance/test_rest_client.py
 tests/services/brokers/binance/test_root_reservation_migration.py
 tests/services/brokers/kiwoom/test_credential_identity.py
 tests/services/brokers/nhplug/test_live_quotes.py
+tests/services/brokers/nhplug/test_stage2_mutants.py
 tests/services/brokers/nhplug/test_static_guard.py
 tests/services/brokers/paper/test_contracts.py
 tests/services/brokers/toss/test_client.py

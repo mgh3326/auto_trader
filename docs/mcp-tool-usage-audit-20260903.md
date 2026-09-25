@@ -16,7 +16,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | analysis_readonly | 33 | 2 | 4 | 2 | 1 | 42 |
 | crypto | 59 | 3 | 41 | 39 | 1 | 143 |
 | db-paper | 58 | 3 | 35 | 47 | 1 | 144 |
-| default | 80 | 4 | 78 | 42 | 3 | 207 |
+| default | 80 | 4 | 78 | 42 | 11 | 215 |
 | fill-watch-context | 0 | 0 | 2 | 0 | 0 | 2 |
 | hermes-paper-kis | 59 | 3 | 37 | 39 | 1 | 139 |
 | kiwoom | 63 | 4 | 43 | 39 | 1 | 150 |
@@ -227,6 +227,14 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | market_quote_snapshot_latest | default, us-paper | app.mcp_server.tooling.market_quote_snapshot_tools | no | C | 0 | 0 | 0 | 1 | 0 |
 | modify_journal_entry | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.trade_journal_registration | persistence | C | 0 | 0 | 0 | 1 | 0 |
 | modify_order | crypto, default | app.mcp_server.tooling.orders_registration | order | C | 0 | 0 | 8 | 5 | 0 |
+| nhplug_mock_cancel_order | default | app.mcp_server.tooling.orders_nhplug_mock_variants | order | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_get_open_orders | default | app.mcp_server.tooling.orders_nhplug_mock_variants | no | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_get_order_history | default | app.mcp_server.tooling.orders_nhplug_mock_variants | no | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_get_positions | default | app.mcp_server.tooling.orders_nhplug_mock_variants | no | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_modify_order | default | app.mcp_server.tooling.orders_nhplug_mock_variants | order | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_place_order | default | app.mcp_server.tooling.orders_nhplug_mock_variants | order | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_preview_order | default | app.mcp_server.tooling.orders_nhplug_mock_variants | no | U | 0 | 0 | 0 | 1 | 0 |
+| nhplug_mock_reconcile_orders | default | app.mcp_server.tooling.orders_nhplug_mock_variants | order | U | 0 | 0 | 0 | 1 | 0 |
 | order_proposal_create | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.order_proposal_tools | order, proposal | A | 66352 | 132606 | 32 | 20 | 0 |
 | order_proposal_expire_sweep | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.order_proposal_tools | order, proposal | D | 0 | 0 | 0 | 0 | 0 |
 | order_proposal_get | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.order_proposal_tools | no | A | 2112 | 2157 | 2 | 3 | 0 |
@@ -336,6 +344,13 @@ UNLISTED=220
 > default-profile-only, persistence-classified `decision_table_apply` were
 > added after this 2026-09-03 snapshot and were not part of its Sentry usage
 > measurement.
+
+> 2026-09-25 #711 postscript: NHPLUG Stage 2 added eight `default`-only,
+> default-off (`NHPLUG_MOCK_ENABLED`) `nhplug_mock_*` tools — preview/place/
+> modify/cancel, positions, open orders, order history, and ledger reconcile —
+> after this snapshot. They are classified `U` (no usage window) and are
+> named by no lane allowlist; account assignment is a separate operator
+> decision.
 
 > 2026-09-24 HK #657 postscript: `analysis_readonly` gained thirteen pure-read
 > tools for the fable-strategy research lane — `get_forecasts`,

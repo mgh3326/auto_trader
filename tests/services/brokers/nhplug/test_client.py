@@ -75,12 +75,15 @@ def armed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
 
 
-def test_readonly_allowlist_is_exactly_the_three_stage_one_paths() -> None:
+def test_readonly_allowlist_is_stage_one_paths_plus_the_stage_two_listing() -> None:
     assert ALLOWED_READONLY_PATHS == frozenset(
         {
             "/n2/acctinfo",
             "/krstock/inquiry/v1/balance",
             "/krstock/quote/v1/currentPrice",
+            # Stage 2 (#711): daily order/execution listing for open orders,
+            # fills, and reconcile.
+            "/krstock/inquiry/v1/dailyOrderExecution",
         }
     )
 
@@ -192,6 +195,8 @@ async def test_mock_account_is_verified_then_balance_is_sent_to_only_mock_host(
             "ltg_aot_dit_cd": "9",
             "aet_bse": "2",
             "qut_dit_cd": "UNT",
+            # Required by the vendor spec (1 = regular session prices).
+            "aly_qut_cd": "1",
         }
     }
 

@@ -1,0 +1,483 @@
+"""Pure, fail-closed interpretation of NHPLUG mock order responses.
+
+No I/O, no clock, no database.  The rules here encode one lesson above all:
+**an empty or error-shaped order listing is not evidence of "no open orders"**
+(the Kiwoom ``kt00009`` incident).  The vendor documents that response blocks
+are omitted when there is no data, and the same ``rsp_cd`` can mean different
+things per API, so:
+
+* a page is *usable* only when its envelope is well-formed, its business code
+  is a known read code, every row parses, and pagination terminates;
+* a listing is *complete* only when every page is usable and no continuation
+  key remains unfollowed;
+* "no open orders" (``none_confirmed``) requires two independent, complete
+  listings (the open-only scope and the all-orders scope) that agree, and no
+  locally known live order that the broker listing fails to show;
+* anything else is ``unknown``, never an empty success.
+
+Broker business messages are redacted of long digit runs before they are
+surfaced; customer-name and account fields are never copied out of a row.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from typing import Any, Final, Literal
+
+ROW_BLOCK_KEY: Final[str] = "Output_1"
+ACK_BLOCK_KEY: Final[str] = "Output_0"
+
+# Read codes observed for this vendor.  A code outside this set, or no code
+# at all, makes the page unusable rather than "empty".
+READ_OK_CODES: Final[frozenset[str]] = frozenset({"00000", "00166", "00221"})
+READ_CONTINUE_CODES: Final[frozenset[str]] = frozenset({"00165", "00218"})
+READ_NO_ROWS_CODE: Final[str] = "13578"
+ORDER_ACK_OK_CODES: Final[frozenset[str]] = frozenset({"00000", "00166", "00221"})
+
+_BODY_CONTINUATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^cts(?:z\d+)?$", re.IGNORECASE
+)
+_LONG_DIGITS_RE: Final[re.Pattern[str]] = re.compile(r"\d{6,}")
+_MAX_MESSAGE_LENGTH: Final[int] = 160
+
+OpenOrdersState = Literal["present", "none_confirmed", "unknown"]
+AckState = Literal["accepted", "acceptance_uncertain", "rejected"]
+OrderStatus = Literal[
+    "open",
+    "partially_filled",
+    "filled",
+    "cancelled",
+    "modified",
+    "rejected",
+    "unknown",
+]
+TERMINAL_ORDER_STATUSES: Final[frozenset[str]] = frozenset(
+    {"filled", "cancelled", "modified", "rejected"}
+)
+
+
+def strict_int(value: object) -> int | None:
+    """Parse an exact non-negative integer; bools, floats, and junk are None."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def strict_decimal(value: object) -> Decimal | None:
+    """Exact decimal parsing for broker numerics; floats go through ``repr``."""
+
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(repr(value))
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = Decimal(value.strip().replace(",", ""))
+        except InvalidOperation:
+            return None
+        return parsed if parsed.is_finite() else None
+    return None
+
+
+def redact_message(value: object) -> str | None:
+    """Keep a short broker message for operators, masking long digit runs."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    masked = _LONG_DIGITS_RE.sub("[redacted]", value.strip())
+    return masked[:_MAX_MESSAGE_LENGTH]
+
+
+def _side_from_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    has_buy = "매수" in value
+    has_sell = "매도" in value
+    if has_buy == has_sell:
+        return None
+    return "buy" if has_buy else "sell"
+
+
+def _text(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderRow:
+    """One normalized listing row; customer and account fields are dropped."""
+
+    order_no: int
+    symbol: str
+    order_qty: int
+    filled_qty: int
+    open_qty: int
+    side: str | None = None
+    original_order_no: int | None = None
+    order_price: Decimal | None = None
+    avg_fill_price: Decimal | None = None
+    cancelled_qty: int | None = None
+    modified_qty: int | None = None
+    correction_kind: str | None = None
+    rejection_reason: str | None = None
+    order_time: str | None = None
+
+    def evidence(self) -> dict[str, Any]:
+        """JSON-safe evidence summary for the ledger (decimals as strings)."""
+
+        return {
+            "order_no": str(self.order_no),
+            "original_order_no": None
+            if self.original_order_no is None
+            else str(self.original_order_no),
+            "symbol": self.symbol,
+            "side": self.side,
+            "order_qty": self.order_qty,
+            "order_price": None if self.order_price is None else str(self.order_price),
+            "filled_qty": self.filled_qty,
+            "avg_fill_price": None
+            if self.avg_fill_price is None
+            else str(self.avg_fill_price),
+            "open_qty": self.open_qty,
+            "cancelled_qty": self.cancelled_qty,
+            "modified_qty": self.modified_qty,
+            "correction_kind": self.correction_kind,
+            "rejection_reason": redact_message(self.rejection_reason),
+            "order_time": self.order_time,
+        }
+
+
+def parse_order_row(row: object) -> OrderRow | None:
+    """Parse one listing row, or None when any required field is unusable."""
+
+    if not isinstance(row, Mapping):
+        return None
+    order_no = strict_int(row.get("itg_orr_no"))
+    symbol = _text(row.get("iem_cd"))
+    order_qty = strict_int(row.get("orr_qty"))
+    filled_qty = strict_int(row.get("tot_cns_qty"))
+    open_qty = strict_int(row.get("ny_cns_qty"))
+    if (
+        order_no is None
+        or order_no <= 0
+        or symbol is None
+        or order_qty is None
+        or filled_qty is None
+        or open_qty is None
+    ):
+        return None
+    original = strict_int(row.get("org_itg_orr_no"))
+    return OrderRow(
+        order_no=order_no,
+        symbol=symbol,
+        order_qty=order_qty,
+        filled_qty=filled_qty,
+        open_qty=open_qty,
+        side=_side_from_name(row.get("sby_dit_cd_nm")),
+        original_order_no=original if original else None,
+        order_price=strict_decimal(row.get("orr_pr")),
+        avg_fill_price=strict_decimal(row.get("cns_avg_uit_pr")),
+        cancelled_qty=strict_int(row.get("can_qty")),
+        modified_qty=strict_int(row.get("cor_qty")),
+        correction_kind=_text(row.get("cor_can_dit_cd_nm")),
+        rejection_reason=_text(row.get("orr_rjt_rsn_cd_nm")),
+        order_time=_text(row.get("orr_tm")),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ListingPage:
+    """Classification of one listing page."""
+
+    usable: bool
+    rows: tuple[OrderRow, ...] = ()
+    reason: str | None = None
+    response_code: str | None = None
+    continuation_key: str | None = field(default=None, repr=False)
+    has_next: bool = False
+
+
+def _body_continuation_key(payload: Mapping[str, Any]) -> str | None:
+    found: str | None = None
+    for key, block in payload.items():
+        if not isinstance(key, str) or not key.startswith("Output"):
+            continue
+        for row in block if isinstance(block, list) else [block]:
+            if not isinstance(row, Mapping):
+                continue
+            for field_name, value in row.items():
+                if (
+                    isinstance(field_name, str)
+                    and _BODY_CONTINUATION_RE.match(field_name)
+                    and isinstance(value, str)
+                    and value.strip()
+                ):
+                    found = value.strip()
+    return found
+
+
+def classify_listing_page(
+    payload: object,
+    *,
+    header_continuation_key: str | None = None,
+    header_continuation_flag: str | None = None,
+) -> ListingPage:
+    """Classify one page; unknown shapes are unusable, never "empty"."""
+
+    if not isinstance(payload, Mapping):
+        return ListingPage(usable=False, reason="response_not_object")
+    if "error_code" in payload or "error_description" in payload:
+        return ListingPage(usable=False, reason="gateway_error_envelope")
+    raw_code = payload.get("rsp_cd")
+    code = str(raw_code) if isinstance(raw_code, str | int) else None
+    if code is None:
+        return ListingPage(usable=False, reason="missing_response_code")
+    if code not in READ_OK_CODES | READ_CONTINUE_CODES | {READ_NO_ROWS_CODE}:
+        return ListingPage(
+            usable=False, reason="unrecognized_response_code", response_code=code
+        )
+
+    block = payload.get(ROW_BLOCK_KEY)
+    if block is None:
+        raw_rows: list[Any] = []
+    elif isinstance(block, list):
+        raw_rows = block
+    else:
+        return ListingPage(
+            usable=False, reason="row_block_not_a_list", response_code=code
+        )
+    if code == READ_NO_ROWS_CODE and raw_rows:
+        return ListingPage(
+            usable=False, reason="no_rows_code_with_rows", response_code=code
+        )
+
+    rows: list[OrderRow] = []
+    for raw in raw_rows:
+        parsed = parse_order_row(raw)
+        if parsed is None:
+            return ListingPage(
+                usable=False, reason="malformed_order_row", response_code=code
+            )
+        rows.append(parsed)
+
+    key = header_continuation_key or _body_continuation_key(payload)
+    flag = (header_continuation_flag or "").strip().upper()
+    if not key or flag == "N":
+        has_next = False
+    elif flag == "Y":
+        has_next = True
+    elif header_continuation_key is None:
+        # A body continuation key with a value means "more pages".
+        has_next = True
+    else:
+        has_next = code in READ_CONTINUE_CODES
+    return ListingPage(
+        usable=True,
+        rows=tuple(rows),
+        response_code=code,
+        continuation_key=key if has_next else None,
+        has_next=has_next,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class OrderListing:
+    """A fully paginated listing for one scope, or an explicit incomplete one."""
+
+    scope: str
+    complete: bool
+    rows: tuple[OrderRow, ...] = ()
+    reason: str | None = None
+    pages: int = 0
+    response_codes: tuple[str | None, ...] = ()
+
+    def find(self, order_no: int) -> OrderRow | None:
+        for row in self.rows:
+            if row.order_no == order_no:
+                return row
+        return None
+
+
+def assemble_listing(
+    scope: str, pages: Sequence[ListingPage], *, truncated: bool = False
+) -> OrderListing:
+    """Combine pages; any unusable page, loop, or truncation is incomplete."""
+
+    if not pages:
+        return OrderListing(scope=scope, complete=False, reason="no_pages")
+    codes = tuple(page.response_code for page in pages)
+    rows: list[OrderRow] = []
+    seen_keys: set[str] = set()
+    for page in pages:
+        if not page.usable:
+            return OrderListing(
+                scope=scope,
+                complete=False,
+                reason=page.reason or "unusable_page",
+                pages=len(pages),
+                response_codes=codes,
+            )
+        rows.extend(page.rows)
+        if page.continuation_key is not None:
+            if page.continuation_key in seen_keys:
+                return OrderListing(
+                    scope=scope,
+                    complete=False,
+                    reason="continuation_key_repeated",
+                    pages=len(pages),
+                    response_codes=codes,
+                )
+            seen_keys.add(page.continuation_key)
+    if truncated or pages[-1].has_next:
+        return OrderListing(
+            scope=scope,
+            complete=False,
+            reason="pagination_truncated",
+            pages=len(pages),
+            response_codes=codes,
+        )
+    unique: dict[int, OrderRow] = {}
+    for row in rows:
+        previous = unique.get(row.order_no)
+        if previous is not None and previous != row:
+            return OrderListing(
+                scope=scope,
+                complete=False,
+                reason="conflicting_duplicate_order_rows",
+                pages=len(pages),
+                response_codes=codes,
+            )
+        unique[row.order_no] = row
+    return OrderListing(
+        scope=scope,
+        complete=True,
+        rows=tuple(unique.values()),
+        pages=len(pages),
+        response_codes=codes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class OpenOrdersDetermination:
+    state: OpenOrdersState
+    open_rows: tuple[OrderRow, ...]
+    reasons: tuple[str, ...]
+
+
+def determine_open_orders(
+    *,
+    all_listing: OrderListing,
+    open_listing: OrderListing,
+    ledger_live_order_nos: Iterable[int] = (),
+    ledger_has_unbound_uncertain: bool = False,
+) -> OpenOrdersDetermination:
+    """Two-source determination; an empty answer needs both sources to agree."""
+
+    reasons: list[str] = []
+    open_rows: dict[int, OrderRow] = {}
+    if all_listing.complete:
+        for row in all_listing.rows:
+            if row.open_qty > 0:
+                open_rows[row.order_no] = row
+    else:
+        reasons.append(f"all_scope_incomplete:{all_listing.reason}")
+    if open_listing.complete:
+        for row in open_listing.rows:
+            if row.open_qty <= 0:
+                reasons.append("open_scope_row_without_open_quantity")
+            open_rows.setdefault(row.order_no, row)
+    else:
+        reasons.append(f"open_scope_incomplete:{open_listing.reason}")
+
+    if all_listing.complete and open_listing.complete:
+        all_open = {r.order_no for r in all_listing.rows if r.open_qty > 0}
+        scoped_open = {r.order_no for r in open_listing.rows}
+        if all_open != scoped_open:
+            reasons.append("open_order_sources_disagree")
+        listed = {r.order_no for r in all_listing.rows}
+        missing = sorted(set(ledger_live_order_nos) - listed)
+        if missing:
+            reasons.append("ledger_live_order_missing_from_listing")
+    if ledger_has_unbound_uncertain:
+        reasons.append("ledger_has_order_with_unknown_broker_number")
+
+    rows = tuple(sorted(open_rows.values(), key=lambda r: r.order_no))
+    if rows:
+        # Positive evidence of an open order is trustworthy from either source.
+        return OpenOrdersDetermination(
+            state="present", open_rows=rows, reasons=tuple(reasons)
+        )
+    if reasons:
+        return OpenOrdersDetermination(
+            state="unknown", open_rows=(), reasons=tuple(reasons)
+        )
+    return OpenOrdersDetermination(state="none_confirmed", open_rows=(), reasons=())
+
+
+@dataclass(frozen=True, slots=True)
+class OrderAck:
+    state: AckState
+    broker_order_id: str | None
+    response_code: str | None
+    response_message: str | None
+
+
+def classify_order_ack(payload: object) -> OrderAck:
+    """Evidence-first acknowledgement: an order number is the only acceptance.
+
+    A known-good code without a readable order number is *uncertain* (the
+    order may exist), never success and never rejection.
+    """
+
+    if not isinstance(payload, Mapping):
+        return OrderAck("acceptance_uncertain", None, None, None)
+    raw_code = payload.get("rsp_cd", payload.get("error_code"))
+    code = str(raw_code) if isinstance(raw_code, str | int) else None
+    message = redact_message(payload.get("rsp_msg", payload.get("error_description")))
+    block = payload.get(ACK_BLOCK_KEY)
+    order_no = (
+        strict_int(block.get("mkt_orr_no")) if isinstance(block, Mapping) else None
+    )
+    if order_no is not None and order_no > 0:
+        return OrderAck("accepted", str(order_no), code, message)
+    if code is None or code in ORDER_ACK_OK_CODES:
+        return OrderAck("acceptance_uncertain", None, code, message)
+    return OrderAck("rejected", None, code, message)
+
+
+def derive_order_status(row: OrderRow) -> OrderStatus:
+    """Map broker quantities to a status; inconsistent arithmetic is unknown."""
+
+    if row.filled_qty > row.order_qty or row.open_qty > row.order_qty:
+        return "unknown"
+    if row.open_qty > 0:
+        return "partially_filled" if row.filled_qty > 0 else "open"
+    if row.order_qty > 0 and row.filled_qty == row.order_qty:
+        return "filled"
+    cancelled = row.cancelled_qty or 0
+    modified = row.modified_qty or 0
+    if (
+        row.rejection_reason
+        and row.filled_qty == 0
+        and cancelled == 0
+        and modified == 0
+    ):
+        return "rejected"
+    if modified > 0 and row.filled_qty + cancelled + modified == row.order_qty:
+        return "modified"
+    if cancelled > 0 and row.filled_qty + cancelled == row.order_qty:
+        return "cancelled"
+    return "unknown"

@@ -101,7 +101,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v46 (ROB-691): review.toss_live_order_ledger expired_at column + 'expired'
 # status CHECK widening, mirrored in _DDL_STATEMENTS; the bump forces one
 # re-bootstrap of persistent local test DBs.
-SCHEMA_BOOTSTRAP_VERSION = 46
+# v47 (#711): review.nhplug_mock_order_ledger (new ORM table via create_all).
+# Production applies alembic/versions/20260925_task711_nhplug_mock_ledger.py.
+SCHEMA_BOOTSTRAP_VERSION = 47
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

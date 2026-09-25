@@ -493,6 +493,17 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             )
 
             register_kiwoom_us(mcp)
+        # #711 NHPLUG Stage 2: NH namuh MOCK-account tools (limit order/modify/
+        # cancel, reads, ledger reconcile). DEFAULT-only and physically absent
+        # unless ``settings.nhplug_mock_enabled``; every dispatch also re-reads
+        # NHPLUG_MOCK_ENABLED and every mutation needs dry_run=False +
+        # confirm=True. No lane allowlist names them (assignment is separate).
+        if settings.nhplug_mock_enabled:
+            from app.mcp_server.tooling.orders_nhplug_mock_variants import (
+                register as register_nhplug_mock,
+            )
+
+            register_nhplug_mock(mcp)
         if settings.binance_demo_scalping_enabled:
             # ROB-1147: the mutation-path scalping submit-decision tool was
             # removed with the rest of the demo-scalping auto-order

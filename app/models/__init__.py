@@ -72,6 +72,7 @@ from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
 from .naver_research_detail_cache import NaverResearchDetailCache
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
+from .nhplug_mock_order_ledger import NHPlugMockOrderLedger
 from .order_proposals import (
     OrderProposal,
     OrderProposalApprovalBatch,
@@ -288,6 +289,7 @@ __all__ = [
     "MarketQuoteSnapshot",
     "MarketValuationSnapshot",
     "NaverResearchDetailCache",
+    "NHPlugMockOrderLedger",
     "FinancialFundamentalsSnapshot",
     "ExternalCashDeclaration",
     "FundingAdvisory",

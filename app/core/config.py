@@ -268,6 +268,18 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # NHPLUG (NH namuh) Stage 2 MOCK account orders (#711). Disabled by default.
+    # This flag only controls MCP registration of the nhplug_mock_* tools; every
+    # OAuth/data/order dispatch independently re-reads NHPLUG_MOCK_ENABLED from
+    # the process environment (app/services/brokers/nhplug/gating.py), so a
+    # value present only in a dotenv file registers the tools but every call
+    # still fails closed. Hosts are code constants: there is deliberately no
+    # base-URL or auth-URL setting. Orders also need per-call confirm=True.
+    nhplug_mock_enabled: bool = False
+    nhplug_app_key: str | None = None
+    nhplug_app_secret: str | None = None
+    nhplug_mock_account_no: str | None = None
+
     # Kiwoom LIVE read-only market data (charts only). Disabled by default.
     # 🔴 Minimal surface on purpose: app key, app secret, and base URL ONLY.
     # No account number is exposed here — ``KiwoomLiveReadOnlyClient`` must not

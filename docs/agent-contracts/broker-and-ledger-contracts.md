@@ -15,7 +15,7 @@
 - US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 - Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 - Kiwoom Live Read-Only Market Data (Stage 1)
-- NHPLUG Mock Read-Only Foundation (Stage 1)
+- NHPLUG Mock Account (Stage 1 reads + Stage 2 orders, #711)
 - 토스증권 Open API (ROB-529)
 
 ## 기준 원문 계약
@@ -278,15 +278,32 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 
 **동일성 실측(2026-08-03, 20종목 × 일봉 600 + 5분봉 900)**: 행 커버리지 40/40 동일, 비교 셀 252,000 중 불일치 36(99.9857%) — 🔴 **전부 형성 중인 최신 봉**(장중 2초 시차)이며 **최신 봉 제외 시 100.000000%**. 상폐 `051170` 은 live 에서 1행 반환. KIS 3자 대조에서 068270 은 2026-06-03 경계로 223건 어긋나지만 **live·mock 결과가 동일**하며 원인은 수정주가 역산 **반올림 규칙 차이**(약 0.004%) — 어느 쪽이 옳은지는 `UNDETERMINED`. 함의: **Kiwoom↔KIS 과거 수정주가 완전일치 대조는 실패하므로 허용오차 필요**
 
-### NHPLUG Mock Read-Only Foundation (Stage 1)
+### NHPLUG Mock Account (Stage 1 reads + Stage 2 orders, #711)
 
-`app/services/brokers/nhplug/` and `scripts/nhplug_mock_smoke.py` expose a bounded read-only foundation only: account discovery (`/n2/acctinfo`), KR balance, and KR current quote. There are **no** order methods, MCP order tools, ledgers, reconcile paths, or scheduler registrations.
+**Stage 2 operator decision (2026-09-25, `decision/2026-09-25/nhplug-stage2-mock`), approved scope verbatim:**
+"NH나무 **모의계좌 한정**: 잔고·포지션·미체결·체결 조회 + **지정가(limit)** 주문·정정·취소 + 레저·reconcile. kiwoom_mock 어댑터 미러."
+"제외: 실계좌 전부, 시장가 주문, 스케줄러 등록(별도 승인), 계좌 배정(연동 완료 후 별도 결정)."
+Retained Stage 1 boundaries (no relaxation) are listed below; Stage 2 additions follow them.
+
+Stage 1 (`app/services/brokers/nhplug/` + `scripts/nhplug_mock_smoke.py`) is the read foundation: account discovery (`/n2/acctinfo`), KR balance, and KR current quote.
 
 - **Data host × account-type double discriminator**: data requests use only `https://moapi.nhplug.com:8443`; the scheme, host, and port are checked again on the built request immediately before `send`. `/n2/acctinfo` establishes an allowlist containing only `acct_type="03"`; `01`/`02` are denied, and a number with conflicting returned types rejects the account response. `NHPLUG_MOCK_ACCOUNT_NO` is untrusted until it appears in that broker response, and account-scoped reads recheck it again immediately before send.
 - **Exceptional OAuth physical separation**: token issue/revoke must reach `https://api.nhplug.com:8443`, but only `nhplug/auth.py` may name that host and it allowlists exactly `POST /oauth2/token` and `POST /oauth2/revoke`. The data client does not import it and has no production-host constant. Both clients apply the master gate at dispatch and explicitly use `follow_redirects=False`; this also protects APP KEY/SECRET custom headers from cross-origin redirect forwarding.
 - **Default-disabled**: `NHPLUG_MOCK_ENABLED=true` is required at every OAuth and data dispatch; unset is fail-closed. The smoke CLI requires an operator-created `.env.nhplug-mock.native`-style file with exactly `NHPLUG_APP_KEY`, `NHPLUG_APP_SECRET`, and `NHPLUG_MOCK_ACCOUNT_NO`; it rejects `prod` file names/`ENV_FILE` and any extra key (including `DATABASE_URL`). It prints key names and safe response shape only, never values.
-- **No vendor fail-open configuration**: do not import the vendor `nhplug` SDK and never read `NHPLUG_BASE_URL` / `NHPLUG_AUTH_URL`. Host constants are local and static guards reject SDK imports, production-host literals outside auth, override-env strings (including constant concatenation), and known order endpoints/TRs.
+- **No vendor fail-open configuration**: do not import the vendor `nhplug` SDK and never read `NHPLUG_BASE_URL` / `NHPLUG_AUTH_URL`. Host constants are local and static guards reject SDK imports, production-host literals outside auth, override-env strings (including constant concatenation), and every order endpoint/TR outside the four Stage 2 KRX paths owned by `client.py`.
 - **Guarantee strength**: this is **"accidental prevention + static detection," not structural impossibility**. The same APP KEY can access operating accounts, OAuth tokens are issued on the operating host, and `/n2/acctinfo` necessarily returns operating accounts alongside mock accounts. The `03` allowlist is our check, not a vendor-enforced isolation boundary. See `docs/runbooks/nhplug-mock-smoke.md`.
+
+**Stage 2 — mock-account limit orders, ledger, reconcile (#711):**
+
+- **Surface**: client `app/services/brokers/nhplug/client.py` (the only order dispatcher, `_post_mutation`), pure evidence rules `nhplug/order_evidence.py`, ledger `review.nhplug_mock_order_ledger` (`app/models/nhplug_mock_order_ledger.py`, additive migration `20260925_task711_nhplug_ledger`), writer `app/services/nhplug_mock/ledger_service.NHPlugMockLedgerService` (sole writer), pure planner `nhplug_mock/reconcile_plan.py`, operations `nhplug_mock/operations.py`, MCP `app/mcp_server/tooling/orders_nhplug_mock_variants.py` (8 `nhplug_mock_*` tools: preview/place/modify/cancel/get_positions/get_open_orders/get_order_history/reconcile_orders), smoke CLI `scripts/nhplug_mock_order_smoke.py`. Runbook: `docs/runbooks/nhplug-mock-smoke.md` §Stage 2.
+- **Exact mutation paths**: `/krstock/order/v1/cashBuy`, `/cashSell`, `/modify`, `/cancel` only, as literals only in `client.py` (static guard). Credit, reserved, US/global, `/trading/` routes and the known order TR codes stay forbidden everywhere. The single added read path is `/krstock/inquiry/v1/dailyOrderExecution`.
+- **Limit only**: bodies are the exact KRX limit shape — `nmn_pr_tp_cd=01`, `orr_cnd_dit_cd=00`, `ssl_nmn_pr_dit_cd=00`, `rmt_mkt_cd=KRX`, `sor_mkt_sli_yn=N`, positive integer quantity/price, no amount/stop fields; modify carries `sop_cnd_pr=0`. Market (`05`) and every other price type/condition/venue are refused at the tool (`error_code="limit_orders_only"` / `"limit_price_required"`), at the client entry, and again on the built request bytes just before `send`. The ledger table CHECKs `order_type='limit'`, `venue='KRX'`, `account_mode='nhplug_mock'`, `broker='nhplug'`.
+- **Double gate (hard rule 4)**: `NHPLUG_MOCK_ENABLED` (default false) is re-read from the process environment at every dispatch; `settings.nhplug_mock_enabled` only controls DEFAULT-profile MCP registration. Every mutation needs `dry_run=False` **and** `confirm=True` (exact booleans) at the tool/operations layer and again at the client (`DryRunConfirmContract.authorizes_send`) before any token or socket I/O. `dry_run=True` is fully offline (no network, no ledger row).
+- **Post-build re-verification**: for reads and orders the built request's scheme/host/port/path is rechecked immediately before `send`; for account-scoped reads and every order the `act_no` is decoded from the exact request bytes and rechecked against the broker-derived `acct_type=03` allowlist (fresh `/n2/acctinfo` per operation). `follow_redirects=False` on every client; a 3xx on an order is dispatch-uncertain, never followed.
+- **Evidence-first ledger (hard rule 5)**: the row is committed in `submitting` *before* the broker leg — no ledger row, no send. `accepted` needs a readable `Output_0.mkt_orr_no`; a known-good code without an order number is `acceptance_uncertain`; any failure at/after `send` is `acceptance_uncertain` (`retry_allowed=false`, `reconcile_required=true`). Fill quantities and terminal states (`filled`/`cancelled`/`modified`/`confirmed`) are written only by reconcile with `reconcile_state='verified'` broker evidence; terminal rows are immutable. No account number is stored; customer-name fields are dropped.
+- 🔴 **Empty array ≠ no open orders** (Kiwoom `kt00009` lesson): the vendor omits response blocks when empty and one `rsp_cd` means different things per API. A listing is usable only with a known read code, a list row block, fully parsed rows, and completed pagination (no repeated/unfollowed continuation key). `open_orders_state="none_confirmed"` requires the open-only scope (`ost_cns_dit=2`) and the all-orders scope (`ost_cns_dit=0`) to be complete and agree, and no live/uncertain ledger order missing from the listing; otherwise `unknown` (`success=false`). Reconcile never closes a row from an incomplete listing or from absence: terminal needs the all-orders row to say so **and** absence from a complete open-only scope; disagreement is `source_disagreement`, missing is `unknown`.
+- **Unverified vendor assumptions (checked by the operator smoke)**: the listing's `itg_orr_no` equals the order ack's `mkt_orr_no` for KRX non-SOR orders; modify returns a new order number with the original's quantity moved to `cor_qty`; the mock host supports `dailyOrderExecution`. A mismatch fails closed (`unknown`), and the smoke aborts with a cleanup cancel.
+- **Out of scope / forbidden**: live accounts, market orders, scheduler registration, lane allowlist/account assignment, automatic retry of an uncertain send.
 
 ### 토스증권 Open API (ROB-529)
 
