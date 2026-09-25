@@ -543,6 +543,7 @@ async def test_upbit_quote_alias_is_blocked_before_new_sell_send(
         "fetch_my_coins",
         AsyncMock(return_value=[{"currency": coin, "balance": "100", "locked": "0"}]),
     )
+
     class BrokerReached(Exception):
         pass
 
