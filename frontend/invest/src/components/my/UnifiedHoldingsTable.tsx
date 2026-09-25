@@ -8,6 +8,7 @@ import type {
   GroupedHolding,
   GroupedSourceBreakdown,
   PriceState,
+  ProtectionState,
 } from "../../types/invest";
 
 const COLS = "minmax(180px,1.7fr) 105px 118px 128px 118px minmax(210px,1.25fr)";
@@ -29,6 +30,13 @@ function fmtMoney(v: number | null | undefined, currency: GroupedHolding["curren
 function fmtQty(qty: number, assetType: GroupedHolding["assetType"]): string {
   if (assetType === "crypto") return qty.toLocaleString("ko-KR", { maximumFractionDigits: 8 });
   return `${qty.toLocaleString("ko-KR")}주`;
+}
+
+function fmtMaybeQty(
+  qty: number | null | undefined,
+  assetType: GroupedHolding["assetType"],
+): string {
+  return qty == null ? "검증 필요" : fmtQty(qty, assetType);
 }
 
 function fmtPct(v: number | null | undefined): string {
@@ -74,6 +82,22 @@ function sourceLabel(accounts: Account[], source: AccountSource): string {
   return accounts.find((account) => account.source === source)?.displayName ?? SOURCE_LABEL[source];
 }
 
+const PROTECTION_WARNING: Partial<Record<ProtectionState, string>> = {
+  encroached: "기존 매도 대기가 장기 보호 수량을 침범했습니다.",
+  shortfall: "현재 보유 수량이 장기 보호 수량보다 적습니다.",
+  unverified: "브로커 수량 또는 보호 상태를 검증하지 못했습니다.",
+};
+
+function ProtectionWarning({ state }: { state?: ProtectionState }) {
+  const reason = state ? PROTECTION_WARNING[state] : undefined;
+  if (!reason) return null;
+  return (
+    <span title={reason} aria-label={`보호 경고: ${reason}`} data-testid="protection-warning-chip">
+      <Pill tone="warn" size="sm">보호 경고</Pill>
+    </span>
+  );
+}
+
 function SourceChip({ source, accounts }: { source: AccountSource; accounts: Account[] }) {
   return (
     <Pill tone={pillToneForSource(source)} size="sm">
@@ -85,18 +109,22 @@ function SourceChip({ source, accounts }: { source: AccountSource; accounts: Acc
 function QuantityCell({ holding }: { holding: GroupedHolding }) {
   const tradeable = holding.tradeableQuantity ?? holding.totalQuantity;
   const sellable = holding.sellableQuantity ?? tradeable;
+  const tactical = holding.tacticalSellableQuantity ?? sellable;
   const pendingSell = holding.pendingSellQuantity ?? 0;
+  const protectedQuantity = holding.protectedQuantity ?? 0;
   const reference = holding.referenceQuantity ?? 0;
 
   return (
     <div style={{ textAlign: "right", color: "var(--fg-1)", fontWeight: 600 }}>
       <div>{fmtQty(holding.totalQuantity, holding.assetType)}</div>
       <div style={{ marginTop: 3, fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>
-        매매가능 {fmtQty(tradeable, holding.assetType)} · 매도가능 {fmtQty(sellable, holding.assetType)}
+        매매가능 {fmtQty(tradeable, holding.assetType)} · 전술 매도 가능 {fmtMaybeQty(tactical, holding.assetType)}
       </div>
-      {pendingSell > 0 && (
-        <div style={{ marginTop: 2, fontSize: 11, color: "var(--warn)", fontWeight: 500 }}>
-          주문대기 {fmtQty(pendingSell, holding.assetType)}
+      {(pendingSell > 0 || protectedQuantity > 0 || PROTECTION_WARNING[holding.protectionState ?? "unprotected"]) && (
+        <div style={{ marginTop: 2, display: "flex", justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap", gap: 4, fontSize: 11, color: "var(--warn)", fontWeight: 500 }}>
+          {pendingSell > 0 ? <span>주문대기 {fmtQty(pendingSell, holding.assetType)}</span> : null}
+          {protectedQuantity > 0 ? <span data-testid="long-term-protection-chip">장기 보호 {fmtQty(protectedQuantity, holding.assetType)}</span> : null}
+          <ProtectionWarning state={holding.protectionState} />
         </div>
       )}
       {reference > 0 && (
@@ -121,16 +149,18 @@ function BreakdownLine({
 }) {
   const name = accountName(accounts, item.accountId) ?? sourceLabel(accounts, item.source);
   const sellable = item.sellableQuantity ?? (item.isTradeable ? item.quantity : 0);
+  const tactical = item.tacticalSellableQuantity ?? sellable;
+  const protectedQuantity = item.protectedQuantity ?? 0;
   const reference = item.referenceQuantity ?? (item.manualOnly ? item.quantity : 0);
   const metaLabel = item.manualOnly
     ? `참고전용 ${fmtQty(reference, assetType)}`
-    : `매도가능 ${fmtQty(sellable, assetType)}`;
+    : `전술 매도 가능 ${fmtMaybeQty(tactical, assetType)}`;
   return (
     <div
       data-testid="unified-holding-source-breakdown"
       style={{
         display: "grid",
-        gridTemplateColumns: "minmax(74px,1fr) auto auto",
+        gridTemplateColumns: "minmax(74px,1fr) auto auto auto",
         gap: 6,
         alignItems: "center",
         color: "var(--fg-2)",
@@ -140,6 +170,14 @@ function BreakdownLine({
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
       <span style={{ color: "var(--fg-3)", fontFeatureSettings: '"tnum"' }}>
         {fmtQty(item.quantity, assetType)} · {metaLabel}
+      </span>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        {protectedQuantity > 0 ? (
+          <span data-testid="account-protection-chip" style={{ color: "var(--accent)", fontWeight: 700 }}>
+            장기 보호 {fmtQty(protectedQuantity, assetType)}
+          </span>
+        ) : null}
+        <ProtectionWarning state={item.protectionState} />
       </span>
       <span style={{ color: plColor(item.pnlRate), fontWeight: 700, fontFeatureSettings: '"tnum"' }}>
         {fmtMoney(item.valueNative ?? item.valueKrw, currency)} · {fmtPct(item.pnlRate)}
@@ -155,6 +193,11 @@ export function UnifiedHoldingsTable({
   holdings: GroupedHolding[];
   accounts: Account[];
 }) {
+  const hasProtectionDisplay = holdings.some((holding) =>
+    (holding.protectedQuantity ?? 0) > 0
+    || holding.tacticalSellableQuantity != null
+    || Boolean(PROTECTION_WARNING[holding.protectionState ?? "unprotected"]),
+  );
   return (
     <div
       data-testid="unified-holdings-table"
@@ -186,6 +229,22 @@ export function UnifiedHoldingsTable({
         <div style={{ textAlign: "right" }}>손익률</div>
         <div>출처/계좌</div>
       </div>
+
+      {hasProtectionDisplay ? (
+        <div
+          role="status"
+          data-testid="holdings-protection-display-banner"
+          style={{
+            padding: "8px 20px",
+            borderBottom: "1px solid var(--divider)",
+            color: "var(--fg-2)",
+            background: "var(--surface-2)",
+            fontSize: 11,
+          }}
+        >
+          장기 보호와 전술 매도 가능은 표시용 수치입니다. 주문 전송 전에는 브로커 수량을 다시 확인합니다.
+        </div>
+      ) : null}
 
       {holdings.length === 0 ? (
         <div data-testid="unified-holdings-empty" style={{ padding: 32, textAlign: "center", color: "var(--fg-3)", fontSize: 13 }}>

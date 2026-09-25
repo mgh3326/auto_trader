@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from decimal import Decimal
 from typing import Any
 
@@ -59,6 +60,20 @@ def _normalize_symbol(symbol: str, market_type: str) -> str:
             return normalized
         return f"KRW-{normalized}"
     return normalized
+
+
+def _optional_broker_sellable(value: Any) -> float | None:
+    """Keep unavailable broker S unavailable instead of substituting zero."""
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed
 
 
 def _log_broker_failure(
@@ -122,6 +137,9 @@ class PortfolioDataCollector:
                 evaluation = _to_float(stock.get("evlu_amt"), default=0.0) or None
                 profit_loss = _to_float(stock.get("evlu_pfls_amt"), default=0.0)
                 profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
+                broker_sellable = _optional_broker_sellable(
+                    stock.get("ord_psbl_qty")
+                )
 
                 components.append(
                     {
@@ -142,6 +160,8 @@ class PortfolioDataCollector:
                         "evaluation": evaluation,
                         "profit_loss": profit_loss,
                         "profit_rate": profit_rate,
+                        "broker_sellable_quantity": broker_sellable,
+                        "sellable_observed": broker_sellable is not None,
                     }
                 )
         except Exception as exc:
@@ -173,6 +193,9 @@ class PortfolioDataCollector:
                 )
                 profit_loss = _to_float(stock.get("frcr_evlu_pfls_amt"), default=0.0)
                 profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
+                broker_sellable = _optional_broker_sellable(
+                    stock.get("ord_psbl_qty")
+                )
 
                 components.append(
                     {
@@ -193,6 +216,8 @@ class PortfolioDataCollector:
                         "evaluation": evaluation,
                         "profit_loss": profit_loss,
                         "profit_rate": profit_rate,
+                        "broker_sellable_quantity": broker_sellable,
+                        "sellable_observed": broker_sellable is not None,
                     }
                 )
         except Exception as exc:
@@ -241,6 +266,7 @@ class PortfolioDataCollector:
             quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
             if quantity <= 0:
                 continue
+            broker_sellable = _optional_broker_sellable(coin.get("balance"))
 
             components.append(
                 {
@@ -257,6 +283,8 @@ class PortfolioDataCollector:
                     "evaluation": None,
                     "profit_loss": None,
                     "profit_rate": None,
+                    "broker_sellable_quantity": broker_sellable,
+                    "sellable_observed": broker_sellable is not None,
                 }
             )
 
@@ -348,6 +376,8 @@ class PortfolioDataCollector:
                     "evaluation": None,
                     "profit_loss": None,
                     "profit_rate": None,
+                    "broker_sellable_quantity": None,
+                    "sellable_observed": False,
                 }
             )
 

@@ -120,6 +120,18 @@ def _group_broker_sellable_quantity(items: Iterable[Holding]) -> float | None:
     return sum(value for value in values if value is not None)
 
 
+def _group_tactical_sellable_quantity(items: Iterable[Holding]) -> float | None:
+    """Sum tactical display headroom only when every live source has it."""
+
+    live_items = [item for item in items if _is_tradeable_holding(item)]
+    if not live_items:
+        return 0.0
+    values = [item.tacticalSellableQuantity for item in live_items]
+    if any(value is None for value in values):
+        return None
+    return sum(value for value in values if value is not None)
+
+
 def _group_sellable_observed(items: Iterable[Holding]) -> bool:
     live_items = [item for item in items if _is_tradeable_holding(item)]
     return bool(live_items) and all(item.sellableObserved for item in live_items)
@@ -163,6 +175,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
             h.pendingSellQuantity for h in items if _is_tradeable_holding(h)
         )
         broker_sellable_qty = _group_broker_sellable_quantity(items)
+        tactical_sellable_qty = _group_tactical_sellable_quantity(items)
         sellable_observed = _group_sellable_observed(items)
         protected_qty = sum(h.protectedQuantity for h in items)
         protection_state = _protection_state(items)
@@ -266,6 +279,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                 sellableObserved=sellable_observed,
                 brokerSellableQuantity=broker_sellable_qty,
                 protectedQuantity=protected_qty,
+                tacticalSellableQuantity=tactical_sellable_qty,
                 protectionState=protection_state,
                 pendingSellQuantity=pending_sell_qty,
                 referenceQuantity=reference_qty,
@@ -299,6 +313,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                         sellableObserved=h.sellableObserved,
                         brokerSellableQuantity=h.brokerSellableQuantity,
                         protectedQuantity=h.protectedQuantity,
+                        tacticalSellableQuantity=h.tacticalSellableQuantity,
                         protectionState=h.protectionState,
                         pendingSellQuantity=h.pendingSellQuantity,
                         referenceQuantity=_reference_quantity(h),
@@ -623,6 +638,9 @@ class InvestHomeService:
                 "broker_sellable_quantity", raw_sellable
             )
             holding.protectedQuantity = float(output.get("protected_quantity", 0.0))
+            holding.tacticalSellableQuantity = output.get(
+                "tactical_sellable_quantity"
+            )
             holding.protectionState = output.get("protection_state", "unverified")
             if "sellable_quantity" in output:
                 holding.sellableQuantity = output["sellable_quantity"]

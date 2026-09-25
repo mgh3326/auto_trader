@@ -137,7 +137,7 @@ class TestWholeProfileClosedWorld:
     ) -> None:
         """Keep the reviewed closed-world base inventory count pinned."""
 
-        # Closed world: the 124-tool count moves only with a reviewed addition. ROB-1303
+        # Closed world: the 126-tool count moves only with a reviewed addition. ROB-1303
         # added get_spike_attribution (read-only attribution reader), which the
         # KIWOOM <-> KIWOOM_KR shared-surface contract requires here — see
         # TestKiwoomKrProfile::test_keeps_kr_order_surface_intact. ROB-1309
@@ -149,7 +149,8 @@ class TestWholeProfileClosedWorld:
         assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "screen_stocks_enrich" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
         assert "session_bootstrap_pack" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 125
+        assert "get_protected_positions" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 126
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()

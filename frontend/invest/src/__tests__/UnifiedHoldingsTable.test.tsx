@@ -45,6 +45,10 @@ const holdings: GroupedHolding[] = [
     totalQuantity: 40,
     tradeableQuantity: 30,
     sellableQuantity: 25,
+    brokerSellableQuantity: 25,
+    protectedQuantity: 10,
+    tacticalSellableQuantity: 15,
+    protectionState: "encroached",
     pendingSellQuantity: 5,
     referenceQuantity: 10,
     averageCost: 70000,
@@ -66,6 +70,10 @@ const holdings: GroupedHolding[] = [
         isTradeable: true,
         manualOnly: false,
         sellableQuantity: 25,
+        brokerSellableQuantity: 25,
+        protectedQuantity: 10,
+        tacticalSellableQuantity: 15,
+        protectionState: "encroached",
         pendingSellQuantity: 5,
         referenceQuantity: 0,
         averageCost: 70000,
@@ -110,8 +118,12 @@ test("UnifiedHoldingsTable renders source/account breakdown and stock detail lin
   expect(within(row).getAllByText("KIS 종합").length).toBeGreaterThan(0);
   expect(within(row).getAllByText("Toss 수동 벤치마크").length).toBeGreaterThan(0);
   expect(within(row).getByText(/매매가능 30주/)).toBeInTheDocument();
-  expect(within(row).getAllByText(/매도가능 25주/).length).toBeGreaterThan(0);
+  expect(within(row).getAllByText(/전술 매도 가능 15주/).length).toBeGreaterThan(0);
   expect(within(row).getByText(/주문대기 5주/)).toBeInTheDocument();
+  expect(within(row).getByTestId("long-term-protection-chip")).toHaveTextContent("장기 보호 10주");
+  expect(screen.getByTestId("holdings-protection-display-banner")).toHaveTextContent("표시용 수치");
+  expect(within(row).getAllByTestId("protection-warning-chip")[0]).toHaveAttribute("title", expect.stringContaining("침범"));
+  expect(within(row).getByTestId("account-protection-chip")).toHaveTextContent("장기 보호 10주");
   expect(within(row).getAllByText(/참고전용 10주/).length).toBeGreaterThan(0);
   expect(screen.getAllByTestId("unified-holding-source-breakdown")).toHaveLength(2);
 });

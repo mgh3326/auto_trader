@@ -81,6 +81,10 @@ class Holding(BaseModel):
     # broker fact and declared floor separately for an auditable read model.
     brokerSellableQuantity: float | None = None
     protectedQuantity: float = 0.0
+    # Always retain the arithmetic headroom separately from the display's
+    # mode-dependent sellable value. It is read-only UI evidence, never order
+    # send authority.
+    tacticalSellableQuantity: float | None = None
     protectionState: ProtectionStateLiteral = "unprotected"
     pendingSellQuantity: float = 0.0
     referenceQuantity: float | None = None
@@ -104,6 +108,7 @@ class Holding(BaseModel):
             self.sellableObserved = False
             self.brokerSellableQuantity = 0.0
             self.protectedQuantity = 0.0
+            self.tacticalSellableQuantity = 0.0
             self.protectionState = "unprotected"
             self.pendingSellQuantity = 0.0
             self.referenceQuantity = self.quantity
@@ -133,6 +138,7 @@ class GroupedSourceBreakdown(BaseModel):
     sellableObserved: bool = False
     brokerSellableQuantity: float | None = None
     protectedQuantity: float = 0.0
+    tacticalSellableQuantity: float | None = None
     protectionState: ProtectionStateLiteral = "unprotected"
     pendingSellQuantity: float = 0.0
     referenceQuantity: float | None = None
@@ -153,6 +159,7 @@ class GroupedHolding(BaseModel):
     sellableObserved: bool = False
     brokerSellableQuantity: float | None = None
     protectedQuantity: float = 0.0
+    tacticalSellableQuantity: float | None = None
     protectionState: ProtectionStateLiteral = "unprotected"
     pendingSellQuantity: float = 0.0
     referenceQuantity: float = 0.0
