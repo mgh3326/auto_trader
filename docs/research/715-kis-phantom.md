@@ -2,7 +2,7 @@
 
 - lane: b715-kis-phantom · builder-devin-medium (SWE-2 medium) · T1 read-only research
 - worktree: /home/mgh3326/work/auto_trader.t715 · branch: task715-kis-phantom
-- round 2: incorporates tester (opus xhigh) round-1 BLOCKER findings — B1/B2/B3 corrected below.
+- final: incorporates tester (opus xhigh) rounds 1-3; tester PASS @9d80091 (round-3 head; this commit adds only the n1-n6 precision notes).
 - input: handoffkeep doc research/2026-09-25/715-rung-sweep-extract (operator-desk dry-run of scripts/rob1284_resting_rung_sweep.py on NCP, post-#691-backfill)
 - NO broker calls, NO production DB, NO NCP access were used. Everything below is repo code + the masked extract.
 
@@ -73,12 +73,12 @@ Measure first, then a fix task covering all of:
 
 - M2 (zero cost): jq the existing /root/at-run/sweep715/sweep.json for the market/ledger-table/status split — decides which gaps are live before any code work. (Ages are not in sweep.json; use the DB join in Q6.)
 - Fix A (US window): anchor the evidence inquiry on the ledger row's order/trade date instead of now-7d (mirroring _live_daily_order_window), bounded to documented TTTS3035R depth; make not-found distinguishable (requires_manual_review) instead of silent pending.
-- Fix B (partial residual — the real #691 port; probe-first, do NOT reuse the existing rule blindly): prerequisite read-only probe required — the partial-residual evidence shape is unverified. KR: classify_day_order_expiry's expiry rule (rjct_qty==ord_qty) is pinned by test_partial_rjct_after_close_stays_pending (tests/services/brokers/kis/test_live_order_expiry.py:127-132) to return pending on partial rejects, so a NEW residual rule is needed (candidate shape: after NXT close, tot_ccld_qty>0 AND rjct_qty==ord_qty−tot_ccld_qty AND rmn_qty==0 — whatever a TTTC8001R probe of a known partial-then-swept order actually shows), plus an explicit change to that pinned test. US: extend the adapter to terminal-check partial rows, but note _map_kis_status maps filled>0/remaining<=0 to "filled" (orders_modify_cancel.py:170-171) — the residual rule must compare filled<ordered, not reuse normalized_status. Then: mark the ledger expired/cancelled on evidence and project the terminal rung state (pre-project the booked partial then close with filled_qty=None, mirroring the #691 second commit).
+- Fix B (partial residual — the real #691 port; probe-first, do NOT reuse the existing rule blindly): prerequisite read-only probe required — the partial-residual evidence shape is unverified. KR: classify_day_order_expiry's expiry rule (rjct_qty==ord_qty) is pinned by test_partial_rjct_after_close_stays_pending (tests/services/brokers/kis/test_live_order_expiry.py:127-132) to return pending on partial rejects, so a NEW residual rule is needed (candidate shape: after NXT close, tot_ccld_qty>0 AND rjct_qty==ord_qty−tot_ccld_qty AND rmn_qty==0 — whatever a TTTC8001R probe of a known partial-then-swept order actually shows), plus an explicit re-scoping of that pinned test (its fixture keeps tot_ccld_qty=0 so a tot_ccld_qty-gated rule need not flip the assertion; rename/re-scope it and add a sibling residual test rather than reusing the internally-inconsistent 10 ≠ 0+6+0 fixture). US: extend the adapter to terminal-check partial rows, but note _map_kis_status maps filled>0/remaining<=0 to "filled" (orders_modify_cancel.py:170-171) — the residual rule must compare filled<ordered, not reuse normalized_status. Then: mark the ledger expired/cancelled on evidence and project the terminal rung state (pre-project the booked partial then close with filled_qty=None, mirroring the #691 second commit).
 - Fix C (KR expiry convergence): the expired/cancelled branch should converge the rung in the same pass (today it needs a second non-dry pass or sweep --apply).
 - Fix D (scan starvation): bounded paging/aging for the open scan so permanently-stuck rows don't occupy every limit=100 slot.
 - Explicitly out of scope: converting absence into expiry (absence-as-evidence, refused by #691 too), and arming any default-off gate.
 - Tests: fixture-level — KR partial-then-expired books residual + marks expired + converges rung; US not-found flagged; date-anchored window; starvation paging. Backfill: operator dry-run first, then gated non-dry pass(es), then sweep --apply --confirm for rung transition.
-- If no fix: acceptable only if M2 shows the 219 are all recent genuinely-live orders — implausible given age, but measurable.
+- If no fix: acceptable only if the Q6 DB age join + Step 3 probe show the 219 are all recent genuinely-live orders — implausible given backlog age, but measurable.
 
 ## Q6 — Exact dry-run / measurement commands for operator-desk (NCP, deployed image e9477c7+)
 
@@ -101,7 +101,7 @@ Step 2 — US leg (read-only TTTS3035R GETs; WARNING on load: each row re-scans 
 
 Step 3 — probe ">7-day dead-order visibility" (read-only, answers the inferred part of Q2; also the KR-residual probe for Fix B):
 
-    MCP get_order_history(market="us", symbol=<one stuck symbol>, status="all", days=90, account_mode="kis_live")  (or kis_live_get_order_history) — if the dead order appears with nccs_qty=0/status expired, Fix A's wider window is sufficient; if not, the gap is broker-side depth. For KR residual shape: TTTC8001R probe on a known partially-filled-then-swept order date before writing any Fix B fixture.
+    MCP get_order_history(market="us", symbol=<one stuck symbol>, status="all", days=90, account_mode="kis_live")  (or kis_live_get_order_history) — if the dead order appears with nccs_qty=0/status expired, Fix A's wider window is sufficient; if not, the gap is broker-side depth. For the KR residual shape (Fix B prerequisite): a raw inquire_daily_order_domestic read on the exact order date of a known partially-filled-then-swept order still inside the ~90-day depth — note the normalized get_order_history path does not expose rjct_qty, so this probe must read the raw TR fields (rjct_qty, rmn_qty, tot_ccld_qty).
 
 ## Commands run + rc (this session, all read-only, repo-local)
 
@@ -114,4 +114,4 @@ Step 3 — probe ">7-day dead-order visibility" (read-only, answers the inferred
 Round 1: opus xhigh, independent re-trace — VERDICT: BLOCKER @d36eaf5fc46224bb44b47bf404c33de2d33ca4e9.
 Material findings adopted: B1 (US kernel emits no reason_code on PENDING — Q6 measurement fixed to M2/M3), B2 (partial-residual gap added as the true #691 analogue — verified at kis_live_ledger.py:799-819 and _converge map :652-661), B3 (#691 reframed: positive REJECTED+canceledAt evidence, not mere unmatched-skip), plus corrections on ledger open-status set, sampling bias, US-cancel-no-ledger-write, two-pass KR convergence, and US dry-run load.
 Round 2: VERDICT: BLOCKER @f3e373a4ae7a397569db9929691e9cf063477424 — R2-B1 (Q6 had labeled the gap-#1 signature would_book_partial "resolvable"; corrected — partial verdicts on backlog rows ARE gap #1 and a pre-fix non-dry backfill would strand them) and R2-B2 (Fix B originally reused classify_day_order_expiry, whose partial-reject→pending rule is pinned by an existing test; rewritten probe-first with the pinned-test change and the US filled>0/remaining<=0→"filled" trap noted). Folded in m1–m7 (sweep.json carries no ages, void-authority prerequisites, account_mode arg name, load warnings).
-Round 3 verdict pending at new head.
+Round 3: VERDICT: PASS @9d80091faf58982a75aa490e46cfebea9019405d. Non-blocking notes n1-n6 folded into this final commit (n4 worth restating: KR app-initiated cancels escape gap #1 via _mark_ledger_cancelled, so the gap-#1 population is EOD/NXT sweeps + out-of-app HTS/MTS cancels; and a proactive cancel on a row with an unbooked partial fill closes the ledger before that fill books — side observation, not traced end-to-end).
