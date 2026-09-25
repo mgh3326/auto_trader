@@ -144,12 +144,16 @@ async def test_full_rjct_after_nxt_close_marks_expired():
         patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=rows)),
         patch.object(mod, "now_kst", return_value=now),
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
+        patch.object(mod, "_converge_kis_proposal_rung", AsyncMock()) as conv,
     ):
         out = await mod._reconcile_one_ledger_row(_ledger_row(), dry_run=False)
     assert out["verdict"] == "expired"
     assert out["action"] == "marked_expired"
     upd.assert_awaited_once()
     assert upd.call_args.kwargs["status"] == "expired"
+    # ROB-719 gap C: expiry evidence converges the rung in the same pass.
+    conv.assert_awaited_once()
+    assert conv.await_args.kwargs["ledger_status"] == "expired"
 
 
 @pytest.mark.asyncio
@@ -160,11 +164,14 @@ async def test_full_rjct_after_nxt_close_dry_run_does_not_write():
         patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=rows)),
         patch.object(mod, "now_kst", return_value=now),
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
+        patch.object(mod, "_converge_kis_proposal_rung", AsyncMock()) as conv,
     ):
         out = await mod._reconcile_one_ledger_row(_ledger_row(), dry_run=True)
     assert out["verdict"] == "expired"
     assert out["action"] == "would_mark_expired"
     upd.assert_not_awaited()
+    # dry-run must not touch the proposal rung either.
+    conv.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -255,9 +262,13 @@ async def test_cancel_confirm_row_marks_cancelled_via_orgn_odno():
         patch.object(mod, "_fetch_live_daily_rows", AsyncMock(return_value=rows)),
         patch.object(mod, "now_kst", return_value=now),
         patch.object(mod, "_update_ledger_outcome", AsyncMock()) as upd,
+        patch.object(mod, "_converge_kis_proposal_rung", AsyncMock()) as conv,
     ):
         out = await mod._reconcile_one_ledger_row(_ledger_row(), dry_run=False)
     assert out["verdict"] == "cancelled"
     assert out["action"] == "marked_cancelled"
     upd.assert_awaited_once()
     assert upd.call_args.kwargs["status"] == "cancelled"
+    # ROB-719 gap C: cancel evidence converges the rung in the same pass.
+    conv.assert_awaited_once()
+    assert conv.await_args.kwargs["ledger_status"] == "cancelled"

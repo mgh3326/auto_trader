@@ -1523,3 +1523,149 @@ async def test_reconcile_dry_run_does_not_touch_proposal_rung(db_session):
 
     assert out["action"] == "would_book"
     assert await _read_rung_state(pid) == "resting"
+
+
+# ---------------------------------------------------------------------------
+# ROB-719 — gap A (probe-independent part) + gap D regression pins.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_reconcile_pending_not_found_is_flagged_for_review(dry_run):
+    """ROB-719 gap A: an order absent from the broker evidence window is not a
+    silent pending — it must be flagged for manual review end to end.
+
+    Absence is still not expiry evidence: the ledger row must stay open and
+    the only difference vs a genuinely live pending order is the flag.
+    """
+    from decimal import Decimal
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    row = SimpleNamespace(
+        id=719,
+        order_no="US-NOT-FOUND",
+        broker="kis",
+        market="us",
+        symbol="AAPL",
+    )
+    not_found = FillEvidence(
+        FillVerdict.PENDING,
+        Decimal("0"),
+        None,
+        None,
+        "not_found",
+        "order US-NOT-FOUND not in recent overseas history",
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=not_found)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_update_live_ledger_outcome", new=AsyncMock()) as update,
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=dry_run)
+
+    assert out["verdict"] == "pending"
+    assert out["action"] == "noop_pending"
+    assert out.get("reason_code") == "not_found"
+    assert out.get("requires_manual_review") is True
+    update.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_scan_ages_kis_rows_beyond_history_window(db_session):
+    """ROB-719 gap D: US rows older than the 7-day history window must not
+    starve the scan — they fill only slots left over after reachable rows.
+
+    Two stale ``kis`` rows (10 days old) plus one fresh row, ``limit=1``:
+    under the old ``created_at ASC`` order the oldest row would take the only
+    slot on every pass.
+    """
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.models.review import LiveOrderLedger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    now = datetime.now(UTC)
+    stale_ids = []
+    async with ll._order_session_factory()() as db:
+        for _ in range(2):
+            row = LiveOrderLedger(
+                trade_date=now - timedelta(days=10),
+                broker="kis",
+                account_scope="kis_live",
+                market="us",
+                symbol="AAPL",
+                side="buy",
+                order_kind="limit",
+                order_no=f"STALE-{uuid4().hex[:12]}",
+                status="accepted",
+                lifecycle_state="accepted",
+                created_at=now - timedelta(days=10),
+            )
+            db.add(row)
+            await db.flush()
+            stale_ids.append(row.id)
+        fresh = LiveOrderLedger(
+            trade_date=now,
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            symbol="AAPL",
+            side="buy",
+            order_kind="limit",
+            order_no=f"FRESH-{uuid4().hex[:12]}",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now,
+        )
+        db.add(fresh)
+        await db.flush()
+        fresh_id = fresh.id
+        await db.commit()
+    assert stale_ids[0] < fresh_id
+
+    pending = FillEvidence(
+        FillVerdict.PENDING, Decimal("0"), None, None, "not_found", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=pending)
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        out = await ll.live_reconcile_orders_impl(broker="kis", dry_run=True, limit=1)
+
+    assert out["success"] is True
+    scanned_ids = {entry["ledger_id"] for entry in out["reconciled"]}
+    assert scanned_ids == {fresh_id}
+    coverage = out["candidate_scan"]
+    assert coverage["scanned"] == 1
+    assert coverage["open_total"] == 3
+    assert coverage["probeable_open"] == 1
+    assert coverage["unreached_beyond_reach"] == 2
+    assert coverage["unreached_probeable"] == 0
+    # The not-found flag is visible end to end, on the scanned row itself.
+    entry = out["reconciled"][0]
+    assert entry["action"] == "noop_pending"
+    assert entry.get("reason_code") == "not_found"
+    assert entry.get("requires_manual_review") is True
