@@ -87,9 +87,7 @@ _ALWAYS_FORBIDDEN_ORDER_TEXT = (
 )
 # Modules that may define mutation-named functions (reviewed Stage 2 surface).
 _STAGE2_MUTATION_NAME_MODULES = frozenset({"client.py", "order_evidence.py"})
-_CLIENT_MUTATION_METHODS = frozenset(
-    {"submit_limit_order", "modify_limit_order", "cancel_order"}
-)
+_CLIENT_MUTATION_METHODS = frozenset({"dispatch_claimed_order"})
 _FORBIDDEN_MUTATION_FRAGMENTS = (
     "order",
     "buy",
@@ -544,7 +542,9 @@ def _assert_client_mutations_authorize_first(source: str) -> None:
     ]
     for guard in (
         "_assert_send_authorized",
-        "_assert_committed_intent",
+        "_assert_order_ledger",
+        "_body_from_claim",
+        "_assert_built_body_is_claimed",
         "_assert_mock_enabled",
         "_assert_mutation_path",
         "_assert_resolved_mock_request",
@@ -679,10 +679,8 @@ def test_stage2_order_path_outside_owner_is_rejected() -> None:
         (
             "authorization check removed",
             "        _assert_send_authorized(authorization)\n"
-            "        act_no = self._require_order_allowlist().configured_account_no\n"
-            "        if side ==",
-            "        act_no = self._require_order_allowlist().configured_account_no\n"
-            "        if side ==",
+            "        return await self._post_mutation(\n",
+            "        return await self._post_mutation(\n",
         ),
         (
             "pre-send host recheck removed",
@@ -930,44 +928,66 @@ def test_dry_run_confirm_contract_authorizes_only_the_exact_confirmed_pair() -> 
     assert DryRunConfirmContract(dry_run=0, confirm=1).authorizes_send is False  # type: ignore[arg-type]
 
 
-_INTENT_ISSUER_OWNER = (
-    REPO_ROOT / "app" / "services" / "nhplug_mock" / "ledger_service.py"
-)
+_CLAIM_OWNER = REPO_ROOT / "app" / "services" / "nhplug_mock" / "ledger_service.py"
 
 
-def _names_intent_issuer(tree: ast.AST) -> bool:
+def _mentions(tree: ast.AST, name: str) -> bool:
     return any(
-        (isinstance(node, ast.Name) and node.id == "issue_committed_intent")
-        or (isinstance(node, ast.Attribute) and node.attr == "issue_committed_intent")
-        or (isinstance(node, ast.alias) and node.name == "issue_committed_intent")
+        (isinstance(node, ast.Name) and node.id == name)
+        or (isinstance(node, ast.Attribute) and node.attr == name)
+        or (isinstance(node, ast.alias) and node.name == name)
+        or (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == name
+        )
         for node in ast.walk(tree)
-    ) or "issue_committed_intent" in _literal_strings(tree)
+    ) or name in _literal_strings(tree)
 
 
-def test_only_the_ledger_service_mints_committed_order_intents() -> None:
-    """No ledger row, no send: nothing else may mint a send intent."""
+def test_only_the_ledger_service_claims_and_only_the_client_dispatches() -> None:
+    """The claim UPDATE lives in the ledger service; only client.py invokes it."""
 
-    offenders = sorted(
+    users = sorted(
         str(path.relative_to(REPO_ROOT))
         for root in (REPO_ROOT / "app", REPO_ROOT / "scripts")
         for path in root.rglob("*.py")
         if "__pycache__" not in path.parts
-        and path not in {_INTENT_ISSUER_OWNER, RUNTIME_DIR / "contracts.py"}
-        and _names_intent_issuer(ast.parse(path.read_text(encoding="utf-8")))
+        and _mentions(ast.parse(path.read_text(encoding="utf-8")), "claim_for_dispatch")
     )
-    assert offenders == [], f"unexpected intent issuers: {offenders}"
-    assert _names_intent_issuer(
-        ast.parse(_INTENT_ISSUER_OWNER.read_text(encoding="utf-8"))
-    )
+    assert users == [
+        "app/services/brokers/nhplug/client.py",
+        "app/services/nhplug_mock/ledger_service.py",
+    ]
+    # The retired, forgeable in-process intent must not come back.
+    for root in (REPO_ROOT / "app", REPO_ROOT / "scripts"):
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            assert "CommittedOrderIntent" not in text, path
+            assert "issue_committed_intent" not in text, path
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        "from app.services.brokers.nhplug.contracts import issue_committed_intent\n",
-        "import app.services.brokers.nhplug.contracts as c\nc.issue_committed_intent()\n",
-        'getattr(c, "issue_committed_intent")\n',
-    ),
-)
-def test_intent_issuer_detector_catches_mutants(source: str) -> None:
-    assert _names_intent_issuer(ast.parse(source))
+def test_client_order_body_is_built_only_from_the_claim() -> None:
+    """dispatch_claimed_order accepts no quantity/price/side parameters."""
+
+    tree = ast.parse(CLIENT_MODULE.read_text(encoding="utf-8"))
+    method = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "dispatch_claimed_order"
+    )
+    names = {arg.arg for arg in method.args.kwonlyargs}
+    assert names == {
+        "ledger",
+        "ledger_row_id",
+        "client_request_id",
+        "expected",
+        "authorization",
+        "full_quantity",
+    }
+    builder = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_body_from_claim"
+    )
+    assert [arg.arg for arg in builder.args.args] == ["claimed"]

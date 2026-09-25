@@ -26,19 +26,23 @@ import httpx
 import pytest
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.services.brokers.nhplug.contracts import (
+    ClaimedOrder,
     DryRunConfirmContract,
-    issue_committed_intent,
+    ExpectedOrder,
 )
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
+    NHPlugMockClaimRejected,
     NHPlugMockDispatchUncertain,
     NHPlugMockEndpointError,
     NHPlugMockOrderRefused,
 )
+from app.services.nhplug_mock.ledger_service import NHPlugMockLedgerService
 from tests.mcp_server._registration_recorder import RegistrationRecorder
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.integration
 
 MOCK_ACCOUNT = "MOCK-ACCOUNT-03"
 CONFIRMED = DryRunConfirmContract(dry_run=False, confirm=True)
@@ -54,6 +58,9 @@ CLIENT = "app.services.brokers.nhplug.client"
 GUARD = "app.services.brokers.nhplug.account_guard"
 EVIDENCE = "app.services.brokers.nhplug.order_evidence"
 OPERATIONS = "app.services.nhplug_mock.operations"
+LEDGER = "app.services.nhplug_mock.ledger_service"
+_STATE: dict[str, Any] = {}
+COMMITTED = ExpectedOrder("place", "005930", "buy", 1, 50000, None)
 TOOLS = "app.mcp_server.tooling.orders_nhplug_mock_variants"
 
 
@@ -81,6 +88,37 @@ def loaded(module_name: str, old: str | None = None, new: str = "") -> Iterator[
         yield module
     finally:
         sys.modules.pop(name, None)
+
+
+@contextmanager
+def loaded_many(edits: list[tuple[str, str, str]]) -> Iterator[dict[str, Any]]:
+    """Load mutated copies of several modules (one or more edits each)."""
+
+    by_module: dict[str, list[tuple[str, str]]] = {}
+    for module_name, old, new in edits:
+        by_module.setdefault(module_name, []).append((old, new))
+    mutated: dict[str, Any] = {}
+    names: list[str] = []
+    try:
+        for module_name, pairs in by_module.items():
+            real = importlib.import_module(module_name)
+            source = Path(str(real.__file__)).read_text(encoding="utf-8")
+            for old, new in pairs:
+                assert source.count(old) == 1, (
+                    f"mutant anchor must match exactly once in {module_name}"
+                )
+                source = source.replace(old, new)
+            name = f"{module_name}_mutant_{uuid.uuid4().hex}"
+            module = types.ModuleType(name)
+            module.__file__ = real.__file__
+            sys.modules[name] = module
+            names.append(name)
+            exec(compile(source, str(real.__file__), "exec"), module.__dict__)
+            mutated[module_name] = module
+        yield mutated
+    finally:
+        for name in names:
+            sys.modules.pop(name, None)
 
 
 class _Broker:
@@ -125,29 +163,37 @@ async def _client(client_module: Any, broker: _Broker) -> tuple[Any, list[int]]:
     return client, token_calls
 
 
-def _intent() -> Any:
-    return issue_committed_intent(
-        ledger_row_id=1,
-        client_request_id=uuid.uuid4().hex,
-        operation="place",
+def _order_date() -> str:
+    return f"3{uuid.uuid4().int % 10_000_000:07d}"
+
+
+async def _committed_row(ledger: Any) -> Any:
+    return await ledger.record_submitting(
+        order_date=_order_date(),
+        operation_kind="place",
         symbol="005930",
         side="buy",
         quantity=1,
         price=50000,
-        original_order_no=None,
     )
 
 
 async def _submit(
-    client: Any, authorization: Any = CONFIRMED, intent: Any = "default"
+    client: Any,
+    authorization: Any = CONFIRMED,
+    ledger: Any = None,
+    row: Any = None,
+    client_request_id: str | None = None,
+    expected: ExpectedOrder = COMMITTED,
 ) -> Any:
-    return await client.submit_limit_order(
-        side="buy",
-        symbol="005930",
-        quantity=1,
-        price=50000,
+    ledger = _STATE["ledger"] if ledger is None else ledger
+    row = await _committed_row(ledger) if row is None else row
+    return await client.dispatch_claimed_order(
+        ledger=ledger,
+        ledger_row_id=row.id,
+        client_request_id=client_request_id or str(row.client_request_id),
+        expected=expected,
         authorization=authorization,
-        intent=_intent() if intent == "default" else intent,
     )
 
 
@@ -436,22 +482,15 @@ async def probe_dispatcher_authorization(
 ) -> None:
     broker = _Broker()
     client, token_calls = await _client(client_module, broker)
+    row = await _committed_row(_STATE["ledger"])
     try:
         await client._post_mutation(
-            path="/krstock/order/v1/cashBuy",
-            input_0={
-                "act_no": MOCK_ACCOUNT,
-                "iem_cd": "005930",
-                "orr_qty": 1,
-                "orr_pr": 50000,
-                "nmn_pr_tp_cd": "01",
-                "orr_cnd_dit_cd": "00",
-                "ssl_nmn_pr_dit_cd": "00",
-                "rmt_mkt_cd": "KRX",
-                "sor_mkt_sli_yn": "N",
-            },
+            ledger=_STATE["ledger"],
+            ledger_row_id=row.id,
+            client_request_id=str(row.client_request_id),
+            expected=COMMITTED,
             authorization=DryRunConfirmContract(),
-            intent=_intent(),
+            full_quantity=None,
         )
     except NHPlugMockOrderRefused:
         pass
@@ -556,17 +595,40 @@ async def probe_fill_cross_check(plan: Any, monkeypatch: pytest.MonkeyPatch) -> 
 # --- round-2 boundaries ----------------------------------------------------
 
 
-async def probe_dispatch_needs_intent(
+class _FakeLedger:
+    """Claims a row that was never committed (no ledger row)."""
+
+    async def claim_for_dispatch(self, **kwargs: Any) -> ClaimedOrder:
+        return ClaimedOrder(
+            ledger_row_id=kwargs["row_id"],
+            client_request_id=kwargs["client_request_id"],
+            claim_token="forged",
+            operation="place",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=50000,
+            original_order_no=None,
+        )
+
+
+async def probe_dispatch_needs_real_ledger(
     client_module: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broker = _Broker()
     client, token_calls = await _client(client_module, broker)
     try:
-        await _submit(client, intent=None)
+        await client.dispatch_claimed_order(
+            ledger=_FakeLedger(),
+            ledger_row_id=987654321,
+            client_request_id=str(uuid.uuid4()),
+            expected=COMMITTED,
+            authorization=CONFIRMED,
+        )
     except NHPlugMockOrderRefused:
         pass
     else:
-        raise AssertionError("an order was sent without a committed ledger intent")
+        raise AssertionError("an order was sent without a committed ledger row")
     assert token_calls == [] and broker.requests == []
 
 
@@ -615,6 +677,122 @@ async def probe_cancel_needs_own_ack(
         all_claimed_order_ids=("1000123",),
     )
     assert planned[0].update.status is None, planned
+
+
+# --- round-4 durable claim probes (take a {module_name: module} mapping) ----
+
+
+def _claim_env(
+    mods: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, Any]:
+    ledger_mod = mods.get(LEDGER) or importlib.import_module(LEDGER)
+    client_mod = mods.get(CLIENT) or importlib.import_module(CLIENT)
+    # The client's exact-type check must accept the (possibly mutated) ledger.
+    monkeypatch.setattr(
+        client_mod, "NHPlugMockLedgerService", ledger_mod.NHPlugMockLedgerService
+    )
+    return ledger_mod, client_mod
+
+
+def _order_bodies(broker: _Broker) -> list[dict[str, Any]]:
+    import json
+
+    return [
+        json.loads(r.content)["Input_0"]
+        for r in broker.requests
+        if "/order/" in r.url.path
+    ]
+
+
+def _assert_one_committed_send(broker: _Broker) -> None:
+    bodies = _order_bodies(broker)
+    assert len(bodies) == 1, f"{len(bodies)} order sends for one committed row"
+    assert (bodies[0]["orr_qty"], bodies[0]["orr_pr"]) == (1, 50000), bodies[0]
+
+
+async def _expect_rejected(call: Awaitable[Any]) -> None:
+    try:
+        await call
+    except NHPlugMockOrderRefused:  # includes NHPlugMockClaimRejected
+        return
+    raise AssertionError("a second dispatch of one committed row was sent")
+
+
+async def probe_replay_new_request_id(
+    mods: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger_mod, client_mod = _claim_env(mods, monkeypatch)
+    async with AsyncSessionLocal() as session:
+        ledger = ledger_mod.NHPlugMockLedgerService(session)
+        broker = _Broker()
+        client, _ = await _client(client_mod, broker)
+        row = await _committed_row(ledger)
+        await _submit(client, ledger=ledger, row=row)
+        await _expect_rejected(
+            _submit(client, ledger=ledger, row=row, client_request_id=str(uuid.uuid4()))
+        )
+    _assert_one_committed_send(broker)
+
+
+async def probe_second_client(
+    mods: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger_mod, client_mod = _claim_env(mods, monkeypatch)
+    broker = _Broker()
+    first, _ = await _client(client_mod, broker)
+    second, _ = await _client(client_mod, broker)
+    async with AsyncSessionLocal() as s1, AsyncSessionLocal() as s2:
+        row = await _committed_row(ledger_mod.NHPlugMockLedgerService(s1))
+        await _submit(first, ledger=ledger_mod.NHPlugMockLedgerService(s1), row=row)
+        await _expect_rejected(
+            _submit(second, ledger=ledger_mod.NHPlugMockLedgerService(s2), row=row)
+        )
+    _assert_one_committed_send(broker)
+
+
+async def probe_concurrent(
+    mods: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    ledger_mod, client_mod = _claim_env(mods, monkeypatch)
+    broker = _Broker()
+    first, _ = await _client(client_mod, broker)
+    second, _ = await _client(client_mod, broker)
+    async with (
+        AsyncSessionLocal() as s0,
+        AsyncSessionLocal() as s1,
+        AsyncSessionLocal() as s2,
+    ):
+        row = await _committed_row(ledger_mod.NHPlugMockLedgerService(s0))
+        await asyncio.gather(
+            _submit(first, ledger=ledger_mod.NHPlugMockLedgerService(s1), row=row),
+            _submit(second, ledger=ledger_mod.NHPlugMockLedgerService(s2), row=row),
+            return_exceptions=True,
+        )
+    _assert_one_committed_send(broker)
+
+
+async def probe_altered_quantity(
+    mods: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger_mod, client_mod = _claim_env(mods, monkeypatch)
+    async with AsyncSessionLocal() as session:
+        ledger = ledger_mod.NHPlugMockLedgerService(session)
+        broker = _Broker()
+        client, _ = await _client(client_mod, broker)
+        row = await _committed_row(ledger)
+        drifted = ExpectedOrder("place", "005930", "buy", 2, 50000, None)
+        try:
+            await _submit(client, ledger=ledger, row=row, expected=drifted)
+        except NHPlugMockClaimRejected:
+            pass
+        await _expect_rejected(
+            _submit(client, ledger=ledger, row=row, expected=drifted)
+        )
+        if not _order_bodies(broker):
+            await _submit(client, ledger=ledger, row=row)
+    _assert_one_committed_send(broker)
 
 
 Probe = Callable[[Any, pytest.MonkeyPatch], Awaitable[None]]
@@ -710,8 +888,8 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
         "dispatcher_skips_authorization",
         CLIENT,
         "        _assert_send_authorized(authorization)\n"
-        "        verified_intent = _assert_committed_intent(intent, path=path, input_0=input_0)\n",
-        "        verified_intent = _assert_committed_intent(intent, path=path, input_0=input_0)\n",
+        "        claim_ledger = _assert_order_ledger(ledger)\n",
+        "        claim_ledger = _assert_order_ledger(ledger)\n",
         probe_dispatcher_authorization,
     ),
     (
@@ -743,15 +921,11 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
         probe_fill_cross_check,
     ),
     (
-        "dispatch_without_committed_intent",
+        "dispatch_without_real_ledger",
         CLIENT,
-        '    """No committed ledger intent, no send; the intent must match the body."""\n',
-        '    """No committed ledger intent, no send; the intent must match the body."""\n'
-        "    if type(intent) is not CommittedOrderIntent:\n"
-        "        import types\n"
-        "\n"
-        "        return types.SimpleNamespace(client_request_id=repr(input_0))  # type: ignore[return-value]\n",
-        probe_dispatch_needs_intent,
+        "    if type(ledger) is not NHPlugMockLedgerService:\n",
+        "    if False:\n",
+        probe_dispatch_needs_real_ledger,
     ),
     (
         "empty_open_scope_confirms_none",
@@ -772,9 +946,83 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
 )
 
 
+_CLAIM_STATE_GUARD = (
+    '                model.status == "submitting",\n'
+    "                model.claim_token.is_(None),\n"
+)
+_CLAIM_REQUEST_ID = "                model.client_request_id == request_uuid,\n"
+_CLAIM_QUANTITY_PRICE = (
+    "                model.quantity.is_not_distinct_from(\n"
+    "                    None if expected.quantity is None else Decimal(expected.quantity)\n"
+    "                ),\n"
+    "                model.price.is_not_distinct_from(\n"
+    "                    None if expected.price is None else Decimal(expected.price)\n"
+    "                ),\n"
+)
+MultiProbe = Callable[[dict[str, Any], pytest.MonkeyPatch], Awaitable[None]]
+
+# Round 4: each mutant restores one weakness of the retired in-process intent
+# (5a3c54f) inside the new claim path; the tester repro must then go red.
+MULTI_MUTANTS: tuple[tuple[str, list[tuple[str, str, str]], MultiProbe], ...] = (
+    (
+        "replay_new_request_id_old_path",
+        [
+            (LEDGER, _CLAIM_REQUEST_ID + _CLAIM_STATE_GUARD, ""),
+            (
+                CLIENT,
+                "            claimed = _assert_claim_matches(\n",
+                "            claimed = (lambda c, **_: c)(\n",
+            ),
+        ],
+        probe_replay_new_request_id,
+    ),
+    (
+        "second_client_old_path",
+        [(LEDGER, _CLAIM_STATE_GUARD, "")],
+        probe_second_client,
+    ),
+    (
+        "concurrent_calls_old_path",
+        [(LEDGER, _CLAIM_STATE_GUARD, "")],
+        probe_concurrent,
+    ),
+    (
+        "altered_quantity_old_path",
+        [
+            (LEDGER, _CLAIM_QUANTITY_PRICE, ""),
+            (
+                CLIENT,
+                "            claimed = _assert_claim_matches(\n",
+                "            claimed = (lambda c, **_: c)(\n",
+            ),
+            (
+                CLIENT,
+                "            path, input_0 = _body_from_claim(\n"
+                "                claimed,\n",
+                "            path, input_0 = _body_from_claim(\n"
+                "                expected,  # type: ignore[arg-type]\n",
+            ),
+            (
+                CLIENT,
+                "            _assert_built_body_is_claimed(claimed, path, _built_input(request))\n",
+                "            _assert_built_body_is_claimed(expected, path, _built_input(request))  # type: ignore[arg-type]\n",
+            ),
+        ],
+        probe_altered_quantity,
+    ),
+)
+
+
 @pytest.fixture
 def armed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
+
+
+@pytest.fixture(autouse=True)
+def _ledger_state(db_session: Any) -> Any:
+    _STATE["ledger"] = NHPlugMockLedgerService(db_session)
+    yield
+    _STATE.clear()
 
 
 @pytest.mark.parametrize(
@@ -821,3 +1069,33 @@ def test_mutant_set_covers_every_required_boundary() -> None:
         "allow_redirects_on_orders",
         "accept_market_order_type",
     } <= labels
+
+
+@pytest.mark.parametrize(
+    ("label", "edits", "probe"), MULTI_MUTANTS, ids=[m[0] for m in MULTI_MUTANTS]
+)
+@pytest.mark.asyncio
+async def test_claim_probe_passes_on_real_code(
+    armed: None,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    edits: list[tuple[str, str, str]],
+    probe: MultiProbe,
+) -> None:
+    await probe({}, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("label", "edits", "probe"), MULTI_MUTANTS, ids=[m[0] for m in MULTI_MUTANTS]
+)
+@pytest.mark.asyncio
+async def test_claim_mutant_restoring_the_old_path_turns_red(
+    armed: None,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    edits: list[tuple[str, str, str]],
+    probe: MultiProbe,
+) -> None:
+    with loaded_many(edits) as mutated:
+        with pytest.raises(AssertionError):
+            await probe(mutated, monkeypatch)

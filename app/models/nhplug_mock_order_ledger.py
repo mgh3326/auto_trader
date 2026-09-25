@@ -5,8 +5,10 @@ One row per order operation (place, modify, cancel) on the broker-verified
 ``app.services.nhplug_mock.ledger_service.NHPlugMockLedgerService``; no direct
 SQL INSERT/UPDATE/DELETE.
 
-Evidence-first: a row is created in ``submitting`` *before* the broker leg and
-is moved to ``accepted`` only by a readable broker order number.  Fill
+Evidence-first: a row is created in ``submitting`` *before* the broker leg,
+atomically claimed (``dispatching``, ``claim_token``) immediately before send —
+the request body is built only from the claimed row — and moved to
+``accepted`` only by a readable broker order number.  Fill
 quantities and terminal states are written only by reconcile from broker
 listing rows that two independent listing scopes agree on.
 
@@ -40,6 +42,7 @@ from app.models.base import Base
 
 NHPLUG_MOCK_LEDGER_STATUSES: tuple[str, ...] = (
     "submitting",
+    "dispatching",
     "not_submitted",
     "accepted",
     "acceptance_uncertain",
@@ -73,6 +76,7 @@ class NHPlugMockOrderLedger(Base):
             "broker_order_id",
             name="uq_nhplug_mock_ledger_date_broker_order",
         ),
+        UniqueConstraint("claim_token", name="uq_nhplug_mock_ledger_claim_token"),
         CheckConstraint("broker = 'nhplug'", name="broker_nhplug"),
         CheckConstraint("account_mode = 'nhplug_mock'", name="account_mode_mock"),
         CheckConstraint("venue = 'KRX'", name="venue_krx"),
@@ -114,6 +118,18 @@ class NHPlugMockOrderLedger(Base):
             "ack_order_id IS NULL OR ack_order_id = broker_order_id",
             name="ack_matches_broker_order",
         ),
+        # Durable single-use dispatch claim (#711 round 4).
+        CheckConstraint(
+            "(claim_token IS NULL) = (claimed_at IS NULL)", name="claim_pair"
+        ),
+        CheckConstraint(
+            "status <> 'submitting' OR claim_token IS NULL",
+            name="submitting_unclaimed",
+        ),
+        CheckConstraint(
+            "status IN ('submitting','not_submitted') OR claim_token IS NOT NULL",
+            name="dispatched_states_claimed",
+        ),
         Index("ix_nhplug_mock_ledger_order_date_status", "order_date", "status"),
         Index("ix_nhplug_mock_ledger_symbol", "symbol"),
         {"schema": "review"},
@@ -141,6 +157,10 @@ class NHPlugMockOrderLedger(Base):
     # bound later by attribute matching never populates it.  Terminal
     # cancel/modify corroboration requires this positive ack evidence.
     ack_order_id: Mapped[str | None] = mapped_column(Text)
+    # Set once by the atomic claim immediately before the broker leg; never
+    # cleared.  An unclaimed ``submitting`` row provably never reached send.
+    claim_token: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     original_order_id: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[str] = mapped_column(Text, nullable=False)

@@ -8,6 +8,7 @@ orders" rule end to end through reconcile.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models.nhplug_mock_order_ledger import NHPlugMockOrderLedger
+from app.services.brokers.nhplug.contracts import ExpectedOrder
 from app.services.brokers.nhplug.order_evidence import (
     EMPTY_IS_NOT_EVIDENCE,
     OrderAck,
@@ -57,6 +59,25 @@ def _factory(broker: FakeNHMockBroker):
     return build
 
 
+async def _claim(ledger: NHPlugMockLedgerService, row: Any) -> Any:
+    """Claim a committed submitting row exactly as the client dispatch does."""
+
+    claimed = await ledger.claim_for_dispatch(
+        row_id=row.id,
+        client_request_id=str(row.client_request_id),
+        expected=ExpectedOrder(
+            row.operation_kind,
+            row.symbol,
+            row.side,
+            None if row.quantity is None else int(row.quantity),
+            None if row.price is None else int(row.price),
+            int(row.original_order_id) if row.original_order_id else None,
+        ),
+    )
+    assert claimed is not None
+    return claimed
+
+
 async def _rows(
     ledger: NHPlugMockLedgerService, date: str
 ) -> list[NHPlugMockOrderLedger]:
@@ -83,6 +104,7 @@ async def test_ledger_rejects_accepted_without_broker_number(db_session) -> None
         "limit",
     )
     with pytest.raises(NHPlugMockLedgerError):
+        await _claim(ledger, row)
         await ledger.record_ack(row.id, OrderAck("accepted", None, "00000", None))
 
 
@@ -96,6 +118,7 @@ async def test_fill_and_terminal_states_need_verified_evidence(db_session) -> No
         quantity=1,
         price=50000,
     )
+    await _claim(ledger, row)
     await ledger.record_ack(row.id, OrderAck("accepted", "1000123", "00000", None))
     with pytest.raises(NHPlugMockLedgerError, match="evidence"):
         await ledger.apply_reconcile(
@@ -619,6 +642,7 @@ async def test_ledger_refuses_quantities_without_verified_state(db_session) -> N
         quantity=1,
         price=50000,
     )
+    await _claim(ledger, row)
     await ledger.record_ack(row.id, OrderAck("accepted", "1000123", "00000", None))
     for update in (
         ReconcileUpdate(
@@ -672,6 +696,7 @@ async def test_failed_ledger_write_rolls_back_and_session_stays_usable(
         quantity=1,
         price=50000,
     )
+    await _claim(ledger, first)
     await ledger.record_ack(first.id, OrderAck("accepted", "1000123", "00000", None))
     second = await ledger.record_submitting(
         order_date=date,
@@ -683,6 +708,7 @@ async def test_failed_ledger_write_rolls_back_and_session_stays_usable(
         original_order_id="1000123",
     )
     second_id = second.id
+    await _claim(ledger, second)
     with pytest.raises(IntegrityError):
         # e.g. a modify that reuses the original order number
         await ledger.record_ack(
@@ -699,12 +725,14 @@ async def test_failed_ledger_write_rolls_back_and_session_stays_usable(
     )
     assert third.status == "submitting"
     reloaded = await ledger.get(second_id)
-    assert reloaded is not None and reloaded.status == "submitting"
+    assert reloaded is not None and reloaded.status == "dispatching"
     assert reloaded.broker_order_id is None
 
 
-async def test_intent_is_issued_only_for_a_committed_submitting_row(db_session) -> None:
-    """Tester R2 finding 3: the send intent comes from a committed row only."""
+async def test_claim_is_atomic_single_use_and_bound_to_the_committed_order(
+    db_session,
+) -> None:
+    """Round 4: the claim is the only path from submitting to a send."""
 
     ledger = NHPlugMockLedgerService(db_session)
     row = await ledger.record_submitting(
@@ -715,18 +743,153 @@ async def test_intent_is_issued_only_for_a_committed_submitting_row(db_session) 
         quantity=1,
         price=50000,
     )
-    intent = await ledger.committed_intent(row.id)
-    assert intent.is_ledger_issued and intent.ledger_row_id == row.id
-    assert (intent.symbol, intent.side, intent.quantity, intent.price) == (
+    committed = ExpectedOrder("place", "005930", "buy", 1, 50000, None)
+    for drifted in (
+        ExpectedOrder("place", "005930", "buy", 2, 50000, None),
+        ExpectedOrder("place", "005930", "sell", 1, 50000, None),
+        ExpectedOrder("modify", "005930", "buy", 1, 50000, None),
+    ):
+        assert (
+            await ledger.claim_for_dispatch(
+                row_id=row.id,
+                client_request_id=str(row.client_request_id),
+                expected=drifted,
+            )
+            is None
+        )
+    assert (
+        await ledger.claim_for_dispatch(
+            row_id=row.id, client_request_id=str(uuid.uuid4()), expected=committed
+        )
+        is None
+    )
+    claimed = await ledger.claim_for_dispatch(
+        row_id=row.id, client_request_id=str(row.client_request_id), expected=committed
+    )
+    assert claimed is not None
+    assert (claimed.symbol, claimed.side, claimed.quantity, claimed.price) == (
         "005930",
         "buy",
         1,
         50000,
     )
+    stored = await ledger.get(row.id)
+    assert stored.status == "dispatching" and stored.claimed_at is not None
+    assert str(stored.claim_token) == claimed.claim_token
+    # Single use: the same claim can never succeed again.
+    assert (
+        await ledger.claim_for_dispatch(
+            row_id=row.id,
+            client_request_id=str(row.client_request_id),
+            expected=committed,
+        )
+        is None
+    )
+    assert (
+        await ledger.claim_for_dispatch(
+            row_id=987654321, client_request_id=str(uuid.uuid4()), expected=committed
+        )
+        is None
+    )
     await ledger.record_ack(row.id, OrderAck("accepted", "1000123", "00000", None))
+    assert (await ledger.get(row.id)).ack_order_id == "1000123"
+
+
+async def test_ack_requires_a_claimed_row(db_session) -> None:
+    ledger = NHPlugMockLedgerService(db_session)
+    row = await ledger.record_submitting(
+        order_date=_order_date(),
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+    )
     with pytest.raises(NHPlugMockLedgerError, match="submitting"):
-        await ledger.committed_intent(row.id)
-    with pytest.raises(NHPlugMockLedgerError):
-        await ledger.committed_intent(987654321)
-    await db_session.refresh(row)
-    assert row.ack_order_id == "1000123"
+        await ledger.record_ack(row.id, OrderAck("accepted", "1000123", "00000", None))
+    with pytest.raises(NHPlugMockLedgerError, match="submitting"):
+        await ledger.record_dispatch_uncertain(row.id)
+    refused = await ledger.record_not_submitted(row.id, refusal="refused_before_claim")
+    assert refused.status == "not_submitted" and refused.claim_token is None
+
+
+@pytest.mark.parametrize(
+    ("status", "claimed"),
+    (
+        ("dispatching", False),
+        ("accepted", False),
+        ("acceptance_uncertain", False),
+        ("submitting", True),
+    ),
+)
+async def test_claim_checks_are_enforced_by_the_database(
+    db_session, status: str, claimed: bool
+) -> None:
+    row = NHPlugMockOrderLedger(
+        client_request_id=uuid.uuid4(),
+        order_date=_order_date(),
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=Decimal(1),
+        price=Decimal(50000),
+        broker_order_id="1" if status == "accepted" else None,
+        status=status,
+    )
+    if claimed:
+        row.claim_token = uuid.uuid4()
+        row.claimed_at = datetime.now(UTC)
+    db_session.add(row)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+async def test_claim_token_is_unique(db_session) -> None:
+    token = uuid.uuid4()
+    for _ in range(2):
+        db_session.add(
+            NHPlugMockOrderLedger(
+                client_request_id=uuid.uuid4(),
+                order_date=_order_date(),
+                operation_kind="place",
+                symbol="005930",
+                side="buy",
+                quantity=Decimal(1),
+                price=Decimal(50000),
+                status="dispatching",
+                claim_token=token,
+                claimed_at=datetime.now(UTC),
+            )
+        )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+async def test_rejected_claim_never_touches_the_owning_dispatch_row(db_session) -> None:
+    """A second dispatch that loses the claim must not rewrite the row."""
+
+    from app.services.brokers.nhplug.errors import NHPlugMockClaimRejected
+
+    ledger = NHPlugMockLedgerService(db_session)
+    row = await ledger.record_submitting(
+        order_date=_order_date(),
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+    )
+    await _claim(ledger, row)  # owned by a concurrent dispatch
+
+    async def losing_send() -> dict[str, Any]:
+        raise NHPlugMockClaimRejected("already claimed")
+
+    result = await operations._dispatch_and_record(
+        ledger=ledger, row_id=row.id, send=losing_send, response={}
+    )
+    assert result["error_code"] == "ledger_claim_rejected"
+    assert result["dispatch_started"] is False and result["ledger_written"] is False
+    stored = await ledger.get(row.id)
+    assert stored.status == "dispatching"

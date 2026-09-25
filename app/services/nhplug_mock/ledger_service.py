@@ -3,6 +3,11 @@
 Evidence-first rules enforced here, independent of callers:
 
 * a row is created in ``submitting`` and committed *before* the broker leg;
+* immediately before send the row is atomically claimed (``dispatching``)
+  by ``claim_for_dispatch`` — one conditional UPDATE committed before any byte
+  leaves — and the request body is built only from the claimed values, so a
+  row can be dispatched at most once and only with its committed body;
+* an unclaimed ``submitting`` row therefore provably never reached send;
 * ``accepted`` needs a broker order number; a row without one can only be
   ``rejected``, ``acceptance_uncertain``, or ``not_submitted``;
 * fill quantities and every terminal order state are written only with
@@ -19,14 +24,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.nhplug_mock_order_ledger import NHPlugMockOrderLedger
-from app.services.brokers.nhplug.contracts import (
-    CommittedOrderIntent,
-    issue_committed_intent,
-)
+from app.services.brokers.nhplug.contracts import ClaimedOrder, ExpectedOrder
 from app.services.brokers.nhplug.order_evidence import OrderAck
 
 TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
@@ -36,15 +38,19 @@ LIVE_ORDER_STATUSES: Final[frozenset[str]] = frozenset(
     {"accepted", "open", "partially_filled"}
 )
 UNBOUND_UNCERTAIN_STATUSES: Final[frozenset[str]] = frozenset(
-    {"submitting", "acceptance_uncertain"}
+    {"dispatching", "acceptance_uncertain"}
 )
 _ORDER_TRACKING_TARGETS: Final[frozenset[str]] = frozenset(
     {"open", "partially_filled", "filled", "cancelled", "modified", "anomaly"}
 )
 _ALLOWED_TRANSITIONS: Final[Mapping[str, frozenset[str]]] = {
-    # A reconcile that finds a row still in ``submitting`` (process died
-    # mid-flight) may bind it, confirm a cancel, or flag an anomaly.
-    "submitting": frozenset(
+    # ``submitting`` leaves only through the atomic claim (to
+    # ``dispatching``, not via ``_transition``) or a pre-send refusal.
+    "submitting": frozenset({"not_submitted"}),
+    # A claimed row records its broker outcome; a reconcile that finds one
+    # still ``dispatching`` (process died after the claim) may bind it,
+    # confirm a cancel, or flag an anomaly.
+    "dispatching": frozenset(
         {
             "not_submitted",
             "accepted",
@@ -127,31 +133,86 @@ class NHPlugMockLedgerService:
         self._db.add(row)
         return await self._commit(row)
 
-    async def committed_intent(self, row_id: int) -> CommittedOrderIntent:
-        """Issue the single-use send intent for a committed ``submitting`` row.
+    async def claim_for_dispatch(
+        self, *, row_id: int, client_request_id: str, expected: ExpectedOrder
+    ) -> ClaimedOrder | None:
+        """Atomically claim one committed ``submitting`` row for its only send.
 
-        The row is re-read from the database, so an intent exists only for a
-        row that is durably committed and still awaiting its broker leg.
+        A single conditional UPDATE moves the row to ``dispatching`` only if
+        the id, client_request_id, every order field, the ``submitting``
+        status and an empty claim all match; it is committed before return.
+        Returns the claimed values (the only source of the request body), or
+        ``None`` when nothing matched — a replay, another client, a
+        concurrent call, or a drifted expectation.
         """
 
-        result = await self._db.execute(
-            select(NHPlugMockOrderLedger)
-            .where(NHPlugMockOrderLedger.id == row_id)
-            .execution_options(populate_existing=True)
+        model = NHPlugMockOrderLedger
+        try:
+            request_uuid = uuid.UUID(str(client_request_id))
+        except ValueError:
+            return None
+        original = (
+            None
+            if expected.original_order_no is None
+            else str(expected.original_order_no)
         )
-        row = result.scalar_one_or_none()
-        if row is None or row.status != "submitting":
-            raise NHPlugMockLedgerError("no committed submitting row for this intent")
-        original = row.original_order_id
-        return issue_committed_intent(
-            ledger_row_id=row.id,
-            client_request_id=str(row.client_request_id),
-            operation=row.operation_kind,  # type: ignore[arg-type]
-            symbol=row.symbol,
-            side=row.side,
-            quantity=None if row.quantity is None else int(row.quantity),
-            price=None if row.price is None else int(row.price),
-            original_order_no=int(original) if original else None,
+        statement = (
+            update(model)
+            .where(
+                model.id == row_id,
+                model.client_request_id == request_uuid,
+                model.status == "submitting",
+                model.claim_token.is_(None),
+                model.operation_kind == expected.operation,
+                model.symbol == expected.symbol,
+                model.side.is_not_distinct_from(expected.side),
+                model.quantity.is_not_distinct_from(
+                    None if expected.quantity is None else Decimal(expected.quantity)
+                ),
+                model.price.is_not_distinct_from(
+                    None if expected.price is None else Decimal(expected.price)
+                ),
+                model.original_order_id.is_not_distinct_from(original),
+            )
+            .values(
+                status="dispatching",
+                claim_token=uuid.uuid4(),
+                claimed_at=func.now(),
+                updated_at=func.now(),
+            )
+            .returning(
+                model.id,
+                model.client_request_id,
+                model.claim_token,
+                model.operation_kind,
+                model.symbol,
+                model.side,
+                model.quantity,
+                model.price,
+                model.original_order_id,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        try:
+            claimed = (await self._db.execute(statement)).one_or_none()
+            await self._db.commit()
+        except BaseException:
+            await self._db.rollback()
+            raise
+        if claimed is None:
+            return None
+        return ClaimedOrder(
+            ledger_row_id=claimed.id,
+            client_request_id=str(claimed.client_request_id),
+            claim_token=str(claimed.claim_token),
+            operation=claimed.operation_kind,
+            symbol=claimed.symbol,
+            side=claimed.side,
+            quantity=None if claimed.quantity is None else int(claimed.quantity),
+            price=None if claimed.price is None else int(claimed.price),
+            original_order_no=int(claimed.original_order_id)
+            if claimed.original_order_id
+            else None,
         )
 
     async def record_not_submitted(
@@ -243,13 +304,19 @@ class NHPlugMockLedgerService:
         return await self._commit(row)
 
     async def get(self, row_id: int) -> NHPlugMockOrderLedger | None:
-        return await self._db.get(NHPlugMockOrderLedger, row_id)
+        result = await self._db.execute(
+            select(NHPlugMockOrderLedger)
+            .where(NHPlugMockOrderLedger.id == row_id)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
 
     async def list_for_date(self, order_date: str) -> Sequence[NHPlugMockOrderLedger]:
         result = await self._db.execute(
             select(NHPlugMockOrderLedger)
             .where(NHPlugMockOrderLedger.order_date == order_date)
             .order_by(NHPlugMockOrderLedger.id)
+            .execution_options(populate_existing=True)
         )
         return result.scalars().all()
 
@@ -257,15 +324,24 @@ class NHPlugMockLedgerService:
         self, *, order_date: str, broker_order_id: str
     ) -> NHPlugMockOrderLedger | None:
         result = await self._db.execute(
-            select(NHPlugMockOrderLedger).where(
+            select(NHPlugMockOrderLedger)
+            .where(
                 NHPlugMockOrderLedger.order_date == order_date,
                 NHPlugMockOrderLedger.broker_order_id == broker_order_id,
             )
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 
     async def _require(self, row_id: int) -> NHPlugMockOrderLedger:
-        row = await self._db.get(NHPlugMockOrderLedger, row_id)
+        # Always re-read: the dispatch claim is a Core UPDATE, so a cached
+        # identity-map instance may still show ``submitting``.
+        result = await self._db.execute(
+            select(NHPlugMockOrderLedger)
+            .where(NHPlugMockOrderLedger.id == row_id)
+            .execution_options(populate_existing=True)
+        )
+        row = result.scalar_one_or_none()
         if row is None:
             raise NHPlugMockLedgerError("ledger row not found")
         return row

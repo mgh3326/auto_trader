@@ -8,8 +8,8 @@ armed.  ``dry_run=True`` never dispatches, whatever ``confirm`` says.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Final, Literal
+from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,63 +32,46 @@ class DryRunConfirmContract:
         return self.dry_run is False and self.confirm is True
 
 
-# --- committed ledger intent (#711 tester round 2) -------------------------
+# --- durable single-use dispatch claim (#711 tester round 3) ----------------
 #
-# "No ledger row, no send" is enforced at the client itself: every order
-# dispatch needs a CommittedOrderIntent, which only the ledger service issues
-# after the ``submitting`` row is committed.  The issuer proof below is private;
-# a static guard allows ``issue_committed_intent`` to be called from
-# ``app/services/nhplug_mock/ledger_service.py`` only.  This is accidental-
-# prevention plus static detection, like the rest of the boundary.
+# "No ledger row, no send" and "exactly one send of exactly the committed
+# body" are enforced by the database, not by an in-process token:
+#
+# * the caller states what it expects to send (``ExpectedOrder``); this is a
+#   match filter only and is never used to build the request body;
+# * immediately before send, the client asks the ledger service to claim the
+#   row with one atomic conditional UPDATE (submitting -> dispatching, WHERE
+#   the id, client_request_id, every order field, status and an empty claim
+#   all match), committed before any byte is sent;
+# * the request body is built only from the claimed row returned by that
+#   UPDATE (``ClaimedOrder``).  A second claim of the same row — replay,
+#   another client, another process, a concurrent call — matches no row.
 
-_LEDGER_ISSUER: Final[object] = object()
 IntentOperation = Literal["place", "modify", "cancel"]
 
 
 @dataclass(frozen=True, slots=True)
-class CommittedOrderIntent:
-    """A committed ledger row's order parameters, consumable exactly once."""
+class ExpectedOrder:
+    """What the caller intends to send; used only in the claim's WHERE."""
 
-    ledger_row_id: int
-    client_request_id: str
     operation: IntentOperation
     symbol: str
     side: str | None
     quantity: int | None
     price: int | None
     original_order_no: int | None
-    _issuer: object = field(default=None, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        if self._issuer is not _LEDGER_ISSUER:
-            raise ValueError("order intents are issued only by the ledger service")
-
-    @property
-    def is_ledger_issued(self) -> bool:
-        return self._issuer is _LEDGER_ISSUER
 
 
-def issue_committed_intent(
-    *,
-    ledger_row_id: int,
-    client_request_id: str,
-    operation: IntentOperation,
-    symbol: str,
-    side: str | None,
-    quantity: int | None,
-    price: int | None,
-    original_order_no: int | None,
-) -> CommittedOrderIntent:
-    """Ledger-service only (static guard): mint an intent for a committed row."""
+@dataclass(frozen=True, slots=True)
+class ClaimedOrder:
+    """Order values as returned by the committed atomic claim UPDATE."""
 
-    return CommittedOrderIntent(
-        ledger_row_id=ledger_row_id,
-        client_request_id=client_request_id,
-        operation=operation,
-        symbol=symbol,
-        side=side,
-        quantity=quantity,
-        price=price,
-        original_order_no=original_order_no,
-        _issuer=_LEDGER_ISSUER,
-    )
+    ledger_row_id: int
+    client_request_id: str
+    claim_token: str
+    operation: IntentOperation
+    symbol: str
+    side: str | None
+    quantity: int | None
+    price: int | None
+    original_order_no: int | None

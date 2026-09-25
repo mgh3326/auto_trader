@@ -8,7 +8,10 @@ Additive DDL only: one new table plus two indexes. No existing table, column,
 constraint, or row is touched. Operators apply it separately with
 ``alembic upgrade head``; nothing auto-applies it. The table CHECKs pin the
 Stage 2 scope (broker='nhplug', account_mode='nhplug_mock', venue='KRX',
-order_type='limit') and store no account number. Constraint names are pinned
+order_type='limit') and store no account number. The durable single-use
+dispatch claim (claim_token unique, claimed_at, status 'dispatching') is
+pinned by CHECKs: submitting rows are unclaimed and every dispatched state is
+claimed. Constraint names are pinned
 with ``op.f`` to the ORM naming-convention spelling so migrated and
 ``create_all`` schemas converge on one name.
 """
@@ -31,6 +34,7 @@ _TABLE = "nhplug_mock_order_ledger"
 _SCHEMA = "review"
 _STATUSES = (
     "submitting",
+    "dispatching",
     "not_submitted",
     "accepted",
     "acceptance_uncertain",
@@ -72,6 +76,8 @@ def upgrade() -> None:
         sa.Column("price", sa.Numeric(20, 3), nullable=True),
         sa.Column("broker_order_id", sa.Text(), nullable=True),
         sa.Column("ack_order_id", sa.Text(), nullable=True),
+        sa.Column("claim_token", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("claimed_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("original_order_id", sa.Text(), nullable=True),
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column(
@@ -120,6 +126,7 @@ def upgrade() -> None:
             "broker_order_id",
             name="uq_nhplug_mock_ledger_date_broker_order",
         ),
+        sa.UniqueConstraint("claim_token", name="uq_nhplug_mock_ledger_claim_token"),
         sa.CheckConstraint("broker = 'nhplug'", name=_ck("broker_nhplug")),
         sa.CheckConstraint(
             "account_mode = 'nhplug_mock'", name=_ck("account_mode_mock")
@@ -166,6 +173,17 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "ack_order_id IS NULL OR ack_order_id = broker_order_id",
             name=_ck("ack_matches_broker_order"),
+        ),
+        sa.CheckConstraint(
+            "(claim_token IS NULL) = (claimed_at IS NULL)", name=_ck("claim_pair")
+        ),
+        sa.CheckConstraint(
+            "status <> 'submitting' OR claim_token IS NULL",
+            name=_ck("submitting_unclaimed"),
+        ),
+        sa.CheckConstraint(
+            "status IN ('submitting','not_submitted') OR claim_token IS NOT NULL",
+            name=_ck("dispatched_states_claimed"),
         ),
         schema=_SCHEMA,
     )

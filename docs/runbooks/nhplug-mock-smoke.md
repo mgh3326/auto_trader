@@ -82,7 +82,7 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_smoke \
 - 매 작업마다 `/n2/acctinfo`로 `acct_type=03`을 새로 검증하고, build된 요청 바이트의 `act_no`를 send 직전에 다시 대조한다. 01/02·상충 type 응답은 거부.
 - `NHPLUG_MOCK_ENABLED=true`는 **프로세스 환경변수**여야 한다(파일에만 있으면 모든 dispatch가 fail-closed). 모든 주문은 `dry_run=False` + `confirm=True`(CLI는 `--confirm-mock-order`).
 - 레저 `review.nhplug_mock_order_ledger`: broker 전송 **전** `submitting` 행 커밋(레저 없으면 전송 없음). 주문번호가 읽혀야만 `accepted`. send 이후 실패는 `acceptance_uncertain`(재시도 금지). 체결·종결 상태는 reconcile만, 두 조회 소스가 합의한 증거로만 기록.
-- 미체결: **"미체결 없음"이라는 답은 없다.** `open_orders_state`는 `present`(완전한 조회가 미체결 행을 양성으로 나열) 또는 `unknown`뿐이다. 빈 배열·블록 누락·13578·오류형 응답·페이지 미완료(`cts_flag=N`이어도 키가 있거나 계속코드면 다음 페이지를 따라감)는 항상 `unknown`. 종결 상태는 양성 증거 두 개로만 기록: 체결=전체조회 행+체결조회(`ost_cns_dit=1`), 취소=전체조회 행+우리 취소 주문의 브로커 접수(`ack_order_id`), 정정=전체조회 행+우리 정정 접수+후속 주문 행. client는 커밋된 레저 intent 없이는 전송하지 않는다.
+- 미체결: **"미체결 없음"이라는 답은 없다.** `open_orders_state`는 `present`(완전한 조회가 미체결 행을 양성으로 나열) 또는 `unknown`뿐이다. 빈 배열·블록 누락·13578·오류형 응답·페이지 미완료(`cts_flag=N`이어도 키가 있거나 계속코드면 다음 페이지를 따라감)는 항상 `unknown`. 종결 상태는 양성 증거 두 개로만 기록: 체결=전체조회 행+체결조회(`ost_cns_dit=1`), 취소=전체조회 행+우리 취소 주문의 브로커 접수(`ack_order_id`), 정정=전체조회 행+우리 정정 접수+후속 주문 행. client는 전송 직전 레저 행을 원자적으로 단일 claim(`submitting`→`dispatching`, 고유 `claim_token`)하고 claim된 행의 값으로만 본문을 만든다 — 재전송·두 번째 client·동시 호출·수량 변조는 claim이 거부되어 전송 0회.
 - MCP 인자는 `StrictBool`/`StrictInt`: `dry_run`/`confirm`에 `0`/`1`/`"true"`를 보내면 검증 단계에서 거부된다. 주문은 그 client가 직접 `/n2/acctinfo`로 검증한 계좌에서만 가능하다.
 
 ### 개발 중 검증하지 못한 벤더 가정 (스모크가 확인)

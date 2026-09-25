@@ -32,12 +32,14 @@ import httpx
 
 from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
 from app.services.brokers.nhplug.contracts import (
-    CommittedOrderIntent,
+    ClaimedOrder,
     DryRunConfirmContract,
+    ExpectedOrder,
 )
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
     NHPlugMockBrokerRejected,
+    NHPlugMockClaimRejected,
     NHPlugMockConfigurationError,
     NHPlugMockDispatchUncertain,
     NHPlugMockEndpointError,
@@ -46,6 +48,7 @@ from app.services.brokers.nhplug.errors import (
     NHPlugMockResponseError,
 )
 from app.services.brokers.nhplug.gating import _assert_mock_enabled
+from app.services.nhplug_mock.ledger_service import NHPlugMockLedgerService
 
 MOCK_BASE_URL: Final[str] = "https://moapi.nhplug.com:8443"
 MOCK_HOST: Final[str] = "moapi.nhplug.com"
@@ -320,51 +323,124 @@ def _assert_send_authorized(authorization: object) -> None:
         )
 
 
-_PATH_OPERATIONS: Final[Mapping[str, str]] = {
-    CASH_BUY_PATH: "place",
-    CASH_SELL_PATH: "place",
-    MODIFY_PATH: "modify",
-    CANCEL_PATH: "cancel",
-}
+def _assert_order_ledger(ledger: object) -> NHPlugMockLedgerService:
+    """Only the real ledger service may claim rows (no fakes, no subclasses)."""
 
-
-def _assert_committed_intent(
-    intent: object, *, path: str, input_0: Mapping[str, Any]
-) -> CommittedOrderIntent:
-    """No committed ledger intent, no send; the intent must match the body."""
-
-    if type(intent) is not CommittedOrderIntent or not intent.is_ledger_issued:
+    if type(ledger) is not NHPlugMockLedgerService:
         raise NHPlugMockOrderRefused(
-            "NHPLUG mock orders require a committed ledger intent"
+            "NHPLUG mock orders are dispatched only through the ledger service claim"
         )
-    if intent.operation != _PATH_OPERATIONS.get(path):
-        raise NHPlugMockOrderRefused("ledger intent operation does not match")
-    if path in _NEW_ORDER_PATHS:
-        expected_side = "buy" if path == CASH_BUY_PATH else "sell"
-        matches = (
-            intent.side == expected_side
-            and intent.symbol == input_0.get("iem_cd")
-            and intent.quantity == input_0.get("orr_qty")
-            and intent.price == input_0.get("orr_pr")
-            and intent.original_order_no is None
-        )
-    elif path == MODIFY_PATH:
-        matches = (
-            intent.symbol == input_0.get("iem_cd")
-            and intent.original_order_no == input_0.get("org_mkt_orr_no")
-            and intent.quantity == input_0.get("cor_qty")
-            and intent.price == input_0.get("cor_pr")
-        )
+    return ledger
+
+
+def _assert_claim_matches(
+    claimed: object,
+    *,
+    ledger_row_id: int,
+    client_request_id: str,
+    expected: ExpectedOrder,
+) -> ClaimedOrder:
+    """Defense in depth: the claimed row is exactly the one requested."""
+
+    if type(claimed) is not ClaimedOrder or (
+        claimed.ledger_row_id,
+        claimed.client_request_id,
+        claimed.operation,
+        claimed.symbol,
+        claimed.side,
+        claimed.quantity,
+        claimed.price,
+        claimed.original_order_no,
+    ) != (
+        ledger_row_id,
+        client_request_id,
+        expected.operation,
+        expected.symbol,
+        expected.side,
+        expected.quantity,
+        expected.price,
+        expected.original_order_no,
+    ):
+        raise NHPlugMockOrderRefused("claimed ledger row does not match the request")
+    return claimed
+
+
+def _body_from_claim(
+    claimed: ClaimedOrder, *, act_no: str, full_quantity: bool | None
+) -> tuple[str, dict[str, Any]]:
+    """Build the order body from the claimed ledger row and nothing else."""
+
+    symbol = _require_kr_symbol(claimed.symbol)
+    if claimed.operation == "place":
+        if claimed.side == "buy":
+            path = CASH_BUY_PATH
+        elif claimed.side == "sell":
+            path = CASH_SELL_PATH
+        else:
+            raise NHPlugMockOrderRefused("side must be 'buy' or 'sell'")
+        return path, {
+            "act_no": act_no,
+            "iem_cd": symbol,
+            "orr_qty": _require_quantity(claimed.quantity, "quantity"),
+            "orr_pr": _require_price(claimed.price, "price"),
+            "nmn_pr_tp_cd": LIMIT_PRICE_TYPE_CODE,
+            "orr_cnd_dit_cd": NO_ORDER_CONDITION_CODE,
+            "ssl_nmn_pr_dit_cd": NORMAL_SHORT_SELL_CODE,
+            "rmt_mkt_cd": MOCK_ORDER_MARKET,
+            "sor_mkt_sli_yn": NO_SOR_SPLIT,
+        }
+    if claimed.operation == "modify":
+        if type(full_quantity) is not bool:
+            raise NHPlugMockOrderRefused("modify scope must be stated explicitly")
+        return MODIFY_PATH, {
+            "act_no": act_no,
+            "org_mkt_orr_no": _require_order_no(claimed.original_order_no),
+            "all_pat_dit_cd": FULL_QUANTITY_CODE
+            if full_quantity
+            else PARTIAL_QUANTITY_CODE,
+            "iem_cd": symbol,
+            "cor_qty": _require_quantity(claimed.quantity, "quantity"),
+            "cor_pr": _require_price(claimed.price, "price"),
+            "sop_cnd_pr": 0,
+            "rmt_mkt_cd": MOCK_ORDER_MARKET,
+            "sor_mkt_sli_yn": NO_SOR_SPLIT,
+        }
+    if claimed.operation == "cancel":
+        if claimed.price is not None:
+            raise NHPlugMockOrderRefused("a cancel carries no price")
+        body: dict[str, Any] = {
+            "act_no": act_no,
+            "org_mkt_orr_no": _require_order_no(claimed.original_order_no),
+            "all_pat_dit_cd": FULL_QUANTITY_CODE
+            if claimed.quantity is None
+            else PARTIAL_QUANTITY_CODE,
+            "iem_cd": symbol,
+        }
+        if claimed.quantity is not None:
+            body["cor_qty"] = _require_quantity(claimed.quantity, "quantity")
+        return CANCEL_PATH, body
+    raise NHPlugMockOrderRefused("unknown order operation")
+
+
+def _assert_built_body_is_claimed(
+    claimed: ClaimedOrder, path: str, input_0: Mapping[str, Any]
+) -> None:
+    """The exact bytes about to be sent must carry the claimed values."""
+
+    quantity_key = "orr_qty" if path in _NEW_ORDER_PATHS else "cor_qty"
+    price_key = "orr_pr" if path in _NEW_ORDER_PATHS else "cor_pr"
+    matches = (
+        input_0.get("iem_cd") == claimed.symbol
+        and input_0.get(quantity_key) == claimed.quantity
+    )
+    if path == CANCEL_PATH:
+        matches = matches and price_key not in input_0
     else:
-        matches = (
-            intent.symbol == input_0.get("iem_cd")
-            and intent.original_order_no == input_0.get("org_mkt_orr_no")
-            and intent.quantity == input_0.get("cor_qty")
-            and intent.price is None
-        )
+        matches = matches and input_0.get(price_key) == claimed.price
+    if path != CASH_BUY_PATH and path != CASH_SELL_PATH:
+        matches = matches and input_0.get("org_mkt_orr_no") == claimed.original_order_no
     if not matches:
-        raise NHPlugMockOrderRefused("ledger intent does not match the order body")
-    return intent
+        raise NHPlugMockOrderRefused("built order body differs from the claimed row")
 
 
 def _require_kr_symbol(symbol: object) -> str:
@@ -422,7 +498,6 @@ class NHPlugMockClient:
         # /n2/acctinfo response (``verify_and_bind_mock_account``), never one
         # handed in by a caller.
         self._order_allowlist: MockAccountAllowlist | None = None
-        self._consumed_intents: set[str] = set()
 
     async def verify_and_bind_mock_account(self, configured_account_no: str) -> None:
         """Fetch /n2/acctinfo on this client and bind the acct_type=03 account.
@@ -580,105 +655,31 @@ class NHPlugMockClient:
             continuation_key=continuation_key,
         )
 
-    async def submit_limit_order(
+    async def dispatch_claimed_order(
         self,
         *,
-        side: str,
-        symbol: str,
-        quantity: int,
-        price: int,
+        ledger: NHPlugMockLedgerService,
+        ledger_row_id: int,
+        client_request_id: str,
+        expected: ExpectedOrder,
         authorization: DryRunConfirmContract,
-        intent: CommittedOrderIntent | None = None,
+        full_quantity: bool | None = None,
     ) -> dict[str, Any]:
-        """Send one confirmed KRX limit buy or sell for the verified mock account."""
+        """Send exactly the committed body of one ledger row, at most once.
+
+        No quantity, price, or order object is accepted from the caller: the
+        row is claimed atomically immediately before send and the body is
+        built from the claimed values only (``expected`` is a match filter).
+        """
 
         _assert_send_authorized(authorization)
-        act_no = self._require_order_allowlist().configured_account_no
-        if side == "buy":
-            path = CASH_BUY_PATH
-        elif side == "sell":
-            path = CASH_SELL_PATH
-        else:
-            raise NHPlugMockOrderRefused("side must be 'buy' or 'sell'")
         return await self._post_mutation(
-            path=path,
-            input_0={
-                "act_no": act_no,
-                "iem_cd": _require_kr_symbol(symbol),
-                "orr_qty": _require_quantity(quantity, "quantity"),
-                "orr_pr": _require_price(price, "price"),
-                "nmn_pr_tp_cd": LIMIT_PRICE_TYPE_CODE,
-                "orr_cnd_dit_cd": NO_ORDER_CONDITION_CODE,
-                "ssl_nmn_pr_dit_cd": NORMAL_SHORT_SELL_CODE,
-                "rmt_mkt_cd": MOCK_ORDER_MARKET,
-                "sor_mkt_sli_yn": NO_SOR_SPLIT,
-            },
+            ledger=ledger,
+            ledger_row_id=ledger_row_id,
+            client_request_id=client_request_id,
+            expected=expected,
             authorization=authorization,
-            intent=intent,
-        )
-
-    async def modify_limit_order(
-        self,
-        *,
-        original_order_no: int,
-        symbol: str,
-        quantity: int,
-        price: int,
-        full_quantity: bool,
-        authorization: DryRunConfirmContract,
-        intent: CommittedOrderIntent | None = None,
-    ) -> dict[str, Any]:
-        """Send one confirmed limit-price modification of a resting order."""
-
-        _assert_send_authorized(authorization)
-        act_no = self._require_order_allowlist().configured_account_no
-        return await self._post_mutation(
-            path=MODIFY_PATH,
-            input_0={
-                "act_no": act_no,
-                "org_mkt_orr_no": _require_order_no(original_order_no),
-                "all_pat_dit_cd": FULL_QUANTITY_CODE
-                if full_quantity
-                else PARTIAL_QUANTITY_CODE,
-                "iem_cd": _require_kr_symbol(symbol),
-                "cor_qty": _require_quantity(quantity, "quantity"),
-                "cor_pr": _require_price(price, "price"),
-                "sop_cnd_pr": 0,
-                "rmt_mkt_cd": MOCK_ORDER_MARKET,
-                "sor_mkt_sli_yn": NO_SOR_SPLIT,
-            },
-            authorization=authorization,
-            intent=intent,
-        )
-
-    async def cancel_order(
-        self,
-        *,
-        original_order_no: int,
-        symbol: str,
-        quantity: int | None,
-        authorization: DryRunConfirmContract,
-        intent: CommittedOrderIntent | None = None,
-    ) -> dict[str, Any]:
-        """Send one confirmed cancel; ``quantity=None`` cancels the full remainder."""
-
-        _assert_send_authorized(authorization)
-        act_no = self._require_order_allowlist().configured_account_no
-        input_0: dict[str, Any] = {
-            "act_no": act_no,
-            "org_mkt_orr_no": _require_order_no(original_order_no),
-            "all_pat_dit_cd": FULL_QUANTITY_CODE
-            if quantity is None
-            else PARTIAL_QUANTITY_CODE,
-            "iem_cd": _require_kr_symbol(symbol),
-        }
-        if quantity is not None:
-            input_0["cor_qty"] = _require_quantity(quantity, "quantity")
-        return await self._post_mutation(
-            path=CANCEL_PATH,
-            input_0=input_0,
-            authorization=authorization,
-            intent=intent,
+            full_quantity=full_quantity,
         )
 
     async def _post_readonly(
@@ -760,30 +761,26 @@ class NHPlugMockClient:
     async def _post_mutation(
         self,
         *,
-        path: str,
-        input_0: dict[str, Any],
+        ledger: NHPlugMockLedgerService,
+        ledger_row_id: int,
+        client_request_id: str,
+        expected: ExpectedOrder,
         authorization: DryRunConfirmContract,
-        intent: CommittedOrderIntent | None,
+        full_quantity: bool | None,
     ) -> dict[str, Any]:
-        """The only order dispatcher: gate, path, account, and limit shape twice."""
+        """The only order dispatcher: claim, build from the claim, check, send."""
 
         _assert_send_authorized(authorization)
-        verified_intent = _assert_committed_intent(intent, path=path, input_0=input_0)
-        if verified_intent.client_request_id in self._consumed_intents:
-            raise NHPlugMockOrderRefused("ledger intent was already used")
+        claim_ledger = _assert_order_ledger(ledger)
+        if type(expected) is not ExpectedOrder:
+            raise NHPlugMockOrderRefused("an explicit expected order is required")
         _assert_mock_enabled()
-        _assert_mutation_path(path)
         if self._base_url != MOCK_BASE_URL:
             raise NHPlugMockEndpointError(
                 "NHPLUG data base endpoint changed after construction"
             )
         account_allowlist = self._require_order_allowlist()
-        if input_0.get("act_no") != account_allowlist.configured_account_no:
-            raise NHPlugMockAccountRejected(
-                "orders may use only the configured mock account"
-            )
         account_allowlist.assert_allowed(account_allowlist.configured_account_no)
-        _assert_limit_only_body(path, input_0)
 
         headers = await self._headers(continuation_key=None)
         async with httpx.AsyncClient(
@@ -794,22 +791,42 @@ class NHPlugMockClient:
             # another origin; a 3xx is never followed.
             follow_redirects=False,
         ) as client:
+            # Durable single-use claim, committed before any byte is sent.
+            claimed = await claim_ledger.claim_for_dispatch(
+                row_id=ledger_row_id,
+                client_request_id=client_request_id,
+                expected=expected,
+            )
+            if claimed is None:
+                raise NHPlugMockClaimRejected(
+                    "ledger row is not claimable (already dispatched, replayed, "
+                    "or different from the committed order)"
+                )
+            claimed = _assert_claim_matches(
+                claimed,
+                ledger_row_id=ledger_row_id,
+                client_request_id=client_request_id,
+                expected=expected,
+            )
+            path, input_0 = _body_from_claim(
+                claimed,
+                act_no=account_allowlist.configured_account_no,
+                full_quantity=full_quantity,
+            )
+            _assert_mutation_path(path)
+            _assert_limit_only_body(path, input_0)
             request = client.build_request(
                 "POST", path, headers=headers, json={"Input_0": input_0}
             )
             # Everything above is provably pre-dispatch.  Recheck the built
             # request immediately before send: scheme, host, port, path,
-            # account, and the limit-only body shape.
+            # account, the limit-only shape, and the claimed values.
             _assert_resolved_mock_request(
                 request, allowed_paths=ALLOWED_MUTATION_PATHS, expected_path=path
             )
             _assert_built_account(request, allowlist=account_allowlist)
             _assert_limit_only_body(path, _built_input(request))
-            _assert_committed_intent(
-                verified_intent, path=path, input_0=_built_input(request)
-            )
-            # Consume before send: an intent is never reused, even on failure.
-            self._consumed_intents.add(verified_intent.client_request_id)
+            _assert_built_body_is_claimed(claimed, path, _built_input(request))
             try:
                 response = await client.send(request)
             except Exception as exc:

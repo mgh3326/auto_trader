@@ -57,3 +57,11 @@ class NHPlugMockDispatchUncertain(NHPlugMockError):
     must treat the order as possibly accepted, record it for reconciliation,
     and never retry automatically.
     """
+
+
+class NHPlugMockClaimRejected(NHPlugMockOrderRefused):
+    """The ledger row could not be claimed for dispatch; nothing was sent.
+
+    Another dispatch may own the row (replay, second client, concurrent call),
+    so the caller must not change the row's state.
+    """

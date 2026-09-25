@@ -32,10 +32,11 @@ from app.services.brokers.nhplug.client import (
 )
 from app.services.brokers.nhplug.contracts import (
     DryRunConfirmContract,
-    issue_committed_intent,
+    ExpectedOrder,
 )
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
+    NHPlugMockClaimRejected,
     NHPlugMockConfigurationError,
     NHPlugMockDisabled,
     NHPlugMockDispatchUncertain,
@@ -43,8 +44,9 @@ from app.services.brokers.nhplug.errors import (
     NHPlugMockOrderRefused,
     NHPlugMockReadOnlyEndpointError,
 )
+from app.services.nhplug_mock.ledger_service import NHPlugMockLedgerService
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.integration
 
 MOCK_ACCOUNT = "MOCK-ACCOUNT-03"
 CONFIRMED = DryRunConfirmContract(dry_run=False, confirm=True)
@@ -127,6 +129,15 @@ async def _bound_client(broker: _Broker) -> tuple[NHPlugMockClient, _Tokens]:
 @pytest.fixture
 def armed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
+
+
+@pytest.fixture(autouse=True)
+def _ledger_service(db_session: Any) -> Any:
+    """Every dispatch claims a real committed ledger row (throwaway test DB)."""
+
+    _LEDGER["service"] = NHPlugMockLedgerService(db_session)
+    yield
+    _LEDGER.clear()
 
 
 def _body(request: httpx.Request) -> dict[str, Any]:
@@ -297,25 +308,6 @@ async def test_confirmed_buy_and_sell_send_exact_krx_limit_bodies(armed: None) -
     }
 
 
-@pytest.mark.parametrize("price", (None, 0, -1, 1.5, "50000", True, 100_000_001))
-@pytest.mark.asyncio
-async def test_missing_or_invalid_limit_price_is_refused_before_token(
-    armed: None, price: Any
-) -> None:
-    broker = _Broker()
-    client, tokens = await _bound_client(broker)
-    with pytest.raises(NHPlugMockOrderRefused):
-        await _submit(
-            client,
-            side="buy",
-            symbol="005930",
-            quantity=1,
-            price=price,
-            authorization=CONFIRMED,
-        )
-    assert tokens.calls == 0 and broker.requests == []
-
-
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -329,6 +321,9 @@ async def test_missing_or_invalid_limit_price_is_refused_before_token(
         ("orr_amt", 50000),  # amount-based order
         ("sop_cnd_pr", 49000),  # stop
         ("act_no", "LIVE-ACCOUNT-01"),
+        ("orr_qty", 2),  # quantity drift after build
+        ("orr_pr", 49900),  # price drift after build
+        ("iem_cd", "000660"),  # symbol drift after build
     ),
 )
 @pytest.mark.asyncio
@@ -624,24 +619,6 @@ async def test_modify_and_cancel_bodies(armed: None) -> None:
     assert _body(partial_cancel)["cor_qty"] == 2
 
 
-@pytest.mark.parametrize("order_no", (0, -5, True, "1000123", 10_000_000_000))
-@pytest.mark.asyncio
-async def test_invalid_original_order_numbers_are_refused(
-    armed: None, order_no: Any
-) -> None:
-    broker = _Broker()
-    client, tokens = await _bound_client(broker)
-    with pytest.raises(NHPlugMockOrderRefused):
-        await _cancel(
-            client,
-            original_order_no=order_no,
-            symbol="005930",
-            quantity=None,
-            authorization=CONFIRMED,
-        )
-    assert tokens.calls == 0 and broker.requests == []
-
-
 @pytest.mark.asyncio
 async def test_listing_page_sends_scope_date_and_continuation(armed: None) -> None:
     broker = _Broker(
@@ -786,26 +763,20 @@ async def test_dispatcher_itself_enforces_authorization(
 
     broker = _Broker()
     client, tokens = await _bound_client(broker)
+    row = await _row(
+        operation_kind="place", symbol="005930", side="buy", quantity=1, price=50000
+    )
     with pytest.raises(NHPlugMockOrderRefused):
         await client._post_mutation(
-            path=CASH_BUY_PATH,
-            input_0={
-                "act_no": MOCK_ACCOUNT,
-                "iem_cd": "005930",
-                "orr_qty": 1,
-                "orr_pr": 50000,
-                "nmn_pr_tp_cd": "01",
-                "orr_cnd_dit_cd": "00",
-                "ssl_nmn_pr_dit_cd": "00",
-                "rmt_mkt_cd": "KRX",
-                "sor_mkt_sli_yn": "N",
-            },
+            ledger=_ledger(),
+            ledger_row_id=row.id,
+            client_request_id=str(row.client_request_id),
+            expected=ExpectedOrder("place", "005930", "buy", 1, 50000, None),
             authorization=authorization,
-            intent=_intent(
-                "place", symbol="005930", side="buy", quantity=1, price=50000
-            ),
+            full_quantity=None,
         )
     assert tokens.calls == 0 and broker.requests == []
+    assert (await _ledger().get(row.id)).status == "submitting"
 
 
 async def _submit_with(client: NHPlugMockClient, authorization: Any) -> Any:
@@ -819,151 +790,191 @@ async def _submit_with(client: NHPlugMockClient, authorization: Any) -> Any:
     )
 
 
-def _intent(
-    operation: str,
-    *,
-    symbol: Any,
-    side: Any = None,
-    quantity: Any = None,
-    price: Any = None,
-    original: Any = None,
+_LEDGER: dict[str, Any] = {}
+
+
+def _ledger() -> NHPlugMockLedgerService:
+    return _LEDGER["service"]
+
+
+def _order_date() -> str:
+    return f"3{uuid.uuid4().int % 10_000_000:07d}"
+
+
+async def _row(**kwargs: Any) -> Any:
+    row = await _ledger().record_submitting(order_date=_order_date(), **kwargs)
+    _LEDGER["last_row_id"] = row.id
+    return row
+
+
+async def _dispatch(
+    client: NHPlugMockClient,
+    row: Any,
+    expected: ExpectedOrder,
+    authorization: Any,
+    full_quantity: bool | None = None,
+    ledger: Any = None,
 ) -> Any:
-    return issue_committed_intent(
-        ledger_row_id=1,
-        client_request_id=uuid.uuid4().hex,
-        operation=operation,  # type: ignore[arg-type]
+    return await client.dispatch_claimed_order(
+        ledger=_ledger() if ledger is None else ledger,
+        ledger_row_id=row.id,
+        client_request_id=str(row.client_request_id),
+        expected=expected,
+        authorization=authorization,
+        full_quantity=full_quantity,
+    )
+
+
+async def _submit(
+    client: NHPlugMockClient,
+    *,
+    side: str,
+    symbol: str,
+    quantity: int,
+    price: int,
+    authorization: Any,
+) -> Any:
+    row = await _row(
+        operation_kind="place",
         symbol=symbol,
         side=side,
         quantity=quantity,
         price=price,
-        original_order_no=original,
+    )
+    return await _dispatch(
+        client,
+        row,
+        ExpectedOrder("place", symbol, side, quantity, price, None),
+        authorization,
     )
 
 
-async def _submit(client: NHPlugMockClient, **kwargs: Any) -> Any:
-    kwargs.setdefault(
-        "intent",
-        _intent(
-            "place",
-            symbol=kwargs.get("symbol"),
-            side=kwargs.get("side"),
-            quantity=kwargs.get("quantity"),
-            price=kwargs.get("price"),
-        ),
+async def _modify(
+    client: NHPlugMockClient,
+    *,
+    original_order_no: int,
+    symbol: str,
+    quantity: int,
+    price: int,
+    full_quantity: bool,
+    authorization: Any,
+) -> Any:
+    row = await _row(
+        operation_kind="modify",
+        symbol=symbol,
+        side="buy",
+        quantity=quantity,
+        price=price,
+        original_order_id=str(original_order_no),
     )
-    return await client.submit_limit_order(**kwargs)
-
-
-async def _modify(client: NHPlugMockClient, **kwargs: Any) -> Any:
-    kwargs.setdefault(
-        "intent",
-        _intent(
-            "modify",
-            symbol=kwargs.get("symbol"),
-            quantity=kwargs.get("quantity"),
-            price=kwargs.get("price"),
-            original=kwargs.get("original_order_no"),
-        ),
+    return await _dispatch(
+        client,
+        row,
+        ExpectedOrder("modify", symbol, "buy", quantity, price, original_order_no),
+        authorization,
+        full_quantity=full_quantity,
     )
-    return await client.modify_limit_order(**kwargs)
 
 
-async def _cancel(client: NHPlugMockClient, **kwargs: Any) -> Any:
-    kwargs.setdefault(
-        "intent",
-        _intent(
-            "cancel",
-            symbol=kwargs.get("symbol"),
-            quantity=kwargs.get("quantity"),
-            original=kwargs.get("original_order_no"),
-        ),
+async def _cancel(
+    client: NHPlugMockClient,
+    *,
+    original_order_no: int,
+    symbol: str,
+    quantity: int | None,
+    authorization: Any,
+) -> Any:
+    row = await _row(
+        operation_kind="cancel",
+        symbol=symbol,
+        side="buy",
+        quantity=quantity,
+        price=None,
+        original_order_id=str(original_order_no),
     )
-    return await client.cancel_order(**kwargs)
+    return await _dispatch(
+        client,
+        row,
+        ExpectedOrder("cancel", symbol, "buy", quantity, None, original_order_no),
+        authorization,
+    )
 
 
-# --- tester round 2: no committed ledger intent, no send --------------------
+# --- round 3/4: durable single-use claim ------------------------------------
 
 
 @pytest.mark.parametrize(
-    "intent_factory",
+    "expected",
     (
-        lambda: None,
-        lambda: {"operation": "place"},
-        lambda: _intent("place", symbol="005930", side="sell", quantity=1, price=50000),
-        lambda: _intent("place", symbol="005930", side="buy", quantity=2, price=50000),
-        lambda: _intent("place", symbol="005930", side="buy", quantity=1, price=49999),
-        lambda: _intent("place", symbol="000660", side="buy", quantity=1, price=50000),
-        lambda: _intent("cancel", symbol="005930", original=1),
+        ExpectedOrder("place", "005930", "buy", 2, 50000, None),
+        ExpectedOrder("place", "005930", "buy", 1, 49999, None),
+        ExpectedOrder("place", "005930", "sell", 1, 50000, None),
+        ExpectedOrder("place", "000660", "buy", 1, 50000, None),
+        ExpectedOrder("cancel", "005930", "buy", 1, 50000, None),
+        ExpectedOrder("place", "005930", "buy", 1, 50000, 1000123),
     ),
-    ids=(
-        "none",
-        "dict",
-        "wrong_side",
-        "wrong_qty",
-        "wrong_price",
-        "wrong_symbol",
-        "wrong_operation",
-    ),
+    ids=("qty", "price", "side", "symbol", "operation", "original"),
 )
 @pytest.mark.asyncio
-async def test_order_needs_a_matching_committed_ledger_intent(
-    armed: None, intent_factory: Any
+async def test_drifted_expectation_cannot_claim_the_row(
+    armed: None, expected: ExpectedOrder
+) -> None:
+    broker = _Broker()
+    client, _ = await _bound_client(broker)
+    row = await _row(
+        operation_kind="place", symbol="005930", side="buy", quantity=1, price=50000
+    )
+    with pytest.raises(NHPlugMockClaimRejected):
+        await _dispatch(client, row, expected, CONFIRMED)
+    assert broker.order_requests == []
+    assert (await _ledger().get(row.id)).status == "submitting"
+
+
+class _SubLedger(NHPlugMockLedgerService):
+    async def claim_for_dispatch(self, **kwargs: Any) -> Any:  # type: ignore[override]
+        raise AssertionError("a subclass must never be asked to claim")
+
+
+@pytest.mark.parametrize("fake", ("none", "object", "subclass"))
+@pytest.mark.asyncio
+async def test_only_the_real_ledger_service_can_claim(
+    armed: None, db_session: Any, fake: str
 ) -> None:
     broker = _Broker()
     client, tokens = await _bound_client(broker)
-    with pytest.raises(NHPlugMockOrderRefused, match="intent"):
-        await client.submit_limit_order(
-            side="buy",
-            symbol="005930",
-            quantity=1,
-            price=50000,
+    row = await _row(
+        operation_kind="place", symbol="005930", side="buy", quantity=1, price=50000
+    )
+    ledger: Any = {
+        "none": None,
+        "object": object(),
+        "subclass": _SubLedger(db_session),
+    }[fake]
+    with pytest.raises(NHPlugMockOrderRefused, match="ledger service"):
+        await client.dispatch_claimed_order(
+            ledger=ledger,
+            ledger_row_id=row.id,
+            client_request_id=str(row.client_request_id),
+            expected=ExpectedOrder("place", "005930", "buy", 1, 50000, None),
             authorization=CONFIRMED,
-            intent=intent_factory(),
         )
     assert tokens.calls == 0 and broker.requests == []
 
 
-def test_intents_cannot_be_constructed_outside_the_issuer() -> None:
-    from app.services.brokers.nhplug.contracts import CommittedOrderIntent
-
-    with pytest.raises(ValueError, match="ledger service"):
-        CommittedOrderIntent(
-            ledger_row_id=1,
-            client_request_id="x",
-            operation="place",
-            symbol="005930",
-            side="buy",
-            quantity=1,
-            price=50000,
-            original_order_no=None,
-        )
-
-
 @pytest.mark.asyncio
-async def test_an_intent_is_consumed_once_even_after_a_failed_send(
+async def test_a_claimed_row_is_never_sent_again_even_after_a_failed_send(
     armed: None,
 ) -> None:
     broker = _Broker(lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("x")))
     client, _ = await _bound_client(broker)
-    intent = _intent("place", symbol="005930", side="buy", quantity=1, price=50000)
+    row = await _row(
+        operation_kind="place", symbol="005930", side="buy", quantity=1, price=50000
+    )
+    expected = ExpectedOrder("place", "005930", "buy", 1, 50000, None)
     with pytest.raises(NHPlugMockDispatchUncertain):
-        await _submit(
-            client,
-            side="buy",
-            symbol="005930",
-            quantity=1,
-            price=50000,
-            authorization=CONFIRMED,
-            intent=intent,
-        )
-    with pytest.raises(NHPlugMockOrderRefused, match="already used"):
-        await _submit(
-            client,
-            side="buy",
-            symbol="005930",
-            quantity=1,
-            price=50000,
-            authorization=CONFIRMED,
-            intent=intent,
-        )
+        await _dispatch(client, row, expected, CONFIRMED)
+    with pytest.raises(NHPlugMockClaimRejected):
+        await _dispatch(client, row, expected, CONFIRMED)
     assert len(broker.order_requests) == 1
+    stored = await _ledger().get(row.id)
+    assert stored.status == "dispatching" and stored.claim_token is not None

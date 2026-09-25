@@ -180,8 +180,9 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     `NHPlugMockLedgerService` 경유만. 주문 path는 `nhplug/client.py`의 KRX 4개
     (cashBuy/cashSell/modify/cancel)뿐 — 시장가·신용·예약·SOR/NXT 추가 금지. 빈 배열·블록
     누락·13578·오류형 미체결 응답은 "미체결 없음"이 아니다 — "없음" 답은 존재하지 않고 항상
-    `unknown`이며, 종결 상태는 양성 증거 두 개로만 기록한다. 커밋된 레저 intent 없이는 client가
-    전송하지 않는다. 스케줄러 등록·레인 allowlist 배정 금지.
+    `unknown`이며, 종결 상태는 양성 증거 두 개로만 기록한다. client는 전송 직전 레저 행을
+    원자적으로 단일 claim(submitting→dispatching)하고 claim된 행의 값으로만 본문을 만든다(행당
+    최대 1회, 커밋된 본문 그대로). 스케줄러 등록·레인 allowlist 배정 금지.
 15. **Kiwoom ACCEPTANCE authority cessation (ROB-1340)**: confirmed BUY·cancel·reconcile은
     하나의 PostgreSQL coordination scope에서만 수행한다. cancel 직전 ownership 상실 시
     취소를 보내지 말고 cycle JSON live-order-risk를 먼저 append한 뒤 기존 Telegram

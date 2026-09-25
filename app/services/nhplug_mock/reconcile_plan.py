@@ -43,9 +43,11 @@ from app.services.brokers.nhplug.order_evidence import (
 )
 from app.services.nhplug_mock.ledger_service import ReconcileUpdate
 
+# ``submitting`` is deliberately absent: an unclaimed row provably never
+# reached send.  ``dispatching`` (claimed, outcome not recorded) may have.
 RECONCILABLE_STATUSES: Final[frozenset[str]] = frozenset(
     {
-        "submitting",
+        "dispatching",
         "accepted",
         "acceptance_uncertain",
         "open",
@@ -54,7 +56,7 @@ RECONCILABLE_STATUSES: Final[frozenset[str]] = frozenset(
     }
 )
 _UNBOUND_STATUSES: Final[frozenset[str]] = frozenset(
-    {"submitting", "acceptance_uncertain", "rejected"}
+    {"dispatching", "acceptance_uncertain", "rejected"}
 )
 
 
