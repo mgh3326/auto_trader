@@ -151,7 +151,10 @@ async def test_g1_q15_policy_lookup_failure_never_reaches_broker(
     from app.mcp_server.tooling import order_execution as execution
     from app.services.protected_quantity_service import ProtectionStateUnavailable
 
-    broker_send = AsyncMock()
+    class BrokerReached(Exception):
+        pass
+
+    broker_send = AsyncMock(side_effect=BrokerReached)
     monkeypatch.setattr(
         execution,
         "prepare_live_sell_lease",
@@ -159,10 +162,13 @@ async def test_g1_q15_policy_lookup_failure_never_reaches_broker(
     )
     monkeypatch.setattr(execution, "_execute_order", broker_send)
 
-    result = await execution._execute_and_record(**_execute_kwargs())
+    try:
+        result = await execution._execute_and_record(**_execute_kwargs())
+    except BrokerReached:
+        result = {}
 
-    assert result["error_code"] == "protection_state_unavailable"
     broker_send.assert_not_awaited()
+    assert result["error_code"] == "protection_state_unavailable"
 
 
 @pytest.mark.asyncio
@@ -936,17 +942,18 @@ async def test_g4_upbit_holds_protection_lease_through_reorder_response(
             ProtectionDecision(True, "covered", Decimal("40")),
         ]
     )
+    release_seen: dict[str, int] = {}
 
     async def cancel_while_locked(order_ids: list[str]) -> list[dict[str, str]]:
         assert order_ids == ["order-1"]
-        assert lease.release_calls == 0
+        release_seen["cancel"] = lease.release_calls
         return [{"uuid": "order-1"}]
 
     async def place_while_locked(
         market: str, volume: str, price: str
     ) -> dict[str, str]:
         assert (market, volume, price) == ("KRW-BTC", "40.00000000", "56000000")
-        assert lease.release_calls == 0
+        release_seen["place"] = lease.release_calls
         return {"uuid": "replacement-1"}
 
     monkeypatch.setattr(
@@ -981,6 +988,7 @@ async def test_g4_upbit_holds_protection_lease_through_reorder_response(
     )
 
     assert result["new_order"]["uuid"] == "replacement-1"
+    assert release_seen == {"cancel": 0, "place": 0}
     assert [call["kind"] for call in lease.calls] == ["cancel_replace", "new"]
     assert lease.release_calls == 1
 

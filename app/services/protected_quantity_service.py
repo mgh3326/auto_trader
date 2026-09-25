@@ -18,10 +18,10 @@ import builtins
 import hashlib
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -337,6 +337,42 @@ async def _read_head_snapshot(key: ProtectionKey) -> ProtectedPositionSnapshot |
         raise ProtectionStateUnavailable("protected position lookup failed") from exc
 
 
+async def _read_upbit_asset_alias(
+    key: ProtectionKey,
+) -> ProtectedPositionSnapshot | None:
+    """Find another protected market for the same Upbit base-asset balance.
+
+    The declaration and live-order ledger keys remain full market codes. Upbit
+    balance/locked evidence is shared by every quote market of a base asset,
+    so a sell through a different quote must not treat that balance as free.
+    """
+
+    from app.core.db import AsyncSessionLocal
+
+    base_asset = key.symbol.partition("-")[2]
+    try:
+        async with AsyncSessionLocal() as db:
+            row = (
+                await db.execute(
+                    select(ProtectedPosition)
+                    .where(
+                        ProtectedPosition.account_scope == "upbit_live",
+                        ProtectedPosition.market == "crypto",
+                        ProtectedPosition.symbol != key.symbol,
+                        ProtectedPosition.protected_quantity > 0,
+                        func.split_part(ProtectedPosition.symbol, "-", 2) == base_asset,
+                    )
+                    .order_by(ProtectedPosition.symbol)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _snapshot(row)
+    except Exception as exc:
+        raise ProtectionStateUnavailable(
+            "protected Upbit asset alias lookup failed"
+        ) from exc
+
+
 async def _net_execution_quantity_since(
     db: AsyncSession, *, key: ProtectionKey, since: datetime
 ) -> Decimal:
@@ -435,26 +471,43 @@ async def headroom_for_observation(
     mode = protection_mode_for_scope(key.account_scope, settings_obj=settings_obj)
     try:
         snapshot = await _read_head_snapshot(key)
+        alias = (
+            await _read_upbit_asset_alias(key)
+            if key.account_scope == "upbit_live"
+            else None
+        )
         held = (
             coerce_broker_quantity(broker_held, field="broker_held")
             if broker_held is not None
             else None
         )
-        state, raw_headroom = _state_and_headroom(
-            snapshot=snapshot,
-            held=held,
-            sellable=raw_sellable if sellable_observed else None,
-        )
-        if (
-            snapshot is not None
-            and snapshot.protected_quantity > 0
-            and held is not None
-        ):
-            if await _is_drifted(snapshot=snapshot, fresh_held=held):
-                state, raw_headroom = "unverified", Decimal("0")
-        protected = (
-            snapshot.protected_quantity if snapshot is not None else Decimal("0")
-        )
+        if alias is not None:
+            # One base-asset balance has conflicting market-code declarations.
+            # Show no tactical headroom while preserving the raw broker value
+            # in off/shadow. The live guard makes its own current lookup.
+            selected = (
+                snapshot
+                if snapshot is not None and snapshot.protected_quantity > 0
+                else alias
+            )
+            state, raw_headroom = "unverified", Decimal("0")
+            protected = selected.protected_quantity
+        else:
+            state, raw_headroom = _state_and_headroom(
+                snapshot=snapshot,
+                held=held,
+                sellable=raw_sellable if sellable_observed else None,
+            )
+            if (
+                snapshot is not None
+                and snapshot.protected_quantity > 0
+                and held is not None
+            ):
+                if await _is_drifted(snapshot=snapshot, fresh_held=held):
+                    state, raw_headroom = "unverified", Decimal("0")
+            protected = (
+                snapshot.protected_quantity if snapshot is not None else Decimal("0")
+            )
     except (
         ProtectionStateUnavailable,
         ProtectedQuantityValidationError,
@@ -504,7 +557,19 @@ async def _decorate_unverified_projection(
             symbol=symbol,
         )
         snapshot = await _read_head_snapshot(key)
-        if snapshot is None or snapshot.protected_quantity == 0:
+        alias = (
+            await _read_upbit_asset_alias(key)
+            if key.account_scope == "upbit_live"
+            else None
+        )
+        if alias is not None:
+            protected = (
+                snapshot.protected_quantity
+                if snapshot is not None and snapshot.protected_quantity > 0
+                else alias.protected_quantity
+            )
+            state = "unverified"
+        elif snapshot is None or snapshot.protected_quantity == 0:
             state = "unprotected"
         else:
             protected = snapshot.protected_quantity
@@ -878,11 +943,15 @@ class LiveSellProtectionLease:
         mode: ProtectionMode,
         connection: AsyncConnection,
         lock_key: int,
+        requested_key: ProtectionKey | None = None,
+        alias_conflict: bool = False,
     ) -> None:
         self.snapshot = snapshot
         self.mode = mode
         self._connection = connection
         self._lock_key = lock_key
+        self.requested_key = requested_key or snapshot.key
+        self.alias_conflict = alias_conflict
         self._released = False
 
     async def evaluate(
@@ -895,6 +964,26 @@ class LiveSellProtectionLease:
         sellable_observed: bool,
         amend_remaining_fresh: Any | None = None,
     ) -> ProtectionDecision:
+        if self.alias_conflict:
+            try:
+                requested_quantity = coerce_broker_quantity(quantity, field="quantity")
+            except ProtectedQuantityValidationError:
+                requested_quantity = None
+            try:
+                sellable = coerce_broker_quantity(
+                    fresh_broker_sellable, field="broker_sellable"
+                )
+            except ProtectedQuantityValidationError:
+                sellable = None
+            block = ProtectionBlock(
+                error_code="protected_quantity_unresolved",
+                key=self.requested_key,
+                protected_quantity=self.snapshot.protected_quantity,
+                broker_sellable=sellable,
+                headroom=Decimal("0"),
+                quantity=requested_quantity,
+            )
+            return _shadow_or_block(block, mode=self.mode, state="unverified")
         return await _evaluate_live_sell(
             snapshot=self.snapshot,
             mode=self.mode,
@@ -938,8 +1027,16 @@ async def _invalidate_and_close(connection: AsyncConnection) -> None:
 
 
 def _advisory_key(key: ProtectionKey) -> int:
+    # Upbit's balance is per base asset even when the order/ledger key has a
+    # different quote market. Serialize declarations and protected sends for
+    # the same asset under one key while retaining market-code DB identities.
+    lock_symbol = (
+        key.symbol.partition("-")[2]
+        if key.account_scope == "upbit_live"
+        else key.symbol
+    )
     digest = hashlib.sha256(
-        f"protected-quantity:v1:{key.account_scope}:{key.market}:{key.symbol}".encode()
+        f"protected-quantity:v1:{key.account_scope}:{key.market}:{lock_symbol}".encode()
     ).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=True)
 
@@ -983,7 +1080,14 @@ async def prepare_live_sell_lease(
         mode = protection_mode_for_scope(key.account_scope, settings_obj=settings_obj)
     except (ProtectedQuantityValidationError, ProtectionStateUnavailable) as exc:
         raise ProtectionStateUnavailable("protection state is unavailable") from exc
-    if snapshot is None or snapshot.protected_quantity == 0 or mode == "off":
+    if mode == "off":
+        return _NoopSellLease()
+    alias = (
+        await _read_upbit_asset_alias(key)
+        if key.account_scope == "upbit_live"
+        else None
+    )
+    if (snapshot is None or snapshot.protected_quantity == 0) and alias is None:
         return _NoopSellLease()
     try:
         connection = await _acquire_lock(key)
@@ -995,7 +1099,14 @@ async def prepare_live_sell_lease(
         # A declaration may have changed while waiting.  Re-read after lock so
         # the decision uses a current head rather than a stale P value.
         refreshed = await _read_head_snapshot(key)
-        if refreshed is None or refreshed.protected_quantity == 0:
+        refreshed_alias = (
+            await _read_upbit_asset_alias(key)
+            if key.account_scope == "upbit_live"
+            else None
+        )
+        if (
+            refreshed is None or refreshed.protected_quantity == 0
+        ) and refreshed_alias is None:
             await connection.execute(
                 _RELEASE_ADVISORY_LOCK, {"key": _advisory_key(key)}
             )
@@ -1012,11 +1123,20 @@ async def prepare_live_sell_lease(
             await connection.commit()
             await connection.close()
             return _NoopSellLease()
+        selected_snapshot = (
+            refreshed
+            if refreshed is not None and refreshed.protected_quantity > 0
+            else refreshed_alias
+        )
+        if selected_snapshot is None:
+            raise ProtectionStateUnavailable("protected Upbit asset state changed")
         return LiveSellProtectionLease(
-            snapshot=refreshed,
+            snapshot=selected_snapshot,
             mode=refreshed_mode,
             connection=connection,
             lock_key=_advisory_key(key),
+            requested_key=key,
+            alias_conflict=refreshed_alias is not None,
         )
     except BaseException as exc:
         await _invalidate_and_close(connection)
@@ -1211,7 +1331,7 @@ class ProtectedQuantityService:
         idempotency_key: str,
         actor_user_id: int,
         origin: Literal["invest_ui", "operator_cli"],
-        observation: BrokerPositionObservation,
+        observation_provider: Callable[[], Awaitable[BrokerPositionObservation]],
         reconfirm: bool = False,
         confirm_protection_change: bool = False,
         confirm_symbol: str | None = None,
@@ -1256,26 +1376,45 @@ class ProtectedQuantityService:
         if replay is not None:
             return replay
 
-        if not isinstance(observation, BrokerPositionObservation):
-            raise ProtectedQuantityValidationError(
-                "fresh broker observation is required"
-            )
-        held = coerce_broker_quantity(observation.held, field="broker_held")
-        sellable = coerce_broker_quantity(observation.sellable, field="broker_sellable")
-        if observation.observed_at.tzinfo is None:
-            raise ProtectedQuantityValidationError(
-                "broker observation must be timezone-aware"
-            )
-        if new_quantity > held:
-            raise ProtectedQuantityValidationError(
-                "protected_quantity must not exceed fresh broker held quantity"
-            )
-
         # A declaration change can make a just-checked sell unsafe. Use the
         # same key as the live send's session lease so a write waits until the
         # broker response, while the transaction-scoped lock releases on every
         # commit or rollback path below. This is not an order-ledger lock.
         await self._db.execute(_XACT_ADVISORY_LOCK, {"key": _advisory_key(key)})
+
+        # The broker read belongs inside the same key lock as the write. A
+        # pre-lock observation can become stale while a protected sell finishes
+        # and otherwise lets P_new exceed the broker's held quantity at commit.
+        observed_after_lock = datetime.now(UTC)
+        try:
+            if not callable(observation_provider):
+                raise ProtectedQuantityValidationError(
+                    "fresh broker observation is required"
+                )
+            observation = await observation_provider()
+            if not isinstance(observation, BrokerPositionObservation):
+                raise ProtectedQuantityValidationError(
+                    "fresh broker observation is required"
+                )
+            held = coerce_broker_quantity(observation.held, field="broker_held")
+            sellable = coerce_broker_quantity(
+                observation.sellable, field="broker_sellable"
+            )
+            if observation.observed_at.tzinfo is None:
+                raise ProtectedQuantityValidationError(
+                    "broker observation must be timezone-aware"
+                )
+            if observation.observed_at < observed_after_lock:
+                raise ProtectedQuantityValidationError(
+                    "broker observation must be collected after the protection lock"
+                )
+            if new_quantity > held:
+                raise ProtectedQuantityValidationError(
+                    "protected_quantity must not exceed fresh broker held quantity"
+                )
+        except BaseException:
+            await self._db.rollback()
+            raise
 
         row = await _read_head(self._db, key=key, for_update=True)
         if row is None:

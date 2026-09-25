@@ -2,9 +2,10 @@
 
 ## Status
 
-This feature ships inert. All three scope modes default to off, and this
-source revision rejects every enforce configuration at startup. The approval
-for implementation did not approve enforcement. A later, separately approved
+This feature ships with protection arithmetic disabled by default. All three
+scope modes default to off, and this source revision rejects every enforce
+configuration at startup. The approval for implementation did not approve
+enforcement. A later, separately approved
 operator change must both remove that source-level refusal and select a
 scope-specific rollout mode.
 
@@ -43,10 +44,13 @@ held. It is unverified instead.
 ## Send-time behavior
 
 Protected live sells acquire a PostgreSQL session advisory lease keyed by
-scope, market, and symbol. The lease starts before the fresh broker check and
-remains held through the broker response. A declaration write takes the same
+scope, market, and symbol; Upbit uses its base asset for the lock because
+different quote markets draw from the same balance. Its declaration and live
+ledger identities remain full market codes. The lease starts before the fresh
+broker check and remains held through the broker response. A declaration write takes the same
 key transactionally, so it cannot raise P between a successful guard and the
-broker response.
+broker response. The declaration service invokes its broker H/S provider only
+after acquiring that lock; a pre-lock H snapshot is rejected.
 
 The guard reads the unprojected broker values immediately before sending. It
 rejects an active protected sell when sellable is unobserved, the protection
@@ -55,7 +59,13 @@ P, the quantity is unresolved, or the requested amount exceeds headroom.
 Shadow records a would-block event but does not block a send. Off preserves
 existing sizing behavior.
 
-Upbit cancel and replace checks before cancellation and again after a
+If one Upbit asset has active protection under another quote-market code,
+enforce refuses its sell and shadow records a would-block event. This avoids
+treating the same base-asset balance as unprotected through a second quote
+market. The displayed tactical quantity for that alias is zero and unverified.
+
+Upbit cancel and replace refreshes the original order remainder after taking
+the asset lock, checks before cancellation, and checks again after a
 successful cancellation. If the second check fails, the original order stays
 cancelled and the replacement is explicitly withheld. The feature never
 automatically recreates or cancels another order to repair this condition.
@@ -65,15 +75,17 @@ deployment pointed at a different database, and a PostgreSQL restart can still
 change broker state outside the lease. The next fresh read becomes encroached,
 shortfall, or unverified and fails closed.
 
-## Operator rollout, after separate approval
+## Operator migration and later rollout
 
 1. Take a database backup and record its restore procedure before applying the
    additive migration.
 2. Apply the migration at the operator desk, then verify that both review
    tables and the revision mutation triggers exist. This implementation task
    does not apply it to any production or standby database.
-3. Keep every scope off while declarations are reviewed. Declaration writes
-   require a fresh broker observation, an explicit confirmation, optimistic
+3. Deploy this code only after step 2: even off mode refuses all live sells if
+   the protected-position table cannot be read. Keep every scope off while
+   declarations are reviewed. Declaration writes require a broker observation
+   collected inside the per-asset lock, an explicit confirmation, optimistic
    revision match, and exact symbol reconfirmation for decrease or release.
 4. A later approved rollout may use shadow per scope for observation. Do not
    treat this implementation approval as authorization to make any scope
@@ -88,10 +100,11 @@ Rollback is a controlled operator decision, not an automated response to a
 guard failure. First return every scope to off and preserve the head and
 revision evidence for investigation. Do not delete rows or mutate revision
 history. If a schema downgrade is separately approved, export the affected
-declarations and revision evidence, verify the backup restore path, perform
-the approved downgrade at the operator desk, and verify no service remains
-configured to read the removed tables. A downgrade discards the feature tables
-only after that evidence-handling decision; it is not a way to bypass a live
+declarations and revision evidence, verify the backup restore path, first
+roll back or stop every service containing this guard, then perform the
+approved downgrade at the operator desk. Even off mode reads the tables. A
+downgrade discards the feature tables only after that evidence-handling
+decision; it is not a way to bypass a live
 sell block.
 
 ## Incident handling

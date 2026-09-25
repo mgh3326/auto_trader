@@ -564,6 +564,40 @@ async def cancel_and_reorder(
 
     try:
         if protection_lease is not None and protection_lease.active:
+            # The first detail was fetched before waiting for the asset lock.
+            # A fill during that wait reduces the cancellation allowance, so
+            # obtain the actual remaining quantity under the lock immediately
+            # before the pre-cancel decision.
+            try:
+                refreshed_order = await fetch_order_detail(order_uuid)
+            except Exception:  # noqa: BLE001 - no safe remaining-order evidence
+                return _protection_hold_result(
+                    original_order=original_order,
+                    cancel_result={
+                        "success": False,
+                        "error": "Fresh order remainder unavailable; cancel not sent.",
+                        "error_code": "protection_state_unavailable",
+                    },
+                    block=None,
+                    phase="pre_cancel",
+                )
+            if (
+                refreshed_order.get("state") != "wait"
+                or refreshed_order.get("ord_type") != "limit"
+                or refreshed_order.get("side") != side
+                or refreshed_order.get("market") != market
+            ):
+                return _protection_hold_result(
+                    original_order=refreshed_order,
+                    cancel_result={
+                        "success": False,
+                        "error": "Original order changed before cancel; cancel not sent.",
+                        "error_code": "protection_state_unavailable",
+                    },
+                    block=None,
+                    phase="pre_cancel",
+                )
+            original_order = refreshed_order
             (
                 fresh_sellable,
                 fresh_held,

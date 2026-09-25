@@ -96,6 +96,27 @@ def test_key_normalization_uses_db_and_upbit_market_dialects() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+async def test_policy_head_lookup_failure_never_becomes_unprotected(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    import app.core.db as core_db
+
+    class BrokenSessionFactory:
+        def __call__(self) -> None:
+            raise RuntimeError("protected table unavailable")
+
+    monkeypatch.setattr(core_db, "AsyncSessionLocal", BrokenSessionFactory())
+    with pytest.raises(policy.ProtectionStateUnavailable):
+        await policy.prepare_live_sell_lease(
+            account_scope="kis_live",
+            market="kr",
+            symbol="005930",
+            settings_obj=_settings(kis=mode),
+        )
+
+
+@pytest.mark.asyncio
 async def test_acquire_lock_invalidates_if_commit_fails_after_lock_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

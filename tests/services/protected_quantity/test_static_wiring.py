@@ -17,6 +17,7 @@ _SEND_TARGETS = frozenset(
         "order_korea_stock",
         "order_overseas_stock",
         "sell_overseas_stock",
+        "sell_korea_stock",
         "modify_korea_order",
         "modify_overseas_order",
         "place_sell_order",
@@ -60,7 +61,10 @@ def _send_callers(relative_path: str) -> Counter[str]:
             # at the call site. Include those concrete references so G6 covers
             # the real live seller rather than only direct Python calls.
             if isinstance(node.func, ast.Name) and node.func.id == "_call_kis":
-                for argument in node.args:
+                for argument in [
+                    *node.args,
+                    *(keyword.value for keyword in node.keywords),
+                ]:
                     if (
                         isinstance(argument, ast.Attribute)
                         and argument.attr in _SEND_TARGETS
@@ -147,6 +151,10 @@ _CALLER_CLASSIFICATION = {
         1,
     ),
     "app/services/brokers/kis/client.py:KISClient.order_korea_stock:order_korea_stock": (
+        "broker_delegate",
+        1,
+    ),
+    "app/services/brokers/kis/client.py:KISClient.sell_korea_stock:sell_korea_stock": (
         "broker_delegate",
         1,
     ),

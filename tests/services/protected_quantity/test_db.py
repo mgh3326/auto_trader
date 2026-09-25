@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -18,6 +20,7 @@ from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from app.core.config import settings
 from app.models.base import Base
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 from app.services import protected_quantity_service as policy
@@ -47,6 +50,41 @@ def _observation(*, held: str = "10", sellable: str = "10"):
     )
 
 
+def _provider(*, held: str = "10", sellable: str = "10"):
+    async def observe() -> BrokerPositionObservation:
+        return _observation(held=held, sellable=sellable)
+
+    return observe
+
+
+def _crypto_send_kwargs(symbol: str) -> dict[str, Any]:
+    return {
+        "normalized_symbol": symbol,
+        "side": "sell",
+        "order_type": "limit",
+        "order_quantity": 100.0,
+        "price": 1.0,
+        "market_type": "crypto",
+        "current_price": 1.0,
+        "avg_price": 0.5,
+        "dry_run_result": {"price": 1.0, "quantity": 100.0},
+        "order_amount": 100.0,
+        "reason": "quote alias test",
+        "exit_reason": None,
+        "thesis": None,
+        "strategy": None,
+        "target_price": None,
+        "stop_loss": None,
+        "min_hold_days": None,
+        "notes": None,
+        "indicators_snapshot": None,
+        "defensive_trim_ctx": None,
+        "order_error_fn": lambda message: {"success": False, "error": message},
+        "is_mock": False,
+        "idempotency_key": f"alias-{uuid4()}",
+    }
+
+
 async def _save(
     service: ProtectedQuantityService,
     *,
@@ -69,7 +107,7 @@ async def _save(
         idempotency_key=idempotency_key,
         actor_user_id=7,
         origin="invest_ui",
-        observation=_observation(held=held, sellable=sellable),
+        observation_provider=_provider(held=held, sellable=sellable),
         reconfirm=reconfirm,
         confirm_protection_change=True,
         confirm_symbol=confirm_symbol,
@@ -149,7 +187,7 @@ async def test_service_confirmation_staleness_and_replay(db_session) -> None:
             idempotency_key=f"unconfirmed-{uuid4()}",
             actor_user_id=7,
             origin="invest_ui",
-            observation=_observation(),
+            observation_provider=_provider(),
         )
     assert confirm_error.value.error == "confirm_required"
 
@@ -210,7 +248,7 @@ async def test_service_rejects_floor_above_fresh_held(db_session) -> None:
             idempotency_key=f"above-held-{uuid4()}",
             actor_user_id=7,
             origin="invest_ui",
-            observation=_observation(held="10"),
+            observation_provider=_provider(held="10"),
             confirm_protection_change=True,
         )
 
@@ -427,7 +465,6 @@ async def test_upbit_drift_matches_execution_ledger_market_code_key(db_session) 
     """Crypto drift must use raw KRW-BTC, not the ledger base symbol BTC."""
 
     service = ProtectedQuantityService(db_session)
-    observed_at = datetime.now(UTC)
     declared = await service.save(
         account_scope="upbit_live",
         market="crypto",
@@ -438,13 +475,10 @@ async def test_upbit_drift_matches_execution_ledger_market_code_key(db_session) 
         idempotency_key=f"crypto-drift-{uuid4()}",
         actor_user_id=7,
         origin="invest_ui",
-        observation=BrokerPositionObservation(
-            held=Decimal("100"),
-            sellable=Decimal("100"),
-            observed_at=observed_at,
-        ),
+        observation_provider=_provider(held="100", sellable="100"),
         confirm_protection_change=True,
     )
+    observed_at = declared.head.last_confirmed_at
     fill = ExecutionLedgerUpsert(
         broker="upbit",
         account_mode="live",
@@ -483,6 +517,235 @@ async def test_upbit_drift_matches_execution_ledger_market_code_key(db_session) 
 
 
 @pytest.mark.asyncio
+async def test_upbit_quote_alias_is_blocked_before_new_sell_send(
+    db_session, monkeypatch
+) -> None:
+    import app.services.brokers.upbit.client as upbit_client
+    from app.mcp_server.tooling import order_execution as execution
+
+    coin = f"Z{uuid4().hex[:6].upper()}"
+    await ProtectedQuantityService(db_session).save(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol=f"KRW-{coin}",
+        protected_quantity="60",
+        expected_revision=None,
+        reason="quote alias declaration",
+        idempotency_key=f"alias-declare-{uuid4()}",
+        actor_user_id=7,
+        origin="invest_ui",
+        observation_provider=_provider(held="100", sellable="100"),
+        confirm_protection_change=True,
+    )
+    monkeypatch.setattr(settings, "protected_quantity_mode_upbit_live", "enforce")
+    monkeypatch.setattr(
+        upbit_client,
+        "fetch_my_coins",
+        AsyncMock(return_value=[{"currency": coin, "balance": "100", "locked": "0"}]),
+    )
+    class BrokerReached(Exception):
+        pass
+
+    broker_send = AsyncMock(side_effect=BrokerReached)
+    monkeypatch.setattr(execution, "_execute_order", broker_send)
+
+    try:
+        result = await execution._execute_and_record(
+            **_crypto_send_kwargs(f"USDT-{coin}")
+        )
+    except BrokerReached:
+        result = {}
+
+    broker_send.assert_not_awaited()
+    assert result["error_code"] == "protected_quantity_unresolved"
+    assert result["symbol"] == f"USDT-{coin}"
+
+
+@pytest.mark.asyncio
+async def test_upbit_quote_alias_blocks_cancel_and_reorder_before_cancel(
+    db_session, monkeypatch
+) -> None:
+    import app.services.brokers.upbit.client as upbit_client
+    import app.services.brokers.upbit.orders as upbit_orders
+
+    coin = f"Z{uuid4().hex[:6].upper()}"
+    await ProtectedQuantityService(db_session).save(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol=f"KRW-{coin}",
+        protected_quantity="60",
+        expected_revision=None,
+        reason="quote alias declaration",
+        idempotency_key=f"alias-declare-{uuid4()}",
+        actor_user_id=7,
+        origin="invest_ui",
+        observation_provider=_provider(held="100", sellable="100"),
+        confirm_protection_change=True,
+    )
+    monkeypatch.setattr(settings, "protected_quantity_mode_upbit_live", "enforce")
+    original = {
+        "uuid": "order-1",
+        "state": "wait",
+        "ord_type": "limit",
+        "side": "ask",
+        "market": f"USDT-{coin}",
+        "remaining_volume": "40",
+    }
+    monkeypatch.setattr(
+        upbit_orders, "fetch_order_detail", AsyncMock(return_value=original)
+    )
+    monkeypatch.setattr(
+        upbit_client,
+        "fetch_my_coins",
+        AsyncMock(return_value=[{"currency": coin, "balance": "60", "locked": "40"}]),
+    )
+    cancel = AsyncMock()
+    replace = AsyncMock()
+    monkeypatch.setattr(upbit_orders, "cancel_orders", cancel)
+    monkeypatch.setattr(upbit_orders, "place_sell_order", replace)
+
+    result = await upbit_orders.cancel_and_reorder(
+        "order-1", new_price=1.0, new_quantity=100
+    )
+
+    cancel.assert_not_awaited()
+    replace.assert_not_awaited()
+    assert result["protection_phase"] == "pre_cancel"
+    assert result["error_code"] == "protected_quantity_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_upbit_quote_alias_shadow_records_would_block_without_refusing(
+    db_session, caplog
+) -> None:
+    coin = f"Z{uuid4().hex[:6].upper()}"
+    await ProtectedQuantityService(db_session).save(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol=f"KRW-{coin}",
+        protected_quantity="60",
+        expected_revision=None,
+        reason="quote alias declaration",
+        idempotency_key=f"alias-declare-{uuid4()}",
+        actor_user_id=7,
+        origin="invest_ui",
+        observation_provider=_provider(held="100", sellable="100"),
+        confirm_protection_change=True,
+    )
+    lease = await prepare_live_sell_lease(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol=f"USDT-{coin}",
+        settings_obj=SimpleNamespace(protected_quantity_mode_upbit_live="shadow"),
+    )
+    try:
+        with caplog.at_level("WARNING", logger=policy.__name__):
+            decision = await lease.evaluate(
+                quantity="100",
+                kind="new",
+                fresh_broker_sellable="100",
+                fresh_broker_held="100",
+                sellable_observed=True,
+            )
+    finally:
+        await lease.release()
+
+    assert decision.allowed is True
+    assert decision.would_block is True
+    assert decision.block is not None
+    assert decision.block.error_code == "protected_quantity_unresolved"
+    assert any(
+        "protected_quantity_would_block" in row.message for row in caplog.records
+    )
+    projection = await policy.headroom_for_observation(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol=f"USDT-{coin}",
+        broker_sellable="100",
+        broker_held="100",
+        sellable_observed=True,
+        settings_obj=SimpleNamespace(protected_quantity_mode_upbit_live="shadow"),
+    )
+    assert projection.key.symbol == f"USDT-{coin}"
+    assert projection.protected_quantity == Decimal("60")
+    assert projection.tactical_sellable == Decimal("0")
+    assert projection.state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_upbit_pre_cancel_uses_remaining_after_asset_lock_wait(
+    db_session, monkeypatch
+) -> None:
+    import app.services.brokers.upbit.client as upbit_client
+    import app.services.brokers.upbit.orders as upbit_orders
+
+    coin = f"Z{uuid4().hex[:6].upper()}"
+    market = f"KRW-{coin}"
+    await ProtectedQuantityService(db_session).save(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol=market,
+        protected_quantity="60",
+        expected_revision=None,
+        reason="remaining quantity race",
+        idempotency_key=f"remaining-{uuid4()}",
+        actor_user_id=7,
+        origin="invest_ui",
+        observation_provider=_provider(held="100", sellable="100"),
+        confirm_protection_change=True,
+    )
+    monkeypatch.setattr(settings, "protected_quantity_mode_upbit_live", "enforce")
+    monkeypatch.setattr(policy, "_is_drifted", AsyncMock(return_value=False))
+    state = {"remaining": Decimal("40"), "locked": Decimal("40")}
+
+    async def fetch_order_detail(order_uuid: str) -> dict[str, Any]:
+        return {
+            "uuid": order_uuid,
+            "state": "wait",
+            "ord_type": "limit",
+            "side": "ask",
+            "market": market,
+            "remaining_volume": str(state["remaining"]),
+        }
+
+    async def fetch_my_coins() -> list[dict[str, Any]]:
+        return [
+            {
+                "currency": coin,
+                "balance": "60",
+                "locked": str(state["locked"]),
+            }
+        ]
+
+    cancel = AsyncMock()
+    replace = AsyncMock()
+    monkeypatch.setattr(upbit_orders, "fetch_order_detail", fetch_order_detail)
+    monkeypatch.setattr(upbit_client, "fetch_my_coins", fetch_my_coins)
+    monkeypatch.setattr(upbit_orders, "cancel_orders", cancel)
+    monkeypatch.setattr(upbit_orders, "place_sell_order", replace)
+
+    blocker = await prepare_live_sell_lease(
+        account_scope="upbit_live", market="crypto", symbol=market
+    )
+    pending = asyncio.create_task(
+        upbit_orders.cancel_and_reorder("order-1", new_price=1.0, new_quantity=40)
+    )
+    try:
+        await asyncio.sleep(0.1)
+        assert pending.done() is False
+        state["locked"] = Decimal("15")
+        state["remaining"] = Decimal("15")
+    finally:
+        await blocker.release()
+    result = await asyncio.wait_for(pending, timeout=5)
+
+    cancel.assert_not_awaited()
+    replace.assert_not_awaited()
+    assert result["protection_phase"] == "pre_cancel"
+    assert result["error_code"] == "protected_quantity_exceeded"
+
+
+@pytest.mark.asyncio
 async def test_service_rejects_every_declaration_direction_without_fresh_evidence(
     db_session,
 ) -> None:
@@ -495,7 +758,10 @@ async def test_service_rejects_every_declaration_direction_without_fresh_evidenc
         expected_revision=None,
         idempotency_key=f"declare-{uuid4()}",
     )
-    unavailable_observation = cast(BrokerPositionObservation, None)
+
+    async def unavailable_observation() -> BrokerPositionObservation:
+        return cast(BrokerPositionObservation, None)
+
     attempts: tuple[tuple[str, bool, str | None], ...] = (
         ("7", False, None),
         ("5", False, symbol),
@@ -518,7 +784,7 @@ async def test_service_rejects_every_declaration_direction_without_fresh_evidenc
                 idempotency_key=f"no-evidence-{uuid4()}",
                 actor_user_id=7,
                 origin="invest_ui",
-                observation=unavailable_observation,
+                observation_provider=unavailable_observation,
                 reconfirm=reconfirm,
                 confirm_protection_change=True,
                 confirm_symbol=confirm_symbol,
@@ -581,6 +847,190 @@ async def test_declaration_write_waits_for_active_live_sell_lease(db_session) ->
 
     assert updated.action == "increase"
     assert updated.revision == 2
+
+
+@pytest.mark.asyncio
+async def test_write_observes_held_after_sell_lease_releases(db_session) -> None:
+    """A write waiting behind a sell must test the post-send broker H."""
+
+    from app.core.db import AsyncSessionLocal
+
+    symbol = f"Z{uuid4().hex[:7].upper()}"
+    declared = await _save(
+        ProtectedQuantityService(db_session),
+        symbol=symbol,
+        quantity="60",
+        expected_revision=None,
+        idempotency_key=f"declare-{uuid4()}",
+        held="100",
+        sellable="100",
+    )
+    settings_obj = SimpleNamespace(protected_quantity_mode_kis_live="enforce")
+    lease = await prepare_live_sell_lease(
+        account_scope="kis_live", market="kr", symbol=symbol, settings_obj=settings_obj
+    )
+    broker = {"held": Decimal("100"), "sellable": Decimal("100")}
+    observed: list[Decimal] = []
+
+    async def observe_after_lock() -> BrokerPositionObservation:
+        observed.append(broker["held"])
+        return BrokerPositionObservation(
+            held=broker["held"],
+            sellable=broker["sellable"],
+            observed_at=datetime.now(UTC),
+        )
+
+    decision = await lease.evaluate(
+        quantity=Decimal("40"),
+        kind="new",
+        fresh_broker_sellable=broker["sellable"],
+        fresh_broker_held=broker["held"],
+        sellable_observed=True,
+    )
+    assert decision.allowed is True
+    async with AsyncSessionLocal() as writer_db:
+        pending = asyncio.create_task(
+            ProtectedQuantityService(writer_db).save(
+                account_scope="kis_live",
+                market="kr",
+                symbol=symbol,
+                protected_quantity="100",
+                expected_revision=declared.revision,
+                reason="race check",
+                idempotency_key=f"increase-{uuid4()}",
+                actor_user_id=7,
+                origin="invest_ui",
+                observation_provider=observe_after_lock,
+                confirm_protection_change=True,
+            )
+        )
+        try:
+            await asyncio.sleep(0.1)
+            assert pending.done() is False
+            assert observed == []
+            broker["held"] = Decimal("60")
+            broker["sellable"] = Decimal("60")
+        finally:
+            await lease.release()
+        with pytest.raises(
+            ProtectedQuantityValidationError,
+            match="protected_quantity must not exceed fresh broker held quantity",
+        ):
+            await asyncio.wait_for(pending, timeout=5)
+
+    assert observed == [Decimal("60")]
+    head = await ProtectedQuantityService(db_session).get(key=declared.head.key)
+    assert head is not None
+    assert head.protected_quantity == Decimal("60")
+    assert head.revision == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_two_sells_recheck_sellable_after_real_lease_wait(
+    db_session, monkeypatch
+) -> None:
+    """Both callers see stale S=100 before locking; only one may POST."""
+
+    from app.mcp_server.tooling import orders_toss_variants as toss
+
+    symbol = f"9{uuid4().int % 100000:05d}"
+    await ProtectedQuantityService(db_session).save(
+        account_scope="toss_live",
+        market="kr",
+        symbol=symbol,
+        protected_quantity="60",
+        expected_revision=None,
+        reason="Toss lock race",
+        idempotency_key=f"toss-{uuid4()}",
+        actor_user_id=7,
+        origin="invest_ui",
+        observation_provider=_provider(held="100", sellable="100"),
+        confirm_protection_change=True,
+    )
+    monkeypatch.setattr(settings, "protected_quantity_mode_toss_live", "enforce")
+    pre_lock_barrier = asyncio.Event()
+
+    class FakeToss:
+        def __init__(self) -> None:
+            self.sellable = Decimal("100")
+            self.held = Decimal("100")
+            self.sellable_reads: list[Decimal] = []
+            self.posts: list[dict[str, Any]] = []
+
+        async def sellable_quantity(self, *, symbol: str) -> Any:
+            index = len(self.sellable_reads)
+            observed = self.sellable
+            self.sellable_reads.append(observed)
+            if index < 2:
+                if index == 1:
+                    pre_lock_barrier.set()
+                await pre_lock_barrier.wait()
+            return SimpleNamespace(sellable_quantity=observed)
+
+        async def holdings(self, *, symbol: str | None = None) -> Any:
+            return SimpleNamespace(
+                items=[SimpleNamespace(symbol=symbol, quantity=self.held)]
+            )
+
+        async def place_order(self, payload: dict[str, Any]) -> Any:
+            self.posts.append(dict(payload))
+            self.sellable -= Decimal(str(payload["quantity"]))
+            return SimpleNamespace(
+                order_id=f"fake-{len(self.posts)}", client_order_id="fake-client"
+            )
+
+    client = FakeToss()
+
+    @asynccontextmanager
+    async def fake_client_context():
+        yield client
+
+    monkeypatch.setattr(toss, "_entry_guard", lambda *_: None)
+    monkeypatch.setattr(toss, "_client_context", fake_client_context)
+    monkeypatch.setattr(
+        toss,
+        "_snap_kr_limit_price",
+        AsyncMock(return_value=(Decimal("70000"), None, {})),
+    )
+    monkeypatch.setattr(toss, "_live_mutation_disabled_error", lambda *_: None)
+    monkeypatch.setattr(
+        toss,
+        "check_warnings_guard",
+        AsyncMock(
+            return_value=SimpleNamespace(ok=True, warnings=[], error_message=None)
+        ),
+    )
+    monkeypatch.setattr(toss, "_opposite_pending_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_sell_loss_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_nxt_preflight_context", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_invalidate_sellable_after_sell_mutation", AsyncMock())
+    monkeypatch.setattr(toss, "record_toss_place_order", AsyncMock(return_value={}))
+
+    results = await asyncio.gather(
+        *(
+            toss._toss_place_order_impl(
+                symbol=symbol,
+                side="sell",
+                quantity="40",
+                price="70000",
+                market="kr",
+                dry_run=False,
+                confirm=True,
+                account_mode="toss_live",
+                rung=index + 1,
+            )
+            for index in range(2)
+        )
+    )
+
+    assert len({post["clientOrderId"] for post in client.posts}) == len(client.posts)
+    assert len(client.posts) == 1, (client.posts, results, client.sellable_reads)
+    blocked = [row for row in results if row.get("success") is not True]
+    assert len(blocked) == 1, results
+    assert blocked[0]["error_code"] == "protected_quantity_exceeded"
+    assert blocked[0]["broker_sellable"] == "60"
+    assert client.sellable_reads[:2] == [Decimal("100"), Decimal("100")]
+    assert client.sellable == Decimal("60")
 
 
 @pytest.mark.asyncio
@@ -733,7 +1183,7 @@ def _has_table(connection: sa.Connection) -> bool:
     return sa.inspect(connection).has_table(TABLE, schema=SCHEMA)
 
 
-def _roundtrip(connection: sa.Connection) -> list[bool]:
+def _roundtrip(connection: sa.Connection) -> tuple[list[bool], dict[str, bool]]:
     migration = _load_migration()
     context = MigrationContext.configure(
         connection=connection,
@@ -744,7 +1194,44 @@ def _roundtrip(connection: sa.Connection) -> list[bool]:
         removed = _has_table(connection)
         migration.upgrade()
         restored = _has_table(connection)
-    return [removed, restored]
+    head_id = connection.execute(
+        text(
+            "INSERT INTO review.protected_positions "
+            "(account_scope, market, symbol, protected_quantity, "
+            "last_confirmed_broker_held, last_confirmed_at, updated_by_user_id) "
+            "VALUES ('kis_live', 'kr', :symbol, 1, 1, now(), 7) RETURNING id"
+        ),
+        {"symbol": f"Z{uuid4().hex[:7].upper()}"},
+    ).scalar_one()
+    revision_id = connection.execute(
+        text(
+            "INSERT INTO review.protected_position_revisions "
+            "(protected_position_id, revision, action, new_quantity, "
+            "broker_held_observed, broker_sellable_observed, broker_observed_at, "
+            "reason, actor_user_id, origin, idempotency_key) "
+            "VALUES (:head_id, 1, 'declare', 1, 1, 1, now(), "
+            "'migration trigger probe', 7, 'invest_ui', :idempotency_key) "
+            "RETURNING id"
+        ),
+        {"head_id": head_id, "idempotency_key": str(uuid4())},
+    ).scalar_one()
+    mutations = {
+        "update": "UPDATE review.protected_position_revisions SET reason='changed' WHERE id=:id",
+        "delete": "DELETE FROM review.protected_position_revisions WHERE id=:id",
+        "truncate": "TRUNCATE review.protected_position_revisions",
+    }
+    outcomes: dict[str, bool] = {}
+    for operation, sql in mutations.items():
+        savepoint = connection.begin_nested()
+        try:
+            connection.execute(text(sql), {"id": revision_id})
+        except DBAPIError:
+            outcomes[operation] = True
+        else:
+            outcomes[operation] = False
+        finally:
+            savepoint.rollback()
+    return [removed, restored], outcomes
 
 
 @pytest.mark.asyncio
@@ -758,4 +1245,7 @@ async def test_migration_upgrade_downgrade_roundtrip_uses_only_run_owned_test_db
         trace = await connection.run_sync(_roundtrip)
         await session.rollback()
 
-    assert trace == [False, True]
+    assert trace == (
+        [False, True],
+        {"update": True, "delete": True, "truncate": True},
+    )
