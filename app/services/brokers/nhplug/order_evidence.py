@@ -398,7 +398,9 @@ def determine_open_orders(
     if open_listing.complete:
         for row in open_listing.rows:
             if row.open_qty <= 0:
+                # Contradictory, not positive, evidence: never "present".
                 reasons.append("open_scope_row_without_open_quantity")
+                continue
             open_rows.setdefault(row.order_no, row)
     else:
         reasons.append(f"open_scope_incomplete:{open_listing.reason}")

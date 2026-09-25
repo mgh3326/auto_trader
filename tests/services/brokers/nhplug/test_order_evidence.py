@@ -351,3 +351,18 @@ def test_row_parsing_rejects_bools_negatives_floats_and_blanks(
     base = fx("listing_open_one")["Output_1"][0]
     base.update(field_value)
     assert parse_order_row(base) is None
+
+
+def test_open_scope_row_without_open_quantity_is_not_presence() -> None:
+    """CodeRabbit: contradictory open-scope rows drive unknown, not present."""
+
+    zero = fx("listing_open_one")
+    zero["Output_1"][0]["ny_cns_qty"] = 0
+    zero["Output_1"][0]["can_qty"] = 1
+    result = determine_open_orders(
+        all_listing=listing("all", "listing_all_filled"),
+        open_listing=assemble_listing("open", [classify_listing_page(zero)]),
+    )
+    assert result.state == "unknown"
+    assert result.open_rows == ()
+    assert "open_scope_row_without_open_quantity" in result.reasons

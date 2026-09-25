@@ -648,3 +648,49 @@ async def test_db_check_rejects_fill_above_order_quantity(db_session) -> None:
     with pytest.raises(IntegrityError):
         await db_session.flush()
     await db_session.rollback()
+
+
+async def test_failed_ledger_write_rolls_back_and_session_stays_usable(
+    db_session,
+) -> None:
+    """CodeRabbit: a duplicate broker number must not poison the session."""
+
+    ledger = NHPlugMockLedgerService(db_session)
+    date = _order_date()
+    first = await ledger.record_submitting(
+        order_date=date,
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+    )
+    await ledger.record_ack(first.id, OrderAck("accepted", "1000123", "00000", None))
+    second = await ledger.record_submitting(
+        order_date=date,
+        operation_kind="modify",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=49500,
+        original_order_id="1000123",
+    )
+    second_id = second.id
+    with pytest.raises(IntegrityError):
+        # e.g. a modify that reuses the original order number
+        await ledger.record_ack(
+            second_id, OrderAck("accepted", "1000123", "00000", None)
+        )
+    # The same session keeps working for later rows.
+    third = await ledger.record_submitting(
+        order_date=date,
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=48000,
+    )
+    assert third.status == "submitting"
+    reloaded = await ledger.get(second_id)
+    assert reloaded is not None and reloaded.status == "submitting"
+    assert reloaded.broker_order_id is None

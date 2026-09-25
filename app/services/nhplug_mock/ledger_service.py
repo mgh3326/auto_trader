@@ -121,10 +121,7 @@ class NHPlugMockLedgerService:
             correlation_id=correlation_id,
         )
         self._db.add(row)
-        await self._db.flush()
-        await self._db.commit()
-        await self._db.refresh(row)
-        return row
+        return await self._commit(row)
 
     async def record_not_submitted(
         self, row_id: int, *, refusal: str
@@ -251,7 +248,18 @@ class NHPlugMockLedgerService:
         row.status = target
 
     async def _commit(self, row: NHPlugMockOrderLedger) -> NHPlugMockOrderLedger:
-        await self._db.flush()
-        await self._db.commit()
+        """Commit one write; on failure roll back so the session stays usable.
+
+        Callers share one session across a round trip or a reconcile pass;
+        a failed flush (e.g. a duplicate broker order number) must not leave
+        it in a rollback-required state that blocks every later write.
+        """
+
+        try:
+            await self._db.flush()
+            await self._db.commit()
+        except BaseException:
+            await self._db.rollback()
+            raise
         await self._db.refresh(row)
         return row
