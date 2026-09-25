@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -33,7 +34,10 @@ CHILD_POLICY_PROBE = (
 EXTERNAL_IPV4 = ("203.0.113.1", 443)  # RFC 5737 TEST-NET-3, never routable
 EXTERNAL_HOSTNAME = "rob1296-guard-probe.invalid"  # RFC 6761 reserved TLD
 LOOPBACK_POSTGRES = ("127.0.0.1", 5432)
-LOOPBACK_REDIS = ("127.0.0.1", 6379)
+LOOPBACK_REDIS = (
+    "127.0.0.1",
+    urlparse(os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")).port or 6379,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)

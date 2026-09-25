@@ -7,6 +7,7 @@ import pytest
 
 from app.mcp_server.tooling import order_validation
 from app.mcp_server.tooling.order_validation import LossCutContext
+from app.services import protected_quantity_service
 
 
 @pytest.mark.unit
@@ -31,6 +32,11 @@ async def test_kis_domestic_zero_orderable_does_not_fall_back_to_total(monkeypat
     monkeypatch.setattr(
         order_validation, "_create_kis_client", lambda *, is_mock: client
     )
+    monkeypatch.setattr(
+        protected_quantity_service,
+        "_read_head_snapshot",
+        AsyncMock(return_value=None),
+    )
 
     result = await order_validation._get_holdings_for_order(
         "005930", "equity_kr", is_mock=False
@@ -38,10 +44,14 @@ async def test_kis_domestic_zero_orderable_does_not_fall_back_to_total(monkeypat
 
     assert result == {
         "quantity": 0.0,
+        "broker_sellable_quantity": 0.0,
         "total_quantity": 8.0,
         "locked": 8.0,
         "avg_price": 70000.0,
         "sellable_observed": True,
+        "protected_quantity": 0.0,
+        "tactical_sellable_quantity": 0.0,
+        "protection_state": "unprotected",
     }
 
 
