@@ -10,10 +10,15 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import app.services.brokers.upbit.client as _client
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    prepare_live_sell_lease,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +289,64 @@ def _format_upbit_time(value: datetime | str) -> str:
     return text
 
 
+async def _fresh_upbit_sell_position(
+    market: str,
+) -> tuple[Any | None, Any | None, bool]:
+    """Read raw Upbit S/H for G4 without a portfolio cache or projection."""
+
+    _, separator, currency = market.partition("-")
+    if not separator or not currency:
+        return None, None, False
+    try:
+        accounts = await _client.fetch_my_coins()
+    except Exception:  # noqa: BLE001 - caller turns missing evidence into a block
+        return None, None, False
+    for account in accounts:
+        if str(account.get("currency", "")).strip().upper() != currency.upper():
+            continue
+        balance = account.get("balance")
+        locked = account.get("locked")
+        try:
+            held = Decimal(str(balance)) + Decimal(str(locked))
+        except (InvalidOperation, TypeError, ValueError):
+            return balance, None, True
+        return balance, held, True
+    return None, None, False
+
+
+def _protection_hold_result(
+    *,
+    original_order: dict[str, Any],
+    cancel_result: dict[str, Any],
+    block: Any,
+    phase: str,
+) -> dict[str, Any]:
+    """Return a safe, explicit no-send result without mutating protection P."""
+
+    detail: dict[str, Any] = {
+        "original_order": original_order,
+        "cancel_result": cancel_result,
+        "new_order": None,
+        "protection_phase": phase,
+        "reorder_withheld": phase == "post_cancel",
+    }
+    if phase == "post_cancel":
+        detail["error"] = (
+            "Original order was cancelled; protected replacement was withheld."
+        )
+    else:
+        detail["error"] = "Protected quantity floor blocks cancellation and reorder."
+    if block is not None:
+        detail.update(block.payload())
+    elif isinstance(cancel_result.get("error_code"), str):
+        # Q15 has no arithmetic block object, but callers must still receive
+        # the closed fail-closed reason rather than a misleading floor error.
+        detail["error_code"] = cancel_result["error_code"]
+        if isinstance(cancel_result.get("error"), str):
+            detail["error"] = cancel_result["error"]
+    return detail
+
+
 async def fetch_closed_orders(
     market: str | None = None,
     limit: int = 100,
@@ -461,39 +524,121 @@ async def cancel_and_reorder(
         }
     adjusted_price = adjust_price_to_upbit_unit(new_price)
 
-    # 5. 취소 후 재주문
-    cancel_result = await cancel_orders([order_uuid])
+    if side not in {"bid", "ask"}:
+        return {
+            "original_order": original_order,
+            "cancel_result": {
+                "success": False,
+                "error": "Original order has invalid side",
+            },
+            "new_order": None,
+        }
 
-    if cancel_result and len(cancel_result) > 0 and "error" not in cancel_result[0]:
-        # 취소 성공하면 재주문
+    # G4: a protected Upbit ask keeps one dedicated PostgreSQL advisory lock
+    # from the pre-cancel check through the cancellation and replacement broker
+    # responses.  The policy lookup itself occurs for every live sell (Q15),
+    # while the two extra account reads happen only for an active declaration.
+    protection_lease: Any | None = None
+    if side == "ask":
+        try:
+            protection_lease = await prepare_live_sell_lease(
+                account_scope="upbit_live",
+                market="crypto",
+                symbol=market,
+            )
+        except ProtectionStateUnavailable:
+            return _protection_hold_result(
+                original_order=original_order,
+                cancel_result={
+                    "success": False,
+                    "error": "Protected position state is unavailable; cancel not sent.",
+                    "error_code": "protection_state_unavailable",
+                },
+                block=None,
+                phase="pre_cancel",
+            )
+
+    try:
+        if protection_lease is not None and protection_lease.active:
+            (
+                fresh_sellable,
+                fresh_held,
+                sellable_observed,
+            ) = await _fresh_upbit_sell_position(market)
+            decision = await protection_lease.evaluate(
+                quantity=new_quantity,
+                kind="cancel_replace",
+                fresh_broker_sellable=fresh_sellable,
+                fresh_broker_held=fresh_held,
+                sellable_observed=sellable_observed,
+                amend_remaining_fresh=original_order.get("remaining_volume"),
+            )
+            if not decision.allowed:
+                return _protection_hold_result(
+                    original_order=original_order,
+                    cancel_result={
+                        "success": False,
+                        "error": "Protected quantity floor blocks cancellation and reorder.",
+                    },
+                    block=decision.block,
+                    phase="pre_cancel",
+                )
+
+        # 5. 취소 후 재주문
+        cancel_result = await cancel_orders([order_uuid])
+        if not cancel_result or "error" in cancel_result[0]:
+            return {
+                "original_order": original_order,
+                "cancel_result": cancel_result[0]
+                if cancel_result
+                else {"success": False, "error": "cancel failed"},
+                "new_order": None,
+            }
+
+        # G4's mandatory second check: cancellation can expose the former
+        # reservation while a fill races in.  Re-read H/S inside the same lease
+        # and with no remaining-order allowance before the replacement POST.
+        if protection_lease is not None and protection_lease.active:
+            (
+                fresh_sellable,
+                fresh_held,
+                sellable_observed,
+            ) = await _fresh_upbit_sell_position(market)
+            decision = await protection_lease.evaluate(
+                quantity=new_quantity,
+                kind="new",
+                fresh_broker_sellable=fresh_sellable,
+                fresh_broker_held=fresh_held,
+                sellable_observed=sellable_observed,
+            )
+            if not decision.allowed:
+                return _protection_hold_result(
+                    original_order=original_order,
+                    cancel_result=cancel_result[0],
+                    block=decision.block,
+                    phase="post_cancel",
+                )
+
         volume_str = f"{new_quantity:.8f}" if new_quantity else ""
         price_str = f"{adjusted_price:.5f}".rstrip("0").rstrip(".") if new_price else ""
-
         try:
-            # side에 따라 적절한 메서드 호출
             if side == "bid":
                 new_order = await place_buy_order(
                     market, price_str, volume_str, "limit"
                 )
             else:
                 new_order = await place_sell_order(market, volume_str, price_str)
-
             return {
                 "original_order": original_order,
                 "cancel_result": cancel_result[0],
                 "new_order": new_order,
             }
-        except Exception as e:
+        except Exception as exc:
             return {
                 "original_order": original_order,
                 "cancel_result": cancel_result[0],
-                "new_order": {"error": str(e)},
+                "new_order": {"error": str(exc)},
             }
-    else:
-        return {
-            "original_order": original_order,
-            "cancel_result": cancel_result[0]
-            if cancel_result
-            else {"success": False, "error": "cancel failed"},
-            "new_order": None,
-        }
+    finally:
+        if protection_lease is not None:
+            await protection_lease.release()

@@ -17,6 +17,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_quote",
     "get_orderbook",
     "get_holdings",
+    "get_protected_positions",
     "get_position",
     "place_order",
     "get_ohlcv",

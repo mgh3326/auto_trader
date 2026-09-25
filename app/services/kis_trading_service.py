@@ -23,6 +23,10 @@ from app.services.kis_trading_contracts import (
     OrderStepResult,
     _map_exception_to_result,
 )
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    prepare_live_sell_lease,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +171,109 @@ class OverseasOrderOps:
 
 _DOMESTIC_OPS = DomesticOrderOps()
 _OVERSEAS_OPS = OverseasOrderOps()
+
+
+async def _legacy_fresh_kis_sell_position(
+    ops: SupportsOrderExecution,
+    kis: KISClient,
+    symbol: str,
+) -> tuple[Any | None, Any | None, bool]:
+    """Read broker-native S/H immediately before one legacy sell fragment."""
+
+    try:
+        if ops.market == "domestic":
+            rows = await kis.fetch_my_stocks()
+            target = next(
+                (
+                    row
+                    for row in rows
+                    if str(row.get("pdno", "")).strip().upper()
+                    == symbol.strip().upper()
+                ),
+                None,
+            )
+            if target is None:
+                return None, None, False
+            held = target.get("hldg_qty")
+            sellable = target.get("ord_psbl_qty")
+        else:
+            rows = await kis.fetch_my_overseas_stocks()
+            normalized_symbol = to_db_symbol(symbol)
+            target = next(
+                (
+                    row
+                    for row in rows
+                    if to_db_symbol(str(row.get("ovrs_pdno", ""))) == normalized_symbol
+                ),
+                None,
+            )
+            if target is None:
+                return None, None, False
+            held = target.get("ovrs_cblc_qty")
+            sellable = target.get("ord_psbl_qty")
+            if sellable in {None, ""}:
+                sellable = target.get("ovrs_ord_psbl_qty")
+        observed = sellable not in {None, ""}
+        return (sellable if observed else None), held, observed
+    except Exception:  # noqa: BLE001 - missing broker evidence is fail-closed
+        return None, None, False
+
+
+async def _place_legacy_guarded_sell_fragment(
+    ops: SupportsOrderExecution,
+    kis_client: KISClient,
+    symbol: str,
+    quantity: int,
+    price: float,
+    *,
+    exchange_code: str | None,
+) -> dict[str, Any]:
+    """G5: fresh, locked protection check for every residual legacy fragment."""
+
+    market = "kr" if ops.market == "domestic" else "us"
+    try:
+        lease = await prepare_live_sell_lease(
+            account_scope="kis_live",
+            market=market,
+            symbol=symbol,
+        )
+    except ProtectionStateUnavailable:
+        return {
+            "error": "Protected position state is unavailable; legacy sell not sent.",
+            "error_code": "protection_state_unavailable",
+        }
+
+    try:
+        if lease.active:
+            (
+                fresh_sellable,
+                fresh_held,
+                sellable_observed,
+            ) = await _legacy_fresh_kis_sell_position(ops, kis_client, symbol)
+            decision = await lease.evaluate(
+                quantity=quantity,
+                kind="new",
+                fresh_broker_sellable=fresh_sellable,
+                fresh_broker_held=fresh_held,
+                sellable_observed=sellable_observed,
+            )
+            if not decision.allowed:
+                payload: dict[str, Any] = {
+                    "error": "Protected quantity floor blocks this legacy sell fragment."
+                }
+                if decision.block is not None:
+                    payload.update(decision.block.payload())
+                return payload
+        return await ops.place_order(
+            kis_client,
+            symbol,
+            "sell",
+            quantity,
+            price,
+            exchange_code=exchange_code,
+        )
+    finally:
+        await lease.release()
 
 
 # =============================================================================
@@ -407,10 +514,10 @@ async def _process_sell_orders_impl(
 
         if not valid_prices:
             if current_price >= min_sell_price:
-                res = await ops.place_order(
+                res = await _place_legacy_guarded_sell_fragment(
+                    ops,
                     kis_client,
                     symbol,
-                    "sell",
                     balance_qty,
                     current_price,
                     exchange_code=resolved_exchange,
@@ -434,10 +541,10 @@ async def _process_sell_orders_impl(
 
         if qty_per_order < 1:
             target_price = valid_prices[0]
-            res = await ops.place_order(
+            res = await _place_legacy_guarded_sell_fragment(
+                ops,
                 kis_client,
                 symbol,
-                "sell",
                 balance_qty,
                 target_price,
                 exchange_code=resolved_exchange,
@@ -470,10 +577,10 @@ async def _process_sell_orders_impl(
             if qty < 1:
                 continue
 
-            res = await ops.place_order(
+            res = await _place_legacy_guarded_sell_fragment(
+                ops,
                 kis_client,
                 symbol,
-                "sell",
                 qty,
                 price,
                 exchange_code=resolved_exchange,

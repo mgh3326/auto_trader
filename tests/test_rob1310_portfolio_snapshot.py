@@ -1456,20 +1456,31 @@ async def test_cached_mcp_projection_includes_upbit_dust_from_hidden_home_holdin
 
 
 @pytest.mark.unit
-def test_portfolio_snapshot_serializer_drops_reconstructible_sellability_fields() -> (
+def test_portfolio_snapshot_serializer_keeps_l1_sellability_but_drops_pending_state() -> (
     None
 ):
-    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+    from app.services.portfolio_snapshot import (
+        deserialize_portfolio_snapshot,
+        serialize_portfolio_snapshot,
+    )
 
     payload = serialize_portfolio_snapshot(_legacy_projection_home_response())
     raw_holdings = payload["response"]["holdings"]
 
     assert raw_holdings
-    for holding in raw_holdings:
-        assert "sellableQuantity" not in holding
-        assert "pendingSellQuantity" not in holding
-        assert not any("sellable" in str(key).lower() for key in holding)
-        assert not any("pending_sell" in str(key).lower() for key in holding)
+    samsung = next(holding for holding in raw_holdings if holding["symbol"] == "005930")
+    assert samsung["sellableQuantity"] == 7
+    assert "brokerSellableQuantity" in samsung
+    assert "protectedQuantity" in samsung
+    assert "protectionState" in samsung
+    assert "pendingSellQuantity" not in samsung
+
+    round_trip = deserialize_portfolio_snapshot(payload)
+    restored = next(
+        holding for holding in round_trip.holdings if holding.symbol == "005930"
+    )
+    assert restored.sellableQuantity == 7
+    assert restored.pendingSellQuantity == 0
 
 
 @pytest.mark.unit
@@ -2663,10 +2674,10 @@ async def test_toss_api_home_reader_survives_corrupt_cash_cache(
     )
 
     async def _snapshot_through_real_service(*, need_sellable: bool = False, **kwargs):
-        assert need_sellable is False
+        assert need_sellable is True
         return await fetch_toss_portfolio_snapshot(
             client=client,
-            need_sellable=False,
+            need_sellable=True,
             need_cash=True,
             snapshot_cache=cache,
             use_shared_snapshot=True,

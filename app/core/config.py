@@ -2,7 +2,7 @@ import json
 import os
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -21,6 +21,13 @@ ApiRateLimitMap = dict[str, ApiRateLimitEntry]
 # regime or every concurrent /invest + MCP reader during a cold compose raises
 # an unhandled TimeoutError while the owner is still healthy and progressing.
 PORTFOLIO_SNAPSHOT_MEASURED_COLD_COMPOSE_REGIME_SECONDS: float = 16.28
+
+# #728 ships the enforcement implementation dark.  A later, explicitly
+# operator-approved configuration PR must change this source-controlled
+# authorization before a deployment may parse an enforce mode.  Keeping this
+# outside environment configuration prevents an unreviewed env edit from
+# turning a new sell gate on.
+_PROTECTED_QUANTITY_ENFORCE_CONFIG_APPROVED = False
 
 
 DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
@@ -307,6 +314,18 @@ class Settings(BaseSettings):
     toss_rate_limiter_backend: Literal["local", "redis"] = "local"
     toss_live_order_mutations_enabled: bool = False
 
+    # Q13 remains open: even after the generic enforce authorization lands,
+    # Toss may not enter enforce until its sellable semantics are evidenced.
+    protected_quantity_toss_sellable_verified: bool = False
+    # ROB-728 — operator-declared long-term quantity floors.  The three modes
+    # intentionally exist per account scope, but this implementation PR only
+    # permits off and shadow in a deployment.  Enforcement is code-complete
+    # for test injection yet structurally unreachable until a separately
+    # approved source/configuration change authorizes it.
+    protected_quantity_mode_kis_live: Literal["off", "shadow", "enforce"] = "off"
+    protected_quantity_mode_toss_live: Literal["off", "shadow", "enforce"] = "off"
+    protected_quantity_mode_upbit_live: Literal["off", "shadow", "enforce"] = "off"
+
     # ROB-866: gate for the scheduleless Toss manual-activity sweep TaskIQ task.
     # Default off — the sweep runs manually (dry_run MCP tool) first; recurrence is
     # a separate decision after manual reps. Only gates the auto-run task; the MCP
@@ -545,6 +564,36 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(
                 f"approval hash mode must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return normalized
+
+    @field_validator(
+        "protected_quantity_mode_kis_live",
+        "protected_quantity_mode_toss_live",
+        "protected_quantity_mode_upbit_live",
+        mode="before",
+    )
+    @classmethod
+    def _validate_protected_quantity_mode(cls, value: Any, info: ValidationInfo) -> str:
+        normalized = value.strip().lower() if isinstance(value, str) else value
+        allowed = {"off", "shadow", "enforce"}
+        if normalized not in allowed:
+            raise ValueError(
+                "protected quantity mode must be one of off, shadow, enforce"
+            )
+        if (
+            info.field_name == "protected_quantity_mode_toss_live"
+            and normalized == "enforce"
+            and not bool(info.data.get("protected_quantity_toss_sellable_verified"))
+        ):
+            raise ValueError(
+                "protected_quantity_mode_toss_live=enforce requires "
+                "PROTECTED_QUANTITY_TOSS_SELLABLE_VERIFIED=true"
+            )
+        if normalized == "enforce" and not _PROTECTED_QUANTITY_ENFORCE_CONFIG_APPROVED:
+            raise ValueError(
+                "protected quantity enforce is unavailable until a separately "
+                "operator-approved configuration change"
             )
         return normalized
 

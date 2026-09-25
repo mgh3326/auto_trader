@@ -2,8 +2,9 @@
 
 This module is intentionally read-only.  It serializes the bounded home
 projection once into the process-shared portfolio cache and provides the MCP
-position projection from that same payload.  Sellable quantity is excluded
-from the cache schema; order paths have their own fresh broker authority.
+position projection from that same payload. Protected-quantity read evidence
+is retained for the L1 display projection; order paths still have their own
+fresh broker authority and must never authorize sends from this cache.
 """
 
 from __future__ import annotations
@@ -17,15 +18,28 @@ from app.mcp_server.tooling.shared import (
 )
 from app.schemas.invest_home import InvestHomeResponse
 
-PORTFOLIO_SNAPSHOT_SCHEMA_VERSION = 1
+PORTFOLIO_SNAPSHOT_SCHEMA_VERSION = 2
 
 
-def _is_forbidden_snapshot_field(key: object) -> bool:
-    normalized = "".join(char for char in str(key).lower() if char.isalnum())
-    return "sellable" in normalized or normalized in {
-        "pendingsellquantity",
-        "pendingquantity",
-    }
+def _strip_pending_sell_fields(value: Any) -> Any:
+    """Remove stale order-state only; retain explicit L1 display evidence.
+
+    The whole-portfolio cache is a read model, never an order authority.  A
+    pending-order counter can become stale independently of a holding, while
+    the C5/C7 projection needs the broker sellable fact, tactical display
+    quantity, and protection state.  Keep the latter fields in schema v2 and
+    remove only pending-order state from every nested response projection.
+    """
+
+    if isinstance(value, dict):
+        return {
+            key: _strip_pending_sell_fields(item)
+            for key, item in value.items()
+            if key not in {"pendingSellQuantity", "pending_sell_quantity"}
+        }
+    if isinstance(value, list):
+        return [_strip_pending_sell_fields(item) for item in value]
+    return value
 
 
 def portfolio_snapshot_scope(
@@ -37,18 +51,6 @@ def portfolio_snapshot_scope(
     paper_key = "*" if paper_sources is None else ",".join(sorted(paper_sources))
     digest = hashlib.sha256(paper_key.encode("utf-8")).hexdigest()[:16]
     return f"user:{int(user_id)}:paper:{int(include_paper)}:{digest}"
-
-
-def _strip_sellable_fields(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _strip_sellable_fields(item)
-            for key, item in value.items()
-            if not _is_forbidden_snapshot_field(key)
-        }
-    if isinstance(value, list):
-        return [_strip_sellable_fields(item) for item in value]
-    return value
 
 
 HELD_KEY_MARKETS = frozenset({"kr", "us", "crypto"})
@@ -91,9 +93,9 @@ def _held_pairs_from_response(response: InvestHomeResponse) -> list[list[str]]:
 
 
 def serialize_portfolio_snapshot(response: InvestHomeResponse) -> dict[str, Any]:
-    """Build the cache payload and remove all sellable fields recursively."""
+    """Build a bounded L1 cache payload, never a live-send authority."""
 
-    raw_response = _strip_sellable_fields(response.model_dump(mode="json"))
+    raw_response = _strip_pending_sell_fields(response.model_dump(mode="json"))
     return {
         "schema_version": PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
         "held_pairs": _held_pairs_from_response(response),
@@ -107,9 +109,6 @@ def deserialize_portfolio_snapshot(payload: dict[str, Any]) -> InvestHomeRespons
     raw_response = payload.get("response")
     if not isinstance(raw_response, dict):
         raise ValueError("portfolio snapshot response is invalid")
-    # Re-validate the no-sellable cache contract before exposing it to callers.
-    if _contains_sellable_key(raw_response):
-        raise ValueError("portfolio snapshot contains forbidden sellable field")
     return InvestHomeResponse.model_validate(raw_response)
 
 
@@ -135,17 +134,6 @@ def held_pairs_from_portfolio_snapshot(
         if normalized_symbol:
             pairs.add((normalized_market, normalized_symbol))
     return sorted(pairs)
-
-
-def _contains_sellable_key(value: Any) -> bool:
-    if isinstance(value, dict):
-        return any(
-            _is_forbidden_snapshot_field(key) or _contains_sellable_key(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, list):
-        return any(_contains_sellable_key(item) for item in value)
-    return False
 
 
 def _mcp_symbol(symbol: str, instrument_type: str) -> str:
@@ -329,6 +317,15 @@ def portfolio_snapshot_to_mcp_positions(
                 ),
                 "profit_loss": _mcp_profit_loss(holding),
                 "profit_rate": _mcp_profit_rate(holding),
+                # C7 exposes the L1 display projection and its raw evidence.
+                # These cached values are never accepted by a live broker send;
+                # G guards re-read broker S/H immediately before mutation.
+                "sellable_quantity": holding.sellableQuantity,
+                "broker_sellable_quantity": holding.brokerSellableQuantity,
+                "sellable_observed": holding.sellableObserved,
+                "protected_quantity": holding.protectedQuantity,
+                "tactical_sellable_quantity": holding.sellableQuantity,
+                "protection_state": holding.protectionState,
             }
         )
     return positions

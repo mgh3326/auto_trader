@@ -75,6 +75,11 @@ from app.services.order_proposals.cash_funding_exemption import (
     parse_funding_target,
     resolve_cash_funding_exemption,
 )
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    prepare_live_sell_lease,
+    protection_mode_for_scope,
+)
 from app.services.toss_sellable_cache import get_shared_sellable_cache
 
 logger = logging.getLogger(__name__)
@@ -873,6 +878,78 @@ async def _fresh_sellable_preflight(
     }, None
 
 
+async def _prepare_toss_sell_protection(
+    client: TossReadClient,
+    *,
+    market: Literal["kr", "us"],
+    symbol: str,
+    quantity: Decimal | None,
+    fresh_sellable_evidence: dict[str, Any],
+    order_amount_present: bool,
+    kind: Literal["new", "amend_uncapped"],
+    base: dict[str, Any],
+) -> tuple[Any | None, dict[str, Any] | None]:
+    """G2/G3 protection gate after Toss's broker-native sellability read.
+
+    The policy table is consulted for every live sell (Q15).  The additional
+    holdings call is deliberately delayed until the declaration is known to be
+    active, preserving the no-extra-broker-read rule for unprotected symbols.
+    The returned lease remains held by the caller through the mutation response.
+    """
+
+    try:
+        lease = await prepare_live_sell_lease(
+            account_scope="toss_live",
+            market=market,
+            symbol=symbol,
+        )
+    except ProtectionStateUnavailable:
+        return None, {
+            "success": False,
+            **base,
+            "error": "Protected position state is unavailable; sell not sent.",
+            "error_code": "protection_state_unavailable",
+        }
+
+    if not lease.active:
+        return lease, None
+
+    fresh_sellable = fresh_sellable_evidence.get("fresh_sellable_quantity")
+    holding = None
+    if not order_amount_present:
+        try:
+            holding = await _find_holding(client, symbol)
+        except Exception:  # noqa: BLE001 - missing fresh H is fail-closed
+            holding = None
+
+    try:
+        decision = await lease.evaluate(
+            # A protected orderAmount SELL lets the broker choose q. Do not
+            # infer it from price or cache data; unresolved is fail-closed in
+            # enforce and a would-block observation in shadow.
+            quantity=None if order_amount_present else quantity,
+            kind=kind,
+            fresh_broker_sellable=fresh_sellable,
+            fresh_broker_held=None if holding is None else holding.quantity,
+            sellable_observed=True,
+        )
+    except BaseException:
+        await lease.release()
+        raise
+    if decision.allowed:
+        return lease, None
+
+    await lease.release()
+    error = {
+        "success": False,
+        **base,
+        "error": "Protected quantity floor blocks this sell order.",
+    }
+    if decision.block is not None:
+        error.update(decision.block.payload())
+    return None, error
+
+
 async def _opposite_pending_error(
     client: TossReadClient,
     symbol: str,
@@ -1612,13 +1689,31 @@ async def _toss_place_order_impl(
     # run before *any* Decimal arithmetic on the quantity, including the
     # high-value KRW notional comparison below -- ``Decimal("NaN") >= ...``
     # raises ``decimal.InvalidOperation`` instead of failing closed with the
-    # structured contract. Toss's orderAmount-only SELL shape has no
-    # broker-authoritative quantity contract; do not synthesize one from
-    # holdings, snapshots, or sellable caches.
-    if side == "sell" and (
-        quantity_dec is None
-        or not quantity_dec.is_finite()
-        or quantity_dec <= Decimal("0")
+    # structured contract. There is one narrow #728 observation exception:
+    # when the Toss protection mode is shadow/enforce, an orderAmount-only
+    # SELL reaches G2 after the fresh broker preflight so an active protected
+    # declaration can reject it as unresolved. It still never reaches POST
+    # when no declaration blocks it; the legacy explicit-quantity rule stays
+    # intact in off mode and after a shadow observation.
+    order_amount_protection_probe = False
+    if side == "sell" and quantity_dec is None and order_amount_dec is not None:
+        try:
+            order_amount_protection_probe = (
+                protection_mode_for_scope("toss_live") != "off"
+            )
+        except ProtectionStateUnavailable:
+            # The normal structural error below is fail-closed, and avoids
+            # inventing an authority path if process configuration is invalid.
+            order_amount_protection_probe = False
+
+    if (
+        side == "sell"
+        and (
+            quantity_dec is None
+            or not quantity_dec.is_finite()
+            or quantity_dec <= Decimal("0")
+        )
+        and not order_amount_protection_probe
     ):
         return {
             "success": False,
@@ -1649,6 +1744,7 @@ async def _toss_place_order_impl(
 
     async def execute_order(client: TossReadClient):
         sellable_evidence: dict[str, Any] = {}
+        protection_lease: Any | None = None
         # Guard: Warnings check
         guard_res = await check_warnings_guard(client, symbol, market=mkt, side=side)
         guard_warnings = _warning_payload(guard_res.warnings)
@@ -1752,6 +1848,32 @@ async def _toss_place_order_impl(
             if sellable_error is not None:
                 return sellable_error
             sellable_evidence = sellable_evidence or {}
+            protection_lease, protection_error = await _prepare_toss_sell_protection(
+                client,
+                market=mkt,
+                symbol=symbol,
+                quantity=quantity_dec,
+                fresh_sellable_evidence=sellable_evidence,
+                order_amount_present=order_amount_dec is not None,
+                kind="new",
+                base=base_response,
+            )
+            if protection_error is not None:
+                return protection_error
+
+            if order_amount_protection_probe:
+                # A shadow decision records its would-block event but does not
+                # authorize this independently unresolved payload. Release the
+                # protected-key lease before returning the unchanged structural
+                # contract, well before the pre-send hook or POST.
+                await protection_lease.release()
+                protection_lease = None
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "SELL orders require an explicit quantity.",
+                    "error_code": "sell_quantity_required",
+                }
 
         pre_send_hook = _toss_pre_send_hook.get()
 
@@ -1840,6 +1962,9 @@ async def _toss_place_order_impl(
                 if res.client_order_id is not None:
                     err["client_order_id"] = res.client_order_id
             return err
+        finally:
+            if protection_lease is not None:
+                await protection_lease.release()
 
     async with _client_context() as client:
         return await execute_order(client)
@@ -2039,6 +2164,7 @@ async def toss_modify_order(
                 return sell_guard
 
         sellable_evidence: dict[str, Any] = {}
+        protection_lease: Any | None = None
 
         if (
             high_value_guard := _high_value_error(
@@ -2110,6 +2236,23 @@ async def toss_modify_order(
                 if sellable_error is not None:
                     return sellable_error
                 sellable_evidence = sellable_evidence or {}
+                (
+                    protection_lease,
+                    protection_error,
+                ) = await _prepare_toss_sell_protection(
+                    client,
+                    market=mkt,
+                    symbol=symbol,
+                    quantity=preflight_quantity,
+                    fresh_sellable_evidence=sellable_evidence,
+                    order_amount_present=False,
+                    # Q19 is open: both KR and US Toss amendments follow the
+                    # conservative new-order bound, including price-only US.
+                    kind="amend_uncapped",
+                    base=base_response,
+                )
+                if protection_error is not None:
+                    return protection_error
 
         if dry_run:
             return {
@@ -2165,6 +2308,9 @@ async def toss_modify_order(
                 err["replacement_order_id"] = res.order_id
                 err.setdefault("order_id", res.order_id)
             return err
+        finally:
+            if protection_lease is not None:
+                await protection_lease.release()
 
     async with _client_context() as client:
         return await execute_modify(client)

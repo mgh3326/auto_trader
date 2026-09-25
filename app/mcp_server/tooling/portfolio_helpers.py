@@ -39,6 +39,15 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         output["strategy_signal"] = position["strategy_signal"]
     if "sellable_quantity" in position:
         output["sellable_quantity"] = position["sellable_quantity"]
+    for key in (
+        "broker_sellable_quantity",
+        "sellable_observed",
+        "protected_quantity",
+        "tactical_sellable_quantity",
+        "protection_state",
+    ):
+        if key in position:
+            output[key] = position[key]
     if "source" in position:
         output["source"] = position["source"]
     # ROB-1095: expose the quote freshness/provenance used by US holdings and

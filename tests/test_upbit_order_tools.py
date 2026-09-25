@@ -8,6 +8,13 @@ import app.services.brokers.upbit.client as upbit
 import app.services.brokers.upbit.orders as upbit_orders
 
 
+class _UnprotectedLease:
+    active = False
+
+    async def release(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_fetch_closed_orders_builds_query(monkeypatch):
     request_mock = AsyncMock(return_value=[])
@@ -97,6 +104,11 @@ async def test_cancel_and_reorder_ask_success(monkeypatch):
     )
     monkeypatch.setattr(
         upbit_orders, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
+    )
+    monkeypatch.setattr(
+        upbit_orders,
+        "prepare_live_sell_lease",
+        AsyncMock(return_value=_UnprotectedLease()),
     )
 
     place_buy_mock = AsyncMock()

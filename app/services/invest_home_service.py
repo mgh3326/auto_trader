@@ -11,9 +11,11 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import sentry_sdk
 
+from app.core.symbol import to_upbit_symbol
 from app.schemas.invest_home import (
     Account,
     AccountKindLiteral,
@@ -82,9 +84,9 @@ def _sellable_quantity(h: Holding) -> float | None:
         return 0.0
     if h.sellableQuantity is not None:
         return max(h.sellableQuantity, 0.0)
-    # Unknown sellability must remain unknown. General home reads intentionally
-    # omit Toss sellable data (ROB-1310); order tools perform their own fresh
-    # broker preflight. In particular, None must not become a synthetic zero.
+    # Unknown sellability must remain unknown. Home may display cache-aware raw
+    # broker evidence, but order tools still perform their own fresh broker
+    # preflight. In particular, None must not become a synthetic zero.
     return None
 
 
@@ -94,6 +96,33 @@ def _reference_quantity(h: Holding) -> float:
     if h.manualOnly or not _is_tradeable_holding(h):
         return max(h.quantity, 0.0)
     return 0.0
+
+
+def _protection_state(items: Iterable[Holding]) -> str:
+    """Return the most conservative state represented by a grouped row."""
+
+    states = {holding.protectionState for holding in items}
+    for state in ("shortfall", "unverified", "encroached", "covered"):
+        if state in states:
+            return state
+    return "unprotected"
+
+
+def _group_broker_sellable_quantity(items: Iterable[Holding]) -> float | None:
+    """Sum raw evidence only when every tradeable source supplied it."""
+
+    live_items = [item for item in items if _is_tradeable_holding(item)]
+    if not live_items:
+        return 0.0
+    values = [item.brokerSellableQuantity for item in live_items]
+    if any(value is None for value in values):
+        return None
+    return sum(value for value in values if value is not None)
+
+
+def _group_sellable_observed(items: Iterable[Holding]) -> bool:
+    live_items = [item for item in items if _is_tradeable_holding(item)]
+    return bool(live_items) and all(item.sellableObserved for item in live_items)
 
 
 def _filter_manual_holdings_for_toss_api(
@@ -133,6 +162,10 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
         pending_sell_qty = sum(
             h.pendingSellQuantity for h in items if _is_tradeable_holding(h)
         )
+        broker_sellable_qty = _group_broker_sellable_quantity(items)
+        sellable_observed = _group_sellable_observed(items)
+        protected_qty = sum(h.protectedQuantity for h in items)
+        protection_state = _protection_state(items)
         reference_qty = sum(_reference_quantity(h) for h in items)
         cost_vals = [h.costBasis for h in items]
         avg_cost: float | None = None
@@ -230,6 +263,10 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                 totalQuantity=total_qty,
                 tradeableQuantity=tradeable_qty,
                 sellableQuantity=sellable_qty,
+                sellableObserved=sellable_observed,
+                brokerSellableQuantity=broker_sellable_qty,
+                protectedQuantity=protected_qty,
+                protectionState=protection_state,
                 pendingSellQuantity=pending_sell_qty,
                 referenceQuantity=reference_qty,
                 averageCost=avg_cost,
@@ -259,6 +296,10 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                         isTradeable=h.isTradeable,
                         manualOnly=h.manualOnly,
                         sellableQuantity=_sellable_quantity(h),
+                        sellableObserved=h.sellableObserved,
+                        brokerSellableQuantity=h.brokerSellableQuantity,
+                        protectedQuantity=h.protectedQuantity,
+                        protectionState=h.protectionState,
                         pendingSellQuantity=h.pendingSellQuantity,
                         referenceQuantity=_reference_quantity(h),
                     )
@@ -504,6 +545,89 @@ class InvestHomeService:
         return snapshot_cache is not None and bool(
             getattr(snapshot_cache, "usable", True)
         )
+
+    @staticmethod
+    def _protection_identity(
+        holding: Holding,
+    ) -> tuple[str, str, str] | None:
+        """Map a live display row to the same key dialect as its ledger."""
+
+        # A live Toss account can be readable while its order-mutation gate is
+        # off. Protection is still display evidence in that state, so do not
+        # conflate the mutation gate with whether this is a live broker row.
+        if holding.accountKind != "live" or holding.manualOnly:
+            return None
+        if holding.source == "kis" and holding.market in {"KR", "US"}:
+            return "kis_live", holding.market.lower(), holding.symbol
+        if holding.source == "toss_api" and holding.market in {"KR", "US"}:
+            return "toss_live", holding.market.lower(), holding.symbol
+        if holding.source == "upbit" and holding.market == "CRYPTO":
+            return "upbit_live", "crypto", to_upbit_symbol(holding.symbol)
+        return None
+
+    async def _apply_protection_projection(
+        self,
+        holdings: Iterable[Holding],
+    ) -> None:
+        """Attach read-only protection state without rewriting broker totals.
+
+        The broker readers emit raw sellable evidence.  This composition seam
+        is the only place invest-home turns it into the mode-dependent tactical
+        display quantity, so source DTOs remain usable by fresh order paths.
+        """
+
+        from app.services.protected_quantity_service import (
+            ProtectedQuantityValidationError,
+            ProtectionStateUnavailable,
+            apply_position_protection,
+        )
+
+        async def project(holding: Holding) -> None:
+            identity = self._protection_identity(holding)
+            if identity is None:
+                return
+            scope, market, symbol = identity
+            raw_sellable = holding.brokerSellableQuantity
+            if raw_sellable is None and holding.sellableObserved:
+                # Cached pre-#728 rows have no separate broker field.  Retain
+                # their existing display value in off/shadow rather than
+                # fabricating a different one; sellableObserved still makes an
+                # active protection state unverified and blocks L2 sends.
+                raw_sellable = holding.sellableQuantity
+            try:
+                output: dict[str, Any] = await apply_position_protection(
+                    {
+                        "quantity": holding.quantity,
+                        # Keep the existing display field intact in off and
+                        # shadow.  broker_sellable_quantity separately carries
+                        # only evidence we know came from the broker.
+                        "sellable_quantity": holding.sellableQuantity,
+                        "broker_sellable_quantity": raw_sellable,
+                        "sellable_observed": holding.sellableObserved,
+                    },
+                    account_scope=scope,
+                    market=market,
+                    symbol=symbol,
+                )
+            except (
+                ProtectedQuantityValidationError,
+                ProtectionStateUnavailable,
+            ):
+                # Read surfaces preserve the broker value during an unavailable
+                # policy projection. The live G guards repeat the lookup under
+                # fail-closed rules before every send.
+                holding.brokerSellableQuantity = raw_sellable
+                holding.protectionState = "unverified"
+                return
+            holding.brokerSellableQuantity = output.get(
+                "broker_sellable_quantity", raw_sellable
+            )
+            holding.protectedQuantity = float(output.get("protected_quantity", 0.0))
+            holding.protectionState = output.get("protection_state", "unverified")
+            if "sellable_quantity" in output:
+                holding.sellableQuantity = output["sellable_quantity"]
+
+        await asyncio.gather(*(project(holding) for holding in holdings))
 
     async def _get_home_from_snapshot(
         self,
@@ -812,6 +936,8 @@ class InvestHomeService:
                                 )  # type: ignore[arg-type]
                             )
 
+        await self._apply_protection_projection([*holdings, *hidden_holdings])
+
         return InvestHomeResponse(
             homeSummary=build_home_summary(accounts),
             accounts=accounts,
@@ -967,6 +1093,8 @@ class InvestHomeService:
                                         source=reader_source, message=type(exc).__name__
                                     )  # type: ignore[arg-type]
                                 )
+
+            await self._apply_protection_projection(holdings)
 
             return _AccountPanelView(
                 homeSummary=build_home_summary(accounts),

@@ -106,6 +106,7 @@ from .paper_validation import (
 )
 from .portfolio_decision_run import PortfolioDecisionRun
 from .prompt import PromptResult
+from .protected_positions import ProtectedPosition, ProtectedPositionRevision
 from .research_backtest import (
     ResearchBacktestPair,
     ResearchBacktestRun,
@@ -324,6 +325,8 @@ __all__ = [
     "PaperValidationStateTransition",
     "StrategyHypothesisDraft",
     "PortfolioDecisionRun",
+    "ProtectedPosition",
+    "ProtectedPositionRevision",
     "SellCondition",
     "TradingDecisionSession",
     "TradingDecisionProposal",

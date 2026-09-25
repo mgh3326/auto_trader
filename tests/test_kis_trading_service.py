@@ -13,6 +13,28 @@ from app.services.kis_trading_service import (
 )
 
 
+class _UnprotectedPolicyLease:
+    """Keep legacy strategy tests independent of the #728 policy store."""
+
+    active = False
+
+    async def release(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _use_unprotected_policy_lease_for_legacy_strategy_tests(monkeypatch):
+    """#728's G5 behavior is covered in its dedicated fake-broker tests."""
+
+    import app.services.kis_trading_service as legacy
+
+    monkeypatch.setattr(
+        legacy,
+        "prepare_live_sell_lease",
+        AsyncMock(return_value=_UnprotectedPolicyLease()),
+    )
+
+
 class TestKISClientMethodSignatures:
     """KISClient 메서드 시그니처 검증 테스트.
 
