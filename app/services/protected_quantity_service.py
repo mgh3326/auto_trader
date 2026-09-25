@@ -76,6 +76,10 @@ _CURRENCY_BY_SCOPE_MARKET = {
 _TRY_ADVISORY_LOCK = text("SELECT pg_try_advisory_lock(CAST(:key AS bigint))")
 _RELEASE_ADVISORY_LOCK = text("SELECT pg_advisory_unlock(CAST(:key AS bigint))")
 _XACT_ADVISORY_LOCK = text("SELECT pg_advisory_xact_lock(CAST(:key AS bigint))")
+_LEASE_CLEANUP_WARNING = (
+    "Protection lease cleanup failed after broker response; broker result was "
+    "preserved and downstream recording continued."
+)
 
 
 class ProtectedQuantityValidationError(ValueError):
@@ -1012,6 +1016,74 @@ class LiveSellProtectionLease:
             await connection.close()
 
 
+async def release_live_sell_lease_preserving_outcome(
+    lease: Any | None,
+    *,
+    operation: str,
+    broker_response_observed: bool = True,
+) -> str | None:
+    """Release a post-send lease without replacing an established broker result.
+
+    ``LiveSellProtectionLease.release`` still invalidates and closes its
+    dedicated connection on any cleanup failure.  This boundary only prevents
+    that cleanup failure from erasing a broker result which has already crossed
+    the mutation boundary.  Cancellation remains a control-flow signal and is
+    deliberately not swallowed.
+    """
+
+    if lease is None:
+        return None
+    try:
+        await lease.release()
+    except Exception as exc:  # noqa: BLE001 - preserve the established outcome
+        if broker_response_observed:
+            logger.warning(
+                "protected sell lease cleanup failed after broker response: "
+                "operation=%s error_type=%s",
+                operation,
+                type(exc).__name__,
+            )
+            return _LEASE_CLEANUP_WARNING
+        logger.warning(
+            "protected sell lease cleanup failed before a broker response: "
+            "operation=%s error_type=%s",
+            operation,
+            type(exc).__name__,
+        )
+    return None
+
+
+def attach_live_sell_lease_cleanup_warning(
+    result: dict[str, Any],
+    warning: str | None,
+    *,
+    accepted: bool | None = None,
+) -> dict[str, Any]:
+    """Add an explicit cleanup warning only to a successful broker outcome."""
+
+    if accepted is None:
+        broker_status = result.get("broker_status")
+        accepted = (
+            broker_status == "accepted"
+            if broker_status is not None
+            else result.get("success") is True
+        )
+    if warning is None or not accepted:
+        return result
+    updated = dict(result)
+    raw_warnings = updated.get("warnings")
+    if raw_warnings is None:
+        warnings: list[Any] = []
+    elif isinstance(raw_warnings, list):
+        warnings = list(raw_warnings)
+    else:
+        warnings = [raw_warnings]
+    if warning not in warnings:
+        warnings.append(warning)
+    updated["warnings"] = warnings
+    return updated
+
+
 async def _invalidate_and_close(connection: AsyncConnection) -> None:
     """Discard a dedicated session before it can return a held advisory lock.
 
@@ -1602,6 +1674,7 @@ __all__ = [
     "ProtectionStateUnavailable",
     "apply_holdings_protection",
     "apply_position_protection",
+    "attach_live_sell_lease_cleanup_warning",
     "coerce_broker_quantity",
     "headroom_for_observation",
     "live_sell_lease",
@@ -1609,4 +1682,5 @@ __all__ = [
     "parse_operator_quantity",
     "prepare_live_sell_lease",
     "protection_mode_for_scope",
+    "release_live_sell_lease_preserving_outcome",
 ]
