@@ -180,22 +180,21 @@ async def _count_open_live_ledger_rows(
         return int((await db.execute(stmt)).scalar_one())
 
 
-# ROB-719 gap D — mirrors the UsOverseasEvidenceAdapter evidence window:
+# ROB-719 gap D+A — mirrors the UsOverseasEvidenceAdapter evidence window:
 # ``_find_us_order_in_recent_history`` (orders_modify_cancel.py) probes
-# TTTS3035R over a fixed now-7d range, so a KIS row older than that can never
-# produce evidence.  Whether TTTS3035R can see aged orders at all is under a
-# read-only operator probe (gap A); if it can, this constant moves to the
-# documented TR depth together with the anchored-window change.
-_KIS_US_HISTORY_LOOKBACK_DAYS = 7
+# TTTS3035R over an order-date-anchored window bounded by the documented
+# ~90-day depth (operator probe 2026-09-25 returned orders back to 07-17), so
+# a KIS row older than that can never produce evidence.
+_KIS_US_HISTORY_LOOKBACK_DAYS = 90
 
 # Documented scan order for the open-row candidate scan (ROB-719 gap D):
 # evidence-reachable rows first (order_no present; KIS rows inside the
-# 7-day TTTS3035R history window), beyond-reach rows only in leftover slots,
-# created_at ASC + id ASC inside each tier.
+# ~90-day TTTS3035R history window), beyond-reach rows only in leftover
+# slots, created_at ASC + id ASC inside each tier.
 _US_OPEN_SCAN_ORDER = (
-    "evidence-reachable first (order_no present; kis rows inside the 7-day "
-    "TTTS3035R history window), then created_at ASC, id ASC; beyond-reach "
-    "rows fill only leftover slots"
+    "evidence-reachable first (order_no present; kis rows inside the "
+    "~90-day TTTS3035R history window), then created_at ASC, id ASC; "
+    "beyond-reach rows fill only leftover slots"
 )
 
 
@@ -207,9 +206,10 @@ def _live_beyond_reach_clause() -> Any:
     evidence window.  Upbit rows have no history-depth cap — only the missing
     key deprioritizes them.
     """
-    # The adapter's probe window is date-granular ((now-7d).date .. now.date)
-    # while this cutoff is an exact timestamp, so a row 7-8 days old may still
-    # be probeable but ranks beyond reach — ordering-only, conservative side.
+    # The adapter's probe window is date-granular (order_date-1 .. today,
+    # bounded by the ~90-day depth) while this cutoff is an exact timestamp,
+    # so a row right at the boundary may still be probeable but ranks beyond
+    # reach — ordering-only, conservative side.
     kis_cutoff = datetime.now(UTC) - timedelta(days=_KIS_US_HISTORY_LOOKBACK_DAYS)
     return or_(
         LiveOrderLedger.order_no.is_(None),
@@ -402,11 +402,13 @@ async def _reconcile_one_live_row(
             base["reason_code"] = evidence.reason_code
         if evidence.reason_code == "not_found":
             # ROB-719 gap A: the order is absent from the broker's evidence
-            # window — for KIS US a fixed ~7-day history probe, so an order
-            # older than that looks identical to a genuinely live one.  Absence
-            # is still not expiry evidence and the ledger stays open, but the
-            # silent noop made aged-out DAY orders invisible forever; flag them
-            # so dry-runs and review queues can see the cohort.
+            # window — for KIS US an order-date-anchored TTTS3035R probe
+            # bounded by the ~90-day depth, so an order older than that (or
+            # one without a derivable order date) looks identical to a
+            # genuinely live one.  Absence is still not expiry evidence and
+            # the ledger stays open, but the silent noop made aged-out DAY
+            # orders invisible forever; flag them so dry-runs and review
+            # queues can see the cohort.
             base["requires_manual_review"] = True
             base["reason"] = evidence.detail or (
                 "order not found in broker evidence window"

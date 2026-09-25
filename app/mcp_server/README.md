@@ -2486,8 +2486,9 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
 A `pending` verdict whose `reason_code` is `not_found` (the order is absent from
-the broker's evidence window — for KIS US a fixed ~7-day TTTS3035R history
-probe) likewise returns `noop_pending` with `requires_manual_review=true` and
+the broker's evidence window — for KIS US a TTTS3035R history probe anchored on
+the ledger row's order date, bounded by the ~90-day documented depth)
+likewise returns `noop_pending` with `requires_manual_review=true` and
 `reason_code="not_found"`; absence is never expiry evidence (ROB-719).
 Only explicit broker cancellation evidence returns `cancelled`; its dry-run
 action is `would_mark_cancelled`, while an applied reconcile reports
@@ -2497,7 +2498,7 @@ Both `live_reconcile_orders` and `kis_live_reconcile_orders` order their
 open-row candidate scans evidence-reachable first (ROB-719): rows that can
 still produce broker evidence scan before permanently unresolvable ones
 (missing order key or an order date beyond the documented evidence depth —
-TTTC8001R ~90 days for KIS KR, the fixed 7-day TTTS3035R window for KIS US),
+TTTC8001R ~90 days for KIS KR, ~90 days order-date-anchored for KIS US),
 which fill only leftover limit slots. `candidate_scan` reports the order plus
 `unreached_probeable` vs `unreached_beyond_reach`. The KR terminal repair
 pre-pass pages by ledger id under a bounded cap (`scanned`, `exhausted`,
