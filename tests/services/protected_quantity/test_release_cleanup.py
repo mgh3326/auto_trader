@@ -12,27 +12,56 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.protected_quantity_service import ProtectionDecision
+from app.services import protected_quantity_service as policy
 
 pytestmark = pytest.mark.unit
 
 
-class _ReleaseFailsLease:
-    """Fake active lease whose dedicated-session cleanup has already failed."""
+def _verified_cleanup_lease(
+    *,
+    unlock_error: BaseException | None = RuntimeError("advisory unlock failed"),
+    commit_error: BaseException | None = None,
+    invalidate_error: BaseException | None = None,
+    close_error: BaseException | None = None,
+) -> tuple[policy.LiveSellProtectionLease, SimpleNamespace]:
+    """Build a real lease whose advisory cleanup fails after broker acceptance.
 
-    active = True
+    The fake connection is intentionally below LiveSellProtectionLease rather
+    than a generic fake lease.  This proves that only a verified invalidation
+    allows a caller to preserve an already-observed broker result.
+    """
 
-    def __init__(self) -> None:
-        self.release_calls = 0
-        self.evaluate_calls: list[dict[str, object]] = []
-
-    async def evaluate(self, **kwargs: object) -> ProtectionDecision:
-        self.evaluate_calls.append(kwargs)
-        return ProtectionDecision(True, "covered", Decimal("40"))
-
-    async def release(self) -> None:
-        self.release_calls += 1
-        raise RuntimeError("advisory unlock failed")
+    key = policy.normalize_protection_key(
+        account_scope="kis_live",
+        market="kr",
+        symbol="005930",
+    )
+    snapshot = policy.ProtectedPositionSnapshot(
+        id=733,
+        key=key,
+        protected_quantity=Decimal("60"),
+        revision=1,
+        last_confirmed_broker_held=Decimal("100"),
+        last_confirmed_at=datetime(2026, 9, 26, tzinfo=UTC),
+        updated_by_user_id=1,
+        updated_at=datetime(2026, 9, 26, tzinfo=UTC),
+    )
+    connection = SimpleNamespace(
+        execute=AsyncMock(side_effect=unlock_error),
+        commit=AsyncMock(side_effect=commit_error),
+        invalidate=AsyncMock(side_effect=invalidate_error),
+        close=AsyncMock(side_effect=close_error),
+    )
+    lease = policy.LiveSellProtectionLease(
+        snapshot=snapshot,
+        mode="shadow",
+        connection=connection,
+        lock_key=733,
+    )
+    lease.evaluate = AsyncMock(  # type: ignore[method-assign]
+        return_value=policy.ProtectionDecision(True, "covered", Decimal("40"))
+    )
+    return lease, connection
 
 
 def _assert_cleanup_warning(result: dict[str, object]) -> None:
@@ -51,7 +80,7 @@ async def test_kis_kr_amend_acceptance_keeps_rob395_repoint_after_cleanup_failur
     from app.mcp_server.tooling import kis_live_ledger
     from app.mcp_server.tooling import orders_modify_cancel as modify
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     broker_modify = AsyncMock(return_value={"odno": "NEW-KR"})
     broker = SimpleNamespace(
         inquire_korea_orders=AsyncMock(
@@ -99,11 +128,72 @@ async def test_kis_kr_amend_acceptance_keeps_rob395_repoint_after_cleanup_failur
     repoint.assert_awaited_once()
     assert repoint.await_args.kwargs["old_order_no"] == "OLD-KR"
     assert repoint.await_args.kwargs["new_order_no"] == "NEW-KR"
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
     assert any(
-        "protected sell lease cleanup failed after broker response" in record.message
+        "protected sell lease cleanup verified after broker response" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_kis_kr_amend_invalidation_failure_is_not_hidden_as_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An accepted broker reply cannot be presented as safely cleaned up without proof."""
+
+    from app.mcp_server.tooling import kis_live_ledger
+    from app.mcp_server.tooling import orders_modify_cancel as modify
+
+    lease, connection = _verified_cleanup_lease(
+        invalidate_error=RuntimeError("invalidation unavailable"),
+    )
+    broker_modify = AsyncMock(return_value={"odno": "NEW-KR-UNSAFE"})
+    broker = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(
+            return_value=[
+                {
+                    "odno": "OLD-KR-UNSAFE",
+                    "ord_unpr": "70000",
+                    "ord_qty": "40",
+                    "sll_buy_dvsn_cd": "01",
+                }
+            ]
+        ),
+        modify_korea_order=broker_modify,
+    )
+    repoint = AsyncMock(return_value=1)
+    monkeypatch.setattr(modify, "_create_kis_client", lambda **_: broker)
+    monkeypatch.setattr(
+        modify, "_live_sell_reprice_floor_error", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        modify, "_kr_security_type_or_none", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(modify, "adjust_tick_size_kr", lambda price, *_: price)
+    monkeypatch.setattr(
+        modify,
+        "_prepare_kis_live_sell_modify_protection",
+        AsyncMock(return_value=(lease, None)),
+    )
+    monkeypatch.setattr(kis_live_ledger, "_repoint_ledger_after_modify", repoint)
+
+    result = await modify.modify_order_impl(
+        "OLD-KR-UNSAFE",
+        "005930",
+        market="kr",
+        new_price=71_000,
+        new_quantity=40,
+        dry_run=False,
+    )
+
+    broker_modify.assert_awaited_once()
+    assert result["success"] is False
+    assert "invalidation unavailable" in str(result["error"])
+    assert "warnings" not in result
+    repoint.assert_not_awaited()
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -114,7 +204,7 @@ async def test_kis_us_amend_acceptance_preserves_result_after_cleanup_failure(
 
     from app.mcp_server.tooling import orders_modify_cancel as modify
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     broker_modify = AsyncMock(return_value={"odno": "NEW-US"})
     broker = SimpleNamespace(modify_overseas_order=broker_modify)
     monkeypatch.setattr(modify, "_create_kis_client", lambda **_: broker)
@@ -155,7 +245,8 @@ async def test_kis_us_amend_acceptance_preserves_result_after_cleanup_failure(
     assert result["new_order_id"] == "NEW-US"
     _assert_cleanup_warning(result)
     broker_modify.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 def _crypto_execute_kwargs() -> dict[str, object]:
@@ -200,7 +291,7 @@ async def test_g1_crypto_acceptance_records_after_cleanup_failure(
     from app.mcp_server.tooling import live_order_ledger
     from app.mcp_server.tooling import order_execution as execution
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     history = AsyncMock()
     accepted_ledger = AsyncMock(
         return_value={"success": True, "broker_status": "accepted", "ledger_id": 733}
@@ -239,7 +330,8 @@ async def test_g1_crypto_acceptance_records_after_cleanup_failure(
     _assert_cleanup_warning(result)
     history.assert_awaited_once()
     accepted_ledger.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -251,7 +343,7 @@ async def test_g1_preserves_pre_send_block_when_cleanup_also_fails(
     from app.mcp_server.tooling import order_execution as execution
     from app.services.brokers.kis.pre_send import PreSendFreshnessError
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     monkeypatch.setattr(
         execution, "prepare_live_sell_lease", AsyncMock(return_value=lease)
     )
@@ -282,7 +374,8 @@ async def test_g1_preserves_pre_send_block_when_cleanup_also_fails(
     assert result["success"] is False
     assert result.get("pre_send_blocked") is True, result
     history.assert_not_awaited()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -294,7 +387,7 @@ async def test_g1_broker_rejection_is_not_promoted_to_acceptance_by_cleanup(
     from app.mcp_server.tooling import live_order_ledger
     from app.mcp_server.tooling import order_execution as execution
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     rejected_ledger = AsyncMock(
         return_value={"success": True, "broker_status": "rejected", "ledger_id": 735}
     )
@@ -331,7 +424,8 @@ async def test_g1_broker_rejection_is_not_promoted_to_acceptance_by_cleanup(
     assert result["broker_status"] == "rejected"
     assert "warnings" not in result
     rejected_ledger.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -344,7 +438,7 @@ async def test_g1_untrusted_server_response_remains_unknown_after_cleanup_failur
     from app.mcp_server.tooling import order_execution as execution
     from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     history = AsyncMock()
     accepted_ledger = AsyncMock()
     monkeypatch.setattr(
@@ -378,48 +472,26 @@ async def test_g1_untrusted_server_response_remains_unknown_after_cleanup_failur
 
     history.assert_not_awaited()
     accepted_ledger.assert_not_awaited()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_release_commit_failure_invalidates_and_closes_dedicated_connection() -> (
     None
 ):
-    """An unlock or commit failure never returns an uncertain lease to the pool."""
+    """A normal commit error is typed only after invalidation and close succeed."""
 
-    from app.services import protected_quantity_service as policy
-
-    key = policy.normalize_protection_key(
-        account_scope="kis_live",
-        market="kr",
-        symbol="005930",
-    )
-    snapshot = policy.ProtectedPositionSnapshot(
-        id=733,
-        key=key,
-        protected_quantity=Decimal("60"),
-        revision=1,
-        last_confirmed_broker_held=Decimal("100"),
-        last_confirmed_at=datetime(2026, 9, 26, tzinfo=UTC),
-        updated_by_user_id=1,
-        updated_at=datetime(2026, 9, 26, tzinfo=UTC),
-    )
-    connection = SimpleNamespace(
-        execute=AsyncMock(),
-        commit=AsyncMock(side_effect=RuntimeError("commit response unavailable")),
-        invalidate=AsyncMock(),
-        close=AsyncMock(),
-    )
-    lease = policy.LiveSellProtectionLease(
-        snapshot=snapshot,
-        mode="shadow",
-        connection=connection,
-        lock_key=733,
+    lease, connection = _verified_cleanup_lease(
+        unlock_error=None,
+        commit_error=RuntimeError("commit response unavailable"),
     )
 
-    with pytest.raises(RuntimeError, match="commit response unavailable"):
+    with pytest.raises(policy.VerifiedLiveSellLeaseCleanupError) as caught:
         await lease.release()
 
+    assert isinstance(caught.value.cleanup_error, RuntimeError)
+    assert caught.value.close_completed is True
     connection.invalidate.assert_awaited_once()
     connection.close.assert_awaited_once()
 
@@ -428,17 +500,59 @@ async def test_release_commit_failure_invalidates_and_closes_dedicated_connectio
 async def test_cleanup_boundary_does_not_swallow_cancellation() -> None:
     """Cancellation must retain its control-flow meaning at the new boundary."""
 
-    from app.services import protected_quantity_service as policy
-
-    class CancellationLease:
-        async def release(self) -> None:
-            raise asyncio.CancelledError()
+    lease, connection = _verified_cleanup_lease(
+        unlock_error=asyncio.CancelledError(),
+        close_error=RuntimeError("close during cancellation unavailable"),
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await policy.release_live_sell_lease_preserving_outcome(
-            CancellationLease(),
+            lease,
             operation="cancellation_test",
         )
+
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_boundary_propagates_invalidation_failure() -> None:
+    """No accepted-result warning is allowed without a discarded backend proof."""
+
+    lease, connection = _verified_cleanup_lease(
+        invalidate_error=RuntimeError("invalidation unavailable"),
+    )
+
+    with pytest.raises(RuntimeError, match="invalidation unavailable"):
+        await policy.release_live_sell_lease_preserving_outcome(
+            lease,
+            operation="invalidation_failure_test",
+        )
+
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_boundary_explicitly_reports_close_failure_after_invalidation() -> (
+    None
+):
+    """A post-invalidation wrapper-close error is explicit, not silently safe."""
+
+    lease, connection = _verified_cleanup_lease(
+        close_error=RuntimeError("wrapper close unavailable"),
+    )
+
+    warning = await policy.release_live_sell_lease_preserving_outcome(
+        lease,
+        operation="close_failure_test",
+    )
+
+    assert warning is not None
+    assert "backend was invalidated" in warning
+    assert "wrapper close also failed" in warning
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -449,7 +563,7 @@ async def test_toss_place_acceptance_keeps_accepted_ledger_after_cleanup_failure
 
     from app.mcp_server.tooling import orders_toss_variants as toss
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     client = SimpleNamespace(
         place_order=AsyncMock(
             return_value=SimpleNamespace(
@@ -520,7 +634,8 @@ async def test_toss_place_acceptance_keeps_accepted_ledger_after_cleanup_failure
     _assert_cleanup_warning(result)
     client.place_order.assert_awaited_once()
     recorded.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -531,7 +646,7 @@ async def test_toss_modify_acceptance_keeps_replacement_ledger_after_cleanup_fai
 
     from app.mcp_server.tooling import orders_toss_variants as toss
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     client = SimpleNamespace(
         get_order=AsyncMock(
             return_value=SimpleNamespace(
@@ -592,7 +707,8 @@ async def test_toss_modify_acceptance_keeps_replacement_ledger_after_cleanup_fai
     _assert_cleanup_warning(result)
     client.modify_order.assert_awaited_once()
     recorded.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -603,7 +719,7 @@ async def test_upbit_cancel_and_reorder_preserves_cancel_after_cleanup_failure(
 
     import app.services.brokers.upbit.orders as upbit_orders
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     original = {
         "uuid": "UPBIT-OLD-733",
         "state": "wait",
@@ -641,7 +757,8 @@ async def test_upbit_cancel_and_reorder_preserves_cancel_after_cleanup_failure(
     _assert_cleanup_warning(result)
     cancel.assert_awaited_once_with(["UPBIT-OLD-733"])
     replace.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -652,7 +769,7 @@ async def test_legacy_kis_fragment_preserves_accepted_order_after_cleanup_failur
 
     from app.services import kis_trading_service as legacy
 
-    lease = _ReleaseFailsLease()
+    lease, connection = _verified_cleanup_lease()
     send = AsyncMock(return_value={"rt_cd": "0", "odno": "LEGACY-733"})
     ops = SimpleNamespace(market="domestic", place_order=send)
     monkeypatch.setattr(
@@ -676,4 +793,5 @@ async def test_legacy_kis_fragment_preserves_accepted_order_after_cleanup_failur
     assert result["odno"] == "LEGACY-733"
     _assert_cleanup_warning(result)
     send.assert_awaited_once()
-    assert lease.release_calls == 1
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
