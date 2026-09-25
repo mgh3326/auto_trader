@@ -17,6 +17,7 @@ def test_protected_quantity_modes_default_to_off() -> None:
     assert settings.protected_quantity_mode_toss_live == "off"
     assert settings.protected_quantity_mode_upbit_live == "off"
     assert settings.protected_quantity_toss_sellable_verified is False
+    assert settings.protected_quantity_kis_kr_amend_broker_capped_verified is False
 
 
 def test_shadow_is_the_only_non_off_deployment_mode_in_this_pr() -> None:
@@ -57,4 +58,12 @@ def test_toss_enforce_first_requires_q13_evidence() -> None:
             _env_file=None,
             protected_quantity_mode_toss_live="enforce",
             protected_quantity_toss_sellable_verified=False,
+        )
+
+
+def test_kis_kr_broker_capped_amend_promotion_is_unreachable_in_this_pr() -> None:
+    with pytest.raises(ValidationError, match="separately operator-approved"):
+        Settings(
+            _env_file=None,
+            protected_quantity_kis_kr_amend_broker_capped_verified=True,
         )

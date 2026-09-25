@@ -29,6 +29,12 @@ PORTFOLIO_SNAPSHOT_MEASURED_COLD_COMPOSE_REGIME_SECONDS: float = 16.28
 # turning a new sell gate on.
 _PROTECTED_QUANTITY_ENFORCE_CONFIG_APPROVED = False
 
+# Q19 remains unevidenced. A future promotion of KIS KR amendments from the
+# conservative new-order bound needs its own source-reviewed authorization;
+# an environment edit must not claim that the broker is residual-quantity
+# capped.
+_PROTECTED_QUANTITY_KIS_KR_AMEND_BROKER_CAPPED_CONFIG_APPROVED = False
+
 
 DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
     "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice": {
@@ -317,6 +323,10 @@ class Settings(BaseSettings):
     # Q13 remains open: even after the generic enforce authorization lands,
     # Toss may not enter enforce until its sellable semantics are evidenced.
     protected_quantity_toss_sellable_verified: bool = False
+    # Q19 remains open: KIS KR amendment residual-quantity semantics have not
+    # been evidenced. This stays false, and true is rejected until a separate
+    # operator-approved source/configuration change authorizes promotion.
+    protected_quantity_kis_kr_amend_broker_capped_verified: bool = False
     # ROB-728 — operator-declared long-term quantity floors.  The three modes
     # intentionally exist per account scope, but this implementation PR only
     # permits off and shadow in a deployment.  Enforcement is code-complete
@@ -596,6 +606,16 @@ class Settings(BaseSettings):
                 "operator-approved configuration change"
             )
         return normalized
+
+    @field_validator("protected_quantity_kis_kr_amend_broker_capped_verified")
+    @classmethod
+    def _validate_kis_kr_amend_broker_capped_verification(cls, value: bool) -> bool:
+        if value and not _PROTECTED_QUANTITY_KIS_KR_AMEND_BROKER_CAPPED_CONFIG_APPROVED:
+            raise ValueError(
+                "protected KIS KR broker-capped amendment promotion is unavailable "
+                "until a separately operator-approved configuration change"
+            )
+        return value
 
     def get_redis_url(self) -> str:
         """Redis 연결 URL 생성"""

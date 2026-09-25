@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.config import settings
 from app.core.symbol import to_db_symbol
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.mcp_server.tooling.order_execution import (
@@ -1344,7 +1345,7 @@ async def _prepare_kis_live_sell_modify_protection(
             quantity=new_quantity,
             # Q19 is not verified.  Every KIS amendment therefore uses the
             # conservative new-order rule, including a price-only amendment.
-            kind="amend_uncapped",
+            kind=_kis_live_amend_protection_kind(market_type),
             fresh_broker_sellable=(
                 None
                 if fresh_holdings is None
@@ -1369,6 +1370,29 @@ async def _prepare_kis_live_sell_modify_protection(
     if decision.block is not None:
         error.update(decision.block.payload())
     return None, error
+
+
+def _kis_live_amend_protection_kind(
+    market_type: str,
+) -> Literal["amend_broker_capped", "amend_uncapped"]:
+    """Keep Q19's KR promotion behind its own startup-verified setting.
+
+    Settings rejects the true value in this PR, so production remains on the
+    conservative path until a separately approved source/configuration change
+    supplies KIS residual-quantity evidence. The branch is intentionally
+    present so a future approval cannot accidentally promote KIS KR by editing
+    a call site without its explicit verification gate.
+    """
+
+    if market_type == "equity_kr" and bool(
+        getattr(
+            settings,
+            "protected_quantity_kis_kr_amend_broker_capped_verified",
+            False,
+        )
+    ):
+        return "amend_broker_capped"
+    return "amend_uncapped"
 
 
 def _build_modify_dry_run_response(

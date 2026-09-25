@@ -914,6 +914,26 @@ async def _prepare_toss_sell_protection(
     if not lease.active:
         return lease, None
 
+    # The first preflight remains the existing structural Toss gate. Once a
+    # protected key obtains its session lease, read S again while that lease is
+    # held. Otherwise two concurrent callers can both retain the pre-lock S
+    # and each pass q <= S - P. The second evidence becomes the response's
+    # published broker authority as well as the policy input.
+    try:
+        refreshed_evidence, refreshed_error = await _fresh_sellable_preflight(
+            client,
+            symbol=symbol,
+            requested_quantity=quantity,
+            base=base,
+        )
+    except BaseException:
+        await lease.release()
+        raise
+    if refreshed_error is not None:
+        await lease.release()
+        return None, refreshed_error
+    fresh_sellable_evidence.clear()
+    fresh_sellable_evidence.update(refreshed_evidence or {})
     fresh_sellable = fresh_sellable_evidence.get("fresh_sellable_quantity")
     holding = None
     if not order_amount_present:

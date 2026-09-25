@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -233,18 +236,19 @@ async def test_g2_protected_toss_sell_blocks_before_post(
     monkeypatch.setattr(toss, "_opposite_pending_error", AsyncMock(return_value=None))
     monkeypatch.setattr(toss, "_sell_loss_guard", AsyncMock(return_value=None))
     monkeypatch.setattr(toss, "_nxt_preflight_context", AsyncMock(return_value=None))
+    fresh_preflight = AsyncMock(
+        return_value=(
+            {
+                "fresh_sellable_quantity": "100",
+                "sellable_quantity_source": "fake",
+            },
+            None,
+        )
+    )
     monkeypatch.setattr(
         toss,
         "_fresh_sellable_preflight",
-        AsyncMock(
-            return_value=(
-                {
-                    "fresh_sellable_quantity": "100",
-                    "sellable_quantity_source": "fake",
-                },
-                None,
-            )
-        ),
+        fresh_preflight,
     )
     monkeypatch.setattr(
         toss,
@@ -271,6 +275,269 @@ async def test_g2_protected_toss_sell_blocks_before_post(
     client.place_order.assert_not_awaited()
     assert result.get("error_code") == "protected_quantity_exceeded", result
     assert lease.release_calls == 1
+    assert fresh_preflight.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_g2_shadow_would_block_still_sends_raw_sellable_valid_quantity(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A q=41 shadow sell is within raw S=100 but above S-P=40.
+
+    This is deliberately not the orderAmount structural-reject case: it proves
+    the policy emits its would-block observation and the fake live POST still
+    occurs exactly once in shadow mode.
+    """
+
+    from app.mcp_server.tooling import orders_toss_variants as toss
+    from app.services import protected_quantity_service as policy
+
+    snapshot = policy.ProtectedPositionSnapshot(
+        id=1,
+        key=policy.normalize_protection_key(
+            account_scope="toss_live", market="kr", symbol="005930"
+        ),
+        protected_quantity=Decimal("60"),
+        revision=1,
+        last_confirmed_broker_held=Decimal("100"),
+        last_confirmed_at=datetime.now(UTC),
+        updated_by_user_id=1,
+        updated_at=datetime.now(UTC),
+    )
+
+    class ShadowLease:
+        active = True
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.decisions: list[ProtectionDecision] = []
+            self.release_calls = 0
+
+        async def evaluate(self, **kwargs: Any) -> ProtectionDecision:
+            self.calls.append(kwargs)
+            assert kwargs["fresh_broker_sellable"] == "100"
+            assert kwargs["fresh_broker_held"] == Decimal("100")
+            assert kwargs["sellable_observed"] is True
+            decision = await policy._evaluate_live_sell(
+                snapshot=snapshot,
+                mode="shadow",
+                quantity=kwargs["quantity"],
+                kind=kwargs["kind"],
+                fresh_broker_sellable=kwargs["fresh_broker_sellable"],
+                fresh_broker_held=kwargs["fresh_broker_held"],
+                sellable_observed=kwargs["sellable_observed"],
+                amend_remaining_fresh=None,
+            )
+            self.decisions.append(decision)
+            return decision
+
+        async def release(self) -> None:
+            self.release_calls += 1
+
+    lease = ShadowLease()
+    client = SimpleNamespace(
+        place_order=AsyncMock(
+            return_value=SimpleNamespace(
+                order_id="shadow-order", client_order_id="shadow-client"
+            )
+        )
+    )
+
+    @asynccontextmanager
+    async def fake_client_context():
+        yield client
+
+    monkeypatch.setattr(policy, "_is_drifted", AsyncMock(return_value=False))
+    monkeypatch.setattr(toss, "_entry_guard", lambda *_: None)
+    monkeypatch.setattr(toss, "_client_context", fake_client_context)
+    monkeypatch.setattr(
+        toss,
+        "_snap_kr_limit_price",
+        AsyncMock(return_value=(Decimal("70000"), None, {})),
+    )
+    monkeypatch.setattr(toss, "_live_mutation_disabled_error", lambda *_: None)
+    monkeypatch.setattr(
+        toss,
+        "check_warnings_guard",
+        AsyncMock(
+            return_value=SimpleNamespace(ok=True, warnings=[], error_message=None)
+        ),
+    )
+    monkeypatch.setattr(toss, "_opposite_pending_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_sell_loss_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_nxt_preflight_context", AsyncMock(return_value=None))
+
+    async def fresh_preflight(
+        _client: Any, **_kwargs: Any
+    ) -> tuple[dict[str, str], None]:
+        # Each broker read is a distinct response object. Reusing the same
+        # dict would let G2's intentional in-place evidence replacement clear
+        # the second fake response as well.
+        return (
+            {
+                "fresh_sellable_quantity": "100",
+                "sellable_quantity_source": "fake",
+            },
+            None,
+        )
+
+    monkeypatch.setattr(toss, "_fresh_sellable_preflight", fresh_preflight)
+    monkeypatch.setattr(toss, "prepare_live_sell_lease", AsyncMock(return_value=lease))
+    monkeypatch.setattr(
+        toss,
+        "_find_holding",
+        AsyncMock(return_value=SimpleNamespace(quantity=Decimal("100"))),
+    )
+    monkeypatch.setattr(toss, "_invalidate_sellable_after_sell_mutation", AsyncMock())
+    monkeypatch.setattr(toss, "record_toss_place_order", AsyncMock(return_value={}))
+
+    caplog.set_level(logging.WARNING, logger=policy.__name__)
+    result = await toss._toss_place_order_impl(
+        symbol="005930",
+        side="sell",
+        quantity="41",
+        price="70000",
+        market="kr",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    client.place_order.assert_awaited_once()
+    assert lease.calls[0]["quantity"] == Decimal("41")
+    assert lease.decisions[0].would_block is True
+    assert lease.decisions[0].block is not None
+    assert lease.decisions[0].block.error_code == "protected_quantity_exceeded"
+    assert lease.release_calls == 1
+    assert any(
+        "protected_quantity_would_block" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_g2_rechecks_sellable_inside_protected_lease_before_each_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two q=40 sells against H/S=100 and P=60 yield one broker POST."""
+
+    from app.mcp_server.tooling import orders_toss_variants as toss
+
+    state = {"sellable": Decimal("100"), "initial_calls": 0}
+    initial_reads_complete = asyncio.Event()
+    lease_lock = asyncio.Lock()
+    leases: list[_Lease] = []
+
+    class SerializedLease(_Lease):
+        def __init__(self) -> None:
+            super().__init__(decisions=[])
+
+        async def evaluate(self, **kwargs: Any) -> ProtectionDecision:
+            self.calls.append(kwargs)
+            quantity = Decimal(str(kwargs["quantity"]))
+            sellable = Decimal(str(kwargs["fresh_broker_sellable"]))
+            if quantity <= sellable - Decimal("60"):
+                return ProtectionDecision(True, "covered", sellable - Decimal("60"))
+            return _blocked_decision(scope="toss_live", market="kr", symbol="005930")
+
+        async def release(self) -> None:
+            if self.release_calls == 0:
+                lease_lock.release()
+            self.release_calls += 1
+
+    async def prepare(**_kwargs: Any) -> SerializedLease:
+        await lease_lock.acquire()
+        lease = SerializedLease()
+        leases.append(lease)
+        return lease
+
+    async def fresh_preflight(
+        _client: Any,
+        *,
+        symbol: str,
+        requested_quantity: Decimal | None,
+        base: dict[str, Any],
+    ) -> tuple[dict[str, Any], None]:
+        del symbol, base
+        if state["initial_calls"] < 2:
+            state["initial_calls"] += 1
+            if state["initial_calls"] == 2:
+                initial_reads_complete.set()
+            await initial_reads_complete.wait()
+        assert requested_quantity == Decimal("40")
+        return {
+            "fresh_sellable_quantity": str(state["sellable"]),
+            "sellable_quantity_source": "fake",
+        }, None
+
+    async def place_order(payload: dict[str, Any]) -> SimpleNamespace:
+        assert Decimal(str(payload["quantity"])) == Decimal("40")
+        state["sellable"] -= Decimal("40")
+        return SimpleNamespace(order_id="fake-order", client_order_id="fake-client")
+
+    client = SimpleNamespace(place_order=AsyncMock(side_effect=place_order))
+
+    @asynccontextmanager
+    async def fake_client_context():
+        yield client
+
+    monkeypatch.setattr(toss, "_entry_guard", lambda *_: None)
+    monkeypatch.setattr(toss, "_client_context", fake_client_context)
+    monkeypatch.setattr(
+        toss,
+        "_snap_kr_limit_price",
+        AsyncMock(return_value=(Decimal("70000"), None, {})),
+    )
+    monkeypatch.setattr(toss, "_live_mutation_disabled_error", lambda *_: None)
+    monkeypatch.setattr(
+        toss,
+        "check_warnings_guard",
+        AsyncMock(
+            return_value=SimpleNamespace(ok=True, warnings=[], error_message=None)
+        ),
+    )
+    monkeypatch.setattr(toss, "_opposite_pending_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_sell_loss_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_nxt_preflight_context", AsyncMock(return_value=None))
+    monkeypatch.setattr(toss, "_fresh_sellable_preflight", fresh_preflight)
+    monkeypatch.setattr(toss, "prepare_live_sell_lease", prepare)
+    monkeypatch.setattr(
+        toss,
+        "_find_holding",
+        AsyncMock(return_value=SimpleNamespace(quantity=Decimal("100"))),
+    )
+    monkeypatch.setattr(toss, "_invalidate_sellable_after_sell_mutation", AsyncMock())
+    monkeypatch.setattr(toss, "record_toss_place_order", AsyncMock(return_value={}))
+
+    results = await asyncio.gather(
+        *(
+            toss._toss_place_order_impl(
+                symbol="005930",
+                side="sell",
+                quantity="40",
+                price="70000",
+                market="kr",
+                dry_run=False,
+                confirm=True,
+                account_mode="toss_live",
+            )
+            for _ in range(2)
+        )
+    )
+
+    assert client.place_order.await_count == 1
+    assert sum(result.get("success") is True for result in results) == 1
+    assert (
+        sum(
+            result.get("error_code") == "protected_quantity_exceeded"
+            for result in results
+        )
+        == 1
+    )
+    assert state["sellable"] == Decimal("60")
+    assert len(leases) == 2
+    assert [lease.release_calls for lease in leases] == [1, 1]
 
 
 @pytest.mark.asyncio
@@ -293,6 +560,11 @@ async def test_g2_order_amount_is_unresolved_for_active_protected_toss_sell(
         toss,
         "prepare_live_sell_lease",
         AsyncMock(return_value=lease),
+    )
+    monkeypatch.setattr(
+        toss,
+        "_fresh_sellable_preflight",
+        AsyncMock(return_value=({"fresh_sellable_quantity": "100"}, None)),
     )
     find_holding = AsyncMock()
     monkeypatch.setattr(toss, "_find_holding", find_holding)
@@ -387,7 +659,7 @@ async def test_g2_order_amount_reaches_active_policy_before_legacy_shape_reject(
     )
 
     assert result["error_code"] == "protected_quantity_unresolved"
-    fresh_preflight.assert_awaited_once()
+    assert fresh_preflight.await_count == 2
     assert lease.calls[0]["quantity"] is None
     assert lease.release_calls == 1
     client.place_order.assert_not_awaited()

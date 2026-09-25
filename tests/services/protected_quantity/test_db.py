@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +19,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.models.base import Base
+from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services import protected_quantity_service as policy
+from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.protected_quantity_service import (
     BrokerPositionObservation,
     ProtectedQuantityConflictError,
@@ -210,6 +213,273 @@ async def test_service_rejects_floor_above_fresh_held(db_session) -> None:
             observation=_observation(held="10"),
             confirm_protection_change=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_service_allows_floor_equal_to_fresh_held(db_session) -> None:
+    service = ProtectedQuantityService(db_session)
+    saved = await _save(
+        service,
+        symbol=f"Z{uuid4().hex[:7].upper()}",
+        quantity="10",
+        expected_revision=None,
+        idempotency_key=f"equal-held-{uuid4()}",
+        held="10",
+        sellable="10",
+    )
+
+    assert saved.head.protected_quantity == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_floor_vs_fresh_held_boundary_has_assertion_red_mutant_oracle(
+    db_session,
+) -> None:
+    """Pin both sides of P_new <= H with assertions, not an uncaught exception."""
+
+    service = ProtectedQuantityService(db_session)
+
+    async def accepted(*, quantity: str) -> bool:
+        try:
+            await _save(
+                service,
+                symbol=f"Z{uuid4().hex[:7].upper()}",
+                quantity=quantity,
+                expected_revision=None,
+                idempotency_key=f"boundary-{uuid4()}",
+                held="10",
+                sellable="10",
+            )
+        except ProtectedQuantityValidationError:
+            return False
+        return True
+
+    assert await accepted(quantity="10") is True
+    assert await accepted(quantity="10.00000001") is False
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_reuse_requires_the_exact_protected_request(
+    db_session,
+) -> None:
+    service = ProtectedQuantityService(db_session)
+    symbol = f"Z{uuid4().hex[:7].upper()}"
+    idempotency_key = f"exact-retry-{uuid4()}"
+    declared = await _save(
+        service,
+        symbol=symbol,
+        quantity="6",
+        expected_revision=None,
+        idempotency_key=idempotency_key,
+    )
+    exact_retry = await _save(
+        service,
+        symbol=symbol,
+        quantity="6",
+        expected_revision=None,
+        idempotency_key=idempotency_key,
+    )
+
+    assert exact_retry.idempotent_replay is True
+    assert exact_retry.revision == declared.revision
+
+    reuse_attempts = (
+        {
+            "symbol": f"Z{uuid4().hex[:7].upper()}",
+            "quantity": "6",
+            "expected_revision": None,
+            "reconfirm": False,
+        },
+        {
+            "symbol": symbol,
+            "quantity": "5",
+            "expected_revision": None,
+            "reconfirm": False,
+        },
+        {
+            "symbol": symbol,
+            "quantity": "6",
+            "expected_revision": declared.revision,
+            "reconfirm": True,
+        },
+    )
+    for attempt in reuse_attempts:
+        with pytest.raises(ProtectedQuantityConflictError) as reused:
+            await _save(
+                service,
+                symbol=attempt["symbol"],
+                quantity=attempt["quantity"],
+                expected_revision=attempt["expected_revision"],
+                idempotency_key=idempotency_key,
+                reconfirm=attempt["reconfirm"],
+            )
+        assert reused.value.error == "idempotency_key_reused"
+
+
+@pytest.mark.asyncio
+async def test_exact_idempotent_retry_replays_its_revision_snapshot_after_head_advances(
+    db_session,
+) -> None:
+    """A v1 retry cannot return v2's floor paired with v1's revision."""
+
+    service = ProtectedQuantityService(db_session)
+    symbol = f"Z{uuid4().hex[:7].upper()}"
+    declaration_key = f"declare-replay-{uuid4()}"
+    declared = await _save(
+        service,
+        symbol=symbol,
+        quantity="6",
+        expected_revision=None,
+        idempotency_key=declaration_key,
+    )
+    advanced = await _save(
+        service,
+        symbol=symbol,
+        quantity="7",
+        expected_revision=declared.revision,
+        idempotency_key=f"increase-after-declare-{uuid4()}",
+    )
+
+    replay = await _save(
+        service,
+        symbol=symbol,
+        quantity="6",
+        expected_revision=None,
+        idempotency_key=declaration_key,
+    )
+
+    assert advanced.revision == 2
+    assert replay.idempotent_replay is True
+    assert replay.revision == replay.head.revision == declared.revision == 1
+    assert (
+        replay.head.protected_quantity
+        == declared.head.protected_quantity
+        == Decimal("6")
+    )
+    assert replay.head.protected_quantity != advanced.head.protected_quantity
+
+
+@pytest.mark.asyncio
+async def test_reconfirm_service_boundary_resolves_growth_unverified_without_changing_p(
+    db_session,
+) -> None:
+    """The PR-1 service boundary supports step 6 without adding a PR-2 route."""
+
+    service = ProtectedQuantityService(db_session)
+    symbol = f"Z{uuid4().hex[:7].upper()}"
+    declared = await _save(
+        service,
+        symbol=symbol,
+        quantity="60",
+        expected_revision=None,
+        idempotency_key=f"growth-declare-{uuid4()}",
+        held="100",
+        sellable="100",
+    )
+
+    unverified = await policy._evaluate_live_sell(
+        snapshot=declared.head,
+        mode="enforce",
+        quantity="1",
+        kind="new",
+        fresh_broker_sellable="500",
+        fresh_broker_held="500",
+        sellable_observed=True,
+        amend_remaining_fresh=None,
+    )
+    assert unverified.allowed is False
+    assert unverified.block is not None
+    assert unverified.block.error_code == "protected_state_unverified"
+
+    reconfirmed = await _save(
+        service,
+        symbol=symbol,
+        quantity="60",
+        expected_revision=declared.revision,
+        idempotency_key=f"growth-reconfirm-{uuid4()}",
+        reconfirm=True,
+        held="500",
+        sellable="500",
+    )
+    resolved = await policy._evaluate_live_sell(
+        snapshot=reconfirmed.head,
+        mode="enforce",
+        quantity="1",
+        kind="new",
+        fresh_broker_sellable="500",
+        fresh_broker_held="500",
+        sellable_observed=True,
+        amend_remaining_fresh=None,
+    )
+
+    assert reconfirmed.action == "reconfirm"
+    assert (
+        reconfirmed.head.protected_quantity
+        == declared.head.protected_quantity
+        == Decimal("60")
+    )
+    assert resolved.allowed is True
+    assert resolved.headroom == Decimal("440")
+
+
+@pytest.mark.asyncio
+async def test_upbit_drift_matches_execution_ledger_market_code_key(db_session) -> None:
+    """Crypto drift must use raw KRW-BTC, not the ledger base symbol BTC."""
+
+    service = ProtectedQuantityService(db_session)
+    observed_at = datetime.now(UTC)
+    declared = await service.save(
+        account_scope="upbit_live",
+        market="crypto",
+        symbol="KRW-BTC",
+        protected_quantity="60",
+        expected_revision=None,
+        reason="market-code drift fixture",
+        idempotency_key=f"crypto-drift-{uuid4()}",
+        actor_user_id=7,
+        origin="invest_ui",
+        observation=BrokerPositionObservation(
+            held=Decimal("100"),
+            sellable=Decimal("100"),
+            observed_at=observed_at,
+        ),
+        confirm_protection_change=True,
+    )
+    fill = ExecutionLedgerUpsert(
+        broker="upbit",
+        account_mode="live",
+        venue="upbit_krw",
+        instrument_type="crypto",
+        symbol="BTC",
+        raw_symbol="KRW-BTC",
+        side="sell",
+        broker_order_id=f"protected-drift-{uuid4()}",
+        fill_seq=0,
+        filled_qty=Decimal("1"),
+        filled_price=Decimal("100000000"),
+        filled_notional=Decimal("100000000"),
+        filled_at=observed_at + timedelta(seconds=1),
+        currency="KRW",
+        source="reconciler",
+        raw_payload_json={"fixture": "protected-quantity"},
+    )
+    await ExecutionLedgerRepository(db_session).upsert_fill(fill)
+    await db_session.commit()
+
+    assert (
+        await policy._is_drifted(
+            snapshot=declared.head,
+            fresh_held=Decimal("99"),
+        )
+        is False
+    )
+    assert (
+        await policy._is_drifted(
+            snapshot=declared.head,
+            fresh_held=Decimal("100"),
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio

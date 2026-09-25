@@ -264,6 +264,16 @@ def test_guards_remain_before_their_send_boundaries() -> None:
         < g3.index("client.modify_order")
     )
 
+    toss_guard = _function_source(
+        "app/mcp_server/tooling/orders_toss_variants.py",
+        "_prepare_toss_sell_protection",
+    )
+    assert (
+        toss_guard.index("prepare_live_sell_lease")
+        < toss_guard.index("_fresh_sellable_preflight")
+        < toss_guard.index("lease.evaluate")
+    )
+
     g4_kr = _function_source(
         "app/mcp_server/tooling/orders_modify_cancel.py", "_modify_kis_domestic"
     )

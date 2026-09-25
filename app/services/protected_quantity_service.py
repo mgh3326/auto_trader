@@ -286,6 +286,33 @@ def _snapshot(row: ProtectedPosition) -> ProtectedPositionSnapshot:
     )
 
 
+def _snapshot_at_revision(
+    head: ProtectedPosition,
+    revision: ProtectedPositionRevision,
+) -> ProtectedPositionSnapshot:
+    """Rebuild the write result that the idempotency key originally produced.
+
+    The mutable head can legitimately advance after a successful write.  An
+    exact retry must nevertheless describe the original revision, not combine
+    that revision number with a later floor from the current head.
+    """
+
+    return ProtectedPositionSnapshot(
+        id=int(head.id),
+        key=normalize_protection_key(
+            account_scope=head.account_scope,
+            market=head.market,
+            symbol=head.symbol,
+        ),
+        protected_quantity=Decimal(str(revision.new_quantity)),
+        revision=int(revision.revision),
+        last_confirmed_broker_held=Decimal(str(revision.broker_held_observed)),
+        last_confirmed_at=revision.broker_observed_at,
+        updated_by_user_id=int(revision.actor_user_id),
+        updated_at=revision.recorded_at,
+    )
+
+
 async def _read_head(
     db: AsyncSession, *, key: ProtectionKey, for_update: bool = False
 ) -> ProtectedPosition | None:
@@ -896,6 +923,20 @@ class LiveSellProtectionLease:
             await connection.close()
 
 
+async def _invalidate_and_close(connection: AsyncConnection) -> None:
+    """Discard a dedicated session before it can return a held advisory lock.
+
+    Session advisory locks survive transactions. Any failure after a try-lock
+    result is therefore handled as a connection-pool safety failure, including
+    cancellation: invalidate first and always close in the finally path.
+    """
+
+    try:
+        await connection.invalidate()
+    finally:
+        await connection.close()
+
+
 def _advisory_key(key: ProtectionKey) -> int:
     digest = hashlib.sha256(
         f"protected-quantity:v1:{key.account_scope}:{key.market}:{key.symbol}".encode()
@@ -925,7 +966,7 @@ async def _acquire_lock(
                 raise ProtectionStateUnavailable("protection advisory lock timed out")
             await asyncio.sleep(0.05)
     except BaseException:
-        await connection.close()
+        await _invalidate_and_close(connection)
         raise
 
 
@@ -978,8 +1019,7 @@ async def prepare_live_sell_lease(
             lock_key=_advisory_key(key),
         )
     except BaseException as exc:
-        await connection.invalidate()
-        await connection.close()
+        await _invalidate_and_close(connection)
         if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
             raise
         raise ProtectionStateUnavailable("protection state is unavailable") from exc
@@ -1041,6 +1081,13 @@ class ProtectedQuantityService:
     async def _idempotent_replay(
         self,
         *,
+        key: ProtectionKey,
+        new_quantity: Decimal,
+        expected_revision: int | None,
+        reason: str,
+        origin: Literal["invest_ui", "operator_cli"],
+        reconfirm: bool,
+        confirm_symbol: str | None,
         actor_user_id: int,
         idempotency_key: str,
     ) -> ProtectedPositionWriteResult | None:
@@ -1059,12 +1106,98 @@ class ProtectedQuantityService:
         )
         if head is None:
             raise ProtectionStateUnavailable("idempotent revision head is missing")
+        if not self._is_exact_idempotent_replay(
+            replay=existing_replay,
+            head=head,
+            key=key,
+            new_quantity=new_quantity,
+            expected_revision=expected_revision,
+            reason=reason,
+            origin=origin,
+            reconfirm=reconfirm,
+            confirm_symbol=confirm_symbol,
+        ):
+            raise ProtectedQuantityConflictError(
+                "idempotency_key_reused",
+                "idempotency key was already used for a different protected position request",
+            )
         return ProtectedPositionWriteResult(
-            head=_snapshot(head),
+            head=_snapshot_at_revision(head, existing_replay),
             revision=int(existing_replay.revision),
             action=existing_replay.action,
             idempotent_replay=True,
         )
+
+    @staticmethod
+    def _is_exact_idempotent_replay(
+        *,
+        replay: ProtectedPositionRevision,
+        head: ProtectedPosition,
+        key: ProtectionKey,
+        new_quantity: Decimal,
+        expected_revision: int | None,
+        reason: str,
+        origin: Literal["invest_ui", "operator_cli"],
+        reconfirm: bool,
+        confirm_symbol: str | None,
+    ) -> bool:
+        """Accept only a semantic retry of the original declaration request."""
+
+        try:
+            replay_key = normalize_protection_key(
+                account_scope=head.account_scope,
+                market=head.market,
+                symbol=head.symbol,
+            )
+        except ProtectedQuantityValidationError:
+            return False
+        if replay_key != key:
+            return False
+        if Decimal(str(replay.new_quantity)) != new_quantity:
+            return False
+        if replay.reason != reason.strip() or replay.origin != origin:
+            return False
+
+        action = str(replay.action)
+        if action == "declare":
+            return (
+                expected_revision is None
+                and reconfirm is False
+                and replay.previous_quantity is None
+            )
+        if (
+            not _is_exact_int(expected_revision)
+            or expected_revision != int(replay.revision) - 1
+            or replay.previous_quantity is None
+        ):
+            return False
+
+        previous_quantity = Decimal(str(replay.previous_quantity))
+        if reconfirm:
+            requested_action = (
+                "reconfirm" if new_quantity == previous_quantity else None
+            )
+        elif new_quantity == previous_quantity:
+            requested_action = None
+        elif new_quantity > previous_quantity:
+            requested_action = "increase"
+        elif new_quantity == 0:
+            requested_action = "release"
+        else:
+            requested_action = "decrease"
+        if requested_action != action:
+            return False
+        if action not in {"decrease", "release"}:
+            return True
+        try:
+            confirmed = normalize_protection_key(
+                account_scope=key.account_scope,
+                market=key.market,
+                symbol=confirm_symbol or "",
+            )
+        except ProtectedQuantityValidationError:
+            return False
+        return confirmed.symbol == key.symbol
 
     async def save(
         self,
@@ -1110,6 +1243,13 @@ class ProtectedQuantityService:
             raise ProtectedQuantityValidationError("reconfirm must be an exact bool")
 
         replay = await self._idempotent_replay(
+            key=key,
+            new_quantity=new_quantity,
+            expected_revision=expected_revision,
+            reason=reason,
+            origin=origin,
+            reconfirm=reconfirm,
+            confirm_symbol=confirm_symbol,
             actor_user_id=actor_user_id,
             idempotency_key=idempotency_key.strip(),
         )
@@ -1168,6 +1308,13 @@ class ProtectedQuantityService:
             if inserted is None:
                 await self._db.rollback()
                 replay = await self._idempotent_replay(
+                    key=key,
+                    new_quantity=new_quantity,
+                    expected_revision=expected_revision,
+                    reason=reason,
+                    origin=origin,
+                    reconfirm=reconfirm,
+                    confirm_symbol=confirm_symbol,
                     actor_user_id=actor_user_id,
                     idempotency_key=idempotency_key.strip(),
                 )
@@ -1264,6 +1411,13 @@ class ProtectedQuantityService:
         except IntegrityError:
             await self._db.rollback()
             replay = await self._idempotent_replay(
+                key=key,
+                new_quantity=new_quantity,
+                expected_revision=expected_revision,
+                reason=reason,
+                origin=origin,
+                reconfirm=reconfirm,
+                confirm_symbol=confirm_symbol,
                 actor_user_id=actor_user_id,
                 idempotency_key=idempotency_key.strip(),
             )

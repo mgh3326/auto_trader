@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -92,6 +93,85 @@ def test_key_normalization_uses_db_and_upbit_market_dialects() -> None:
             market="kr",
             symbol="005930",
         )
+
+
+@pytest.mark.asyncio
+async def test_acquire_lock_invalidates_if_commit_fails_after_lock_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session lock must never return to the pool after an ambiguous result."""
+
+    from app.core import db
+
+    connection = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one=lambda: True)),
+        commit=AsyncMock(side_effect=RuntimeError("commit response unavailable")),
+        invalidate=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        db,
+        "engine",
+        SimpleNamespace(connect=AsyncMock(return_value=connection)),
+    )
+
+    with pytest.raises(RuntimeError, match="commit response unavailable"):
+        await policy._acquire_lock(
+            policy.normalize_protection_key(
+                account_scope="kis_live", market="kr", symbol="005930"
+            )
+        )
+
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lock_cancellation_invalidates_and_lease_release_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation is not allowed to leak a session-level advisory lock."""
+
+    from app.core import db
+
+    acquire_connection = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one=lambda: True)),
+        commit=AsyncMock(side_effect=asyncio.CancelledError()),
+        invalidate=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        db,
+        "engine",
+        SimpleNamespace(connect=AsyncMock(return_value=acquire_connection)),
+    )
+    key = policy.normalize_protection_key(
+        account_scope="kis_live", market="kr", symbol="005930"
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await policy._acquire_lock(key)
+
+    acquire_connection.invalidate.assert_awaited_once()
+    acquire_connection.close.assert_awaited_once()
+
+    release_connection = SimpleNamespace(
+        execute=AsyncMock(),
+        commit=AsyncMock(side_effect=asyncio.CancelledError()),
+        invalidate=AsyncMock(),
+        close=AsyncMock(),
+    )
+    lease = policy.LiveSellProtectionLease(
+        snapshot=_snapshot(),
+        mode="enforce",
+        connection=release_connection,  # type: ignore[arg-type]
+        lock_key=1,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await lease.release()
+
+    release_connection.invalidate.assert_awaited_once()
+    release_connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
