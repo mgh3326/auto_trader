@@ -154,7 +154,6 @@ _TOSS_RESOLVED_MUTATION_SIBLING_STATUSES = frozenset(
         "cancelled",
         "replaced",
         "rejected",
-        "expired",
         "cancel_rejected",
         "replace_rejected",
     }
