@@ -1101,7 +1101,37 @@ class LiveSellProtectionLease:
                 ) from cleanup_exc
             raise
         else:
-            await connection.close()
+            try:
+                await connection.close()
+            except BaseException as close_exc:
+                # Unlock and commit succeeded, but a close failure still leaves
+                # the dedicated backend's disposal unproven. Invalidate it
+                # before preserving any broker result; an invalidation failure
+                # remains an error rather than a warning.
+                try:
+                    await connection.invalidate()
+                except BaseException as invalidate_exc:
+                    logger.error(
+                        "protected sell lease invalidation failed after close-only "
+                        "cleanup error: close_error_type=%s invalidation_error_type=%s",
+                        type(close_exc).__name__,
+                        type(invalidate_exc).__name__,
+                    )
+                    if not isinstance(close_exc, Exception):
+                        raise close_exc from invalidate_exc
+                    raise
+                if isinstance(close_exc, Exception):
+                    logger.warning(
+                        "protected sell lease close failed after successful advisory "
+                        "cleanup but backend was invalidated: close_error_type=%s",
+                        type(close_exc).__name__,
+                    )
+                    raise VerifiedLiveSellLeaseCleanupError(
+                        close_exc,
+                        close_completed=False,
+                        close_error=close_exc,
+                    ) from close_exc
+                raise
 
 
 async def release_live_sell_lease_preserving_outcome(

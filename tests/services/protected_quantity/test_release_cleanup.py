@@ -137,6 +137,133 @@ async def test_kis_kr_amend_acceptance_keeps_rob395_repoint_after_cleanup_failur
 
 
 @pytest.mark.asyncio
+async def test_kis_kr_amend_close_only_failure_preserves_repoint_after_invalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A close-only failure preserves acceptance only after backend discard."""
+
+    from app.mcp_server.tooling import kis_live_ledger
+    from app.mcp_server.tooling import orders_modify_cancel as modify
+
+    lease, connection = _verified_cleanup_lease(
+        unlock_error=None,
+        close_error=RuntimeError("close-only unavailable"),
+    )
+    broker_modify = AsyncMock(return_value={"odno": "NEW-KR-CLOSE"})
+    broker = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(
+            return_value=[
+                {
+                    "odno": "OLD-KR-CLOSE",
+                    "ord_unpr": "70000",
+                    "ord_qty": "40",
+                    "sll_buy_dvsn_cd": "01",
+                }
+            ]
+        ),
+        modify_korea_order=broker_modify,
+    )
+    repoint = AsyncMock(return_value=1)
+    monkeypatch.setattr(modify, "_create_kis_client", lambda **_: broker)
+    monkeypatch.setattr(
+        modify, "_live_sell_reprice_floor_error", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        modify, "_kr_security_type_or_none", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(modify, "adjust_tick_size_kr", lambda price, *_: price)
+    monkeypatch.setattr(
+        modify,
+        "_prepare_kis_live_sell_modify_protection",
+        AsyncMock(return_value=(lease, None)),
+    )
+    monkeypatch.setattr(kis_live_ledger, "_repoint_ledger_after_modify", repoint)
+
+    result = await modify.modify_order_impl(
+        "OLD-KR-CLOSE",
+        "005930",
+        market="kr",
+        new_price=71_000,
+        new_quantity=40,
+        dry_run=False,
+    )
+
+    assert result["success"] is True, result
+    assert result["new_order_id"] == "NEW-KR-CLOSE"
+    _assert_cleanup_warning(result)
+    broker_modify.assert_awaited_once()
+    repoint.assert_awaited_once()
+    connection.execute.assert_awaited_once()
+    connection.commit.assert_awaited_once()
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kis_kr_amend_close_only_invalidation_failure_is_not_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A close-only failure with failed disposal does not create a safe result."""
+
+    from app.mcp_server.tooling import kis_live_ledger
+    from app.mcp_server.tooling import orders_modify_cancel as modify
+
+    lease, connection = _verified_cleanup_lease(
+        unlock_error=None,
+        invalidate_error=RuntimeError("close-only invalidation unavailable"),
+        close_error=RuntimeError("close-only unavailable"),
+    )
+    broker_modify = AsyncMock(return_value={"odno": "NEW-KR-CLOSE-UNSAFE"})
+    broker = SimpleNamespace(
+        inquire_korea_orders=AsyncMock(
+            return_value=[
+                {
+                    "odno": "OLD-KR-CLOSE-UNSAFE",
+                    "ord_unpr": "70000",
+                    "ord_qty": "40",
+                    "sll_buy_dvsn_cd": "01",
+                }
+            ]
+        ),
+        modify_korea_order=broker_modify,
+    )
+    repoint = AsyncMock(return_value=1)
+    monkeypatch.setattr(modify, "_create_kis_client", lambda **_: broker)
+    monkeypatch.setattr(
+        modify, "_live_sell_reprice_floor_error", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        modify, "_kr_security_type_or_none", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(modify, "adjust_tick_size_kr", lambda price, *_: price)
+    monkeypatch.setattr(
+        modify,
+        "_prepare_kis_live_sell_modify_protection",
+        AsyncMock(return_value=(lease, None)),
+    )
+    monkeypatch.setattr(kis_live_ledger, "_repoint_ledger_after_modify", repoint)
+
+    result = await modify.modify_order_impl(
+        "OLD-KR-CLOSE-UNSAFE",
+        "005930",
+        market="kr",
+        new_price=71_000,
+        new_quantity=40,
+        dry_run=False,
+    )
+
+    broker_modify.assert_awaited_once()
+    assert result["success"] is False
+    assert "close-only invalidation unavailable" in str(result["error"])
+    assert "warnings" not in result
+    repoint.assert_not_awaited()
+    connection.execute.assert_awaited_once()
+    connection.commit.assert_awaited_once()
+    connection.invalidate.assert_awaited_once()
+    connection.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_kis_kr_amend_invalidation_failure_is_not_hidden_as_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
