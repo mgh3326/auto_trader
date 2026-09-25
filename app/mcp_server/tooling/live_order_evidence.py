@@ -7,6 +7,7 @@ classify_fill_evidence를 재사용(해외 ft_ 키를 canonical 키로 정규화
 
 from __future__ import annotations
 
+import datetime
 import logging
 from decimal import Decimal
 from typing import Any, Protocol
@@ -53,14 +54,40 @@ def _normalize_overseas_for_classify(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _row_order_date(row: Any) -> datetime.date | None:
+    """Ledger row's order date for the order-anchored TTTS3035R inquiry.
+
+    ``trade_date`` (UTC timestamp captured at send) is canonical;
+    ``created_at`` is the fallback.  Returns None when underivable — the
+    search then falls back to the recent 7-day window, a strictly narrower
+    fail-closed probe.
+    """
+    for attr in ("trade_date", "created_at"):
+        dt = getattr(row, attr, None)
+        if isinstance(dt, datetime.datetime):
+            if dt.tzinfo is None:
+                return dt.date()
+            return dt.astimezone(datetime.UTC).date()
+        if isinstance(dt, datetime.date):
+            return dt
+    return None
+
+
 class UsOverseasEvidenceAdapter:
     broker = "kis"
 
     async def fetch_evidence(self, row: Any) -> FillEvidence:
         kis = _create_live_kis_client()
         candidates = await _build_us_exchange_candidates(row.symbol)
+        # ROB-719 gap A: anchor the TTTS3035R inquiry on the row's order date
+        # — the probe showed the broker retains ~90 days of overseas history,
+        # so a fixed now-7d window made every aged order falsely "not found".
         order, _exch = await _find_us_order_in_recent_history(
-            kis, str(row.order_no), str(row.symbol), candidates
+            kis,
+            str(row.order_no),
+            str(row.symbol),
+            candidates,
+            order_date=_row_order_date(row),
         )
         if order is None:
             # fail-closed: 증거 미발견 → pending 유지(취소/만료 단정 금지)
@@ -70,7 +97,7 @@ class UsOverseasEvidenceAdapter:
                 None,
                 None,
                 "not_found",
-                f"order {row.order_no} not in recent overseas history",
+                f"order {row.order_no} not in anchored overseas order history",
             )
 
         # Reuse the same normalizer as order-history / proposal target

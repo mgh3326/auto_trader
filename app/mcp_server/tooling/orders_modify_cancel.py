@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import time
 from collections.abc import Awaitable, Callable
@@ -287,6 +288,11 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
 
 _DEFAULT_US_CANCEL_EXCHANGES = ["NASD", "NYSE", "AMEX"]
 
+# ROB-719 gap A: probe-verified TTTS3035R history depth for KIS overseas
+# orders — a 90-day inquiry on 2026-09-25 returned orders dated back to
+# 07-17, including expired rows the fixed 7-day window had never reached.
+_US_OVERSEAS_HISTORY_DEPTH_DAYS = 90
+
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
     """Remove duplicates while preserving order."""
@@ -362,10 +368,20 @@ async def _find_us_order_in_recent_history(
     order_id: str,
     symbol: str,
     exchange_candidates: list[str],
+    *,
+    order_date: datetime.date | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Find an order in recent daily order history when not in open orders.
+    """Find an order in daily order history when not in open orders.
 
-    Searches a narrow recent window (last 7 days) across exchange candidates.
+    Default callers search a narrow recent window (last 7 days) across
+    exchange candidates.  ``order_date`` (the ledger row's order/trade date)
+    anchors the inquiry window instead: TTTS3035R retains ~90 days of
+    overseas history (probe-verified 2026-09-25 — orders back to 07-17 were
+    returned for a 90-day inquiry), so a dated row produces evidence even
+    weeks after placement.  The anchored window starts one day before the
+    order date to absorb broker ``ord_dt`` vs UTC trade-date boundary skew,
+    and is bounded by the documented depth and today.
+
     Post-filters by order_id and symbol since the KIS API's order_number
     parameter is not supported for overseas orders.
 
@@ -375,7 +391,16 @@ async def _find_us_order_in_recent_history(
     from datetime import datetime, timedelta
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=7)
+    if order_date is None:
+        start_date = end_date - timedelta(days=7)
+    else:
+        earliest = (
+            end_date - timedelta(days=_US_OVERSEAS_HISTORY_DEPTH_DAYS - 1)
+        ).date()
+        start_day = max(order_date - timedelta(days=1), earliest)
+        if start_day > end_date.date():
+            start_day = end_date.date()
+        start_date = datetime.combine(start_day, datetime.min.time())
 
     start_str = start_date.strftime("%Y%m%d")
     end_str = end_date.strftime("%Y%m%d")
