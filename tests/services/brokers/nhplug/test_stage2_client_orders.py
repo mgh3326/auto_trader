@@ -9,6 +9,7 @@ No real NH API call is made; all transports are ``httpx.MockTransport``.
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -29,7 +30,10 @@ from app.services.brokers.nhplug.client import (
     MODIFY_PATH,
     NHPlugMockClient,
 )
-from app.services.brokers.nhplug.contracts import DryRunConfirmContract
+from app.services.brokers.nhplug.contracts import (
+    DryRunConfirmContract,
+    issue_committed_intent,
+)
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
     NHPlugMockConfigurationError,
@@ -151,7 +155,8 @@ async def test_gate_off_refuses_orders_before_token_or_transport(
     broker = _Broker()
     client, tokens = await _bound_client(broker)
     with pytest.raises(NHPlugMockDisabled):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -161,7 +166,9 @@ async def test_gate_off_refuses_orders_before_token_or_transport(
     assert tokens.calls == 0 and broker.requests == []
 
 
-@pytest.mark.parametrize("value", ("false", "1", "yes", "TRUE ", ""))
+@pytest.mark.parametrize(
+    "value", ("true", "false", "1", "yes", "TRUE", " true", "True", "")
+)
 @pytest.mark.asyncio
 async def test_only_exact_true_arms_the_gate(
     monkeypatch: pytest.MonkeyPatch, value: str
@@ -169,8 +176,9 @@ async def test_only_exact_true_arms_the_gate(
     monkeypatch.setenv("NHPLUG_MOCK_ENABLED", value)
     broker = _Broker()
     client, _ = await _bound_client(broker)
-    if value.strip().lower() == "true":
-        await client.submit_limit_order(
+    if value == "true":
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -180,7 +188,8 @@ async def test_only_exact_true_arms_the_gate(
         assert len(broker.order_requests) == 1
     else:
         with pytest.raises(NHPlugMockDisabled):
-            await client.submit_limit_order(
+            await _submit(
+                client,
                 side="buy",
                 symbol="005930",
                 quantity=1,
@@ -211,7 +220,8 @@ async def test_every_mutation_needs_exact_dry_run_false_and_confirm_true(
     client, tokens = await _bound_client(broker)
     with pytest.raises(NHPlugMockOrderRefused, match="confirm=True"):
         if operation in {"buy", "sell"}:
-            await client.submit_limit_order(
+            await _submit(
+                client,
                 side=operation,
                 symbol="005930",
                 quantity=1,
@@ -219,7 +229,8 @@ async def test_every_mutation_needs_exact_dry_run_false_and_confirm_true(
                 authorization=authorization,
             )
         elif operation == "modify":
-            await client.modify_limit_order(
+            await _modify(
+                client,
                 original_order_no=1000123,
                 symbol="005930",
                 quantity=1,
@@ -228,7 +239,8 @@ async def test_every_mutation_needs_exact_dry_run_false_and_confirm_true(
                 authorization=authorization,
             )
         else:
-            await client.cancel_order(
+            await _cancel(
+                client,
                 original_order_no=1000123,
                 symbol="005930",
                 quantity=None,
@@ -245,11 +257,21 @@ async def test_every_mutation_needs_exact_dry_run_false_and_confirm_true(
 async def test_confirmed_buy_and_sell_send_exact_krx_limit_bodies(armed: None) -> None:
     broker = _Broker()
     client, _ = await _bound_client(broker)
-    buy = await client.submit_limit_order(
-        side="buy", symbol="005930", quantity=2, price=50000, authorization=CONFIRMED
+    buy = await _submit(
+        client,
+        side="buy",
+        symbol="005930",
+        quantity=2,
+        price=50000,
+        authorization=CONFIRMED,
     )
-    await client.submit_limit_order(
-        side="sell", symbol="005930", quantity=1, price=60000, authorization=CONFIRMED
+    await _submit(
+        client,
+        side="sell",
+        symbol="005930",
+        quantity=1,
+        price=60000,
+        authorization=CONFIRMED,
     )
     assert buy == ACK
     assert [r.url.path for r in broker.order_requests] == [
@@ -283,7 +305,8 @@ async def test_missing_or_invalid_limit_price_is_refused_before_token(
     broker = _Broker()
     client, tokens = await _bound_client(broker)
     with pytest.raises(NHPlugMockOrderRefused):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -327,7 +350,8 @@ async def test_built_body_is_rechecked_immediately_before_send(
     client, _ = await _bound_client(broker)
     monkeypatch.setattr(httpx.AsyncClient, "build_request", tampering_build)
     with pytest.raises((NHPlugMockOrderRefused, NHPlugMockAccountRejected)):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -366,7 +390,8 @@ async def test_resolved_order_request_is_rechecked_before_send(
     client, _ = await _bound_client(broker)
     monkeypatch.setattr(httpx.AsyncClient, "build_request", redirecting_build)
     with pytest.raises(error):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -395,8 +420,13 @@ async def test_order_path_must_be_exactly_the_intended_one(
     client, _ = await _bound_client(broker)
     monkeypatch.setattr(httpx.AsyncClient, "build_request", swap_route)
     with pytest.raises(NHPlugMockReadOnlyEndpointError, match="different path"):
-        await client.submit_limit_order(
-            side=side, symbol="005930", quantity=1, price=50000, authorization=CONFIRMED
+        await _submit(
+            client,
+            side=side,
+            symbol="005930",
+            quantity=1,
+            price=50000,
+            authorization=CONFIRMED,
         )
     assert broker.requests == []
 
@@ -432,7 +462,8 @@ async def test_orders_are_impossible_without_a_bound_mock_allowlist(
         transport=httpx.MockTransport(broker),
     )
     with pytest.raises(NHPlugMockAccountRejected):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -485,7 +516,8 @@ async def test_order_redirect_is_never_followed(armed: None) -> None:
     broker = _Broker(redirect)
     client, _ = await _bound_client(broker)
     with pytest.raises(NHPlugMockDispatchUncertain):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -528,7 +560,8 @@ async def test_failures_at_or_after_send_are_dispatch_uncertain(
     broker = _Broker(respond)
     client, _ = await _bound_client(broker)
     with pytest.raises(NHPlugMockDispatchUncertain):
-        await client.submit_limit_order(
+        await _submit(
+            client,
             side="buy",
             symbol="005930",
             quantity=1,
@@ -544,7 +577,8 @@ async def test_failures_at_or_after_send_are_dispatch_uncertain(
 async def test_modify_and_cancel_bodies(armed: None) -> None:
     broker = _Broker()
     client, _ = await _bound_client(broker)
-    await client.modify_limit_order(
+    await _modify(
+        client,
         original_order_no=1000123,
         symbol="005930",
         quantity=1,
@@ -552,13 +586,15 @@ async def test_modify_and_cancel_bodies(armed: None) -> None:
         full_quantity=True,
         authorization=CONFIRMED,
     )
-    await client.cancel_order(
+    await _cancel(
+        client,
         original_order_no=1000130,
         symbol="005930",
         quantity=None,
         authorization=CONFIRMED,
     )
-    await client.cancel_order(
+    await _cancel(
+        client,
         original_order_no=1000131,
         symbol="005930",
         quantity=2,
@@ -596,7 +632,8 @@ async def test_invalid_original_order_numbers_are_refused(
     broker = _Broker()
     client, tokens = await _bound_client(broker)
     with pytest.raises(NHPlugMockOrderRefused):
-        await client.cancel_order(
+        await _cancel(
+            client,
             original_order_no=order_no,
             symbol="005930",
             quantity=None,
@@ -764,15 +801,169 @@ async def test_dispatcher_itself_enforces_authorization(
                 "sor_mkt_sli_yn": "N",
             },
             authorization=authorization,
+            intent=_intent(
+                "place", symbol="005930", side="buy", quantity=1, price=50000
+            ),
         )
     assert tokens.calls == 0 and broker.requests == []
 
 
 async def _submit_with(client: NHPlugMockClient, authorization: Any) -> Any:
-    return await client.submit_limit_order(
+    return await _submit(
+        client,
         side="buy",
         symbol="005930",
         quantity=1,
         price=50000,
         authorization=authorization,
     )
+
+
+def _intent(
+    operation: str,
+    *,
+    symbol: Any,
+    side: Any = None,
+    quantity: Any = None,
+    price: Any = None,
+    original: Any = None,
+) -> Any:
+    return issue_committed_intent(
+        ledger_row_id=1,
+        client_request_id=uuid.uuid4().hex,
+        operation=operation,  # type: ignore[arg-type]
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        original_order_no=original,
+    )
+
+
+async def _submit(client: NHPlugMockClient, **kwargs: Any) -> Any:
+    kwargs.setdefault(
+        "intent",
+        _intent(
+            "place",
+            symbol=kwargs.get("symbol"),
+            side=kwargs.get("side"),
+            quantity=kwargs.get("quantity"),
+            price=kwargs.get("price"),
+        ),
+    )
+    return await client.submit_limit_order(**kwargs)
+
+
+async def _modify(client: NHPlugMockClient, **kwargs: Any) -> Any:
+    kwargs.setdefault(
+        "intent",
+        _intent(
+            "modify",
+            symbol=kwargs.get("symbol"),
+            quantity=kwargs.get("quantity"),
+            price=kwargs.get("price"),
+            original=kwargs.get("original_order_no"),
+        ),
+    )
+    return await client.modify_limit_order(**kwargs)
+
+
+async def _cancel(client: NHPlugMockClient, **kwargs: Any) -> Any:
+    kwargs.setdefault(
+        "intent",
+        _intent(
+            "cancel",
+            symbol=kwargs.get("symbol"),
+            quantity=kwargs.get("quantity"),
+            original=kwargs.get("original_order_no"),
+        ),
+    )
+    return await client.cancel_order(**kwargs)
+
+
+# --- tester round 2: no committed ledger intent, no send --------------------
+
+
+@pytest.mark.parametrize(
+    "intent_factory",
+    (
+        lambda: None,
+        lambda: {"operation": "place"},
+        lambda: _intent("place", symbol="005930", side="sell", quantity=1, price=50000),
+        lambda: _intent("place", symbol="005930", side="buy", quantity=2, price=50000),
+        lambda: _intent("place", symbol="005930", side="buy", quantity=1, price=49999),
+        lambda: _intent("place", symbol="000660", side="buy", quantity=1, price=50000),
+        lambda: _intent("cancel", symbol="005930", original=1),
+    ),
+    ids=(
+        "none",
+        "dict",
+        "wrong_side",
+        "wrong_qty",
+        "wrong_price",
+        "wrong_symbol",
+        "wrong_operation",
+    ),
+)
+@pytest.mark.asyncio
+async def test_order_needs_a_matching_committed_ledger_intent(
+    armed: None, intent_factory: Any
+) -> None:
+    broker = _Broker()
+    client, tokens = await _bound_client(broker)
+    with pytest.raises(NHPlugMockOrderRefused, match="intent"):
+        await client.submit_limit_order(
+            side="buy",
+            symbol="005930",
+            quantity=1,
+            price=50000,
+            authorization=CONFIRMED,
+            intent=intent_factory(),
+        )
+    assert tokens.calls == 0 and broker.requests == []
+
+
+def test_intents_cannot_be_constructed_outside_the_issuer() -> None:
+    from app.services.brokers.nhplug.contracts import CommittedOrderIntent
+
+    with pytest.raises(ValueError, match="ledger service"):
+        CommittedOrderIntent(
+            ledger_row_id=1,
+            client_request_id="x",
+            operation="place",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=50000,
+            original_order_no=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_intent_is_consumed_once_even_after_a_failed_send(
+    armed: None,
+) -> None:
+    broker = _Broker(lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("x")))
+    client, _ = await _bound_client(broker)
+    intent = _intent("place", symbol="005930", side="buy", quantity=1, price=50000)
+    with pytest.raises(NHPlugMockDispatchUncertain):
+        await _submit(
+            client,
+            side="buy",
+            symbol="005930",
+            quantity=1,
+            price=50000,
+            authorization=CONFIRMED,
+            intent=intent,
+        )
+    with pytest.raises(NHPlugMockOrderRefused, match="already used"):
+        await _submit(
+            client,
+            side="buy",
+            symbol="005930",
+            quantity=1,
+            price=50000,
+            authorization=CONFIRMED,
+            intent=intent,
+        )
+    assert len(broker.order_requests) == 1

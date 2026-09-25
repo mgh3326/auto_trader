@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from app.services.brokers.nhplug.order_evidence import (
+    EMPTY_IS_NOT_EVIDENCE,
     OrderListing,
     assemble_listing,
     classify_listing_page,
@@ -35,6 +36,15 @@ FIXTURES = json.loads(
 
 def fx(name: str) -> dict[str, Any]:
     return copy.deepcopy(FIXTURES[name])
+
+
+_OPEN_ROW_FOR_KEYS: dict[str, Any] = {
+    "itg_orr_no": 1000123,
+    "iem_cd": "005930",
+    "orr_qty": 1,
+    "tot_cns_qty": 0,
+    "ny_cns_qty": 1,
+}
 
 
 def listing(scope: str, *names: str) -> OrderListing:
@@ -100,20 +110,28 @@ def test_continuation_by_code_header_and_flag() -> None:
         fx("listing_page1_continue"), header_continuation_key="K1"
     )
     assert first.has_next and first.continuation_key == "K1"
-    last = classify_listing_page(fx("listing_page2_last"), header_continuation_key="K2")
-    assert not last.has_next
+    keyed_last = classify_listing_page(
+        fx("listing_page2_last"), header_continuation_key="K2"
+    )
+    assert keyed_last.has_next  # any key is followed
     flagged = classify_listing_page(
         fx("listing_page2_last"),
         header_continuation_key="K2",
         header_continuation_flag="Y",
     )
     assert flagged.has_next
-    stop = classify_listing_page(
+    # Tester R2: cts_flag=N contradicted by a continue code or a key is not
+    # final; the key is followed (or the listing is incomplete).
+    contradicted = classify_listing_page(
         fx("listing_page1_continue"),
         header_continuation_key="K1",
         header_continuation_flag="N",
     )
-    assert not stop.has_next
+    assert contradicted.has_next and contradicted.continuation_key == "K1"
+    final = classify_listing_page(
+        fx("listing_page2_last"), header_continuation_flag="N"
+    )
+    assert not final.has_next
     body = fx("listing_page2_last")
     body["Output_1"][0]["ctsz20"] = "BODYKEY"
     assert classify_listing_page(body).continuation_key == "BODYKEY"
@@ -161,25 +179,35 @@ def test_conflicting_duplicate_rows_make_listing_incomplete() -> None:
         "listing_no_records_13578",
     ),
 )
-def test_empty_listings_alone_never_confirm_none(empty: str) -> None:
-    """Tester R1 finding 4: empty in both scopes is unknown, not none."""
+@pytest.mark.parametrize(
+    "all_payload",
+    ("listing_all_filled", "listing_all_after_cancel", "listing_empty_array_success"),
+)
+def test_empty_open_scope_is_never_no_open_orders(empty: str, all_payload: str) -> None:
+    """Tester R1/R2: no empty open-scope shape yields a "none" answer.
+
+    Even with complete, agreeing sources and today's closed orders listed in
+    the all-orders scope, the answer is unknown (absence is not evidence).
+    """
 
     result = determine_open_orders(
-        all_listing=listing("all", empty),
+        all_listing=listing("all", all_payload),
         open_listing=listing("open", empty),
     )
     assert result.state == "unknown"
-    assert result.reasons == ("empty_listing_is_not_evidence_of_no_open_orders",)
-
-
-def test_none_confirmed_needs_a_liveness_witness_row_and_agreement() -> None:
-    closed = fx("listing_all_filled")  # today's order, fully filled
-    result = determine_open_orders(
-        all_listing=assemble_listing("all", [classify_listing_page(closed)]),
-        open_listing=listing("open", "listing_no_records_13578"),
-    )
-    assert result.state == "none_confirmed"
     assert result.open_rows == ()
+    assert result.reasons[-1] == EMPTY_IS_NOT_EVIDENCE
+
+
+def test_open_states_are_only_present_or_unknown() -> None:
+    import typing
+
+    from app.services.brokers.nhplug import order_evidence
+
+    assert set(typing.get_args(order_evidence.OpenOrdersState)) == {
+        "present",
+        "unknown",
+    }
 
 
 @pytest.mark.parametrize(
@@ -265,7 +293,7 @@ def test_ledger_live_order_missing_from_both_empty_listings_is_unknown() -> None
     assert "ledger_live_order_missing_from_listing" in result.reasons
 
 
-def test_unbound_uncertain_ledger_order_blocks_none_confirmed() -> None:
+def test_unbound_uncertain_ledger_order_is_reported_as_a_reason() -> None:
     result = determine_open_orders(
         all_listing=listing("all", "listing_empty_array_success"),
         open_listing=listing("open", "listing_empty_array_success"),
@@ -366,3 +394,30 @@ def test_open_scope_row_without_open_quantity_is_not_presence() -> None:
     assert result.state == "unknown"
     assert result.open_rows == ()
     assert "open_scope_row_without_open_quantity" in result.reasons
+
+
+@pytest.mark.parametrize(
+    ("payload", "headers", "expected_key"),
+    (
+        ({"rsp_cd": "00165", "Output_1": []}, {"header_continuation_flag": "N"}, None),
+        (
+            {"rsp_cd": "00000", "Output_1": [{**_OPEN_ROW_FOR_KEYS, "ctsz20": "BODY"}]},
+            {"header_continuation_flag": "N"},
+            "BODY",
+        ),
+        (
+            {"rsp_cd": "00000", "Output_1": []},
+            {"header_continuation_key": "HDR"},
+            "HDR",
+        ),
+    ),
+    ids=("continue_code_with_flag_n", "body_key_with_flag_n", "header_key_no_flag"),
+)
+def test_tester_r2_contradictory_continuation_is_never_final(
+    payload: dict[str, Any], headers: dict[str, str], expected_key: str | None
+) -> None:
+    page = classify_listing_page(payload, **headers)
+    assert page.usable and page.has_next
+    assert page.continuation_key == expected_key
+    # A single such page (next page not fetched) is never a complete listing.
+    assert assemble_listing("open", [page]).complete is False

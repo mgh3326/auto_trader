@@ -31,7 +31,10 @@ from typing import Any, Final
 import httpx
 
 from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
-from app.services.brokers.nhplug.contracts import DryRunConfirmContract
+from app.services.brokers.nhplug.contracts import (
+    CommittedOrderIntent,
+    DryRunConfirmContract,
+)
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
     NHPlugMockBrokerRejected,
@@ -317,6 +320,53 @@ def _assert_send_authorized(authorization: object) -> None:
         )
 
 
+_PATH_OPERATIONS: Final[Mapping[str, str]] = {
+    CASH_BUY_PATH: "place",
+    CASH_SELL_PATH: "place",
+    MODIFY_PATH: "modify",
+    CANCEL_PATH: "cancel",
+}
+
+
+def _assert_committed_intent(
+    intent: object, *, path: str, input_0: Mapping[str, Any]
+) -> CommittedOrderIntent:
+    """No committed ledger intent, no send; the intent must match the body."""
+
+    if type(intent) is not CommittedOrderIntent or not intent.is_ledger_issued:
+        raise NHPlugMockOrderRefused(
+            "NHPLUG mock orders require a committed ledger intent"
+        )
+    if intent.operation != _PATH_OPERATIONS.get(path):
+        raise NHPlugMockOrderRefused("ledger intent operation does not match")
+    if path in _NEW_ORDER_PATHS:
+        expected_side = "buy" if path == CASH_BUY_PATH else "sell"
+        matches = (
+            intent.side == expected_side
+            and intent.symbol == input_0.get("iem_cd")
+            and intent.quantity == input_0.get("orr_qty")
+            and intent.price == input_0.get("orr_pr")
+            and intent.original_order_no is None
+        )
+    elif path == MODIFY_PATH:
+        matches = (
+            intent.symbol == input_0.get("iem_cd")
+            and intent.original_order_no == input_0.get("org_mkt_orr_no")
+            and intent.quantity == input_0.get("cor_qty")
+            and intent.price == input_0.get("cor_pr")
+        )
+    else:
+        matches = (
+            intent.symbol == input_0.get("iem_cd")
+            and intent.original_order_no == input_0.get("org_mkt_orr_no")
+            and intent.quantity == input_0.get("cor_qty")
+            and intent.price is None
+        )
+    if not matches:
+        raise NHPlugMockOrderRefused("ledger intent does not match the order body")
+    return intent
+
+
 def _require_kr_symbol(symbol: object) -> str:
     if not isinstance(symbol, str) or _KR_SYMBOL_RE.fullmatch(symbol) is None:
         raise NHPlugMockOrderRefused("symbol must be an exact six-digit KRX code")
@@ -372,6 +422,7 @@ class NHPlugMockClient:
         # /n2/acctinfo response (``verify_and_bind_mock_account``), never one
         # handed in by a caller.
         self._order_allowlist: MockAccountAllowlist | None = None
+        self._consumed_intents: set[str] = set()
 
     async def verify_and_bind_mock_account(self, configured_account_no: str) -> None:
         """Fetch /n2/acctinfo on this client and bind the acct_type=03 account.
@@ -537,6 +588,7 @@ class NHPlugMockClient:
         quantity: int,
         price: int,
         authorization: DryRunConfirmContract,
+        intent: CommittedOrderIntent | None = None,
     ) -> dict[str, Any]:
         """Send one confirmed KRX limit buy or sell for the verified mock account."""
 
@@ -562,6 +614,7 @@ class NHPlugMockClient:
                 "sor_mkt_sli_yn": NO_SOR_SPLIT,
             },
             authorization=authorization,
+            intent=intent,
         )
 
     async def modify_limit_order(
@@ -573,6 +626,7 @@ class NHPlugMockClient:
         price: int,
         full_quantity: bool,
         authorization: DryRunConfirmContract,
+        intent: CommittedOrderIntent | None = None,
     ) -> dict[str, Any]:
         """Send one confirmed limit-price modification of a resting order."""
 
@@ -594,6 +648,7 @@ class NHPlugMockClient:
                 "sor_mkt_sli_yn": NO_SOR_SPLIT,
             },
             authorization=authorization,
+            intent=intent,
         )
 
     async def cancel_order(
@@ -603,6 +658,7 @@ class NHPlugMockClient:
         symbol: str,
         quantity: int | None,
         authorization: DryRunConfirmContract,
+        intent: CommittedOrderIntent | None = None,
     ) -> dict[str, Any]:
         """Send one confirmed cancel; ``quantity=None`` cancels the full remainder."""
 
@@ -619,7 +675,10 @@ class NHPlugMockClient:
         if quantity is not None:
             input_0["cor_qty"] = _require_quantity(quantity, "quantity")
         return await self._post_mutation(
-            path=CANCEL_PATH, input_0=input_0, authorization=authorization
+            path=CANCEL_PATH,
+            input_0=input_0,
+            authorization=authorization,
+            intent=intent,
         )
 
     async def _post_readonly(
@@ -704,10 +763,14 @@ class NHPlugMockClient:
         path: str,
         input_0: dict[str, Any],
         authorization: DryRunConfirmContract,
+        intent: CommittedOrderIntent | None,
     ) -> dict[str, Any]:
         """The only order dispatcher: gate, path, account, and limit shape twice."""
 
         _assert_send_authorized(authorization)
+        verified_intent = _assert_committed_intent(intent, path=path, input_0=input_0)
+        if verified_intent.client_request_id in self._consumed_intents:
+            raise NHPlugMockOrderRefused("ledger intent was already used")
         _assert_mock_enabled()
         _assert_mutation_path(path)
         if self._base_url != MOCK_BASE_URL:
@@ -742,6 +805,11 @@ class NHPlugMockClient:
             )
             _assert_built_account(request, allowlist=account_allowlist)
             _assert_limit_only_body(path, _built_input(request))
+            _assert_committed_intent(
+                verified_intent, path=path, input_0=_built_input(request)
+            )
+            # Consume before send: an intent is never reused, even on failure.
+            self._consumed_intents.add(verified_intent.client_request_id)
             try:
                 response = await client.send(request)
             except Exception as exc:

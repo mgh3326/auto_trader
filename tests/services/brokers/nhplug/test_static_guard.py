@@ -544,6 +544,7 @@ def _assert_client_mutations_authorize_first(source: str) -> None:
     ]
     for guard in (
         "_assert_send_authorized",
+        "_assert_committed_intent",
         "_assert_mock_enabled",
         "_assert_mutation_path",
         "_assert_resolved_mock_request",
@@ -927,3 +928,46 @@ def test_dry_run_confirm_contract_authorizes_only_the_exact_confirmed_pair() -> 
     assert DryRunConfirmContract(dry_run=False, confirm=True).authorizes_send is True
     assert DryRunConfirmContract(dry_run=True, confirm=True).authorizes_send is False
     assert DryRunConfirmContract(dry_run=0, confirm=1).authorizes_send is False  # type: ignore[arg-type]
+
+
+_INTENT_ISSUER_OWNER = (
+    REPO_ROOT / "app" / "services" / "nhplug_mock" / "ledger_service.py"
+)
+
+
+def _names_intent_issuer(tree: ast.AST) -> bool:
+    return any(
+        (isinstance(node, ast.Name) and node.id == "issue_committed_intent")
+        or (isinstance(node, ast.Attribute) and node.attr == "issue_committed_intent")
+        or (isinstance(node, ast.alias) and node.name == "issue_committed_intent")
+        for node in ast.walk(tree)
+    ) or "issue_committed_intent" in _literal_strings(tree)
+
+
+def test_only_the_ledger_service_mints_committed_order_intents() -> None:
+    """No ledger row, no send: nothing else may mint a send intent."""
+
+    offenders = sorted(
+        str(path.relative_to(REPO_ROOT))
+        for root in (REPO_ROOT / "app", REPO_ROOT / "scripts")
+        for path in root.rglob("*.py")
+        if "__pycache__" not in path.parts
+        and path not in {_INTENT_ISSUER_OWNER, RUNTIME_DIR / "contracts.py"}
+        and _names_intent_issuer(ast.parse(path.read_text(encoding="utf-8")))
+    )
+    assert offenders == [], f"unexpected intent issuers: {offenders}"
+    assert _names_intent_issuer(
+        ast.parse(_INTENT_ISSUER_OWNER.read_text(encoding="utf-8"))
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "from app.services.brokers.nhplug.contracts import issue_committed_intent\n",
+        "import app.services.brokers.nhplug.contracts as c\nc.issue_committed_intent()\n",
+        'getattr(c, "issue_committed_intent")\n',
+    ),
+)
+def test_intent_issuer_detector_catches_mutants(source: str) -> None:
+    assert _names_intent_issuer(ast.parse(source))

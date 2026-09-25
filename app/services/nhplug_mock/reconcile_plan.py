@@ -9,9 +9,18 @@ Invariants (the Kiwoom ``kt00009`` lesson):
 * An incomplete or error-shaped listing never closes anything; the row is
   marked ``unknown`` with the reason and its status is untouched.
 * An order missing from the all-orders listing is ``unknown``, never closed.
-* A terminal state (filled/cancelled/modified/rejected/confirmed) needs the
-  all-orders row to say so **and** a complete open-only listing that does not
-  contain the order.  If the open-only scope still lists it, the row becomes
+* Absence is never evidence.  An empty open-only scope (block absent, 13578,
+  or ``[]``) is used only to *detect* disagreement; it never corroborates a
+  terminal state.  Every terminal state needs two **positive** sources:
+  - filled: the all-orders row and the filled-only scope (same quantity);
+  - cancelled: the all-orders row (cancelled quantity) and our own
+    broker-acknowledged cancel for that order (``ack_order_id``);
+  - modified: the all-orders row (modified quantity), our own acknowledged
+    modify for that order, and the new order's row naming it as original;
+  - confirmed (a cancel row): its own broker acknowledgement and the
+    original's cancelled quantity in the all-orders row;
+  - a listing-derived rejection is routed to manual review, never written.
+  If the open-only scope still lists an order, the row becomes
   ``source_disagreement`` and keeps its status.
 * An open state needs the all-orders row **and** the open-only scope to agree.
 * Fill quantities come only from a listing row (evidence-first), and any
@@ -60,6 +69,30 @@ class LedgerRowView:
     price: Decimal | None
     broker_order_id: str | None
     original_order_id: str | None
+    ack_order_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Acks:
+    """Our own broker-acknowledged cancel/modify requests, by original order."""
+
+    cancels: frozenset[int]
+    modifies: dict[int, set[int]]
+
+
+def _collect_acks(rows: Sequence[LedgerRowView]) -> _Acks:
+    cancels: set[int] = set()
+    modifies: dict[int, set[int]] = {}
+    for row in rows:
+        original = _order_no(row.original_order_id)
+        acked = _order_no(row.ack_order_id)
+        if original is None or acked is None:
+            continue
+        if row.operation_kind == "cancel":
+            cancels.add(original)
+        elif row.operation_kind == "modify":
+            modifies.setdefault(original, set()).add(acked)
+    return _Acks(cancels=frozenset(cancels), modifies=modifies)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +145,7 @@ def _plan_bound_order(
     all_listing: OrderListing,
     open_listing: OrderListing,
     filled_listing: OrderListing | None,
+    acks: _Acks,
 ) -> ReconcileUpdate:
     broker_row = all_listing.find(order_no)
     if broker_row is None:
@@ -170,6 +204,29 @@ def _plan_bound_order(
         )
     if (fill_gap := _fill_confirmed(broker_row, filled_listing)) is not None:
         return _unknown(fill_gap, evidence=broker_row.evidence())
+    if derived == "rejected":
+        return ReconcileUpdate(
+            reconcile_state="unknown",
+            note={"reason": "listing_shows_broker_rejection"},
+            requires_manual_review=True,
+            manual_review_reason="listing_shows_broker_rejection",
+        )
+    if derived == "cancelled" and order_no not in acks.cancels:
+        return _unknown(
+            "cancel_not_corroborated_by_own_acknowledged_cancel",
+            evidence=broker_row.evidence(),
+        )
+    if derived == "modified":
+        successors = acks.modifies.get(order_no, set())
+        if not any(
+            (successor := all_listing.find(number)) is not None
+            and successor.original_order_no == order_no
+            for number in successors
+        ):
+            return _unknown(
+                "modify_not_corroborated_by_own_acknowledged_modify",
+                evidence=broker_row.evidence(),
+            )
     return ReconcileUpdate(
         reconcile_state="verified",
         status=derived,
@@ -229,6 +286,15 @@ def _plan_cancel(
         )
     if view.status == "rejected":
         return None
+    if _order_no(view.ack_order_id) is None:
+        # Bound from the listing only (one source): hold for manual review.
+        return ReconcileUpdate(
+            reconcile_state="pending",
+            broker_order_id=bind,
+            note={"reason": "cancel_has_no_broker_acknowledgement"},
+            requires_manual_review=True,
+            manual_review_reason="cancel_has_no_broker_acknowledgement",
+        )
     return ReconcileUpdate(
         reconcile_state="verified",
         status="confirmed",
@@ -301,6 +367,7 @@ def plan_reconcile(
         for number in (_order_no(value) for value in all_claimed_order_ids)
         if number is not None
     }
+    acks = _collect_acks(rows)
     planned: list[PlannedUpdate] = []
     for view in rows:
         if view.status not in RECONCILABLE_STATUSES:
@@ -331,6 +398,7 @@ def plan_reconcile(
                     all_listing=all_listing,
                     open_listing=open_listing,
                     filled_listing=filled_listing,
+                    acks=acks,
                 )
             elif view.status in _UNBOUND_STATUSES:
                 update = _plan_unbound_order(

@@ -237,12 +237,15 @@ def test_rejected_ack_whose_order_appears_is_anomaly() -> None:
 
 def test_modify_and_cancel_chain_from_recorded_listing() -> None:
     after = fx("listing_all_after_cancel")
-    original = view(id=1, status="accepted", broker_order_id="1000123")
+    original = view(
+        id=1, status="accepted", broker_order_id="1000123", ack_order_id="1000123"
+    )
     modify = view(
         id=2,
         operation_kind="modify",
         status="accepted",
         broker_order_id="1000130",
+        ack_order_id="1000130",
         original_order_id="1000123",
         price=Decimal(49500),
     )
@@ -251,6 +254,7 @@ def test_modify_and_cancel_chain_from_recorded_listing() -> None:
         operation_kind="cancel",
         status="accepted",
         broker_order_id="1000140",
+        ack_order_id="1000140",
         original_order_id="1000130",
         quantity=None,
         price=None,
@@ -363,3 +367,86 @@ def test_attribute_binding_carries_no_evidence_fields() -> None:
     update = plan_one(uncertain, rows_payload(base_row()), rows_payload(base_row()), ())
     assert update.evidence is None and update.filled_qty is None
     assert update.note["evidence"]["order_no"] == "1000123"
+
+
+# --- tester round 2: terminal states need two positive sources -------------
+
+
+@pytest.mark.parametrize(
+    "open_page",
+    ({"rsp_cd": "00000"}, {"rsp_cd": "13578"}, {"rsp_cd": "00000", "Output_1": []}),
+    ids=("block_absent", "no_records", "empty_list"),
+)
+def test_cancel_from_listing_alone_is_not_terminal(open_page: dict[str, Any]) -> None:
+    """R2 finding 1 repro: can_qty=1/open=0 plus an empty open scope."""
+
+    cancelled = base_row(ny_cns_qty=0, can_qty=1)
+    update = plan_one(view(ack_order_id="1000123"), rows_payload(cancelled), open_page)
+    assert update.status is None
+    assert update.reconcile_state == "unknown"
+    assert update.note["reason"] == "cancel_not_corroborated_by_own_acknowledged_cancel"
+
+
+def test_cancel_with_own_acknowledged_cancel_is_terminal() -> None:
+    cancelled = base_row(ny_cns_qty=0, can_qty=1)
+    order = view(id=1, ack_order_id="1000123")
+    own_cancel = view(
+        id=2,
+        operation_kind="cancel",
+        broker_order_id="1000140",
+        ack_order_id="1000140",
+        original_order_id="1000123",
+        quantity=None,
+        price=None,
+    )
+    planned = {
+        item.row_id: item.update
+        for item in plan_reconcile(
+            [order, own_cancel],
+            all_listing=listing("all", rows_payload(cancelled)),
+            open_listing=listing("open", {"rsp_cd": "13578"}),
+            filled_listing=listing("filled", {"rsp_cd": "13578"}),
+            all_claimed_order_ids=("1000123", "1000140"),
+        )
+    }
+    assert planned[1].status == "cancelled"
+    assert planned[2].status == "confirmed"
+
+
+def test_cancel_row_bound_only_from_listing_is_held_for_review() -> None:
+    cancel = view(
+        operation_kind="cancel",
+        status="acceptance_uncertain",
+        broker_order_id=None,
+        original_order_id="1000123",
+        quantity=None,
+        price=None,
+    )
+    original = base_row(ny_cns_qty=0, can_qty=1)
+    cancel_row = base_row(
+        itg_orr_no=1000140,
+        org_itg_orr_no=1000123,
+        cor_can_dit_cd_nm="취소",
+        ny_cns_qty=0,
+        orr_qty=1,
+        can_qty=0,
+        tot_cns_qty=0,
+    )
+    update = plan_one(cancel, rows_payload(original, cancel_row), EMPTY, ("1000123",))
+    assert update.status is None
+    assert update.broker_order_id == "1000140"
+    assert update.requires_manual_review is True
+
+
+def test_modify_needs_own_acknowledged_modify_and_successor_row() -> None:
+    original = base_row(ny_cns_qty=0, cor_qty="1")
+    update = plan_one(view(), rows_payload(original), EMPTY)
+    assert update.status is None
+    assert update.note["reason"] == "modify_not_corroborated_by_own_acknowledged_modify"
+
+
+def test_listing_rejection_goes_to_manual_review_not_terminal() -> None:
+    rejected = base_row(ny_cns_qty=0, orr_rjt_rsn_cd_nm="잔고부족")
+    update = plan_one(view(), rows_payload(rejected), EMPTY)
+    assert update.status is None and update.reconcile_state == "unknown"
+    assert update.requires_manual_review is True

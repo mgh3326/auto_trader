@@ -23,6 +23,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.nhplug_mock_order_ledger import NHPlugMockOrderLedger
+from app.services.brokers.nhplug.contracts import (
+    CommittedOrderIntent,
+    issue_committed_intent,
+)
 from app.services.brokers.nhplug.order_evidence import OrderAck
 
 TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
@@ -123,6 +127,33 @@ class NHPlugMockLedgerService:
         self._db.add(row)
         return await self._commit(row)
 
+    async def committed_intent(self, row_id: int) -> CommittedOrderIntent:
+        """Issue the single-use send intent for a committed ``submitting`` row.
+
+        The row is re-read from the database, so an intent exists only for a
+        row that is durably committed and still awaiting its broker leg.
+        """
+
+        result = await self._db.execute(
+            select(NHPlugMockOrderLedger)
+            .where(NHPlugMockOrderLedger.id == row_id)
+            .execution_options(populate_existing=True)
+        )
+        row = result.scalar_one_or_none()
+        if row is None or row.status != "submitting":
+            raise NHPlugMockLedgerError("no committed submitting row for this intent")
+        original = row.original_order_id
+        return issue_committed_intent(
+            ledger_row_id=row.id,
+            client_request_id=str(row.client_request_id),
+            operation=row.operation_kind,  # type: ignore[arg-type]
+            symbol=row.symbol,
+            side=row.side,
+            quantity=None if row.quantity is None else int(row.quantity),
+            price=None if row.price is None else int(row.price),
+            original_order_no=int(original) if original else None,
+        )
+
     async def record_not_submitted(
         self, row_id: int, *, refusal: str
     ) -> NHPlugMockOrderLedger:
@@ -138,6 +169,7 @@ class NHPlugMockLedgerService:
             if not ack.broker_order_id:
                 raise NHPlugMockLedgerError("accepted needs a broker order number")
             row.broker_order_id = ack.broker_order_id
+            row.ack_order_id = ack.broker_order_id
         self._transition(row, ack.state)
         row.response_code = ack.response_code
         row.response_message = ack.response_message

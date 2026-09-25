@@ -315,8 +315,9 @@ def register(mcp: FastMCP) -> None:
         name="nhplug_mock_get_open_orders",
         description=(
             "Read NH namuh MOCK open orders from two independent listings. "
-            "open_orders_state is present | none_confirmed | unknown; an empty "
-            "or error-shaped response is never reported as none_confirmed."
+            "open_orders_state is present | unknown. There is no 'none' answer: "
+            "an empty, block-absent, 13578, or error-shaped response is always "
+            "unknown, never 'no open orders'."
         ),
     )
     async def nhplug_mock_get_open_orders(

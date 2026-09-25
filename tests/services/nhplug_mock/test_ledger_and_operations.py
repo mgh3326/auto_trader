@@ -15,7 +15,10 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models.nhplug_mock_order_ledger import NHPlugMockOrderLedger
-from app.services.brokers.nhplug.order_evidence import OrderAck
+from app.services.brokers.nhplug.order_evidence import (
+    EMPTY_IS_NOT_EVIDENCE,
+    OrderAck,
+)
 from app.services.nhplug_mock import operations
 from app.services.nhplug_mock.ledger_service import (
     NHPlugMockLedgerError,
@@ -351,7 +354,7 @@ async def test_offline_round_trip_place_query_modify_cancel_reconcile(
     before = await operations.get_open_orders(client, order_date=date, ledger=ledger)
     # No order exists yet today: an empty listing is not proof of "none".
     assert before["open_orders_state"] == "unknown"
-    assert before["reasons"] == ["empty_listing_is_not_evidence_of_no_open_orders"]
+    assert before["reasons"] == [EMPTY_IS_NOT_EVIDENCE]
 
     placed = await operations.place_limit_order(
         client_factory=factory,
@@ -413,7 +416,11 @@ async def test_offline_round_trip_place_query_modify_cancel_reconcile(
     }
 
     final = await operations.get_open_orders(client, order_date=date, ledger=ledger)
-    assert final["open_orders_state"] == "none_confirmed"
+    # Empty-array check: everything is cancelled, the open scope is empty,
+    # and that is reported as unknown — never "no open orders".
+    assert final["open_orders_state"] == "unknown"
+    assert final["reasons"] == [EMPTY_IS_NOT_EVIDENCE]
+    assert final["success"] is False
     assert all(source["complete"] for source in final["sources"])
     assert "CUSTOMER_NAME_MUST_NOT_LEAK" not in str(final)
     assert MOCK_ACCOUNT not in str(final) + str(reconciled) + str(placed)
@@ -694,3 +701,32 @@ async def test_failed_ledger_write_rolls_back_and_session_stays_usable(
     reloaded = await ledger.get(second_id)
     assert reloaded is not None and reloaded.status == "submitting"
     assert reloaded.broker_order_id is None
+
+
+async def test_intent_is_issued_only_for_a_committed_submitting_row(db_session) -> None:
+    """Tester R2 finding 3: the send intent comes from a committed row only."""
+
+    ledger = NHPlugMockLedgerService(db_session)
+    row = await ledger.record_submitting(
+        order_date=_order_date(),
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+    )
+    intent = await ledger.committed_intent(row.id)
+    assert intent.is_ledger_issued and intent.ledger_row_id == row.id
+    assert (intent.symbol, intent.side, intent.quantity, intent.price) == (
+        "005930",
+        "buy",
+        1,
+        50000,
+    )
+    await ledger.record_ack(row.id, OrderAck("accepted", "1000123", "00000", None))
+    with pytest.raises(NHPlugMockLedgerError, match="submitting"):
+        await ledger.committed_intent(row.id)
+    with pytest.raises(NHPlugMockLedgerError):
+        await ledger.committed_intent(987654321)
+    await db_session.refresh(row)
+    assert row.ack_order_id == "1000123"

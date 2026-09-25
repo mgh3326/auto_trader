@@ -10,10 +10,9 @@ things per API, so:
   is a known read code, every row parses, and pagination terminates;
 * a listing is *complete* only when every page is usable and no continuation
   key remains unfollowed;
-* "no open orders" (``none_confirmed``) requires two independent, complete
-  listings (the open-only scope and the all-orders scope) that agree, and no
-  locally known live order that the broker listing fails to show;
-* anything else is ``unknown``, never an empty success.
+* there is no "no open orders" answer at all: without a positively listed
+  open row the result is ``unknown`` (absence is never evidence);
+* terminal order states need two positive sources (see ``reconcile_plan``).
 
 Broker business messages are redacted of long digit runs before they are
 surfaced; customer-name and account fields are never copied out of a row.
@@ -43,7 +42,12 @@ _BODY_CONTINUATION_RE: Final[re.Pattern[str]] = re.compile(
 _LONG_DIGITS_RE: Final[re.Pattern[str]] = re.compile(r"\d{6,}")
 _MAX_MESSAGE_LENGTH: Final[int] = 160
 
-OpenOrdersState = Literal["present", "none_confirmed", "unknown"]
+# There is deliberately no "none" state: no listing shape — empty, block
+# absent, 13578, or error — is accepted as evidence that nothing is open.
+OpenOrdersState = Literal["present", "unknown"]
+EMPTY_IS_NOT_EVIDENCE: Final[str] = (
+    "empty_open_listing_is_not_evidence_of_no_open_orders"
+)
 AckState = Literal["accepted", "acceptance_uncertain", "rejected"]
 OrderStatus = Literal[
     "open",
@@ -275,16 +279,12 @@ def classify_listing_page(
 
     key = header_continuation_key or _body_continuation_key(payload)
     flag = (header_continuation_flag or "").strip().upper()
-    # Any "more pages" signal counts even without a usable key: a page that
-    # announces continuation but cannot be followed leaves the listing
+    # A page is final only when *no* continuation signal is present: no key
+    # (header or body), no continue code, and no "Y" flag.  Any signal —
+    # including one contradicted by cts_flag=N — means "more pages"; a key is
+    # followed, and a signal without a followable key leaves the listing
     # incomplete (unknown), never final.
-    if flag == "N":
-        has_next = False
-    elif flag == "Y" or code in READ_CONTINUE_CODES:
-        has_next = True
-    else:
-        # A body continuation key with a value means "more pages".
-        has_next = header_continuation_key is None and key is not None
+    has_next = key is not None or code in READ_CONTINUE_CODES or flag == "Y"
     return ListingPage(
         usable=True,
         rows=tuple(rows),
@@ -385,7 +385,14 @@ def determine_open_orders(
     ledger_live_order_nos: Iterable[int] = (),
     ledger_has_unbound_uncertain: bool = False,
 ) -> OpenOrdersDetermination:
-    """Two-source determination; an empty answer needs both sources to agree."""
+    """Positive evidence only: ``present`` or ``unknown``, never "none".
+
+    An open order is ``present`` when either complete scope positively lists
+    it with an open quantity.  When no open row is found, the answer is
+    ``unknown`` with ``EMPTY_IS_NOT_EVIDENCE`` (plus any source problems):
+    the Kiwoom kt00009 lesson is that an empty open-orders response can be
+    wrong, and no second listing of the same API can prove it right.
+    """
 
     reasons: list[str] = []
     open_rows: dict[int, OrderRow] = {}
@@ -423,17 +430,10 @@ def determine_open_orders(
         return OpenOrdersDetermination(
             state="present", open_rows=rows, reasons=tuple(reasons)
         )
-    if not reasons and not all_listing.rows:
-        # Liveness witness: an all-orders listing with zero rows (block absent,
-        # 13578, or []) is indistinguishable from an endpoint silently
-        # returning nothing (the kt00009 failure).  "None open" is confirmed
-        # only when the same listing demonstrably returns today's orders.
-        reasons.append("empty_listing_is_not_evidence_of_no_open_orders")
-    if reasons:
-        return OpenOrdersDetermination(
-            state="unknown", open_rows=(), reasons=tuple(reasons)
-        )
-    return OpenOrdersDetermination(state="none_confirmed", open_rows=(), reasons=())
+    reasons.append(EMPTY_IS_NOT_EVIDENCE)
+    return OpenOrdersDetermination(
+        state="unknown", open_rows=(), reasons=tuple(reasons)
+    )
 
 
 @dataclass(frozen=True, slots=True)

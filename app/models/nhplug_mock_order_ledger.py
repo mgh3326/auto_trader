@@ -110,6 +110,10 @@ class NHPlugMockOrderLedger(Base):
             "filled_qty IS NULL OR quantity IS NULL OR filled_qty <= quantity",
             name="filled_within_quantity",
         ),
+        CheckConstraint(
+            "ack_order_id IS NULL OR ack_order_id = broker_order_id",
+            name="ack_matches_broker_order",
+        ),
         Index("ix_nhplug_mock_ledger_order_date_status", "order_date", "status"),
         Index("ix_nhplug_mock_ledger_symbol", "symbol"),
         {"schema": "review"},
@@ -133,6 +137,10 @@ class NHPlugMockOrderLedger(Base):
     price: Mapped[Decimal | None] = mapped_column(Numeric(20, 3))
 
     broker_order_id: Mapped[str | None] = mapped_column(Text)
+    # Set only by record_ack from a readable broker acknowledgement; a number
+    # bound later by attribute matching never populates it.  Terminal
+    # cancel/modify corroboration requires this positive ack evidence.
+    ack_order_id: Mapped[str | None] = mapped_column(Text)
     original_order_id: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[str] = mapped_column(Text, nullable=False)

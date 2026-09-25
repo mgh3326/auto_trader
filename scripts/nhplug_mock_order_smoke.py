@@ -12,7 +12,7 @@ Modes:
 
 - ``preflight``   offline: env file shape, gate, scope constants (0 network)
 - ``positions``   read cash + positions
-- ``open-orders`` two-source open-order read (present/none_confirmed/unknown)
+- ``open-orders`` two-scope open-order read (present/unknown; never "none")
 - ``history``     daily order/fill listing
 - ``place``       one confirmed KRX limit order (ledger row first)
 - ``modify``      one confirmed limit-price modification
@@ -44,6 +44,7 @@ from app.services.brokers.nhplug.client import (
     ALLOWED_READONLY_PATHS,
     NHPlugMockClient,
 )
+from app.services.brokers.nhplug.order_evidence import EMPTY_IS_NOT_EVIDENCE
 from app.services.nhplug_mock import operations
 from scripts.nhplug_mock_smoke import (
     DEFAULT_ENV_FILE,
@@ -84,11 +85,13 @@ async def _ledger_scope(
 
 
 def _only_empty_listing(result: dict[str, Any]) -> bool:
-    """True when "unknown" is solely the missing liveness witness."""
+    """True when "unknown" is solely "an empty open listing is not evidence"."""
 
-    return result.get("reasons") == [
-        "empty_listing_is_not_evidence_of_no_open_orders"
-    ] and all(source.get("complete") for source in result.get("sources", []))
+    return (
+        result.get("open_orders_state") == "unknown"
+        and result.get("reasons") == [EMPTY_IS_NOT_EVIDENCE]
+        and all(source.get("complete") for source in result.get("sources", []))
+    )
 
 
 def _open_ids(result: dict[str, Any]) -> set[str]:
@@ -106,6 +109,7 @@ async def _roundtrip(
 
     settle = float(args.settle_seconds)
     live_order_id: str | None = None
+    test_order_ids: set[str] = set()
     try:
         _step("1_positions", await operations.get_positions(client))
         before = _step(
@@ -140,6 +144,7 @@ async def _roundtrip(
                 raise RoundtripAbort("place acceptance uncertain")
             raise RoundtripAbort("place was not accepted")
         live_order_id = str(placed["broker_order_id"])
+        test_order_ids.add(live_order_id)
 
         await asyncio.sleep(settle)
         after_place = _step(
@@ -171,6 +176,7 @@ async def _roundtrip(
         if modified.get("status") != "accepted":
             raise RoundtripAbort("modify was not accepted")
         live_order_id = str(modified["broker_order_id"])
+        test_order_ids.add(live_order_id)
 
         await asyncio.sleep(settle)
         after_modify = _step(
@@ -204,7 +210,11 @@ async def _roundtrip(
                 client, order_date=order_date, ledger=ledger
             ),
         )
-        if after_cancel["open_orders_state"] == "unknown":
+        if after_cancel["open_orders_state"] == "unknown" and not _only_empty_listing(
+            after_cancel
+        ):
+            # Only the clean "empty is not evidence" unknown is acceptable here;
+            # a broken or incomplete source aborts.
             raise RoundtripAbort("open-order state after cancel is unknown")
         if live_order_id in _open_ids(after_cancel):
             raise RoundtripAbort("cancelled order is still listed as open")
@@ -237,19 +247,22 @@ async def _roundtrip(
                 client, order_date=order_date, ledger=ledger
             ),
         )
-        confirmed = final["open_orders_state"] == "none_confirmed" and all(
-            source["complete"] for source in final["sources"]
+        # The empty-array check: after everything is cancelled the open-only
+        # scope is empty, and that must be reported as unknown (never "none")
+        # from complete, well-formed sources that list none of our orders open.
+        confirmed = _only_empty_listing(final) and not (
+            _open_ids(final) & test_order_ids
         )
         if not confirmed:
             raise RoundtripAbort(
-                "final open-order check is not a two-source none_confirmed"
+                "final empty-array check did not report a clean unknown"
             )
         _emit(
             {
                 "step": "summary",
                 "status": "ok",
                 "final_open_orders_state": final["open_orders_state"],
-                "empty_listing_is_two_source_confirmed": True,
+                "empty_open_listing_reported_as_unknown": True,
             }
         )
         return 0

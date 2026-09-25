@@ -32,7 +32,10 @@ from app.services.brokers.nhplug.client import (
     NHPlugMockClient,
     TokenProvider,
 )
-from app.services.brokers.nhplug.contracts import DryRunConfirmContract
+from app.services.brokers.nhplug.contracts import (
+    CommittedOrderIntent,
+    DryRunConfirmContract,
+)
 from app.services.brokers.nhplug.errors import NHPlugMockDispatchUncertain
 from app.services.brokers.nhplug.order_evidence import (
     ListingPage,
@@ -220,6 +223,7 @@ def _ledger_views(rows: Any) -> list[LedgerRowView]:
             price=None if row.price is None else Decimal(row.price),
             broker_order_id=row.broker_order_id,
             original_order_id=row.original_order_id,
+            ack_order_id=row.ack_order_id,
         )
         for row in rows
     ]
@@ -231,7 +235,7 @@ async def get_open_orders(
     order_date: str,
     ledger: NHPlugMockLedgerService | None = None,
 ) -> dict[str, Any]:
-    """Two-source open-order read; ``none_confirmed`` is never an empty default."""
+    """Two-scope open-order read: ``present`` from positive rows, else ``unknown``."""
 
     all_listing = await collect_listing(client, order_date=order_date, scope="all")
     open_listing = await collect_listing(client, order_date=order_date, scope="open")
@@ -265,9 +269,9 @@ async def get_open_orders(
         ledger_cross_checked=ledger_checked,
         sources=[_listing_summary(all_listing), _listing_summary(open_listing)],
         note=(
-            "none_confirmed requires two complete, agreeing listings plus at "
-            "least one of today's rows as a liveness witness; an empty or "
-            "error-shaped response alone is reported as unknown."
+            "There is no 'none' state: without a positively listed open row "
+            "the answer is unknown, because an empty open-orders response is "
+            "not evidence that nothing is open."
         ),
     )
 
@@ -483,18 +487,23 @@ async def _dispatch_and_record(
 
 async def _record_submitting(
     ledger: NHPlugMockLedgerService, **kwargs: Any
-) -> tuple[int | None, dict[str, Any] | None]:
+) -> tuple[int | None, CommittedOrderIntent | None, dict[str, Any] | None]:
     try:
         row = await ledger.record_submitting(**kwargs)
+        intent = await ledger.committed_intent(row.id)
     except Exception as exc:  # noqa: BLE001 - no ledger row, no send
-        return None, _error(
-            "ledger_unavailable",
-            f"ledger write failed before dispatch ({type(exc).__name__}); "
-            "the order was not sent.",
-            status="not_submitted",
-            dispatch_started=False,
+        return (
+            None,
+            None,
+            _error(
+                "ledger_unavailable",
+                f"ledger write failed before dispatch ({type(exc).__name__}); "
+                "the order was not sent.",
+                status="not_submitted",
+                dispatch_started=False,
+            ),
         )
-    return row.id, None
+    return row.id, intent, None
 
 
 async def place_limit_order(
@@ -539,7 +548,7 @@ async def place_limit_order(
             dispatch_started=False,
         )
     date = order_date or today_order_date()
-    row_id, refusal = await _record_submitting(
+    row_id, intent, refusal = await _record_submitting(
         ledger,
         order_date=date,
         operation_kind="place",
@@ -551,7 +560,7 @@ async def place_limit_order(
         reason=reason,
         correlation_id=correlation_id,
     )
-    if refusal is not None or row_id is None:
+    if refusal is not None or row_id is None or intent is None:
         return refusal or _error("ledger_unavailable", "ledger row missing")
     return await _dispatch_and_record(
         ledger=ledger,
@@ -562,6 +571,7 @@ async def place_limit_order(
             quantity=quantity,
             price=price,
             authorization=DryRunConfirmContract(dry_run=False, confirm=True),
+            intent=intent,
         ),
         response=_base(
             dry_run=False,
@@ -656,7 +666,7 @@ async def modify_limit_order(
             dispatch_started=False,
         )
     full = quantity == original.open_qty
-    row_id, refusal = await _record_submitting(
+    row_id, intent, refusal = await _record_submitting(
         ledger,
         order_date=date,
         operation_kind="modify",
@@ -666,7 +676,7 @@ async def modify_limit_order(
         price=new_price,
         original_order_id=str(order_no),
     )
-    if refusal is not None or row_id is None:
+    if refusal is not None or row_id is None or intent is None:
         return refusal or _error("ledger_unavailable", "ledger row missing")
     return await _dispatch_and_record(
         ledger=ledger,
@@ -678,6 +688,7 @@ async def modify_limit_order(
             price=new_price,
             full_quantity=full,
             authorization=DryRunConfirmContract(dry_run=False, confirm=True),
+            intent=intent,
         ),
         response=_base(
             dry_run=False,
@@ -783,7 +794,7 @@ async def cancel_order(
             )
         side = known.side
         verified_by = "ledger_row"
-    row_id, refusal = await _record_submitting(
+    row_id, intent, refusal = await _record_submitting(
         ledger,
         order_date=date,
         operation_kind="cancel",
@@ -793,7 +804,7 @@ async def cancel_order(
         price=None,
         original_order_id=str(order_no),
     )
-    if refusal is not None or row_id is None:
+    if refusal is not None or row_id is None or intent is None:
         return refusal or _error("ledger_unavailable", "ledger row missing")
     return await _dispatch_and_record(
         ledger=ledger,
@@ -803,6 +814,7 @@ async def cancel_order(
             symbol=symbol,
             quantity=cancel_quantity,
             authorization=DryRunConfirmContract(dry_run=False, confirm=True),
+            intent=intent,
         ),
         response=_base(
             dry_run=False,

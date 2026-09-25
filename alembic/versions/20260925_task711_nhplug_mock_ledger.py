@@ -71,6 +71,7 @@ def upgrade() -> None:
         sa.Column("quantity", sa.Numeric(20, 0), nullable=True),
         sa.Column("price", sa.Numeric(20, 3), nullable=True),
         sa.Column("broker_order_id", sa.Text(), nullable=True),
+        sa.Column("ack_order_id", sa.Text(), nullable=True),
         sa.Column("original_order_id", sa.Text(), nullable=True),
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column(
@@ -161,6 +162,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "filled_qty IS NULL OR quantity IS NULL OR filled_qty <= quantity",
             name=_ck("filled_within_quantity"),
+        ),
+        sa.CheckConstraint(
+            "ack_order_id IS NULL OR ack_order_id = broker_order_id",
+            name=_ck("ack_matches_broker_order"),
         ),
         schema=_SCHEMA,
     )

@@ -26,7 +26,10 @@ import httpx
 import pytest
 
 from app.core.config import settings
-from app.services.brokers.nhplug.contracts import DryRunConfirmContract
+from app.services.brokers.nhplug.contracts import (
+    DryRunConfirmContract,
+    issue_committed_intent,
+)
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
     NHPlugMockDispatchUncertain,
@@ -122,13 +125,29 @@ async def _client(client_module: Any, broker: _Broker) -> tuple[Any, list[int]]:
     return client, token_calls
 
 
-async def _submit(client: Any, authorization: Any = CONFIRMED) -> Any:
+def _intent() -> Any:
+    return issue_committed_intent(
+        ledger_row_id=1,
+        client_request_id=uuid.uuid4().hex,
+        operation="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+        original_order_no=None,
+    )
+
+
+async def _submit(
+    client: Any, authorization: Any = CONFIRMED, intent: Any = "default"
+) -> Any:
     return await client.submit_limit_order(
         side="buy",
         symbol="005930",
         quantity=1,
         price=50000,
         authorization=authorization,
+        intent=_intent() if intent == "default" else intent,
     )
 
 
@@ -374,6 +393,9 @@ async def probe_error_shaped_is_unknown(
         open_listing=_listing(evidence, "open", {"rsp_cd": "00007", "Output_1": []}),
     )
     assert result.state == "unknown", result
+    # The error must surface as a source problem, not be laundered into the
+    # ordinary "empty is not evidence" answer.
+    assert any(r.startswith("open_scope_incomplete") for r in result.reasons), result
 
 
 # --- round-1 boundaries ----------------------------------------------------
@@ -429,6 +451,7 @@ async def probe_dispatcher_authorization(
                 "sor_mkt_sli_yn": "N",
             },
             authorization=DryRunConfirmContract(),
+            intent=_intent(),
         )
     except NHPlugMockOrderRefused:
         pass
@@ -530,6 +553,70 @@ async def probe_fill_cross_check(plan: Any, monkeypatch: pytest.MonkeyPatch) -> 
     assert planned[0].update.status is None, planned
 
 
+# --- round-2 boundaries ----------------------------------------------------
+
+
+async def probe_dispatch_needs_intent(
+    client_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _Broker()
+    client, token_calls = await _client(client_module, broker)
+    try:
+        await _submit(client, intent=None)
+    except NHPlugMockOrderRefused:
+        pass
+    else:
+        raise AssertionError("an order was sent without a committed ledger intent")
+    assert token_calls == [] and broker.requests == []
+
+
+async def probe_empty_open_scope_is_unknown(
+    evidence: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed = {**_OPEN_ROW, "ny_cns_qty": 0, "can_qty": 1}
+    for empty in ({"rsp_cd": "00000"}, {"rsp_cd": "13578"}):
+        result = evidence.determine_open_orders(
+            all_listing=_listing(
+                evidence, "all", {"rsp_cd": "00000", "Output_1": [closed]}
+            ),
+            open_listing=_listing(evidence, "open", empty),
+        )
+        assert result.state == "unknown", result
+
+
+async def probe_cancel_needs_own_ack(
+    plan: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from decimal import Decimal
+
+    from app.services.brokers.nhplug import order_evidence as evidence
+
+    cancelled = {**_OPEN_ROW, "ny_cns_qty": 0, "can_qty": 1}
+    planned = plan.plan_reconcile(
+        [
+            plan.LedgerRowView(
+                id=1,
+                operation_kind="place",
+                status="accepted",
+                symbol="005930",
+                side="buy",
+                quantity=1,
+                price=Decimal(50000),
+                broker_order_id="1000123",
+                original_order_id=None,
+                ack_order_id="1000123",
+            )
+        ],
+        all_listing=_listing(
+            evidence, "all", {"rsp_cd": "00000", "Output_1": [cancelled]}
+        ),
+        open_listing=_listing(evidence, "open", {"rsp_cd": "00000"}),
+        filled_listing=_listing(evidence, "filled", {"rsp_cd": "13578"}),
+        all_claimed_order_ids=("1000123",),
+    )
+    assert planned[0].update.status is None, planned
+
+
 Probe = Callable[[Any, pytest.MonkeyPatch], Awaitable[None]]
 
 MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
@@ -622,8 +709,9 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
     (
         "dispatcher_skips_authorization",
         CLIENT,
-        "        _assert_send_authorized(authorization)\n        _assert_mock_enabled()\n",
-        "        _assert_mock_enabled()\n",
+        "        _assert_send_authorized(authorization)\n"
+        "        verified_intent = _assert_committed_intent(intent, path=path, input_0=input_0)\n",
+        "        verified_intent = _assert_committed_intent(intent, path=path, input_0=input_0)\n",
         probe_dispatcher_authorization,
     ),
     (
@@ -643,8 +731,8 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
     (
         "continuation_flag_without_key_is_final",
         EVIDENCE,
-        '    elif flag == "Y" or code in READ_CONTINUE_CODES:\n',
-        '    elif (flag == "Y" or code in READ_CONTINUE_CODES) and key:\n',
+        '    has_next = key is not None or code in READ_CONTINUE_CODES or flag == "Y"\n',
+        "    has_next = key is not None\n",
         probe_flag_without_key,
     ),
     (
@@ -653,6 +741,33 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
         "    if (fill_gap := _fill_confirmed(broker_row, filled_listing)) is not None:\n",
         "    if (fill_gap := None) is not None:\n",
         probe_fill_cross_check,
+    ),
+    (
+        "dispatch_without_committed_intent",
+        CLIENT,
+        '    """No committed ledger intent, no send; the intent must match the body."""\n',
+        '    """No committed ledger intent, no send; the intent must match the body."""\n'
+        "    if type(intent) is not CommittedOrderIntent:\n"
+        "        import types\n"
+        "\n"
+        "        return types.SimpleNamespace(client_request_id=repr(input_0))  # type: ignore[return-value]\n",
+        probe_dispatch_needs_intent,
+    ),
+    (
+        "empty_open_scope_confirms_none",
+        EVIDENCE,
+        "    reasons.append(EMPTY_IS_NOT_EVIDENCE)\n",
+        "    if not reasons:\n"
+        '        return OpenOrdersDetermination(state="none_confirmed", open_rows=(), reasons=())  # type: ignore[arg-type]\n'
+        "    reasons.append(EMPTY_IS_NOT_EVIDENCE)\n",
+        probe_empty_open_scope_is_unknown,
+    ),
+    (
+        "cancel_without_own_ack",
+        "app.services.nhplug_mock.reconcile_plan",
+        '    if derived == "cancelled" and order_no not in acks.cancels:\n',
+        "    if False:\n",
+        probe_cancel_needs_own_ack,
     ),
 )
 

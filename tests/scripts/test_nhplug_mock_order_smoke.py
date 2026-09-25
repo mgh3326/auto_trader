@@ -167,7 +167,7 @@ async def test_offline_roundtrip_passes_every_step(
     steps = [line.get("step") for line in lines]
     assert code == 0, lines[-1]
     assert steps[-1] == "summary" and lines[-1]["status"] == "ok"
-    assert lines[-1]["empty_listing_is_two_source_confirmed"] is True
+    assert lines[-1]["empty_open_listing_reported_as_unknown"] is True
     reconcile = next(line for line in lines if line.get("step") == "9_reconcile_apply")
     assert reconcile["unresolved"] == 0
     assert broker.order_paths() == [
@@ -243,8 +243,22 @@ def _patch_nth_open_orders(
 @pytest.mark.parametrize(
     ("nth", "override"),
     (
-        (4, {"open_orders_state": "unknown", "open_orders": []}),  # after cancel
-        (5, {"open_orders_state": "unknown", "open_orders": []}),  # final check
+        (
+            4,
+            {
+                "open_orders_state": "unknown",
+                "open_orders": [],
+                "reasons": ["open_scope_incomplete:gateway_error_envelope"],
+            },
+        ),  # after cancel: a broken source, not the clean empty unknown
+        (
+            5,
+            {
+                "open_orders_state": "unknown",
+                "open_orders": [],
+                "reasons": ["all_scope_incomplete:pagination_truncated"],
+            },
+        ),  # final check
         (5, {"open_orders_state": "present", "open_orders": []}),  # final, not none
         (
             1,

@@ -82,7 +82,7 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_smoke \
 - 매 작업마다 `/n2/acctinfo`로 `acct_type=03`을 새로 검증하고, build된 요청 바이트의 `act_no`를 send 직전에 다시 대조한다. 01/02·상충 type 응답은 거부.
 - `NHPLUG_MOCK_ENABLED=true`는 **프로세스 환경변수**여야 한다(파일에만 있으면 모든 dispatch가 fail-closed). 모든 주문은 `dry_run=False` + `confirm=True`(CLI는 `--confirm-mock-order`).
 - 레저 `review.nhplug_mock_order_ledger`: broker 전송 **전** `submitting` 행 커밋(레저 없으면 전송 없음). 주문번호가 읽혀야만 `accepted`. send 이후 실패는 `acceptance_uncertain`(재시도 금지). 체결·종결 상태는 reconcile만, 두 조회 소스가 합의한 증거로만 기록.
-- 미체결: `ost_cns_dit=2`(미체결)와 `ost_cns_dit=0`(전체) 두 조회가 모두 완전하고 합의하며, 전체 조회에 **당일 주문 행이 1개 이상 있을 때(liveness witness)** 만 `none_confirmed`. 빈 배열·블록 누락·13578·오류형 응답·페이지 미완료(`cts_flag=Y`인데 키 없음 포함)는 `unknown`. 체결 수량은 체결 조회(`ost_cns_dit=1`)에서도 같은 수량으로 확인돼야만 기록된다.
+- 미체결: **"미체결 없음"이라는 답은 없다.** `open_orders_state`는 `present`(완전한 조회가 미체결 행을 양성으로 나열) 또는 `unknown`뿐이다. 빈 배열·블록 누락·13578·오류형 응답·페이지 미완료(`cts_flag=N`이어도 키가 있거나 계속코드면 다음 페이지를 따라감)는 항상 `unknown`. 종결 상태는 양성 증거 두 개로만 기록: 체결=전체조회 행+체결조회(`ost_cns_dit=1`), 취소=전체조회 행+우리 취소 주문의 브로커 접수(`ack_order_id`), 정정=전체조회 행+우리 정정 접수+후속 주문 행. client는 커밋된 레저 intent 없이는 전송하지 않는다.
 - MCP 인자는 `StrictBool`/`StrictInt`: `dry_run`/`confirm`에 `0`/`1`/`"true"`를 보내면 검증 단계에서 거부된다. 주문은 그 client가 직접 `/n2/acctinfo`로 검증한 계좌에서만 가능하다.
 
 ### 개발 중 검증하지 못한 벤더 가정 (스모크가 확인)
@@ -115,12 +115,12 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-
 
 # 2) 미체결 baseline (빈 배열 검증 1차)
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F --mode open-orders --confirm-read
-#    기대: 당일 주문이 아직 없으면 open_orders_state=unknown 이며 reasons 가 정확히
-#          ["empty_listing_is_not_evidence_of_no_open_orders"] (빈 응답은 '미체결 없음'의 증거가 아님 — 정상).
-#          당일 다른 주문이 있으면 none_confirmed 또는 present.
+#    기대: 미체결이 없으면 open_orders_state=unknown 이며 reasons 가 정확히
+#          ["empty_open_listing_is_not_evidence_of_no_open_orders"] (빈 응답은 '미체결 없음'의 증거가 아님 — 정상).
+#          다른 미체결이 있으면 present.
 #          sources[0](all)·sources[1](open) 모두 complete=true, response_codes 기록.
 #          그 밖의 reasons(…_incomplete:… 등)로 unknown이면 중단하고 reasons/sources를 보고.
-#    전제: 이 모의계좌에 스모크 외의 미체결 주문이 없어야 10단계 none_confirmed 가 성립한다.
+#    전제: 이 모의계좌에 스모크 외의 미체결 주문이 없어야 10단계 빈 배열 검증이 성립한다.
 
 # 3) 왕복: 주문 -> 조회 -> 정정 -> 조회 -> 취소 -> 조회 -> reconcile -> 빈 배열 확인 (토큰 1회)
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F \
@@ -138,15 +138,15 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-
 | `5_modify_limit_price` | `status=accepted`, `broker_order_id=N2`, `full_quantity=true` |
 | `6_open_orders_after_modify` | `N2`가 open |
 | `7_cancel_full` | `status=accepted`, `original_verified_by=broker_listing` |
-| `8_open_orders_after_cancel` | `unknown`이 아니고 `N2`가 open 목록에 없음 |
+| `8_open_orders_after_cancel` | `N2`가 open 목록에 없음; `unknown`이면 사유가 빈 응답 하나뿐이고 source 모두 complete (그 외 abort) |
 | `9_reconcile_apply` | `success=true`, `unresolved=0`, 모든 행 `applied=true`; place행 `modified`, modify행 `cancelled`, cancel행 `confirmed`, 모두 `verified` (아니면 abort) |
-| `10_empty_listing_check` | `open_orders_state=none_confirmed`, 두 source `complete=true` (아니면 abort) — 당일 주문 행이 witness 로 존재하므로 빈 open 조회가 '없음'으로 인정되는 유일한 경우 |
-| `summary` | `status=ok`, `empty_listing_is_two_source_confirmed=true` |
+| `10_empty_listing_check` | **빈 배열 검증**: `open_orders_state=unknown`, reasons 가 정확히 빈 응답 사유 하나, 두 source `complete=true`, 테스트 주문이 open 목록에 없음 (아니면 abort) — 빈 open 응답이 '없음'으로 보고되지 않음을 실증 |
+| `summary` | `status=ok`, `empty_open_listing_reported_as_unknown=true` |
 
 ```bash
 # 4) 빈 배열 검증 2차 (독립 프로세스로 다시)
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F --mode open-orders --confirm-read
-#    기대: none_confirmed(당일 스모크 주문 행이 witness), 두 source complete=true. open source response_codes(예: 13578=조회할 내역 없음)를 보고에 기록.
+#    기대: unknown + 빈 응답 사유 하나, 두 source complete=true. open source response_codes(예: 13578=조회할 내역 없음)를 보고에 기록.
 
 # 5) 체결/주문 이력과 레저 증거
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F --mode history --confirm-read --scope all
