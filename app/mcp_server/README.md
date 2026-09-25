@@ -2499,7 +2499,11 @@ still produce broker evidence scan before permanently unresolvable ones
 (missing order key or an order date beyond the documented evidence depth —
 TTTC8001R ~90 days for KIS KR, the fixed 7-day TTTS3035R window for KIS US),
 which fill only leftover limit slots. `candidate_scan` reports the order plus
-`unreached_probeable` vs `unreached_beyond_reach`.
+`unreached_probeable` vs `unreached_beyond_reach`. The KR terminal repair
+pre-pass pages by ledger id under a bounded cap (`scanned`, `exhausted`,
+`scan_cap`, `cap_reached`; dry-run reports `scan: {skipped: "dry_run"}`), so a
+dense prefix of unprojectable rows can no longer starve candidates — a
+cap-bound pass reports a `note` instead of silently truncating.
 
 ### Removed profile: `paper_execution` (audit 2026-09-03)
 

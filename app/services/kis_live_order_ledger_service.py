@@ -123,8 +123,15 @@ class KISLiveOrderLedgerService:
             "scanned": scanned,
             "exhausted": exhausted,
             "scan_cap": scan_cap,
+            "cap_reached": scanned >= scan_cap,
             "scan_order": "ledger id ASC keyset pages",
         }
+        if not exhausted and scanned >= scan_cap:
+            scan["note"] = (
+                "scan_cap reached before exhausting the terminal scan — "
+                "unreached rows remain; the bound is per-pass so rerun "
+                "reconcile to continue"
+            )
         for row in candidates:
             self._db.expunge(row)
         return candidates, anomalies, scan

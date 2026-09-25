@@ -207,6 +207,9 @@ def _live_beyond_reach_clause() -> Any:
     evidence window.  Upbit rows have no history-depth cap — only the missing
     key deprioritizes them.
     """
+    # The adapter's probe window is date-granular ((now-7d).date .. now.date)
+    # while this cutoff is an exact timestamp, so a row 7-8 days old may still
+    # be probeable but ranks beyond reach — ordering-only, conservative side.
     kis_cutoff = datetime.now(UTC) - timedelta(days=_KIS_US_HISTORY_LOOKBACK_DAYS)
     return or_(
         LiveOrderLedger.order_no.is_(None),

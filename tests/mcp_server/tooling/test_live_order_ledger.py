@@ -1580,6 +1580,7 @@ async def test_reconcile_pending_not_found_is_flagged_for_review(dry_run):
     assert out["action"] == "noop_pending"
     assert out.get("reason_code") == "not_found"
     assert out.get("requires_manual_review") is True
+    assert out.get("reason") == "order US-NOT-FOUND not in recent overseas history"
     update.assert_not_awaited()
 
 
@@ -1669,3 +1670,79 @@ async def test_open_scan_ages_kis_rows_beyond_history_window(db_session):
     assert entry["action"] == "noop_pending"
     assert entry.get("reason_code") == "not_found"
     assert entry.get("requires_manual_review") is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_beyond_reach_kis_rows_are_deprioritized_not_dropped(db_session):
+    """ROB-719 gap D: aged KIS US rows fill leftover slots, never dropped.
+
+    Ordering deprioritizes beyond-reach rows; it must not filter them out.
+    A 10-day-old kis row plus a fresh row with ``limit=2``: both must be
+    scanned even though the stale row ranks behind the reachable one.
+    """
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.models.review import LiveOrderLedger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    now = datetime.now(UTC)
+    async with ll._order_session_factory()() as db:
+        stale = LiveOrderLedger(
+            trade_date=now - timedelta(days=10),
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            symbol="AAPL",
+            side="buy",
+            order_kind="limit",
+            order_no=f"STALE-{uuid4().hex[:12]}",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now - timedelta(days=10),
+        )
+        fresh = LiveOrderLedger(
+            trade_date=now,
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            symbol="AAPL",
+            side="buy",
+            order_kind="limit",
+            order_no=f"FRESH-{uuid4().hex[:12]}",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now,
+        )
+        db.add_all([stale, fresh])
+        await db.flush()
+        stale_id, fresh_id = stale.id, fresh.id
+        await db.commit()
+    assert stale_id < fresh_id
+
+    pending = FillEvidence(
+        FillVerdict.PENDING, Decimal("0"), None, None, "not_found", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=pending)
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        out = await ll.live_reconcile_orders_impl(broker="kis", dry_run=True, limit=2)
+
+    scanned_ids = {entry["ledger_id"] for entry in out["reconciled"]}
+    assert scanned_ids == {stale_id, fresh_id}
+    coverage = out["candidate_scan"]
+    assert coverage["scanned"] == 2
+    assert coverage["open_total"] == 2
+    assert coverage["probeable_open"] == 1
+    assert coverage["beyond_evidence_reach"] == 1
+    assert coverage["unscanned"] == 0

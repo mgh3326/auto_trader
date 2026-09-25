@@ -715,7 +715,12 @@ async def _converge_kis_proposal_rung(
     ledger_status: str,
     filled_qty: Decimal | None,
 ) -> dict[str, Any] | None:
-    """Project committed KIS terminal evidence in an independent session."""
+    """Project broker-verified KIS terminal evidence in an independent session.
+
+    Runs on broker evidence even if the ledger outcome write above was
+    swallowed — the rung projection is idempotent, so a later rerun repairs
+    the ledger row without double-converging.
+    """
     from app.services.order_proposals import OrderProposalsService
 
     terminal_state = {
@@ -743,15 +748,19 @@ async def _converge_kis_proposal_rung(
                 return None
             # A broker-confirmed cancel or DAY-expiry sweep may carry a final
             # booked partial fill (e.g. _mark_ledger_cancelled preserves
-            # filled_qty).  Project that quantity first, then close with
+            # filled_qty).  Project that quantity onto the SAME validated rung
+            # — record_fill_evidence re-picks a rung by broker id without a
+            # symbol/market scope, which can attribute the partial to an
+            # unrelated rung sharing the order number — then close with
             # filled_qty=None so the service preserves the partial audit value
-            # on the terminal rung — mirrors _converge_toss_proposal_rung.
+            # on the terminal rung.
             if (
                 ledger_status in {"cancelled", "expired"}
                 and filled_qty
                 and filled_qty > 0
             ):
-                await service.record_fill_evidence(
+                await service.record_fill_evidence_for_rung(
+                    rung_id=rung_id,
                     correlation_id=row.correlation_id,
                     broker_order_id=row.order_no,
                     idempotency_key=row.idempotency_key,
@@ -759,6 +768,8 @@ async def _converge_kis_proposal_rung(
                     terminal_state="partially_filled",
                     now=datetime.datetime.now(datetime.UTC),
                     account_mode="kis_live",
+                    symbol=row.symbol,
+                    market=row.instrument_type,
                 )
             rung = await service.record_fill_evidence_for_rung(
                 rung_id=rung_id,
@@ -1017,7 +1028,13 @@ async def kis_live_reconcile_orders_impl(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Reconcile accepted/pending live KR orders against broker fill evidence."""
-    projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
+    projection_repair = {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+        "anomalies": {},
+        "scan": {"skipped": "dry_run"},
+    }
     if not dry_run:
         projection_repair = await _repair_terminal_kis_proposal_projections(
             symbol=symbol, order_id=order_id, limit=limit

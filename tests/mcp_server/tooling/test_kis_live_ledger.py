@@ -237,6 +237,7 @@ async def test_reconcile_repairs_terminal_filled_proposal_projection(db_session)
             "scanned": 1,
             "exhausted": True,
             "scan_cap": 1000,
+            "cap_reached": False,
             "scan_order": "ledger id ASC keyset pages",
         },
     }
@@ -332,6 +333,7 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
             "scanned": 1,
             "exhausted": True,
             "scan_cap": 1000,
+            "cap_reached": False,
             "scan_order": "ledger id ASC keyset pages",
         },
     }
@@ -1590,3 +1592,294 @@ async def test_terminal_repair_prefilter_skips_ineligible_join_rows(db_session):
     assert repair["scan"]["scanned"] == 1
     _, rungs = await OrderProposalsService(db_session).get_proposal(real_pid)
     assert rungs[0].state == "filled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_partial_projection_never_lands_on_unrelated_rung_sharing_order_no(
+    db_session,
+):
+    """ROB-719 gap C: the partial pre-projection must stay on the validated rung.
+
+    KIS order numbers are only unique inside their own ledger, so two resting
+    kis_live rungs in different symbol scopes can share one broker order
+    number.  ``find_unambiguous_evidence_rung_id`` resolves the ledger row's
+    rung through the symbol scope; an unscoped evidence lookup would pick the
+    lower-id rung instead.  The partial qty must land on rung B only — rung A
+    must remain untouched.
+    """
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.services.order_proposals import OrderProposalsService
+
+    suffix = uuid4().hex
+    order_no = f"KIS-ROB719-DUP-{suffix[:12]}"
+    corr_a = f"live:kis_live:rob719-dupa-{suffix[:12]}"
+    corr_b = f"live:kis_live:rob719-dupb-{suffix[:12]}"
+    # Unrelated rung: same broker order number, different symbol, lower id.
+    _, pid_a = await _rob719_proposal_rung(
+        db_session,
+        suffix=f"dupa-{suffix}",
+        symbol="005930",
+        correlation_id=corr_a,
+        broker_order_id=order_no,
+    )
+    _, pid_b = await _rob719_proposal_rung(
+        db_session,
+        suffix=f"dupb-{suffix}",
+        symbol="214150",
+        correlation_id=corr_b,
+        broker_order_id=order_no,
+        quantity="3",
+    )
+    ledger_id = await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=3.0,
+        price=50000.0,
+        amount=150000.0,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=corr_b,
+    )
+    await kl._update_ledger_outcome(
+        ledger_id=ledger_id, status="partial", filled_qty=Decimal("2")
+    )
+    await kl._update_ledger_outcome(ledger_id=ledger_id, status="cancelled")
+
+    # The ROB-1284 resting-rung sweep matches ledger rows to rungs by order_no
+    # alone (a pre-existing cross-match, out of scope) — patch it out so this
+    # test isolates the repair pre-pass projection.
+    with patch.object(
+        kl, "run_resting_rung_sweep", AsyncMock(return_value={"swept": 0})
+    ):
+        result = await kl.kis_live_reconcile_orders_impl(dry_run=False)
+
+    assert result["proposal_projection_repair"]["converged"] == 1
+    _, rungs_a = await OrderProposalsService(db_session).get_proposal(pid_a)
+    _, rungs_b = await OrderProposalsService(db_session).get_proposal(pid_b)
+    # The unrelated rung sharing the order number gets nothing.
+    assert rungs_a[0].state == "resting"
+    assert rungs_a[0].filled_qty is None
+    # The ledger row's own rung keeps the booked partial on terminal close.
+    assert rungs_b[0].state == "cancelled"
+    assert rungs_b[0].filled_qty == Decimal("2")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 2])
+async def test_terminal_repair_pages_past_ineligible_prefix(db_session, limit):
+    """ROB-719 gap D: the repair pre-pass keyset-pages past ineligible rows.
+
+    Three terminal rows each join TWO accepting rungs with disjoint evidence
+    keys (``proposal_evidence_conflict`` — scanned but never projectable),
+    followed by one real candidate.  At ``limit=1`` a one-page scan starves
+    the candidate; at ``limit=2`` each page is a join-duplicate pair that
+    ``unique()`` collapses to a short page, which must not be mistaken for
+    exhaustion.
+    """
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.services.order_proposals import OrderProposalsService
+
+    suffix = uuid4().hex
+    for i in range(3):
+        corr_x = f"live:kis_live:rob719-cx{i}-{suffix[:8]}"
+        corr_y = f"live:kis_live:rob719-cy{i}-{suffix[:8]}"
+        odno_x = f"KIS-ROB719-CX{i}-{suffix[:8]}"
+        odno_y = f"KIS-ROB719-CY{i}-{suffix[:8]}"
+        await _rob719_proposal_rung(
+            db_session,
+            suffix=f"cx{i}-{suffix}",
+            symbol="214150",
+            correlation_id=corr_x,
+            broker_order_id=odno_x,
+        )
+        await _rob719_proposal_rung(
+            db_session,
+            suffix=f"cy{i}-{suffix}",
+            symbol="214150",
+            correlation_id=corr_y,
+            broker_order_id=odno_y,
+        )
+        # Terminal ledger row whose correlation_id resolves to rung X and
+        # order_no to rung Y — disjoint key sets => evidence conflict.
+        await kl._save_kis_live_order_ledger(
+            symbol="214150",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=50000.0,
+            amount=50000.0,
+            currency="KRW",
+            order_no=odno_y,
+            order_time="090000",
+            krx_fwdg_ord_orgno=None,
+            status="cancelled",
+            response_code="0",
+            response_message=None,
+            raw_response={},
+            reason=None,
+            thesis="test",
+            strategy="test",
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes=None,
+            exit_reason=None,
+            indicators_snapshot=None,
+            correlation_id=corr_x,
+        )
+    real_corr = f"live:kis_live:rob719-pg-{suffix[:12]}"
+    real_odno = f"KIS-ROB719-PG-{suffix[:12]}"
+    _, real_pid = await _rob719_proposal_rung(
+        db_session,
+        suffix=f"pg-{suffix}",
+        symbol="214150",
+        correlation_id=real_corr,
+        broker_order_id=real_odno,
+    )
+    await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=50000.0,
+        amount=50000.0,
+        currency="KRW",
+        order_no=real_odno,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="filled",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=real_corr,
+    )
+
+    result = await kl.kis_live_reconcile_orders_impl(dry_run=False, limit=limit)
+
+    repair = result["proposal_projection_repair"]
+    assert repair["candidates"] == 1
+    assert repair["converged"] == 1
+    assert repair["failed"] == 0
+    assert repair["anomalies"] == {"proposal_evidence_conflict": 3}
+    assert repair["scan"]["scanned"] == 4
+    # limit=1 exits as soon as the candidate fills the quota; limit=2 keeps
+    # paging until the scan actually drains (empty page => exhausted).
+    assert repair["scan"]["exhausted"] is (limit == 2)
+    assert repair["scan"]["cap_reached"] is False
+    _, rungs = await OrderProposalsService(db_session).get_proposal(real_pid)
+    assert rungs[0].state == "filled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_beyond_reach_rows_are_deprioritized_not_dropped(db_session):
+    """ROB-719 gap D: beyond-reach rows still scan inside leftover slots.
+
+    Ordering deprioritizes them; it never filters them out.  A 100-day-old
+    row and a recent row with no ``order_no`` are both beyond evidence reach;
+    with room in the limit they must still be looked up alongside the fresh
+    reachable row.
+    """
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.models.review import KISLiveOrderLedger
+
+    now = datetime.now(UTC)
+    async with kl._order_session_factory()() as db:
+        stale = KISLiveOrderLedger(
+            trade_date=now - timedelta(days=100),
+            symbol="214150",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            order_no=f"STALE-{uuid4().hex[:12]}",
+            account_mode="kis_live",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now - timedelta(days=100),
+        )
+        no_key = KISLiveOrderLedger(
+            trade_date=now,
+            symbol="214150",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            order_no=None,
+            account_mode="kis_live",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now,
+        )
+        fresh = KISLiveOrderLedger(
+            trade_date=now,
+            symbol="214150",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            order_no=f"FRESH-{uuid4().hex[:12]}",
+            account_mode="kis_live",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now,
+        )
+        db.add_all([stale, no_key, fresh])
+        await db.flush()
+        beyond_ids = {stale.id, no_key.id}
+        fresh_id = fresh.id
+        await db.commit()
+
+    with patch.object(kl, "_fetch_live_daily_rows", AsyncMock(return_value=[])):
+        result = await kl.kis_live_reconcile_orders_impl(dry_run=True, limit=3)
+
+    scanned_ids = {entry["ledger_id"] for entry in result["reconciled"]}
+    # All three rows fit in the limit — deprioritized rows are still scanned.
+    assert scanned_ids == beyond_ids | {fresh_id}
+    coverage = result["candidate_scan"]
+    assert coverage["scanned"] == 3
+    assert coverage["open_total"] == 3
+    assert coverage["probeable_open"] == 1
+    assert coverage["beyond_evidence_reach"] == 2
+    assert coverage["unscanned"] == 0
+    assert coverage["truncated"] is False
