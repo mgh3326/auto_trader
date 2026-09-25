@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any, Protocol
 
 import sentry_sdk
@@ -45,6 +46,7 @@ from app.services.invest_home_service import (
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
+from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
     get_upbit_warning_markets,
@@ -62,6 +64,18 @@ def _is_missing_money(value: object) -> bool:
         return float(value) == 0
     except (TypeError, ValueError):
         return False
+
+
+def _safe_toss_cash_amount(value: object) -> float | None:
+    """Convert a read-model cash value without letting corruption erase holdings."""
+
+    if value is None:
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) else None
 
 
 class HomeReader(Protocol):
@@ -139,7 +153,11 @@ class KISHomeReader:
             for s in stocks_kr:
                 qty = float(s.get("hldg_qty", 0))
                 avg_price = float(s.get("pchs_avg_pric", 0))
-                sellable_qty = float(s.get("ord_psbl_qty") or s.get("hldg_qty") or 0)
+                raw_sellable = s.get("ord_psbl_qty")
+                sellable_observed = (
+                    raw_sellable is not None and str(raw_sellable).strip() != ""
+                )
+                sellable_qty = float(raw_sellable) if sellable_observed else qty
                 holdings.append(
                     Holding(
                         holdingId=f"kis:kr:{s.get('pdno')}",
@@ -163,6 +181,10 @@ class KISHomeReader:
                         isTradeable=True,
                         manualOnly=False,
                         sellableQuantity=sellable_qty,
+                        sellableObserved=sellable_observed,
+                        brokerSellableQuantity=(
+                            sellable_qty if sellable_observed else None
+                        ),
                         pendingSellQuantity=max(qty - sellable_qty, 0.0),
                         referenceQuantity=0.0,
                     )
@@ -171,12 +193,13 @@ class KISHomeReader:
             for s in stocks_us:
                 qty = float(s.get("ovrs_cblc_qty", 0))
                 avg_price = float(s.get("pchs_avg_pric", 0))
-                sellable_qty = float(
-                    s.get("ord_psbl_qty")
-                    or s.get("ovrs_ord_psbl_qty")
-                    or s.get("ovrs_cblc_qty")
-                    or 0
+                raw_sellable = s.get("ord_psbl_qty")
+                if raw_sellable is None or str(raw_sellable).strip() == "":
+                    raw_sellable = s.get("ovrs_ord_psbl_qty")
+                sellable_observed = (
+                    raw_sellable is not None and str(raw_sellable).strip() != ""
                 )
+                sellable_qty = float(raw_sellable) if sellable_observed else qty
                 value_native = float(s.get("ovrs_stck_evlu_amt", 0))
                 pnl_native = float(s.get("frcr_evlu_pfls_amt", 0))
                 value_krw = (
@@ -210,6 +233,10 @@ class KISHomeReader:
                         isTradeable=True,
                         manualOnly=False,
                         sellableQuantity=sellable_qty,
+                        sellableObserved=sellable_observed,
+                        brokerSellableQuantity=(
+                            sellable_qty if sellable_observed else None
+                        ),
                         pendingSellQuantity=max(qty - sellable_qty, 0.0),
                         referenceQuantity=0.0,
                     )
@@ -438,6 +465,10 @@ class UpbitHomeReader:
                         quantity=qty,
                         currency="KRW",
                         priceState="missing",
+                        sellableQuantity=float(c.get("balance", 0)),
+                        sellableObserved=True,
+                        brokerSellableQuantity=float(c.get("balance", 0)),
+                        pendingSellQuantity=float(c.get("locked", 0)),
                     )
                 )
 
@@ -480,6 +511,10 @@ class UpbitHomeReader:
                     pnlKrw=pnl_krw,
                     pnlRate=pnl_rate,
                     priceState="live" if current_price is not None else "missing",
+                    sellableQuantity=float(c.get("balance", 0)),
+                    sellableObserved=True,
+                    brokerSellableQuantity=float(c.get("balance", 0)),
+                    pendingSellQuantity=float(c.get("locked", 0)),
                 )
 
                 if value_krw is not None and value_krw < 5000:
@@ -542,14 +577,17 @@ class UpbitHomeReader:
 
 
 def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float | None:
-    """Keep sellable quantity unknown on the general home read path.
+    """Return raw Toss sellable evidence for the display projection.
 
-    ROB-1310 keeps general home reads off the Toss sellable endpoint. Unknown
-    sellability is therefore ``None``; even an accidental lower-layer value is
-    not promoted into this display projection.
+    Protection is applied by InvestHomeService after the broker reader emits
+    its raw position. Mutation enablement controls order capability, not
+    visibility of a broker-provided read value.
     """
-    del position, mutations_enabled
-    return None
+
+    del mutations_enabled
+    if position.sellable_quantity is None:
+        return None
+    return float(position.sellable_quantity)
 
 
 def _toss_pending_sell_quantity(position: Any, mutations_enabled: bool) -> float:
@@ -563,9 +601,9 @@ class TossApiHomeReader:
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         del user_id
         try:
-            # ROB-549: keep tradeability gated on the live-mutation flag. ROB-1310
-            # makes sellable quantity broker-adjacent; this general home reader
-            # never fans out to Toss ORDER_INFO.
+            # Keep tradeability gated on the live-mutation flag. #728 obtains
+            # raw sellable evidence for the tactical display through the
+            # existing shared cache; only cache misses fan out to Toss.
             from app.core.config import settings as _settings
 
             mutations_enabled = bool(
@@ -576,7 +614,8 @@ class TossApiHomeReader:
                 name="invest.home.toss_api.snapshot",
             ) as span:
                 snapshot = await fetch_toss_portfolio_snapshot(
-                    need_sellable=False,
+                    need_sellable=True,
+                    sellable_cache=get_shared_sellable_cache(),
                 )
                 span.set_data("position_count", len(snapshot.positions))
                 span.set_data("error_count", len(snapshot.errors))
@@ -585,6 +624,12 @@ class TossApiHomeReader:
             cost_basis_krw_total: float | None = 0.0
             pnl_krw_total: float | None = 0.0
             warning_messages: list[str] = []
+            cash_krw = _safe_toss_cash_amount(snapshot.cash_krw)
+            cash_usd = _safe_toss_cash_amount(snapshot.cash_usd)
+            if (snapshot.cash_krw is not None and cash_krw is None) or (
+                snapshot.cash_usd is not None and cash_usd is None
+            ):
+                warning_messages.append("invalid_cash_snapshot_payload")
 
             usd_krw_rate: float | None = None
             if any(
@@ -681,6 +726,10 @@ class TossApiHomeReader:
                         sellableQuantity=_toss_sellable_quantity(
                             position, mutations_enabled
                         ),
+                        sellableObserved=position.sellable_quantity is not None,
+                        brokerSellableQuantity=_toss_sellable_quantity(
+                            position, mutations_enabled
+                        ),
                         pendingSellQuantity=_toss_pending_sell_quantity(
                             position, mutations_enabled
                         ),
@@ -707,12 +756,8 @@ class TossApiHomeReader:
                 pnlKrw=pnl_krw_total,
                 pnlRate=pnl_rate,
                 cashBalances=CashAmounts(
-                    krw=float(snapshot.cash_krw)
-                    if snapshot.cash_krw is not None
-                    else None,
-                    usd=float(snapshot.cash_usd)
-                    if snapshot.cash_usd is not None
-                    else None,
+                    krw=cash_krw,
+                    usd=cash_usd,
                 ),
                 buyingPower=CashAmounts(
                     # ROB-707: Toss GET /api/v1/buying-power exposes only
@@ -721,12 +766,8 @@ class TossApiHomeReader:
                     # surface it here. Fail-open: None per currency when the
                     # fetch failed (the error is already in snapshot.errors ->
                     # warning). cashBalances is left unchanged above.
-                    krw=float(snapshot.cash_krw)
-                    if snapshot.cash_krw is not None
-                    else None,
-                    usd=float(snapshot.cash_usd)
-                    if snapshot.cash_usd is not None
-                    else None,
+                    krw=cash_krw,
+                    usd=cash_usd,
                 ),
             )
             warning = None

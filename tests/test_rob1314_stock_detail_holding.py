@@ -134,7 +134,10 @@ async def test_get_symbol_holding_projects_from_shared_snapshot_without_readers(
     from app.services import invest_home_service as svc_mod
     from app.services.invest_home_readers import _SourceFetchResult
     from app.services.invest_home_service import InvestHomeService
-    from app.services.portfolio_snapshot import portfolio_snapshot_scope
+    from app.services.portfolio_snapshot import (
+        PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
+        portfolio_snapshot_scope,
+    )
     from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
 
     calls = {"reader": 0}
@@ -153,7 +156,7 @@ async def test_get_symbol_holding_projects_from_shared_snapshot_without_readers(
     cache = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
 
     payload = {
-        "schema_version": 1,
+        "schema_version": PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
         "held_pairs": [["kr", "005930"]],
         "response": {
             "homeSummary": {

@@ -25,6 +25,9 @@ AssetTypeLiteral = Literal["equity", "etf", "crypto", "fund", "other"]
 CurrencyLiteral = Literal["KRW", "USD"]
 AssetCategoryLiteral = Literal["kr_stock", "us_stock", "crypto"]
 PriceStateLiteral = Literal["live", "missing", "stale"]
+ProtectionStateLiteral = Literal[
+    "unprotected", "covered", "encroached", "shortfall", "unverified"
+]
 
 
 class CashAmounts(BaseModel):
@@ -73,6 +76,12 @@ class Holding(BaseModel):
     isTradeable: bool = True
     manualOnly: bool = False
     sellableQuantity: float | None = None
+    sellableObserved: bool = False
+    # In enforce mode sellableQuantity is the tactical projection.  Retain the
+    # broker fact and declared floor separately for an auditable read model.
+    brokerSellableQuantity: float | None = None
+    protectedQuantity: float = 0.0
+    protectionState: ProtectionStateLiteral = "unprotected"
     pendingSellQuantity: float = 0.0
     referenceQuantity: float | None = None
 
@@ -92,6 +101,10 @@ class Holding(BaseModel):
             self.isTradeable = False
             self.manualOnly = True
             self.sellableQuantity = 0.0
+            self.sellableObserved = False
+            self.brokerSellableQuantity = 0.0
+            self.protectedQuantity = 0.0
+            self.protectionState = "unprotected"
             self.pendingSellQuantity = 0.0
             self.referenceQuantity = self.quantity
         elif self.referenceQuantity is None:
@@ -117,6 +130,10 @@ class GroupedSourceBreakdown(BaseModel):
     isTradeable: bool = True
     manualOnly: bool = False
     sellableQuantity: float | None = None
+    sellableObserved: bool = False
+    brokerSellableQuantity: float | None = None
+    protectedQuantity: float = 0.0
+    protectionState: ProtectionStateLiteral = "unprotected"
     pendingSellQuantity: float = 0.0
     referenceQuantity: float | None = None
 
@@ -133,6 +150,10 @@ class GroupedHolding(BaseModel):
     totalQuantity: float
     tradeableQuantity: float = 0.0
     sellableQuantity: float | None = None
+    sellableObserved: bool = False
+    brokerSellableQuantity: float | None = None
+    protectedQuantity: float = 0.0
+    protectionState: ProtectionStateLiteral = "unprotected"
     pendingSellQuantity: float = 0.0
     referenceQuantity: float = 0.0
     averageCost: float | None = None

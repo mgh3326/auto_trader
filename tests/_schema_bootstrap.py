@@ -101,7 +101,9 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v46 (ROB-691): review.toss_live_order_ledger expired_at column + 'expired'
 # status CHECK widening, mirrored in _DDL_STATEMENTS; the bump forces one
 # re-bootstrap of persistent local test DBs.
-SCHEMA_BOOTSTRAP_VERSION = 46
+# v47 (ROB-728): review.protected_positions ORM tables plus the immutable
+# protected_position_revisions trigger used by the test-only PostgreSQL schema.
+SCHEMA_BOOTSTRAP_VERSION = 47
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1912,6 +1914,26 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD CONSTRAINT ck_toss_live_order_ledger_toss_live_ledger_status CHECK (status IN ("
     "'accepted','rejected','pending','partial','filled','cancelled',"
     "'replaced','cancel_rejected','replace_rejected','anomaly','expired'))",
+    # ---- ROB-728: operator quantity-floor revision evidence (table via ORM).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_protected_position_revision_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.protected_position_revisions is append-only; % rejected',
+            TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_protected_position_revisions_append_only "
+    "ON review.protected_position_revisions",
+    "CREATE TRIGGER trg_protected_position_revisions_append_only "
+    "BEFORE UPDATE OR DELETE ON review.protected_position_revisions "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_protected_position_revision_mutation()",
+    "DROP TRIGGER IF EXISTS trg_protected_position_revisions_truncate_append_only "
+    "ON review.protected_position_revisions",
+    "CREATE TRIGGER trg_protected_position_revisions_truncate_append_only "
+    "BEFORE TRUNCATE ON review.protected_position_revisions "
+    "FOR EACH STATEMENT EXECUTE FUNCTION review.reject_protected_position_revision_mutation()",
 )
 
 

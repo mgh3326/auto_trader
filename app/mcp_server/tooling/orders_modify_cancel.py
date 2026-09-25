@@ -6,11 +6,12 @@ import datetime
 import hashlib
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.config import settings
 from app.core.symbol import to_db_symbol
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.mcp_server.tooling.order_execution import (
@@ -36,6 +37,10 @@ from app.services.brokers.kis.live_order_expiry import (
 )
 from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.kr_symbol_universe_service import get_kr_security_type
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    prepare_live_sell_lease,
+)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
@@ -1329,6 +1334,92 @@ async def _live_sell_reprice_floor_error(
     return None
 
 
+async def _prepare_kis_live_sell_modify_protection(
+    *,
+    normalized_symbol: str,
+    market_type: str,
+    new_quantity: float | int,
+) -> tuple[Any | None, dict[str, Any] | None]:
+    """G4's live KIS amend guard, held through the broker amend response."""
+
+    market = _normalize_market_type_to_external(market_type)
+    try:
+        lease = await prepare_live_sell_lease(
+            account_scope="kis_live",
+            market=market,
+            symbol=normalized_symbol,
+        )
+    except ProtectionStateUnavailable:
+        return None, {
+            "error": "Protected position state is unavailable; sell modification not sent.",
+            "error_code": "protection_state_unavailable",
+        }
+    if not lease.active:
+        return lease, None
+
+    try:
+        fresh_holdings = await _get_holdings_for_order(
+            normalized_symbol,
+            market_type,
+            is_mock=False,
+        )
+    except Exception:  # noqa: BLE001 - fresh broker evidence is mandatory
+        fresh_holdings = None
+    try:
+        decision = await lease.evaluate(
+            quantity=new_quantity,
+            # Q19 is not verified.  Every KIS amendment therefore uses the
+            # conservative new-order rule, including a price-only amendment.
+            kind=_kis_live_amend_protection_kind(market_type),
+            fresh_broker_sellable=(
+                None
+                if fresh_holdings is None
+                else fresh_holdings.get("broker_sellable_quantity")
+            ),
+            fresh_broker_held=(
+                None if fresh_holdings is None else fresh_holdings.get("total_quantity")
+            ),
+            sellable_observed=(
+                fresh_holdings is not None
+                and fresh_holdings.get("sellable_observed") is True
+            ),
+        )
+    except BaseException:
+        await lease.release()
+        raise
+    if decision.allowed:
+        return lease, None
+
+    await lease.release()
+    error = {"error": "Protected quantity floor blocks this sell modification."}
+    if decision.block is not None:
+        error.update(decision.block.payload())
+    return None, error
+
+
+def _kis_live_amend_protection_kind(
+    market_type: str,
+) -> Literal["amend_broker_capped", "amend_uncapped"]:
+    """Keep Q19's KR promotion behind its own startup-verified setting.
+
+    Settings rejects the true value in this PR, so production remains on the
+    conservative path until a separately approved source/configuration change
+    supplies KIS residual-quantity evidence. The branch is intentionally
+    present so a future approval cannot accidentally promote KIS KR by editing
+    a call site without its explicit verification gate.
+    """
+
+    if market_type == "equity_kr" and bool(
+        getattr(
+            settings,
+            "protected_quantity_kis_kr_amend_broker_capped_verified",
+            False,
+        )
+    ):
+        return "amend_broker_capped"
+    return "amend_uncapped"
+
+
 def _build_modify_dry_run_response(
     order_id: str,
     normalized_symbol: str,
@@ -1437,6 +1528,39 @@ async def _modify_upbit(
                 "method": "cancel_reorder",
                 "dry_run": dry_run,
                 "message": "Order modified via cancel and reorder",
+            }
+        if result.get("reorder_withheld") or result.get("protection_phase"):
+            protection_detail = {
+                key: result[key]
+                for key in (
+                    "error_code",
+                    "protected_quantity",
+                    "broker_sellable",
+                    "headroom",
+                    "quantity",
+                    "protection_phase",
+                    "reorder_withheld",
+                )
+                if key in result
+            }
+            return {
+                "success": False,
+                "status": (
+                    "cancelled_reorder_withheld"
+                    if result.get("reorder_withheld")
+                    else "failed"
+                ),
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "error": result.get(
+                    "error",
+                    "Original order was cancelled; protected replacement was withheld.",
+                ),
+                "changes": changes,
+                "method": "cancel_reorder",
+                "dry_run": dry_run,
+                **protection_detail,
             }
         return {
             "success": False,
@@ -1699,14 +1823,39 @@ async def _modify_kis_domestic(
         else:
             krx_fwdg_ord_orgno = None
 
-        result = await kis.modify_korea_order(
-            order_id,
-            normalized_symbol,
-            final_quantity,
-            final_price,
-            krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
-            is_mock=is_mock,
-        )
+        protection_lease: Any | None = None
+        if side == "sell":
+            (
+                protection_lease,
+                protection_error,
+            ) = await _prepare_kis_live_sell_modify_protection(
+                normalized_symbol=normalized_symbol,
+                market_type=market_type,
+                new_quantity=final_quantity,
+            )
+            if protection_error is not None:
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "order_id": order_id,
+                    "symbol": normalized_symbol,
+                    "market": _normalize_market_type_to_external(market_type),
+                    "method": "api_modify",
+                    "dry_run": dry_run,
+                    **protection_error,
+                }
+        try:
+            result = await kis.modify_korea_order(
+                order_id,
+                normalized_symbol,
+                final_quantity,
+                final_price,
+                krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
+                is_mock=is_mock,
+            )
+        finally:
+            if protection_lease is not None:
+                await protection_lease.release()
         changes = {
             "price": {"from": original_price, "to": final_price}
             if final_price != original_price
@@ -1848,13 +1997,38 @@ async def _modify_kis_overseas(
             int(new_quantity) if new_quantity is not None else original_quantity
         )
 
-        result = await kis.modify_overseas_order(
-            order_id,
-            normalized_symbol,
-            exchange_code,
-            final_quantity,
-            final_price,
-        )
+        protection_lease: Any | None = None
+        if side == "sell":
+            (
+                protection_lease,
+                protection_error,
+            ) = await _prepare_kis_live_sell_modify_protection(
+                normalized_symbol=normalized_symbol,
+                market_type=market_type,
+                new_quantity=final_quantity,
+            )
+            if protection_error is not None:
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "order_id": order_id,
+                    "symbol": normalized_symbol,
+                    "market": _normalize_market_type_to_external(market_type),
+                    "method": "api_modify",
+                    "dry_run": dry_run,
+                    **protection_error,
+                }
+        try:
+            result = await kis.modify_overseas_order(
+                order_id,
+                normalized_symbol,
+                exchange_code,
+                final_quantity,
+                final_price,
+            )
+        finally:
+            if protection_lease is not None:
+                await protection_lease.release()
         changes = {
             "price": {"from": original_price, "to": final_price}
             if final_price != original_price

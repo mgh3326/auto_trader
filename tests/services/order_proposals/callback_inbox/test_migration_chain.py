@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260925_task691_toss_expired"
+HEAD_REVISION = "20260925_rob728_lot_protection"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -103,6 +103,8 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
+    "review.protected_position_revisions",
+    "review.protected_positions",
     "review.kiwoom_authority_cessation_receipts",
     "review.kiwoom_authority_attempts",
     "review.telegram_callback_recovery_cursor",

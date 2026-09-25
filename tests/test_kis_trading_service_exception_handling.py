@@ -34,6 +34,25 @@ def mock_kis_client():
     return client
 
 
+class _UnprotectedPolicyLease:
+    active = False
+
+    async def release(self) -> None:
+        return None
+
+
+@pytest.fixture
+def unprotected_policy_lease(monkeypatch):
+    """Keep legacy exception fixtures independent of the #728 policy store."""
+    import app.services.kis_trading_service as legacy_trading
+
+    monkeypatch.setattr(
+        legacy_trading,
+        "prepare_live_sell_lease",
+        AsyncMock(return_value=_UnprotectedPolicyLease()),
+    )
+
+
 class TestDomesticBuyExceptionHandling:
     """Exception handling tests for domestic buy orders."""
 
@@ -102,7 +121,9 @@ class TestDomesticSellExceptionHandling:
     """Exception handling tests for domestic sell orders."""
 
     @pytest.mark.asyncio
-    async def test_api_error_returns_error_payload(self, mock_kis_client):
+    async def test_api_error_returns_error_payload(
+        self, mock_kis_client, unprotected_policy_lease
+    ):
         """API error during domestic sell should return error payload."""
         mock_kis_client.order_korea_stock = AsyncMock(
             side_effect=RuntimeError("APBK0400 insufficient orderable quantity")
@@ -217,7 +238,9 @@ class TestOverseasSellExceptionHandling:
     """Exception handling tests for overseas sell orders."""
 
     @pytest.mark.asyncio
-    async def test_api_error_returns_error_payload(self, mock_kis_client):
+    async def test_api_error_returns_error_payload(
+        self, mock_kis_client, unprotected_policy_lease
+    ):
         """API error during overseas sell should return error payload."""
         mock_kis_client.order_overseas_stock = AsyncMock(
             side_effect=RuntimeError("APBK0400 insufficient orderable quantity")

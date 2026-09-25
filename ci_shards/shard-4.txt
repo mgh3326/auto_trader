@@ -181,6 +181,8 @@ tests/services/paper_evaluation/test_epoch.py
 tests/services/paper_evaluation/test_evaluation_config_hash.py
 tests/services/paper_evaluation/test_scorecard.py
 tests/services/paper_validation/test_service_transitions.py
+tests/services/protected_quantity/test_config.py
+tests/services/protected_quantity/test_static_wiring.py
 tests/services/research/test_honest_gate_reason_code_docs.py
 tests/services/research/test_no_broker_import_guard.py
 tests/services/research/test_research_campaign_bridge_observer_effect.py

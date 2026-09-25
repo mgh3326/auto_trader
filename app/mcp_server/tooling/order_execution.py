@@ -105,6 +105,10 @@ from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
 )
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    prepare_live_sell_lease,
+)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
@@ -1050,6 +1054,65 @@ async def _execute_and_record(
             normalized_symbol=normalized_symbol, market_type=market_type
         )
 
+    # G1 (#728): this is deliberately after the kis_mock attribution gate and
+    # immediately before ROB-653 intent reservation.  A rejected protected
+    # sell must neither reach a broker nor consume an idempotency reservation.
+    # The lease does the all-live DB lookup required by Q15; only an active
+    # protected key obtains a dedicated advisory-lock session and triggers the
+    # extra fresh broker holding read.
+    protection_lease: Any | None = None
+    if side == "sell" and not is_mock:
+        try:
+            protection_lease = await prepare_live_sell_lease(
+                account_scope=account_scope,
+                market=_normalize_market_type_to_external(market_type),
+                symbol=normalized_symbol,
+            )
+        except ProtectionStateUnavailable:
+            err = order_error_fn(
+                "Protected position state is unavailable; sell not sent."
+            )
+            err["error_code"] = "protection_state_unavailable"
+            return err
+
+        if protection_lease.active:
+            try:
+                fresh_holdings = await _get_holdings_for_order(
+                    normalized_symbol,
+                    market_type,
+                    is_mock=False,
+                )
+            except Exception:  # noqa: BLE001 - malformed/missing fresh evidence blocks
+                fresh_holdings = None
+            try:
+                decision = await protection_lease.evaluate(
+                    quantity=order_quantity,
+                    kind="new",
+                    fresh_broker_sellable=(
+                        None
+                        if fresh_holdings is None
+                        else fresh_holdings.get("broker_sellable_quantity")
+                    ),
+                    fresh_broker_held=(
+                        None
+                        if fresh_holdings is None
+                        else fresh_holdings.get("total_quantity")
+                    ),
+                    sellable_observed=(
+                        fresh_holdings is not None
+                        and fresh_holdings.get("sellable_observed") is True
+                    ),
+                )
+            except BaseException:
+                await protection_lease.release()
+                raise
+            if not decision.allowed:
+                await protection_lease.release()
+                err = order_error_fn("Protected quantity floor blocks this sell order.")
+                if decision.block is not None:
+                    err.update(decision.block.payload())
+                return err
+
     # ROB-653 P6-B — KIS has no broker idempotency key; reserve a local intent
     # row before the send. A same-key send the same trading day fails closed.
     # Crypto/Upbit is excluded (it uses the broker-side content identifier).
@@ -1077,31 +1140,38 @@ async def _execute_and_record(
         intent_key = correlation_id
 
     intent_row_id: int | None = None
-    if intent_account_scope is not None and intent_key is not None:
-        async with _order_session_factory()() as intent_db:
-            try:
-                # ROB-1263 r2 / B-5: keep the row id. Releasing by
-                # (scope, key) alone deletes *whatever* row currently carries
-                # that key, so a stale failure path can remove a replacement
-                # reservation made by a later attempt or a reconciler.
-                intent_row_id = await OrderSendIntentService(intent_db).reserve(
-                    account_scope=intent_account_scope,
-                    idempotency_key=intent_key,
-                    symbol=normalized_symbol,
-                    side=side,
-                )
-                intent_reserved = True
-            except DuplicateOrderIntent:
-                logger.warning(
-                    "KIS duplicate order intent blocked: scope=%s symbol=%s side=%s key=%s",
-                    intent_account_scope,
-                    normalized_symbol,
-                    side,
-                    intent_key,
-                )
-                return order_error_fn(
-                    _duplicate_order_intent_message(intent_account_scope)
-                )
+    try:
+        if intent_account_scope is not None and intent_key is not None:
+            async with _order_session_factory()() as intent_db:
+                try:
+                    # ROB-1263 r2 / B-5: keep the row id. Releasing by
+                    # (scope, key) alone deletes *whatever* row currently carries
+                    # that key, so a stale failure path can remove a replacement
+                    # reservation made by a later attempt or a reconciler.
+                    intent_row_id = await OrderSendIntentService(intent_db).reserve(
+                        account_scope=intent_account_scope,
+                        idempotency_key=intent_key,
+                        symbol=normalized_symbol,
+                        side=side,
+                    )
+                    intent_reserved = True
+                except DuplicateOrderIntent:
+                    logger.warning(
+                        "KIS duplicate order intent blocked: scope=%s symbol=%s side=%s key=%s",
+                        intent_account_scope,
+                        normalized_symbol,
+                        side,
+                        intent_key,
+                    )
+                    if protection_lease is not None:
+                        await protection_lease.release()
+                    return order_error_fn(
+                        _duplicate_order_intent_message(intent_account_scope)
+                    )
+    except BaseException:
+        if protection_lease is not None:
+            await protection_lease.release()
+        raise
 
     async def _release_reserved_intent_after_send_failure(
         exc: BaseException,
@@ -1198,6 +1268,8 @@ async def _execute_and_record(
             )
         finally:
             broker_ms = (time.perf_counter() - broker_started_at) * 1000
+            if protection_lease is not None:
+                await protection_lease.release()
 
     try:
         if is_mock and market_type == "equity_kr":

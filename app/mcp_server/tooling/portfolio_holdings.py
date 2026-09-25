@@ -112,6 +112,7 @@ from app.services.portfolio_snapshot import (
 from app.services.portfolio_snapshot_cache import (
     get_shared_portfolio_snapshot_cache,
 )
+from app.services.protected_quantity_service import apply_position_protection
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
     TossPortfolioPosition,
@@ -357,6 +358,12 @@ async def _collect_kis_positions(
                 quantity = _to_float(stock.get("hldg_qty"))
                 if quantity <= 0:
                     continue
+                orderable_raw = stock.get("ord_psbl_qty")
+                sellable_quantity = (
+                    quantity
+                    if orderable_raw in {None, ""}
+                    else _to_float(orderable_raw)
+                )
 
                 positions.append(
                     {
@@ -372,6 +379,11 @@ async def _collect_kis_positions(
                         ),
                         "name": stock.get("prdt_name") or stock.get("pdno"),
                         "quantity": quantity,
+                        "sellable_quantity": sellable_quantity,
+                        "broker_sellable_quantity": (
+                            None if orderable_raw in {None, ""} else sellable_quantity
+                        ),
+                        "sellable_observed": orderable_raw not in {None, ""},
                         "avg_buy_price": _to_float(stock.get("pchs_avg_pric")),
                         "current_price": _to_float(stock.get("prpr"), default=0.0)
                         or None,
@@ -393,6 +405,14 @@ async def _collect_kis_positions(
                 quantity = _to_float(stock.get("ovrs_cblc_qty"))
                 if quantity <= 0:
                     continue
+                orderable_raw = stock.get("ord_psbl_qty")
+                if orderable_raw in {None, ""}:
+                    orderable_raw = stock.get("ovrs_ord_psbl_qty")
+                sellable_quantity = (
+                    quantity
+                    if orderable_raw in {None, ""}
+                    else _to_float(orderable_raw)
+                )
 
                 current_price_raw = stock.get("now_pric2")
                 evaluation_amount_raw = stock.get("ovrs_stck_evlu_amt")
@@ -417,6 +437,11 @@ async def _collect_kis_positions(
                         ),
                         "name": stock.get("ovrs_item_name") or stock.get("ovrs_pdno"),
                         "quantity": quantity,
+                        "sellable_quantity": sellable_quantity,
+                        "broker_sellable_quantity": (
+                            None if orderable_raw in {None, ""} else sellable_quantity
+                        ),
+                        "sellable_observed": orderable_raw not in {None, ""},
                         "avg_buy_price": _to_float(stock.get("pchs_avg_pric")),
                         "current_price": (
                             current_price
@@ -458,7 +483,8 @@ async def _collect_upbit_positions(
             if not currency or currency == "KRW":
                 continue
 
-            quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
+            sellable_quantity = _to_float(coin.get("balance"))
+            quantity = sellable_quantity + _to_float(coin.get("locked"))
             if quantity <= 0:
                 continue
 
@@ -487,6 +513,9 @@ async def _collect_upbit_positions(
                     "symbol": symbol,
                     "name": korean_name,
                     "quantity": quantity,
+                    "sellable_quantity": sellable_quantity,
+                    "broker_sellable_quantity": sellable_quantity,
+                    "sellable_observed": True,
                     "avg_buy_price": _to_float(coin.get("avg_buy_price")),
                     "current_price": None,
                     "evaluation_amount": None,
@@ -593,9 +622,14 @@ def _toss_api_position_to_mcp(position: TossPortfolioPosition) -> dict[str, Any]
         "profit_rate": float(position.profit_rate)
         if position.profit_rate is not None
         else None,
+        "sellable_quantity": None,
+        "broker_sellable_quantity": None,
+        "sellable_observed": False,
     }
     if position.sellable_quantity is not None:
         payload["sellable_quantity"] = float(position.sellable_quantity)
+        payload["broker_sellable_quantity"] = float(position.sellable_quantity)
+        payload["sellable_observed"] = True
     return payload
 
 
@@ -610,10 +644,10 @@ async def _collect_toss_api_positions(
     if market_filter == "crypto":
         return [], [], False
 
-    # ROB-1310: general holdings reads do not consume sellable quantities. The
-    # explicit opt-in remains available for broker-adjacent callers, but it is
-    # never reached by get_holdings/home/briefing. need_cash=False: this path
-    # never reads cash, so skip the ACCOUNT-limited buying_power fanout.
+    # C7 reads cache-aware raw sellable evidence for an L1 display projection.
+    # It is never live-send authority: G2/G3 still read Toss directly at the
+    # mutation boundary. need_cash=False keeps this path off the ACCOUNT-limited
+    # buying_power fanout.
     sellable_cache = (
         None if fresh_sellable or not need_sellable else get_shared_sellable_cache()
     )
@@ -1076,7 +1110,11 @@ async def _collect_portfolio_positions(
     errors: list[dict[str, Any]] = []
     whole_snapshot_used = False
     snapshot_cache = get_shared_portfolio_snapshot_cache()
-    if not is_mock and not need_sellable and snapshot_cache.usable:
+    # Schema v2 retains the C7 raw/tactical display fields.  General read
+    # callers may therefore share the bounded whole-portfolio cache even when
+    # they request sellability; only an explicit send-adjacent fresh read must
+    # bypass it.
+    if not is_mock and not fresh_sellable and snapshot_cache.usable:
         positions, errors = await _collect_whole_portfolio_positions(
             cache=snapshot_cache,
             user_id=user_id,
@@ -1210,6 +1248,58 @@ async def _collect_portfolio_positions(
     return positions, errors, market_filter, account_filter
 
 
+async def _apply_protection_to_live_positions(
+    positions: list[dict[str, Any]], *, is_mock: bool
+) -> list[dict[str, Any]]:
+    """Apply C7's L1 projection without changing total broker quantities."""
+
+    if is_mock:
+        return positions
+
+    protected_positions: list[dict[str, Any]] = []
+    for position in positions:
+        broker = str(position.get("broker") or "").lower()
+        source = str(position.get("source") or "").lower()
+        instrument_type = str(position.get("instrument_type") or "")
+        market = str(position.get("market") or "")
+        if (
+            broker == "kis"
+            and source == "kis_api"
+            and instrument_type
+            in {
+                "equity_kr",
+                "equity_us",
+            }
+        ):
+            account_scope = "kis_live"
+        elif (
+            broker == "upbit" and source == "upbit_api" and instrument_type == "crypto"
+        ):
+            account_scope = "upbit_live"
+        elif (
+            broker == "toss"
+            and source == "toss_api"
+            and instrument_type
+            in {
+                "equity_kr",
+                "equity_us",
+            }
+        ):
+            account_scope = "toss_live"
+        else:
+            protected_positions.append(position)
+            continue
+        protected_positions.append(
+            await apply_position_protection(
+                position,
+                account_scope=account_scope,
+                market=market,
+                symbol=str(position.get("symbol") or ""),
+            )
+        )
+    return protected_positions
+
+
 async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],
@@ -1309,8 +1399,16 @@ async def _get_holdings_impl(
         include_current_price=include_current_price,
         account_name=account_name,
         is_mock=is_mock,
-        need_sellable=False,
+        # C7: get_holdings is an order-planning surface.  It obtains the raw
+        # Toss sellable value through the existing cache-aware read path, then
+        # exposes a tactical projection below; raw broker DTOs remain untouched.
+        need_sellable=not is_mock,
         fresh_sellable=fresh_sellable,
+    )
+
+    positions = await _apply_protection_to_live_positions(
+        positions,
+        is_mock=is_mock,
     )
 
     filtered_count = 0
@@ -1783,10 +1881,11 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "marked degraded=true during outages). "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings. "
-            "General holdings reads omit sellable_quantity; the deprecated "
-            "fresh_sellable flag is retained for compatibility and does not "
-            "enable broker sellable fanout. Live order tools perform their own "
-            "fresh broker preflight. "
+            "Live positions expose broker_sellable_quantity, tactical "
+            "sellable_quantity, protected_quantity, protection_state, and "
+            "sellable_observed. The deprecated fresh_sellable flag is retained "
+            "for compatibility. Live order tools still perform their own fresh "
+            "broker preflight. "
         ),
     )
     async def get_holdings(
