@@ -214,6 +214,8 @@ tests/services/paper_validation/test_migration.py
 tests/services/paper_validation/test_models.py
 tests/services/paper_validation/test_safety_guards.py
 tests/services/paper_validation/test_state_machine.py
+tests/services/protected_quantity/test_acceptance.py
+tests/services/protected_quantity/test_service.py
 tests/services/research/test_research_contracts_wheel.py
 tests/services/research/test_research_offline_gate_service.py
 tests/services/research/test_rob974_h6a_reason_taxonomy.py

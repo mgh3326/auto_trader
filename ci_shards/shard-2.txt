@@ -43,6 +43,7 @@ tests/mcp_server/tooling/test_market_index_current_only.py
 tests/mcp_server/tooling/test_news_handlers.py
 tests/mcp_server/tooling/test_order_execution_live_routing.py
 tests/mcp_server/tooling/test_order_proposal_create_post_commit.py
+tests/mcp_server/tooling/test_protected_quantity_holdings.py
 tests/mcp_server/tooling/test_screen_stocks_snapshot_docs.py
 tests/mcp_server/tooling/test_toss_batch_evidence_source.py
 tests/mcp_server/tooling/test_toss_loss_cut.py
@@ -205,6 +206,7 @@ tests/services/paper_evaluation/test_evidence_reader.py
 tests/services/paper_evaluation/test_integration.py
 tests/services/paper_evaluation/test_migration.py
 tests/services/paper_validation/test_service_concurrency.py
+tests/services/protected_quantity/test_guard_wiring.py
 tests/services/research/test_alpaca_track_seal_registration.py
 tests/services/research/test_research_canonical_hash.py
 tests/services/research/test_research_db_write_guard.py

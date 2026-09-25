@@ -199,6 +199,7 @@ tests/services/paper_cohort/test_runner_shadow.py
 tests/services/paper_cohort/test_signals.py
 tests/services/paper_evaluation/test_gate.py
 tests/services/paper_validation/test_contracts.py
+tests/services/protected_quantity/test_db.py
 tests/services/research/test_honest_trial_evidence.py
 tests/services/research/test_research_campaign_bridge_trials.py
 tests/services/research/test_rob1025_funding_and_observability.py
