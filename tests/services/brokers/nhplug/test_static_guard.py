@@ -681,7 +681,9 @@ def test_stage2_order_path_outside_owner_is_rejected() -> None:
         ),
         (
             "pre-send host recheck removed",
-            "            _assert_resolved_mock_request(request, allowed_paths=ALLOWED_MUTATION_PATHS)\n",
+            "            _assert_resolved_mock_request(\n"
+            "                request, allowed_paths=ALLOWED_MUTATION_PATHS, expected_path=path\n"
+            "            )\n",
             "",
         ),
         (

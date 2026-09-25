@@ -366,6 +366,31 @@ async def test_resolved_order_request_is_rechecked_before_send(
     assert broker.requests == []
 
 
+@pytest.mark.parametrize(
+    ("side", "swapped_path"),
+    (("buy", CASH_SELL_PATH), ("sell", CASH_BUY_PATH)),
+)
+@pytest.mark.asyncio
+async def test_order_path_must_be_exactly_the_intended_one(
+    armed: None, monkeypatch: pytest.MonkeyPatch, side: str, swapped_path: str
+) -> None:
+    """A buy body can never leave on the sell route (or vice versa)."""
+
+    original_build = httpx.AsyncClient.build_request
+
+    def swap_route(self: httpx.AsyncClient, method: str, _path: str, **kw: Any):
+        return original_build(self, method, swapped_path, **kw)
+
+    monkeypatch.setattr(httpx.AsyncClient, "build_request", swap_route)
+    broker = _Broker()
+    client, _ = _bound_client(broker)
+    with pytest.raises(NHPlugMockReadOnlyEndpointError, match="different path"):
+        await client.submit_limit_order(
+            side=side, symbol="005930", quantity=1, price=50000, authorization=CONFIRMED
+        )
+    assert broker.requests == []
+
+
 @pytest.mark.asyncio
 async def test_listing_act_no_is_rechecked_after_build(
     armed: None, monkeypatch: pytest.MonkeyPatch

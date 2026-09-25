@@ -163,7 +163,10 @@ def _assert_mutation_path(path: str) -> None:
 
 
 def _assert_resolved_mock_request(
-    request: httpx.Request, *, allowed_paths: frozenset[str]
+    request: httpx.Request,
+    *,
+    allowed_paths: frozenset[str],
+    expected_path: str | None = None,
 ) -> None:
     """Revalidate resolved scheme, host, port, and path immediately before send."""
 
@@ -178,6 +181,10 @@ def _assert_resolved_mock_request(
     if request.url.path not in allowed_paths:
         raise NHPlugMockReadOnlyEndpointError(
             "NHPLUG request resolved to a non-allowlisted path"
+        )
+    if expected_path is not None and request.url.path != expected_path:
+        raise NHPlugMockReadOnlyEndpointError(
+            "NHPLUG request resolved to a different path than intended"
         )
 
 
@@ -643,7 +650,9 @@ class NHPlugMockClient:
             request = client.build_request(
                 "POST", path, headers=headers, json={"Input_0": input_0}
             )
-            _assert_resolved_mock_request(request, allowed_paths=ALLOWED_READONLY_PATHS)
+            _assert_resolved_mock_request(
+                request, allowed_paths=ALLOWED_READONLY_PATHS, expected_path=path
+            )
             # Second independent account check immediately before the send site,
             # made against the exact bytes about to leave the process.
             if account_allowlist is not None:
@@ -693,7 +702,9 @@ class NHPlugMockClient:
             # Everything above is provably pre-dispatch.  Recheck the built
             # request immediately before send: scheme, host, port, path,
             # account, and the limit-only body shape.
-            _assert_resolved_mock_request(request, allowed_paths=ALLOWED_MUTATION_PATHS)
+            _assert_resolved_mock_request(
+                request, allowed_paths=ALLOWED_MUTATION_PATHS, expected_path=path
+            )
             _assert_built_account(request, allowlist=account_allowlist)
             _assert_limit_only_body(path, _built_input(request))
             try:

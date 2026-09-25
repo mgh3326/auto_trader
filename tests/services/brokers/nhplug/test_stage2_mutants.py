@@ -376,7 +376,9 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
     (
         "remove_host_reverify",
         CLIENT,
-        "            _assert_resolved_mock_request(request, allowed_paths=ALLOWED_MUTATION_PATHS)\n",
+        "            _assert_resolved_mock_request(\n"
+        "                request, allowed_paths=ALLOWED_MUTATION_PATHS, expected_path=path\n"
+        "            )\n",
         "",
         probe_host_reverify,
     ),
