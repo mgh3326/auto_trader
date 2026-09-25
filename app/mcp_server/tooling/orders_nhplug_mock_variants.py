@@ -14,7 +14,9 @@ Safety layers (each independently tested):
 - Master gate ``NHPLUG_MOCK_ENABLED`` re-read at every client dispatch.
 - Per-call double gate: every mutation needs ``dry_run=False`` AND
   ``confirm=True``; the tool checks it before building any client, and the
-  client dispatcher checks it again before token or socket I/O.
+  client dispatcher checks it again before token or socket I/O.  The MCP
+  schema uses ``StrictBool``/``StrictInt`` so JSON ``0``/``1``/``"true"`` are
+  rejected at validation instead of being coerced into booleans.
 - ``order_type`` must be ``limit`` and a limit price is required; market
   orders are refused with ``error_code="limit_orders_only"``.
 - Account: fresh ``/n2/acctinfo`` verification per call; only ``acct_type=03``.
@@ -28,6 +30,8 @@ import hashlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import StrictBool, StrictInt
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
@@ -159,8 +163,8 @@ def register(mcp: FastMCP) -> None:
     async def nhplug_mock_preview_order(
         symbol: str,
         side: Literal["buy", "sell"],
-        quantity: int,
-        price: int | None = None,
+        quantity: StrictInt,
+        price: StrictInt | None = None,
         order_type: str = "limit",
     ) -> dict[str, Any]:
         if (
@@ -189,11 +193,11 @@ def register(mcp: FastMCP) -> None:
     async def nhplug_mock_place_order(
         symbol: str,
         side: Literal["buy", "sell"],
-        quantity: int,
-        price: int | None = None,
+        quantity: StrictInt,
+        price: StrictInt | None = None,
         order_type: str = "limit",
-        dry_run: bool = True,
-        confirm: bool = False,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False,
         strategy: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
@@ -242,11 +246,11 @@ def register(mcp: FastMCP) -> None:
     async def nhplug_mock_modify_order(
         order_id: str,
         symbol: str,
-        new_price: int | None = None,
-        new_quantity: int | None = None,
+        new_price: StrictInt | None = None,
+        new_quantity: StrictInt | None = None,
         order_type: str = "limit",
-        dry_run: bool = True,
-        confirm: bool = False,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False,
     ) -> dict[str, Any]:
         if dry_run is False:
             if confirm is not True:
@@ -277,9 +281,9 @@ def register(mcp: FastMCP) -> None:
     async def nhplug_mock_cancel_order(
         order_id: str,
         symbol: str,
-        cancel_quantity: int | None = None,
-        dry_run: bool = True,
-        confirm: bool = False,
+        cancel_quantity: StrictInt | None = None,
+        dry_run: StrictBool = True,
+        confirm: StrictBool = False,
     ) -> dict[str, Any]:
         if dry_run is False:
             if confirm is not True:
@@ -362,7 +366,7 @@ def register(mcp: FastMCP) -> None:
     )
     async def nhplug_mock_reconcile_orders(
         order_date: str | None = None,
-        dry_run: bool = True,
+        dry_run: StrictBool = True,
     ) -> dict[str, Any]:
         if (guard := _config_error()) is not None:
             return guard

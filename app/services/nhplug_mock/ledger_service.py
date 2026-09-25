@@ -169,8 +169,23 @@ class NHPlugMockLedgerService:
                 raise NHPlugMockLedgerError(
                     f"{target} requires verified broker listing evidence"
                 )
-        if update.filled_qty is not None and not update.evidence:
-            raise NHPlugMockLedgerError("fill quantities require broker evidence")
+        carries_evidence_fields = any(
+            value is not None
+            for value in (
+                update.filled_qty,
+                update.avg_fill_price,
+                update.open_qty,
+                update.cancelled_qty,
+                update.evidence,
+            )
+        )
+        if carries_evidence_fields and (
+            update.reconcile_state != "verified" or not update.evidence
+        ):
+            raise NHPlugMockLedgerError(
+                "quantities and evidence are written only with verified broker "
+                "listing evidence"
+            )
         if update.broker_order_id is not None:
             if row.broker_order_id not in {None, update.broker_order_id}:
                 raise NHPlugMockLedgerError("broker order number cannot be rebound")

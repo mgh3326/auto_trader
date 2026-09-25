@@ -83,6 +83,14 @@ async def _ledger_scope(
         return await body(NHPlugMockLedgerService(session))
 
 
+def _only_empty_listing(result: dict[str, Any]) -> bool:
+    """True when "unknown" is solely the missing liveness witness."""
+
+    return result.get("reasons") == [
+        "empty_listing_is_not_evidence_of_no_open_orders"
+    ] and all(source.get("complete") for source in result.get("sources", []))
+
+
 def _open_ids(result: dict[str, Any]) -> set[str]:
     return {str(row.get("order_no")) for row in result.get("open_orders", [])}
 
@@ -106,7 +114,9 @@ async def _roundtrip(
                 client, order_date=order_date, ledger=ledger
             ),
         )
-        if before["open_orders_state"] == "unknown":
+        if before["open_orders_state"] == "unknown" and not _only_empty_listing(before):
+            # An empty day (no witness row yet) is expected before the first
+            # order; an error-shaped or incomplete source is not.
             raise RoundtripAbort("open-order listing is unknown before the test")
 
         placed = _step(
@@ -194,30 +204,52 @@ async def _roundtrip(
                 client, order_date=order_date, ledger=ledger
             ),
         )
+        if after_cancel["open_orders_state"] == "unknown":
+            raise RoundtripAbort("open-order state after cancel is unknown")
         if live_order_id in _open_ids(after_cancel):
             raise RoundtripAbort("cancelled order is still listed as open")
         live_order_id = None
 
-        _step(
+        reconciled = _step(
             "9_reconcile_apply",
             await operations.reconcile_orders(
                 client, ledger, order_date=order_date, dry_run=False
             ),
         )
+        if not reconciled.get("success") or reconciled.get("unresolved") != 0:
+            raise RoundtripAbort("reconcile did not verify every ledger row")
+        statuses = {
+            (entry.get("status"), entry.get("reconcile_state"))
+            for entry in reconciled.get("results", [])
+        }
+        expected = {
+            ("modified", "verified"),
+            ("cancelled", "verified"),
+            ("confirmed", "verified"),
+        }
+        if not expected <= statuses or not all(
+            entry.get("applied") for entry in reconciled.get("results", [])
+        ):
+            raise RoundtripAbort("reconcile did not reach the expected verified states")
         final = _step(
             "10_empty_listing_check",
             await operations.get_open_orders(
                 client, order_date=order_date, ledger=ledger
             ),
         )
+        confirmed = final["open_orders_state"] == "none_confirmed" and all(
+            source["complete"] for source in final["sources"]
+        )
+        if not confirmed:
+            raise RoundtripAbort(
+                "final open-order check is not a two-source none_confirmed"
+            )
         _emit(
             {
                 "step": "summary",
                 "status": "ok",
                 "final_open_orders_state": final["open_orders_state"],
-                "empty_listing_is_two_source_confirmed": final["open_orders_state"]
-                in {"none_confirmed", "present"}
-                and all(source["complete"] for source in final["sources"]),
+                "empty_listing_is_two_source_confirmed": True,
             }
         )
         return 0

@@ -153,13 +153,55 @@ def test_conflicting_duplicate_rows_make_listing_incomplete() -> None:
 # --- The kt00009 lesson: "empty array != no open orders" -------------------
 
 
-def test_two_complete_agreeing_empty_sources_confirm_none() -> None:
+@pytest.mark.parametrize(
+    "empty",
+    (
+        "listing_block_absent_success",
+        "listing_empty_array_success",
+        "listing_no_records_13578",
+    ),
+)
+def test_empty_listings_alone_never_confirm_none(empty: str) -> None:
+    """Tester R1 finding 4: empty in both scopes is unknown, not none."""
+
     result = determine_open_orders(
-        all_listing=listing("all", "listing_block_absent_success"),
+        all_listing=listing("all", empty),
+        open_listing=listing("open", empty),
+    )
+    assert result.state == "unknown"
+    assert result.reasons == ("empty_listing_is_not_evidence_of_no_open_orders",)
+
+
+def test_none_confirmed_needs_a_liveness_witness_row_and_agreement() -> None:
+    closed = fx("listing_all_filled")  # today's order, fully filled
+    result = determine_open_orders(
+        all_listing=assemble_listing("all", [classify_listing_page(closed)]),
         open_listing=listing("open", "listing_no_records_13578"),
     )
     assert result.state == "none_confirmed"
     assert result.open_rows == ()
+
+
+@pytest.mark.parametrize(
+    ("payload", "headers"),
+    (
+        ({"rsp_cd": "00000"}, {"header_continuation_flag": "Y"}),
+        ({"rsp_cd": "00000", "Output_1": []}, {"header_continuation_flag": "Y"}),
+        ({"rsp_cd": "00165"}, {}),
+        ({"rsp_cd": "00218", "Output_1": []}, {}),
+    ),
+    ids=("flag_y_no_key", "flag_y_empty_rows", "continue_code_no_key", "continue_218"),
+)
+def test_continuation_without_a_followable_key_is_incomplete(
+    payload: dict[str, Any], headers: dict[str, str]
+) -> None:
+    """Tester R1 finding 4: an announced next page with no key is not final."""
+
+    page = classify_listing_page(payload, **headers)
+    assert page.usable and page.has_next and page.continuation_key is None
+    assembled = assemble_listing("open", [page])
+    assert assembled.complete is False
+    assert assembled.reason == "pagination_truncated"
 
 
 def test_empty_open_scope_is_overruled_by_the_all_orders_scope() -> None:
@@ -285,6 +327,14 @@ def _row(**overrides: Any) -> Any:
         ({"ny_cns_qty": 0, "orr_rjt_rsn_cd_nm": "잔고부족"}, "rejected"),
         ({"ny_cns_qty": 0}, "unknown"),
         ({"tot_cns_qty": 5}, "unknown"),
+        # Tester R1 finding 5: filled + open exceeds the order quantity.
+        ({"tot_cns_qty": 1, "ny_cns_qty": 1}, "unknown"),
+        ({"orr_qty": 3, "tot_cns_qty": 1, "ny_cns_qty": 1}, "unknown"),
+        (
+            {"orr_qty": 3, "tot_cns_qty": 1, "ny_cns_qty": 1, "can_qty": 1},
+            "partially_filled",
+        ),
+        ({"ny_cns_qty": 0, "can_qty": 1, "cor_qty": "1"}, "unknown"),
     ),
 )
 def test_derive_order_status(overrides: dict[str, Any], expected: str) -> None:

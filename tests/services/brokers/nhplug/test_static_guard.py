@@ -543,6 +543,7 @@ def _assert_client_mutations_authorize_first(source: str) -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
     for guard in (
+        "_assert_send_authorized",
         "_assert_mock_enabled",
         "_assert_mutation_path",
         "_assert_resolved_mock_request",
@@ -676,7 +677,10 @@ def test_stage2_order_path_outside_owner_is_rejected() -> None:
     (
         (
             "authorization check removed",
-            "        _assert_send_authorized(authorization)\n        if side ==",
+            "        _assert_send_authorized(authorization)\n"
+            "        act_no = self._require_order_allowlist().configured_account_no\n"
+            "        if side ==",
+            "        act_no = self._require_order_allowlist().configured_account_no\n"
             "        if side ==",
         ),
         (

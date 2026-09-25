@@ -349,7 +349,9 @@ async def test_offline_round_trip_place_query_modify_cancel_reconcile(
     client = await factory()
 
     before = await operations.get_open_orders(client, order_date=date, ledger=ledger)
-    assert before["open_orders_state"] == "none_confirmed"
+    # No order exists yet today: an empty listing is not proof of "none".
+    assert before["open_orders_state"] == "unknown"
+    assert before["reasons"] == ["empty_listing_is_not_evidence_of_no_open_orders"]
 
     placed = await operations.place_limit_order(
         client_factory=factory,
@@ -596,3 +598,53 @@ async def test_positions_read_and_history(db_session, armed) -> None:
         client, order_date=_order_date(), scope="all"
     )
     assert history["success"] is True and history["orders"] == []
+
+
+async def test_ledger_refuses_quantities_without_verified_state(db_session) -> None:
+    """Tester R1 finding 6 repro."""
+
+    ledger = NHPlugMockLedgerService(db_session)
+    row = await ledger.record_submitting(
+        order_date=_order_date(),
+        operation_kind="place",
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+    )
+    await ledger.record_ack(row.id, OrderAck("accepted", "1000123", "00000", None))
+    for update in (
+        ReconcileUpdate(
+            reconcile_state="unknown",
+            status="accepted",
+            filled_qty=1,
+            evidence={"arbitrary": "unverified"},
+        ),
+        ReconcileUpdate(reconcile_state="pending", evidence={"x": 1}),
+        ReconcileUpdate(reconcile_state="source_disagreement", open_qty=1),
+        ReconcileUpdate(reconcile_state="verified", cancelled_qty=1),
+    ):
+        with pytest.raises(NHPlugMockLedgerError, match="verified"):
+            await ledger.apply_reconcile(row.id, update)
+    await db_session.refresh(row)
+    assert row.filled_qty is None and row.reconcile_state == "pending"
+
+
+async def test_db_check_rejects_fill_above_order_quantity(db_session) -> None:
+    db_session.add(
+        NHPlugMockOrderLedger(
+            client_request_id=uuid.uuid4(),
+            order_date=_order_date(),
+            operation_kind="place",
+            symbol="005930",
+            side="buy",
+            quantity=Decimal(1),
+            price=Decimal(50000),
+            broker_order_id="1",
+            status="accepted",
+            filled_qty=Decimal(2),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()

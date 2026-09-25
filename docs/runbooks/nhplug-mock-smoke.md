@@ -6,7 +6,7 @@
 
 - 데이터 클라이언트는 `https://moapi.nhplug.com:8443`만 허용한다. 다른 scheme·호스트·포트·경로는 거부한다.
 - 요청을 만든 뒤 `send` 직전에 `request.url.scheme`, `request.url.host`, `request.url.port`, path를 다시 확인한다. OAuth와 데이터 양쪽에서 `follow_redirects=False`를 명시한다. 3xx는 따라가지 않고 실패한다. 이는 호스트 경계만이 아니라 APP KEY/SECRET 경계다. httpx는 cross-origin redirect에서 custom credential header를 자동 제거하지 않을 수 있으므로 redirect를 따르면 secret이 외부 host로 전달될 수 있다.
-- 데이터 allowlist는 `/n2/acctinfo`, 국내 잔고, 국내 현재가 세 path뿐이며, allowlist 검사는 토큰 해석과 소켓 생성 전에 실행된다.
+- 데이터 read allowlist는 Stage 1의 `/n2/acctinfo`, 국내 잔고, 국내 현재가 세 path에 Stage 2의 일별주문체결조회(`/krstock/inquiry/v1/dailyOrderExecution`)를 더한 네 path뿐이며(주문 path 4개는 별도 mutation allowlist), allowlist 검사는 토큰 해석과 소켓 생성 전에 실행된다.
 - 계좌목록에서 `acct_type=03`인 값만 allowlist에 넣는다. `01`·`02`는 거부 타입 상수이며, 동일 계좌번호가 상충하는 type으로 중복되면 전체 응답을 거부한다. `NHPLUG_MOCK_ACCOUNT_NO`도 반드시 broker 응답의 `03` allowlist에 있어야 한다. 검증된 allowlist는 dispatcher에 bind되며, balance/quote dispatch는 caller가 선택적으로 넘긴 allowlist 없이 이를 필수로 사용한다.
 - 잔고와 시세 요청은 시작 시와 `send` 직전 두 번 configured `act_no` allowlist를 확인한다. 시세 본문에는 계좌번호가 없지만, 같은 verified configured account를 두 번 확인해 이중 판별 상태를 유지한다.
 - 접근토큰은 벤더 제약상 운영 OAuth 호스트에서만 발급된다. 운영 호스트를 아는 코드는 `app/services/brokers/nhplug/auth.py` 하나이며, `POST /oauth2/token`, `POST /oauth2/revoke`만 allowlist한다. OAuth dispatch도 데이터 dispatch와 같은 `NHPLUG_MOCK_ENABLED` master gate 뒤에 있다. 데이터 클라이언트는 운영 호스트 상수나 import를 갖지 않는다.
@@ -82,7 +82,8 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_smoke \
 - 매 작업마다 `/n2/acctinfo`로 `acct_type=03`을 새로 검증하고, build된 요청 바이트의 `act_no`를 send 직전에 다시 대조한다. 01/02·상충 type 응답은 거부.
 - `NHPLUG_MOCK_ENABLED=true`는 **프로세스 환경변수**여야 한다(파일에만 있으면 모든 dispatch가 fail-closed). 모든 주문은 `dry_run=False` + `confirm=True`(CLI는 `--confirm-mock-order`).
 - 레저 `review.nhplug_mock_order_ledger`: broker 전송 **전** `submitting` 행 커밋(레저 없으면 전송 없음). 주문번호가 읽혀야만 `accepted`. send 이후 실패는 `acceptance_uncertain`(재시도 금지). 체결·종결 상태는 reconcile만, 두 조회 소스가 합의한 증거로만 기록.
-- 미체결: `ost_cns_dit=2`(미체결)와 `ost_cns_dit=0`(전체) 두 조회가 모두 완전하고 합의할 때만 `none_confirmed`. 빈 배열·블록 누락·오류형 응답·페이지 미완료는 `unknown`.
+- 미체결: `ost_cns_dit=2`(미체결)와 `ost_cns_dit=0`(전체) 두 조회가 모두 완전하고 합의하며, 전체 조회에 **당일 주문 행이 1개 이상 있을 때(liveness witness)** 만 `none_confirmed`. 빈 배열·블록 누락·13578·오류형 응답·페이지 미완료(`cts_flag=Y`인데 키 없음 포함)는 `unknown`. 체결 수량은 체결 조회(`ost_cns_dit=1`)에서도 같은 수량으로 확인돼야만 기록된다.
+- MCP 인자는 `StrictBool`/`StrictInt`: `dry_run`/`confirm`에 `0`/`1`/`"true"`를 보내면 검증 단계에서 거부된다. 주문은 그 client가 직접 `/n2/acctinfo`로 검증한 계좌에서만 가능하다.
 
 ### 개발 중 검증하지 못한 벤더 가정 (스모크가 확인)
 
@@ -114,9 +115,12 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-
 
 # 2) 미체결 baseline (빈 배열 검증 1차)
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F --mode open-orders --confirm-read
-#    기대: open_orders_state=none_confirmed(기존 주문 없을 때) 또는 present.
+#    기대: 당일 주문이 아직 없으면 open_orders_state=unknown 이며 reasons 가 정확히
+#          ["empty_listing_is_not_evidence_of_no_open_orders"] (빈 응답은 '미체결 없음'의 증거가 아님 — 정상).
+#          당일 다른 주문이 있으면 none_confirmed 또는 present.
 #          sources[0](all)·sources[1](open) 모두 complete=true, response_codes 기록.
-#          unknown이면 중단하고 reasons/sources를 보고(벤더 가정 3 또는 빈 배열 문제).
+#          그 밖의 reasons(…_incomplete:… 등)로 unknown이면 중단하고 reasons/sources를 보고.
+#    전제: 이 모의계좌에 스모크 외의 미체결 주문이 없어야 10단계 none_confirmed 가 성립한다.
 
 # 3) 왕복: 주문 -> 조회 -> 정정 -> 조회 -> 취소 -> 조회 -> reconcile -> 빈 배열 확인 (토큰 1회)
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F \
@@ -128,21 +132,21 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-
 | step | 기대 |
 |---|---|
 | `1_positions` | `success=true` |
-| `2_open_orders_before` | `unknown`이 아님 |
+| `2_open_orders_before` | `unknown`이면 reasons가 빈 응답 사유 하나뿐이고 source 모두 complete (그 외 unknown은 abort) |
 | `3_place_limit_buy` | `status=accepted`, `broker_order_id=N1`, `ledger_id` 존재, `dispatch_started=true` |
 | `4_open_orders_after_place` | `open_orders_state=present`, `open_orders[].order_no`에 `N1` (가정 1 검증) |
 | `5_modify_limit_price` | `status=accepted`, `broker_order_id=N2`, `full_quantity=true` |
 | `6_open_orders_after_modify` | `N2`가 open |
 | `7_cancel_full` | `status=accepted`, `original_verified_by=broker_listing` |
-| `8_open_orders_after_cancel` | `N2`가 open 목록에 없음 |
-| `9_reconcile_apply` | `success=true`, `unresolved=0`; place행 `modified`, modify행 `cancelled`, cancel행 `confirmed`, 모두 `verified` |
-| `10_empty_listing_check` | `open_orders_state=none_confirmed`(다른 주문 없을 때), 두 source `complete=true` |
+| `8_open_orders_after_cancel` | `unknown`이 아니고 `N2`가 open 목록에 없음 |
+| `9_reconcile_apply` | `success=true`, `unresolved=0`, 모든 행 `applied=true`; place행 `modified`, modify행 `cancelled`, cancel행 `confirmed`, 모두 `verified` (아니면 abort) |
+| `10_empty_listing_check` | `open_orders_state=none_confirmed`, 두 source `complete=true` (아니면 abort) — 당일 주문 행이 witness 로 존재하므로 빈 open 조회가 '없음'으로 인정되는 유일한 경우 |
 | `summary` | `status=ok`, `empty_listing_is_two_source_confirmed=true` |
 
 ```bash
 # 4) 빈 배열 검증 2차 (독립 프로세스로 다시)
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F --mode open-orders --confirm-read
-#    기대: none_confirmed, 두 source complete=true. open source response_codes(예: 13578=조회할 내역 없음)를 보고에 기록.
+#    기대: none_confirmed(당일 스모크 주문 행이 witness), 두 source complete=true. open source response_codes(예: 13578=조회할 내역 없음)를 보고에 기록.
 
 # 5) 체결/주문 이력과 레저 증거
 NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_order_smoke --env-file $F --mode history --confirm-read --scope all
@@ -173,4 +177,5 @@ MCP로 같은 흐름을 돌릴 경우(선택): `NHPLUG_MOCK_ENABLED=true` + `NHP
 
 - 2) baseline 또는 4) 재확인이 `unknown` — 빈 배열/오류형 응답 문제 또는 모의 호스트의 조회 미지원. `sources[*].reason`, `response_codes`를 그대로 보고.
 - 4단계 `placed order is not visible as open` — 벤더 가정 1(주문번호 동일성) 불성립. 주문을 취소하고 보고(후속 수정 필요).
-- 9단계 `unresolved > 0` 또는 `source_disagreement` — 두 조회 소스 불일치. 결과 JSON 보고.
+- 9단계 `unresolved > 0` 또는 `source_disagreement` — 두 조회 소스 불일치(roundtrip이 abort). 결과 JSON 보고.
+- 이 스모크는 체결을 만들지 않으므로 체결 교차확인(`ost_cns_dit=1`)은 실측되지 않는다. 체결 기록 경로는 별도 실측 전까지 fake 기반 테스트로만 검증됐다.

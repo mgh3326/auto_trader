@@ -301,11 +301,16 @@ def _assert_limit_only_body(path: str, input_0: Mapping[str, Any]) -> None:
 
 
 def _assert_send_authorized(authorization: object) -> None:
-    """The per-call double gate's second half: exact dry_run=False + confirm=True."""
+    """The per-call double gate's second half: exact dry_run=False + confirm=True.
+
+    The exact type is required (a subclass could override ``authorizes_send``)
+    and both fields are compared by identity with the bool singletons.
+    """
 
     if (
-        not isinstance(authorization, DryRunConfirmContract)
-        or not authorization.authorizes_send
+        type(authorization) is not DryRunConfirmContract
+        or authorization.dry_run is not False
+        or authorization.confirm is not True
     ):
         raise NHPlugMockOrderRefused(
             "NHPLUG mock order dispatch requires dry_run=False and confirm=True"
@@ -363,6 +368,24 @@ class NHPlugMockClient:
         self._transport = transport
         self._timeout = timeout
         self._account_allowlist: MockAccountAllowlist | None = None
+        # Orders require an allowlist this client derived from its own
+        # /n2/acctinfo response (``verify_and_bind_mock_account``), never one
+        # handed in by a caller.
+        self._order_allowlist: MockAccountAllowlist | None = None
+
+    async def verify_and_bind_mock_account(self, configured_account_no: str) -> None:
+        """Fetch /n2/acctinfo on this client and bind the acct_type=03 account.
+
+        This is the only way to make order dispatch possible on a client.
+        """
+
+        payload = await self.list_accounts()
+        allowlist = MockAccountAllowlist.from_acctinfo_response(
+            payload=payload, configured_account_no=configured_account_no
+        )
+        allowlist.assert_allowed(allowlist.configured_account_no)
+        self._account_allowlist = allowlist
+        self._order_allowlist = allowlist
 
     def bind_account_allowlist(self, account_allowlist: MockAccountAllowlist) -> None:
         """Bind the broker-derived mock account boundary to this dispatcher.
@@ -378,6 +401,17 @@ class NHPlugMockClient:
             )
         account_allowlist.assert_allowed(account_allowlist.configured_account_no)
         self._account_allowlist = account_allowlist
+        # A caller-supplied allowlist enables reads only, never orders.
+        self._order_allowlist = None
+
+    def _require_order_allowlist(self) -> MockAccountAllowlist:
+        allowlist = self._order_allowlist
+        if allowlist is None or allowlist is not self._account_allowlist:
+            raise NHPlugMockAccountRejected(
+                "orders require an account verified by this client's own "
+                "/n2/acctinfo request"
+            )
+        return allowlist
 
     def _require_account_allowlist(self) -> MockAccountAllowlist:
         allowlist = self._account_allowlist
@@ -507,13 +541,13 @@ class NHPlugMockClient:
         """Send one confirmed KRX limit buy or sell for the verified mock account."""
 
         _assert_send_authorized(authorization)
+        act_no = self._require_order_allowlist().configured_account_no
         if side == "buy":
             path = CASH_BUY_PATH
         elif side == "sell":
             path = CASH_SELL_PATH
         else:
             raise NHPlugMockOrderRefused("side must be 'buy' or 'sell'")
-        act_no = self.bound_account_no
         return await self._post_mutation(
             path=path,
             input_0={
@@ -543,7 +577,7 @@ class NHPlugMockClient:
         """Send one confirmed limit-price modification of a resting order."""
 
         _assert_send_authorized(authorization)
-        act_no = self.bound_account_no
+        act_no = self._require_order_allowlist().configured_account_no
         return await self._post_mutation(
             path=MODIFY_PATH,
             input_0={
@@ -573,7 +607,7 @@ class NHPlugMockClient:
         """Send one confirmed cancel; ``quantity=None`` cancels the full remainder."""
 
         _assert_send_authorized(authorization)
-        act_no = self.bound_account_no
+        act_no = self._require_order_allowlist().configured_account_no
         input_0: dict[str, Any] = {
             "act_no": act_no,
             "org_mkt_orr_no": _require_order_no(original_order_no),
@@ -673,13 +707,14 @@ class NHPlugMockClient:
     ) -> dict[str, Any]:
         """The only order dispatcher: gate, path, account, and limit shape twice."""
 
+        _assert_send_authorized(authorization)
         _assert_mock_enabled()
         _assert_mutation_path(path)
         if self._base_url != MOCK_BASE_URL:
             raise NHPlugMockEndpointError(
                 "NHPLUG data base endpoint changed after construction"
             )
-        account_allowlist = self._require_account_allowlist()
+        account_allowlist = self._require_order_allowlist()
         if input_0.get("act_no") != account_allowlist.configured_account_no:
             raise NHPlugMockAccountRejected(
                 "orders may use only the configured mock account"

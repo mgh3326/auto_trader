@@ -219,3 +219,79 @@ async def _run(argv: list[str]) -> int:
 
 def _order_date() -> str:
     return f"3{uuid.uuid4().int % 10_000_000:07d}"
+
+
+# --- tester round 1 (finding 7): no false "ok" ------------------------------
+
+
+def _patch_nth_open_orders(
+    monkeypatch: pytest.MonkeyPatch, nth: int, override: dict[str, Any]
+) -> None:
+    real = operations.get_open_orders
+    calls = {"n": 0}
+
+    async def wrapped(client: Any, **kwargs: Any) -> dict[str, Any]:
+        result = await real(client, **kwargs)
+        calls["n"] += 1
+        return {**result, **override} if calls["n"] == nth else result
+
+    monkeypatch.setattr(smoke.operations, "get_open_orders", wrapped)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("nth", "override"),
+    (
+        (4, {"open_orders_state": "unknown", "open_orders": []}),  # after cancel
+        (5, {"open_orders_state": "unknown", "open_orders": []}),  # final check
+        (5, {"open_orders_state": "present", "open_orders": []}),  # final, not none
+        (
+            1,
+            {
+                "open_orders_state": "unknown",
+                "reasons": ["open_scope_incomplete:gateway_error_envelope"],
+            },
+        ),  # error-shaped baseline
+    ),
+    ids=("after_cancel_unknown", "final_unknown", "final_present", "baseline_error"),
+)
+async def test_roundtrip_never_reports_ok_on_unknown_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    db_session: Any,
+    nth: int,
+    override: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
+    broker = FakeNHMockBroker()
+    _wire(monkeypatch, broker, db_session)
+    _patch_nth_open_orders(monkeypatch, nth, override)
+    code = await _run(_roundtrip_argv(tmp_path, _order_date()))
+    lines = _lines(capsys)
+    assert code == 2
+    assert lines[-1]["step"] == "abort"
+    assert not any(line.get("step") == "summary" for line in lines)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_roundtrip_aborts_when_reconcile_leaves_rows_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    db_session: Any,
+) -> None:
+    monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
+    broker = FakeNHMockBroker()
+    _wire(monkeypatch, broker, db_session)
+
+    async def unresolved(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"success": False, "unresolved": 1, "results": []}
+
+    monkeypatch.setattr(smoke.operations, "reconcile_orders", unresolved)
+    code = await _run(_roundtrip_argv(tmp_path, _order_date()))
+    lines = _lines(capsys)
+    assert code == 2 and lines[-1]["step"] == "abort"
+    assert lines[-1]["reason"] == "reconcile did not verify every ledger row"

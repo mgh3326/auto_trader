@@ -25,7 +25,6 @@ from decimal import Decimal
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
 from app.services.brokers.nhplug.client import (
     MAX_ORDER_NUMBER,
     MAX_ORDER_PRICE_KRW,
@@ -88,12 +87,7 @@ async def open_verified_client(
         token_provider=token_provider,
         transport=transport,
     )
-    payload = await client.list_accounts()
-    client.bind_account_allowlist(
-        MockAccountAllowlist.from_acctinfo_response(
-            payload=payload, configured_account_no=credentials.account_no
-        )
-    )
+    await client.verify_and_bind_mock_account(credentials.account_no)
     return client
 
 
@@ -271,8 +265,9 @@ async def get_open_orders(
         ledger_cross_checked=ledger_checked,
         sources=[_listing_summary(all_listing), _listing_summary(open_listing)],
         note=(
-            "none_confirmed requires two complete, agreeing listings; an empty "
-            "or error-shaped response alone is reported as unknown."
+            "none_confirmed requires two complete, agreeing listings plus at "
+            "least one of today's rows as a liveness witness; an empty or "
+            "error-shaped response alone is reported as unknown."
         ),
     )
 
@@ -833,11 +828,15 @@ async def reconcile_orders(
 
     all_listing = await collect_listing(client, order_date=order_date, scope="all")
     open_listing = await collect_listing(client, order_date=order_date, scope="open")
+    filled_listing = await collect_listing(
+        client, order_date=order_date, scope="filled"
+    )
     rows = list(await ledger.list_for_date(order_date))
     planned = plan_reconcile(
         _ledger_views(rows),
         all_listing=all_listing,
         open_listing=open_listing,
+        filled_listing=filled_listing,
         all_claimed_order_ids=[row.broker_order_id for row in rows],
     )
     results: list[dict[str, Any]] = []
@@ -869,5 +868,9 @@ async def reconcile_orders(
         planned=len(results),
         unresolved=unknown,
         results=results,
-        sources=[_listing_summary(all_listing), _listing_summary(open_listing)],
+        sources=[
+            _listing_summary(all_listing),
+            _listing_summary(open_listing),
+            _listing_summary(filled_listing),
+        ],
     )

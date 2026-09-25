@@ -158,6 +158,10 @@ def upgrade() -> None:
             "filled_qty IS NULL OR filled_qty >= 0",
             name=_ck("filled_qty_nonnegative"),
         ),
+        sa.CheckConstraint(
+            "filled_qty IS NULL OR quantity IS NULL OR filled_qty <= quantity",
+            name=_ck("filled_within_quantity"),
+        ),
         schema=_SCHEMA,
     )
     op.create_index(

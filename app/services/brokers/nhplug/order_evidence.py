@@ -275,15 +275,16 @@ def classify_listing_page(
 
     key = header_continuation_key or _body_continuation_key(payload)
     flag = (header_continuation_flag or "").strip().upper()
-    if not key or flag == "N":
+    # Any "more pages" signal counts even without a usable key: a page that
+    # announces continuation but cannot be followed leaves the listing
+    # incomplete (unknown), never final.
+    if flag == "N":
         has_next = False
-    elif flag == "Y":
-        has_next = True
-    elif header_continuation_key is None:
-        # A body continuation key with a value means "more pages".
+    elif flag == "Y" or code in READ_CONTINUE_CODES:
         has_next = True
     else:
-        has_next = code in READ_CONTINUE_CODES
+        # A body continuation key with a value means "more pages".
+        has_next = header_continuation_key is None and key is not None
     return ListingPage(
         usable=True,
         rows=tuple(rows),
@@ -420,6 +421,12 @@ def determine_open_orders(
         return OpenOrdersDetermination(
             state="present", open_rows=rows, reasons=tuple(reasons)
         )
+    if not reasons and not all_listing.rows:
+        # Liveness witness: an all-orders listing with zero rows (block absent,
+        # 13578, or []) is indistinguishable from an endpoint silently
+        # returning nothing (the kt00009 failure).  "None open" is confirmed
+        # only when the same listing demonstrably returns today's orders.
+        reasons.append("empty_listing_is_not_evidence_of_no_open_orders")
     if reasons:
         return OpenOrdersDetermination(
             state="unknown", open_rows=(), reasons=tuple(reasons)
@@ -461,23 +468,27 @@ def classify_order_ack(payload: object) -> OrderAck:
 def derive_order_status(row: OrderRow) -> OrderStatus:
     """Map broker quantities to a status; inconsistent arithmetic is unknown."""
 
-    if row.filled_qty > row.order_qty or row.open_qty > row.order_qty:
+    if row.order_qty <= 0:
         return "unknown"
-    if row.open_qty > 0:
-        return "partially_filled" if row.filled_qty > 0 else "open"
-    if row.order_qty > 0 and row.filled_qty == row.order_qty:
-        return "filled"
     cancelled = row.cancelled_qty or 0
     modified = row.modified_qty or 0
     if (
         row.rejection_reason
         and row.filled_qty == 0
+        and row.open_qty == 0
         and cancelled == 0
         and modified == 0
     ):
         return "rejected"
-    if modified > 0 and row.filled_qty + cancelled + modified == row.order_qty:
+    # Every quantity must be accounted for exactly once.
+    if row.filled_qty + row.open_qty + cancelled + modified != row.order_qty:
+        return "unknown"
+    if row.open_qty > 0:
+        return "partially_filled" if row.filled_qty > 0 else "open"
+    if row.filled_qty == row.order_qty:
+        return "filled"
+    if modified > 0:
         return "modified"
-    if cancelled > 0 and row.filled_qty + cancelled == row.order_qty:
+    if cancelled > 0:
         return "cancelled"
     return "unknown"

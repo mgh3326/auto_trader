@@ -14,7 +14,9 @@ Invariants (the Kiwoom ``kt00009`` lesson):
   contain the order.  If the open-only scope still lists it, the row becomes
   ``source_disagreement`` and keeps its status.
 * An open state needs the all-orders row **and** the open-only scope to agree.
-* Fill quantities come only from a listing row (evidence-first).
+* Fill quantities come only from a listing row (evidence-first), and any
+  non-zero fill must also appear with the same quantity in the independent
+  filled-only scope (``ost_cns_dit=1``); otherwise the row stays ``unknown``.
 """
 
 from __future__ import annotations
@@ -87,12 +89,29 @@ def _fill_fields(row: OrderRow) -> dict[str, object]:
     }
 
 
+def _fill_confirmed(
+    broker_row: OrderRow, filled_listing: OrderListing | None
+) -> str | None:
+    """Return a reason when a non-zero fill lacks filled-scope confirmation."""
+
+    if broker_row.filled_qty == 0:
+        return None
+    if filled_listing is None or not filled_listing.complete:
+        reason = None if filled_listing is None else filled_listing.reason
+        return f"filled_scope_incomplete:{reason}"
+    confirming = filled_listing.find(broker_row.order_no)
+    if confirming is None or confirming.filled_qty != broker_row.filled_qty:
+        return "fill_not_confirmed_by_filled_scope"
+    return None
+
+
 def _plan_bound_order(
     view: LedgerRowView,
     order_no: int,
     *,
     all_listing: OrderListing,
     open_listing: OrderListing,
+    filled_listing: OrderListing | None,
 ) -> ReconcileUpdate:
     broker_row = all_listing.find(order_no)
     if broker_row is None:
@@ -149,6 +168,8 @@ def _plan_bound_order(
         return _unknown(
             "broker_open_quantity_regressed", evidence=broker_row.evidence()
         )
+    if (fill_gap := _fill_confirmed(broker_row, filled_listing)) is not None:
+        return _unknown(fill_gap, evidence=broker_row.evidence())
     return ReconcileUpdate(
         reconcile_state="verified",
         status=derived,
@@ -256,8 +277,10 @@ def _plan_unbound_order(
         reconcile_state="pending",
         status="accepted",
         broker_order_id=str(match.order_no),
-        evidence=match.evidence(),
-        note={"reason": "bound_by_unique_attribute_match"},
+        note={
+            "reason": "bound_by_unique_attribute_match",
+            "evidence": match.evidence(),
+        },
         requires_manual_review=True,
         manual_review_reason="broker_order_number_bound_by_attribute_match",
     )
@@ -268,6 +291,7 @@ def plan_reconcile(
     *,
     all_listing: OrderListing,
     open_listing: OrderListing,
+    filled_listing: OrderListing | None = None,
     all_claimed_order_ids: Iterable[str | None] = (),
 ) -> list[PlannedUpdate]:
     """Plan updates for every reconcilable row; pure and deterministic."""
@@ -306,6 +330,7 @@ def plan_reconcile(
                     order_no,
                     all_listing=all_listing,
                     open_listing=open_listing,
+                    filled_listing=filled_listing,
                 )
             elif view.status in _UNBOUND_STATUSES:
                 update = _plan_unbound_order(

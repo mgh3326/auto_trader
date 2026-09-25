@@ -71,11 +71,18 @@ def plan_one(
     all_payload: dict[str, Any],
     open_payload: dict[str, Any],
     claimed: tuple[str | None, ...] | None = None,
+    filled_payload: dict[str, Any] | None = None,
 ):
+    if filled_payload is None:
+        rows = all_payload.get("Output_1") or []
+        filled_payload = rows_payload(
+            *[r for r in rows if isinstance(r, dict) and r.get("tot_cns_qty")]
+        )
     planned = plan_reconcile(
         [row],
         all_listing=listing("all", all_payload),
         open_listing=listing("open", open_payload),
+        filled_listing=listing("filled", filled_payload),
         all_claimed_order_ids=claimed
         if claimed is not None
         else (row.broker_order_id,),
@@ -292,3 +299,67 @@ def test_terminal_ledger_rows_are_not_replanned() -> None:
         "not_submitted",
     ):
         assert plan_one(view(status=status), rows_payload(base_row()), EMPTY) is None
+
+
+# --- tester round 1 regressions ---------------------------------------------
+
+
+def test_fill_requires_confirmation_from_the_filled_scope() -> None:
+    filled = base_row(tot_cns_qty=1, ny_cns_qty=0, cns_avg_uit_pr="50000")
+    for filled_payload, reason in (
+        (EMPTY, "fill_not_confirmed_by_filled_scope"),
+        (
+            rows_payload(base_row(tot_cns_qty=2, orr_qty=2)),
+            "fill_not_confirmed_by_filled_scope",
+        ),
+        (fx("listing_gateway_error"), "filled_scope_incomplete:gateway_error_envelope"),
+    ):
+        update = plan_one(
+            view(), rows_payload(filled), EMPTY, filled_payload=filled_payload
+        )
+        assert update.status is None and update.reconcile_state == "unknown", (
+            filled_payload
+        )
+        assert update.note["reason"] == reason
+        assert update.filled_qty is None
+
+
+@pytest.mark.parametrize(
+    "open_page",
+    ({"rsp_cd": "00000"}, {"rsp_cd": "13578"}, {"rsp_cd": "00000", "Output_1": []}),
+)
+def test_tester_repro_unfinished_open_page_cannot_book_a_fill(
+    open_page: dict[str, Any],
+) -> None:
+    """R1 finding 4 repro: cts_flag=Y without a key on the open scope."""
+
+    filled = base_row(tot_cns_qty=1, ny_cns_qty=0, cns_avg_uit_pr="50000")
+    open_listing = assemble_listing(
+        "open",
+        [classify_listing_page(open_page, header_continuation_flag="Y")],
+    )
+    planned = plan_reconcile(
+        [view()],
+        all_listing=listing("all", rows_payload(filled)),
+        open_listing=open_listing,
+        filled_listing=listing("filled", rows_payload(filled)),
+        all_claimed_order_ids=("1000123",),
+    )
+    assert planned[0].update.status is None
+    assert planned[0].update.reconcile_state == "unknown"
+
+
+def test_tester_repro_contradictory_quantities_are_not_verified() -> None:
+    """R1 finding 5 repro: orr_qty=1, tot_cns_qty=1, ny_cns_qty=1."""
+
+    row = base_row(tot_cns_qty=1, ny_cns_qty=1)
+    update = plan_one(view(), rows_payload(row), rows_payload(row))
+    assert update.reconcile_state == "unknown"
+    assert update.status is None and update.filled_qty is None
+
+
+def test_attribute_binding_carries_no_evidence_fields() -> None:
+    uncertain = view(status="acceptance_uncertain", broker_order_id=None)
+    update = plan_one(uncertain, rows_payload(base_row()), rows_payload(base_row()), ())
+    assert update.evidence is None and update.filled_qty is None
+    assert update.note["evidence"]["order_no"] == "1000123"

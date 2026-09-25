@@ -106,6 +106,10 @@ class NHPlugMockOrderLedger(Base):
         CheckConstraint(
             "filled_qty IS NULL OR filled_qty >= 0", name="filled_qty_nonnegative"
         ),
+        CheckConstraint(
+            "filled_qty IS NULL OR quantity IS NULL OR filled_qty <= quantity",
+            name="filled_within_quantity",
+        ),
         Index("ix_nhplug_mock_ledger_order_date_status", "order_date", "status"),
         Index("ix_nhplug_mock_ledger_symbol", "symbol"),
         {"schema": "review"},

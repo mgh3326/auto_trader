@@ -222,3 +222,122 @@ def test_no_lane_allowlist_names_nhplug_tools() -> None:
     lanes = Path(__file__).resolve().parents[2] / "config" / "mcp_lane_allowlists"
     for path in lanes.glob("*.txt"):
         assert "nhplug" not in path.read_text(encoding="utf-8"), path.name
+
+
+# --- tester round 1: the real FastMCP wire boundary ------------------------
+
+
+def _wire_server(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, _Spy]:
+    from fastmcp import FastMCP
+
+    spy = _Spy()
+    for name in ("place_limit_order", "modify_limit_order", "cancel_order"):
+        monkeypatch.setattr(tools_module.operations, name, spy(name))
+
+    async def no_client() -> Any:
+        spy.calls.append("verified_client")
+        raise AssertionError("a client must not be built")
+
+    monkeypatch.setattr(tools_module, "_verified_client", no_client)
+    server = FastMCP("nhplug-wire-test")
+    tools_module.register(server)
+    return server, spy
+
+
+@pytest.mark.parametrize(
+    ("tool", "base"),
+    (
+        (
+            "nhplug_mock_place_order",
+            {"symbol": "005930", "side": "buy", "quantity": 1, "price": 50000},
+        ),
+        (
+            "nhplug_mock_modify_order",
+            {"order_id": "1000123", "symbol": "005930", "new_price": 49500},
+        ),
+        ("nhplug_mock_cancel_order", {"order_id": "1000123", "symbol": "005930"}),
+    ),
+)
+@pytest.mark.parametrize(
+    "gate_values",
+    (
+        {"dry_run": 0, "confirm": 1},
+        {"dry_run": "false", "confirm": "true"},
+        {"dry_run": False, "confirm": 1},
+        {"dry_run": False, "confirm": "true"},
+        {"dry_run": 0, "confirm": True},
+    ),
+    ids=("ints", "strings", "int_confirm", "string_confirm", "int_dry_run"),
+)
+@pytest.mark.asyncio
+async def test_wire_coercible_gate_values_are_rejected_before_any_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: None,
+    tool: str,
+    base: dict[str, Any],
+    gate_values: dict[str, Any],
+) -> None:
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    server, spy = _wire_server(monkeypatch)
+    async with Client(server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(tool, {**base, **gate_values})
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        {"quantity": "1", "price": 50000},
+        {"quantity": 1, "price": "50000"},
+        {"quantity": 1.0, "price": 50000},
+    ),
+)
+@pytest.mark.asyncio
+async def test_wire_coercible_quantities_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, configured: None, arguments: dict[str, Any]
+) -> None:
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    server, spy = _wire_server(monkeypatch)
+    async with Client(server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                "nhplug_mock_place_order",
+                {"symbol": "005930", "side": "buy", **arguments},
+            )
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_wire_exact_booleans_still_reach_the_confirmed_path(
+    monkeypatch: pytest.MonkeyPatch, configured: None
+) -> None:
+    from fastmcp import Client
+
+    server, spy = _wire_server(monkeypatch)
+
+    class _Ledger:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(tools_module, "_ledger", lambda: _Ledger())
+    async with Client(server) as client:
+        await client.call_tool(
+            "nhplug_mock_place_order",
+            {
+                "symbol": "005930",
+                "side": "buy",
+                "quantity": 1,
+                "price": 50000,
+                "dry_run": False,
+                "confirm": True,
+            },
+        )
+    assert spy.calls == ["place_limit_order"]

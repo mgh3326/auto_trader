@@ -14,6 +14,9 @@ from app.services.brokers.nhplug.errors import (
 ALLOWED_MOCK_ACCOUNT_TYPES: Final[frozenset[str]] = frozenset({"03"})
 DENIED_LIVE_ACCOUNT_TYPES: Final[frozenset[str]] = frozenset({"01", "02"})
 _ACCOUNT_LIST_KEY: Final[str] = "Output_0"
+# Construction proof: only ``from_acctinfo_response`` holds this object, so an
+# allowlist cannot be hand-built with arbitrary account numbers (#711).
+_BROKER_DERIVED: Final[object] = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +34,13 @@ class MockAccountAllowlist:
     configured_account_no: str = field(repr=False)
     allowed_account_numbers: frozenset[str] = field(repr=False)
     account_type_counts: tuple[tuple[str, int], ...]
+    _derivation: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._derivation is not _BROKER_DERIVED:
+            raise NHPlugMockAccountRejected(
+                "a mock account allowlist can only be derived from /n2/acctinfo"
+            )
 
     @property
     def allowed_count(self) -> int:
@@ -104,6 +114,7 @@ class MockAccountAllowlist:
             configured_account_no=configured_account_no.strip(),
             allowed_account_numbers=frozenset(allowed),
             account_type_counts=tuple(sorted(counts.items())),
+            _derivation=_BROKER_DERIVED,
         )
         result.assert_allowed(result.configured_account_no)
         return result

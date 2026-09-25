@@ -89,6 +89,11 @@ class _Broker:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if (
+            request.url.path == "/n2/acctinfo"
+            and request.url.host == "moapi.nhplug.com"
+        ):
+            return httpx.Response(200, json=ACCOUNTS)
         if self._respond is not None:
             return self._respond(request)
         return httpx.Response(
@@ -96,14 +101,12 @@ class _Broker:
         )
 
 
-def _client(client_module: Any, broker: _Broker) -> tuple[Any, list[int]]:
+async def _client(client_module: Any, broker: _Broker) -> tuple[Any, list[int]]:
     token_calls: list[int] = []
 
     async def tokens() -> str:
         token_calls.append(1)
         return "t"
-
-    from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
 
     client = client_module.NHPlugMockClient(
         app_key="k",
@@ -111,11 +114,11 @@ def _client(client_module: Any, broker: _Broker) -> tuple[Any, list[int]]:
         token_provider=tokens,
         transport=httpx.MockTransport(broker),
     )
-    client.bind_account_allowlist(
-        MockAccountAllowlist.from_acctinfo_response(
-            payload=ACCOUNTS, configured_account_no=MOCK_ACCOUNT
-        )
-    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("NHPLUG_MOCK_ENABLED", "true")
+        await client.verify_and_bind_mock_account(MOCK_ACCOUNT)
+    token_calls.clear()
+    broker.requests.clear()
     return client, token_calls
 
 
@@ -144,10 +147,10 @@ async def probe_host_reverify(
             self, method, "https://api.nhplug.com:8443/krstock/order/v1/cashBuy", **kw
         )
 
+    broker = _Broker()
+    client, _ = await _client(client_module, broker)
     with monkeypatch.context() as patch:
         patch.setattr(httpx.AsyncClient, "build_request", to_production)
-        broker = _Broker()
-        client, _ = _client(client_module, broker)
         try:
             await _submit(client)
         except NHPlugMockEndpointError:
@@ -183,7 +186,7 @@ async def probe_client_confirm(
         DryRunConfirmContract(dry_run=True, confirm=True),
     ):
         broker = _Broker()
-        client, token_calls = _client(client_module, broker)
+        client, token_calls = await _client(client_module, broker)
         try:
             await _submit(client, authorization)
         except NHPlugMockOrderRefused:
@@ -279,7 +282,7 @@ async def probe_redirect(client_module: Any, monkeypatch: pytest.MonkeyPatch) ->
         )
 
     broker = _Broker(respond)
-    client, _ = _client(client_module, broker)
+    client, _ = await _client(client_module, broker)
     try:
         await _submit(client)
     except NHPlugMockDispatchUncertain:
@@ -317,10 +320,10 @@ async def probe_market_at_client(
         kwargs["json"] = {"Input_0": {**body["Input_0"], "nmn_pr_tp_cd": "05"}}
         return original(self, *args, **kwargs)
 
+    broker = _Broker()
+    client, _ = await _client(client_module, broker)
     with monkeypatch.context() as patch:
         patch.setattr(httpx.AsyncClient, "build_request", market)
-        broker = _Broker()
-        client, _ = _client(client_module, broker)
         try:
             await _submit(client)
         except NHPlugMockOrderRefused:
@@ -363,11 +366,168 @@ async def probe_empty_open_scope(
 async def probe_error_shaped_is_unknown(
     evidence: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    closed = {**_OPEN_ROW, "tot_cns_qty": 1, "ny_cns_qty": 0}
     result = evidence.determine_open_orders(
-        all_listing=_listing(evidence, "all", {"rsp_cd": "00000", "Output_1": []}),
+        all_listing=_listing(
+            evidence, "all", {"rsp_cd": "00000", "Output_1": [closed]}
+        ),
         open_listing=_listing(evidence, "open", {"rsp_cd": "00007", "Output_1": []}),
     )
     assert result.state == "unknown", result
+
+
+# --- round-1 boundaries ----------------------------------------------------
+
+
+async def probe_caller_bound_allowlist(
+    client_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
+
+    broker = _Broker()
+    client = client_module.NHPlugMockClient(
+        app_key="k",
+        app_secret="s",
+        token_provider=_static_token,
+        transport=httpx.MockTransport(broker),
+    )
+    client.bind_account_allowlist(
+        MockAccountAllowlist.from_acctinfo_response(
+            payload=ACCOUNTS, configured_account_no=MOCK_ACCOUNT
+        )
+    )
+    try:
+        await _submit(client)
+    except NHPlugMockAccountRejected:
+        pass
+    else:
+        raise AssertionError("a caller-bound allowlist enabled an order")
+    assert broker.requests == []
+
+
+async def _static_token() -> str:
+    return "t"
+
+
+async def probe_dispatcher_authorization(
+    client_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _Broker()
+    client, token_calls = await _client(client_module, broker)
+    try:
+        await client._post_mutation(
+            path="/krstock/order/v1/cashBuy",
+            input_0={
+                "act_no": MOCK_ACCOUNT,
+                "iem_cd": "005930",
+                "orr_qty": 1,
+                "orr_pr": 50000,
+                "nmn_pr_tp_cd": "01",
+                "orr_cnd_dit_cd": "00",
+                "ssl_nmn_pr_dit_cd": "00",
+                "rmt_mkt_cd": "KRX",
+                "sor_mkt_sli_yn": "N",
+            },
+            authorization=DryRunConfirmContract(),
+        )
+    except NHPlugMockOrderRefused:
+        pass
+    else:
+        raise AssertionError("the dispatcher sent without confirm=True")
+    assert token_calls == [] and broker.requests == []
+
+
+async def probe_wire_strict_types(
+    tools_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastmcp import Client, FastMCP
+    from fastmcp.exceptions import ToolError
+
+    calls: list[str] = []
+
+    async def spy(**kwargs: Any) -> dict[str, Any]:
+        calls.append("place")
+        return {"success": True}
+
+    @asynccontextmanager
+    async def fake_ledger() -> Any:
+        yield None
+
+    real_ops = importlib.import_module(OPERATIONS)
+    with monkeypatch.context() as patch:
+        for key, value in (
+            ("nhplug_mock_enabled", True),
+            ("nhplug_app_key", "k"),
+            ("nhplug_app_secret", "s"),
+            ("nhplug_mock_account_no", "a"),
+        ):
+            patch.setattr(settings, key, value)
+        patch.setattr(real_ops, "place_limit_order", spy)
+        patch.setitem(tools_module.__dict__, "_ledger", fake_ledger)
+        server = FastMCP("mutant-wire")
+        tools_module.register(server)
+        async with Client(server) as client:
+            try:
+                await client.call_tool(
+                    "nhplug_mock_place_order",
+                    {
+                        "symbol": "005930",
+                        "side": "buy",
+                        "quantity": 1,
+                        "price": 50000,
+                        "dry_run": 0,
+                        "confirm": 1,
+                    },
+                )
+            except ToolError:
+                pass
+            else:
+                raise AssertionError("JSON 0/1 were coerced into dry_run/confirm")
+    assert calls == []
+
+
+async def probe_quantity_sum(evidence: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    row = evidence.parse_order_row({**_OPEN_ROW, "tot_cns_qty": 1, "ny_cns_qty": 1})
+    assert evidence.derive_order_status(row) == "unknown"
+
+
+async def probe_flag_without_key(
+    evidence: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = evidence.classify_listing_page(
+        {"rsp_cd": "00000"}, header_continuation_flag="Y"
+    )
+    assert evidence.assemble_listing("open", [page]).complete is False
+
+
+async def probe_fill_cross_check(plan: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from decimal import Decimal
+
+    from app.services.brokers.nhplug import order_evidence as evidence
+
+    filled = {**_OPEN_ROW, "tot_cns_qty": 1, "ny_cns_qty": 0, "cns_avg_uit_pr": 50000}
+    planned = plan.plan_reconcile(
+        [
+            plan.LedgerRowView(
+                id=1,
+                operation_kind="place",
+                status="accepted",
+                symbol="005930",
+                side="buy",
+                quantity=1,
+                price=Decimal(50000),
+                broker_order_id="1000123",
+                original_order_id=None,
+            )
+        ],
+        all_listing=_listing(
+            evidence, "all", {"rsp_cd": "00000", "Output_1": [filled]}
+        ),
+        open_listing=_listing(evidence, "open", {"rsp_cd": "13578"}),
+        filled_listing=_listing(evidence, "filled", {"rsp_cd": "13578"}),
+        all_claimed_order_ids=("1000123",),
+    )
+    assert planned[0].update.status is None, planned
 
 
 Probe = Callable[[Any, pytest.MonkeyPatch], Awaitable[None]]
@@ -394,8 +554,9 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
     (
         "drop_confirm_at_client",
         CLIENT,
-        "        not isinstance(authorization, DryRunConfirmContract)\n"
-        "        or not authorization.authorizes_send\n",
+        "        type(authorization) is not DryRunConfirmContract\n"
+        "        or authorization.dry_run is not False\n"
+        "        or authorization.confirm is not True\n",
         "        False\n",
         probe_client_confirm,
     ),
@@ -449,6 +610,49 @@ MUTANTS: tuple[tuple[str, str, str, str, Probe], ...] = (
         "    if code not in READ_OK_CODES | READ_CONTINUE_CODES | {READ_NO_ROWS_CODE}:\n",
         "    if False:\n",
         probe_error_shaped_is_unknown,
+    ),
+    (
+        "caller_bound_allowlist_enables_orders",
+        CLIENT,
+        "        allowlist = self._order_allowlist\n"
+        "        if allowlist is None or allowlist is not self._account_allowlist:\n",
+        "        allowlist = self._account_allowlist\n        if allowlist is None:\n",
+        probe_caller_bound_allowlist,
+    ),
+    (
+        "dispatcher_skips_authorization",
+        CLIENT,
+        "        _assert_send_authorized(authorization)\n        _assert_mock_enabled()\n",
+        "        _assert_mock_enabled()\n",
+        probe_dispatcher_authorization,
+    ),
+    (
+        "wire_bool_coercion",
+        TOOLS,
+        "        dry_run: StrictBool = True,\n        confirm: StrictBool = False,\n        strategy",
+        "        dry_run: bool = True,\n        confirm: bool = False,\n        strategy",
+        probe_wire_strict_types,
+    ),
+    (
+        "quantities_not_summed",
+        EVIDENCE,
+        "    if row.filled_qty + row.open_qty + cancelled + modified != row.order_qty:\n",
+        "    if False:\n",
+        probe_quantity_sum,
+    ),
+    (
+        "continuation_flag_without_key_is_final",
+        EVIDENCE,
+        '    elif flag == "Y" or code in READ_CONTINUE_CODES:\n',
+        '    elif (flag == "Y" or code in READ_CONTINUE_CODES) and key:\n',
+        probe_flag_without_key,
+    ),
+    (
+        "fill_without_filled_scope",
+        "app.services.nhplug_mock.reconcile_plan",
+        "    if (fill_gap := _fill_confirmed(broker_row, filled_listing)) is not None:\n",
+        "    if (fill_gap := None) is not None:\n",
+        probe_fill_cross_check,
     ),
 )
 
