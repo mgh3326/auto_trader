@@ -47,7 +47,14 @@ def upgrade() -> None:
     _execute_script("""
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nhplug_operator') THEN
-        CREATE ROLE nhplug_operator NOLOGIN;
+        BEGIN
+          CREATE ROLE nhplug_operator NOLOGIN;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+          -- Roles are cluster-wide: another database's concurrent migration may win.
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nhplug_operator') THEN
+            RAISE;
+          END IF;
+        END;
       END IF;
     END $$;
     CREATE TABLE review.nhplug_mock_key_version (

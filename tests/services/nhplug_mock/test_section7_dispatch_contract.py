@@ -753,6 +753,52 @@ async def test_r2_claim_gate_host_and_body_refusals_send_nothing(
     assert broker.requests == []
 
 
+@pytest.mark.parametrize("wrong_field", ["client_request_id", "body_digest"])
+@pytest.mark.asyncio
+async def test_claim_identity_condition_rejects_before_one_legitimate_send(
+    seeded_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    wrong_field: str,
+) -> None:
+    suffix = "claim-condition-" + wrong_field
+    ledger, row, ref = await intent_row(seeded_engine, suffix)
+    broker = FakeBroker()
+    monkeypatch.setattr(client_module, "GatedTransport", broker.transport)
+    client = await client_for(suffix)
+    request_id = (
+        uuid4() if wrong_field == "client_request_id" else row["client_request_id"]
+    )
+    digest = "0" * 64 if wrong_field == "body_digest" else row["body_digest"]
+
+    with pytest.raises(LedgerConflict, match="claim_rejected"):
+        await ledger.claim(row["id"], request_id, digest, ref, IDENTITY)
+    with pytest.raises(LedgerConflict, match="claim_rejected"):
+        await client.dispatch_claimed_order(
+            ledger,
+            row["id"],
+            request_id,
+            digest,
+            ref,
+            keys={1: KEY},
+            readiness=READY,
+            timing=Stage2Timing(),
+            dry_run=False,
+            confirm=True,
+        )
+    stored = await ledger.get(row["id"])
+    assert (stored["state"], stored["claim_token"], broker.requests) == (
+        "intent",
+        None,
+        [],
+    )
+
+    outcome = await _dispatch(client, ledger, row, ref)
+    assert outcome.state == "uncertain"
+    assert len(broker.requests) == 1
+    stored = await ledger.get(row["id"])
+    assert stored["state"] == "uncertain"
+
+
 async def client_for_account(
     engine: AsyncEngine, row: dict[str, Any]
 ) -> NHPlugMockClient:
@@ -979,12 +1025,18 @@ async def test_r2_post_fence_outcomes_are_uncertain_without_resend(
     wire, seen = _wire(status, body, raw, exc)
     monkeypatch.setattr(client_module, "GatedTransport", wire)
     client = await client_for_account(seeded_engine, row)
-    outcome = await _dispatch(client, ledger, row, ref)
+    thrown: Exception | None = None
+    outcome = None
+    try:
+        outcome = await _dispatch(client, ledger, row, ref)
+    except Exception as error:
+        thrown = error
     stored = await ledger.get(row["id"])
-    assert (outcome.state, stored["state"]) == ("uncertain", "uncertain"), (
-        outcome,
+    assert stored["state"] == "uncertain", (
+        thrown,
         stored["state"],
     )
+    assert thrown is None and outcome is not None and outcome.state == "uncertain"
     assert (
         stored["ack_evidence_order_id"] == expect_number
         and stored["uncertain_reason"] == expect_reason

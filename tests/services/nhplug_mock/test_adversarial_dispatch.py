@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import app.services.brokers.nhplug.client as client_module
@@ -583,10 +584,14 @@ async def test_probe_own_number_attribute_mismatch_goes_anomaly_not_accepted(
 
 
 @pytest.mark.asyncio
-async def test_probe_forged_dispatcher_done_enables_bind_without_gone_proof(
+@pytest.mark.xfail(
+    reason="Known DB limit: a direct writer can forge dispatcher_done_at; intended refusal is not enforced",
+    strict=True,
+)
+async def test_known_limit_forged_dispatcher_done_writer_should_be_refused(
     seeded_engine: AsyncEngine,
 ) -> None:
-    """DB cannot tell D's completion from any writer's: documents the limit."""
+    """Document the intended refusal without requiring the current acceptance."""
 
     ledger, row, ref = await intent_row(seeded_engine, "forge-done")
     claim = await ledger.claim(
@@ -595,15 +600,16 @@ async def test_probe_forged_dispatcher_done_enables_bind_without_gone_proof(
     assert await ledger.fence(claim, lease_seconds=1)
     await asyncio.sleep(1.1)
     await ledger.recover_expired()
-    async with seeded_engine.begin() as conn:
-        await conn.execute(
-            text(
-                "UPDATE review.nhplug_mock_order_ledger SET dispatcher_done_at=now() WHERE id=:id"
-            ),
-            {"id": row["id"]},
-        )
+    with pytest.raises(DBAPIError):
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE review.nhplug_mock_order_ledger SET dispatcher_done_at=now() WHERE id=:id"
+                ),
+                {"id": row["id"]},
+            )
     stored = await ledger.get(row["id"])
-    assert stored["dispatcher_done_at"] is not None
+    assert stored["dispatcher_done_at"] is None
 
 
 @pytest.mark.asyncio
