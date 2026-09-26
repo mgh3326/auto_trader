@@ -424,6 +424,8 @@ def upgrade() -> None:
           OR NEW.evidence->>'listing_order_id' IS DISTINCT FROM OLD.ack_evidence_order_id
           OR NEW.evidence->>'listing_complete' IS DISTINCT FROM 'true'
           OR NEW.evidence->>'listing_scope' IS DISTINCT FROM 'all'
+          OR NEW.evidence->>'account_ref' IS DISTINCT FROM OLD.account_ref::text
+          OR NEW.evidence->>'order_date' IS DISTINCT FROM OLD.order_date::text
           OR NEW.evidence->>'attributes_match' IS DISTINCT FROM 'true'
           THEN RAISE EXCEPTION 'nhplug own-number positive listing proof absent'; END IF;
       ELSIF OLD.state = 'uncertain' AND NEW.state = 'accepted' AND NEW.ack_source = 'operator' THEN
@@ -468,6 +470,8 @@ def upgrade() -> None:
           OR NEW.evidence->>'listing_order_id' IS DISTINCT FROM OLD.ack_evidence_order_id
           OR NEW.evidence->>'listing_complete' IS DISTINCT FROM 'true'
           OR NEW.evidence->>'listing_scope' IS DISTINCT FROM 'all'
+          OR NEW.evidence->>'account_ref' IS DISTINCT FROM OLD.account_ref::text
+          OR NEW.evidence->>'order_date' IS DISTINCT FROM OLD.order_date::text
           OR NEW.evidence->>'attributes_match' IS DISTINCT FROM 'false') THEN
           RAISE EXCEPTION 'nhplug uncertain anomaly positive listing proof absent';
         END IF;

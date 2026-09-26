@@ -23,8 +23,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
+from uuid import UUID
 
 ROW_BLOCK_KEY: Final[str] = "Output_1"
 
@@ -301,6 +303,8 @@ class OrderListing:
     reason: str | None = None
     pages: int = 0
     response_codes: tuple[str | None, ...] = ()
+    account_ref: UUID | None = None
+    order_date: date | None = None
 
     def find(self, order_no: int) -> OrderRow | None:
         for row in self.rows:

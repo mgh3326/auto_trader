@@ -103,6 +103,14 @@ def _row_dict(row: Any) -> dict[str, Any]:
     return result
 
 
+def _assert_listing_scope(listing: OrderListing, row: Any) -> None:
+    if (
+        listing.account_ref != UUID(str(row["account_ref"]))
+        or listing.order_date != row["order_date"]
+    ):
+        raise LedgerConflict("listing_scope_mismatch")
+
+
 class NHPlugMockLedger:
     def __init__(self, engine: AsyncEngine) -> None:
         self.engine = engine
@@ -489,6 +497,7 @@ class NHPlugMockLedger:
                 or current["ack_evidence_order_id"] is None
             ):
                 return False
+            _assert_listing_scope(listing, current)
             intent = _intent_from_row(_row_dict(current))
             target = listing.find(int(current["ack_evidence_order_id"]))
             if target is None:
@@ -511,6 +520,8 @@ class NHPlugMockLedger:
                 "listing_order_id": current["ack_evidence_order_id"],
                 "listing_complete": True,
                 "listing_scope": "all",
+                "account_ref": str(current["account_ref"]),
+                "order_date": str(current["order_date"]),
                 "attributes_match": attributes_match,
                 "listing_row": target.evidence(),
             }
@@ -579,6 +590,7 @@ class NHPlugMockLedger:
             )
             if row is None or row["state"] != "uncertain":
                 return ()
+            _assert_listing_scope(all_listing, row)
             if row["ack_evidence_order_id"] is not None:
                 return ()
             intent = _intent_from_row(_row_dict(row))
@@ -690,6 +702,7 @@ class NHPlugMockLedger:
                 or row["lease_closed_at"] is None
             ):
                 return False
+            _assert_listing_scope(all_listing, row)
             own = row["ack_evidence_order_id"]
             if own is not None and all_listing.find(int(own)) is not None:
                 raise LedgerConflict("own_number_present")
@@ -755,6 +768,10 @@ class NHPlugMockLedger:
                 "partially_filled",
             }:
                 raise LedgerConflict("not_reconcilable")
+            _assert_listing_scope(all_listing, row)
+            _assert_listing_scope(open_listing, row)
+            if filled_listing is not None:
+                _assert_listing_scope(filled_listing, row)
             number = int(row["broker_order_id"])
             own = all_listing.find(number)
             intent = _intent_from_row(_row_dict(row))
@@ -774,8 +791,15 @@ class NHPlugMockLedger:
                     or not _matches_intent(own, intent)
                 ):
                     reason = "cancel_ack_or_original_missing"
+                elif derive_order_status(original) != "cancelled":
+                    reason = "original_quantities_inconsistent"
                 elif original.cancelled_qty is None or original.cancelled_qty <= 0:
                     reason = "cancel_quantity_not_reflected"
+                elif (
+                    intent.amend_scope == "partial"
+                    and original.cancelled_qty != intent.quantity
+                ):
+                    reason = "cancel_quantity_drift"
                 elif (
                     open_listing.find(original.order_no) is not None
                     or original.open_qty != 0

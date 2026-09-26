@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -117,6 +118,10 @@ def listing(number: int, *, symbol: str = "005930", price: int = 67400) -> Order
         pages=1,
         response_codes=("00000",),
     )
+
+
+def scoped(value: OrderListing, row: dict[str, Any]) -> OrderListing:
+    return replace(value, account_ref=row["account_ref"], order_date=row["order_date"])
 
 
 class FakeBroker:
@@ -231,7 +236,9 @@ async def test_minimal_path_fake_send_uncertain_then_own_number_reconcile(
         and middle["ack_evidence_order_id"] == "123"
     )
     assert middle["dispatcher_done_at"] is not None
-    assert await ledger.verify_own_number(row["id"], listing(123), readiness=READY)
+    assert await ledger.verify_own_number(
+        row["id"], scoped(listing(123), row), readiness=READY
+    )
     final = await ledger.get(row["id"])
     assert (
         final is not None
@@ -482,7 +489,9 @@ async def test_order_number_unique_per_account_and_trading_day(
         assert await ledger.record_final(
             claim, DispatchOutcome("uncertain", "no_proof_code", "999")
         )
-        assert await ledger.verify_own_number(row["id"], listing(999), readiness=READY)
+        assert await ledger.verify_own_number(
+            row["id"], scoped(listing(999), row), readiness=READY
+        )
         assert (await ledger.get(row["id"]))["broker_order_id"] == "999"
 
 
@@ -513,20 +522,69 @@ async def test_same_account_order_number_collides_only_within_trading_day(
 
     today = date.today()
     first = await accept("005930", today, "number_scope_first_1234")
-    assert await ledger.verify_own_number(first["id"], listing(999), readiness=READY)
+    assert await ledger.verify_own_number(
+        first["id"], scoped(listing(999), first), readiness=READY
+    )
     same_day = await accept("000660", today, "number_scope_second_123")
     with pytest.raises(IntegrityError):
         await ledger.verify_own_number(
-            same_day["id"], listing(999, symbol="000660"), readiness=READY
+            same_day["id"],
+            scoped(listing(999, symbol="000660"), same_day),
+            readiness=READY,
         )
     assert (await ledger.get(same_day["id"]))["state"] == "uncertain"
     next_day = await accept(
         "035420", today + timedelta(days=1), "number_scope_third_1234"
     )
     assert await ledger.verify_own_number(
-        next_day["id"], listing(999, symbol="035420"), readiness=READY
+        next_day["id"], scoped(listing(999, symbol="035420"), next_day), readiness=READY
     )
     assert (await ledger.get(next_day["id"]))["state"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_listing_account_and_day_are_required_for_own_number_proof(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, ref = await intent_row(seeded_engine, "listing-scope")
+    claim = await ledger.claim(
+        row["id"], row["client_request_id"], row["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(claim)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", "771")
+    )
+    correct = scoped(listing(771), row)
+    for wrong in (
+        listing(771),
+        replace(correct, account_ref=uuid4()),
+        replace(correct, order_date=row["order_date"] + timedelta(days=1)),
+    ):
+        with pytest.raises(LedgerConflict, match="listing_scope_mismatch"):
+            await ledger.verify_own_number(row["id"], wrong, readiness=READY)
+        assert (await ledger.get(row["id"]))["state"] == "uncertain"
+
+    forged = {
+        "listing_order_id": "771",
+        "listing_complete": True,
+        "listing_scope": "all",
+        "account_ref": str(uuid4()),
+        "order_date": str(row["order_date"]),
+        "attributes_match": True,
+    }
+    with pytest.raises(Exception, match="own-number positive listing proof absent"):
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE review.nhplug_mock_order_ledger SET state='accepted', "
+                    "broker_order_id='771', ack_order_id='771', ack_source='own_evidence', "
+                    "reconcile_state='verified', evidence=CAST(:evidence AS jsonb), "
+                    "last_reconcile=CAST(:evidence AS jsonb) WHERE id=:id"
+                ),
+                {"id": row["id"], "evidence": json.dumps(forged)},
+            )
+    assert (await ledger.get(row["id"]))["state"] == "uncertain"
+    assert await ledger.verify_own_number(row["id"], correct, readiness=READY)
 
 
 @pytest.mark.asyncio
@@ -1489,7 +1547,9 @@ async def test_filled_requires_independent_filled_scope_and_exact_quantities(
     assert await ledger.record_final(
         claim, DispatchOutcome("uncertain", "no_proof_code", "223")
     )
-    assert await ledger.verify_own_number(row["id"], listing(223), readiness=READY)
+    assert await ledger.verify_own_number(
+        row["id"], scoped(listing(223), row), readiness=READY
+    )
     all_row = OrderRow(
         223,
         "005930",
@@ -1500,8 +1560,17 @@ async def test_filled_requires_independent_filled_scope_and_exact_quantities(
         order_price=Decimal(67400),
         avg_fill_price=Decimal(67400),
     )
-    all_orders = OrderListing("all", True, (all_row,), pages=1)
-    open_orders = OrderListing("open", True, (), pages=1)
+    all_orders = scoped(OrderListing("all", True, (all_row,), pages=1), row)
+    open_orders = scoped(OrderListing("open", True, (), pages=1), row)
+    with pytest.raises(LedgerConflict, match="listing_scope_mismatch"):
+        await ledger.reconcile_bound(
+            row["id"],
+            replace(all_orders, account_ref=uuid4()),
+            open_orders,
+            None,
+            readiness=READY,
+        )
+    assert (await ledger.get(row["id"]))["state"] == "accepted"
     assert (
         await ledger.reconcile_bound(
             row["id"], all_orders, open_orders, None, readiness=READY
@@ -1509,8 +1578,8 @@ async def test_filled_requires_independent_filled_scope_and_exact_quantities(
         == "unknown"
     )
     assert (await ledger.get(row["id"]))["state"] == "accepted"
-    mismatched_fill = OrderListing(
-        "filled", True, (OrderRow(223, "005930", 1, 0, 1),), pages=1
+    mismatched_fill = scoped(
+        OrderListing("filled", True, (OrderRow(223, "005930", 1, 0, 1),), pages=1), row
     )
     assert (
         await ledger.reconcile_bound(
@@ -1518,7 +1587,7 @@ async def test_filled_requires_independent_filled_scope_and_exact_quantities(
         )
         == "unknown"
     )
-    filled_orders = OrderListing("filled", True, (all_row,), pages=1)
+    filled_orders = scoped(OrderListing("filled", True, (all_row,), pages=1), row)
     assert (
         await ledger.reconcile_bound(
             row["id"], all_orders, open_orders, filled_orders, readiness=READY
@@ -1543,12 +1612,14 @@ async def test_cancelled_requires_own_cancel_ack(seeded_engine: AsyncEngine) -> 
     assert await ledger.record_final(
         claim, DispatchOutcome("uncertain", "no_proof_code", "323")
     )
-    assert await ledger.verify_own_number(row["id"], listing(323), readiness=READY)
+    assert await ledger.verify_own_number(
+        row["id"], scoped(listing(323), row), readiness=READY
+    )
     root = OrderRow(
         323, "005930", 1, 0, 0, side="buy", order_price=Decimal(67400), cancelled_qty=1
     )
-    all_orders = OrderListing("all", True, (root,), pages=1)
-    open_orders = OrderListing("open", True, (), pages=1)
+    all_orders = scoped(OrderListing("all", True, (root,), pages=1), row)
+    open_orders = scoped(OrderListing("open", True, (), pages=1), row)
     assert (
         await ledger.reconcile_bound(
             row["id"], all_orders, open_orders, None, readiness=READY
@@ -1577,9 +1648,25 @@ async def test_cancelled_requires_own_cancel_ack(seeded_engine: AsyncEngine) -> 
     )
     assert await ledger.verify_own_number(
         cancel["id"],
-        OrderListing("all", True, (cancel_broker,), pages=1),
+        scoped(OrderListing("all", True, (cancel_broker,), pages=1), cancel),
         readiness=READY,
     )
+    malformed = scoped(
+        OrderListing(
+            "all",
+            True,
+            (replace(root, order_qty=2),),
+            pages=1,
+        ),
+        row,
+    )
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], malformed, open_orders, None, readiness=READY
+        )
+        == "unknown"
+    )
+    assert (await ledger.get(row["id"]))["state"] == "accepted"
     assert (
         await ledger.reconcile_bound(
             row["id"], all_orders, open_orders, None, readiness=READY
@@ -1587,6 +1674,81 @@ async def test_cancelled_requires_own_cancel_ack(seeded_engine: AsyncEngine) -> 
         == "cancelled"
     )
     assert (await ledger.get(row["id"]))["state"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_modified_requires_own_ack_and_positive_successor_row(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, ref = await intent_row(seeded_engine, "modify-evidence")
+    claim = await ledger.claim(
+        row["id"], row["client_request_id"], row["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(claim)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", "623")
+    )
+    assert await ledger.verify_own_number(
+        row["id"], scoped(listing(623), row), readiness=READY
+    )
+    root = OrderRow(
+        623, "005930", 1, 0, 0, side="buy", order_price=Decimal(67400), modified_qty=1
+    )
+    all_without_successor = scoped(OrderListing("all", True, (root,), pages=1), row)
+    open_orders = scoped(OrderListing("open", True, (), pages=1), row)
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], all_without_successor, open_orders, None, readiness=READY
+        )
+        == "unknown"
+    )
+    modify_intent = OrderIntent("modify", "buy", "005930", 1, 67000, "623", "full", ref)
+    modify, should_claim = await ledger.create_intent(
+        modify_intent,
+        readiness=READY,
+        idempotency_key="modify_evidence_123456",
+        order_date=date.today(),
+    )
+    assert should_claim
+    modify_claim = await ledger.claim(
+        modify["id"], modify["client_request_id"], modify["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(modify_claim)
+    assert await ledger.record_final(
+        modify_claim, DispatchOutcome("uncertain", "no_proof_code", "624")
+    )
+    successor = OrderRow(
+        624,
+        "005930",
+        1,
+        0,
+        1,
+        side="buy",
+        original_order_no=623,
+        order_price=Decimal(67000),
+    )
+    all_orders = scoped(OrderListing("all", True, (root, successor), pages=1), row)
+    assert await ledger.verify_own_number(modify["id"], all_orders, readiness=READY)
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], all_without_successor, open_orders, None, readiness=READY
+        )
+        == "unknown"
+    )
+    open_successor = scoped(OrderListing("open", True, (successor,), pages=1), row)
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], all_orders, open_successor, None, readiness=READY
+        )
+        == "modified"
+    )
+    final = await ledger.get(row["id"])
+    assert (
+        final is not None
+        and final["state"] == "modified"
+        and final["broker_order_id"] == "623"
+    )
+    assert final["successor_order_id"] == "624"
 
 
 async def authorize_candidate(
@@ -1639,7 +1801,7 @@ async def test_candidate_only_then_operator_bind_after_dispatcher_done(
     )
     candidates = await ledger.record_uncertain_candidates(
         row["id"],
-        OrderListing("all", True, (candidate,), pages=1),
+        scoped(OrderListing("all", True, (candidate,), pages=1), row),
         readiness=READY,
     )
     assert candidates == ("423",)
@@ -1706,7 +1868,7 @@ async def test_live_dispatcher_blocks_candidate_and_own_ack_wins(
     )
     assert await ledger.record_uncertain_candidates(
         row["id"],
-        OrderListing("all", True, (candidate,), pages=1),
+        scoped(OrderListing("all", True, (candidate,), pages=1), row),
         readiness=READY,
     ) == ("523",)
     auth = await authorize_candidate(seeded_engine, recovered, "523")
@@ -1721,7 +1883,9 @@ async def test_live_dispatcher_blocks_candidate_and_own_ack_wins(
     assert after_late["dispatcher_done_at"] is not None
     with pytest.raises(Exception, match="candidate bind mismatch"):
         await ledger.bind_operator_candidate(row["id"], "523", auth, readiness=READY)
-    assert await ledger.verify_own_number(row["id"], listing(524), readiness=READY)
+    assert await ledger.verify_own_number(
+        row["id"], scoped(listing(524), row), readiness=READY
+    )
     assert (await ledger.get(row["id"]))["broker_order_id"] == "524"
 
 
@@ -1742,7 +1906,7 @@ async def test_abandon_needs_host_death_listing_and_operator_authorization(
     )
     pending = await ledger.get(row["id"])
     assert pending is not None and pending["state"] == "uncertain"
-    empty = OrderListing("all", True, (), pages=1)
+    empty = scoped(OrderListing("all", True, (), pages=1), row)
     monkeypatch.setattr(
         lease_host, "process_gone_on_lease_host", lambda identity: False
     )
@@ -1753,7 +1917,7 @@ async def test_abandon_needs_host_death_listing_and_operator_authorization(
     monkeypatch.setattr(lease_host, "process_gone_on_lease_host", lambda identity: True)
     with pytest.raises(LedgerConflict, match="own_number_present"):
         await ledger.abandon_with_authorization(
-            row["id"], uuid4(), listing(123), readiness=READY
+            row["id"], uuid4(), scoped(listing(123), row), readiness=READY
         )
     auth = uuid4()
     async with seeded_engine.begin() as conn:
@@ -1782,7 +1946,7 @@ async def test_abandon_needs_host_death_listing_and_operator_authorization(
         )
     with pytest.raises(LedgerConflict, match="own_number_present"):
         await ledger.abandon_with_authorization(
-            row["id"], auth, listing(123), readiness=READY
+            row["id"], auth, scoped(listing(123), row), readiness=READY
         )
     assert await ledger.abandon_with_authorization(
         row["id"], auth, empty, readiness=READY

@@ -11,6 +11,8 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -214,7 +216,13 @@ class NHPlugMockClient:
         )
 
     async def fetch_order_listing(
-        self, *, order_date: str, scope: str, max_pages: int = 100
+        self,
+        *,
+        ledger: NHPlugMockLedger,
+        keys: dict[int, KeyMaterial],
+        order_date: str,
+        scope: str,
+        max_pages: int = 100,
     ) -> OrderListing:
         """Fetch every page of one mock account order scope for manual reconciliation."""
 
@@ -222,6 +230,10 @@ class NHPlugMockClient:
         Stage2Readiness.from_env().assert_ready()
         if type(order_date) is not str or re.fullmatch(r"[0-9]{8}", order_date) is None:
             raise NHPlugMockConfigurationError("order_date must be YYYYMMDD")
+        try:
+            trading_day = datetime.strptime(order_date, "%Y%m%d").date()
+        except ValueError as exc:
+            raise NHPlugMockConfigurationError("order_date is invalid") from exc
         scope_code = {"all": "0", "filled": "1", "open": "2"}.get(scope)
         if (
             scope_code is None
@@ -231,8 +243,13 @@ class NHPlugMockClient:
         ):
             raise NHPlugMockConfigurationError("invalid listing scope or page limit")
         allowlist = self._require_account_allowlist()
+        if not self._order_allowlist_verified:
+            raise NHPlugMockConfigurationError(
+                "fresh mock account verification required"
+            )
         act_no = allowlist.configured_account_no
         allowlist.assert_allowed(act_no)
+        account_ref = await resolve_account_ref(ledger.engine, act_no, keys)
         pages = []
         continuation: str | None = None
         seen: set[str] = set()
@@ -299,8 +316,12 @@ class NHPlugMockClient:
             if continuation is None or continuation in seen:
                 break
             seen.add(continuation)
-        return assemble_listing(
-            scope, pages, truncated=bool(pages and pages[-1].has_next)
+        return replace(
+            assemble_listing(
+                scope, pages, truncated=bool(pages and pages[-1].has_next)
+            ),
+            account_ref=account_ref,
+            order_date=trading_day,
         )
 
     async def dispatch_claimed_order(
