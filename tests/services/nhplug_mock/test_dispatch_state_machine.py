@@ -31,6 +31,7 @@ from app.services.brokers.nhplug.client import NHPlugMockClient
 from app.services.brokers.nhplug.errors import (
     NHPlugMockAccountRejected,
     NHPlugMockConfigurationError,
+    NHPlugMockDisabled,
 )
 from app.services.brokers.nhplug.order_evidence import OrderListing, OrderRow
 from app.services.nhplug_mock.account_identity import (
@@ -1379,6 +1380,51 @@ async def test_stage2_confirmation_blocks_t1_and_dispatch_before_claim(
             )
         ).scalar_one()
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_nonexact_mock_gate_blocks_t1_before_order_write(
+    seeded_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = await account(seeded_engine, "gate-exact-t1")
+    ledger = NHPlugMockLedger(seeded_engine)
+    intent = OrderIntent("place", "buy", "005930", 1, 67400, None, None, ref)
+    monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "TRUE")
+
+    with pytest.raises(Stage2Disabled, match="mock_gate_disabled"):
+        await ledger.create_intent(
+            intent,
+            readiness=READY,
+            idempotency_key="gate_exact_t1_1234567890",
+            order_date=date.today(),
+        )
+    async with seeded_engine.connect() as conn:
+        count = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM review.nhplug_mock_order_ledger WHERE account_ref=:ref"
+                ),
+                {"ref": ref},
+            )
+        ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_nonexact_mock_gate_blocks_dispatch_before_fake_send(
+    seeded_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, row, ref = await intent_row(seeded_engine, "gate-exact-send")
+    client = await client_for("gate-exact-send")
+    broker = FakeBroker()
+    monkeypatch.setattr(client_module, "GatedTransport", broker.transport)
+    monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "TRUE")
+
+    with pytest.raises(NHPlugMockDisabled, match="NHPLUG_MOCK_ENABLED=true"):
+        await dispatch_row(client, ledger, row, ref)
+    assert broker.requests == []
+    current = await ledger.get(row["id"])
+    assert current["state"] == "intent"
 
 
 @pytest.mark.asyncio

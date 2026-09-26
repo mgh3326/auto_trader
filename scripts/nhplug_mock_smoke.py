@@ -157,7 +157,7 @@ async def run(args: argparse.Namespace) -> int:
 
     try:
         credentials = _load_minimal_env(Path(args.env_file))
-        if os.getenv("NHPLUG_MOCK_ENABLED", "").strip().lower() != "true":
+        if os.getenv("NHPLUG_MOCK_ENABLED") != "true":
             raise NHPlugMockDisabled(
                 "NHPLUG_MOCK_ENABLED=true is required; mock reads default to disabled"
             )

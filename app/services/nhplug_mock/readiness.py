@@ -33,6 +33,8 @@ class Stage2Readiness:
     def assert_ready(self) -> None:
         if type(self) is not Stage2Readiness:
             raise Stage2Disabled("invalid_readiness")
+        if os.getenv("NHPLUG_MOCK_ENABLED") != "true":
+            raise Stage2Disabled("mock_gate_disabled")
         for name in ("key", "time", "db", "host", "vendor"):
             if getattr(self, f"{name}_confirmed") is not True:
                 raise Stage2Disabled(f"{name}_unconfirmed")
