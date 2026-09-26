@@ -95,8 +95,8 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="get_trade_journal",
         description=(
-            "Query trade journals. MUST call before any sell recommendation to check "
-            "thesis, hold period, target/stop prices. "
+            "Query trade journals. Use before a sell recommendation to check the "
+            "thesis, hold period, and target/stop prices the position was opened with. "
             "Returns active journals by default. "
             "Each entry includes hold_remaining_days and hold_expired. "
             "account_type defaults to None (all); set 'live'|'paper'|'mock' to filter. "

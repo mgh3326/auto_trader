@@ -7,7 +7,7 @@
 | Task | Location | Notes |
 |------|----------|-------|
 | Shared Sentry initialization | `app/monitoring/sentry.py` | Integration flags, sensitive-data scrubbing, health-log suppression |
-| Trade notification delivery | `app/monitoring/trade_notifier.py` | Singleton notifier, message formatting, Telegram send flow |
+| Trade notification delivery | `app/monitoring/trade_notifier/` | Singleton notifier, message formatting, Telegram send flow |
 | yfinance request span tracing | `app/monitoring/yfinance_sentry.py` | HTTP client span wrapper and metadata tagging |
 | API startup monitoring wiring | `app/main.py` | Calls `init_sentry` and notifier setup/cleanup |
 | Worker startup monitoring wiring | `app/core/taskiq_broker.py` | Worker Sentry init and notifier configuration |
