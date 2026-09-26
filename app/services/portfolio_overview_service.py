@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.normalizers import to_float as _to_float
-from app.core.symbol import to_db_symbol
+from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.mcp_server.tooling.portfolio_helpers import min_order_krw
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
@@ -151,6 +151,12 @@ class PortfolioOverviewService:
                 if item["market_type"] != _MARKET_CRYPTO
                 or item["symbol"] in active_upbit_markets
             ]
+
+        # Keep raw broker sellable evidence separate from #728's tactical
+        # display headroom. This is a read model only; order paths repeat their
+        # own fresh broker preflight and never use these cached components as
+        # send authority.
+        await self._apply_protection_projection(components)
 
         try:
             usd_krw_rate = await usd_krw_rate_task
@@ -758,6 +764,19 @@ class PortfolioOverviewService:
                     "evaluation": item["evaluation"],
                     "profit_loss": item["profit_loss"],
                     "profit_rate": item["profit_rate"],
+                    "broker_sellable_quantity": item.get("broker_sellable_quantity"),
+                    "sellable_observed": bool(item.get("sellable_observed")),
+                    "protected_quantity": _to_float(
+                        item.get("protected_quantity"),
+                        default=0.0,
+                    ),
+                    "tactical_sellable_quantity": item.get(
+                        "tactical_sellable_quantity"
+                    ),
+                    "protection_state": item.get(
+                        "protection_state",
+                        "unprotected",
+                    ),
                 }
             )
         return by_key
@@ -868,6 +887,7 @@ class PortfolioOverviewService:
                 market_type=row["market_type"],
                 usd_krw=usd_krw,
             )
+            protection = self._aggregate_protection_components(components_list)
             is_dust = False
             if row["market_type"] == _MARKET_CRYPTO:
                 evaluation = float(totals["evaluation"] or 0)
@@ -888,6 +908,7 @@ class PortfolioOverviewService:
                     "evaluation_krw": totals["evaluation_krw"],
                     "profit_loss_krw": totals["profit_loss_krw"],
                     "dust": is_dust,
+                    **protection,
                     "components": components_list,
                 }
             )
@@ -899,6 +920,119 @@ class PortfolioOverviewService:
                 item["symbol"],
             ),
         )
+
+    @staticmethod
+    def _aggregate_protection_components(
+        components: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Aggregate raw S and tactical read evidence conservatively."""
+
+        live = [item for item in components if item.get("source") == "live"]
+        if not live:
+            return {
+                "broker_sellable_quantity": 0.0,
+                "sellable_observed": False,
+                "protected_quantity": 0.0,
+                "tactical_sellable_quantity": 0.0,
+                "protection_state": "unprotected",
+            }
+        raw_values = [item.get("broker_sellable_quantity") for item in live]
+        tactical_values = [item.get("tactical_sellable_quantity") for item in live]
+        states = {str(item.get("protection_state", "unprotected")) for item in live}
+        for state in ("shortfall", "unverified", "encroached", "covered"):
+            if state in states:
+                aggregate_state = state
+                break
+        else:
+            aggregate_state = "unprotected"
+        return {
+            "broker_sellable_quantity": (
+                None
+                if any(value is None for value in raw_values)
+                else sum(_to_float(value) for value in raw_values)
+            ),
+            "sellable_observed": all(
+                bool(item.get("sellable_observed")) for item in live
+            ),
+            "protected_quantity": sum(
+                _to_float(item.get("protected_quantity"), default=0.0) for item in live
+            ),
+            "tactical_sellable_quantity": (
+                None
+                if any(value is None for value in tactical_values)
+                else sum(_to_float(value) for value in tactical_values)
+            ),
+            "protection_state": aggregate_state,
+        }
+
+    @staticmethod
+    def _protection_identity_component(
+        component: dict[str, Any],
+    ) -> tuple[str, str, str] | None:
+        if component.get("source") != "live":
+            return None
+        market_type = str(component.get("market_type", "")).upper()
+        broker = str(component.get("broker", "")).lower()
+        symbol = str(component.get("symbol", ""))
+        if broker == "kis" and market_type in {_MARKET_KR, _MARKET_US}:
+            return "kis_live", market_type.lower(), to_db_symbol(symbol)
+        if broker == "upbit" and market_type == _MARKET_CRYPTO:
+            return "upbit_live", "crypto", to_upbit_symbol(symbol)
+        return None
+
+    async def _apply_protection_projection(
+        self,
+        components: list[dict[str, Any]],
+    ) -> None:
+        """Attach non-authoritative #728 display fields to account components."""
+
+        from app.services.protected_quantity_service import apply_position_protection
+
+        async def project(component: dict[str, Any]) -> None:
+            identity = self._protection_identity_component(component)
+            if identity is None:
+                component.setdefault("protected_quantity", 0.0)
+                component.setdefault("tactical_sellable_quantity", None)
+                component.setdefault("protection_state", "unprotected")
+                return
+            scope, market, symbol = identity
+            raw_sellable = component.get("broker_sellable_quantity")
+            try:
+                output = await apply_position_protection(
+                    {
+                        "quantity": component.get("quantity"),
+                        "sellable_quantity": raw_sellable,
+                        "broker_sellable_quantity": raw_sellable,
+                        "sellable_observed": bool(component.get("sellable_observed")),
+                    },
+                    account_scope=scope,
+                    market=market,
+                    symbol=symbol,
+                )
+            except Exception:
+                # A display projection must not replace an unavailable broker
+                # fact with zero. Live send guards stay fail-closed elsewhere.
+                component["protected_quantity"] = 0.0
+                component["tactical_sellable_quantity"] = None
+                component["protection_state"] = "unverified"
+                return
+            component["broker_sellable_quantity"] = output.get(
+                "broker_sellable_quantity",
+                raw_sellable,
+            )
+            component["protected_quantity"] = _to_float(
+                output.get("protected_quantity"),
+                default=0.0,
+            )
+            component["tactical_sellable_quantity"] = output.get(
+                "tactical_sellable_quantity"
+            )
+            component["protection_state"] = output.get(
+                "protection_state",
+                "unverified",
+            )
+
+        await asyncio.gather(*(project(component) for component in components))
 
     def _pick_current_price(self, components: list[dict[str, Any]]) -> float | None:
         live_component = next(

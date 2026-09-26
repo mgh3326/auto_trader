@@ -37,6 +37,8 @@
 // /invest/settings/manual-cash — Operator-entered parking balances
 //                             (user_settings.manual_cash, the deployment-cap
 //                             parking term). Admin-only save (#671).
+// /invest/settings/protected-positions — Operator-recorded long-term floors
+//                             with an explicit confirmation preview (#728).
 // ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
@@ -66,6 +68,7 @@ import {
 } from "./pages/LossCutApprovalRoute";
 import { FundingRoute } from "./pages/FundingRoute";
 import { ManualCashSettingsRoute } from "./pages/ManualCashSettingsRoute";
+import { ProtectedPositionsSettingsRoute } from "./pages/ProtectedPositionsSettingsRoute";
 import { ApprovalDetailRoute, ApprovalsListRoute } from "./pages/ApprovalsRoute";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
@@ -133,6 +136,7 @@ export const router = createBrowserRouter(
     { path: "/funding", element: <FundingRoute /> },
     { path: "/funding/:advisoryId", element: <FundingRoute /> },
     { path: "/settings/manual-cash", element: <ManualCashSettingsRoute /> },
+    { path: "/settings/protected-positions", element: <ProtectedPositionsSettingsRoute /> },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*
     // siblings. The retired legacy components were removed after the

@@ -4,18 +4,36 @@ Merged Portfolio Service
 KIS 보유 종목과 수동 등록 종목을 통합하여 포트폴리오 제공
 """
 
+import asyncio
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.manual_holdings_service import ManualHoldingsService
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_broker_sellable(value: Any) -> float | None:
+    """Represent absent or malformed broker sellability as unavailable."""
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed
+
 
 KIS_FIELD_CONFIG = {
     MarketType.KR: {
@@ -48,6 +66,10 @@ class HoldingInfo:
     broker: str
     quantity: float
     avg_price: float
+    broker_sellable_quantity: float | None = None
+    protected_quantity: float = 0.0
+    tactical_sellable_quantity: float | None = None
+    protection_state: str = "unprotected"
 
 
 @dataclass
@@ -92,6 +114,12 @@ class MergedHolding:
     evaluation: float = 0.0
     profit_loss: float = 0.0
     profit_rate: float = 0.0
+    # Raw broker S and the #728 display projection are distinct. Neither is
+    # usable as a send authority; live adapters refresh broker evidence.
+    broker_sellable_quantity: float | None = None
+    protected_quantity: float = 0.0
+    tactical_sellable_quantity: float | None = None
+    protection_state: str = "unprotected"
     # AI 분석 정보
     analysis_id: int | None = None
     last_analysis_at: str | None = None
@@ -108,7 +136,15 @@ class MergedHolding:
             "name": self.name,
             "market_type": self.market_type,
             "holdings": [
-                {"broker": h.broker, "quantity": h.quantity, "avg_price": h.avg_price}
+                {
+                    "broker": h.broker,
+                    "quantity": h.quantity,
+                    "avg_price": h.avg_price,
+                    "broker_sellable_quantity": h.broker_sellable_quantity,
+                    "protected_quantity": h.protected_quantity,
+                    "tactical_sellable_quantity": h.tactical_sellable_quantity,
+                    "protection_state": h.protection_state,
+                }
                 for h in self.holdings
             ],
             "kis_quantity": self.kis_quantity,
@@ -123,6 +159,10 @@ class MergedHolding:
             "evaluation": self.evaluation,
             "profit_loss": self.profit_loss,
             "profit_rate": self.profit_rate,
+            "broker_sellable_quantity": self.broker_sellable_quantity,
+            "protected_quantity": self.protected_quantity,
+            "tactical_sellable_quantity": self.tactical_sellable_quantity,
+            "protection_state": self.protection_state,
             "analysis_id": self.analysis_id,
             "last_analysis_at": self.last_analysis_at,
             "last_analysis_decision": self.last_analysis_decision,
@@ -220,6 +260,7 @@ class MergedPortfolioService:
             evaluation = mapping["evaluation"](stock)
             profit_loss = mapping["profit_loss"](stock)
             profit_rate = mapping["profit_rate"](stock)
+            broker_sellable = _optional_broker_sellable(stock.get("ord_psbl_qty"))
 
             holding = self._get_or_create_holding(
                 merged, ticker, name, market_type, current_price
@@ -230,8 +271,14 @@ class MergedPortfolioService:
             holding.evaluation = evaluation
             holding.profit_loss = profit_loss
             holding.profit_rate = profit_rate
+            holding.broker_sellable_quantity = broker_sellable
             holding.holdings.append(
-                HoldingInfo(broker="kis", quantity=qty, avg_price=avg_price)
+                HoldingInfo(
+                    broker="kis",
+                    quantity=qty,
+                    avg_price=avg_price,
+                    broker_sellable_quantity=broker_sellable,
+                )
             )
 
     async def _apply_manual_holdings(
@@ -373,6 +420,62 @@ class MergedPortfolioService:
                 merged_holding.settings_price_levels = settings.buy_price_levels
                 merged_holding.settings_active = settings.is_active
 
+    async def _apply_protection_projection(
+        self,
+        merged: dict[str, MergedHolding],
+    ) -> None:
+        """Attach read-only #728 fields without changing legacy sell behavior."""
+
+        from app.services.protected_quantity_service import apply_position_protection
+
+        async def project(holding: MergedHolding) -> None:
+            if holding.kis_quantity <= 0:
+                return
+            market = holding.market_type.lower()
+            if market not in {"kr", "us"}:
+                return
+            raw_sellable = holding.broker_sellable_quantity
+            try:
+                output = await apply_position_protection(
+                    {
+                        "quantity": holding.kis_quantity,
+                        "sellable_quantity": raw_sellable,
+                        "broker_sellable_quantity": raw_sellable,
+                        "sellable_observed": raw_sellable is not None,
+                    },
+                    account_scope="kis_live",
+                    market=market,
+                    symbol=to_db_symbol(holding.ticker),
+                )
+            except Exception:
+                holding.protection_state = "unverified"
+                holding.tactical_sellable_quantity = None
+                return
+            holding.broker_sellable_quantity = output.get(
+                "broker_sellable_quantity",
+                raw_sellable,
+            )
+            holding.protected_quantity = float(output.get("protected_quantity", 0.0))
+            holding.tactical_sellable_quantity = output.get(
+                "tactical_sellable_quantity"
+            )
+            holding.protection_state = output.get(
+                "protection_state",
+                "unverified",
+            )
+            for component in holding.holdings:
+                if component.broker == "kis":
+                    component.broker_sellable_quantity = (
+                        holding.broker_sellable_quantity
+                    )
+                    component.protected_quantity = holding.protected_quantity
+                    component.tactical_sellable_quantity = (
+                        holding.tactical_sellable_quantity
+                    )
+                    component.protection_state = holding.protection_state
+
+        await asyncio.gather(*(project(holding) for holding in merged.values()))
+
     async def _build_merged_portfolio(
         self,
         user_id: int,
@@ -395,6 +498,7 @@ class MergedPortfolioService:
 
         usd_krw_rate = await get_usd_krw_rate()
         self._finalize_holdings(merged, usd_krw=usd_krw_rate)
+        await self._apply_protection_projection(merged)
         await self._attach_analysis_and_settings(merged)
 
         return list(merged.values())

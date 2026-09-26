@@ -126,6 +126,7 @@ Generated at: `2026-09-03T08:21:34.712163+00:00`
 | get_forecasts | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.forecast_tools | no | A | 840 | 1010 | 2 | 1 | 0 |
 | get_fx_rate | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.fundamentals_handlers | no | A | 168 | 169 | 3 | 0 | 0 |
 | get_holdings | account_read, analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper, watch_repricing | app.mcp_server.tooling.portfolio_holdings | no | A | 43448 | 42732 | 38 | 5 | 0 |
+| get_protected_positions | account_read, analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, tradingcodex_execution, us-paper | app.mcp_server.tooling.protected_positions | no | B | 0 | 0 | 0 | 1 | 1 |
 | get_holdings_news | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | A | 3352 | 3345 | 1 | 0 | 0 |
 | get_indicators | analysis_readonly, crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper, watch_repricing | app.mcp_server.tooling.market_data_quotes | no | A | 736 | 638 | 9 | 0 | 0 |
 | get_insider_transactions | crypto, db-paper, default, hermes-paper-kis, kiwoom, kiwoom_kr, us-paper | app.mcp_server.tooling.fundamentals_handlers | no | D | 0 | 0 | 0 | 0 | 0 |

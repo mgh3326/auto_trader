@@ -539,6 +539,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_forecasts",
         "get_fx_rate",
         "get_holdings",
+        "get_protected_positions",
         "get_holdings_news",
         "get_indicators",
         "get_insider_transactions",

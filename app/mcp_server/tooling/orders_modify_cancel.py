@@ -39,7 +39,9 @@ from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_cod
 from app.services.kr_symbol_universe_service import get_kr_security_type
 from app.services.protected_quantity_service import (
     ProtectionStateUnavailable,
+    attach_live_sell_lease_cleanup_warning,
     prepare_live_sell_lease,
+    release_live_sell_lease_preserving_outcome,
 )
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
@@ -1853,9 +1855,18 @@ async def _modify_kis_domestic(
                 krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
                 is_mock=is_mock,
             )
-        finally:
+        except BaseException:
             if protection_lease is not None:
-                await protection_lease.release()
+                await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="kis_kr_amend",
+                    broker_response_observed=False,
+                )
+            raise
+        release_warning = await release_live_sell_lease_preserving_outcome(
+            protection_lease,
+            operation="kis_kr_amend",
+        )
         changes = {
             "price": {"from": original_price, "to": final_price}
             if final_price != original_price
@@ -1866,18 +1877,21 @@ async def _modify_kis_domestic(
         }
 
         if result.get("odno"):
-            return {
-                "success": True,
-                "status": "modified",
-                "order_id": order_id,
-                "new_order_id": result["odno"],
-                "symbol": normalized_symbol,
-                "market": _normalize_market_type_to_external(market_type),
-                "changes": changes,
-                "method": "api_modify",
-                "dry_run": dry_run,
-                "message": "Order modified via KIS API",
-            }
+            return attach_live_sell_lease_cleanup_warning(
+                {
+                    "success": True,
+                    "status": "modified",
+                    "order_id": order_id,
+                    "new_order_id": result["odno"],
+                    "symbol": normalized_symbol,
+                    "market": _normalize_market_type_to_external(market_type),
+                    "changes": changes,
+                    "method": "api_modify",
+                    "dry_run": dry_run,
+                    "message": "Order modified via KIS API",
+                },
+                release_warning,
+            )
         return {
             "success": False,
             "status": "failed",
@@ -2026,9 +2040,18 @@ async def _modify_kis_overseas(
                 final_quantity,
                 final_price,
             )
-        finally:
+        except BaseException:
             if protection_lease is not None:
-                await protection_lease.release()
+                await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="kis_us_amend",
+                    broker_response_observed=False,
+                )
+            raise
+        release_warning = await release_live_sell_lease_preserving_outcome(
+            protection_lease,
+            operation="kis_us_amend",
+        )
         changes = {
             "price": {"from": original_price, "to": final_price}
             if final_price != original_price
@@ -2039,19 +2062,22 @@ async def _modify_kis_overseas(
         }
 
         if result.get("odno"):
-            return {
-                "success": True,
-                "status": "modified",
-                "order_id": order_id,
-                "new_order_id": result["odno"],
-                "symbol": normalized_symbol,
-                "market": _normalize_market_type_to_external(market_type),
-                "exchange": exchange_code,
-                "changes": changes,
-                "method": "api_modify",
-                "dry_run": dry_run,
-                "message": "Order modified via KIS API",
-            }
+            return attach_live_sell_lease_cleanup_warning(
+                {
+                    "success": True,
+                    "status": "modified",
+                    "order_id": order_id,
+                    "new_order_id": result["odno"],
+                    "symbol": normalized_symbol,
+                    "market": _normalize_market_type_to_external(market_type),
+                    "exchange": exchange_code,
+                    "changes": changes,
+                    "method": "api_modify",
+                    "dry_run": dry_run,
+                    "message": "Order modified via KIS API",
+                },
+                release_warning,
+            )
         return {
             "success": False,
             "status": "failed",

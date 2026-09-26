@@ -1,4 +1,10 @@
-import type { AccountPanelResponse, AccountSource, CashAmounts, GroupedHolding } from "../types/invest";
+import type {
+  AccountPanelResponse,
+  AccountSource,
+  CashAmounts,
+  GroupedHolding,
+  ProtectionState,
+} from "../types/invest";
 import { accountSourceMeta } from "./AccountSourceMeta";
 
 export type AccountFilterKey = "all" | AccountSource;
@@ -60,6 +66,11 @@ export function scopeGroupedToSource(
     let sellableQuantity = 0;
     let pendingSellQuantity = 0;
     let referenceQuantity = 0;
+    let protectedQuantity = 0;
+    let brokerSellableQuantity: number | null = 0;
+    let tacticalSellableQuantity: number | null = 0;
+    let sellableObserved = true;
+    const protectionStates = new Set<string>();
     let qtyForAvg = 0;
     let costSum = 0;
 
@@ -69,6 +80,13 @@ export function scopeGroupedToSource(
       sellableQuantity += b.sellableQuantity ?? 0;
       pendingSellQuantity += b.pendingSellQuantity ?? 0;
       referenceQuantity += b.referenceQuantity ?? (b.manualOnly ? b.quantity : 0);
+      protectedQuantity += b.protectedQuantity ?? 0;
+      if (b.brokerSellableQuantity == null) brokerSellableQuantity = null;
+      else if (brokerSellableQuantity != null) brokerSellableQuantity += b.brokerSellableQuantity;
+      if (b.tacticalSellableQuantity == null) tacticalSellableQuantity = null;
+      else if (tacticalSellableQuantity != null) tacticalSellableQuantity += b.tacticalSellableQuantity;
+      sellableObserved = sellableObserved && Boolean(b.sellableObserved);
+      protectionStates.add(b.protectionState ?? "unprotected");
       if (b.costBasis != null) costBasis = (costBasis ?? 0) + b.costBasis;
       if (b.valueNative != null) valueNative = (valueNative ?? 0) + b.valueNative;
       if (b.valueKrw != null) valueKrw = (valueKrw ?? 0) + b.valueKrw;
@@ -84,12 +102,20 @@ export function scopeGroupedToSource(
       valueNative != null && costBasis != null && costBasis !== 0
         ? (valueNative - costBasis) / costBasis
         : null;
+    const protectionState: ProtectionState = (["shortfall", "unverified", "encroached", "covered"] as ProtectionState[]).find(
+      (state) => protectionStates.has(state),
+    ) ?? "unprotected";
 
     out.push({
       ...g,
       totalQuantity,
       tradeableQuantity,
       sellableQuantity,
+      sellableObserved,
+      brokerSellableQuantity,
+      protectedQuantity,
+      tacticalSellableQuantity,
+      protectionState,
       pendingSellQuantity,
       referenceQuantity,
       averageCost,

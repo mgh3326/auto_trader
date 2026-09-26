@@ -77,8 +77,10 @@ from app.services.order_proposals.cash_funding_exemption import (
 )
 from app.services.protected_quantity_service import (
     ProtectionStateUnavailable,
+    attach_live_sell_lease_cleanup_warning,
     prepare_live_sell_lease,
     protection_mode_for_scope,
+    release_live_sell_lease_preserving_outcome,
 )
 from app.services.toss_sellable_cache import get_shared_sellable_cache
 
@@ -1898,6 +1900,7 @@ async def _toss_place_order_impl(
         pre_send_hook = _toss_pre_send_hook.get()
 
         res = None
+        response: dict[str, Any] | None = None
         try:
             if pre_send_hook is None:
                 res = await client.place_order(payload)
@@ -1954,7 +1957,7 @@ async def _toss_place_order_impl(
                 ),
                 rung=(proposal_context.rung if proposal_context is not None else rung),
             )
-            return {
+            response = {
                 "success": True,
                 **base_response,
                 "mutation_sent": True,
@@ -1970,6 +1973,7 @@ async def _toss_place_order_impl(
                     "run toss_reconcile_orders to book confirmed fills."
                 ),
             }
+            return response
         except PreSendFreshnessError:
             raise
         except Exception as exc:
@@ -1981,10 +1985,22 @@ async def _toss_place_order_impl(
                 err["order_id"] = res.order_id
                 if res.client_order_id is not None:
                     err["client_order_id"] = res.client_order_id
-            return err
+            response = err
+            return response
         finally:
             if protection_lease is not None:
-                await protection_lease.release()
+                release_warning = await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="toss_place_order",
+                    broker_response_observed=res is not None,
+                )
+                if response is not None:
+                    response.update(
+                        attach_live_sell_lease_cleanup_warning(
+                            response,
+                            release_warning,
+                        )
+                    )
 
     async with _client_context() as client:
         return await execute_order(client)
@@ -2284,6 +2300,7 @@ async def toss_modify_order(
             }
 
         res = None
+        response: dict[str, Any] | None = None
         try:
             res = await client.modify_order(order_id, payload)
             if side == "sell":
@@ -2308,7 +2325,7 @@ async def toss_modify_order(
                     "payload": _json_safe(payload),
                 },
             )
-            return {
+            response = {
                 "success": True,
                 **base_response,
                 **tick_meta,
@@ -2319,6 +2336,7 @@ async def toss_modify_order(
                 **sellable_evidence,
                 **ledger,
             }
+            return response
         except Exception as exc:
             err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
             # ROB-545 Major — keep the order ids on the error path so the live
@@ -2327,10 +2345,22 @@ async def toss_modify_order(
             if res is not None:
                 err["replacement_order_id"] = res.order_id
                 err.setdefault("order_id", res.order_id)
-            return err
+            response = err
+            return response
         finally:
             if protection_lease is not None:
-                await protection_lease.release()
+                release_warning = await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="toss_modify_order",
+                    broker_response_observed=res is not None,
+                )
+                if response is not None:
+                    response.update(
+                        attach_live_sell_lease_cleanup_warning(
+                            response,
+                            release_warning,
+                        )
+                    )
 
     async with _client_context() as client:
         return await execute_modify(client)
