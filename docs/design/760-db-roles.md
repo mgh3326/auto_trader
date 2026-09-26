@@ -367,6 +367,31 @@ protected tables and functions to `nhplug_security_owner`, then make
 `nhplug_operator` a non-owner DML group. This document does not perform that
 transition.
 
+### ROB-1340 Kiwoom authority-evidence exception
+
+Two other `review` tables are not ordinary generic-DML objects:
+`review.kiwoom_authority_attempts` and
+`review.kiwoom_authority_cessation_receipts`. The runtime readiness projection requires
+the effective application role to have exactly `SELECT = true`, `INSERT = true`, and
+`UPDATE = DELETE = TRUNCATE = false` on both
+[app/services/brokers/kiwoom/coordination_store.py:L141-L158, L279-L421]. The store
+commits append-only start and terminal evidence then independently reads it back
+[app/services/brokers/kiwoom/coordination_store.py:L455-L503, L534-L628]. The migration
+creates immutable update/delete/truncate triggers
+[alembic/versions/20260902_rob1340_authority_cessation.py:L191-L220], but trigger
+rejection is defense in depth rather than a reason to grant excess capability.
+
+| Object | `at_app` | `nhplug_operator` | Owner / reason |
+| --- | --- | --- | --- |
+| `review.kiwoom_authority_attempts` | `SELECT, INSERT` only | no grant by default | `at_migration_owner`; append-only authority-attempt evidence. |
+| `review.kiwoom_authority_cessation_receipts` | `SELECT, INSERT` only | no grant by default | `at_migration_owner`; append-only terminal-receipt evidence. |
+
+Each identity-backed `id` sequence needs the same catalog-discovered `USAGE`-only
+application treatment as the #711 ledger sequence. Do not grant `SELECT` or `UPDATE`
+on either sequence. The owner batch must also revoke `PUBLIC` direct execute on
+`review.reject_kiwoom_authority_evidence_mutation()`; no application or operator path
+needs to invoke that trigger function directly.
+
 `nhplug_security_owner` also needs the narrowly scoped `SELECT, UPDATE` privilege on
 `review.nhplug_mock_order_ledger` after ownership is separated: the SECURITY DEFINER
 guard locks/reads ledger rows while enforcing transitions. That grant is for the
@@ -381,6 +406,11 @@ The intended #711 ownership map is also explicit: `at_migration_owner` owns the
 `nhplug_auth_immutable`. The reviewed owner batch should use named `ALTER ... OWNER TO`
 statements for only those objects after confirming their current owners; it must not
 use a blanket ownership transfer or change extension-owned members.
+
+`at_migration_owner` also owns both ROB-1340 authority-evidence tables and
+`review.reject_kiwoom_authority_evidence_mutation()`. They remain ordinary
+non-login-owner objects, not #711 operator-control objects, but their ACL matrix is
+protected and must not be folded into a broad review-schema grant.
 
 ### Proposed #711 schema/table/function ACL batch
 
@@ -403,7 +433,9 @@ REVOKE ALL PRIVILEGES ON TABLE
   review.nhplug_mock_operator_authorization,
   review.nhplug_mock_account_ref,
   review.nhplug_mock_account_binding,
-  review.nhplug_mock_order_ledger
+  review.nhplug_mock_order_ledger,
+  review.kiwoom_authority_attempts,
+  review.kiwoom_authority_cessation_receipts
 FROM PUBLIC;
 
 REVOKE ALL PRIVILEGES ON TABLE
@@ -413,7 +445,9 @@ REVOKE ALL PRIVILEGES ON TABLE
   review.nhplug_mock_operator_authorization,
   review.nhplug_mock_account_ref,
   review.nhplug_mock_account_binding,
-  review.nhplug_mock_order_ledger
+  review.nhplug_mock_order_ledger,
+  review.kiwoom_authority_attempts,
+  review.kiwoom_authority_cessation_receipts
 FROM at_app, nhplug_operator;
 
 GRANT SELECT ON TABLE review.nhplug_mock_key_version,
@@ -433,6 +467,9 @@ GRANT SELECT, INSERT, UPDATE ON TABLE review.nhplug_mock_order_ledger TO at_app;
 GRANT SELECT ON TABLE review.nhplug_mock_order_ledger TO nhplug_operator;
 GRANT SELECT, UPDATE ON TABLE review.nhplug_mock_order_ledger
 TO nhplug_security_owner;
+GRANT SELECT, INSERT ON TABLE review.kiwoom_authority_attempts,
+  review.kiwoom_authority_cessation_receipts
+TO at_app;
 
 REVOKE ALL ON FUNCTION
   review.nhplug_body_field(text,text),
@@ -441,7 +478,8 @@ REVOKE ALL ON FUNCTION
   review.nhplug_order_guard(),
   review.nhplug_append_only(),
   review.nhplug_key_registry_insert(),
-  review.nhplug_auth_immutable()
+  review.nhplug_auth_immutable(),
+  review.reject_kiwoom_authority_evidence_mutation()
 FROM PUBLIC, at_app, nhplug_operator;
 ```
 
@@ -465,19 +503,26 @@ distinguishes these three sequence permissions; validate `USAGE` against the act
 identity-insert path. See the PostgreSQL [GRANT reference](https://www.postgresql.org/docs/current/sql-grant.html)
 and [sequence-function reference](https://www.postgresql.org/docs/current/functions-sequence.html).
 
-The #711 ledger sequence must be discovered rather than assumed from a conventional
-name:
+The #711 ledger and the two ROB-1340 append-only-evidence sequences must be discovered
+rather than assumed from conventional names:
 
 ```sql
 BEGIN READ ONLY;
-SELECT pg_get_serial_sequence('review.nhplug_mock_order_ledger', 'id') AS ledger_sequence;
+SELECT pg_get_serial_sequence('review.nhplug_mock_order_ledger', 'id') AS ledger_sequence,
+       pg_get_serial_sequence('review.kiwoom_authority_attempts', 'id')
+         AS authority_attempts_sequence,
+       pg_get_serial_sequence('review.kiwoom_authority_cessation_receipts', 'id')
+         AS authority_receipts_sequence;
 ROLLBACK;
 ```
 
-After the operator reviews that output, the intended grant is `USAGE` on precisely
-that sequence to `at_app`, with no `SELECT` or `UPDATE` for `at_app`. Repeat the same
-catalog-driven process for normal application sequences. Never grant a blanket
-`ALL SEQUENCES IN SCHEMA` privilege before comparing it with the object manifest.
+After the operator reviews that output, grant `USAGE` on precisely each returned
+sequence to `at_app`, and revoke `SELECT, UPDATE` from `at_app` and
+`nhplug_operator` on those same names. This gives the authority-evidence insert path
+the exact sequence capability needed by its generated primary key, while keeping the
+runtime's required no-UPDATE contract intact. Repeat the same catalog-driven process
+for normal application sequences. Never grant a blanket `ALL SEQUENCES IN SCHEMA`
+privilege before comparing it with the object manifest.
 
 ### Functions, SECURITY DEFINER, and RLS
 
@@ -715,11 +760,15 @@ FROM pg_default_acl AS d
 LEFT JOIN pg_namespace AS n ON n.oid = d.defaclnamespace
 ORDER BY creator, schema_name, d.defaclobjtype;
 
--- #711 objects, their actual identity sequence, function owners/config/ACLs,
--- and any PUBLIC execute inherited from a NULL/default proacl.
+-- #711 and ROB-1340 protected objects, their identity sequences,
+-- function owners/config/ACLs, and any PUBLIC execute inherited from a NULL/default proacl.
 SELECT to_regclass('review.nhplug_mock_order_ledger') AS ledger,
        to_regclass('review.nhplug_mock_operator_authorization') AS authorization,
        pg_get_serial_sequence('review.nhplug_mock_order_ledger', 'id') AS ledger_sequence,
+       to_regclass('review.kiwoom_authority_attempts') AS authority_attempts,
+       to_regclass('review.kiwoom_authority_cessation_receipts') AS authority_receipts,
+       pg_get_serial_sequence('review.kiwoom_authority_attempts', 'id') AS authority_attempts_sequence,
+       pg_get_serial_sequence('review.kiwoom_authority_cessation_receipts', 'id') AS authority_receipts_sequence,
        to_regprocedure('review.nhplug_consume_authorization(uuid,text,bigint,uuid,date,text,text,bigint)') AS consume_function,
        to_regprocedure('review.nhplug_order_guard()') AS guard_function;
 SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS identity_args,
@@ -730,7 +779,9 @@ FROM pg_proc AS p
 JOIN pg_namespace AS n ON n.oid = p.pronamespace
 LEFT JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
   ON true
-WHERE n.nspname = 'review' AND left(p.proname, 7) = 'nhplug_'
+WHERE n.nspname = 'review'
+  AND (left(p.proname, 7) = 'nhplug_'
+       OR p.proname = 'reject_kiwoom_authority_evidence_mutation')
 ORDER BY p.proname, identity_args, grantee, acl.privilege_type;
 SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
 FROM pg_policies
@@ -876,15 +927,27 @@ JOIN pg_roles AS parent ON parent.oid = m.roleid
 WHERE parent.rolname IN ('at_app', 'at_migration_owner', 'nhplug_operator')
 ORDER BY parent.rolname, r.rolname;
 
--- Object-level checks for the sensitive #711 split.
+SELECT n.nspname,
+       has_schema_privilege('at_app', n.oid, 'USAGE') AS app_usage,
+       has_schema_privilege('at_app', n.oid, 'CREATE') AS app_create,
+       has_schema_privilege('nhplug_operator', n.oid, 'USAGE') AS operator_usage,
+       has_schema_privilege('nhplug_operator', n.oid, 'CREATE') AS operator_create
+FROM pg_namespace AS n
+WHERE n.nspname IN ('public', 'review', 'research')
+ORDER BY n.nspname;
+
+-- Object-level checks for the sensitive #711 and ROB-1340 splits.
 SELECT c.oid::regclass AS object_name, pg_get_userbyid(c.relowner) AS owner,
        has_table_privilege('at_app', c.oid, 'SELECT') AS app_select,
        has_table_privilege('at_app', c.oid, 'INSERT') AS app_insert,
        has_table_privilege('at_app', c.oid, 'UPDATE') AS app_update,
        has_table_privilege('at_app', c.oid, 'DELETE') AS app_delete,
+       has_table_privilege('at_app', c.oid, 'TRUNCATE') AS app_truncate,
+       has_table_privilege('nhplug_operator', c.oid, 'SELECT') AS operator_select,
        has_table_privilege('nhplug_operator', c.oid, 'INSERT') AS operator_insert,
        has_table_privilege('nhplug_operator', c.oid, 'UPDATE') AS operator_update,
-       has_table_privilege('nhplug_operator', c.oid, 'DELETE') AS operator_delete
+       has_table_privilege('nhplug_operator', c.oid, 'DELETE') AS operator_delete,
+       has_table_privilege('nhplug_operator', c.oid, 'TRUNCATE') AS operator_truncate
 FROM pg_class AS c
 WHERE c.oid IN (
   'review.nhplug_mock_key_version'::regclass,
@@ -893,7 +956,9 @@ WHERE c.oid IN (
   'review.nhplug_mock_operator_authorization'::regclass,
   'review.nhplug_mock_account_ref'::regclass,
   'review.nhplug_mock_account_binding'::regclass,
-  'review.nhplug_mock_order_ledger'::regclass
+  'review.nhplug_mock_order_ledger'::regclass,
+  'review.kiwoom_authority_attempts'::regclass,
+  'review.kiwoom_authority_cessation_receipts'::regclass
 )
 ORDER BY object_name;
 
@@ -902,7 +967,12 @@ SELECT s.oid::regclass AS sequence_name,
        has_sequence_privilege('at_app', s.oid, 'SELECT') AS app_select,
        has_sequence_privilege('at_app', s.oid, 'UPDATE') AS app_update
 FROM pg_class AS s
-WHERE s.oid = pg_get_serial_sequence('review.nhplug_mock_order_ledger', 'id')::regclass;
+WHERE s.oid IN (
+  pg_get_serial_sequence('review.nhplug_mock_order_ledger', 'id')::regclass,
+  pg_get_serial_sequence('review.kiwoom_authority_attempts', 'id')::regclass,
+  pg_get_serial_sequence('review.kiwoom_authority_cessation_receipts', 'id')::regclass
+)
+ORDER BY sequence_name;
 
 SELECT p.oid::regprocedure AS function_name,
        pg_get_userbyid(p.proowner) AS owner, p.prosecdef, p.proconfig,
@@ -915,7 +985,8 @@ SELECT p.oid::regprocedure AS function_name,
 FROM pg_proc AS p
 WHERE p.oid IN (
   'review.nhplug_consume_authorization(uuid,text,bigint,uuid,date,text,text,bigint)'::regprocedure,
-  'review.nhplug_order_guard()'::regprocedure
+  'review.nhplug_order_guard()'::regprocedure,
+  'review.reject_kiwoom_authority_evidence_mutation()'::regprocedure
 )
 ORDER BY function_name;
 
@@ -968,6 +1039,7 @@ that can continue the old access pattern.
 | Missing normal-table grant | API, task, MCP, monitor, or manual CLI fails after a new connection is opened. | Build/review an object-level DML and sequence manifest from source plus production catalog; stage it before revocation. |
 | Existing ownership | An owner bypasses ordinary ACL intent; historical migration runners may own arbitrary objects. | Inventory owners; prohibit blanket reassignment; move named objects only. |
 | #711 historical ACLs | The migration grants reads to `current_user` and makes `nhplug_operator` an owner/update role. | Resolve the compatibility blocker with a forward approved transition before activating the split. |
+| ROB-1340 authority evidence | Runtime readiness demands SELECT/INSERT and rejects any effective UPDATE/DELETE/TRUNCATE on two append-only evidence tables. | Keep the explicit exception and identity-sequence grants outside a broad review-schema manifest. |
 | Extension objects | Reassignment or missing function/extension privilege can break migrations or generated defaults. | Inspect `pg_extension` and extension-member dependencies; retain DBA ownership. |
 | PUBLIC function execute | #711 security-definer functions may be publicly executable by default. | Inspect `proacl`/effective ACL, then revoke and selectively grant in an approved transactional change. |
 | RLS / SECURITY DEFINER | Table owner and definer behavior can bypass intended policies; a path change can introduce function hijack risk. | Inspect policies, `prosecdef`, `proconfig`, owner attributes, and schema-create ACLs; do not change function body/search path casually. |
@@ -1014,9 +1086,10 @@ be run against the intended production database by an approved operator.
    ROLLBACK;
    ```
 
-3. **Has #711 been applied, and what are its live owners/ACLs/function properties?**
-   Default: treat it as not-safe-to-cut-over until the explicit forward ACL/ownership
-   transition is approved, whether it is already applied or pending.
+3. **Have #711 and ROB-1340 been applied, and what are their live owners/ACLs/function
+   properties?** Default: treat either protected surface as not-safe-to-cut-over until
+   its explicit ACL/ownership transition is approved, whether it is already applied or
+   pending.
 
    ```sql
    BEGIN READ ONLY;
@@ -1026,14 +1099,17 @@ be run against the intended production database by an approved operator.
    WHERE c.oid IN (
      to_regclass('review.nhplug_mock_key_version'),
      to_regclass('review.nhplug_mock_operator_authorization'),
-     to_regclass('review.nhplug_mock_order_ledger')
+     to_regclass('review.nhplug_mock_order_ledger'),
+     to_regclass('review.kiwoom_authority_attempts'),
+     to_regclass('review.kiwoom_authority_cessation_receipts')
    )
    ORDER BY c.oid::regclass::text;
    SELECT p.oid::regprocedure, pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig, p.proacl
    FROM pg_proc AS p
    WHERE p.oid IN (
      to_regprocedure('review.nhplug_consume_authorization(uuid,text,bigint,uuid,date,text,text,bigint)'),
-     to_regprocedure('review.nhplug_order_guard()')
+     to_regprocedure('review.nhplug_order_guard()'),
+     to_regprocedure('review.reject_kiwoom_authority_evidence_mutation()')
    )
    ORDER BY p.oid::regprocedure::text;
    ROLLBACK;
