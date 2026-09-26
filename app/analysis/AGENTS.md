@@ -8,7 +8,7 @@
 |------|----------|-------|
 | Analysis response contracts | `app/analysis/models.py` | Structured analysis schema (`PriceAnalysis` / `PriceRange`) |
 | Technical indicator enrichment | `app/analysis/indicators.py` | Feature enrichment for analysis input |
-| Job entrypoints using analyzers | `app/jobs/analyze.py`, `app/jobs/kis_trading.py` | Main runtime callsites for analyzer flows |
+| Pipeline entrypoint | `app/analysis/pipeline.py` | Stage orchestration and stock-info persistence |
 | Persistence coupling | `app/services/stock_info_service.py` | Stock-info persistence bridge |
 
 ## CONVENTIONS

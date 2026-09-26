@@ -18,7 +18,7 @@
 - Python 3.13+
 - UV (의존성 관리)
 - PostgreSQL (데이터베이스)
-- Redis (모델 제한 관리 및 캐싱)
+- Redis (캐싱·토큰 관리·TaskIQ 브로커)
 
 ### 초기 설정
 ```bash
@@ -124,8 +124,7 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 
 ### KIS 분봉 API 문제
 - **증상:** `time_unit` 파라미터가 제대로 작동하지 않아 모든 시간대에서 동일한 데이터 반환
-- **해결:** 현재 KIS API 자체의 문제로 향후 업데이트 대기 중
-- **대응:** 분봉 수집 실패 시에도 일봉 데이터로 분석 진행
+- **대응:** 1분봉을 받아 로컬에서 집계한다(`app/services/brokers/kis/_base_market_data.py::_aggregate_minute_candles_frame`).
 
 ### Redis 연결 실패
 - Docker Compose로 Redis 실행: `docker compose up -d redis`

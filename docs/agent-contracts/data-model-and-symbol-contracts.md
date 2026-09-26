@@ -122,8 +122,6 @@ DB Tables:
 - Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
 
-## 웹 대시보드
-
 ### Trading Policy YAML 단일 소스 (ROB-646)
 
 `config/trading_policy.yaml` = 매매 판단 임계값/decision rule 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
