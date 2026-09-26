@@ -205,7 +205,7 @@ the environment files named by those templates.
 | --- | --- | --- |
 | Application job timers | `job-crypto-invest-insight-snapshots`, `job-crypto-invest-screener-snapshots`, `job-kr-fundamentals-snapshots`, `job-kr-investor-flow-snapshots`, `job-toss-symbol-master-sync`, `job-toss-warnings-sync`, `job-us-fundamentals-snapshots`, `job-us-invest-screener-snapshots`, and `job-us-market-valuation-snapshots` invoke named application modules through `at-job.sh`. The wrapper supplies its runtime environment to the deployed image; example modules import the shared factory. | Treat every installed unit and paired existing timer as an `at_app` login rotation/drain target. The change record must name its module, login, credential input, timer cadence, and final successful new-login run. Do not add, re-register, or retime a timer in this Phase 1 design. |
 | Fill-event handoff timer | `fill-event-handoff.service` starts `scripts.fill_event_handoff --once`, which opens `AsyncSessionLocal`. | Treat an installed unit as an `at_app` consumer and rotate/drain it with the application credentials. The handoff-specific input is not a substitute for the application database identity. |
-| PostgreSQL backup timer | `at-pg-backup.service` invokes `pg-backup.sh`, whose `pg_dump` and `pg_dumpall --globals-only` calls use a distinct libpq identity. | Keep it outside `at_app`; inventory its cluster/database scope and least privilege separately. Do not silently reuse an application or migration login for the backup client. Its daily cadence is part of the post-rotation observation window. |
+| PostgreSQL backup timer | `at-pg-backup.service` invokes `pg-backup.sh`, whose `pg_dump` and `pg_dumpall --globals-only` calls use a distinct libpq identity. | Keep it outside `at_app`; inventory its cluster/database scope and least privilege separately. Do not silently reuse an application or migration login for the backup client. Its daily cadence is only one input to a window that must include a firing of every installed timer. |
 | Resident lane-kickoff timers | The eleven tracked `job-kickoff-{0905,1130,1430,crypto-0220,crypto-0820,crypto-1420,crypto-2020,nxt-eve,nxt-open,nxt-prep,us-2235}` units pass the API and lane-event inputs to `scripts.lane_event_kickoff`. Its static import path is lane-event emission, not the application database factory. | Record every installed unit and paired timer as a credential-input consumer, then confirm its deployed command remains non-PostgreSQL before excluding it from the `at_app` client matrix. Remove a legacy application credential from its inherited application input even when the current source does not open a database connection. |
 | B0X lane-event templates | The six `job-kickoff-b0x-{harvest,nudge-crypto,nudge-kr,nudge-us,table-kr,table-us}` templates and `b0x-lane-event-consumer.service.in` are explicitly non-operational until installer rendering. Their tracked commands invoke lane-event helpers with a template environment input; the static entrypoints have no shared or direct PostgreSQL factory import. | Do not treat a template as installed. If an approved operator finds one rendered, add its exact command, credential-input name, database classification, and timer cadence to the signed inventory before legacy-credential retirement. Do not activate or retime it for this design. |
 | MCP watchdog timer | `at-mcp-watchdog.service` runs an external `/root/at-run` watchdog path rather than a repository Python module. Repository source cannot establish whether that external path opens a database or restarts a credential-bearing MCP process. | Include every installed watchdog unit in the deployment/restart inventory and classify its actual process and credential inputs before completion; do not presume that a timer without a repository database import is harmless. |
@@ -221,6 +221,12 @@ shared-factory consumers rather than new connection factories; for example,
 `app.jobs.toss_warnings` and `app.jobs.market_valuation_snapshots` import
 `AsyncSessionLocal` [app/jobs/toss_warnings.py:L1-L25,
 app/jobs/market_valuation_snapshots.py:L1-L20, L100-L127].
+
+Timer cadence is a completion constraint, not just inventory metadata. The tracked
+US-fundamentals timer fires on Sunday [ops/ncp/systemd/job-us-fundamentals-snapshots.timer:L4-L10];
+if it and the weekday-only application timers are installed, the post-rotation
+observation period must be at least seven calendar days and span a weekend. A daily
+backup firing alone is not sufficient evidence for that set of installed units.
 
 The remaining tracked service families are included above rather than silently
 discarded: a representative resident kickoff unit supplies its two environment inputs
@@ -793,7 +799,10 @@ an explicit production facts record. No step below may be executed from this PR.
    scheduler, and websocket units [scripts/deploy-ncp-pull.sh:L130-L170]; confirm the
    live inventory rather than treating the template as fact. Include every installed
    unit from [Tracked NCP systemd consumers and backup client](#tracked-ncp-systemd-consumers-and-backup-client),
-   its credential-input name, its login, and its longest existing timer cadence.
+   its credential-input name, its login, and each existing timer's `OnCalendar` or
+   interval. Derive an observation period that includes at least one firing of every
+   installed unit; do not substitute a daily backup cadence for a longer application
+   timer.
 4. Stop new manual production CLIs and identify queued/background work that must not
    execute under an old role during the transition. Coordinate an existing host-unit
    pause/drain with the responsible operator where needed; do not add, register, or
@@ -828,8 +837,8 @@ WHERE rolname IN ('at_migration_owner', 'at_app', 'nhplug_security_owner',
 ORDER BY rolname;
 -- Record every login/superuser candidate before selecting the legacy credential
 -- in the operator change record. Do not include password data.
-SELECT rolname, rolsuper, rolcanlogin, rolinherit, rolcreaterole,
-       rolbypassrls, rolreplication
+SELECT oid, rolname, rolsuper, rolcanlogin, rolinherit, rolcreaterole,
+       rolbypassrls, rolreplication, oid = 10 AS is_bootstrap_role
 FROM pg_roles
 WHERE rolcanlogin OR rolsuper
 ORDER BY rolname;
@@ -1046,8 +1055,11 @@ drains may overlap new traffic. Plan a maintenance window or explicitly accepted
 overlap. Do not revoke old privileges until catalog evidence shows the old login has no
 active sessions and the replacement process has passed its approved checks. Do not
 retire the old credential until it is absent from every inventoried application input
-and repeated client evidence covers at least the longest installed host timer (daily
-when the tracked backup timer is installed).
+and repeated evidence covers at least one firing of every installed host timer. Derive
+the period from the recorded live `OnCalendar`/interval values: if the tracked Sunday
+US-fundamentals timer and weekday-only application timers are installed, it is at
+least seven calendar days and spans a weekend; a daily backup firing alone is
+insufficient.
 
 ### 4. Exact post-deploy verification SQL
 
@@ -1196,9 +1208,11 @@ GROUP BY usename, application_name, client_addr, state
 ORDER BY usename, application_name, client_addr, state;
 
 -- Replace only this literal with the legacy application login recorded during
--- preflight. Its final state must be NOLOGIN and NOSUPERUSER before completion.
-SELECT rolname, rolcanlogin, rolsuper, rolinherit, rolcreaterole,
-       rolbypassrls, rolreplication
+-- preflight. Interpret it using the retirement mechanism recorded in section 4a:
+-- an app-only login must end NOLOGIN/NOSUPERUSER; a shared backup/DBA/bootstrap
+-- login is not altered here and instead needs the credential/input evidence below.
+SELECT oid, rolname, rolcanlogin, rolsuper, rolinherit, rolcreaterole,
+       rolbypassrls, rolreplication, oid = 10 AS is_bootstrap_role
 FROM pg_roles
 WHERE rolname = '<legacy_application_login_from_change_record>';
 
@@ -1206,10 +1220,14 @@ ROLLBACK;
 ```
 
 Treat any unexpected `app_execute`, `public_execute`, operator update/delete, owner,
-role attribute, old client, or absent required application privilege as a failed
-cutover. The static check is not enough: run the #711 authorization-consumption path
-only in an approved staging clone with rollback-safe data, because a production insert
-can advance a sequence even if its surrounding transaction rolls back.
+old client, or absent required application privilege as a failed cutover. Treat a role
+attribute as failed only when it conflicts with the retirement mechanism recorded in
+section 4a: an app-only legacy login must be `NOLOGIN NOSUPERUSER`, while a shared
+backup/DBA/bootstrap login must have evidence that its old application credential was
+removed from every application input without altering that shared role. The static
+check is not enough: run the #711 authorization-consumption path only in an approved
+staging clone with rollback-safe data, because a production insert can advance a
+sequence even if its surrounding transaction rolls back.
 
 For each deployed login, compare the effective protected-object result with the
 required #711/ROB-1340 matrix above, and run the same effective-login query for one
@@ -1221,18 +1239,28 @@ login fails verification even if a group-role ACL check succeeds.
 ### 4a. Legacy-credential retirement evidence
 
 After every installed application consumer has successfully run under its new login,
-remove the legacy application credential from every inventoried application input and
-prevent fresh authentication. The approved operator chooses the safe mechanism from
-the preflight record: rotate/revoke the credential in the secret system, or set the
-specific legacy login `NOLOGIN NOSUPERUSER` if it is not shared by another approved
-consumer. Never apply a blanket role change, and do not retire a Timescale owner or
-backup identity under this step.
+classify the legacy login from the preflight/change record before changing it. An
+**app-only** legacy login, after its Timescale ownership is clear, must have its
+credential removed from every application input and end `NOLOGIN NOSUPERUSER`. A login
+shared with the backup client, a DBA workflow, the bootstrap superuser, or another
+approved consumer is **not** altered by this application cutover: never apply
+`NOLOGIN`/`NOSUPERUSER` to it here. Instead, remove its old credential from every
+application input, rotate/revoke that old credential through the approved secret
+workflow, and record that the old credential no longer authenticates. If backup still
+uses the shared login, either establish a separate backup identity through the
+approved backup/DR procedure before app completion, or deliver the rotated credential
+only to the backup input. Never apply a blanket role change, alter the bootstrap
+superuser, or retire a Timescale owner or backup identity under this step.
 
 This is deliberately later than new-service deploy and earlier than completion. Repeat
-the active-client query after the credential-retirement action for an observation
-window at least as long as the longest installed host timer (daily when the backup
-timer is present). The cutover is incomplete if a timer can still launch an old-login
-process, even if one point-in-time session query was empty.
+the active-client query and record each unit result for an observation period that
+includes at least one firing of every installed host timer. Use the recorded live
+`OnCalendar`/interval values; the tracked Sunday timer makes that at least seven days
+when installed, and the interval must also span the weekend for the weekday-only
+timers. After credential retirement, a failed old-credential attempt may appear only
+in the unit result or approved server authentication-failure evidence rather than as a
+`pg_stat_activity` row. The cutover is incomplete if a timer can still launch an
+old-login process, even if one point-in-time session query was empty.
 
 ### 5. Drain and rollback
 
@@ -1257,8 +1285,9 @@ rollback and backup restore solve different problems.
 An old superuser session is not made safe by revoking ordinary grants: it still bypasses
 ordinary ACLs. Identify and end/re-authenticate old privileged sessions under a DBA
 maintenance procedure before declaring the cutover complete. The role split is complete
-only after the legacy credential is retired, the observation window is clean, and no
-old application/migration/superuser session can continue the old access pattern.
+only after the app-only legacy login is retired or the shared-login credential/input
+evidence is complete, the all-timer observation window is clean, and no old
+application/migration/superuser session can continue the old access pattern.
 
 ## Risks requiring explicit assessment
 
@@ -1271,8 +1300,8 @@ old application/migration/superuser session can continue the old access pattern.
 | Extension objects | Reassignment or missing function/extension privilege can break migrations or generated defaults. | Inspect `pg_extension` and extension-member dependencies; retain DBA ownership. For TimescaleDB, inventory hypertables, continuous aggregates, chunks, materialization tables, and policy-job owners before any owner or credential transition. |
 | PUBLIC function execute | #711 security-definer functions may be publicly executable by default. | Inspect `proacl`/effective ACL, then revoke and selectively grant in an approved transactional change. |
 | RLS / SECURITY DEFINER | Table owner and definer behavior can bypass intended policies; a path change can introduce function hijack risk. | Inspect policies, `prosecdef`, `proconfig`, owner attributes, and schema-create ACLs; do not change function body/search path casually. |
-| Background work | Old TaskIQ worker/scheduler, monitors, MCP requests, pools, host timers, and fill handoff can retain or later re-open an old credential. | Inventory all active clients and installed units, rotate/drain every unit, retire the old credential, then observe for at least the longest timer cadence. |
-| Legacy privileged credential | A superuser or bypassing login ignores ordinary ACL revocation and can return after a timer fires. | Remove it from every application input, retire it with an approved credential/role action, and prove no old sessions during the observation window. |
+| Background work | Old TaskIQ worker/scheduler, monitors, MCP requests, pools, host timers, and fill handoff can retain or later re-open an old credential. | Inventory all active clients and installed units, rotate/drain every unit, retire the application credential, then observe through at least one firing of every installed timer. |
+| Legacy privileged credential | A superuser or bypassing login ignores ordinary ACL revocation and can return after a timer fires. | Remove its old credential from every application input. Retire an app-only role, but preserve a shared backup/DBA/bootstrap role and use the conditional credential evidence in section 4a. |
 | TimescaleDB jobs | Retention/refresh policy jobs and extension-owned object graphs can keep an old owner alive or fail after a generic ownership change. | Use the Timescale catalog and supported owner-transition method, then prove a refresh and retention job under the approved owner before legacy retirement. |
 | Zero-downtime assumption | The repository shows blue/green only for some units; credentials and sessions are not atomically switched. | Use a maintenance window or documented overlap, with old grants retained until all old sessions are gone. |
 | Test-role confusion | Test fixtures intentionally create/drop isolated databases. | Keep a separate test administrator and run-owned DB behavior; do not weaken production roles. |
@@ -1417,14 +1446,15 @@ be run against the intended production database by an approved operator.
 7. **What is the acceptable outage/overlap, old-credential retirement, and
    client-drain policy?** Default: use a maintenance window, retain old grants until
    new clients are verified, then remove the legacy application credential from every
-   inventoried application input and observe a clean interval at least as long as the
-   longest installed timer. The template's API/MCP drain timers do not establish
-   database-session drain completion.
+   inventoried application input and observe a clean interval through at least one
+   firing of every installed timer. With the tracked Sunday timer installed, the
+   default is at least seven days and spans the weekend for weekday-only timers. The
+   template's API/MCP drain timers do not establish database-session drain completion.
 
    ```sql
    BEGIN READ ONLY;
-   SELECT rolname, rolcanlogin, rolsuper, rolinherit, rolcreaterole,
-          rolbypassrls, rolreplication
+   SELECT oid, rolname, rolcanlogin, rolsuper, rolinherit, rolcreaterole,
+          rolbypassrls, rolreplication, oid = 10 AS is_bootstrap_role
    FROM pg_roles
    WHERE rolname = '<legacy_application_login_from_change_record>';
    SELECT usename, application_name, client_addr, state, count(*)
