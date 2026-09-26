@@ -76,12 +76,16 @@
 13. **screener pick log**: `buy_candidate_fanout` 안에서 쓰지 마라 (no-write
     계약). 관측 레코더는 바깥, `SCREENER_PICK_LOG_ENABLED` 기본 false,
     fail-open, 스케줄러 금지. 가격은 exact decimal 문자열.
-14. **NHPLUG 모의 read-only (Stage 1)**: 데이터는 `moapi.nhplug.com:8443`만,
-    `/n2/acctinfo`의 `acct_type=03` allowlist만 사용하며, build 후 scheme·host·port와
-    `act_no`를 send 직전에 재검증한다. 동일 계좌번호의 상충 type 응답은 거부한다. 운영 OAuth 호스트는 `nhplug/auth.py`의
-    token/revoke 2 path 예외뿐이다. `NHPLUG_MOCK_ENABLED` default false 유지,
-    vendor SDK·`NHPLUG_BASE_URL`/`NHPLUG_AUTH_URL`·주문 endpoint/TR 추가 금지.
-    주문 메서드/MCP/레저/reconcile/스케줄러는 Stage 1 범위 밖이다.
+14. **NHPLUG 모의 Stage 2 (#711)**: 데이터·주문은 moapi.nhplug.com:8443의 고정 경로만,
+    계좌는 /n2/acctinfo의 acct_type=03 검증을 거친 같은 클라이언트의 모의 계좌만 사용한다.
+    build 후 scheme·host·port·path·act_no·본문을 send 직전에 재검증하고 redirect·자동 재시도는 금지한다.
+    운영 OAuth 호스트는 nhplug/auth.py의 token/revoke 2 path 예외뿐이다. NHPLUG_MOCK_ENABLED와
+    Stage 2의 KEY/TIME/DB/HOST/VENDOR 확인 플래그는 모두 기본 false이며 하나라도 빠지면 주문 의도와 송신을 막는다.
+    지정가·KRX·비SOR 모의 주문만 허용하고 시장가·실계좌·vendor SDK·호스트 override·스케줄러 추가는 금지한다.
+    같은 키는 기존 행만 반환하며, claim·fence 뒤 결과가 불명확하면 uncertain으로 남겨 날짜와 무관한 예약을 유지한다.
+    성공·무주문 증명 코드 표는 기본 비어 있고, 번호만 있는 응답으로 accepted/rejected 하지 않는다.
+    uncertain 해소와 T14 운영자 위험 인수는 docs/design/711-nhplug-dispatch-state-machine.md의 양성 증거와
+    승인 행 조건을 따른다. 주문 스모크는 머지 후 지정 운영자만 수행한다.
 15. **Kiwoom ACCEPTANCE authority cessation (ROB-1340)**: confirmed BUY·cancel·reconcile은
     하나의 PostgreSQL coordination scope에서만 수행한다. cancel 직전 ownership 상실 시
     취소를 보내지 말고 cycle JSON live-order-risk를 먼저 append한 뒤 기존 Telegram
