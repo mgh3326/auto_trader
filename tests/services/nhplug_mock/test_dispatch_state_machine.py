@@ -470,6 +470,29 @@ async def test_own_number_with_mismatched_attributes_becomes_anomaly(
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_evidence_write_is_zero_rows_after_done(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, _, claim = await uncertain_row(
+        seeded_engine, "late-dispatcher-write", evidence_number="961"
+    )
+    before = await ledger.get(row["id"])
+    for outcome in (
+        DispatchOutcome("uncertain", "late", "961"),
+        DispatchOutcome("uncertain", "late", "962"),
+        DispatchOutcome("uncertain", "late", None),
+    ):
+        try:
+            wrote = await ledger.record_final(claim, outcome)
+        except DBAPIError as exc:
+            raise AssertionError(
+                f"late dispatcher write reached the DB guard: {type(exc).__name__}"
+            ) from exc
+        assert wrote is False
+    assert await ledger.get(row["id"]) == before
+
+
+@pytest.mark.asyncio
 async def test_abandon_db_guard_refuses_missing_proof_and_future_grace(
     seeded_engine: AsyncEngine,
 ) -> None:

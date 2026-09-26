@@ -549,6 +549,30 @@ def test_stage2_package_has_no_other_send_owner_or_caller_lease_identity() -> No
     assert not ({"act_no", "symbol", "quantity", "price", "path"} & set(parameters))
 
 
+def test_stage2_transport_has_zero_lower_layer_retries() -> None:
+    source = (STAGE2_RUNTIME_DIR / "transport.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    transport = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "GatedTransport"
+    )
+    constructor = next(
+        node
+        for node in transport.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+    retries = [
+        keyword.value
+        for node in ast.walk(constructor)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "retries"
+    ]
+    assert len(retries) == 1
+    assert isinstance(retries[0], ast.Constant) and retries[0].value == 0
+
+
 def test_new_stage2_package_send_site_mutant_is_assertion_red(tmp_path: Path) -> None:
     (tmp_path / "zz_escape.py").write_text(
         'import httpx\nasync def escape():\n    await httpx.AsyncClient().post("https://example.invalid")\n',
