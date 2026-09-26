@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Final
 
 from app.services.brokers.nhplug.errors import (
@@ -14,6 +14,7 @@ from app.services.brokers.nhplug.errors import (
 ALLOWED_MOCK_ACCOUNT_TYPES: Final[frozenset[str]] = frozenset({"03"})
 DENIED_LIVE_ACCOUNT_TYPES: Final[frozenset[str]] = frozenset({"01", "02"})
 _ACCOUNT_LIST_KEY: Final[str] = "Output_0"
+_FACTORY_TOKEN = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,13 @@ class MockAccountAllowlist:
     configured_account_no: str = field(repr=False)
     allowed_account_numbers: frozenset[str] = field(repr=False)
     account_type_counts: tuple[tuple[str, int], ...]
+    _factory_token: InitVar[object] = None
+
+    def __post_init__(self, _factory_token: object) -> None:
+        if _factory_token is not _FACTORY_TOKEN:
+            raise NHPlugMockAccountRejected(
+                "mock account allowlist must come from the account response parser"
+            )
 
     @property
     def allowed_count(self) -> int:
@@ -104,6 +112,7 @@ class MockAccountAllowlist:
             configured_account_no=configured_account_no.strip(),
             allowed_account_numbers=frozenset(allowed),
             account_type_counts=tuple(sorted(counts.items())),
+            _factory_token=_FACTORY_TOKEN,
         )
         result.assert_allowed(result.configured_account_no)
         return result

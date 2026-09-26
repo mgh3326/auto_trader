@@ -65,13 +65,18 @@ def test_preflight_is_offline_and_redacts_all_minimal_env_values(
     assert payload["required_env_keys"] == list(smoke.REQUIRED_ENV_KEYS)
 
 
-def test_gate_off_fails_closed_before_client_construction(
+@pytest.mark.parametrize("gate", [None, "TRUE", "True", " true ", "false"])
+def test_nonexact_gate_fails_closed_before_client_construction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    gate: str | None,
 ) -> None:
     env_file = _write_minimal_env(tmp_path / ".env.nhplug-mock.native")
-    monkeypatch.delenv("NHPLUG_MOCK_ENABLED", raising=False)
+    if gate is None:
+        monkeypatch.delenv("NHPLUG_MOCK_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("NHPLUG_MOCK_ENABLED", gate)
 
     assert smoke.main(["--env-file", str(env_file)]) == 2
     rendered = capsys.readouterr().out

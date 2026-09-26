@@ -1,13 +1,15 @@
-"""Static stage-one guard for the NHPLUG read-only broker boundary."""
+"""Static guard for the NHPLUG Stage 1 reads and Stage 2 mock dispatcher."""
 
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 from pathlib import Path
 
 import pytest
 
+from app.services.brokers.nhplug.client import NHPlugMockClient
 from app.services.brokers.nhplug.contracts import DryRunConfirmContract
 from app.services.brokers.nhplug.live_quotes import (
     ALLOWED_DATA_PATHS,
@@ -17,11 +19,13 @@ from app.services.brokers.nhplug.live_quotes import (
     LIVE_TOKEN_PATH,
     US_PERIOD_PATH,
 )
+from app.services.nhplug_mock.intent import ORDER_PATHS
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_DIR = REPO_ROOT / "app" / "services" / "brokers" / "nhplug"
+STAGE2_RUNTIME_DIR = REPO_ROOT / "app" / "services" / "nhplug_mock"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "nhplug_mock_smoke.py"
 LIVE_QUOTES_MODULE = RUNTIME_DIR / "live_quotes.py"
 
@@ -342,23 +346,41 @@ def _assert_package_pins_follow_redirects(package_sources: tuple[Path, ...]) -> 
             )
 
 
-def _assert_package_exposes_no_mutation_methods(
+def _assert_package_exposes_no_other_send_sites(
     package_sources: tuple[Path, ...],
 ) -> None:
-    offenders = {
-        f"{path.name}:{node.name}"
-        for path in package_sources
-        for node in ast.walk(
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path in package_sources:
+        if path.name in {
+            "client.py",
+            "auth.py",
+            "live_quotes.py",
+            "live_period_collect.py",
+        }:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert not any(
+            isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+            and node.name.startswith(
+                (
+                    "place_",
+                    "submit_",
+                    "dispatch_",
+                    "execute_",
+                    "cancel_order",
+                    "modify_order",
+                )
+            )
+            for node in ast.walk(tree)
+        ), f"{path.name} adds mutation-like methods outside client.py"
+        assert not _httpx_client_constructions(tree), (
+            f"{path.name} adds another HTTP send owner"
         )
-        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
-        and any(
-            fragment in node.name.lower() for fragment in _FORBIDDEN_MUTATION_FRAGMENTS
-        )
-    }
-    assert not offenders, (
-        f"stage-one package exposes mutation-like methods: {sorted(offenders)!r}"
-    )
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "send"
+            for node in ast.walk(tree)
+        ), f"{path.name} adds another HTTP send site"
 
 
 def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
@@ -376,7 +398,7 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
         )
     _assert_package_has_no_oauth_imports(package_sources)
     _assert_package_pins_follow_redirects(package_sources)
-    _assert_package_exposes_no_mutation_methods(package_sources)
+    _assert_package_exposes_no_other_send_sites(package_sources)
     if package_dir == RUNTIME_DIR:
         _assert_live_quote_source_safe(
             LIVE_QUOTES_MODULE.read_text(encoding="utf-8"),
@@ -384,16 +406,31 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
         )
 
 
+def _assert_stage2_package_has_no_send_site(package_dir: Path) -> None:
+    """The new ledger package may describe orders but may not own HTTP sends."""
+
+    sources = _runtime_package_sources(package_dir)
+    assert sources, f"no Python sources found under {package_dir}"
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert not _httpx_client_constructions(tree), (
+            f"{path.name} adds another HTTP client and order send owner"
+        )
+        module_names, _ = _httpx_client_names(tree)
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in module_names
+            and node.func.attr in {"request", "post", "put", "patch", "delete"}
+            for node in ast.walk(tree)
+        ), f"{path.name} adds another HTTP send owner"
+
+
 def _assert_stage_one_source_safe(
     source: str, *, filename: str, permits_production_host: bool = False
 ) -> None:
-    """Fail with AssertionError for every unsafe source-level escape hatch.
-
-    The order rule is intentionally stronger than a future gated-dispatch rule:
-    this stage has no order dispatcher at all, so every known order endpoint/TR
-    is forbidden.  A future stage must explicitly narrow this guard alongside
-    an independently reviewed dry-run/confirm implementation.
-    """
+    """Allow exact mock paths only in the single dispatcher's byte verifier."""
 
     tree = ast.parse(source, filename=filename)
     literals = _literal_strings(tree)
@@ -406,11 +443,25 @@ def _assert_stage_one_source_safe(
         assert not any(_PRODUCTION_HOST_RE.search(literal) for literal in literals), (
             "only scoped live modules may contain the production hostname"
         )
-    assert not any(
-        forbidden.casefold() in literal.casefold()
-        for literal in literals
-        for forbidden in _FORBIDDEN_ORDER_TEXT
-    ), "stage-one source contains an out-of-scope order endpoint or TR"
+    approved_nodes: set[int] = set()
+    if filename == "client.py":
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "_assert_order_request"
+            ):
+                approved_nodes.update(id(child) for child in ast.walk(node))
+    for node in ast.walk(tree):
+        literal = _constant_string(node)
+        if literal is None:
+            continue
+        if any(
+            forbidden.casefold() in literal.casefold()
+            for forbidden in _FORBIDDEN_ORDER_TEXT
+        ):
+            assert id(node) in approved_nodes and literal in ORDER_PATHS, (
+                "out-of-scope order endpoint or TR is forbidden"
+            )
 
 
 def _imports_mock_runtime(tree: ast.AST) -> list[str]:
@@ -489,6 +540,48 @@ def test_entire_nhplug_package_obeys_every_stage_one_static_guard() -> None:
     _assert_stage_one_source_safe(
         SMOKE_SCRIPT.read_text(encoding="utf-8"), filename=SMOKE_SCRIPT.name
     )
+
+
+def test_stage2_package_has_no_other_send_owner_or_caller_lease_identity() -> None:
+    _assert_stage2_package_has_no_send_site(STAGE2_RUNTIME_DIR)
+    parameters = inspect.signature(NHPlugMockClient.dispatch_claimed_order).parameters
+    assert "identity" not in parameters
+    assert not ({"act_no", "symbol", "quantity", "price", "path"} & set(parameters))
+
+
+def test_stage2_transport_has_zero_lower_layer_retries() -> None:
+    source = (STAGE2_RUNTIME_DIR / "transport.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    transport = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "GatedTransport"
+    )
+    constructor = next(
+        node
+        for node in transport.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+    retries = [
+        keyword.value
+        for node in ast.walk(constructor)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "retries"
+    ]
+    assert len(retries) == 1
+    assert isinstance(retries[0], ast.Constant) and retries[0].value == 0
+
+
+def test_new_stage2_package_send_site_mutant_is_assertion_red(tmp_path: Path) -> None:
+    (tmp_path / "zz_escape.py").write_text(
+        'import httpx\nasync def escape():\n    await httpx.AsyncClient().post("https://example.invalid")\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        AssertionError, match="another HTTP client and order send owner"
+    ):
+        _assert_stage2_package_has_no_send_site(tmp_path)
 
 
 @pytest.mark.parametrize(

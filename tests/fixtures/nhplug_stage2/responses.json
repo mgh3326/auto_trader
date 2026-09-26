@@ -1,0 +1,358 @@
+{
+ "_provenance": "Shapes derived from the vendor krstock OpenAPI document (PLUG-OpenAPI/nhplug-mcp specs/krstock.openapi.json, dailyOrderExecution / cashBuy / modify / cancel) and the vendor SDK's documented rsp_cd semantics (13578 = no records; 00165/00218 = continue). Values are synthetic; no live NH response was captured (#711 forbids NH API calls in development).",
+ "listing_open_one": {
+  "rsp_cd": "00000",
+  "rsp_msg": "조회가 완료되었습니다.",
+  "Output_0": [
+   {
+    "cus_fnm": "CUSTOMER_NAME_MUST_NOT_LEAK"
+   }
+  ],
+  "Output_1": [
+   {
+    "itg_orr_no": 1000123,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 0,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 50000,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 1,
+    "cor_qty": "0",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   }
+  ]
+ },
+ "listing_all_one_open": {
+  "rsp_cd": "00000",
+  "rsp_msg": "조회가 완료되었습니다.",
+  "Output_0": [
+   {
+    "cus_fnm": "CUSTOMER_NAME_MUST_NOT_LEAK"
+   }
+  ],
+  "Output_1": [
+   {
+    "itg_orr_no": 1000123,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 0,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 50000,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 1,
+    "cor_qty": "0",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   }
+  ]
+ },
+ "listing_block_absent_success": {
+  "rsp_cd": "00000",
+  "rsp_msg": "조회가 완료되었습니다.",
+  "Output_0": [
+   {
+    "cus_fnm": "CUSTOMER_NAME_MUST_NOT_LEAK"
+   }
+  ]
+ },
+ "listing_empty_array_success": {
+  "rsp_cd": "00000",
+  "rsp_msg": "조회가 완료되었습니다.",
+  "Output_0": [
+   {
+    "cus_fnm": "CUSTOMER_NAME_MUST_NOT_LEAK"
+   }
+  ],
+  "Output_1": []
+ },
+ "listing_no_records_13578": {
+  "rsp_cd": "13578",
+  "rsp_msg": "조회할 내역이 없습니다."
+ },
+ "listing_processing_error_00007": {
+  "rsp_cd": "00007",
+  "rsp_msg": "처리중 오류가 발생했습니다.",
+  "Output_1": []
+ },
+ "listing_gateway_error": {
+  "error_code": "IGW40023",
+  "error_description": "지원하지 않는 서비스입니다."
+ },
+ "listing_rows_not_list": {
+  "rsp_cd": "00000",
+  "Output_1": {
+   "itg_orr_no": 1000123
+  }
+ },
+ "listing_malformed_row": {
+  "rsp_cd": "00000",
+  "Output_1": [
+   {
+    "itg_orr_no": "abc",
+    "iem_cd": "005930",
+    "orr_qty": 1,
+    "tot_cns_qty": 0,
+    "ny_cns_qty": 1
+   }
+  ]
+ },
+ "listing_page1_continue": {
+  "rsp_cd": "00165",
+  "Output_1": [
+   {
+    "itg_orr_no": 1000123,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 0,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 50000,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 1,
+    "cor_qty": "0",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   }
+  ]
+ },
+ "listing_page2_last": {
+  "rsp_cd": "00000",
+  "Output_1": [
+   {
+    "itg_orr_no": 1000124,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 0,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 2,
+    "orr_pr": 49000,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 2,
+    "cor_qty": "0",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   }
+  ]
+ },
+ "listing_all_after_cancel": {
+  "rsp_cd": "00000",
+  "Output_1": [
+   {
+    "itg_orr_no": 1000123,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 0,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 50000,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 0,
+    "cor_qty": "1",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   },
+   {
+    "itg_orr_no": 1000130,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 1000123,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "정정",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 49500,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 0,
+    "cor_qty": "0",
+    "can_qty": 1,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   },
+   {
+    "itg_orr_no": 1000140,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 1000130,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "취소",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 0,
+    "tot_cns_qty": 0,
+    "cns_avg_uit_pr": 0,
+    "cns_amt": 0,
+    "cns_cnt": 0,
+    "ny_cns_qty": 0,
+    "cor_qty": "0",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   }
+  ]
+ },
+ "listing_all_filled": {
+  "rsp_cd": "00000",
+  "Output_1": [
+   {
+    "itg_orr_no": 1000123,
+    "orr_mkt_cd_nm": "거래소",
+    "mo_itg_orr_no": "",
+    "org_itg_orr_no": 0,
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "sby_dit_cd_nm": "현금매수",
+    "cor_can_dit_cd_nm": "",
+    "nmn_pr_tp_cd_nm": "보통가",
+    "orr_cnd_dit_cd_nm": "없음",
+    "orr_qty": 1,
+    "orr_pr": 50000,
+    "tot_cns_qty": 1,
+    "cns_avg_uit_pr": 50000,
+    "cns_amt": 50000,
+    "cns_cnt": 1,
+    "ny_cns_qty": 0,
+    "cor_qty": "0",
+    "can_qty": 0,
+    "orr_tm": "093015123",
+    "orr_mdi": "OPENAPI",
+    "orr_rjt_rsn_cd_nm": "",
+    "rmt_mkt_cd": "KRX",
+    "sor_mkt_sli_yn": "N"
+   }
+  ]
+ },
+ "ack_accepted": {
+  "rsp_cd": "00000",
+  "rsp_msg": "정상처리되었습니다",
+  "Output_0": {
+   "orr_gno_tab_cd": "0001",
+   "mkt_orr_no": 1000123,
+   "orr_qty1": 1,
+   "orr_qty2": 0,
+   "anw_cld_mkt_orr_no1": 1000123
+  }
+ },
+ "ack_success_code_without_order_number": {
+  "rsp_cd": "00000",
+  "rsp_msg": "정상처리되었습니다"
+ },
+ "ack_rejected_insufficient_cash": {
+  "rsp_cd": "40310",
+  "rsp_msg": "주문가능금액을 초과하였습니다 계좌 12345678901"
+ },
+ "acctinfo_mock_and_live": {
+  "rsp_cd": "00000",
+  "Output_0": [
+   {
+    "acct_no": "MOCK-ACCOUNT-03",
+    "acct_type": "03"
+   },
+   {
+    "acct_no": "LIVE-ACCOUNT-01",
+    "acct_type": "01"
+   },
+   {
+    "acct_no": "LIVE-ACCOUNT-02",
+    "acct_type": "02"
+   }
+  ]
+ },
+ "balance_one_position": {
+  "rsp_cd": "00000",
+  "Output_0": {
+   "dca": 10000000,
+   "orr_pbl_amt": "9950000",
+   "nxt2_dd_dca": 10000000,
+   "act_no": "MOCK-ACCOUNT-03"
+  },
+  "Output_1": [
+   {
+    "iem_cd": "005930",
+    "iem_nm": "삼성전자",
+    "itg_bnc_qty": 3,
+    "phs_pr": 50000,
+    "now_pr": 51000,
+    "eal_amt": 153000
+   }
+  ]
+ }
+}
