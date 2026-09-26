@@ -21,12 +21,17 @@ import pytest_asyncio
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import app.services.brokers.nhplug.client as client_module
 import app.services.nhplug_mock.lease_host as lease_host
+from app.services.brokers.nhplug.account_guard import MockAccountAllowlist
 from app.services.brokers.nhplug.client import NHPlugMockClient
+from app.services.brokers.nhplug.errors import (
+    NHPlugMockAccountRejected,
+    NHPlugMockConfigurationError,
+)
 from app.services.brokers.nhplug.order_evidence import OrderListing, OrderRow
 from app.services.nhplug_mock.account_identity import (
     AccountIdentityError,
@@ -184,11 +189,77 @@ async def client_for(suffix: str) -> NHPlugMockClient:
     return client
 
 
+async def dispatch_row(
+    client: NHPlugMockClient,
+    ledger: NHPlugMockLedger,
+    row: dict[str, Any],
+    ref: UUID,
+    *,
+    timing: Stage2Timing | None = None,
+) -> DispatchOutcome:
+    return await client.dispatch_claimed_order(
+        ledger,
+        row["id"],
+        row["client_request_id"],
+        row["body_digest"],
+        ref,
+        keys={1: KEY},
+        readiness=READY,
+        timing=timing or Stage2Timing(),
+        dry_run=False,
+        confirm=True,
+    )
+
+
+async def uncertain_row(
+    engine: AsyncEngine,
+    suffix: str,
+    *,
+    evidence_number: str | None = None,
+    lease_seconds: int = 60,
+) -> tuple[NHPlugMockLedger, dict[str, Any], UUID, Any]:
+    ledger, row, ref = await intent_row(engine, suffix)
+    claim = await ledger.claim(
+        row["id"], row["client_request_id"], row["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(claim, lease_seconds=lease_seconds)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", evidence_number)
+    )
+    return ledger, row, ref, claim
+
+
 @pytest.fixture(autouse=True)
 def mock_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NHPLUG_MOCK_ENABLED", "true")
     for name in ("KEY", "TIME", "DB", "HOST", "VENDOR"):
         monkeypatch.setenv(f"NHPLUG_STAGE2_{name}_CONFIRMED", "true")
+
+
+@pytest.mark.asyncio
+async def test_empty_key_registry_refuses_binding_without_writes(
+    nhplug_engine: AsyncEngine,
+) -> None:
+    async with nhplug_engine.connect() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT count(*) FROM review.nhplug_mock_key_version")
+            )
+        ).scalar_one() == 0
+        before = (
+            await conn.execute(
+                text("SELECT count(*) FROM review.nhplug_mock_account_ref")
+            )
+        ).scalar_one()
+    with pytest.raises(AccountIdentityError, match="key_registry_empty"):
+        await resolve_account_ref(nhplug_engine, "MOCK-empty-registry", {1: KEY})
+    async with nhplug_engine.connect() as conn:
+        after = (
+            await conn.execute(
+                text("SELECT count(*) FROM review.nhplug_mock_account_ref")
+            )
+        ).scalar_one()
+    assert after == before
 
 
 @pytest.mark.asyncio
@@ -206,7 +277,6 @@ async def test_minimal_path_fake_send_uncertain_then_own_number_reconcile(
         row["body_digest"],
         ref,
         keys={1: KEY},
-        identity=IDENTITY,
         readiness=READY,
         timing=Stage2Timing(),
         dry_run=False,
@@ -238,6 +308,9 @@ async def test_minimal_path_fake_send_uncertain_then_own_number_reconcile(
         and middle["ack_evidence_order_id"] == "123"
     )
     assert middle["dispatcher_done_at"] is not None
+    sender = lease_host.current_lease_identity()
+    assert lease_host.lease_identity_from_row(middle) == sender
+    assert not lease_host.process_gone_on_lease_host(sender)
     assert await ledger.verify_own_number(
         row["id"], scoped(listing(123), row), readiness=READY
     )
@@ -248,6 +321,339 @@ async def test_minimal_path_fake_send_uncertain_then_own_number_reconcile(
         and final["broker_order_id"] == "123"
     )
     assert final["ack_order_id"] == "123"
+
+
+@pytest.mark.asyncio
+async def test_verified_mock_account_cannot_be_replaced_before_dispatch(
+    seeded_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = await client_for("verified-binding")
+    alternate = MockAccountAllowlist.from_acctinfo_response(
+        payload={
+            "Output_0": [{"acct_no": "UNVERIFIED-IN-THIS-CLIENT", "acct_type": "03"}]
+        },
+        configured_account_no="UNVERIFIED-IN-THIS-CLIENT",
+    )
+    with pytest.raises(
+        NHPlugMockConfigurationError,
+        match="verified mock account binding cannot be replaced",
+    ):
+        client.bind_account_allowlist(alternate)
+    with pytest.raises(
+        NHPlugMockAccountRejected, match="must come from the account response parser"
+    ):
+        MockAccountAllowlist(
+            configured_account_no="UNVERIFIED-IN-THIS-CLIENT",
+            allowed_account_numbers=frozenset({"UNVERIFIED-IN-THIS-CLIENT"}),
+            account_type_counts=(("03", 1),),
+        )
+    bad_ref = await resolve_account_ref(
+        seeded_engine, "UNVERIFIED-IN-THIS-CLIENT", {1: KEY}
+    )
+    ledger = NHPlugMockLedger(seeded_engine)
+    row, should_claim = await ledger.create_intent(
+        OrderIntent("place", "buy", "005930", 1, 67400, None, None, bad_ref),
+        readiness=READY,
+        idempotency_key="verified_binding_12345",
+        order_date=date.today(),
+    )
+    assert should_claim
+    broker = FakeBroker()
+    monkeypatch.setattr(client_module, "GatedTransport", broker.transport)
+    with pytest.raises(LedgerConflict, match="account_ref_mismatch"):
+        await client.dispatch_claimed_order(
+            ledger,
+            row["id"],
+            row["client_request_id"],
+            row["body_digest"],
+            bad_ref,
+            keys={1: KEY},
+            readiness=READY,
+            timing=Stage2Timing(),
+            dry_run=False,
+            confirm=True,
+        )
+    assert broker.requests == []
+    assert (await ledger.get(row["id"]))["state"] == "intent"
+
+
+@pytest.mark.asyncio
+async def test_rejected_fence_never_reaches_fake_broker(
+    seeded_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, row, ref = await intent_row(seeded_engine, "fence-refusal")
+    broker = FakeBroker()
+    monkeypatch.setattr(client_module, "GatedTransport", broker.transport)
+
+    async def refused_fence(*args: Any, **kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(ledger, "fence", refused_fence)
+    client = await client_for("fence-refusal")
+    with pytest.raises(LedgerConflict, match="fence_rejected"):
+        await dispatch_row(client, ledger, row, ref)
+    stored = await ledger.get(row["id"])
+    assert broker.requests == []
+    assert stored is not None and stored["state"] == "claimed"
+    assert stored["sending_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_arm_failure_withdraws_before_fence_and_sends_nothing(
+    seeded_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, row, ref = await intent_row(seeded_engine, "arm-refusal")
+    observed: list[str] = []
+
+    class ArmFailure(httpx.AsyncBaseTransport):
+        def arm(self, deadline: float) -> None:
+            raise ValueError("injected arm failure")
+
+        async def hard_close(self, timeout: float) -> None:
+            return None
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            observed.append(request.url.path)
+            return httpx.Response(200, json={}, request=request)
+
+    monkeypatch.setattr(client_module, "GatedTransport", ArmFailure)
+    client = await client_for("arm-refusal")
+    with pytest.raises(ValueError, match="injected arm failure"):
+        await dispatch_row(client, ledger, row, ref)
+    stored = await ledger.get(row["id"])
+    assert observed == []
+    assert stored is not None and stored["state"] == "withdrawn"
+    assert stored["sending_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_uncertain_anomaly_requires_own_number_even_with_complete_listing(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, _, _ = await uncertain_row(seeded_engine, "own-number-absent")
+    forged = {
+        "listing_order_id": None,
+        "listing_complete": True,
+        "listing_scope": "all",
+        "account_ref": str(row["account_ref"]),
+        "order_date": str(row["order_date"]),
+        "attributes_match": False,
+    }
+    with pytest.raises(
+        Exception, match="uncertain anomaly positive listing proof absent"
+    ):
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE review.nhplug_mock_order_ledger SET state='anomaly', "
+                    "requires_manual_review=true, manual_review_reason='forged', "
+                    "evidence=CAST(:e AS jsonb), last_reconcile=CAST(:e AS jsonb) "
+                    "WHERE id=:id"
+                ),
+                {"id": row["id"], "e": json.dumps(forged)},
+            )
+    assert (await ledger.get(row["id"]))["state"] == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_own_number_with_mismatched_attributes_becomes_anomaly(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, _, _ = await uncertain_row(
+        seeded_engine, "own-number-mismatch", evidence_number="951"
+    )
+    wrong = scoped(listing(951, price=99900), row)
+    assert not await ledger.verify_own_number(row["id"], wrong, readiness=READY)
+    stored = await ledger.get(row["id"])
+    assert stored is not None and stored["state"] == "anomaly"
+    assert stored["broker_order_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_abandon_db_guard_refuses_missing_proof_and_future_grace(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, ref, _ = await uncertain_row(
+        seeded_engine, "abandon-positive-proof", lease_seconds=1
+    )
+    await asyncio.sleep(1.1)
+    pending = await ledger.get(row["id"])
+    assert pending is not None and pending["state"] == "uncertain"
+    for missing in (
+        "process_gone",
+        "listing_complete",
+        "grace_elapsed",
+        "future_grace",
+    ):
+        evidence = {
+            "process_gone": True,
+            "listing_complete": True,
+            "grace_elapsed": True,
+        }
+        if missing != "future_grace":
+            evidence[missing] = False
+        grace = pending["lease_expires_at"] + (
+            timedelta(hours=6)
+            if missing == "future_grace"
+            else timedelta(milliseconds=100)
+        )
+        auth_id = uuid4()
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO review.nhplug_mock_operator_authorization "
+                    "(id,kind,target_row_id,account_ref,order_date,body_digest,evidence,"
+                    "grace_until,operator_id,reason) "
+                    "VALUES (:id,'abandon',:target,:account,:day,:digest,CAST(:e AS jsonb),"
+                    ":grace,'tester','proof guard')"
+                ),
+                {
+                    "id": auth_id,
+                    "target": row["id"],
+                    "account": ref,
+                    "day": row["order_date"],
+                    "digest": row["body_digest"],
+                    "e": json.dumps(evidence),
+                    "grace": grace,
+                },
+            )
+        with pytest.raises(Exception, match="abandon positive process proof absent"):
+            async with seeded_engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE review.nhplug_mock_order_ledger SET state='abandoned', "
+                        "resolution_authorization_id=:auth WHERE id=:id"
+                    ),
+                    {"id": row["id"], "auth": auth_id},
+                )
+        assert (await ledger.get(row["id"]))["state"] == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_bound_number_and_identity_are_write_once_after_t9b(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, ref, _ = await uncertain_row(
+        seeded_engine, "write-once-after-t9b", evidence_number="601"
+    )
+    assert await ledger.verify_own_number(
+        row["id"], scoped(listing(601), row), readiness=READY
+    )
+    for assignment in (
+        "broker_order_id='456'",
+        "ack_order_id='456'",
+        "order_date=order_date+1",
+        "symbol='000660'",
+        "quantity=2",
+        "idempotency_key='changed_key_123456789'",
+    ):
+        with pytest.raises(DBAPIError):
+            async with seeded_engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE review.nhplug_mock_order_ledger SET "
+                        + assignment
+                        + " WHERE id=:id"
+                    ),
+                    {"id": row["id"]},
+                )
+    with pytest.raises(DBAPIError):
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM review.nhplug_mock_order_ledger WHERE id=:id"),
+                {"id": row["id"]},
+            )
+    final = await ledger.get(row["id"])
+    assert final is not None and final["state"] == "accepted"
+    assert final["broker_order_id"] == "601" and final["account_ref"] == ref
+    assert final["symbol"] == "005930" and final["quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_second_order_requires_matching_one_use_authorization(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, first, ref, _ = await uncertain_row(
+        seeded_engine, "second-order", evidence_number="501"
+    )
+    assert await ledger.verify_own_number(
+        first["id"], scoped(listing(501), first), readiness=READY
+    )
+    body = OrderIntent("place", "buy", "005930", 1, 67400, None, None, ref)
+    with pytest.raises(LedgerConflict, match="duplicate_order_requires_authorization"):
+        await ledger.create_intent(
+            body,
+            readiness=READY,
+            idempotency_key="second_order_no_auth_1234",
+            order_date=date.today(),
+        )
+
+    async def authorization(kind: str, target: int) -> UUID:
+        auth_id = uuid4()
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO review.nhplug_mock_operator_authorization "
+                    "(id,kind,target_row_id,account_ref,order_date,body_digest,evidence,"
+                    "grace_until,operator_id,reason) "
+                    "VALUES (:id,:kind,:target,:account,:day,:digest,'{}'::jsonb,"
+                    "now(),'tester','second order')"
+                ),
+                {
+                    "id": auth_id,
+                    "kind": kind,
+                    "target": target,
+                    "account": ref,
+                    "day": first["order_date"],
+                    "digest": first["body_digest"],
+                },
+            )
+        return auth_id
+
+    for kind, target in (
+        ("abandon", first["id"]),
+        ("second_order", first["id"] + 100000),
+    ):
+        bad = await authorization(kind, target)
+        with pytest.raises(Exception, match="authorization mismatch or consumed"):
+            await ledger.create_intent(
+                body,
+                readiness=READY,
+                idempotency_key="second_order_bad_" + str(bad)[:8],
+                order_date=date.today(),
+                duplicate_of=first["id"],
+                second_order_authorization_id=bad,
+            )
+    good = await authorization("second_order", first["id"])
+    second, should_claim = await ledger.create_intent(
+        body,
+        readiness=READY,
+        idempotency_key="second_order_valid_12345",
+        order_date=date.today(),
+        duplicate_of=first["id"],
+        second_order_authorization_id=good,
+    )
+    assert should_claim and second["duplicate_ordinal"] == 1
+    assert second["duplicate_of"] == first["id"]
+    claim = await ledger.claim(
+        second["id"], second["client_request_id"], second["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(claim)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", "502")
+    )
+    assert await ledger.verify_own_number(
+        second["id"], scoped(listing(502), second), readiness=READY
+    )
+    with pytest.raises((LedgerConflict, DBAPIError)):
+        await ledger.create_intent(
+            body,
+            readiness=READY,
+            idempotency_key="second_order_reuse_12345",
+            order_date=date.today(),
+            duplicate_of=first["id"],
+            second_order_authorization_id=good,
+        )
 
 
 @pytest.mark.asyncio
@@ -362,7 +768,6 @@ async def test_ack_is_extracted_before_metadata_failure(
         row["body_digest"],
         ref,
         keys={1: KEY},
-        identity=IDENTITY,
         readiness=READY,
         timing=Stage2Timing(),
         dry_run=False,
@@ -388,7 +793,6 @@ async def test_close_failure_preserves_ack_and_no_second_send(
         row["body_digest"],
         ref,
         keys={1: KEY},
-        identity=IDENTITY,
         readiness=READY,
         timing=Stage2Timing(),
         dry_run=False,
@@ -404,7 +808,6 @@ async def test_close_failure_preserves_ack_and_no_second_send(
             row["body_digest"],
             ref,
             keys={1: KEY},
-            identity=IDENTITY,
             readiness=READY,
             timing=Stage2Timing(),
             dry_run=False,
@@ -455,7 +858,6 @@ async def test_cancelled_send_records_uncertain_before_reraising(
             row["body_digest"],
             ref,
             keys={1: KEY},
-            identity=IDENTITY,
             readiness=READY,
             timing=Stage2Timing(),
             dry_run=False,
@@ -1266,7 +1668,6 @@ async def test_order_body_is_independently_observed_for_all_six_routes(
         row["body_digest"],
         ref,
         keys={1: KEY},
-        identity=IDENTITY,
         readiness=READY,
         timing=Stage2Timing(),
         dry_run=False,
@@ -1310,7 +1711,6 @@ async def test_post_build_body_mutation_withdraws_before_send(
             row["body_digest"],
             ref,
             keys={1: KEY},
-            identity=IDENTITY,
             readiness=READY,
             timing=Stage2Timing(),
             dry_run=False,
@@ -1877,7 +2277,7 @@ async def test_partial_modify_confirms_exact_reflected_quantity(
         readiness=READY,
     )
     modify, should_claim = await ledger.create_intent(
-        OrderIntent("modify", "buy", "005930", 1, 67000, "730", "partial", ref),
+        OrderIntent("modify", "buy", "005930", 2, 67000, "730", "partial", ref),
         readiness=READY,
         idempotency_key="partial_modify_request_1234",
         order_date=date.today(),
@@ -1897,14 +2297,14 @@ async def test_partial_modify_confirms_exact_reflected_quantity(
     successor = OrderRow(
         731,
         "005930",
-        1,
+        2,
         0,
-        1,
+        2,
         side="buy",
         original_order_no=730,
         order_price=Decimal(67000),
     )
-    root_reflected = replace(root_open, open_qty=4, modified_qty=1)
+    root_reflected = replace(root_open, open_qty=3, modified_qty=2)
     all_orders = scoped(
         OrderListing("all", True, (root_reflected, successor), pages=1), modify
     )
@@ -1912,6 +2312,20 @@ async def test_partial_modify_confirms_exact_reflected_quantity(
         OrderListing("open", True, (root_reflected, successor), pages=1), modify
     )
     assert await ledger.verify_own_number(modify["id"], all_orders, readiness=READY)
+    under_reflected = replace(root_open, open_qty=4, modified_qty=1)
+    under_all = scoped(
+        OrderListing("all", True, (under_reflected, successor), pages=1), modify
+    )
+    under_open = scoped(
+        OrderListing("open", True, (under_reflected, successor), pages=1), modify
+    )
+    assert (
+        await ledger.reconcile_bound(
+            modify["id"], under_all, under_open, None, readiness=READY
+        )
+        == "unknown"
+    )
+    assert (await ledger.get(modify["id"]))["state"] == "accepted"
     forged_note = {
         "account_ref": str(uuid4()),
         "order_date": str(modify["order_date"]),
@@ -1923,7 +2337,7 @@ async def test_partial_modify_confirms_exact_reflected_quantity(
             await conn.execute(
                 text(
                     "UPDATE review.nhplug_mock_order_ledger SET state='confirmed', "
-                    "applied_qty=1, reconcile_state='verified', evidence='{}'::jsonb, "
+                    "applied_qty=2, reconcile_state='verified', evidence='{}'::jsonb, "
                     "last_reconcile=CAST(:note AS jsonb) WHERE id=:id"
                 ),
                 {"id": modify["id"], "note": json.dumps(forged_note)},
@@ -1936,7 +2350,7 @@ async def test_partial_modify_confirms_exact_reflected_quantity(
         == "confirmed"
     )
     final = await ledger.get(modify["id"])
-    assert final is not None and final["applied_qty"] == 1
+    assert final is not None and final["applied_qty"] == 2
     assert (await ledger.get(place["id"]))["state"] == "accepted"
 
 

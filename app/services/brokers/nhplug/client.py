@@ -36,10 +36,10 @@ from app.services.brokers.nhplug.order_evidence import (
 )
 from app.services.nhplug_mock.account_identity import KeyMaterial, resolve_account_ref
 from app.services.nhplug_mock.intent import ORDER_PATHS, body_digest, build_body
+from app.services.nhplug_mock.lease_host import current_lease_identity
 from app.services.nhplug_mock.ledger import (
     Claim,
     DispatchOutcome,
-    LeaseIdentity,
     LedgerConflict,
     NHPlugMockLedger,
 )
@@ -160,6 +160,10 @@ class NHPlugMockClient:
         caller-selected argument to a generic dispatch helper.
         """
 
+        if self._order_allowlist_verified:
+            raise NHPlugMockConfigurationError(
+                "verified mock account binding cannot be replaced"
+            )
         if not isinstance(account_allowlist, MockAccountAllowlist):
             raise NHPlugMockConfigurationError(
                 "a broker-verified mock account allowlist is required"
@@ -334,7 +338,6 @@ class NHPlugMockClient:
         account_ref: UUID,
         *,
         keys: dict[int, KeyMaterial],
-        identity: LeaseIdentity,
         readiness: Stage2Readiness,
         timing: Stage2Timing,
         dry_run: bool = True,
@@ -369,6 +372,9 @@ class NHPlugMockClient:
         )
         if resolved != account_ref:
             raise LedgerConflict("account_ref_mismatch")
+        # T3 must record this send process, not an identity supplied by a caller.
+        # The T14 death witness uses these immutable fields to release a reservation.
+        identity = current_lease_identity()
         claim = await ledger.claim(
             row_id,
             request_id,

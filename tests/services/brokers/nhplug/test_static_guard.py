@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 from pathlib import Path
 
 import pytest
 
+from app.services.brokers.nhplug.client import NHPlugMockClient
 from app.services.brokers.nhplug.contracts import DryRunConfirmContract
 from app.services.brokers.nhplug.live_quotes import (
     ALLOWED_DATA_PATHS,
@@ -23,6 +25,7 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_DIR = REPO_ROOT / "app" / "services" / "brokers" / "nhplug"
+STAGE2_RUNTIME_DIR = REPO_ROOT / "app" / "services" / "nhplug_mock"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "nhplug_mock_smoke.py"
 LIVE_QUOTES_MODULE = RUNTIME_DIR / "live_quotes.py"
 
@@ -403,6 +406,27 @@ def _assert_entire_package_is_stage_one_safe(package_dir: Path) -> None:
         )
 
 
+def _assert_stage2_package_has_no_send_site(package_dir: Path) -> None:
+    """The new ledger package may describe orders but may not own HTTP sends."""
+
+    sources = _runtime_package_sources(package_dir)
+    assert sources, f"no Python sources found under {package_dir}"
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert not _httpx_client_constructions(tree), (
+            f"{path.name} adds another HTTP client and order send owner"
+        )
+        module_names, _ = _httpx_client_names(tree)
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in module_names
+            and node.func.attr in {"request", "post", "put", "patch", "delete"}
+            for node in ast.walk(tree)
+        ), f"{path.name} adds another HTTP send owner"
+
+
 def _assert_stage_one_source_safe(
     source: str, *, filename: str, permits_production_host: bool = False
 ) -> None:
@@ -516,6 +540,24 @@ def test_entire_nhplug_package_obeys_every_stage_one_static_guard() -> None:
     _assert_stage_one_source_safe(
         SMOKE_SCRIPT.read_text(encoding="utf-8"), filename=SMOKE_SCRIPT.name
     )
+
+
+def test_stage2_package_has_no_other_send_owner_or_caller_lease_identity() -> None:
+    _assert_stage2_package_has_no_send_site(STAGE2_RUNTIME_DIR)
+    parameters = inspect.signature(NHPlugMockClient.dispatch_claimed_order).parameters
+    assert "identity" not in parameters
+    assert not ({"act_no", "symbol", "quantity", "price", "path"} & set(parameters))
+
+
+def test_new_stage2_package_send_site_mutant_is_assertion_red(tmp_path: Path) -> None:
+    (tmp_path / "zz_escape.py").write_text(
+        'import httpx\nasync def escape():\n    await httpx.AsyncClient().post("https://example.invalid")\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        AssertionError, match="another HTTP client and order send owner"
+    ):
+        _assert_stage2_package_has_no_send_site(tmp_path)
 
 
 @pytest.mark.parametrize(
