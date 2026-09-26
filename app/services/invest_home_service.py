@@ -638,9 +638,7 @@ class InvestHomeService:
                 "broker_sellable_quantity", raw_sellable
             )
             holding.protectedQuantity = float(output.get("protected_quantity", 0.0))
-            holding.tacticalSellableQuantity = output.get(
-                "tactical_sellable_quantity"
-            )
+            holding.tacticalSellableQuantity = output.get("tactical_sellable_quantity")
             holding.protectionState = output.get("protection_state", "unverified")
             if "sellable_quantity" in output:
                 holding.sellableQuantity = output["sellable_quantity"]

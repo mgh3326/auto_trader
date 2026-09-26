@@ -764,9 +764,7 @@ class PortfolioOverviewService:
                     "evaluation": item["evaluation"],
                     "profit_loss": item["profit_loss"],
                     "profit_rate": item["profit_rate"],
-                    "broker_sellable_quantity": item.get(
-                        "broker_sellable_quantity"
-                    ),
+                    "broker_sellable_quantity": item.get("broker_sellable_quantity"),
                     "sellable_observed": bool(item.get("sellable_observed")),
                     "protected_quantity": _to_float(
                         item.get("protected_quantity"),
@@ -957,8 +955,7 @@ class PortfolioOverviewService:
                 bool(item.get("sellable_observed")) for item in live
             ),
             "protected_quantity": sum(
-                _to_float(item.get("protected_quantity"), default=0.0)
-                for item in live
+                _to_float(item.get("protected_quantity"), default=0.0) for item in live
             ),
             "tactical_sellable_quantity": (
                 None

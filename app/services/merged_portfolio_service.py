@@ -34,6 +34,7 @@ def _optional_broker_sellable(value: Any) -> float | None:
         return None
     return parsed
 
+
 KIS_FIELD_CONFIG = {
     MarketType.KR: {
         "ticker": "pdno",
@@ -454,9 +455,7 @@ class MergedPortfolioService:
                 "broker_sellable_quantity",
                 raw_sellable,
             )
-            holding.protected_quantity = float(
-                output.get("protected_quantity", 0.0)
-            )
+            holding.protected_quantity = float(output.get("protected_quantity", 0.0))
             holding.tactical_sellable_quantity = output.get(
                 "tactical_sellable_quantity"
             )
@@ -466,7 +465,9 @@ class MergedPortfolioService:
             )
             for component in holding.holdings:
                 if component.broker == "kis":
-                    component.broker_sellable_quantity = holding.broker_sellable_quantity
+                    component.broker_sellable_quantity = (
+                        holding.broker_sellable_quantity
+                    )
                     component.protected_quantity = holding.protected_quantity
                     component.tactical_sellable_quantity = (
                         holding.tactical_sellable_quantity

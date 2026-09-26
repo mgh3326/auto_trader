@@ -137,9 +137,7 @@ class PortfolioDataCollector:
                 evaluation = _to_float(stock.get("evlu_amt"), default=0.0) or None
                 profit_loss = _to_float(stock.get("evlu_pfls_amt"), default=0.0)
                 profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
-                broker_sellable = _optional_broker_sellable(
-                    stock.get("ord_psbl_qty")
-                )
+                broker_sellable = _optional_broker_sellable(stock.get("ord_psbl_qty"))
 
                 components.append(
                     {
@@ -193,9 +191,7 @@ class PortfolioDataCollector:
                 )
                 profit_loss = _to_float(stock.get("frcr_evlu_pfls_amt"), default=0.0)
                 profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
-                broker_sellable = _optional_broker_sellable(
-                    stock.get("ord_psbl_qty")
-                )
+                broker_sellable = _optional_broker_sellable(stock.get("ord_psbl_qty"))
 
                 components.append(
                     {
