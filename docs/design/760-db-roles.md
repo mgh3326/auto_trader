@@ -91,6 +91,12 @@ found the only non-test SQLAlchemy/asyncpg constructors in `app/core/db.py`,
 compose migration templates also contain inline connection checks and are called out in
 the Alembic inventory below. The
 complete test-only hit list is captured in [Tests and throwaway databases](#tests-and-throwaway-databases).
+The exact non-test source audit command was:
+
+```text
+rg -n --glob '*.py' 'asyncpg\\.(connect|create_pool)|create_async_engine|async_engine_from_config|create_engine\\(|psycopg[0-9]?\\.connect|psql\\(' app scripts research alembic | rg -v '/tests/' | sort
+```
+
 The `app/services/brokers/binance/demo/ledger/service.py` session factory binds an
 already supplied session/engine rather than creating a separate URL-bearing engine
 [app/services/brokers/binance/demo/ledger/service.py:L116-L145]; it is not an
@@ -305,8 +311,8 @@ production application roles database-create authority:
 | NHPLUG / callback worker fixtures | `tests/services/nhplug_mock/claim_worker.py`; `tests/services/nhplug_mock/dispatch_test_worker.py`; `tests/services/order_proposals/callback_inbox/test_lock_cleanup_cancellation.py`; `tests/services/order_proposals/callback_inbox/test_gates_and_registration.py` |
 | Guard/source-fixture references rather than a production connection path | `tests/infra/test_database_guard_completeness.py`; `tests/research/test_screener_bakeoff_parity.py` |
 
-The source-to-document audit records the exact search command and confirms that this
-list is complete for the cited constructor patterns at this design revision.
+The source-to-document audit uses this constructor-pattern family and confirms that
+this list is complete for the cited patterns at this design revision.
 
 ## Target privileges and ownership
 
