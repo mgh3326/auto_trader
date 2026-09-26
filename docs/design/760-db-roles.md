@@ -83,6 +83,9 @@ repository's templates describe production.
 | Promotion URL | `promote_kr_candles_to_research.py` derives an asyncpg URL from `DATABASE_URL`; its write path is separately opt-in. | `scripts/promote_kr_candles_to_research.py:L1-L41, L58-L83` |
 | Campaign URL | The ROB-974 script reads only the alias named by `ROB974_DATABASE_URL` after its own fixed-target checks. | `scripts/run_rob974_r2_campaign.py:L96-L109, L304-L337, L420-L446, L734-L780` |
 | Dev-seed source URL | `make_dev_seed.py` requires `--source-database-url` and opens an asyncpg read-only transaction. | `scripts/make_dev_seed.py:L126-L137, L192-L213, L260-L305` |
+| Tracked host-job input | The NCP job wrapper passes its selected `AT_RUNTIME_ENV_FILE` to the deployed image as `--env-file`; the documented templates set that input for scheduled application jobs. This design inspected templates, not an environment file. | `ops/ncp/bin/at-job.sh:L153-L187`; `ops/ncp/systemd/job-toss-warnings-sync.service:L7-L16`; `ops/ncp/systemd/job-us-market-valuation-snapshots.service:L7-L16` |
+| Fill-handoff inputs | The tracked fill-handoff unit passes its application and handoff environment inputs to `scripts.fill_event_handoff`; that entrypoint opens the shared application session. | `ops/ncp/systemd/fill-event-handoff.service:L7-L16`; `scripts/fill_event_handoff.py:L18-L24, L98-L121` |
+| Backup libpq inputs | The tracked backup service calls `pg_dump` and `pg_dumpall` through `ops/ncp/pg-backup.sh`. The script requires `PGHOST`, `PGPORT`, `PGUSER`, and one of `PGPASSWORD` or `PGPASSFILE`, and can forward SSL/connect controls. These are key names only, not inspected values. | `ops/ncp/systemd/at-pg-backup.service:L6-L15`; `ops/ncp/pg-backup.sh:L57-L104, L149-L167` |
 | Test aliases | The test harness derives a run-owned `DATABASE_URL` from `AUTO_TRADER_TEST_DATABASE_URL` and records the xdist name, base URL, run UID, owner token, and shared-DB flags under its own aliases. | `tests/_run_owned_database.py:L12-L45, L135-L178` |
 
 Within `app/`, `scripts/`, and `alembic/`, the Python-source static constructor audit
@@ -91,10 +94,22 @@ found the only non-test SQLAlchemy/asyncpg constructors in `app/core/db.py`,
 compose migration templates also contain inline connection checks and are called out in
 the Alembic inventory below. The
 complete test-only hit list is captured in [Tests and throwaway databases](#tests-and-throwaway-databases).
-The exact non-test source audit command was:
+The exact non-test direct-constructor audit command was run under `pipefail` so an
+invalid regular expression cannot be hidden by a later pipe stage:
 
 ```text
-rg -n --glob '*.py' 'asyncpg\\.(connect|create_pool)|create_async_engine|async_engine_from_config|create_engine\\(|psycopg[0-9]?\\.connect|psql\\(' app scripts research alembic | rg -v '/tests/' | sort
+set -o pipefail
+rg -n --glob '*.py' 'asyncpg\.(connect|create_pool)|create_async_engine|async_engine_from_config|create_engine\(|psycopg[0-9]?\.connect|psql\(' app scripts research alembic | rg -v '/tests/' | sort
+```
+
+It is deliberately complemented by shared-factory and host-unit discovery; a direct
+constructor search alone cannot find a CLI that imports the already-created `engine`
+or a systemd service that starts an application module:
+
+```text
+set -o pipefail
+rg -n --glob '*.py' 'from app\.core\.db import (AsyncSessionLocal|engine)' app scripts research | sort
+rg -n --glob '*.service' --glob '*.service.in' --glob '*.sh' 'AT_RUNTIME_ENV_FILE|--env-file|pg_dump|pg_dumpall|PGHOST|PGUSER' ops/ncp | sort
 ```
 
 The `app/services/brokers/binance/demo/ledger/service.py` session factory binds an
@@ -144,12 +159,15 @@ compose file defines multiple MCP services [docker-compose.prod.yml:L89-L211] an
 deployment script enumerates named MCP units/profiles and starts
 `python -m app.mcp_server.main` [scripts/deploy-ncp-pull.sh:L37-L41, L150-L160].
 
-**Role result:** each MCP deployment gets its own `NOINHERIT` login, all initially
-membership-only in `at_app`. A read-only MCP profile is an MCP-tool surface property,
-not evidence that its process can safely share a database reporting role: the server
-binary registers a broad application tool set by profile and there is no DB-identity
-selector in the source. A separate reporting identity would require a future,
-explicitly configured read-only process.
+**Role result:** each MCP deployment gets its own login that is an `INHERIT` member
+of only `at_app`, because neither the MCP bootstrap nor the shared engine performs
+`SET ROLE`. On PostgreSQL 16 or later, the reviewed membership must explicitly have
+`INHERIT TRUE`, `SET FALSE`, and `ADMIN FALSE`; on earlier supported versions, the
+login itself must retain `INHERIT` and no role-switch path. A read-only MCP profile is
+an MCP-tool surface property, not evidence that its process can safely share a
+database reporting role: the server binary registers a broad application tool set by
+profile and there is no DB-identity selector in the source. A separate reporting
+identity would require a future, explicitly configured read-only process.
 
 ### CLI and monitors
 
@@ -164,21 +182,65 @@ The following repository entrypoints are material to a staged rotation:
 | `scripts/promote_kr_candles_to_research.py` | Direct asyncpg connection from `DATABASE_URL`; confirmed mode can write. | Rotate only with the application identity after its normal-table DML manifest covers the promotion path. |
 | `scripts/run_rob974_r2_campaign.py` | Direct `create_async_engine` from `ROB974_DATABASE_URL`, including a read-only schema guard and a separate run engine. | Preserve its target/identity gates; do not substitute the generic application role without its own approved campaign manifest. |
 | `scripts/make_dev_seed.py` | Direct asyncpg connection from required operator CLI input, explicitly read-only. | Use a future reporting role only if its exact source tables are approved; do not make it a production application credential. |
+| `scripts/retrospective_action_cutover.py` | Imports the shared `engine` and begins a database transaction for its guarded cutover. | Treat it as an approved operational application CLI only after its table/lock requirements receive a named manifest review; it is not a separate URL factory. |
 
 The deployment evidence for the unified monitor is the tracked `websocket_monitor.py`
 command in compose [docker-compose.prod.yml:L213-L275] and the dedicated `run_ws`
 launcher [scripts/deploy-ncp-pull.sh:L77-L83]. Its database imports and session use are
 in `websocket_monitor.py:L22-L23, L254-L268, L302-L312`. `manage_users.py` uses the
 shared session factory for both reads and updates [manage_users.py:L20-L23, L51-L125].
-The direct CLI constructors are cited in the configuration table above.
+The direct CLI constructors are cited in the configuration table above; the
+retrospective cutover's shared-engine import and transaction are
+[scripts/retrospective_action_cutover.py:L51-L60, L91-L94].
+
+#### Tracked NCP systemd consumers and backup client
+
+The direct Python constructor search is not a complete deployment inventory. The
+tracked NCP systemd templates contain existing background entrypoints; their presence
+does not prove installation, but an operator must inventory and rotate every installed
+one before declaring a credential cutover complete. This document did not open any of
+the environment files named by those templates.
+
+| Tracked unit class | Repository connection path | Cutover treatment |
+| --- | --- | --- |
+| Application job timers | `job-crypto-invest-insight-snapshots`, `job-crypto-invest-screener-snapshots`, `job-kr-fundamentals-snapshots`, `job-kr-investor-flow-snapshots`, `job-toss-symbol-master-sync`, `job-toss-warnings-sync`, `job-us-fundamentals-snapshots`, `job-us-invest-screener-snapshots`, and `job-us-market-valuation-snapshots` invoke named application modules through `at-job.sh`. The wrapper supplies its runtime environment to the deployed image; example modules import the shared factory. | Treat every installed unit and paired existing timer as an `at_app` login rotation/drain target. The change record must name its module, login, credential input, timer cadence, and final successful new-login run. Do not add, re-register, or retime a timer in this Phase 1 design. |
+| Fill-event handoff timer | `fill-event-handoff.service` starts `scripts.fill_event_handoff --once`, which opens `AsyncSessionLocal`. | Treat an installed unit as an `at_app` consumer and rotate/drain it with the application credentials. The handoff-specific input is not a substitute for the application database identity. |
+| PostgreSQL backup timer | `at-pg-backup.service` invokes `pg-backup.sh`, whose `pg_dump` and `pg_dumpall --globals-only` calls use a distinct libpq identity. | Keep it outside `at_app`; inventory its cluster/database scope and least privilege separately. Do not silently reuse an application or migration login for the backup client. Its daily cadence is part of the post-rotation observation window. |
+| Resident lane-kickoff timers | The eleven tracked `job-kickoff-{0905,1130,1430,crypto-0220,crypto-0820,crypto-1420,crypto-2020,nxt-eve,nxt-open,nxt-prep,us-2235}` units pass the API and lane-event inputs to `scripts.lane_event_kickoff`. Its static import path is lane-event emission, not the application database factory. | Record every installed unit and paired timer as a credential-input consumer, then confirm its deployed command remains non-PostgreSQL before excluding it from the `at_app` client matrix. Remove a legacy application credential from its inherited application input even when the current source does not open a database connection. |
+| B0X lane-event templates | The six `job-kickoff-b0x-{harvest,nudge-crypto,nudge-kr,nudge-us,table-kr,table-us}` templates and `b0x-lane-event-consumer.service.in` are explicitly non-operational until installer rendering. Their tracked commands invoke lane-event helpers with a template environment input; the static entrypoints have no shared or direct PostgreSQL factory import. | Do not treat a template as installed. If an approved operator finds one rendered, add its exact command, credential-input name, database classification, and timer cadence to the signed inventory before legacy-credential retirement. Do not activate or retime it for this design. |
+| MCP watchdog timer | `at-mcp-watchdog.service` runs an external `/root/at-run` watchdog path rather than a repository Python module. Repository source cannot establish whether that external path opens a database or restarts a credential-bearing MCP process. | Include every installed watchdog unit in the deployment/restart inventory and classify its actual process and credential inputs before completion; do not presume that a timer without a repository database import is harmless. |
+
+The unit names above are tracked-template evidence, not an assertion that each one is
+installed. Their common wrapper is [ops/ncp/bin/at-job.sh:L153-L187]; representative
+unit bindings are [ops/ncp/systemd/job-toss-warnings-sync.service:L7-L16,
+ops/ncp/systemd/job-us-market-valuation-snapshots.service:L7-L16], the fill-handoff
+binding is [ops/ncp/systemd/fill-event-handoff.service:L7-L16], and the backup service
+and client are [ops/ncp/systemd/at-pg-backup.service:L6-L15,
+ops/ncp/pg-backup.sh:L57-L104, L149-L167]. The scheduled modules are transitive
+shared-factory consumers rather than new connection factories; for example,
+`app.jobs.toss_warnings` and `app.jobs.market_valuation_snapshots` import
+`AsyncSessionLocal` [app/jobs/toss_warnings.py:L1-L25,
+app/jobs/market_valuation_snapshots.py:L1-L20, L100-L127].
+
+The remaining tracked service families are included above rather than silently
+discarded: a representative resident kickoff unit supplies its two environment inputs
+and runs `scripts.lane_event_kickoff` [ops/ncp/systemd/job-kickoff-0905.service:L7-L21],
+the B0X kickoff template is explicitly render-gated
+[ops/ncp/systemd/job-kickoff-b0x-harvest.service.in:L6-L20], the B0X consumer template
+names its binding and state-db input [ops/ncp/systemd/b0x-lane-event-consumer.service.in:L6-L17],
+and the watchdog runs a non-repository path [ops/ncp/systemd/at-mcp-watchdog.service:L6-L12].
+`scripts.lane_event_kickoff` imports the lane-event API at its entrypoint
+[scripts/lane_event_kickoff.py:L1-L20]. The inventory command for an operator record
+is `rg --files ops/ncp/systemd | sort`, paired by service/timer basename and reconciled
+with the installed-unit query in [Open operator questions](#open-operator-questions).
 
 #### Full static CLI/research consumer audit
 
-The following source files import `AsyncSessionLocal`; they are **candidate rotation
-targets if deployed**, not proof that they run in production. They do not create a new
-connection factory or a different URL alias; when invoked, they use the shared
-`DATABASE_URL` path. This exact source audit prevents manual CLI surfaces from being
-mistaken for a small, API-only cutover:
+The following source files import `AsyncSessionLocal` or the shared `engine`; they are
+**candidate rotation targets if deployed**, not proof that they run in production. They
+do not create a new connection factory or a different URL alias; when invoked, they use
+the shared `DATABASE_URL` path. This exact source audit prevents manual CLI surfaces
+from being mistaken for a small, API-only cutover:
 
 ```text
 research/alpaca_track_seal/registry_cli.py
@@ -229,6 +291,7 @@ scripts/rob1284_resting_rung_sweep.py
 scripts/rob178_smoke.py
 scripts/rob278_kr_dryrun.py
 scripts/rob837_reconcile_upbit_proposal.py
+scripts/retrospective_action_cutover.py
 scripts/run_market_close_digest.py
 scripts/run_research_run_refresh.py
 scripts/seed_execution_ledger_opening_lots.py
@@ -666,15 +729,43 @@ itself an object owner.
 The repository references `gen_random_uuid()` in multiple migrations/models and
 `sha256(...)` in the #711 body-digest function
 [alembic/versions/20260926_task711_nhplug_dispatch.py:L107-L116]. The static scan found
-no tracked `CREATE EXTENSION` statement. That is not enough to identify the live
-extension provider, version, owner, or whether a managed service reserves extension
-administration. The extension catalog and member dependencies are mandatory preflight
-items.
+no tracked `CREATE EXTENSION` statement, but that does **not** mean extensions are
+optional. The tracked TimescaleDB migration rejects a missing `timescaledb` extension
+[alembic/versions/87541fdbc954_add_kr_candles_timescale.py:L35-L51], creates a
+hypertable and continuous aggregate [alembic/versions/87541fdbc954_add_kr_candles_timescale.py:L79-L99],
+and registers policy/refresh behavior [alembic/versions/87541fdbc954_add_kr_candles_timescale.py:L139-L178].
+Other tracked revisions likewise use hypertables, continuous aggregates, and retention
+policies [alembic/versions/e5df7fbd9803_add_crypto_candles_1m.py:L89-L100,
+alembic/versions/e7a5b7c9d1f2_add_us_candles_timescale.py:L200-L278,
+alembic/versions/d31f0a2b4c6d_add_kr_candles_retention_policy.py:L21-L65]. A database
+that has successfully passed the mandatory migration is therefore expected to have
+TimescaleDB; production catalog evidence remains authoritative for version, owners,
+installed jobs, and managed-service restrictions.
 
 Extensions remain DBA/platform-owned. Do not reassign extension members, grant the
 application `CREATE EXTENSION`, or try to make the application role own an extension to
 fix a migration failure. If a future migration needs an extension, split its approved
 DBA prerequisite from ordinary application DDL and record the exact supported version.
+
+#### TimescaleDB ownership and background-job boundary
+
+Timescale objects must not be treated as ordinary relations selected only by
+`pg_class.relkind`. Continuous aggregates can appear as `relkind = 'v'` in the tracked
+migration [alembic/versions/20260804_toss_phase2_corpus.py:L42-L45]; their materialization
+hypertables, chunks, and policy jobs have additional extension-managed ownership
+relationships. Before ownership or credential retirement, the operator must inventory
+the hypertable, continuous aggregate, materialization hypertable, chunk, and
+Timescale-policy-job owners. The approved owner transition uses the supported
+version-specific Timescale/PostgreSQL commands: `ALTER TABLE` for a hypertable and
+`ALTER MATERIALIZED VIEW` for a continuous aggregate, never a relkind-driven generic
+`ALTER VIEW`. The mechanism to reassign a policy-job owner is a version/platform fact
+that the DBA must record and prove after the move; this design does not guess or run it.
+
+Do not retire an old login while it owns a Timescale job, chunk, continuous aggregate,
+or materialization hypertable. The staging proof for a future Phase 2 role transition
+must include one continuous-aggregate refresh and one retention-policy job under the
+proposed owner. These are existing extension jobs, not authorization to create or
+schedule another job.
 
 ### Tests and throwaway databases
 
@@ -700,10 +791,13 @@ an explicit production facts record. No step below may be executed from this PR.
 3. Capture the exact image digests and service inventory before rotation. The tracked
    deployment script shows blue/green API and MCP behavior but singleton worker,
    scheduler, and websocket units [scripts/deploy-ncp-pull.sh:L130-L170]; confirm the
-   live inventory rather than treating the template as fact.
+   live inventory rather than treating the template as fact. Include every installed
+   unit from [Tracked NCP systemd consumers and backup client](#tracked-ncp-systemd-consumers-and-backup-client),
+   its credential-input name, its login, and its longest existing timer cadence.
 4. Stop new manual production CLIs and identify queued/background work that must not
-   execute under an old role during the transition. Do not add a scheduler or change
-   existing execution gates as part of this activity.
+   execute under an old role during the transition. Coordinate an existing host-unit
+   pause/drain with the responsible operator where needed; do not add, register, or
+   retime a scheduler as part of this activity.
 
 ### 1. Read-only preflight SQL
 
@@ -731,6 +825,13 @@ FROM pg_roles
 WHERE rolname IN ('at_migration_owner', 'at_app', 'nhplug_security_owner',
                   'nhplug_operator', 'at_reporting')
    OR left(rolname, 3) = 'at_'
+ORDER BY rolname;
+-- Record every login/superuser candidate before selecting the legacy credential
+-- in the operator change record. Do not include password data.
+SELECT rolname, rolsuper, rolcanlogin, rolinherit, rolcreaterole,
+       rolbypassrls, rolreplication
+FROM pg_roles
+WHERE rolcanlogin OR rolsuper
 ORDER BY rolname;
 SELECT parent.rolname AS granted_role, member.rolname AS member_role,
        m.admin_option
@@ -812,6 +913,36 @@ ORDER BY usename, application_name, client_addr, state;
 ROLLBACK;
 ```
 
+If the extension inventory above contains `timescaledb`, run this **separate**
+read-only block. Keeping it separate means an unexpected absent extension does not
+abort the generic role/ACL preflight. Its output is the mandatory ownership and
+background-job manifest for the Timescale transition:
+
+```sql
+BEGIN READ ONLY;
+SELECT extname, extversion, pg_get_userbyid(extowner) AS extension_owner
+FROM pg_extension
+WHERE extname = 'timescaledb';
+SELECT job_id, proc_name, owner, hypertable_schema, hypertable_name, scheduled
+FROM timescaledb_information.jobs
+ORDER BY job_id;
+SELECT hypertable_schema, hypertable_name, owner
+FROM timescaledb_information.hypertables
+ORDER BY hypertable_schema, hypertable_name;
+SELECT view_schema, view_name, view_owner,
+       materialization_hypertable_schema, materialization_hypertable_name
+FROM timescaledb_information.continuous_aggregates
+ORDER BY view_schema, view_name;
+SELECT n.nspname AS schema_name, pg_get_userbyid(c.relowner) AS owner,
+       count(*) AS relation_count
+FROM pg_class AS c
+JOIN pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname LIKE E'\\_timescaledb%' ESCAPE E'\\'
+GROUP BY n.nspname, c.relowner
+ORDER BY schema_name, owner;
+ROLLBACK;
+```
+
 If the current database role cannot see a needed catalog field, stop rather than
 substituting a guessed answer. Obtain the narrowest approved catalog-reader/DBA view.
 If the `alembic_version_relation` result is non-null, the operator may run this separate
@@ -858,6 +989,13 @@ container rollout, connection draining, and client termination: those external s
 are not made atomic by SQL transaction boundaries. Preserve a matching inverse ACL and
 ownership batch before beginning.
 
+Every API, worker, scheduler, MCP, monitor, host-job, and fill-handoff application
+login must inherit only `at_app`; there is no generic application startup `SET ROLE`
+step. PostgreSQL 16 or later membership rows must record `inherit_option = true`,
+`set_option = false`, and `admin_option = false`; earlier supported versions require
+an inheriting login and no owner-role membership. This is an application-login
+requirement, not a license to give any login membership in an owner role.
+
 At minimum, the approved batch must:
 
 1. grant `CONNECT` and only required schema `USAGE` to the group roles;
@@ -889,7 +1027,14 @@ identified process in this order:
    connection confirmation before any old grant is revoked.
 5. **Websocket/other monitors:** restart every deployed monitor that imports the
    shared factory; confirm its process command rather than relying on a source filename.
-6. **Approved operational CLIs:** inventory separately. Explicit-URL tools such as
+6. **Tracked host jobs and fill handoff:** rotate every installed application-job and
+   fill-handoff unit, then record a successful run under its new application login.
+   A timer that can still launch a process from an old credential input is an active
+   cutover failure, even if it had no session during the last snapshot.
+7. **Backup client:** inventory the separate backup identity and its database/cluster
+   scope. Keep it outside `at_app`; rotate it only through a separately approved
+   backup/DR procedure, never by copying an application credential.
+8. **Approved operational CLIs:** inventory separately. Explicit-URL tools such as
    protected-position inspection, campaign execution, and dev-seed export must not be
    accidentally pointed at a privileged production identity.
 
@@ -899,7 +1044,10 @@ Consequently this is not a true zero-downtime credential cutover. Old pools reta
 authenticated sessions; the scheduler/monitor restarts can have a gap; and long MCP
 drains may overlap new traffic. Plan a maintenance window or explicitly accepted
 overlap. Do not revoke old privileges until catalog evidence shows the old login has no
-active sessions and the replacement process has passed its approved checks.
+active sessions and the replacement process has passed its approved checks. Do not
+retire the old credential until it is absent from every inventoried application input
+and repeated client evidence covers at least the longest installed host timer (daily
+when the tracked backup timer is installed).
 
 ### 4. Exact post-deploy verification SQL
 
@@ -932,6 +1080,16 @@ JOIN pg_auth_members AS m ON m.member = r.oid
 JOIN pg_roles AS parent ON parent.oid = m.roleid
 WHERE parent.rolname IN ('at_app', 'at_migration_owner', 'nhplug_operator')
 ORDER BY parent.rolname, r.rolname;
+
+-- PostgreSQL 16+ only: verify the membership semantics, not just the member
+-- role's rolinherit default. Every at_app login must inherit but not SET/admin it.
+SELECT parent.rolname AS granted_role, member.rolname AS member_role,
+       m.admin_option, m.inherit_option, m.set_option
+FROM pg_auth_members AS m
+JOIN pg_roles AS parent ON parent.oid = m.roleid
+JOIN pg_roles AS member ON member.oid = m.member
+WHERE parent.rolname = 'at_app' AND member.rolcanlogin
+ORDER BY member.rolname;
 
 SELECT n.nspname,
        has_schema_privilege('at_app', n.oid, 'USAGE') AS app_usage,
@@ -968,6 +1126,40 @@ WHERE c.oid IN (
 )
 ORDER BY object_name;
 
+-- Effective privileges for every login that inherits at_app. Reconcile this
+-- list one-for-one with the signed deployed-unit inventory; an unmapped login
+-- or a deployed unit absent from this result fails the cutover.
+WITH app_login AS (
+  SELECT member.rolname AS login_name
+  FROM pg_auth_members AS m
+  JOIN pg_roles AS parent ON parent.oid = m.roleid
+  JOIN pg_roles AS member ON member.oid = m.member
+  WHERE parent.rolname = 'at_app' AND member.rolcanlogin
+), protected_object AS (
+  SELECT c.oid, c.oid::regclass AS object_name
+  FROM pg_class AS c
+  WHERE c.oid IN (
+    'review.nhplug_mock_key_version'::regclass,
+    'review.nhplug_success_proof_code'::regclass,
+    'review.nhplug_no_order_proof_code'::regclass,
+    'review.nhplug_mock_operator_authorization'::regclass,
+    'review.nhplug_mock_account_ref'::regclass,
+    'review.nhplug_mock_account_binding'::regclass,
+    'review.nhplug_mock_order_ledger'::regclass,
+    'review.kiwoom_authority_attempts'::regclass,
+    'review.kiwoom_authority_cessation_receipts'::regclass
+  )
+)
+SELECT l.login_name, o.object_name,
+       has_table_privilege(l.login_name, o.oid, 'SELECT') AS can_select,
+       has_table_privilege(l.login_name, o.oid, 'INSERT') AS can_insert,
+       has_table_privilege(l.login_name, o.oid, 'UPDATE') AS can_update,
+       has_table_privilege(l.login_name, o.oid, 'DELETE') AS can_delete,
+       has_table_privilege(l.login_name, o.oid, 'TRUNCATE') AS can_truncate
+FROM app_login AS l
+CROSS JOIN protected_object AS o
+ORDER BY l.login_name, o.object_name;
+
 SELECT s.oid::regclass AS sequence_name,
        has_sequence_privilege('at_app', s.oid, 'USAGE') AS app_usage,
        has_sequence_privilege('at_app', s.oid, 'SELECT') AS app_select,
@@ -1003,6 +1195,13 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 GROUP BY usename, application_name, client_addr, state
 ORDER BY usename, application_name, client_addr, state;
 
+-- Replace only this literal with the legacy application login recorded during
+-- preflight. Its final state must be NOLOGIN and NOSUPERUSER before completion.
+SELECT rolname, rolcanlogin, rolsuper, rolinherit, rolcreaterole,
+       rolbypassrls, rolreplication
+FROM pg_roles
+WHERE rolname = '<legacy_application_login_from_change_record>';
+
 ROLLBACK;
 ```
 
@@ -1011,6 +1210,29 @@ role attribute, old client, or absent required application privilege as a failed
 cutover. The static check is not enough: run the #711 authorization-consumption path
 only in an approved staging clone with rollback-safe data, because a production insert
 can advance a sequence even if its surrounding transaction rolls back.
+
+For each deployed login, compare the effective protected-object result with the
+required #711/ROB-1340 matrix above, and run the same effective-login query for one
+named normal table from that deployment class's signed DML manifest. A group-role
+success alone does not prove an `INHERIT` login works. On PostgreSQL 16 or later, a
+false `inherit_option`, true `set_option`, or true `admin_option` for an `at_app`
+login fails verification even if a group-role ACL check succeeds.
+
+### 4a. Legacy-credential retirement evidence
+
+After every installed application consumer has successfully run under its new login,
+remove the legacy application credential from every inventoried application input and
+prevent fresh authentication. The approved operator chooses the safe mechanism from
+the preflight record: rotate/revoke the credential in the secret system, or set the
+specific legacy login `NOLOGIN NOSUPERUSER` if it is not shared by another approved
+consumer. Never apply a blanket role change, and do not retire a Timescale owner or
+backup identity under this step.
+
+This is deliberately later than new-service deploy and earlier than completion. Repeat
+the active-client query after the credential-retirement action for an observation
+window at least as long as the longest installed host timer (daily when the backup
+timer is present). The cutover is incomplete if a timer can still launch an old-login
+process, even if one point-in-time session query was empty.
 
 ### 5. Drain and rollback
 
@@ -1035,8 +1257,8 @@ rollback and backup restore solve different problems.
 An old superuser session is not made safe by revoking ordinary grants: it still bypasses
 ordinary ACLs. Identify and end/re-authenticate old privileged sessions under a DBA
 maintenance procedure before declaring the cutover complete. The role split is complete
-only when the active-client query has no old application/migration/superuser session
-that can continue the old access pattern.
+only after the legacy credential is retired, the observation window is clean, and no
+old application/migration/superuser session can continue the old access pattern.
 
 ## Risks requiring explicit assessment
 
@@ -1046,10 +1268,12 @@ that can continue the old access pattern.
 | Existing ownership | An owner bypasses ordinary ACL intent; historical migration runners may own arbitrary objects. | Inventory owners; prohibit blanket reassignment; move named objects only. |
 | #711 historical ACLs | The migration grants reads to `current_user` and makes `nhplug_operator` an owner/update role. | Resolve the compatibility blocker with a forward approved transition before activating the split. |
 | ROB-1340 authority evidence | Runtime readiness demands SELECT/INSERT and rejects any effective UPDATE/DELETE/TRUNCATE on two append-only evidence tables. | Keep the explicit exception and identity-sequence grants outside a broad review-schema manifest. |
-| Extension objects | Reassignment or missing function/extension privilege can break migrations or generated defaults. | Inspect `pg_extension` and extension-member dependencies; retain DBA ownership. |
+| Extension objects | Reassignment or missing function/extension privilege can break migrations or generated defaults. | Inspect `pg_extension` and extension-member dependencies; retain DBA ownership. For TimescaleDB, inventory hypertables, continuous aggregates, chunks, materialization tables, and policy-job owners before any owner or credential transition. |
 | PUBLIC function execute | #711 security-definer functions may be publicly executable by default. | Inspect `proacl`/effective ACL, then revoke and selectively grant in an approved transactional change. |
 | RLS / SECURITY DEFINER | Table owner and definer behavior can bypass intended policies; a path change can introduce function hijack risk. | Inspect policies, `prosecdef`, `proconfig`, owner attributes, and schema-create ACLs; do not change function body/search path casually. |
-| Background work | Old TaskIQ worker/scheduler, monitors, MCP requests, and pools can retain old credentials. | Inventory all active clients, rotate/drain every unit, then revoke old access. |
+| Background work | Old TaskIQ worker/scheduler, monitors, MCP requests, pools, host timers, and fill handoff can retain or later re-open an old credential. | Inventory all active clients and installed units, rotate/drain every unit, retire the old credential, then observe for at least the longest timer cadence. |
+| Legacy privileged credential | A superuser or bypassing login ignores ordinary ACL revocation and can return after a timer fires. | Remove it from every application input, retire it with an approved credential/role action, and prove no old sessions during the observation window. |
+| TimescaleDB jobs | Retention/refresh policy jobs and extension-owned object graphs can keep an old owner alive or fail after a generic ownership change. | Use the Timescale catalog and supported owner-transition method, then prove a refresh and retention job under the approved owner before legacy retirement. |
 | Zero-downtime assumption | The repository shows blue/green only for some units; credentials and sessions are not atomically switched. | Use a maintenance window or documented overlap, with old grants retained until all old sessions are gone. |
 | Test-role confusion | Test fixtures intentionally create/drop isolated databases. | Keep a separate test administrator and run-owned DB behavior; do not weaken production roles. |
 
@@ -1060,7 +1284,7 @@ be run against the intended production database by an approved operator.
 
 1. **Which database, PostgreSQL version, and deployed units are actually in scope?**
    Default: include every unit in the repository inventory until the live service list
-   proves otherwise.
+   proves otherwise, including installed host-job, fill-handoff, and backup timers.
 
    ```sql
    BEGIN READ ONLY;
@@ -1071,6 +1295,14 @@ be run against the intended production database by an approved operator.
    GROUP BY usename, application_name, client_addr, state
    ORDER BY usename, application_name, client_addr, state;
    ROLLBACK;
+   ```
+
+   The same approved operator should obtain the host-unit inventory without opening
+   a credential file:
+
+   ```text
+   systemctl list-timers --all
+   systemctl list-units --all 'job-*' 'fill-event-handoff*' 'at-pg-backup*' 'b0x-*'
    ```
 
 2. **Are any target role names already present, and who owns/members them?**
@@ -1141,8 +1373,9 @@ be run against the intended production database by an approved operator.
    ROLLBACK;
    ```
 
-5. **Which extensions and RLS policies exist, and who owns their members?**
-   Default: platform/DBA retains extensions; defer RLS changes entirely.
+5. **Which extensions and RLS policies exist, and who owns their members and
+   TimescaleDB jobs?** Default: platform/DBA retains extensions; defer RLS changes
+   entirely, and do not retire an old login until Timescale ownership is resolved.
 
    ```sql
    BEGIN READ ONLY;
@@ -1159,15 +1392,49 @@ be run against the intended production database by an approved operator.
    ROLLBACK;
    ```
 
+   If the first query returns `timescaledb`, run this separate read-only query:
+
+   ```sql
+   BEGIN READ ONLY;
+   SELECT job_id, proc_name, owner, hypertable_schema, hypertable_name, scheduled
+   FROM timescaledb_information.jobs
+   ORDER BY job_id;
+   SELECT hypertable_schema, hypertable_name, owner
+   FROM timescaledb_information.hypertables
+   ORDER BY hypertable_schema, hypertable_name;
+   SELECT view_schema, view_name, view_owner,
+          materialization_hypertable_schema, materialization_hypertable_name
+   FROM timescaledb_information.continuous_aggregates
+   ORDER BY view_schema, view_name;
+   ROLLBACK;
+   ```
+
 6. **Is a reporting role actually justified?** Default: do not create one. The source
    contains no separately configured reporting process; introduce it only with a named
    consumer, a read-only view/table manifest, connection identity, retention policy,
    and an operator-approved deployment path.
 
-7. **What is the acceptable outage/overlap and client-drain policy?** Default: use a
-   maintenance window, retain old grants until active-client evidence is clean, and
-   explicitly account for old superuser sessions. The template's API/MCP drain timers
-   do not establish database-session drain completion.
+7. **What is the acceptable outage/overlap, old-credential retirement, and
+   client-drain policy?** Default: use a maintenance window, retain old grants until
+   new clients are verified, then remove the legacy application credential from every
+   inventoried application input and observe a clean interval at least as long as the
+   longest installed timer. The template's API/MCP drain timers do not establish
+   database-session drain completion.
+
+   ```sql
+   BEGIN READ ONLY;
+   SELECT rolname, rolcanlogin, rolsuper, rolinherit, rolcreaterole,
+          rolbypassrls, rolreplication
+   FROM pg_roles
+   WHERE rolname = '<legacy_application_login_from_change_record>';
+   SELECT usename, application_name, client_addr, state, count(*)
+   FROM pg_stat_activity
+   WHERE datname = current_database()
+     AND pid <> pg_backend_pid()
+   GROUP BY usename, application_name, client_addr, state
+   ORDER BY usename, application_name, client_addr, state;
+   ROLLBACK;
+   ```
 
 ## MCP lane-contract assessment
 
