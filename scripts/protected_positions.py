@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.services.protected_position_settings import read_protected_position_history
+from app.services.protected_position_history import read_protected_position_history
 from app.services.protected_quantity_service import (
     ProtectedQuantityService,
     ProtectedQuantityValidationError,

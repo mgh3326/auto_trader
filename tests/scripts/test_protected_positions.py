@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import ast
+import json
+import os
+import subprocess
+import sys
 from argparse import Namespace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -56,6 +60,39 @@ def test_cli_is_explicit_database_read_only_and_has_no_write_command() -> None:
     assert "save" not in choices and "write" not in choices
     assert not any("brokers" in module for module in imports)
     assert ".save(" not in source
+
+
+@pytest.mark.integration
+def test_cli_subprocess_reads_explicit_database_without_broker_secrets(
+    db_session,
+) -> None:
+    validate_run_owned_database_url(engine.url)
+    project_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "scripts" / "protected_positions.py"),
+            "--database-url",
+            engine.url.render_as_string(hide_password=False),
+            "show",
+            "kis_live",
+            "kr",
+            f"TNONE{uuid4().hex[:8].upper()}",
+        ],
+        cwd=project_root,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "ENV_FILE": "/dev/null",
+            "DEV_ENV_FILE": "/dev/null",
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)["error"] == "not_found"
 
 
 @pytest.mark.integration

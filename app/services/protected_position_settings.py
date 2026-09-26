@@ -17,13 +17,16 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_upbit_symbol
-from app.models.trading import User
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.upbit.client import fetch_my_coins
+from app.services.protected_position_history import (
+    _actor_names,
+    _history_item,
+    read_protected_position_history,
+)
 from app.services.protected_quantity_service import (
     BrokerPositionObservation,
     ProtectedPositionSnapshot,
@@ -287,16 +290,6 @@ async def read_live_position_inventory() -> tuple[
     return observations, failures
 
 
-async def _actor_names(db: AsyncSession, actor_ids: set[int]) -> dict[int, str | None]:
-    if not actor_ids:
-        return {}
-    rows = await db.execute(select(User).where(User.id.in_(actor_ids)))
-    names: dict[int, str | None] = {}
-    for user in rows.scalars():
-        names[int(user.id)] = user.nickname or user.username
-    return names
-
-
 def _state_from_observation(
     *, snapshot: ProtectedPositionSnapshot | None, observation: LivePositionObservation
 ) -> tuple[str, Decimal | None]:
@@ -314,43 +307,6 @@ def _state_from_observation(
     if observation.sellable < protected:
         return "encroached", Decimal("0")
     return "covered", max(Decimal("0"), observation.sellable - protected)
-
-
-def _history_item(revision: Any, *, actor_name: str | None) -> dict[str, Any]:
-    return {
-        "revision": int(revision.revision),
-        "action": str(revision.action),
-        "previous_quantity": _decimal_text(
-            None
-            if revision.previous_quantity is None
-            else Decimal(str(revision.previous_quantity))
-        ),
-        "new_quantity": _decimal_text(Decimal(str(revision.new_quantity))),
-        "broker_held": _decimal_text(Decimal(str(revision.broker_held_observed))),
-        "broker_sellable": _decimal_text(
-            Decimal(str(revision.broker_sellable_observed))
-        ),
-        "broker_observed_at": revision.broker_observed_at.isoformat(),
-        "reason": str(revision.reason),
-        "actor_user_id": int(revision.actor_user_id),
-        "actor": actor_name,
-        "origin": str(revision.origin),
-        "recorded_at": revision.recorded_at.isoformat(),
-    }
-
-
-async def read_protected_position_history(
-    db: AsyncSession, *, key: ProtectionKey
-) -> list[dict[str, Any]]:
-    service = ProtectedQuantityService(db)
-    revisions = await service.list_revisions(key=key)
-    actor_names = await _actor_names(
-        db, {int(revision.actor_user_id) for revision in revisions}
-    )
-    return [
-        _history_item(revision, actor_name=actor_names.get(int(revision.actor_user_id)))
-        for revision in revisions
-    ]
 
 
 async def read_protected_position_settings(
