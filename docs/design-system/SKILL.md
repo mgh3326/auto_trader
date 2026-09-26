@@ -4,13 +4,13 @@ description: Use this skill to generate well-branded interfaces and assets for A
 user-invocable: true
 ---
 
-Read the `README.md` file within this skill, and explore the other available files (`colors_and_type.css`, `preview/*.html`).
+Read the `README.md` file within this skill, and explore `preview/*.html`. The shared tokens stylesheet lives at `app/static/css/colors_and_type.css` (served as `/static/css/colors_and_type.css`).
 
 - For visual artifacts (slides, mocks, throwaway prototypes): copy `colors_and_type.css` into the artifact and build static HTML that follows the patterns documented in the README — shell + dark header band + warm-neutral panels.
 - For production code changes in the `mgh3326/auto_trader` repo: apply the README's **Migration plan** section page-by-page. Prefer replacing per-page `:root` blocks with a shared import of `colors_and_type.css`.
 
 Key touchstones:
-- Target-direction templates: `screener_dashboard.html`, `portfolio_dashboard.html`, `pending_orders_dashboard.html`.
+- Target-direction template: `app/templates/screener_dashboard.html`.
 - Legacy pages to migrate: `login.html`, `register.html`, `admin_users.html`, `nav.html`, `base.html`, `error.html`.
 - KR gain/loss convention: 상승 = red (`#9A1C1C`), 하락 = blue (`#0F4C9C`).
 - Icons: Bootstrap Icons 1.11.3 via CDN. No emoji.

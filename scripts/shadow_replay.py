@@ -59,11 +59,41 @@ _PROMPT = (
     "investment_report_get_hermes_context with snapshot_bundle_uuid={uuid}. "
     "Base your decision ONLY on its stage_inputs and cited_snapshots (the frozen "
     "evidence) plus get_trading_policy thresholds and the route_request lane. Do NOT "
-    "call any other tool. Output ONLY a JSON object: "
-    '{{"side": "buy"|"sell"|null, "max_action": {{"notional": <num|null>, '
-    '"limit_price": <num|null>}}, "trade_setup": {{"stop": <num|null>, '
-    '"target": <num|null>, "headline": {{"entry": <num|null>}}}}, '
-    '"trigger_checklist": [<str>...]}}'
+    "call any other tool. Return the decision in the structured output."
+)
+
+_NUM_OR_NULL = {"type": ["number", "null"]}
+_DECISION_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["side", "max_action", "trade_setup", "trigger_checklist"],
+        "properties": {
+            "side": {"enum": ["buy", "sell", None]},
+            "max_action": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["notional", "limit_price"],
+                "properties": {"notional": _NUM_OR_NULL, "limit_price": _NUM_OR_NULL},
+            },
+            "trade_setup": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["stop", "target", "headline"],
+                "properties": {
+                    "stop": _NUM_OR_NULL,
+                    "target": _NUM_OR_NULL,
+                    "headline": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["entry"],
+                        "properties": {"entry": _NUM_OR_NULL},
+                    },
+                },
+            },
+            "trigger_checklist": {"type": "array", "items": {"type": "string"}},
+        },
+    }
 )
 
 
@@ -160,6 +190,8 @@ def _one_run(uuid: str, model: str) -> dict[str, Any] | None:
                 "8",
                 "--output-format",
                 "json",
+                "--json-schema",
+                _DECISION_SCHEMA,
             ],
             input=_PROMPT.format(uuid=uuid),
             text=True,
@@ -181,6 +213,8 @@ def _one_run(uuid: str, model: str) -> dict[str, Any] | None:
         outer = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return _extract_decision_json(proc.stdout)
+    if isinstance(outer, dict) and isinstance(outer.get("structured_output"), dict):
+        return outer["structured_output"]
     text = outer.get("result") if isinstance(outer, dict) else proc.stdout
     return _extract_decision_json(text) if isinstance(text, str) else None
 
