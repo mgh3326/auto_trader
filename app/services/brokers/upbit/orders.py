@@ -18,6 +18,7 @@ from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.protected_quantity_service import (
     ProtectionStateUnavailable,
     prepare_live_sell_lease,
+    release_live_sell_lease_preserving_outcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -543,6 +544,7 @@ async def cancel_and_reorder(
     # responses.  The policy lookup itself occurs for every live sell (Q15),
     # while the two extra account reads happen only for an active declaration.
     protection_lease: Any | None = None
+    response: dict[str, Any] | None = None
     if side == "ask":
         try:
             protection_lease = await prepare_live_sell_lease(
@@ -625,13 +627,14 @@ async def cancel_and_reorder(
         # 5. 취소 후 재주문
         cancel_result = await cancel_orders([order_uuid])
         if not cancel_result or "error" in cancel_result[0]:
-            return {
+            response = {
                 "original_order": original_order,
                 "cancel_result": cancel_result[0]
                 if cancel_result
                 else {"success": False, "error": "cancel failed"},
                 "new_order": None,
             }
+            return response
 
         # G4's mandatory second check: cancellation can expose the former
         # reservation while a fill races in.  Re-read H/S inside the same lease
@@ -651,7 +654,7 @@ async def cancel_and_reorder(
                     sellable_observed=sellable_observed,
                 )
             except Exception:  # noqa: BLE001 - cancellation has already succeeded
-                return _protection_hold_result(
+                response = _protection_hold_result(
                     original_order=original_order,
                     cancel_result=cancel_result[0],
                     block=None,
@@ -662,13 +665,15 @@ async def cancel_and_reorder(
                         "replacement withheld after cancellation."
                     ),
                 )
+                return response
             if not decision.allowed:
-                return _protection_hold_result(
+                response = _protection_hold_result(
                     original_order=original_order,
                     cancel_result=cancel_result[0],
                     block=decision.block,
                     phase="post_cancel",
                 )
+                return response
 
         volume_str = f"{new_quantity:.8f}" if new_quantity else ""
         price_str = f"{adjusted_price:.5f}".rstrip("0").rstrip(".") if new_price else ""
@@ -679,17 +684,33 @@ async def cancel_and_reorder(
                 )
             else:
                 new_order = await place_sell_order(market, volume_str, price_str)
-            return {
+            response = {
                 "original_order": original_order,
                 "cancel_result": cancel_result[0],
                 "new_order": new_order,
             }
+            return response
         except Exception as exc:
-            return {
+            response = {
                 "original_order": original_order,
                 "cancel_result": cancel_result[0],
                 "new_order": {"error": str(exc)},
             }
+            return response
     finally:
         if protection_lease is not None:
-            await protection_lease.release()
+            release_warning = await release_live_sell_lease_preserving_outcome(
+                protection_lease,
+                operation="upbit_cancel_reorder",
+                broker_response_observed=response is not None,
+            )
+            cancelled = response.get("cancel_result") if response is not None else None
+            if (
+                release_warning is not None
+                and isinstance(cancelled, dict)
+                and "error" not in cancelled
+            ):
+                warnings = list(response.get("warnings") or [])
+                if release_warning not in warnings:
+                    warnings.append(release_warning)
+                response["warnings"] = warnings

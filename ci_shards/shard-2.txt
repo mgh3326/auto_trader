@@ -64,6 +64,7 @@ tests/research/us_stage_b/test_verdict.py
 tests/routers/test_alpaca_paper_ledger_router.py
 tests/routers/test_candidate_discovery.py
 tests/routers/test_invest_buy_plan_router.py
+tests/routers/test_invest_protected_positions.py
 tests/routers/test_invest_session_context_router.py
 tests/routers/test_investment_reports_snapshot_evidence_router.py
 tests/routers/test_investment_snapshots_router.py
@@ -259,6 +260,7 @@ tests/services/test_pending_reconciliation_service.py
 tests/services/test_portfolio_action_classifier.py
 tests/services/test_portfolio_overview_currency.py
 tests/services/test_posture_generator.py
+tests/services/test_protected_position_settings.py
 tests/services/test_reconcile_trigger.py
 tests/services/test_research_run_new_candidates.py
 tests/services/test_session_context_market_wide_scope.py
