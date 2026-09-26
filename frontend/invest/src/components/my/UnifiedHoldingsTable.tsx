@@ -98,6 +98,24 @@ function ProtectionWarning({ state }: { state?: ProtectionState }) {
   );
 }
 
+function tacticalSellableForDisplay({
+  tacticalSellableQuantity,
+  protectedQuantity,
+  protectionState,
+  sellable,
+}: {
+  tacticalSellableQuantity?: number | null;
+  protectedQuantity?: number;
+  protectionState?: ProtectionState;
+  sellable: number;
+}): number | null {
+  if (tacticalSellableQuantity != null) return tacticalSellableQuantity;
+  if ((protectionState ?? "unprotected") === "unprotected" && (protectedQuantity ?? 0) <= 0) {
+    return sellable;
+  }
+  return null;
+}
+
 function SourceChip({ source, accounts }: { source: AccountSource; accounts: Account[] }) {
   return (
     <Pill tone={pillToneForSource(source)} size="sm">
@@ -109,9 +127,14 @@ function SourceChip({ source, accounts }: { source: AccountSource; accounts: Acc
 function QuantityCell({ holding }: { holding: GroupedHolding }) {
   const tradeable = holding.tradeableQuantity ?? holding.totalQuantity;
   const sellable = holding.sellableQuantity ?? tradeable;
-  const tactical = holding.tacticalSellableQuantity ?? sellable;
   const pendingSell = holding.pendingSellQuantity ?? 0;
   const protectedQuantity = holding.protectedQuantity ?? 0;
+  const tactical = tacticalSellableForDisplay({
+    tacticalSellableQuantity: holding.tacticalSellableQuantity,
+    protectedQuantity,
+    protectionState: holding.protectionState,
+    sellable,
+  });
   const reference = holding.referenceQuantity ?? 0;
 
   return (
@@ -149,8 +172,13 @@ function BreakdownLine({
 }) {
   const name = accountName(accounts, item.accountId) ?? sourceLabel(accounts, item.source);
   const sellable = item.sellableQuantity ?? (item.isTradeable ? item.quantity : 0);
-  const tactical = item.tacticalSellableQuantity ?? sellable;
   const protectedQuantity = item.protectedQuantity ?? 0;
+  const tactical = tacticalSellableForDisplay({
+    tacticalSellableQuantity: item.tacticalSellableQuantity,
+    protectedQuantity,
+    protectionState: item.protectionState,
+    sellable,
+  });
   const reference = item.referenceQuantity ?? (item.manualOnly ? item.quantity : 0);
   const metaLabel = item.manualOnly
     ? `참고전용 ${fmtQty(reference, assetType)}`

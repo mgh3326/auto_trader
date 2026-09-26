@@ -128,6 +128,66 @@ test("UnifiedHoldingsTable renders source/account breakdown and stock detail lin
   expect(screen.getAllByTestId("unified-holding-source-breakdown")).toHaveLength(2);
 });
 
+test("UnifiedHoldingsTable preserves unknown tactical headroom for unverified protection", () => {
+  const baseHolding = holdings[0];
+  if (baseHolding == null) throw new Error("missing holding fixture");
+  const unverifiedHolding: GroupedHolding = {
+    ...baseHolding,
+    tacticalSellableQuantity: null,
+    protectionState: "unverified",
+    sourceBreakdown: baseHolding.sourceBreakdown.map((item) =>
+      item.source === "kis"
+        ? {
+            ...item,
+            tacticalSellableQuantity: null,
+            protectionState: "unverified",
+          }
+        : item,
+    ),
+  };
+
+  render(
+    <MemoryRouter>
+      <UnifiedHoldingsTable holdings={[unverifiedHolding]} accounts={accounts} />
+    </MemoryRouter>,
+  );
+
+  expect(screen.getAllByText(/전술 매도 가능 검증 필요/)).toHaveLength(2);
+  expect(screen.getAllByTestId("protection-warning-chip")[0]).toHaveAttribute(
+    "title",
+    expect.stringContaining("검증"),
+  );
+});
+
+test("UnifiedHoldingsTable keeps raw sellable only when protection is absent", () => {
+  const baseHolding = holdings[0];
+  if (baseHolding == null) throw new Error("missing holding fixture");
+  const unprotectedHolding: GroupedHolding = {
+    ...baseHolding,
+    protectedQuantity: 0,
+    tacticalSellableQuantity: null,
+    protectionState: "unprotected",
+    sourceBreakdown: baseHolding.sourceBreakdown.map((item) =>
+      item.source === "kis"
+        ? {
+            ...item,
+            protectedQuantity: 0,
+            tacticalSellableQuantity: null,
+            protectionState: "unprotected",
+          }
+        : item,
+    ),
+  };
+
+  render(
+    <MemoryRouter>
+      <UnifiedHoldingsTable holdings={[unprotectedHolding]} accounts={accounts} />
+    </MemoryRouter>,
+  );
+
+  expect(screen.getAllByText(/전술 매도 가능 25주/)).toHaveLength(2);
+});
+
 test("UnifiedHoldingsTable renders explicit empty state", () => {
   render(
     <MemoryRouter>
