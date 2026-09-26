@@ -99,6 +99,7 @@ tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_native_retirement.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py
+tests/scripts/test_protected_positions.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_run_research_run_refresh_script.py
 tests/scripts/test_seed_execution_ledger_opening_lots_cli.py
