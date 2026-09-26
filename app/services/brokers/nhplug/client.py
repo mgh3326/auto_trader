@@ -2,7 +2,8 @@
 
 This module never imports the OAuth implementation and never contains the
 production hostname.  It has an exact mock host-and-port allowlist, a short
-read-only path allowlist checked before token resolution, and no mutation API.
+read-only path allowlist checked before token resolution, plus one guarded
+Stage 2 mock order dispatch method.
 """
 
 from __future__ import annotations
@@ -116,7 +117,7 @@ def _assert_resolved_mock_request(
 
 
 class NHPlugMockClient:
-    """Read-only data client with no generic arbitrary-endpoint dispatch."""
+    """Pinned mock client with no generic arbitrary-endpoint dispatch."""
 
     def __init__(
         self,

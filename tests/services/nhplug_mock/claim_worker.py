@@ -15,11 +15,14 @@ from app.services.nhplug_mock.ledger import (
     LedgerConflict,
     NHPlugMockLedger,
 )
+from tests._run_owned_database import validate_run_owned_database_url
 
 
 async def main() -> None:
     payload = json.loads(os.environ["NHPLUG_TEST_WORKER_PAYLOAD"])
-    engine = create_async_engine(os.environ["NHPLUG_TEST_WORKER_DB_URL"])
+    database_url = os.environ["NHPLUG_TEST_WORKER_DB_URL"]
+    validate_run_owned_database_url(database_url)
+    engine = create_async_engine(database_url)
     ledger = NHPlugMockLedger(engine)
     print("ready", flush=True)
     if sys.stdin.readline().strip() != "go":

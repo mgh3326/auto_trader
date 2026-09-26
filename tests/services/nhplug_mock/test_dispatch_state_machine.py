@@ -43,6 +43,7 @@ from app.services.nhplug_mock.ledger import (
 from app.services.nhplug_mock.outcome import ResponseMeta
 from app.services.nhplug_mock.readiness import Stage2Disabled, Stage2Readiness
 from app.services.nhplug_mock.transport import Stage2Timing
+from tests._run_owned_database import validate_run_owned_database_url
 
 pytestmark = pytest.mark.integration
 READY = Stage2Readiness(True, True, True, True, True)
@@ -58,6 +59,7 @@ MIGRATION = (
 async def nhplug_engine(_bootstrap_test_schema: None) -> AsyncEngine:
     from app.core.db import engine
 
+    validate_run_owned_database_url(engine.url)
     spec = importlib.util.spec_from_file_location("nhplug711_migration", MIGRATION)
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
@@ -1536,6 +1538,38 @@ async def test_sending_cannot_be_accepted_as_own_evidence_without_reconcile(
 
 
 @pytest.mark.asyncio
+async def test_open_scope_quantity_drift_stays_unknown(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ledger, row, ref = await intent_row(seeded_engine, "open-scope-drift")
+    claim = await ledger.claim(
+        row["id"], row["client_request_id"], row["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(claim)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", "822")
+    )
+    all_orders = scoped(listing(822), row)
+    assert await ledger.verify_own_number(row["id"], all_orders, readiness=READY)
+    drifted = scoped(
+        OrderListing(
+            "open",
+            True,
+            (OrderRow(822, "005930", 2, 0, 2, side="buy", order_price=Decimal(67400)),),
+            pages=1,
+        ),
+        row,
+    )
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], all_orders, drifted, None, readiness=READY
+        )
+        == "unknown"
+    )
+    assert (await ledger.get(row["id"]))["state"] == "accepted"
+
+
+@pytest.mark.asyncio
 async def test_filled_requires_independent_filled_scope_and_exact_quantities(
     seeded_engine: AsyncEngine,
 ) -> None:
@@ -1584,6 +1618,21 @@ async def test_filled_requires_independent_filled_scope_and_exact_quantities(
     assert (
         await ledger.reconcile_bound(
             row["id"], all_orders, open_orders, mismatched_fill, readiness=READY
+        )
+        == "unknown"
+    )
+    quantity_drift_fill = scoped(
+        OrderListing(
+            "filled",
+            True,
+            (OrderRow(223, "005930", 2, 1, 1, side="buy", order_price=Decimal(67400)),),
+            pages=1,
+        ),
+        row,
+    )
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], all_orders, open_orders, quantity_drift_fill, readiness=READY
         )
         == "unknown"
     )
@@ -1735,7 +1784,34 @@ async def test_modified_requires_own_ack_and_positive_successor_row(
         )
         == "unknown"
     )
+    for drifted in (
+        replace(successor, order_qty=2, open_qty=2),
+        replace(successor, order_price=Decimal(67500)),
+        replace(successor, open_qty=0, rejection_reason="rejected"),
+    ):
+        drifted_all = scoped(OrderListing("all", True, (root, drifted), pages=1), row)
+        drifted_open = scoped(OrderListing("open", True, (drifted,), pages=1), row)
+        assert (
+            await ledger.reconcile_bound(
+                row["id"], drifted_all, drifted_open, None, readiness=READY
+            )
+            == "unknown"
+        )
+        assert (await ledger.get(row["id"]))["state"] == "accepted"
     open_successor = scoped(OrderListing("open", True, (successor,), pages=1), row)
+    drifted_open_successor = scoped(
+        OrderListing(
+            "open", True, (replace(successor, order_qty=2, open_qty=2),), pages=1
+        ),
+        row,
+    )
+    assert (
+        await ledger.reconcile_bound(
+            row["id"], all_orders, drifted_open_successor, None, readiness=READY
+        )
+        == "unknown"
+    )
+    assert (await ledger.get(row["id"]))["state"] == "accepted"
     assert (
         await ledger.reconcile_bound(
             row["id"], all_orders, open_successor, None, readiness=READY
@@ -1749,6 +1825,119 @@ async def test_modified_requires_own_ack_and_positive_successor_row(
         and final["broker_order_id"] == "623"
     )
     assert final["successor_order_id"] == "624"
+    unreflected = replace(root, modified_qty=0, open_qty=1)
+    unreflected_all = scoped(
+        OrderListing("all", True, (unreflected, successor), pages=1), modify
+    )
+    unreflected_open = scoped(
+        OrderListing("open", True, (unreflected, successor), pages=1), modify
+    )
+    assert (
+        await ledger.reconcile_bound(
+            modify["id"], unreflected_all, unreflected_open, None, readiness=READY
+        )
+        == "unknown"
+    )
+    assert (await ledger.get(modify["id"]))["state"] == "accepted"
+    assert (
+        await ledger.reconcile_bound(
+            modify["id"], all_orders, open_successor, None, readiness=READY
+        )
+        == "confirmed"
+    )
+    confirmed = await ledger.get(modify["id"])
+    assert confirmed is not None and confirmed["state"] == "confirmed"
+    assert confirmed["applied_qty"] == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_modify_confirms_exact_reflected_quantity(
+    seeded_engine: AsyncEngine,
+) -> None:
+    ref = await account(seeded_engine, "partial-modify")
+    ledger = NHPlugMockLedger(seeded_engine)
+    place, should_claim = await ledger.create_intent(
+        OrderIntent("place", "buy", "005930", 5, 67400, None, None, ref),
+        readiness=READY,
+        idempotency_key="partial_modify_place_1234",
+        order_date=date.today(),
+    )
+    assert should_claim
+    claim = await ledger.claim(
+        place["id"], place["client_request_id"], place["body_digest"], ref, IDENTITY
+    )
+    assert await ledger.fence(claim)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", "730")
+    )
+    root_open = OrderRow(730, "005930", 5, 0, 5, side="buy", order_price=Decimal(67400))
+    assert await ledger.verify_own_number(
+        place["id"],
+        scoped(OrderListing("all", True, (root_open,), pages=1), place),
+        readiness=READY,
+    )
+    modify, should_claim = await ledger.create_intent(
+        OrderIntent("modify", "buy", "005930", 1, 67000, "730", "partial", ref),
+        readiness=READY,
+        idempotency_key="partial_modify_request_1234",
+        order_date=date.today(),
+    )
+    assert should_claim
+    claim = await ledger.claim(
+        modify["id"],
+        modify["client_request_id"],
+        modify["body_digest"],
+        ref,
+        IDENTITY,
+    )
+    assert await ledger.fence(claim)
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code", "731")
+    )
+    successor = OrderRow(
+        731,
+        "005930",
+        1,
+        0,
+        1,
+        side="buy",
+        original_order_no=730,
+        order_price=Decimal(67000),
+    )
+    root_reflected = replace(root_open, open_qty=4, modified_qty=1)
+    all_orders = scoped(
+        OrderListing("all", True, (root_reflected, successor), pages=1), modify
+    )
+    open_orders = scoped(
+        OrderListing("open", True, (root_reflected, successor), pages=1), modify
+    )
+    assert await ledger.verify_own_number(modify["id"], all_orders, readiness=READY)
+    forged_note = {
+        "account_ref": str(uuid4()),
+        "order_date": str(modify["order_date"]),
+        "listing_scope": "all",
+        "listing_complete": True,
+    }
+    with pytest.raises(Exception, match="reconcile evidence absent"):
+        async with seeded_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE review.nhplug_mock_order_ledger SET state='confirmed', "
+                    "applied_qty=1, reconcile_state='verified', evidence='{}'::jsonb, "
+                    "last_reconcile=CAST(:note AS jsonb) WHERE id=:id"
+                ),
+                {"id": modify["id"], "note": json.dumps(forged_note)},
+            )
+    assert (await ledger.get(modify["id"]))["state"] == "accepted"
+    assert (
+        await ledger.reconcile_bound(
+            modify["id"], all_orders, open_orders, None, readiness=READY
+        )
+        == "confirmed"
+    )
+    final = await ledger.get(modify["id"])
+    assert final is not None and final["applied_qty"] == 1
+    assert (await ledger.get(place["id"]))["state"] == "accepted"
 
 
 async def authorize_candidate(
@@ -1969,15 +2158,20 @@ async def start_claim_process(
         "mode": mode,
     }
     environment = os.environ.copy()
-    environment["NHPLUG_TEST_WORKER_DB_URL"] = str(engine.url)
+    validate_run_owned_database_url(engine.url)
+    environment["NHPLUG_TEST_WORKER_DB_URL"] = engine.url.render_as_string(
+        hide_password=False
+    )
     environment["NHPLUG_TEST_WORKER_PAYLOAD"] = json.dumps(payload)
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(Path(__file__).with_name("claim_worker.py")),
+        "-m",
+        "tests.services.nhplug_mock.claim_worker",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=environment,
+        cwd=str(Path(__file__).resolve().parents[3]),
     )
     assert process.stdout is not None
     assert (await asyncio.wait_for(process.stdout.readline(), 10)).strip() == b"ready"

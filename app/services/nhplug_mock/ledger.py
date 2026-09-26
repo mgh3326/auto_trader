@@ -610,6 +610,8 @@ class NHPlugMockLedger:
                 "reason": "candidate_only",
                 "listing_scope": "all",
                 "listing_complete": True,
+                "account_ref": str(row["account_ref"]),
+                "order_date": str(row["order_date"]),
                 "candidate_count": len(candidates),
             }
             await conn.execute(
@@ -775,7 +777,10 @@ class NHPlugMockLedger:
             number = int(row["broker_order_id"])
             own = all_listing.find(number)
             intent = _intent_from_row(_row_dict(row))
-            if intent.operation_kind == "cancel" and row["state"] != "accepted":
+            if (
+                intent.operation_kind in {"cancel", "modify"}
+                and row["state"] != "accepted"
+            ):
                 raise LedgerConflict("not_reconcilable")
             reason: str | None = None
             target: str | None = None
@@ -791,6 +796,16 @@ class NHPlugMockLedger:
                     or not _matches_intent(own, intent)
                 ):
                     reason = "cancel_ack_or_original_missing"
+                elif derive_order_status(own) in {"unknown", "rejected"}:
+                    reason = "cancel_ack_quantities_inconsistent"
+                elif (open_listing.find(own.order_no) is not None) != (
+                    own.open_qty > 0
+                ):
+                    reason = "cancel_ack_open_scope_disagreement"
+                elif (
+                    open_row := open_listing.find(own.order_no)
+                ) is not None and not _same_open_row(own, open_row):
+                    reason = "cancel_ack_open_scope_quantity_drift"
                 elif derive_order_status(original) != "cancelled":
                     reason = "original_quantities_inconsistent"
                 elif original.cancelled_qty is None or original.cancelled_qty <= 0:
@@ -808,13 +823,51 @@ class NHPlugMockLedger:
                 else:
                     target = "confirmed"
                     applied = original.cancelled_qty
+            elif intent.operation_kind == "modify":
+                original = all_listing.find(int(intent.original_order_id or "0"))
+                if (
+                    own is None
+                    or original is None
+                    or own.original_order_no != original.order_no
+                    or not _matches_intent(own, intent)
+                ):
+                    reason = "modify_ack_or_original_missing"
+                elif derive_order_status(own) in {"unknown", "rejected"}:
+                    reason = "modify_ack_quantities_inconsistent"
+                elif (open_listing.find(own.order_no) is not None) != (
+                    own.open_qty > 0
+                ):
+                    reason = "modify_ack_open_scope_disagreement"
+                elif (
+                    open_row := open_listing.find(own.order_no)
+                ) is not None and not _same_open_row(own, open_row):
+                    reason = "modify_ack_open_scope_quantity_drift"
+                elif derive_order_status(original) in {"unknown", "rejected"}:
+                    reason = "original_quantities_inconsistent"
+                elif (
+                    original.modified_qty != intent.quantity
+                    or not original.modified_qty
+                ):
+                    reason = "modify_quantity_not_reflected"
+                elif (open_listing.find(original.order_no) is not None) != (
+                    original.open_qty > 0
+                ):
+                    reason = "original_open_scope_disagreement"
+                elif (
+                    open_row := open_listing.find(original.order_no)
+                ) is not None and not _same_open_row(original, open_row):
+                    reason = "original_open_scope_quantity_drift"
+                else:
+                    target = "confirmed"
+                    applied = original.modified_qty
             elif own is None or not _matches_intent(own, intent):
                 reason = "own_order_missing_or_mismatched"
             elif own.order_qty != intent.quantity:
                 reason = "order_quantity_drift"
             else:
                 derived = derive_order_status(own)
-                in_open = open_listing.find(number) is not None
+                open_row = open_listing.find(number)
+                in_open = open_row is not None
                 if derived not in {
                     "open",
                     "partially_filled",
@@ -827,10 +880,13 @@ class NHPlugMockLedger:
                     reason = "open_scope_disagreement"
                 elif derived in {"filled", "cancelled", "modified"} and in_open:
                     reason = "terminal_open_scope_disagreement"
+                elif open_row is not None and not _same_open_row(own, open_row):
+                    reason = "open_scope_quantity_drift"
                 elif own.filled_qty > 0 and (
                     filled_listing is None
                     or not filled_listing.complete
                     or (filled := filled_listing.find(number)) is None
+                    or not _same_order_identity(own, filled)
                     or filled.filled_qty != own.filled_qty
                 ):
                     reason = "fill_not_confirmed"
@@ -839,7 +895,9 @@ class NHPlugMockLedger:
                 ):
                     reason = "own_cancel_ack_missing"
                 elif derived == "modified":
-                    successor = await _own_successor(conn, row, number, all_listing)
+                    successor = await _own_successor(
+                        conn, row, number, all_listing, open_listing
+                    )
                     if successor is None:
                         reason = "own_modify_ack_or_successor_missing"
                     else:
@@ -850,6 +908,8 @@ class NHPlugMockLedger:
                 "listing_order_id": str(number),
                 "listing_scope": "all",
                 "listing_complete": True,
+                "account_ref": str(row["account_ref"]),
+                "order_date": str(row["order_date"]),
                 "reason": reason or "positive_sources_verified",
             }
             if target is None:
@@ -869,7 +929,7 @@ class NHPlugMockLedger:
             }
             if filled_listing is not None and filled_listing.find(number) is not None:
                 evidence["filled_order"] = filled_listing.find(number).evidence()
-            if intent.operation_kind == "cancel":
+            if intent.operation_kind in {"cancel", "modify"}:
                 assert original is not None
                 evidence["original_order"] = original.evidence()
                 await conn.execute(
@@ -921,6 +981,27 @@ def _matches_intent(candidate: OrderRow, intent: OrderIntent) -> bool:
     )
 
 
+def _same_order_identity(left: OrderRow, right: OrderRow) -> bool:
+    return (
+        left.order_no == right.order_no
+        and left.symbol == right.symbol
+        and left.side == right.side
+        and left.order_qty == right.order_qty
+        and left.order_price == right.order_price
+        and left.original_order_no == right.original_order_no
+    )
+
+
+def _same_open_row(left: OrderRow, right: OrderRow) -> bool:
+    return (
+        _same_order_identity(left, right)
+        and left.filled_qty == right.filled_qty
+        and left.open_qty == right.open_qty
+        and left.cancelled_qty == right.cancelled_qty
+        and left.modified_qty == right.modified_qty
+    )
+
+
 def _broker_order_time(day: date, raw: str | None) -> datetime | None:
     if raw is None or re.fullmatch(r"[0-9]{6}(?:[0-9]{3})?", raw) is None:
         return None
@@ -955,13 +1036,17 @@ async def _own_ack_exists(conn: Any, row: Any, kind: str, original_no: int) -> b
 
 
 async def _own_successor(
-    conn: Any, row: Any, original_no: int, listing: OrderListing
+    conn: Any,
+    row: Any,
+    original_no: int,
+    listing: OrderListing,
+    open_listing: OrderListing,
 ) -> str | None:
-    numbers = (
+    requests = (
         (
             await conn.execute(
                 text(
-                    "SELECT ack_order_id FROM review.nhplug_mock_order_ledger WHERE account_ref=:acct AND order_date=:day "
+                    "SELECT * FROM review.nhplug_mock_order_ledger WHERE account_ref=:acct AND order_date=:day "
                     "AND operation_kind='modify' AND original_order_id=:number AND ack_order_id IS NOT NULL "
                     "AND ack_source IN ('response','own_evidence','operator') "
                     "AND state IN ('accepted','confirmed','open','partially_filled','filled','cancelled','modified')"
@@ -973,11 +1058,20 @@ async def _own_successor(
                 },
             )
         )
-        .scalars()
+        .mappings()
         .all()
     )
-    for number in numbers:
-        successor = listing.find(int(number))
-        if successor is not None and successor.original_order_no == original_no:
+    for request in requests:
+        number = int(request["ack_order_id"])
+        successor = listing.find(number)
+        open_successor = open_listing.find(number)
+        if (
+            successor is not None
+            and successor.original_order_no == original_no
+            and _matches_intent(successor, _intent_from_row(_row_dict(request)))
+            and derive_order_status(successor) not in {"unknown", "rejected"}
+            and (open_successor is not None) == (successor.open_qty > 0)
+            and (open_successor is None or _same_open_row(successor, open_successor))
+        ):
             return str(number)
     return None

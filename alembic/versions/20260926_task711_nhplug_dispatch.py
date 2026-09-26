@@ -458,9 +458,15 @@ def upgrade() -> None:
         allowed := ARRAY['state','reconcile_state','last_reconcile','evidence','filled_qty','avg_fill_price',
           'open_qty','cancelled_qty','modified_qty','successor_order_id','requires_manual_review','manual_review_reason'];
         IF NEW.reconcile_state <> 'verified' OR NEW.evidence IS NULL
+          OR NEW.last_reconcile->>'account_ref' IS DISTINCT FROM OLD.account_ref::text
+          OR NEW.last_reconcile->>'order_date' IS DISTINCT FROM OLD.order_date::text
           THEN RAISE EXCEPTION 'nhplug reconcile evidence absent'; END IF;
       ELSIF OLD.state = 'accepted' AND NEW.state = 'confirmed' THEN
         allowed := ARRAY['state','reconcile_state','last_reconcile','evidence','applied_qty'];
+        IF NEW.reconcile_state <> 'verified' OR NEW.evidence IS NULL
+          OR NEW.last_reconcile->>'account_ref' IS DISTINCT FROM OLD.account_ref::text
+          OR NEW.last_reconcile->>'order_date' IS DISTINCT FROM OLD.order_date::text
+          THEN RAISE EXCEPTION 'nhplug reconcile evidence absent'; END IF;
       ELSIF OLD.state IN ('accepted','open','partially_filled','uncertain') AND NEW.state = 'anomaly' THEN
         allowed := ARRAY['state','requires_manual_review','manual_review_reason','evidence','last_reconcile'];
         IF NEW.requires_manual_review IS DISTINCT FROM true OR NEW.evidence IS NULL
