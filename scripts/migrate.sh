@@ -12,7 +12,9 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 설정
-ENV_FILE=".env.prod"
+ENV_FILE=".env.migration"
+AT_MIGRATION_SET_ROLE="at_migration_owner"
+export ENV_FILE AT_MIGRATION_SET_ROLE
 
 echo -e "${BLUE}🔄 Auto Trader Database Migration${NC}"
 echo "=================================="
@@ -24,7 +26,9 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-source $ENV_FILE
+set -a
+source "$ENV_FILE"
+set +a
 
 if [ -z "$DATABASE_URL" ]; then
     echo -e "${RED}❌ DATABASE_URL not set in $ENV_FILE${NC}"
@@ -82,7 +86,7 @@ check_migration_status() {
     echo -e "${YELLOW}📊 Current migration status:${NC}"
     
     # Alembic 버전 확인
-    current_version=$(psql "$PSQL_URL" -t -c "SELECT version_num FROM alembic_version ORDER BY version_num DESC LIMIT 1;" 2>/dev/null | tr -d ' ' || echo "")
+    current_version=$(psql "$PSQL_URL" -X -qAt -v ON_ERROR_STOP=1 -c "SET ROLE at_migration_owner; SELECT version_num FROM alembic_version ORDER BY version_num DESC LIMIT 1;" 2>/dev/null || echo "")
     
     if [ -z "$current_version" ]; then
         echo "  📋 No alembic_version table found - initial setup needed"
@@ -122,33 +126,6 @@ run_migration() {
         $ALEMBIC_CMD upgrade head
     fi
 
-    echo "  🔁 Syncing kr_symbol_universe..."
-    if ! $PYTHON_CMD scripts/sync_kr_symbol_universe.py; then
-        echo -e "${RED}❌ kr_symbol_universe sync failed${NC}"
-        echo "Run manually: uv run python scripts/sync_kr_symbol_universe.py"
-        exit 1
-    fi
-
-    echo "  ✅ kr_symbol_universe sync completed"
-
-    echo "  🔁 Syncing us_symbol_universe..."
-    if ! $PYTHON_CMD scripts/sync_us_symbol_universe.py; then
-        echo -e "${RED}❌ us_symbol_universe sync failed${NC}"
-        echo "Run manually: uv run python scripts/sync_us_symbol_universe.py"
-        exit 1
-    fi
-
-    echo "  ✅ us_symbol_universe sync completed"
-
-    echo "  🔁 Syncing upbit_symbol_universe..."
-    if ! $PYTHON_CMD scripts/sync_upbit_symbol_universe.py; then
-        echo -e "${RED}❌ upbit_symbol_universe sync failed${NC}"
-        echo "Run manually: uv run python scripts/sync_upbit_symbol_universe.py"
-        exit 1
-    fi
-
-    echo "  ✅ upbit_symbol_universe sync completed"
-    
     echo -e "${GREEN}✅ Migration completed successfully${NC}"
 }
 
@@ -157,7 +134,7 @@ verify_migration() {
     echo -e "${YELLOW}🔍 Verifying migration...${NC}"
     
     # 새 버전 확인
-    new_version=$(psql "$PSQL_URL" -t -c "SELECT version_num FROM alembic_version ORDER BY version_num DESC LIMIT 1;" 2>/dev/null | tr -d ' ')
+    new_version=$(psql "$PSQL_URL" -X -qAt -v ON_ERROR_STOP=1 -c "SET ROLE at_migration_owner; SELECT version_num FROM alembic_version ORDER BY version_num DESC LIMIT 1;" 2>/dev/null)
     echo "  📋 New version: $new_version"
     
     # 테이블 개수 확인

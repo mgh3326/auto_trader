@@ -4,7 +4,9 @@ services:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_migration
     env_file:
-      - .env.prod
+      - .env.migration
+    environment:
+      AT_MIGRATION_SET_ROLE: at_migration_owner
     network_mode: host
     command: >
       sh -c "
@@ -15,9 +17,6 @@ services:
         alembic current &&
         echo '🔄 Running migrations...' &&
         alembic upgrade head &&
-        echo '🔁 Syncing kr_symbol_universe...' &&
-        PYTHONPATH=/app python scripts/sync_kr_symbol_universe.py &&
-        echo '✅ kr_symbol_universe sync completed' &&
         echo '✅ Migrations completed successfully'
       "
     profiles:

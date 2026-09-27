@@ -6,6 +6,20 @@ runtime configuration, role, grant, or database object. Phase 2 requires an expl
 operator decision after the production facts in [Open operator questions](#open-operator-questions)
 are answered.
 
+**#789 implementation amendment, 2026-09-27:** Director-1 selected one owner
+for ordinary migrations and TimescaleDB hypertables, continuous aggregates,
+and policy jobs. TimescaleDB 2.22.1 rejected a background policy job owned by
+a NOLOGIN hypertable owner. Accordingly `at_migration_owner` has LOGIN but no
+password, and ordered pg_hba reject rules must deny its local socket, IPv4,
+and IPv6 connections. This is not an application credential. The production
+2.26.3 job transition remains a separately approved operator stage after a
+version-specific staging proof. Operator-desk classified postgres as shared
+backup, Prefect, and DBA infrastructure: #789 changes only the app inputs
+.env.api and .env.scheduler and never alters or rotates postgres. These
+decisions supersede the earlier proposed NOLOGIN owner and conditional
+app-only legacy-login branch below; the historical analysis remains for
+traceability.
+
 ## Decision summary
 
 Use distinct, least-privilege PostgreSQL group roles, with separately rotated login
@@ -13,7 +27,7 @@ identities for each deployment class:
 
 | Proposed group role | Login? | Intended authority | Explicit exclusions |
 | --- | --- | --- | --- |
-| `at_migration_owner` | No | Own application schemas and application-created objects; execute reviewed Alembic DDL under an approved migration runner | No `SUPERUSER`, `CREATEROLE`, `BYPASSRLS`, or application deployment credentials |
+| `at_migration_owner` | Yes, with no password and pg_hba rejection | Own application schemas and application-created objects; execute reviewed Alembic DDL under an approved migration runner and own TimescaleDB policy jobs | No `SUPERUSER`, `CREATEROLE`, `BYPASSRLS`, or application deployment credentials |
 | `at_app` | No | The repository application's required table DML and sequence use; shared privilege group for API, TaskIQ, MCP, supported monitors, and approved CLI jobs | No DDL, schema `CREATE`, ownership, role administration, `TRUNCATE`, `REFERENCES`, `TRIGGER`, or broad `ALL TABLES` grants |
 | `nhplug_security_owner` | No | Own the #711 SECURITY DEFINER functions and their protected review objects | No login, no untrusted memberships, no `SUPERUSER`, `CREATEROLE`, or `BYPASSRLS` |
 | `nhplug_operator` | No | Insert the specifically approved #711 key/proof/authorization control rows and read the operator evidence required for that desk workflow | No table ownership, no direct ledger state update, no application login, no `UPDATE`/`DELETE` on authorization controls |
@@ -975,7 +989,7 @@ approved secret mechanism. The following illustrates the required hard attribute
 it is proposed mutation SQL, not a command to run now:
 
 ```sql
-CREATE ROLE at_migration_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+CREATE ROLE at_migration_owner LOGIN PASSWORD NULL NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOREPLICATION NOBYPASSRLS;
 CREATE ROLE at_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOREPLICATION NOBYPASSRLS;
