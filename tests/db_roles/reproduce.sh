@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disposable PostgreSQL 17 / TimescaleDB 2.22.1 role-cutover fixture.
+# Disposable PostgreSQL 17 / TimescaleDB 2.26.3 role-cutover fixture.
 set -Eeuo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -21,7 +21,7 @@ docker run -d --rm --name "$container" \
   -e POSTGRES_USER=mgh3326 \
   -e POSTGRES_DB=auto_trader \
   -p 127.0.0.1::5432 \
-  timescale/timescaledb:2.22.1-pg17 >/dev/null
+  timescale/timescaledb:2.26.3-pg17 >/dev/null
 
 for attempt in {1..60}; do
   # The image first starts a temporary socket-only postmaster for init scripts,
@@ -67,6 +67,9 @@ docker exec "$container" psql -X -U mgh3326 -d auto_trader -v ON_ERROR_STOP=1 \
 hba_file="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
   -At -c 'SHOW hba_file')"
 docker exec "$container" cat "$hba_file" > "$fixture_dir/pg_hba.original"
+docker exec "$container" psql -X -U mgh3326 -d auto_trader -At \
+  -c 'SELECT row_to_json(r) FROM pg_hba_file_rules r ORDER BY rule_number' \
+  > "$fixture_dir/pg_hba.rules.original"
 cat docs/runbooks/db-role-cutover-pg_hba.reject \
   "$fixture_dir/pg_hba.original" > "$fixture_dir/pg_hba.conf"
 docker exec -i "$container" sh -c 'cat > "$1"' sh "$hba_file" \
@@ -84,6 +87,10 @@ docker exec "$container" psql -X -U mgh3326 -d auto_trader \
 export AT789_FIXTURE_NONCE="$fixture_nonce"
 
 echo "fixture ready: container=$container port=$port"
+
+semantic_state() {
+  uv run python -m tests.db_roles.semantic_snapshot "$@"
+}
 
 stage1_journal="$fixture_dir/stage1.json"
 uv run python scripts/db_roles/stage1_apply.py --database auto_trader \
@@ -278,10 +285,12 @@ if [[ "$churn_rows" != 1 ]]; then
   exit 1
 fi
 mv "$stage2_journal" "$stage2_journal.cycle3"
+semantic_state --output "$fixture_dir/stage1-provisioned.semantic.json"
 stage2_sha="$(make_approval 2 "$stage2_manifest")"
 apply_stage 2 "$stage2_manifest" "$stage2_sha" "$stage2_journal"
 run_fixture_jobs
 echo 'stage 2 partial job and chunk churn retry, rollback, forward: verified'
+semantic_state --output "$fixture_dir/stage2.semantic.json"
 
 DATABASE_URL="postgresql+asyncpg://at_migration_runner@127.0.0.1:${port}/auto_trader" \
   AT_MIGRATION_SET_ROLE=at_migration_owner uv run alembic current
@@ -369,6 +378,7 @@ rollback_stage 3 "$stage3_journal"
 mv "$stage3_journal" "$stage3_journal.cycle1"
 apply_stage 3 "$stage3_manifest" "$stage3_sha" "$stage3_journal"
 echo 'stage 3 forward, rollback, forward: verified'
+semantic_state --output "$fixture_dir/stage3.semantic.json"
 
 # Keep two real client backends alive through Stage 5 so its signed session
 # evidence is checked against live pg_stat_activity PIDs, not a static claim.
@@ -398,8 +408,127 @@ for stage in 4 5; do
   mv "$journal" "$journal.cycle1"
   apply_stage "$stage" "$manifest" "$sha" "$journal"
   echo "stage $stage forward, rollback, forward: verified"
+  if [[ "$stage" == 4 ]]; then
+    semantic_state --output "$fixture_dir/stage4.semantic.json"
+  fi
 done
 
 DATABASE_URL="postgresql+asyncpg://at_api_login@127.0.0.1:${port}/auto_trader" \
   uv run pytest --noconftest -q tests/db_roles/test_app_role_smoke.py
-echo 'all five stages and app-role smoke verified in disposable container'
+
+# The operator runbook orders a full reversal 5 -> 4 -> 3 -> 2 -> 1.
+# Compare ownership, effective grants, default grants, jobs, memberships and
+# loaded HBA rules with the state immediately before each stage.
+rollback_stage 5 "$fixture_dir/stage5.journal.json"
+semantic_state --compare "$fixture_dir/stage4.semantic.json"
+echo 'reverse chain Stage 5: semantic catalog and HBA verified'
+
+rollback_stage 4 "$fixture_dir/stage4.journal.json"
+semantic_state --compare "$fixture_dir/stage3.semantic.json"
+echo 'reverse chain Stage 4: semantic catalog and HBA verified'
+
+docker exec "$container" psql -X -U mgh3326 -d auto_trader -v ON_ERROR_STOP=1 \
+  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND usename IN ('at_api_login','at_scheduler_login') AND pid<>pg_backend_pid()" >/dev/null
+rollback_stage 3 "$stage3_journal"
+semantic_state --compare "$fixture_dir/stage2.semantic.json"
+echo 'reverse chain Stage 3: semantic catalog and HBA verified'
+
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA paper TO at_app' >/dev/null
+if uv run python scripts/db_roles/stage2_rollback.py --database auto_trader \
+    --journal "$stage2_journal" > "$fixture_dir/unreverted-grant.out" 2>&1; then
+  echo 'Stage 2 inverse accepted a surviving application grant' >&2
+  exit 1
+fi
+if ! grep -q 'catalog ACL changed since Stage 2 journal: "paper"' \
+    "$fixture_dir/unreverted-grant.out"; then
+  echo 'Stage 2 inverse stopped for the wrong reason' >&2
+  cat "$fixture_dir/unreverted-grant.out" >&2
+  exit 1
+fi
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 -c 'REVOKE USAGE ON SCHEMA paper FROM at_app' >/dev/null
+semantic_state --compare "$fixture_dir/stage2.semantic.json"
+echo 'reverse chain Stage 2 refuses a surviving non-owner grant: verified'
+
+rollback_stage 2 "$stage2_journal"
+semantic_state --compare "$fixture_dir/stage1-provisioned.semantic.json"
+echo 'reverse chain Stage 2: semantic catalog and HBA verified'
+
+# Stage 2 churn intentionally left one new chunk and its row in place. Derive
+# the expected role inverses from that post-churn semantic state, preserving
+# the complete current catalog graph rather than comparing to an older graph.
+uv run python - "$fixture_dir/stage1-provisioned.semantic.json" \
+  "$fixture_dir/login-inverse.expected.json" \
+  "$fixture_dir/stage1-inverse.expected.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    snapshot = json.load(source)
+
+
+def without_roles(state, names):
+    return {
+        **state,
+        "roles": [r for r in state["roles"] if r["rolname"] not in names],
+        "memberships": [
+            m
+            for m in state["memberships"]
+            if m["parent"] not in names and m["child"] not in names
+        ],
+    }
+
+
+logins = {
+    "at_api_login",
+    "at_scheduler_login",
+    "at_migration_runner",
+    "at_desk_login",
+}
+after_logins = without_roles(snapshot, logins)
+after_stage1 = without_roles(
+    after_logins, {"at_app", "at_migration_owner", "nhplug_security_owner"}
+)
+for path, value in ((sys.argv[2], after_logins), (sys.argv[3], after_stage1)):
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(value, output, sort_keys=True, indent=2)
+        output.write("\n")
+PY
+
+# These four fixture-only login inverses mirror the separately approved
+# provisioning inverse in the runbook. Stage 1 cannot remove group roles
+# while the login memberships remain.
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 \
+  -c 'REVOKE at_app FROM at_api_login, at_scheduler_login' \
+  -c 'REVOKE at_migration_owner FROM at_migration_runner' \
+  -c 'REVOKE nhplug_operator FROM at_desk_login' \
+  -c 'DROP ROLE at_api_login, at_scheduler_login, at_migration_runner, at_desk_login' >/dev/null
+semantic_state --compare "$fixture_dir/login-inverse.expected.json"
+echo 'reverse chain login inverse: semantic catalog and HBA verified'
+
+uv run python scripts/db_roles/stage1_rollback.py --database auto_trader \
+  --journal "$stage1_journal"
+docker exec -i "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 < scripts/db_roles/stage1_verify.sql
+semantic_state --compare "$fixture_dir/stage1-inverse.expected.json"
+echo 'reverse chain Stage 1: semantic catalog and HBA verified'
+
+docker exec -i "$container" sh -c 'cat > "$1"' sh "$hba_file" \
+  < "$fixture_dir/pg_hba.original"
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 -At -c 'SELECT pg_reload_conf()' >/dev/null
+docker exec "$container" cat "$hba_file" > "$fixture_dir/pg_hba.restored"
+cmp "$fixture_dir/pg_hba.original" "$fixture_dir/pg_hba.restored"
+docker exec "$container" psql -X -U mgh3326 -d auto_trader -At \
+  -c 'SELECT row_to_json(r) FROM pg_hba_file_rules r ORDER BY rule_number' \
+  > "$fixture_dir/pg_hba.rules.restored"
+cmp "$fixture_dir/pg_hba.rules.original" "$fixture_dir/pg_hba.rules.restored"
+hba_loaded="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -At -c "SELECT pg_conf_load_time() >= (pg_stat_file(current_setting('hba_file'))).modification")"
+if [[ "$hba_loaded" != t ]]; then
+  echo 'restored HBA was not loaded' >&2
+  exit 1
+fi
+echo 'all five stages, app-role smoke and complete reverse chain verified in disposable container'

@@ -1,7 +1,7 @@
 """Generate signed local-only approval fixtures from a disposable database.
 
 This generator refuses non-loopback targets, non-fixture databases, and any
-TimescaleDB version other than the pinned 2.22.1 reproduction image.
+TimescaleDB version other than the pinned 2.26.3 reproduction image.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ async def check_fixture(conn: asyncpg.Connection) -> None:
     if (
         row["database_name"] != "auto_trader"
         or not 170000 <= row["version_num"] < 180000
-        or row["ts_version"] != "2.22.1"
+        or row["ts_version"] != "2.26.3"
         or row["bootstrap_oid"] != 10
         or row["ticks"] is None
         or row["nhplug"] is None
@@ -147,7 +147,7 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
     if stage == 2:
         record["objects"] = await catalog_items(conn, functions_and_types=True)
         record["objects"].extend(await internal_items(conn))
-        record["timescale_version"] = "2.22.1"
+        record["timescale_version"] = "2.26.3"
         record["timescale_jobs"] = await job_inventory(conn)
         record["timescale_graph_proof"] = "operator_verified"
     elif stage == 3:
@@ -321,7 +321,7 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                     }
                     for r in clients
                 ],
-                "timescale_version": "2.22.1",
+                "timescale_version": "2.26.3",
             }
         )
     else:

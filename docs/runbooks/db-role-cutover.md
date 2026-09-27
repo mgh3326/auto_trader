@@ -10,10 +10,13 @@ The local reproduction command is:
 
     wrk heavy -- bash tests/db_roles/reproduce.sh
 
-It starts a disposable timescale/timescaledb:2.22.1-pg17 container, applies the
+It starts a disposable timescale/timescaledb:2.26.3-pg17 container, applies the
 repository migrations, builds the production-like ownership fixture, then runs
-all five stages forward, rollback, and forward again. It checks owner socket
-and TCP denial, policy job runs, migration identity, and app-role DB paths.
+all five stages forward, rollback, and forward again. It then runs the full
+Stage 5 to Stage 1 inverse chain, comparing semantic ownership, grants,
+default grants, policy jobs, roles, and loaded pg_hba rules after every step.
+It checks owner socket and TCP denial, policy job runs, migration identity,
+app-role DB paths, and restoration of the original pg_hba file and rules.
 Its synthetic approval records and journals stay in a temporary
 directory; the container and directory are removed on exit.
 
@@ -39,21 +42,23 @@ prefect database. The application uses postgres through .env.api and
 only the app inputs .env.api and .env.scheduler. No stage alters, disables,
 or rotates postgres. Prefect role separation is outside #789.
 
-Stage 2 is stopped until a DBA demonstrates a supported TimescaleDB 2.26.3
-policy-job owner transition and inverse. In the disposable 2.22.1 fixture,
-changing a hypertable or continuous aggregate owner left its policy job owned
-by mgh3326. The alter_job signature there has no owner argument. Operator-desk
-should run db-role-cutover-readonly.sql and
-scripts/db_roles/needs_desk_sql.sql and return both complete outputs, then
-record the reviewed version-specific method and a reversible staging proof.
-The same fixture rejected a transactional remove/add of a retention policy
+The disposable 2.26.3 fixture demonstrates the reviewed public policy API
+transition and inverse, including the complete five-stage reverse chain.
+Changing a hypertable or continuous aggregate owner alone leaves its policy
+job owned by mgh3326; alter_job has no owner argument in the reviewed
+version. The script removes and recreates each policy transactionally under
+the new owner and journals the exact previous configuration. The earlier
+fixture rejected a transactional remove/add of a retention policy
 under NOLOGIN at_migration_owner: TimescaleDB reported that a hypertable owner
 must have LOGIN to run background tasks. Director-1 chose one common owner
 for migrations, hypertables, aggregates, and jobs: at_migration_owner has
 LOGIN but no password, with ordered pg_hba reject rules for local socket,
 IPv4, and IPv6. It is not an interactive credential. A local unprivileged
 LOGIN-role probe created a policy job successfully and rolled back. The
-specific 2.26.3 job transition and inverse still need operator approval.
+version-only 2.26.3 stop is resolved by the disposable proof. Production
+execution still requires a fresh matching policy inventory, staging lock and
+duration evidence, and a separate operator approval for Stage 2. Unknown job
+types, config differences, or a different extension version remain stops.
 No direct write to the TimescaleDB internal job catalog is authorized by this
 runbook. Retain mgh3326 while it owns an extension member, chunk,
 materialization object, or job.
@@ -87,14 +92,14 @@ approvals. No command here prints a DSN or credential. The operator must paste
 the command, exit code, and full verify output back to director-1 after each
 stage. Keep journals and signed manifests for rollback; never commit them.
 
-The read-only evidence commands for the open 2.26.3 gate and fresh ownership
+The read-only evidence commands for the fresh production ownership and policy
 inventory are:
 
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f docs/runbooks/db-role-cutover-readonly.sql
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/needs_desk_sql.sql
 
 Paste both outputs before a Stage 2 approval. These queries do not authorize
-the ownership transition; its version-specific staging proof remains required.
+the ownership transition or replace the production-shaped lock rehearsal.
 
 Each apply is a separate change. The script's transaction uses a 3 second
 lock timeout and a 30 second statement timeout. Ownership changes are catalog
@@ -188,7 +193,8 @@ the exact TimescaleDB version and the full policy-job schedule, configuration,
 owner, and IDs. Compare the manifest with the fresh
 catalog inventory. An absent #711 object is an explicit stop; do not silently
 skip it or run its historical migration under the new owner. This stage needs
-the supported 2.26.3 job-owner transition proof described above before approval.
+the exact 2.26.3 job configuration and a production-shaped staging lock
+rehearsal before approval.
 The approved transaction for each user policy job removes the policy and
 recreates it under at_migration_owner with its recorded configuration.
 Job IDs change. The journal must map old and new IDs, and its inverse must
@@ -204,6 +210,10 @@ restored owner. An unrelated catalog addition stops. If chunks change before
 the owner transfer, abandon that prepared journal and obtain a fresh signed
 manifest; no owner change has committed. A dropped chunk is skipped only if
 the journal classified it as a chunk or index at preparation time.
+Stage 2 compares effective ACL grants on retry and rollback. PostgreSQL can
+replace a NULL catalog ACL with an explicit owner-default ACL after Stage 3
+grants and their inverse; those represent the same privileges and must not
+block Stage 2. A surviving grant to another role still stops the inverse.
 
     uv run python scripts/db_roles/stage2_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage2.approved.json" --sha256 "$STAGE2_SHA" --journal "$CUTOVER_DIR/stage2.journal.json"
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage2_verify.sql
@@ -406,3 +416,6 @@ session. Then run Stage 5, Stage 4, Stage 3, Stage 2 and Stage 1 inverses in
 that order. Stage 3 refuses its inverse while an at_app session remains.
 Rollback stops on catalog drift. A data backup is for data recovery and does
 not substitute for ACL or ownership rollback.
+The disposable 2.26.3 reproduction runs this complete inverse sequence and
+verifies the semantic catalog and loaded pg_hba rules after each stage, then
+restores and compares the original pg_hba file and rules.

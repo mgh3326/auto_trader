@@ -517,7 +517,7 @@ async def timescale_gate(conn: asyncpg.Connection, record: dict) -> None:
     expected = record.get("timescale_version")
     if expected != version:
         raise Stop("TimescaleDB version differs from signed record; NEEDS_DESK_SQL")
-    if version != "2.22.1":
+    if version not in ("2.22.1", "2.26.3"):
         raise Stop(
             "TimescaleDB policy transition requires separate approval for this version; NEEDS_DESK_SQL"
         )
@@ -723,7 +723,9 @@ async def rollback2(conn: asyncpg.Connection, journal: dict) -> None:
             if obj["owner"] == item["target_owner"] and "owner_after_acl" in journal
             else entry.get("acl")
         )
-        if "acl" in entry and obj["acl"] != expected_acl:
+        if "acl" in entry and await effective_acl_key(
+            conn, obj, item, obj["acl"]
+        ) != await effective_acl_key(conn, obj, item, expected_acl):
             raise Stop(
                 "ownership rollback ACL differs from journal: " + obj["sql_name"]
             )
@@ -777,7 +779,9 @@ async def rollback2(conn: asyncpg.Connection, journal: dict) -> None:
         obj = await catalog_object(conn, entry["item"])
         if obj["owner"] != entry["owner"]:
             raise Stop("owner inverse incomplete: " + obj["sql_name"])
-        if "acl" in entry and obj["acl"] != entry["acl"]:
+        if "acl" in entry and await effective_acl_key(
+            conn, obj, entry["item"], obj["acl"]
+        ) != await effective_acl_key(conn, obj, entry["item"], entry["acl"]):
             raise Stop("owner inverse ACL differs from journal: " + obj["sql_name"])
         if (
             entry["item"]["kind"] == "relation"
@@ -881,7 +885,9 @@ async def run_stage2(
                     and "owner_after_acl" in existing
                     else entry["acl"]
                 )
-                if obj["acl"] != expected_acl:
+                if await effective_acl_key(
+                    conn, obj, entry["item"], obj["acl"]
+                ) != await effective_acl_key(conn, obj, entry["item"], expected_acl):
                     raise Stop(
                         "catalog ACL changed since Stage 2 journal: " + obj["sql_name"]
                     )
@@ -1010,6 +1016,36 @@ async def acl_rows(conn: asyncpg.Connection, item: dict) -> list[dict]:
         row["owner"],
     )
     return [dict(r) for r in rows]
+
+
+async def effective_acl_key(
+    conn: asyncpg.Connection, obj: dict, item: dict, raw_acl: str | None
+) -> list[tuple]:
+    """Compare grants as PostgreSQL interprets them for the current owner.
+
+    GRANT and REVOKE can turn a NULL ACL into an explicit owner-default ACL.
+    Stage 3 rollback leaves that representation behind, so Stage 2 must compare
+    privileges rather than the catalog text saved in its journal.
+    """
+    kind = {
+        "schema": b"n",
+        "relation": b"S" if obj.get("relkind") == "S" else b"r",
+        "function": b"f",
+        "type": b"T",
+    }[item["kind"]]
+    rows = await conn.fetch(
+        "SELECT CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE gr.rolname END grantee, "
+        "pg_get_userbyid(a.grantor) grantor, a.privilege_type, a.is_grantable "
+        "FROM pg_roles owner_role, "
+        "LATERAL aclexplode(COALESCE($1::text::aclitem[], "
+        'acldefault($2::"char", owner_role.oid))) a '
+        "LEFT JOIN pg_roles gr ON gr.oid=a.grantee "
+        "WHERE owner_role.rolname=$3",
+        raw_acl,
+        kind,
+        obj["owner"],
+    )
+    return acl_key([dict(row) for row in rows])
 
 
 def acl_key(rows: list[dict]) -> list[tuple]:

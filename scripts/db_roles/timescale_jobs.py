@@ -1,4 +1,4 @@
-"""TimescaleDB 2.22.1 policy move using public policy APIs only.
+"""TimescaleDB 2.22.1 and 2.26.3 policy move using public policy APIs only.
 
 The journal is written before the first change.  A policy is removed and
 recreated in one database transaction.  Its generated ID is discovered from
@@ -93,9 +93,7 @@ def policy_kind(job: dict) -> str:
         or job.get("initial_start") is not None
         or job.get("timezone") is not None
     ):
-        raise JobStop(
-            "policy scheduling differs from reviewed 2.22.1 fixture; NEEDS_DESK_SQL"
-        )
+        raise JobStop("policy scheduling differs from reviewed fixture; NEEDS_DESK_SQL")
     if job.get("scheduled") is not True:
         raise JobStop("unscheduled policy requires separate review; NEEDS_DESK_SQL")
     if job.get("job_id", 0) < 1000:
@@ -117,12 +115,9 @@ def relation(job: dict) -> str:
 
 
 async def preflight(conn: asyncpg.Connection, signed_pairs: object) -> list[dict]:
-    if (
-        await conn.fetchval(
-            "SELECT extversion FROM pg_extension WHERE extname='timescaledb'"
-        )
-        != "2.22.1"
-    ):
+    if await conn.fetchval(
+        "SELECT extversion FROM pg_extension WHERE extname='timescaledb'"
+    ) not in ("2.22.1", "2.26.3"):
         raise JobStop(
             "TimescaleDB version needs separate operator approval; NEEDS_DESK_SQL"
         )
