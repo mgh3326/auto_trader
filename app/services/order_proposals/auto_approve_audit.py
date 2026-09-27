@@ -106,8 +106,9 @@ _ENUM_INPUT_VALUES = {
     # §163차/§173 -- why the cumulative parking meter could not be read. The
     # classifier adds `not_supplied` (no reading passed) and `invalid_exposure`
     # (a reading that is not a finite non-negative amount) to the meter's own
-    # closed vocabulary. For a Toss scope, `account_identity_unavailable` is
-    # the proposal's `broker_account_id` not naming the configured account.
+    # closed vocabulary. Toss account sub-reasons distinguish absent or
+    # malformed identity, configured-reader mismatch, broker-list absence,
+    # and account-read failure.
     "parking_exposure_reason": frozenset(
         PARKING_EXPOSURE_UNAVAILABLE_REASONS | {"not_supplied", "invalid_exposure"}
     ),

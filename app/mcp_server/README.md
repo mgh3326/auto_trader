@@ -871,7 +871,15 @@ When `ORDER_PROPOSALS_ENABLED=true`, the default and
 proposal describes a possible order; creating or voiding one is not a broker
 order mutation.
 
+- `toss_proposal_accounts()`
+  - Read-only Toss account-list source for proposal account sequences. It
+    returns all listed sequences and never selects one; the proposer chooses
+    the intended account explicitly, including on multi-account credentials.
 - `order_proposal_create(...)`
+  - For Toss live parking, supply top-level `broker_account_id` as the exact
+    decimal sequence chosen from a preceding `toss_proposal_accounts` broker
+    read. Missing identity creates a human-card proposal; it is never filled
+    from settings or free-text proposal fields.
   - `market` uses canonical `equity_kr`, `equity_us`, or `crypto`; the tool
     accepts `kr` and `us` aliases and normalizes them before validation,
     payload hashing, and persistence.

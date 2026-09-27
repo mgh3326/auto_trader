@@ -218,8 +218,8 @@ def sum_parking_exposure(rows: Any, *, scope: ParkingScope) -> ParkingExposure:
     return ParkingExposure.observed(total)
 
 
-def _toss_account_identity_matches(broker_account_id: Any) -> bool:
-    """Prove the proposal's durable scope names the settings-selected account.
+def _toss_account_identity_reason(broker_account_id: Any) -> str | None:
+    """Check the explicit proposal scope against the holdings reader selection.
 
     ``TossReadClient.from_settings()`` always sends its configured account
     sequence (or auto-resolves one); it does not consume proposal metadata.
@@ -231,11 +231,34 @@ def _toss_account_identity_matches(broker_account_id: Any) -> bool:
     from app.core.config import settings
 
     configured = settings.toss_api_account_seq
+    if (
+        type(broker_account_id) is not str
+        or not broker_account_id.isascii()
+        or not broker_account_id.isdecimal()
+        or broker_account_id.startswith("0")
+    ):
+        return "account_identity_unavailable"
+    if type(configured) is not int or configured <= 0:
+        return "account_identity_unavailable"
+    if broker_account_id != str(configured):
+        return "account_identity_mismatch"
+    return None
+
+
+def _toss_account_is_listed(accounts: Any, broker_account_id: str) -> bool:
+    """Require one broker-listed account with the exact requested sequence."""
+    from app.services.brokers.toss.dto import TossAccount
+
     return (
-        type(configured) is int
-        and configured > 0
-        and type(broker_account_id) is str
-        and broker_account_id == str(configured)
+        type(accounts) is list
+        and sum(
+            type(account) is TossAccount
+            and type(account.account_seq) is int
+            and account.account_seq > 0
+            and str(account.account_seq) == broker_account_id
+            for account in accounts
+        )
+        == 1
     )
 
 
@@ -244,7 +267,6 @@ def _select_balance_fetcher(
     *,
     fetch_us_holdings: Any,
     fetch_kr_holdings: Any,
-    fetch_toss_holdings: Any,
 ) -> Callable[[], Awaitable[Any]]:
     """Return only the reader cryptographically named by the parking scope.
 
@@ -271,21 +293,7 @@ def _select_balance_fetcher(
 
         return KISClient().fetch_my_stocks
     if scope.balance_provider in _TOSS_HOLDINGS_PROVIDERS:
-        if fetch_toss_holdings is not None:
-            return fetch_toss_holdings
-
-        async def _read_toss_holdings() -> Any:
-            # This path calls only TossReadClient.holdings(), a GET read
-            # surface. It neither imports nor invokes place/modify/cancel.
-            from app.services.brokers.toss.client import TossReadClient
-
-            client = TossReadClient.from_settings()
-            try:
-                return await client.holdings()
-            finally:
-                await client.aclose()
-
-        return _read_toss_holdings
+        raise AssertionError("Toss holdings require the verified account path")
     raise AssertionError(
         f"unsupported parking balance provider: {scope.balance_provider}"
     )
@@ -321,6 +329,7 @@ async def load_parking_exposure(
     fetch_us_holdings: Any = None,
     fetch_kr_holdings: Any = None,
     fetch_toss_holdings: Any = None,
+    fetch_toss_accounts: Any = None,
     durable_notional_fn: Any = None,
 ) -> ParkingExposure:
     """Cumulative exposure for an allowlisted order's bound broker account.
@@ -338,28 +347,69 @@ async def load_parking_exposure(
     scope = parking_scope(symbol=symbol, account_mode=account_mode, market=market)
     if scope is None:
         return ParkingExposure.unavailable("not_requested")
+    assert _PROVIDER_BINDINGS.get(scope.balance_provider) == (
+        scope.account_mode,
+        scope.market,
+        scope.currency,
+    )
 
-    if (
-        scope.balance_provider in _TOSS_HOLDINGS_PROVIDERS
-        and not _toss_account_identity_matches(broker_account_id)
-    ):
-        # No broker read before the account identity is proven.  In particular,
-        # do not auto-resolve a Toss account to authorise an opaque proposal
-        # account label.
-        return ParkingExposure.unavailable("account_identity_unavailable")
+    toss_scope = scope.balance_provider in _TOSS_HOLDINGS_PROVIDERS
+    if toss_scope:
+        identity_reason = _toss_account_identity_reason(broker_account_id)
+        if identity_reason is not None:
+            # No broker read before the account identity is proven. Never
+            # auto-resolve a Toss account for an opaque proposal label.
+            return ParkingExposure.unavailable(identity_reason)
 
     if durable_notional_fn is None:
         return ParkingExposure.unavailable("durable_reader_missing")
 
-    fetcher = _select_balance_fetcher(
-        scope,
-        fetch_us_holdings=fetch_us_holdings,
-        fetch_kr_holdings=fetch_kr_holdings,
-        fetch_toss_holdings=fetch_toss_holdings,
-    )
-
     try:
-        payload = await fetcher()
+        if toss_scope:
+            if (fetch_toss_accounts is None) != (fetch_toss_holdings is None):
+                return ParkingExposure.unavailable("account_lookup_failed")
+            if fetch_toss_accounts is not None:
+                try:
+                    accounts = await fetch_toss_accounts()
+                except Exception as exc:  # noqa: BLE001 - identity was not proven
+                    logger.warning(
+                        "parking account lookup failed: %s", type(exc).__name__
+                    )
+                    return ParkingExposure.unavailable("account_lookup_failed")
+                if not _toss_account_is_listed(accounts, broker_account_id):
+                    return ParkingExposure.unavailable("account_identity_unknown")
+                payload = await fetch_toss_holdings()
+            else:
+                from app.services.brokers.toss.client import TossReadClient
+
+                client = TossReadClient.from_settings()
+                try:
+                    # Settings may have changed since the first comparison.
+                    # Never let the same proposal meter a different account.
+                    selected_seq = client.selected_account_seq
+                    if type(selected_seq) is not int or selected_seq != int(
+                        broker_account_id
+                    ):
+                        return ParkingExposure.unavailable("account_identity_mismatch")
+                    try:
+                        accounts = await client.accounts()
+                    except Exception as exc:  # noqa: BLE001 - identity was not proven
+                        logger.warning(
+                            "parking account lookup failed: %s", type(exc).__name__
+                        )
+                        return ParkingExposure.unavailable("account_lookup_failed")
+                    if not _toss_account_is_listed(accounts, broker_account_id):
+                        return ParkingExposure.unavailable("account_identity_unknown")
+                    payload = await client.holdings()
+                finally:
+                    await client.aclose()
+        else:
+            fetcher = _select_balance_fetcher(
+                scope,
+                fetch_us_holdings=fetch_us_holdings,
+                fetch_kr_holdings=fetch_kr_holdings,
+            )
+            payload = await fetcher()
     except Exception as exc:  # noqa: BLE001 - an unreadable balance is not a clearance
         logger.warning("parking exposure fetch failed: %s", type(exc).__name__)
         return ParkingExposure.unavailable("fetch_failed")

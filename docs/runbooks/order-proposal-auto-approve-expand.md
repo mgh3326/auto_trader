@@ -679,8 +679,9 @@ selects `settings.toss_api_account_seq`; it does not accept the proposal's
 `broker_account_id`. Before any Toss HTTP read, the parking meter therefore
 requires `broker_account_id` to be the exact canonical decimal string of that
 positive configured sequence. Null, whitespace/leading-zero variants, opaque
-IDs, a missing setting, and mismatches all fail closed as
-`account_identity_unavailable`. The implementation does not guess an
+IDs and a missing setting fail closed as `account_identity_unavailable`;
+a different canonical sequence fails as `account_identity_mismatch`.
+The implementation does not guess an
 account-number-to-sequence mapping. This makes the balance half and the
 durable `WHERE account_mode AND market AND broker_account_id` half refer to
 the same Toss scope; Toss and KIS rows remain disjoint even if their textual
@@ -732,10 +733,21 @@ is consumed directly as USD and is not FX-converted.
 
 🔴 **Account identity is a hard precondition.** Before the Toss holdings read,
 the parking exposure path requires `broker_account_id` to be the exact
-canonical decimal string of `settings.toss_api_account_seq`. Missing,
-non-canonical, or mismatched values fail closed as
-`account_identity_unavailable`; no KIS balance is substituted. The US Toss
+canonical decimal string of `settings.toss_api_account_seq`. Missing and
+non-canonical values fail closed as `account_identity_unavailable`; a
+mismatched configured sequence fails as `account_identity_mismatch`. No KIS balance is substituted. The US Toss
 face therefore cannot charge a KIS balance or a different Toss account's cap.
+
+Task #765 adds a broker-membership read before holdings for a canonical,
+explicit Toss sequence. The same Toss client reads all broker account
+sequences and then the holdings of its configured selection. A sequence not
+listed by the broker is `account_identity_unknown`; a sequence different
+from that holdings selection is `account_identity_mismatch`; a missing or
+non-canonical sequence remains `account_identity_unavailable`. An account
+read failure is `account_lookup_failed`. All four produce the normal human
+card. Multiple listed accounts are never resolved implicitly: the proposer
+must pass one sequence explicitly. The historical ae231402 SGOV proposal
+has a NULL sequence and remains `account_identity_unavailable`.
 
 The Toss US face and the KIS US face are deliberately independent meters. Each
 can consume its own USD 10,000 cumulative-buy cap, so the accepted US aggregate

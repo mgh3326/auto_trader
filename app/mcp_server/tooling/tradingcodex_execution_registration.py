@@ -38,6 +38,7 @@ from app.mcp_server.tooling.operating_briefing_registration import (
 from app.mcp_server.tooling.order_proposal_tools import (
     ORDER_PROPOSAL_TOOL_NAMES,
     register_order_proposal_tools,
+    register_toss_proposal_accounts,
 )
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
@@ -151,7 +152,9 @@ _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES: set[str] = {
 # ROB-816 — order_proposals SOT ledger read/create surface. No approve/submit
 # tool is included — approval is Telegram-only (PR 2).
 _TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = (
-    ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES
+    ORDER_PROPOSAL_TOOL_NAMES
+    | PROPOSAL_REVALIDATE_TOOL_NAMES
+    | {"toss_proposal_accounts"}
 )
 
 TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
@@ -468,6 +471,7 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     # default-profile registration in registry.py.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(filtered)
+        register_toss_proposal_accounts(filtered)
         register_proposal_revalidate_tools(
             filtered,
             registered_tool_names=lambda: registered_tool_names_for(mcp),

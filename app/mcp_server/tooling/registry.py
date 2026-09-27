@@ -173,7 +173,10 @@ from app.mcp_server.tooling.niche import NicheMCP
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
-from app.mcp_server.tooling.order_proposal_tools import register_order_proposal_tools
+from app.mcp_server.tooling.order_proposal_tools import (
+    register_order_proposal_tools,
+    register_toss_proposal_accounts,
+)
 from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
@@ -460,6 +463,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # the existing proposal dispatch path.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(mcp)
+        if profile is McpProfile.DEFAULT:
+            register_toss_proposal_accounts(mcp)
         register_proposal_revalidate()
 
     # Profile-gated: side-effect order surfaces

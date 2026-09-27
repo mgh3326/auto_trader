@@ -117,6 +117,14 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
         for profile in profiles:
             if profile in expected:
                 expected[profile].add(tool)
+    # #765 adds this read after the dated 2026-09-03 audit. Preserve the
+    # historical audit and name the reviewed expansion explicitly here.
+    for profile in (
+        "default",
+        "tradingcodex_execution",
+        "watch_repricing",
+    ):
+        expected[profile].add("toss_proposal_accounts")
     actual = collect_profile_tools(monkeypatch, gates_enabled=True)
     assert {profile: set(names) for profile, names in actual.items()} == expected, (
         "surface must preserve A/B/C/U and only the reviewed D exceptions"

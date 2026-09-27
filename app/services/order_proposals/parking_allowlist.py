@@ -273,6 +273,9 @@ PARKING_EXPOSURE_UNAVAILABLE_REASONS: frozenset[str] = frozenset(
         "market_not_kr",
         "market_not_us",
         "account_identity_unavailable",
+        "account_identity_mismatch",
+        "account_identity_unknown",
+        "account_lookup_failed",
         "scope_not_allowlisted",
         # §163차 재작업 1 — the durable half. Its absence or unreadability is
         # not a degraded measurement, it is a broken cap: without it an

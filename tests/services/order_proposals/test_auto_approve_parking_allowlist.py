@@ -1028,6 +1028,32 @@ async def test_load_exposure_makes_no_broker_call_for_a_non_parking_group():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("account_mode", "market", "symbol"),
+    [
+        ("toss_live", "equity_us", "AAPL"),
+        ("toss_live", "equity_kr", "005930"),
+        ("kis_live", "equity_us", "AAPL"),
+        ("upbit", "crypto", "KRW-BTC"),
+    ],
+)
+async def test_nonparking_never_looks_up_account(account_mode, market, symbol):
+    async def _must_not_read():
+        raise AssertionError("nonparking must not make an account or holdings read")
+
+    exposure = await load_parking_exposure(
+        account_mode=account_mode,
+        market=market,
+        symbol=symbol,
+        broker_account_id="unrelated",
+        fetch_toss_accounts=_must_not_read,
+        fetch_toss_holdings=_must_not_read,
+        durable_notional_fn=_must_not_read,
+    )
+    assert exposure.unavailable_reason == "not_requested"
+
+
+@pytest.mark.asyncio
 async def test_load_exposure_fails_closed_when_the_broker_read_raises():
     async def _fetch():
         raise TimeoutError("broker timeout")
@@ -1110,6 +1136,12 @@ def _toss_us_holding(*, symbol: str, amount: str):
     return _toss_kr_holding(symbol=symbol, amount=amount, currency="USD", market="US")
 
 
+async def _listed_toss_accounts():
+    from app.services.brokers.toss.dto import TossAccount
+
+    return [TossAccount(account_no="fake", account_seq=731, account_type="STOCK")]
+
+
 @pytest.mark.asyncio
 async def test_toss_kr_exposure_uses_toss_holdings_and_never_kis(monkeypatch):
     """The provider binding prevents a KR market name from selecting KIS."""
@@ -1140,6 +1172,7 @@ async def test_toss_kr_exposure_uses_toss_holdings_and_never_kis(monkeypatch):
         fetch_us_holdings=_must_not_read_kis,
         fetch_kr_holdings=_must_not_read_kis,
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_pending,
     )
 
@@ -1178,11 +1211,137 @@ async def test_toss_us_exposure_uses_native_usd_holdings_and_never_kis(monkeypat
         fetch_us_holdings=_must_not_read_kis,
         fetch_kr_holdings=_must_not_read_kis,
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
     assert exposure.available is True
     assert exposure.exposure == Decimal("2772.66")
+
+
+@pytest.mark.asyncio
+async def test_toss_account_lookup_failure_never_reads_holdings(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    read_holdings = False
+
+    async def _accounts():
+        raise TimeoutError("fake account endpoint timeout")
+
+    async def _holdings():
+        nonlocal read_holdings
+        read_holdings = True
+        return None
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_toss_accounts=_accounts,
+        fetch_toss_holdings=_holdings,
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.unavailable_reason == "account_lookup_failed"
+    assert read_holdings is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_toss_account_never_reads_holdings(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss.dto import TossAccount
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+
+    async def _accounts():
+        return [TossAccount("fake-other", 732, "STOCK")]
+
+    async def _holdings():
+        raise AssertionError("unknown account must not reach holdings")
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_toss_accounts=_accounts,
+        fetch_toss_holdings=_holdings,
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.unavailable_reason == "account_identity_unknown"
+
+
+@pytest.mark.asyncio
+async def test_toss_account_and_holdings_use_same_selected_client(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss import client as client_module
+    from app.services.brokers.toss.dto import TossHoldings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    calls = []
+
+    class FakeClient:
+        selected_account_seq = 731
+
+        async def accounts(self):
+            calls.append("accounts")
+            return await _listed_toss_accounts()
+
+        async def holdings(self):
+            calls.append("holdings")
+            return TossHoldings(items=[_toss_us_holding(symbol="SGOV", amount="10")])
+
+        async def aclose(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        client_module.TossReadClient, "from_settings", lambda: FakeClient()
+    )
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("10")
+    assert calls == ["accounts", "holdings", "close"]
+
+
+@pytest.mark.asyncio
+async def test_changed_client_selection_blocks_before_account_read(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss import client as client_module
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    calls = []
+
+    class FakeClient:
+        selected_account_seq = 732
+
+        async def accounts(self):
+            raise AssertionError("mismatched selection must stop before read")
+
+        async def holdings(self):
+            raise AssertionError("mismatched selection must stop before holdings")
+
+        async def aclose(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        client_module.TossReadClient, "from_settings", lambda: FakeClient()
+    )
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.unavailable_reason == "account_identity_mismatch"
+    assert calls == ["close"]
 
 
 @pytest.mark.asyncio
@@ -1206,6 +1365,7 @@ async def test_toss_us_filter_excludes_kr_market_rows_from_the_us_face(monkeypat
         symbol="SGOV",
         broker_account_id="731",
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
@@ -1238,6 +1398,7 @@ async def test_toss_us_account_identity_rejects_wrong_account_before_any_balance
         # before either the KIS or Toss reader can run.
         fetch_us_holdings=_must_not_read,
         fetch_toss_holdings=_must_not_read,
+        fetch_toss_accounts=_must_not_read,
         durable_notional_fn=_no_pending,
     )
 
@@ -1274,6 +1435,7 @@ async def test_toss_us_holdings_must_be_native_usd_and_us_market(
         symbol="SGOV",
         broker_account_id="731",
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
@@ -1290,7 +1452,6 @@ def test_toss_us_provider_binding_cannot_reuse_toss_kr_key():
             replace(scope, balance_provider="toss_kr_holdings"),
             fetch_us_holdings=None,
             fetch_kr_holdings=None,
-            fetch_toss_holdings=None,
         )
 
 
@@ -1334,7 +1495,6 @@ def test_provider_binding_mutant_is_an_assertion_error():
             replace(scope, balance_provider="kis_kr_holdings"),
             fetch_us_holdings=None,
             fetch_kr_holdings=None,
-            fetch_toss_holdings=None,
         )
 
 
@@ -1359,6 +1519,7 @@ async def test_toss_kr_account_identity_is_fail_closed_before_holdings_read(
         symbol="459580",
         broker_account_id=broker_account_id,
         fetch_toss_holdings=_must_not_read,
+        fetch_toss_accounts=_must_not_read,
         durable_notional_fn=_no_pending,
     )
 
@@ -1395,6 +1556,7 @@ async def test_toss_kr_holdings_must_be_native_krw_and_kr_market(
         symbol="459580",
         broker_account_id="731",
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
@@ -1402,8 +1564,19 @@ async def test_toss_kr_holdings_must_be_native_krw_and_kr_market(
     assert exposure.unavailable_reason == reason
 
 
-def test_toss_parking_reader_calls_only_the_read_only_holdings_method():
-    source = inspect.getsource(_select_balance_fetcher)
+def test_toss_parking_has_no_unverified_holdings_reader():
+    scope = parking_scope(symbol="SGOV", account_mode="toss_live", market="equity_us")
+    assert scope is not None
+    with pytest.raises(AssertionError, match="verified account path"):
+        _select_balance_fetcher(
+            scope,
+            fetch_us_holdings=None,
+            fetch_kr_holdings=None,
+        )
+    source = inspect.getsource(load_parking_exposure)
+    assert source.index("await client.accounts()") < source.index(
+        "await client.holdings()"
+    )
     assert "await client.holdings()" in source
     assert "client.place_order" not in source
     assert "client.modify_order" not in source
