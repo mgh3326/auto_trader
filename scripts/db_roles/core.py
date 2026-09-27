@@ -1975,11 +1975,9 @@ async def apply5(conn: asyncpg.Connection, record: dict) -> dict:
         timer.get("observed_at"), "backup timer observation"
     )
     if not (
-        now - timedelta(days=7)
-        <= rotation_at
-        <= backup_success_at
-        <= timer_observed_at
-        <= now + timedelta(minutes=1)
+        rotation_at <= backup_success_at
+        and now - timedelta(days=7) <= backup_success_at
+        and backup_success_at <= timer_observed_at <= now + timedelta(minutes=1)
     ):
         raise Stop("backup timer success must follow rotation and be recently observed")
     await timescale_gate(conn, record)
