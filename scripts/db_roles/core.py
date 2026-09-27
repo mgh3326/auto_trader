@@ -1595,12 +1595,13 @@ async def apply4(conn: asyncpg.Connection, record: dict) -> dict:
     if runner != "at_migration_runner" or runner in names:
         raise Stop("migration runner must be the dedicated at_migration_runner login")
     role = await conn.fetchrow(
-        "SELECT rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=$1",
+        "SELECT rolcanlogin,rolinherit,rolsuper,rolcreaterole,rolcreatedb,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=$1",
         runner,
     )
     if (
         role is None
         or not role["rolcanlogin"]
+        or role["rolinherit"]
         or any(
             role[k]
             for k in (
