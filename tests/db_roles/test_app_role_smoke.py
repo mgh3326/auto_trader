@@ -24,6 +24,8 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
     assert url.host in {"127.0.0.1", "localhost"}
     assert url.database == "auto_trader"
     assert url.username == "at_api_login"
+    fixture_nonce = os.environ["AT789_FIXTURE_NONCE"]
+    assert len(fixture_nonce) == 48
 
     async def exercise() -> None:
         symbol = f"T789-{uuid4().hex[:20]}"
@@ -36,6 +38,10 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
                     await session.execute(text("SELECT session_user, current_user"))
                 ).one()
                 assert identity == ("at_api_login", "at_api_login")
+                stored_nonce = await session.scalar(
+                    text("SELECT current_setting('t789.fixture_nonce', true)")
+                )
+                assert stored_nonce == fixture_nonce
                 paper_accounts = await session.scalar(
                     text("SELECT count(*) FROM paper.paper_accounts")
                 )

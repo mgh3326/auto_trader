@@ -77,6 +77,11 @@ docker exec "$container" psql -X -U mgh3326 -d auto_trader \
 uv run alembic upgrade head
 docker exec -i "$container" psql -X -U postgres -d auto_trader \
   -v ON_ERROR_STOP=1 < tests/db_roles/fixture.sql
+fixture_nonce="$(uv run python -c 'import secrets; print(secrets.token_hex(24))')"
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 \
+  -c "ALTER DATABASE auto_trader SET t789.fixture_nonce = '$fixture_nonce'" >/dev/null
+export AT789_FIXTURE_NONCE="$fixture_nonce"
 
 echo "fixture ready: container=$container port=$port"
 
