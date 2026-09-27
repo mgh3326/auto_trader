@@ -782,6 +782,40 @@ def test_run_dry_run_never_advances_watermark_on_skipped_rows(
     assert persisted["watermark"] == 0
 
 
+def test_run_dry_run_with_only_poison_rows_leaves_state_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Round-3 regression: the seen-prune plus the trailing save must not
+    # touch state.json under dry_run, even when every row is skipped.
+    state_path = tmp_path / "state.json"
+    now = datetime(2026, 9, 3, 1, 0, tzinfo=UTC)
+    before = {
+        "version": 1,
+        "watermark": 0,
+        "seen": {"expired": now.timestamp() - 90000},
+        "cooldowns": {},
+    }
+    state_path.write_text(json.dumps(before, sort_keys=True) + "\n")
+    before_bytes = state_path.read_bytes()
+
+    class Repo:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        async def list_recent_fills_for_triage(self, **_kwargs: object) -> Any:
+            return [_orm_row(id=1, filled_at="not-a-timestamp")]
+
+    monkeypatch.setattr(handoff_service, "ExecutionLedgerRepository", Repo)
+    outcome = asyncio.run(
+        FillHandoffRunner(
+            HandoffConfig(state_dir=tmp_path, kick_enabled=True, dry_run=True),
+            now=lambda: now,
+        ).run(_Db())
+    )
+    assert outcome["skipped"] == [{"ledger_id": 1, "reason": "sanitize_failed"}]
+    assert state_path.read_bytes() == before_bytes
+
+
 def test_run_unproven_position_is_queue_only_and_still_durable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

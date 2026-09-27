@@ -740,5 +740,6 @@ class FillHandoffRunner:
                     int(state["watermark"]), int(fill["ledger_id"])
                 )
                 locked.save()
-            locked.save()
+            if not self.config.dry_run:
+                locked.save()
             return outcome
