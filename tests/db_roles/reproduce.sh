@@ -19,7 +19,10 @@ docker run -d --rm --name "$container" \
   timescale/timescaledb:2.22.1-pg17 >/dev/null
 
 for attempt in {1..60}; do
-  if docker exec "$container" pg_isready -U mgh3326 -d auto_trader >/dev/null 2>&1; then
+  # The image first starts a temporary socket-only postmaster for init scripts,
+  # then shuts it down. TCP readiness identifies the final server instead.
+  if docker exec "$container" pg_isready -h 127.0.0.1 -U mgh3326 \
+      -d auto_trader >/dev/null 2>&1; then
     break
   fi
   if ((attempt == 60)); then
