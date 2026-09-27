@@ -128,9 +128,6 @@ if [[ "$runner_identity" != *'at_migration_runner|at_migration_owner'* ]]; then
 fi
 echo 'owner direct login rejected; migration SET ROLE verified'
 
-DATABASE_URL="postgresql+asyncpg://at_migration_runner@127.0.0.1:${port}/auto_trader" \
-  AT_MIGRATION_SET_ROLE=at_migration_owner uv run alembic current
-
 make_approval() {
   local stage="$1" path="$2"
   uv run python -m tests.db_roles.fixture_approvals \
@@ -190,6 +187,9 @@ stage2_sha="$(make_approval 2 "$stage2_manifest")"
 apply_stage 2 "$stage2_manifest" "$stage2_sha" "$stage2_journal"
 run_fixture_jobs
 echo 'stage 2 forward, rollback, forward: verified'
+
+DATABASE_URL="postgresql+asyncpg://at_migration_runner@127.0.0.1:${port}/auto_trader" \
+  AT_MIGRATION_SET_ROLE=at_migration_owner uv run alembic current
 
 stage3_manifest="$fixture_dir/stage3.json"
 stage3_journal="$fixture_dir/stage3.journal.json"
