@@ -208,16 +208,43 @@ DATABASE_URL="postgresql+asyncpg://at_migration_runner@127.0.0.1:${port}/auto_tr
 stage3_manifest="$fixture_dir/stage3.json"
 stage3_journal="$fixture_dir/stage3.journal.json"
 stage3_sha="$(make_approval 3 "$stage3_manifest")"
+missing_owner_manifest="$fixture_dir/stage3.missing-owner.json"
+missing_owner_sha="$(uv run python - "$stage3_manifest" "$missing_owner_manifest" <<'PY'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    record = json.load(source)
+record["database_connect_policy"]["keep_roles"].remove("at_migration_owner")
+payload = (json.dumps(record, sort_keys=True, indent=2) + "\n").encode()
+with open(sys.argv[2], "wb") as target:
+    target.write(payload)
+print(hashlib.sha256(payload).hexdigest())
+PY
+)"
+if uv run python scripts/db_roles/stage3_apply.py --database auto_trader \
+    --manifest "$missing_owner_manifest" --sha256 "$missing_owner_sha" \
+    --journal "$fixture_dir/stage3.missing-owner.journal.json"; then
+  echo 'stage 3 accepted a CONNECT policy missing the TimescaleDB job owner' >&2
+  exit 1
+fi
+if [[ -e "$fixture_dir/stage3.missing-owner.journal.json" ]]; then
+  echo 'stage 3 left a journal after rejecting the incomplete CONNECT policy' >&2
+  exit 1
+fi
 apply_stage 3 "$stage3_manifest" "$stage3_sha" "$stage3_journal"
 docker exec -i "$container" psql -X -h 127.0.0.1 -U at_migration_runner \
   -d auto_trader -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
 SET ROLE at_migration_owner;
 CREATE TABLE public.t789_future_acl (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);
+CREATE TABLE paper.t789_future_acl (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY);
 CREATE FUNCTION public.t789_future_acl_function() RETURNS integer LANGUAGE sql AS 'SELECT 1';
 DO $$
 BEGIN
   IF has_table_privilege('at_app', 'public.t789_future_acl', 'SELECT')
+     OR has_table_privilege('at_app', 'paper.t789_future_acl', 'SELECT')
      OR has_sequence_privilege('at_app', 'public.t789_future_acl_id_seq', 'USAGE')
      OR has_function_privilege('at_api_login', 'public.t789_future_acl_function()', 'EXECUTE') THEN
     RAISE EXCEPTION 'future migration object default ACL leaked privilege';
@@ -226,6 +253,11 @@ END
 $$;
 ROLLBACK;
 SQL
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 -c 'SET ROLE nhplug_security_owner' \
+  -c "SELECT length(review.nhplug_body_digest_v1('place','buy','005930',1,1000,NULL,NULL,'fixture')) = 64 AS digest_helpers_work" \
+  -c "SELECT has_database_privilege('at_migration_owner',current_database(),'CONNECT') AS owner_connect"
+run_fixture_jobs
 DATABASE_URL="postgresql+asyncpg://at_api_login@127.0.0.1:${port}/auto_trader" \
   uv run pytest --noconftest -q tests/db_roles/test_app_role_smoke.py
 rollback_stage 3 "$stage3_journal"

@@ -147,7 +147,8 @@ later stages until their dependencies have been rolled back in reverse order.
 
 ## Stage 2: named ownership and TimescaleDB graph
 
-Approval input: a complete signed object manifest covering schemas, relations,
+Approval input: a complete signed object manifest covering public, review,
+research, and paper schemas; relations,
 sequences, views, functions, types, hypertables, continuous aggregates,
 materialization objects, chunks, and jobs. It must name the current and target
 owner for each object and exclude extension members. The record must include
@@ -184,7 +185,8 @@ Approval input: a signed object-level DML and sequence manifest, the exact
 #711 and Kiwoom protected matrix, pre-change ACLs, and creator-role default
 ACLs. The signed database CONNECT keep-role list must cover postgres for the
 backup and Prefect, every currently active non-owner login, the new at_app
-group, and the pre-provisioned at_migration_runner. Stage 3 revokes PUBLIC
+group, at_migration_owner for TimescaleDB policy workers, and the
+pre-provisioned at_migration_runner. Stage 3 revokes PUBLIC
 CONNECT only after granting that reviewed set; rollback restores its exact
 prior ACL. Provision the runner role and its membership before Stage 3, with
 its credential activation reserved for Stage 4. The app gets no schema
@@ -195,7 +197,9 @@ operator, or PUBLIC. The app receives EXECUTE on exactly
 review.nhplug_body_digest_v1 and review.nhplug_body_field: the generated
 ledger digest requires the first, and the first calls the second. A
 throwaway app-role intent insert passed only after both grants; neither
-helper mutates state. Future migration objects must be created
+helper mutates state. The nhplug_security_owner also receives EXECUTE on
+these two helpers because its SECURITY DEFINER order guard calls the digest
+for a second-order intent. Future migration objects must be created
 after SET ROLE at_migration_owner; a connection as the runner alone is not
 enough to apply that creator's default ACL.
 The defaults deny PUBLIC function execution and leave table and sequence DML
@@ -208,8 +212,10 @@ function as the runner after SET ROLE and checks these denied defaults.
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage3_verify.sql
     uv run python scripts/db_roles/stage3_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage3.journal.json"
 
-Paste every protected-table privilege row, sequence row, function row, and
-default-ACL row. Compare normal-domain privileges with the approved manifest;
+Paste every protected-table privilege row, sequence row, function row,
+database CONNECT row, and default-ACL row. The owner CONNECT field must be
+true and both function EXECUTE matrix fields must be true on every function.
+Compare normal-domain privileges with the approved manifest;
 the verify SQL is evidence, not an automatic approval. Stop if the app has
 ownership, direct protected-function EXECUTE beyond those two helpers,
 sequence SELECT or UPDATE,

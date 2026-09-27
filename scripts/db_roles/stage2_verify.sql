@@ -1,23 +1,23 @@
 BEGIN READ ONLY;
 SELECT n.nspname, pg_get_userbyid(n.nspowner) AS owner
-FROM pg_namespace n WHERE n.nspname IN ('public','review','research')
+FROM pg_namespace n WHERE n.nspname IN ('public','review','research','paper')
 ORDER BY n.nspname;
 SELECT n.nspname, c.relname, c.relkind, pg_get_userbyid(c.relowner) AS owner,
        EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass
                  AND d.objid=c.oid AND d.deptype='e') AS extension_member
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname IN ('public','review','research','_timescaledb_internal')
+WHERE n.nspname IN ('public','review','research','paper','_timescaledb_internal')
   AND c.relkind IN ('r','p','v','m','S','f')
 ORDER BY n.nspname,c.relname;
 SELECT n.nspname, p.oid::regprocedure AS function_name,
        pg_get_userbyid(p.proowner) AS owner, p.prosecdef, p.proconfig
 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-WHERE n.nspname IN ('public','review','research')
+WHERE n.nspname IN ('public','review','research','paper')
 ORDER BY n.nspname, function_name;
 SELECT n.nspname, t.typname, t.typtype, t.typrelid::regclass AS relation_type_of,
        pg_get_userbyid(t.typowner) AS owner
 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-WHERE n.nspname IN ('public','review','research','_timescaledb_internal')
+WHERE n.nspname IN ('public','review','research','paper','_timescaledb_internal')
 ORDER BY n.nspname,t.typname;
 SELECT extversion AS timescaledb_version FROM pg_extension WHERE extname='timescaledb';
 SELECT j.job_id,j.application_name,j.proc_schema,j.proc_name,j.owner,

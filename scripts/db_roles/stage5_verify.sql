@@ -42,6 +42,6 @@ FROM timescaledb_information.jobs j
 JOIN _timescaledb_config.bgw_job b ON b.id=j.job_id ORDER BY j.job_id;
 SELECT n.nspname,c.relname,c.relkind,pg_get_userbyid(c.relowner) AS owner
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname IN ('public','review','research','_timescaledb_internal')
+WHERE n.nspname IN ('public','review','research','paper','_timescaledb_internal')
 ORDER BY n.nspname,c.relname;
 ROLLBACK;

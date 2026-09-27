@@ -1,6 +1,7 @@
 BEGIN READ ONLY;
 SELECT d.datname,d.datacl,
        has_database_privilege('at_app',d.datname,'CONNECT') AS app_connect,
+       has_database_privilege('at_migration_owner',d.datname,'CONNECT') AS owner_connect,
        has_database_privilege('at_app',d.datname,'CREATE') AS app_create,
        has_database_privilege('at_app',d.datname,'TEMPORARY') AS app_temporary
 FROM pg_database d WHERE d.datname=current_database();
@@ -30,13 +31,18 @@ SELECT c.oid::regclass AS sequence_name,
        has_sequence_privilege('at_app',c.oid,'SELECT') AS app_select,
        has_sequence_privilege('at_app',c.oid,'UPDATE') AS app_update
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname IN ('public','review','research') AND c.relkind='S'
+WHERE n.nspname IN ('public','review','research','paper') AND c.relkind='S'
 ORDER BY sequence_name;
 SELECT p.oid::regprocedure AS function_name, p.prosecdef, p.proconfig,
        has_function_privilege('at_app',p.oid,'EXECUTE') AS app_execute,
+       has_function_privilege('nhplug_security_owner',p.oid,'EXECUTE') AS security_owner_execute,
        has_function_privilege('at_app',p.oid,'EXECUTE') =
          (p.proname IN ('nhplug_body_field','nhplug_body_digest_v1'))
          AS app_execute_matrix_ok,
+       has_function_privilege('nhplug_security_owner',p.oid,'EXECUTE') =
+         (p.proname IN ('nhplug_body_field','nhplug_body_digest_v1')
+          OR pg_get_userbyid(p.proowner)='nhplug_security_owner')
+         AS security_owner_execute_matrix_ok,
        EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
                WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS public_execute
 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace

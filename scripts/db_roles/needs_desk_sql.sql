@@ -25,24 +25,24 @@ FROM pg_hba_file_rules ORDER BY rule_number;
 SELECT pg_conf_load_time() AS configuration_loaded_at,
        (pg_stat_file(current_setting('hba_file'))).modification AS hba_modified_at;
 SELECT n.nspname, pg_get_userbyid(n.nspowner) AS owner, n.nspacl
-FROM pg_namespace n WHERE n.nspname IN ('public','review','research') ORDER BY 1;
+FROM pg_namespace n WHERE n.nspname IN ('public','review','research','paper') ORDER BY 1;
 SELECT n.nspname,c.relname,c.relkind,pg_get_userbyid(c.relowner) AS owner,
        c.relacl,c.relrowsecurity,c.relforcerowsecurity,
        EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass
          AND d.objid=c.oid AND d.deptype='e') AS extension_member
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname IN ('public','review','research')
+WHERE n.nspname IN ('public','review','research','paper')
   AND c.relkind IN ('r','p','v','m','S','f') ORDER BY 1,2;
 SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid) AS identity_args,
        pg_get_userbyid(p.proowner) AS owner,p.prosecdef,p.proconfig,p.proacl,
        EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass
          AND d.objid=p.oid AND d.deptype='e') AS extension_member
 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-WHERE n.nspname IN ('public','review','research') ORDER BY 1,2,3;
+WHERE n.nspname IN ('public','review','research','paper') ORDER BY 1,2,3;
 SELECT n.nspname,t.typname,t.typtype,t.typrelid::regclass AS relation_type_of,
        pg_get_userbyid(t.typowner) AS owner,t.typacl
 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-WHERE n.nspname IN ('public','review','research','_timescaledb_internal')
+WHERE n.nspname IN ('public','review','research','paper','_timescaledb_internal')
 ORDER BY 1,2;
 SELECT pg_get_userbyid(d.defaclrole) AS creator,
        COALESCE(n.nspname,'<global>') AS schema_name,d.defaclobjtype,d.defaclacl

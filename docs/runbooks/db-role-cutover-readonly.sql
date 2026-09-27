@@ -49,6 +49,11 @@ WHERE (n.nspname, c.relname) IN
        ('_timescaledb_catalog', 'continuous_agg'))
 ORDER BY n.nspname, c.relname;
 
+SELECT n.nspname, pg_get_userbyid(n.nspowner) AS owner
+FROM pg_namespace n
+WHERE n.nspname IN ('public','review','research','paper')
+ORDER BY n.nspname;
+
 SELECT t.tgname, pg_get_triggerdef(t.oid) AS definition
 FROM pg_trigger t
 WHERE t.tgrelid = to_regclass('_timescaledb_config.bgw_job')

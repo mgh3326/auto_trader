@@ -25,10 +25,21 @@ TYPES = {
     ),
 }
 STATIC = (
-    "schedule_interval", "max_runtime", "max_retries", "retry_period",
-    "proc_schema", "proc_name", "scheduled", "fixed_schedule", "config",
-    "initial_start", "hypertable_schema", "hypertable_name", "check_schema",
-    "check_name", "timezone",
+    "schedule_interval",
+    "max_runtime",
+    "max_retries",
+    "retry_period",
+    "proc_schema",
+    "proc_name",
+    "scheduled",
+    "fixed_schedule",
+    "config",
+    "initial_start",
+    "hypertable_schema",
+    "hypertable_name",
+    "check_schema",
+    "check_name",
+    "timezone",
 )
 
 
@@ -47,7 +58,10 @@ def policy_kind(job: dict) -> str:
     if kind not in TYPES or job.get("proc_schema") != "_timescaledb_functions":
         raise JobStop("unsupported TimescaleDB policy job type; NEEDS_DESK_SQL")
     check, prefix = TYPES[kind]
-    if job.get("check_schema") != "_timescaledb_functions" or job.get("check_name") != check:
+    if (
+        job.get("check_schema") != "_timescaledb_functions"
+        or job.get("check_name") != check
+    ):
         raise JobStop("TimescaleDB policy check function drift; NEEDS_DESK_SQL")
     if not job.get("application_name", "").startswith(prefix):
         raise JobStop("TimescaleDB policy application name drift; NEEDS_DESK_SQL")
@@ -59,12 +73,29 @@ def policy_kind(job: dict) -> str:
     if not isinstance(config, dict):
         raise JobStop("TimescaleDB policy config is not an object")
     if kind == "policy_retention":
-        if set(config) != {"drop_after", "hypertable_id"} or not isinstance(config["drop_after"], str) or type(config["hypertable_id"]) is not int:
+        if (
+            set(config) != {"drop_after", "hypertable_id"}
+            or not isinstance(config["drop_after"], str)
+            or type(config["hypertable_id"]) is not int
+        ):
             raise JobStop("unsupported retention policy config; NEEDS_DESK_SQL")
-    elif set(config) != {"start_offset", "end_offset", "mat_hypertable_id"} or type(config["mat_hypertable_id"]) is not int or any(config[k] is not None and not isinstance(config[k], str) for k in ("start_offset", "end_offset")):
+    elif (
+        set(config) != {"start_offset", "end_offset", "mat_hypertable_id"}
+        or type(config["mat_hypertable_id"]) is not int
+        or any(
+            config[k] is not None and not isinstance(config[k], str)
+            for k in ("start_offset", "end_offset")
+        )
+    ):
         raise JobStop("unsupported continuous aggregate policy config; NEEDS_DESK_SQL")
-    if job.get("fixed_schedule") is not False or job.get("initial_start") is not None or job.get("timezone") is not None:
-        raise JobStop("policy scheduling differs from reviewed 2.22.1 fixture; NEEDS_DESK_SQL")
+    if (
+        job.get("fixed_schedule") is not False
+        or job.get("initial_start") is not None
+        or job.get("timezone") is not None
+    ):
+        raise JobStop(
+            "policy scheduling differs from reviewed 2.22.1 fixture; NEEDS_DESK_SQL"
+        )
     if job.get("scheduled") is not True:
         raise JobStop("unscheduled policy requires separate review; NEEDS_DESK_SQL")
     if job.get("job_id", 0) < 1000:
@@ -73,18 +104,28 @@ def policy_kind(job: dict) -> str:
 
 
 def same_policy(left: dict, right: dict, *, owner: str) -> bool:
-    return right.get("owner") == owner and all(left.get(k) == right.get(k) for k in STATIC)
+    return right.get("owner") == owner and all(
+        left.get(k) == right.get(k) for k in STATIC
+    )
 
 
 def relation(job: dict) -> str:
     def quote(value: str) -> str:
         return '"' + value.replace('"', '""') + '"'
+
     return quote(job["hypertable_schema"]) + "." + quote(job["hypertable_name"])
 
 
 async def preflight(conn: asyncpg.Connection, signed_pairs: object) -> list[dict]:
-    if await conn.fetchval("SELECT extversion FROM pg_extension WHERE extname='timescaledb'") != "2.22.1":
-        raise JobStop("TimescaleDB version needs separate operator approval; NEEDS_DESK_SQL")
+    if (
+        await conn.fetchval(
+            "SELECT extversion FROM pg_extension WHERE extname='timescaledb'"
+        )
+        != "2.22.1"
+    ):
+        raise JobStop(
+            "TimescaleDB version needs separate operator approval; NEEDS_DESK_SQL"
+        )
     jobs = await snapshot(conn)
     pairs = [[j["job_id"], j["owner"]] for j in jobs]
     if pairs != signed_pairs:
@@ -111,7 +152,9 @@ def classify(jobs: list[dict], journal_jobs: list[dict]) -> list[tuple[str, dict
         old = candidates(jobs, before, "mgh3326")
         new = candidates(jobs, before, "at_migration_owner")
         if len(old) + len(new) != 1:
-            raise JobStop("policy transition state ambiguous after partial stage; NEEDS_DESK_SQL")
+            raise JobStop(
+                "policy transition state ambiguous after partial stage; NEEDS_DESK_SQL"
+            )
         state, job = ("old", old[0]) if old else ("new", new[0])
         if job["job_id"] in used:
             raise JobStop("multiple journal entries match a single policy")
@@ -128,19 +171,31 @@ async def add_policy(conn: asyncpg.Connection, before: dict, owner: str) -> int:
     config = before["config"]
     await conn.execute('SET LOCAL ROLE "' + owner + '"')
     if kind == "policy_retention":
-        new_id = await conn.fetchval("""
+        new_id = await conn.fetchval(
+            """
             SELECT add_retention_policy($1::regclass,
                 drop_after => $2::text::interval,
                 schedule_interval => $3::text::interval)
-        """, name, config["drop_after"], before["schedule_interval"])
+        """,
+            name,
+            config["drop_after"],
+            before["schedule_interval"],
+        )
     else:
-        new_id = await conn.fetchval("""
+        new_id = await conn.fetchval(
+            """
             SELECT add_continuous_aggregate_policy($1::regclass,
                 start_offset => $2::text::interval,
                 end_offset => $3::text::interval,
                 schedule_interval => $4::text::interval)
-        """, name, config["start_offset"], config["end_offset"], before["schedule_interval"])
-    await conn.fetchrow("""
+        """,
+            name,
+            config["start_offset"],
+            config["end_offset"],
+            before["schedule_interval"],
+        )
+    await conn.fetchrow(
+        """
         SELECT * FROM alter_job($1::integer,
             schedule_interval => $2::text::interval,
             max_runtime => $3::text::interval,
@@ -150,10 +205,17 @@ async def add_policy(conn: asyncpg.Connection, before: dict, owner: str) -> int:
             config => $7::jsonb,
             next_start => $8::text::timestamptz,
             fixed_schedule => $9::boolean)
-    """, new_id, before["schedule_interval"], before["max_runtime"],
-        before["max_retries"], before["retry_period"], before["scheduled"],
-        json.dumps(config, sort_keys=True), before["next_start"],
-        before["fixed_schedule"])
+    """,
+        new_id,
+        before["schedule_interval"],
+        before["max_runtime"],
+        before["max_retries"],
+        before["retry_period"],
+        before["scheduled"],
+        json.dumps(config, sort_keys=True),
+        before["next_start"],
+        before["fixed_schedule"],
+    )
     # SET LOCAL is undone by the surrounding per-job transaction on failure.
     # RESET on an aborted transaction would hide the original policy error.
     await conn.execute("RESET ROLE")
@@ -173,10 +235,14 @@ async def remove_policy(conn: asyncpg.Connection, job: dict) -> None:
     if kind == "policy_retention":
         await conn.execute("SELECT remove_retention_policy($1::regclass)", name)
     else:
-        await conn.execute("SELECT remove_continuous_aggregate_policy($1::regclass)", name)
+        await conn.execute(
+            "SELECT remove_continuous_aggregate_policy($1::regclass)", name
+        )
 
 
-async def transition_one(conn: asyncpg.Connection, entries: list[dict], index: int, *, reverse: bool) -> int:
+async def transition_one(
+    conn: asyncpg.Connection, entries: list[dict], index: int, *, reverse: bool
+) -> int:
     entry = entries[index]
     before = entry["before"]
     async with conn.transaction():
@@ -188,7 +254,9 @@ async def transition_one(conn: asyncpg.Connection, entries: list[dict], index: i
         if state == wanted:
             return actual["job_id"]
         await remove_policy(conn, actual)
-        new_id = await add_policy(conn, before, "mgh3326" if reverse else "at_migration_owner")
+        new_id = await add_policy(
+            conn, before, "mgh3326" if reverse else "at_migration_owner"
+        )
         if new_id == actual["job_id"]:
             raise JobStop("policy recreation did not allocate a new job ID")
         return new_id

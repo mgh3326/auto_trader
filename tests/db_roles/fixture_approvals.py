@@ -26,7 +26,9 @@ def check_dsn(dsn: str) -> None:
     if parsed.path != "/auto_trader":
         raise RuntimeError("fixture approval generation requires auto_trader")
     if parsed.username != "mgh3326":
-        raise RuntimeError("fixture approval generation requires fixture bootstrap role")
+        raise RuntimeError(
+            "fixture approval generation requires fixture bootstrap role"
+        )
 
 
 async def check_fixture(conn: asyncpg.Connection) -> None:
@@ -49,7 +51,9 @@ async def check_fixture(conn: asyncpg.Connection) -> None:
         raise RuntimeError("database is not the pinned disposable fixture")
 
 
-async def catalog_items(conn: asyncpg.Connection, *, functions_and_types: bool) -> list[dict]:
+async def catalog_items(
+    conn: asyncpg.Connection, *, functions_and_types: bool
+) -> list[dict]:
     items: list[dict] = []
     for kind, schema, name, identity_args in sorted(
         await core.app_catalog_keys(
@@ -76,7 +80,11 @@ async def catalog_items(conn: asyncpg.Connection, *, functions_and_types: bool) 
         target = "at_migration_owner"
         if kind == "relation" and schema == "review" and name in core.PROTECTED:
             target = core.PROTECTED[name][0]
-        if kind == "function" and schema == "review" and name in core.PROTECTED_FUNCTIONS:
+        if (
+            kind == "function"
+            and schema == "review"
+            and name in core.PROTECTED_FUNCTIONS
+        ):
             if name not in core.MIGRATION_FUNCTIONS:
                 target = "nhplug_security_owner"
         item["target_owner"] = target
@@ -86,7 +94,9 @@ async def catalog_items(conn: asyncpg.Connection, *, functions_and_types: bool) 
 
 async def internal_items(conn: asyncpg.Connection) -> list[dict]:
     items = []
-    for kind, schema, name, identity_args in sorted(await core.timescale_internal_keys(conn)):
+    for kind, schema, name, identity_args in sorted(
+        await core.timescale_internal_keys(conn)
+    ):
         item = {
             "kind": kind,
             "schema": schema,
@@ -141,7 +151,7 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
         record["timescale_graph_proof"] = "operator_verified"
     elif stage == 3:
         record["future_creators"] = {
-            "at_migration_owner": ["public", "review", "research"],
+            "at_migration_owner": ["public", "review", "research", "paper"],
             "nhplug_security_owner": ["review"],
         }
         record["database_connect_policy"] = {
@@ -170,6 +180,8 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                     item["app_privileges"] = ""
             elif item["schema"] == "public" and item["name"] == "stock_info":
                 item["app_privileges"] = "raw"
+            elif item["schema"] == "paper" and item["name"] == "paper_accounts":
+                item["app_privileges"] = "r"
             else:
                 item["app_privileges"] = ""
         for name, signature in core.PROTECTED_FUNCTIONS.items():
@@ -252,7 +264,11 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                 "legacy_login": "postgres",
                 "legacy_classification": "shared_infrastructure",
                 "legacy_non_app_sessions": [
-                    {**dict(s), "classification": "dba", "source_ref": "disposable-fixture"}
+                    {
+                        **dict(s),
+                        "classification": "dba",
+                        "source_ref": "disposable-fixture",
+                    }
                     for s in sessions
                 ],
                 "app_input_removal_proof": {
@@ -286,7 +302,9 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                 "timescale_job_proof": await job_inventory(conn),
                 "new_login_observation_proof": [
                     {
-                        "consumer": ".env.api" if r["usename"] == "at_api_login" else ".env.scheduler",
+                        "consumer": ".env.api"
+                        if r["usename"] == "at_api_login"
+                        else ".env.scheduler",
                         "session_user": r["usename"],
                         "current_user": r["usename"],
                         "database": "auto_trader",

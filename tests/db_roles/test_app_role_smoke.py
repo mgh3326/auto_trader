@@ -10,6 +10,7 @@ import asyncio
 import os
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
@@ -17,6 +18,7 @@ from app.core.db import build_engine
 from app.services.stock_info_service import StockInfoService
 
 
+@pytest.mark.live
 def test_application_login_can_use_normal_service_and_not_control_rows() -> None:
     url = make_url(os.environ["DATABASE_URL"])
     assert url.host in {"127.0.0.1", "localhost"}
@@ -30,8 +32,14 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
             from sqlalchemy.ext.asyncio import AsyncSession
 
             async with AsyncSession(engine) as session:
-                identity = (await session.execute(text("SELECT session_user, current_user"))).one()
+                identity = (
+                    await session.execute(text("SELECT session_user, current_user"))
+                ).one()
                 assert identity == ("at_api_login", "at_api_login")
+                paper_accounts = await session.scalar(
+                    text("SELECT count(*) FROM paper.paper_accounts")
+                )
+                assert paper_accounts == 0
 
                 service = StockInfoService(session)
                 stock = await service.create_stock_info(
@@ -43,7 +51,9 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
                 )
                 found = await service.get_stock_info_by_symbol(symbol)
                 assert found is not None and found.id == stock.id
-                changed = await service.update_stock_info(stock.id, {"name": "Role updated"})
+                changed = await service.update_stock_info(
+                    stock.id, {"name": "Role updated"}
+                )
                 assert changed is not None and changed.name == "Role updated"
 
                 # A normal #711 intent insert exercises the generated digest and
@@ -100,7 +110,9 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
                 ).one()
                 assert checks == (False, False, False, False, True, True, False)
                 await session.execute(
-                    text("SELECT id FROM review.nhplug_mock_operator_authorization LIMIT 1")
+                    text(
+                        "SELECT id FROM review.nhplug_mock_operator_authorization LIMIT 1"
+                    )
                 )
         finally:
             await engine.dispose()
