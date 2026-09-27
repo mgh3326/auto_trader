@@ -495,6 +495,13 @@ async def relation_type_owner(conn: asyncpg.Connection, oid: int) -> str | None:
     )
 
 
+async def composite_class_owner(conn: asyncpg.Connection, oid: int) -> str | None:
+    return await conn.fetchval(
+        "SELECT pg_get_userbyid(c.relowner) FROM pg_type t JOIN pg_class c ON c.oid=t.typrelid WHERE t.oid=$1 AND t.typtype='c' AND c.relkind='c'",
+        oid,
+    )
+
+
 async def apply2(
     conn: asyncpg.Connection,
     args: argparse.Namespace,
@@ -582,12 +589,20 @@ async def apply2(
         )
         if type_owner is not None and type_owner != obj["owner"]:
             raise Stop("relation row type owner differs from relation owner")
+        composite_owner = (
+            await composite_class_owner(conn, obj["oid"])
+            if item["kind"] == "type"
+            else None
+        )
+        if composite_owner is not None and composite_owner != obj["owner"]:
+            raise Stop("standalone composite type and relation owners differ")
         before.append(
             {
                 "item": item,
                 "owner": obj["owner"],
                 "acl": obj["acl"],
                 "relation_type_owner": type_owner,
+                "composite_class_owner": composite_owner,
             }
         )
     if dry_run:
@@ -641,6 +656,12 @@ async def apply2(
         ) not in (None, item["target_owner"]):
             raise Stop(
                 "relation row type owner transition incomplete: " + obj["sql_name"]
+            )
+        if item["kind"] == "type" and await composite_class_owner(
+            conn, obj["oid"]
+        ) not in (None, item["target_owner"]):
+            raise Stop(
+                "composite relation owner transition incomplete: " + obj["sql_name"]
             )
     return {"before": before, "manifest_sha256": args.sha256}
 
@@ -713,6 +734,15 @@ async def rollback2(conn: asyncpg.Connection, journal: dict) -> None:
             != entry["relation_type_owner"]
         ):
             raise Stop("relation row type owner inverse incomplete: " + obj["sql_name"])
+        if (
+            entry["item"]["kind"] == "type"
+            and "composite_class_owner" in entry
+            and await composite_class_owner(conn, obj["oid"])
+            != entry["composite_class_owner"]
+        ):
+            raise Stop(
+                "composite relation owner inverse incomplete: " + obj["sql_name"]
+            )
 
 
 async def run_stage2(
