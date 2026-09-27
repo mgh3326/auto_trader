@@ -1,6 +1,11 @@
-# Auto Trader 배포 가이드
+# Auto Trader 이전 배포 가이드
 
-이 문서는 `docker-compose.prod.yml` 기반 프로덕션 배포 절차를 설명합니다.
+이 문서는 사용이 중단된 Raspberry Pi Docker Compose 배포 절차의 기록입니다.
+현재 프로덕션 배포는 docs/runbooks/ncp-pull-deploy.md를 따르며,
+scripts/deploy.sh는 실행을 거부합니다. 아래 명령은 현재 운영 절차가 아닙니다.
+#789 DB 역할 전환 이후 마이그레이션 컨테이너는 별도 승인된
+.env.migration 파일이 있어야 시작됩니다. Stage 4 승인 전 해당 파일이 없어
+Compose가 실패하는 것은 의도된 차단이며, 앱용 DSN을 대신 넣으면 안 됩니다.
 
 ## 배포 파이프라인 개요
 
