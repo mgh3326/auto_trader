@@ -213,6 +213,23 @@ def test_sell_with_negative_ledger_position_is_unproven() -> None:
     assert verdict.reason == "position_unproven"
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"market": "forex"},
+        {"market": None},
+        {"instrument_type": "forex"},
+        {"instrument_type": "index"},
+        {"instrument_type": "alien"},
+        {"instrument_type": None},
+    ],
+)
+def test_unsupported_markets_and_instruments_are_queue_only(override) -> None:
+    verdict = classify_fill_for_kick(_fill(1, **override), _facts("0.1"))
+    assert verdict.eligible is False
+    assert verdict.reason == "unsupported_market"
+
+
 def test_buy_into_a_proven_negative_position_is_unproven() -> None:
     # a ledger-proven negative balance is inconsistent, not flat — fail closed
     verdict = classify_fill_for_kick(
@@ -533,22 +550,49 @@ class _Db:
         pass
 
 
+def _orm_row(**overrides: Any) -> Any:
+    """An ORM-shaped ledger row for runs through the real sanitize_fill."""
+    row = SimpleNamespace(
+        id=1,
+        broker="upbit",
+        account_mode="live",
+        venue="upbit_krw",
+        instrument_type="crypto",
+        symbol="BTC",
+        raw_symbol="BTC",
+        side="sell",
+        filled_qty=Decimal("0.1"),
+        filled_price=Decimal("100"),
+        filled_notional=Decimal("10"),
+        currency="KRW",
+        broker_order_id="o-1",
+        fill_seq=0,
+        correlation_id=None,
+        source="websocket",
+        filled_at=datetime(2026, 9, 3, tzinfo=UTC),
+        created_at=datetime(2026, 9, 3, tzinfo=UTC),
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    return row
+
+
 def _run_outcome(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    rows: list[dict[str, Any]],
+    rows: list[Any],
     *,
     position: tuple[str, int] | Exception | None,
     kick_enabled: bool = True,
     kick_days: dict[str, Any] | None = None,
+    real_sanitize: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     class Repo:
         def __init__(self, _db: object) -> None:
             pass
 
-        async def list_recent_fills_for_triage(
-            self, **_kwargs: object
-        ) -> list[dict[str, Any]]:
+        async def list_recent_fills_for_triage(self, **_kwargs: object) -> list[Any]:
             return rows
 
         async def position_before_fill(self, **_kwargs: object) -> Any:
@@ -563,7 +607,8 @@ def _run_outcome(
     monkeypatch.setattr(handoff_service, "ExecutionLedgerRepository", Repo)
     context = _stub_context()
     monkeypatch.setattr(handoff_service, "SessionContextService", context)
-    monkeypatch.setattr(handoff_service, "sanitize_fill", lambda row: row)
+    if not real_sanitize:
+        monkeypatch.setattr(handoff_service, "sanitize_fill", lambda row: row)
     state = {"version": 1, "watermark": 0, "seen": {}, "cooldowns": {}}
     if kick_days is not None:
         state["kick_days"] = kick_days
@@ -583,6 +628,7 @@ def _run_outcome(
             kick_cooldown_seconds=0,
             prefect_api_url="http://prefect",
             kick_deployments={"crypto": "crypto-deployment"},
+            dry_run=dry_run,
         ),
         now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
         http_post=post,
@@ -661,6 +707,79 @@ def test_run_overflowing_quantity_is_malformed_and_still_durable(
     assert decision["reason"] == "fill_malformed"
     refs = outcome["_context"].appended[0].refs
     assert refs.kick_filter_reason == "fill_malformed"
+
+
+def test_run_poison_and_unsupported_rows_skip_without_wedging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BLOCKER regression: a forex row cannot be an open_question (the schema
+    # Literal has no such market) and a row that crashes sanitize_fill must not
+    # abort the batch — both are recorded, the watermark still advances, and
+    # the following valid row is still queued.
+    rows = [
+        _orm_row(id=1, instrument_type="forex"),
+        _orm_row(id=2, filled_at="not-a-timestamp"),
+        _orm_row(id=3, filled_qty=Decimal("0.01")),
+    ]
+    outcome = _run_outcome(
+        tmp_path, monkeypatch, rows, position=("0.1", 1), real_sanitize=True
+    )
+    assert outcome["durable"] == 1
+    assert outcome["skipped"] == [
+        {"ledger_id": 1, "market": "forex", "reason": "unsupported_market"},
+        {"ledger_id": 2, "reason": "sanitize_failed"},
+    ]
+    reasons = [entry["reason"] for entry in outcome["decisions"]]
+    assert reasons == [
+        "unsupported_market",
+        "sanitize_failed",
+        "sell_partial_below_25pct",
+    ]
+    # the watermark advanced past every row — no poison row can wedge the poll
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    assert persisted["watermark"] == 3
+
+
+def test_run_skipped_rows_without_kick_flag_have_no_extra_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outcome = _run_outcome(
+        tmp_path,
+        monkeypatch,
+        [_orm_row(id=1, instrument_type="forex")],
+        position=None,
+        kick_enabled=False,
+        real_sanitize=True,
+    )
+    assert outcome["durable"] == 0
+    assert outcome["skipped"] == [
+        {"ledger_id": 1, "market": "forex", "reason": "unsupported_market"}
+    ]
+    assert "decisions" not in outcome
+
+
+def test_run_dry_run_never_advances_watermark_on_skipped_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        _orm_row(id=1, instrument_type="forex"),
+        _orm_row(id=2, filled_at="not-a-timestamp"),
+    ]
+    outcome = _run_outcome(
+        tmp_path,
+        monkeypatch,
+        rows,
+        position=None,
+        real_sanitize=True,
+        dry_run=True,
+    )
+    assert outcome["durable"] == 0
+    assert outcome["skipped"] == [
+        {"ledger_id": 1, "market": "forex", "reason": "unsupported_market"},
+        {"ledger_id": 2, "reason": "sanitize_failed"},
+    ]
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    assert persisted["watermark"] == 0
 
 
 def test_run_unproven_position_is_queue_only_and_still_durable(

@@ -68,8 +68,13 @@ ledger has no earlier rows for the fill's exact key, so zero cannot be proven
 — a proven-negative balance is likewise unproven rather than flat),
 `position_read_failed` (the position read itself failed — never a guess),
 `fill_malformed` (bad side/quantity/notional, a missing or timezone-naive
-`filled_at`, or a magnitude that overflows decimal arithmetic), and
-`classification_failed`. Position facts come from an execution-ledger read of net
+`filled_at`, or a magnitude that overflows decimal arithmetic),
+`unsupported_market` (the fill's market or instrument type is outside
+kr/us/crypto — e.g. a `forex` row cannot be an `open_question`, so it is
+recorded under `skipped` and the watermark still advances rather than wedging
+the batch), and `classification_failed` (the classifier itself raised). A row
+that cannot even be sanitized lands in `skipped` with `sanitize_failed` for the
+same reason. Position facts come from an execution-ledger read of net
 signed quantity strictly before the fill, keyed by
 broker/account-mode/venue/instrument-type/symbol/currency and ordered by
 `(filled_at, id)`; opening-lot `manual_import` rows count.

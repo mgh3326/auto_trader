@@ -20,6 +20,12 @@ Queue-only classes:
 - ``position_read_failed``    the position read itself failed
 - ``fill_malformed``          missing/invalid side, quantity, or notional, or
                               degenerate magnitude that overflows arithmetic
+- ``unsupported_market``      the fill's market/instrument is not a
+                              session_context market (kr/us/crypto) — e.g.
+                              forex — so no open_question can represent it
+- ``classification_failed``   the classifier itself raised (service-level
+                              catch-all — classification must never skip
+                              the durable append)
 
 A fill whose ledger key has never been seen (``rows_before == 0``) is
 *unproven*, not flat — this module never treats absent data as a position of
@@ -50,9 +56,17 @@ QUEUE_ONLY_CLASSES = frozenset(
         "position_unproven",
         "position_read_failed",
         "fill_malformed",
+        "unsupported_market",
         "classification_failed",
     }
 )
+
+# Markets that have a session_context briefing surface — mirrors the schema
+# ``MarketLiteral`` {kr, us, crypto}.  Anything else (forex, index, …) can
+# never be queued as an open_question, let alone kick.
+SUPPORTED_MARKETS = frozenset({"kr", "us", "crypto"})
+# Instrument types that map onto supported markets via derive_market.
+SUPPORTED_INSTRUMENT_TYPES = frozenset({"equity_kr", "equity_us", "crypto"})
 
 
 @dataclass(frozen=True)
@@ -104,6 +118,12 @@ def classify_without_position(
     small_buy_notional: Mapping[str, Decimal] = DEFAULT_SMALL_BUY_NOTIONAL,
 ) -> KickVerdict | None:
     """Return a verdict for classes that never need position facts, else None."""
+    if (
+        str(fill.get("market") or "").strip().lower() not in SUPPORTED_MARKETS
+        or str(fill.get("instrument_type") or "").strip().lower()
+        not in SUPPORTED_INSTRUMENT_TYPES
+    ):
+        return KickVerdict(False, "unsupported_market")
     symbol = str(fill.get("symbol") or "").strip().upper()
     if symbol in {str(item).upper() for item in parking_symbols}:
         return KickVerdict(False, "parking_etf")
@@ -232,6 +252,8 @@ __all__ = [
     "KickDecision",
     "KickVerdict",
     "QUEUE_ONLY_CLASSES",
+    "SUPPORTED_INSTRUMENT_TYPES",
+    "SUPPORTED_MARKETS",
     "classify_fill_for_kick",
     "classify_without_position",
 ]

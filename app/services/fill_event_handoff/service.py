@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from zoneinfo import ZoneInfo
 
+from app.schemas.investment_reports import MarketLiteral
 from app.schemas.session_context import SessionContextAppendEntry
 from app.services.execution_ledger.fill_event_sanitizer import sanitize_fill
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
@@ -40,6 +41,9 @@ from .state import HandoffState
 
 KST = ZoneInfo("Asia/Seoul")
 DEDUP_WINDOW = timedelta(hours=24)
+# session_context open_questions exist per market — the schema Literal is the
+# authority for which markets a queued fill can name.
+QUEUEABLE_MARKETS = frozenset(get_args(MarketLiteral))
 PANE_LABEL = re.compile(r"^opa-(crypto|kr|us|nxt)(?:-|$)")
 REP_SCHEDULE: dict[str, tuple[tuple[int, int, str], ...]] = {
     "kr": (
@@ -553,7 +557,62 @@ class FillHandoffRunner:
                 after_id=int(state["watermark"]), source=None, limit=500
             )
             for row in rows:
-                fill = sanitize_fill(row)
+                try:
+                    fill = sanitize_fill(row)
+                except Exception:  # noqa: BLE001 - one poison row must not wedge the batch
+                    skipped_id = getattr(row, "id", None)
+                    outcome.setdefault("skipped", []).append(
+                        {"ledger_id": skipped_id, "reason": "sanitize_failed"}
+                    )
+                    if self.config.kick_enabled:
+                        outcome["decisions"].append(
+                            {
+                                "ledger_id": skipped_id,
+                                "market": None,
+                                "filter": "sanitize_failed",
+                                "class": "queue_only",
+                                "reason": "sanitize_failed",
+                                "flow_run_id": None,
+                            }
+                        )
+                    try:
+                        skipped_ledger = int(skipped_id)
+                    except (TypeError, ValueError):
+                        skipped_ledger = None
+                    # dry_run never mutates state — the trailing save would
+                    # otherwise persist the in-memory watermark advance.
+                    if skipped_ledger is not None and not self.config.dry_run:
+                        state["watermark"] = max(
+                            int(state["watermark"]), skipped_ledger
+                        )
+                        locked.save()
+                    continue
+                if str(fill.get("market") or "") not in QUEUEABLE_MARKETS:
+                    # e.g. forex — the fill can never be an open_question and
+                    # must never kick, but it must be recorded and skipped so
+                    # the poller cannot wedge on it.
+                    outcome.setdefault("skipped", []).append(
+                        {
+                            "ledger_id": fill["ledger_id"],
+                            "market": fill["market"],
+                            "reason": "unsupported_market",
+                        }
+                    )
+                    if self.config.kick_enabled:
+                        verdict = KickVerdict(False, "unsupported_market")
+                        outcome["decisions"].append(
+                            self._decision_record(
+                                fill,
+                                verdict,
+                                KickDecision("queue_only", "unsupported_market"),
+                            )
+                        )
+                    if not self.config.dry_run:
+                        state["watermark"] = max(
+                            int(state["watermark"]), int(fill["ledger_id"])
+                        )
+                        locked.save()
+                    continue
                 key, now = dedupe_key(fill), self.now()
                 seen_at = float(state["seen"].get(key, 0))
                 if now.timestamp() - seen_at < DEDUP_WINDOW.total_seconds():
