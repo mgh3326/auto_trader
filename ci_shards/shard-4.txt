@@ -30,6 +30,7 @@ tests/mcp_server/test_profile_tool_snapshot.py
 tests/mcp_server/test_rob1311_quick_projection.py
 tests/mcp_server/test_session_bootstrap_pack_no_write.py
 tests/mcp_server/test_session_bootstrap_profile_sections.py
+tests/mcp_server/test_toss_proposal_accounts.py
 tests/mcp_server/tooling/test_get_holdings_n1_residuals.py
 tests/mcp_server/tooling/test_live_order_evidence_upbit.py
 tests/mcp_server/tooling/test_orders_history_expiry_reason.py
