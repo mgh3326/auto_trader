@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -160,6 +161,7 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                 "at_app",
                 "at_migration_owner",
                 "at_migration_runner",
+                "at_desk_login",
                 "postgres",
             ],
         }
@@ -245,6 +247,7 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
             }
         )
     elif stage == 5:
+        fixture_time = datetime.now(UTC).isoformat()
         sessions = await conn.fetch(
             "SELECT pid, datname, application_name, client_addr::text AS client_addr, "
             "backend_type FROM pg_stat_activity "
@@ -278,12 +281,15 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                 },
                 "secret_rotation_proof": {
                     "completed_consumers": [".env.api", ".env.scheduler"],
-                    "observed_at": "disposable-fixture",
+                    "observed_at": fixture_time,
                     "postgres_credential_unchanged": True,
                 },
                 "timer_observation_proof": {
                     "installed_timers": ["at-pg-backup.timer"],
-                    "observed_at": "disposable-fixture",
+                    "observed_at": fixture_time,
+                    "last_success_at": fixture_time,
+                    "service_result": "success",
+                    "persistent_catchup_clear": True,
                 },
                 "backup_identity_proof": {
                     "role": "postgres",

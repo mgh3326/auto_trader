@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import asyncpg
@@ -249,6 +250,46 @@ async def timescale_internal_keys(
           AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=i.indrelid AND d.deptype='e')
     """)
     return {("relation", "_timescaledb_internal", r["relname"], "") for r in rows}
+
+
+async def timescale_chunk_keys(
+    conn: asyncpg.Connection,
+) -> set[tuple[str, str, str, str]]:
+    rows = await conn.fetch("""
+        WITH chunk_relations AS (
+          SELECT c.oid, c.relname FROM timescaledb_information.chunks ch
+          JOIN pg_namespace n ON n.nspname=ch.chunk_schema
+          JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=ch.chunk_name
+          WHERE ch.chunk_schema='_timescaledb_internal'
+        )
+        SELECT relname FROM chunk_relations
+        UNION
+        SELECT i.relname FROM chunk_relations cr
+        JOIN pg_index x ON x.indrelid=cr.oid
+        JOIN pg_class i ON i.oid=x.indexrelid
+    """)
+    keys = {("relation", "_timescaledb_internal", r["relname"], "") for r in rows}
+    internal = await timescale_internal_keys(conn)
+    if not keys <= internal:
+        raise Stop("TimescaleDB chunk catalog escaped reviewed internal graph")
+    return keys
+
+
+async def verify_chunk_owners(conn: asyncpg.Connection, owner: str) -> None:
+    for _, schema, name, _ in await timescale_chunk_keys(conn):
+        obj = await catalog_object(
+            conn,
+            {
+                "kind": "relation",
+                "schema": schema,
+                "name": name,
+                "timescale_internal": True,
+            },
+        )
+        if obj["owner"] != owner:
+            raise Stop(
+                "TimescaleDB chunk or chunk index owner differs: " + obj["sql_name"]
+            )
 
 
 async def require_complete_app_manifest(
@@ -667,9 +708,15 @@ async def apply2(
 
 
 async def rollback2(conn: asyncpg.Connection, journal: dict) -> None:
+    present_keys = await app_catalog_keys(
+        conn, include_functions_and_types=True
+    ) | await timescale_internal_keys(conn)
+    dynamic_before = {tuple(key) for key in journal["dynamic_internal_keys"]}
     for index in reversed(range(len(journal["before"]))):
         entry = journal["before"][index]
         item = entry["item"]
+        if item_key(item) not in present_keys and item_key(item) in dynamic_before:
+            continue
         obj = await catalog_object(conn, item)
         expected_acl = (
             journal["owner_after_acl"][index]
@@ -722,6 +769,11 @@ async def rollback2(conn: asyncpg.Connection, journal: dict) -> None:
             + ident(entry["owner"])
         )
     for entry in journal["before"]:
+        if (
+            item_key(entry["item"]) not in present_keys
+            and item_key(entry["item"]) in dynamic_before
+        ):
+            continue
         obj = await catalog_object(conn, entry["item"])
         if obj["owner"] != entry["owner"]:
             raise Stop("owner inverse incomplete: " + obj["sql_name"])
@@ -743,6 +795,7 @@ async def rollback2(conn: asyncpg.Connection, journal: dict) -> None:
             raise Stop(
                 "composite relation owner inverse incomplete: " + obj["sql_name"]
             )
+    await verify_chunk_owners(conn, "mgh3326")
 
 
 async def run_stage2(
@@ -763,6 +816,19 @@ async def run_stage2(
             async with conn.transaction(readonly=True):
                 await conn.execute("SET LOCAL statement_timeout='30s'")
                 owner_before = await apply2(conn, args, record, dry_run=True)
+                dynamic_before = await timescale_chunk_keys(conn)
+                for key in dynamic_before:
+                    obj = await catalog_object(
+                        conn,
+                        {
+                            "kind": key[0],
+                            "schema": key[1],
+                            "name": key[2],
+                            "timescale_internal": True,
+                        },
+                    )
+                    if obj["owner"] != "mgh3326":
+                        raise Stop("initial TimescaleDB chunk owner needs desk review")
                 jobs_before = await timescale_jobs.preflight(
                     conn, record.get("timescale_jobs")
                 )
@@ -772,6 +838,7 @@ async def run_stage2(
                 "manifest_sha256": args.sha256,
                 "timescale_version": record["timescale_version"],
                 **owner_before,
+                "dynamic_internal_keys": [list(key) for key in sorted(dynamic_before)],
                 "jobs": [
                     {"before": job, "new_id": None, "restored_id": None}
                     for job in jobs_before
@@ -787,12 +854,25 @@ async def run_stage2(
             existing.get("before"), list
         ):
             raise Stop("Stage 2 journal lacks prepared ownership and job snapshots")
+        if not isinstance(existing.get("dynamic_internal_keys"), list):
+            raise Stop("Stage 2 journal lacks prepared dynamic chunk inventory")
+        dynamic_before = {tuple(key) for key in existing["dynamic_internal_keys"]}
+        expected_keys = {item_key(entry["item"]) for entry in existing["before"]}
+        if not dynamic_before <= expected_keys:
+            raise Stop("Stage 2 journal dynamic chunk inventory is inconsistent")
         actual_keys = await app_catalog_keys(
             conn, include_functions_and_types=True
         ) | await timescale_internal_keys(conn)
-        if actual_keys != {item_key(entry["item"]) for entry in existing["before"]}:
-            raise Stop("catalog graph changed since Stage 2 journal; NEEDS_DESK_SQL")
+        dynamic_current = await timescale_chunk_keys(conn)
+        if (expected_keys - actual_keys) - dynamic_before or (
+            actual_keys - expected_keys
+        ) - dynamic_current:
+            raise Stop(
+                "stable catalog graph changed since Stage 2 journal; NEEDS_DESK_SQL"
+            )
         for index, entry in enumerate(existing["before"]):
+            if item_key(entry["item"]) not in actual_keys:
+                continue
             obj = await catalog_object(conn, entry["item"])
             if "acl" in entry:
                 expected_acl = (
@@ -807,15 +887,45 @@ async def run_stage2(
                     )
         timescale_jobs.classify(await timescale_jobs.snapshot(conn), existing["jobs"])
         if args.mode == "apply":
-            async with conn.transaction():
-                await conn.execute("SET LOCAL lock_timeout='3s'")
-                await conn.execute("SET LOCAL statement_timeout='30s'")
-                await apply2(conn, args, record)
-                existing["owner_after_acl"] = [
-                    (await catalog_object(conn, entry["item"]))["acl"]
-                    for entry in existing["before"]
-                ]
-                replace_journal(args.journal, existing)
+            present = [
+                entry
+                for entry in existing["before"]
+                if item_key(entry["item"]) in actual_keys
+            ]
+            owners = [
+                (entry, (await catalog_object(conn, entry["item"]))["owner"])
+                for entry in present
+            ]
+            at_target = all(
+                owner == entry["item"]["target_owner"] for entry, owner in owners
+            )
+            at_before = all(owner == entry["owner"] for entry, owner in owners)
+            if at_target:
+                await verify_chunk_owners(conn, "at_migration_owner")
+                if "owner_after_acl" not in existing:
+                    if actual_keys != expected_keys:
+                        raise Stop("Stage 2 owner journal incomplete after chunk churn")
+                    existing["owner_after_acl"] = [
+                        (await catalog_object(conn, entry["item"]))["acl"]
+                        for entry in existing["before"]
+                    ]
+                    replace_journal(args.journal, existing)
+            elif at_before:
+                if actual_keys != expected_keys:
+                    raise Stop(
+                        "chunk graph changed before owner transfer; refresh signed manifest"
+                    )
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL lock_timeout='3s'")
+                    await conn.execute("SET LOCAL statement_timeout='30s'")
+                    await apply2(conn, args, record)
+                    existing["owner_after_acl"] = [
+                        (await catalog_object(conn, entry["item"]))["acl"]
+                        for entry in existing["before"]
+                    ]
+                    replace_journal(args.journal, existing)
+            else:
+                raise Stop("Stage 2 owners are mixed outside an atomic transfer")
             existing["owners_applied"] = True
             existing["owners_reverted"] = False
             existing["rolled_back"] = False
@@ -837,11 +947,14 @@ async def run_stage2(
             if any(state != "new" for state, _ in states):
                 raise Stop("TimescaleDB job owner proof incomplete")
             for entry in existing["before"]:
+                if item_key(entry["item"]) not in actual_keys:
+                    continue
                 obj = await catalog_object(conn, entry["item"])
                 if obj["owner"] != entry["item"]["target_owner"]:
                     raise Stop(
                         "TimescaleDB graph or application owner proof incomplete"
                     )
+            await verify_chunk_owners(conn, "at_migration_owner")
             existing["complete"] = True
             replace_journal(args.journal, existing)
         else:
@@ -1057,6 +1170,7 @@ async def grant_database_connect(conn: asyncpg.Connection, manifest: dict) -> di
             "at_app",
             "at_migration_owner",
             "at_migration_runner",
+            "at_desk_login",
             "postgres",
         }.issubset(keep)
         or len(keep) != len(set(keep))
@@ -1364,6 +1478,16 @@ async def apply3(
 
 
 async def rollback3(conn: asyncpg.Connection, journal: dict) -> None:
+    active_app_sessions = await conn.fetchval("""
+        SELECT count(*) FROM pg_stat_activity a
+        JOIN pg_roles login ON login.rolname=a.usename
+        JOIN pg_auth_members m ON m.member=login.oid
+        JOIN pg_roles parent ON parent.oid=m.roleid
+        WHERE a.datname=current_database() AND a.pid<>pg_backend_pid()
+          AND parent.rolname='at_app'
+    """)
+    if active_app_sessions:
+        raise Stop("active app sessions must drain before Stage 3 grant rollback")
     await rollback_function_defaults(conn, journal.get("defaults", []))
     if journal.get("database_acl"):
         await rollback_database_connect(conn, journal["database_acl"])
@@ -1543,6 +1667,39 @@ async def apply4(conn: asyncpg.Connection, record: dict) -> dict:
         "SELECT has_database_privilege('at_app',current_database(),'CONNECT')"
     ):
         raise Stop("at_app lacks database CONNECT")
+    desk = await conn.fetchrow(
+        "SELECT rolcanlogin,rolinherit,rolsuper,rolcreaterole,rolcreatedb,rolreplication,rolbypassrls FROM pg_roles WHERE rolname='at_desk_login'"
+    )
+    if (
+        desk is None
+        or not desk["rolcanlogin"]
+        or desk["rolinherit"]
+        or any(
+            desk[k]
+            for k in (
+                "rolsuper",
+                "rolcreaterole",
+                "rolcreatedb",
+                "rolreplication",
+                "rolbypassrls",
+            )
+        )
+    ):
+        raise Stop("desk login attributes violate least privilege")
+    desk_memberships = await conn.fetch(
+        "SELECT p.rolname,m.inherit_option,m.set_option,m.admin_option FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid JOIN pg_roles c ON c.oid=m.member WHERE c.rolname='at_desk_login'"
+    )
+    if [dict(m) for m in desk_memberships] != [
+        {
+            "rolname": "nhplug_operator",
+            "inherit_option": False,
+            "set_option": True,
+            "admin_option": False,
+        }
+    ] or not await conn.fetchval(
+        "SELECT has_database_privilege('at_desk_login',current_database(),'CONNECT')"
+    ):
+        raise Stop("desk login must SET ROLE nhplug_operator and retain CONNECT")
     return {
         "checked_logins": sorted(names),
         "migration_runner": runner,
@@ -1550,9 +1707,25 @@ async def apply4(conn: asyncpg.Connection, record: dict) -> dict:
     }
 
 
+def evidence_time(value: object, label: str) -> datetime:
+    if not isinstance(value, str):
+        raise Stop(label + " requires an ISO timestamp with timezone")
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Stop(label + " requires an ISO timestamp with timezone") from exc
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise Stop(label + " requires an ISO timestamp with timezone")
+    return observed.astimezone(UTC)
+
+
 async def apply5(conn: asyncpg.Connection, record: dict) -> dict:
     validate_groups(await role_snapshot(conn))
     await hba_reject_gate(conn)
+    if not await conn.fetchval(
+        "SELECT has_database_privilege('at_migration_owner',current_database(),'CONNECT')"
+    ):
+        raise Stop("TimescaleDB policy job owner lacks database CONNECT")
     required = (
         "legacy_login",
         "legacy_classification",
@@ -1661,6 +1834,18 @@ async def apply5(conn: asyncpg.Connection, record: dict) -> dict:
             raise Stop(
                 "client session classification lacks independent source evidence"
             )
+        if (
+            session["datname"] == "auto_trader"
+            and classification != "timescale_scheduler"
+        ):
+            app_name = (session["application_name"] or "").lower()
+            if any(
+                marker in app_name
+                for marker in ("auto_trader", "taskiq", "scheduler", "mcp", "worker")
+            ):
+                raise Stop(
+                    "legacy client application name matches an app consumer; classification rejected"
+                )
         if classification == "backup" and session["datname"] not in (
             "auto_trader",
             "handoffkeep",
@@ -1777,9 +1962,26 @@ async def apply5(conn: asyncpg.Connection, record: dict) -> dict:
     if (
         not isinstance(timer, dict)
         or timer.get("installed_timers") != ["at-pg-backup.timer"]
-        or not timer.get("observed_at")
+        or timer.get("service_result") != "success"
+        or timer.get("persistent_catchup_clear") is not True
     ):
         raise Stop("backup timer observation differs from operator preflight")
+    now = datetime.now(UTC)
+    rotation_at = evidence_time(rotated.get("observed_at"), "secret rotation")
+    backup_success_at = evidence_time(
+        timer.get("last_success_at"), "backup timer last success"
+    )
+    timer_observed_at = evidence_time(
+        timer.get("observed_at"), "backup timer observation"
+    )
+    if not (
+        now - timedelta(days=7)
+        <= rotation_at
+        <= backup_success_at
+        <= timer_observed_at
+        <= now + timedelta(minutes=1)
+    ):
+        raise Stop("backup timer success must follow rotation and be recently observed")
     await timescale_gate(conn, record)
     jobs = await timescale_jobs.snapshot(conn)
     for job in jobs:

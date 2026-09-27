@@ -122,7 +122,9 @@ docker exec "$container" psql -X -U mgh3326 -d auto_trader \
   -c 'CREATE ROLE at_scheduler_login LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT' \
   -c 'GRANT at_app TO at_scheduler_login WITH ADMIN FALSE, INHERIT TRUE, SET FALSE' \
   -c 'CREATE ROLE at_migration_runner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT' \
-  -c 'GRANT at_migration_owner TO at_migration_runner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE' >/dev/null
+  -c 'GRANT at_migration_owner TO at_migration_runner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE' \
+  -c 'CREATE ROLE at_desk_login LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT' \
+  -c 'GRANT nhplug_operator TO at_desk_login WITH ADMIN FALSE, INHERIT FALSE, SET TRUE' >/dev/null
 runner_identity="$(docker exec "$container" psql -X -h 127.0.0.1 -U at_migration_runner \
   -d auto_trader -v ON_ERROR_STOP=1 -At \
   -c 'SET ROLE at_migration_owner' \
@@ -178,7 +180,7 @@ run_fixture_jobs() {
     -At -c 'SELECT count(*) FROM public.t789_ticks_hour')"
   tick_rows="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
     -At -c 'SELECT count(*) FROM public.t789_ticks')"
-  if [[ "$aggregate_rows" != 3 || "$tick_rows" != 3 ]]; then
+  if [[ "$aggregate_rows" != 3 || "$tick_rows" -lt 3 ]]; then
     echo 'policy execution did not preserve ticks and materialize the aggregate' >&2
     exit 1
   fi
@@ -201,6 +203,80 @@ stage2_sha="$(make_approval 2 "$stage2_manifest")"
 apply_stage 2 "$stage2_manifest" "$stage2_sha" "$stage2_journal"
 run_fixture_jobs
 echo 'stage 2 forward, rollback, forward: verified'
+
+# Recreate a partial job transition, then let a normal insert create a new
+# TimescaleDB chunk. Retry and rollback must preserve that row and accept the
+# new chunk without weakening the stable application-object inventory.
+rollback_stage 2 "$stage2_journal"
+mv "$stage2_journal" "$stage2_journal.cycle2"
+stage2_sha="$(make_approval 2 "$stage2_manifest")"
+uv run python - "$stage2_manifest" "$stage2_sha" "$stage2_journal" <<'PY'
+import argparse
+import asyncio
+import sys
+
+from scripts.db_roles import core, timescale_jobs
+
+original = timescale_jobs.transition_one
+transitioned = 0
+stop_message = "fixture injected partial job stop"
+
+
+async def one_then_stop(conn, entries, index, *, reverse):
+    global transitioned
+    if not reverse and transitioned == 1:
+        raise timescale_jobs.JobStop(stop_message)
+    result = await original(conn, entries, index, reverse=reverse)
+    if not reverse:
+        transitioned += 1
+    return result
+
+
+async def main() -> None:
+    timescale_jobs.transition_one = one_then_stop
+    args = argparse.Namespace(
+        stage=2,
+        mode="apply",
+        database="auto_trader",
+        dsn_env="DB_ROLES_DSN",
+        manifest=sys.argv[1],
+        sha256=sys.argv[2],
+        journal=sys.argv[3],
+    )
+    try:
+        await core.run(args)
+    except timescale_jobs.JobStop as exc:
+        if str(exc) != stop_message or transitioned != 1:
+            raise
+    else:
+        raise RuntimeError("partial Stage 2 fixture did not stop")
+
+
+asyncio.run(main())
+PY
+before_chunks="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -At -c "SELECT count(*) FROM timescaledb_information.chunks WHERE hypertable_schema='public' AND hypertable_name='t789_ticks'")"
+docker exec "$container" psql -X -U mgh3326 -d auto_trader -v ON_ERROR_STOP=1 \
+  -c "INSERT INTO public.t789_ticks VALUES (now() + interval '10 days', 99)" >/dev/null
+after_chunks="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -At -c "SELECT count(*) FROM timescaledb_information.chunks WHERE hypertable_schema='public' AND hypertable_name='t789_ticks'")"
+if ((after_chunks <= before_chunks)); then
+  echo 'fixture insert did not create a new TimescaleDB chunk' >&2
+  exit 1
+fi
+apply_stage 2 "$stage2_manifest" "$stage2_sha" "$stage2_journal"
+rollback_stage 2 "$stage2_journal"
+churn_rows="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -At -c 'SELECT count(*) FROM public.t789_ticks WHERE price=99')"
+if [[ "$churn_rows" != 1 ]]; then
+  echo 'stage 2 rollback lost the new chunk row' >&2
+  exit 1
+fi
+mv "$stage2_journal" "$stage2_journal.cycle3"
+stage2_sha="$(make_approval 2 "$stage2_manifest")"
+apply_stage 2 "$stage2_manifest" "$stage2_sha" "$stage2_journal"
+run_fixture_jobs
+echo 'stage 2 partial job and chunk churn retry, rollback, forward: verified'
 
 DATABASE_URL="postgresql+asyncpg://at_migration_runner@127.0.0.1:${port}/auto_trader" \
   AT_MIGRATION_SET_ROLE=at_migration_owner uv run alembic current
@@ -257,6 +333,30 @@ docker exec "$container" psql -X -U mgh3326 -d auto_trader \
   -v ON_ERROR_STOP=1 -c 'SET ROLE nhplug_security_owner' \
   -c "SELECT length(review.nhplug_body_digest_v1('place','buy','005930',1,1000,NULL,NULL,'fixture')) = 64 AS digest_helpers_work" \
   -c "SELECT has_database_privilege('at_migration_owner',current_database(),'CONNECT') AS owner_connect"
+second_order_root="$(docker exec "$container" psql -X -h 127.0.0.1 \
+  -U at_api_login -d auto_trader -v ON_ERROR_STOP=1 -At \
+  -c "INSERT INTO review.nhplug_mock_account_ref(account_ref) VALUES ('33333333-3333-3333-3333-333333333333'); INSERT INTO review.nhplug_mock_order_ledger (client_request_id,account_ref,idempotency_key,attempt_no,order_date,operation_kind,side,symbol,quantity,price) VALUES ('22222222-2222-2222-2222-222222222222','33333333-3333-3333-3333-333333333333','T789ROOTKEY0000000001',1,current_date,'place','buy','005930',1,1000) RETURNING id,body_digest" | rg '^[0-9]+\|[0-9a-f]{64}$')"
+IFS='|' read -r root_id root_digest <<< "$second_order_root"
+if [[ ! "$root_id" =~ ^[0-9]+$ || ! "$root_digest" =~ ^[0-9a-f]{64}$ ]]; then
+  echo 'second-order fixture root intent invalid' >&2
+  exit 1
+fi
+docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+  -v ON_ERROR_STOP=1 \
+  -c "SET ROLE nhplug_operator; INSERT INTO review.nhplug_mock_operator_authorization (id,kind,target_row_id,account_ref,order_date,body_digest,evidence,operator_id,reason) VALUES ('44444444-4444-4444-4444-444444444444','second_order',$root_id,'33333333-3333-3333-3333-333333333333',current_date,'$root_digest','{}','fixture-desk','role-cutover-test')" >/dev/null
+if docker exec "$container" psql -X -h 127.0.0.1 -U at_api_login \
+    -d auto_trader -v ON_ERROR_STOP=1 \
+    -c "INSERT INTO review.nhplug_mock_order_ledger (client_request_id,account_ref,idempotency_key,attempt_no,order_date,operation_kind,side,symbol,quantity,price,duplicate_of,second_order_authorization_id) VALUES ('55555555-5555-5555-5555-555555555555','33333333-3333-3333-3333-333333333333','T789SECONDKEY00000001',1,current_date,'place','buy','005930',1,1000,$root_id,'44444444-4444-4444-4444-444444444444')" \
+    > "$fixture_dir/second-order.out" 2>&1; then
+  echo 'fixture second order bypassed active-reservation constraint' >&2
+  exit 1
+fi
+if ! rg -q 'uq_nhplug_mock_active_reservation' "$fixture_dir/second-order.out"; then
+  echo 'second-order guard failed before digest and authorization completed' >&2
+  cat "$fixture_dir/second-order.out" >&2
+  exit 1
+fi
+echo 'second-order SECURITY DEFINER digest path: verified'
 run_fixture_jobs
 DATABASE_URL="postgresql+asyncpg://at_api_login@127.0.0.1:${port}/auto_trader" \
   uv run pytest --noconftest -q tests/db_roles/test_app_role_smoke.py

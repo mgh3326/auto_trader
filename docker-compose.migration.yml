@@ -6,9 +6,7 @@ services:
     image: ghcr.io/${GITHUB_REPOSITORY}:latest
     container_name: auto_trader_migration
     env_file:
-      - .env.migration
-    environment:
-      AT_MIGRATION_SET_ROLE: at_migration_owner
+      - ${AT_MIGRATION_ENV_FILE:-.env.prod}
     network_mode: host
     volumes:
       - ./tmp:/app/tmp

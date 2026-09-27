@@ -2,6 +2,8 @@ BEGIN READ ONLY;
 SELECT oid,rolname,rolcanlogin,rolsuper,rolcreaterole,rolbypassrls,
        oid=10 AS bootstrap_role
 FROM pg_roles WHERE rolname='postgres';
+SELECT has_database_privilege('at_migration_owner',current_database(),'CONNECT')
+       AS timescale_job_owner_connect;
 WITH expected(datname) AS
  (VALUES ('auto_trader'),('handoffkeep'),('prefect'))
 SELECT expected.datname,d.oid IS NOT NULL AS database_exists,

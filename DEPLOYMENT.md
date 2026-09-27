@@ -3,9 +3,9 @@
 이 문서는 사용이 중단된 Raspberry Pi Docker Compose 배포 절차의 기록입니다.
 현재 프로덕션 배포는 docs/runbooks/ncp-pull-deploy.md를 따르며,
 scripts/deploy.sh는 실행을 거부합니다. 아래 명령은 현재 운영 절차가 아닙니다.
-#789 DB 역할 전환 이후 마이그레이션 컨테이너는 별도 승인된
-.env.migration 파일이 있어야 시작됩니다. Stage 4 승인 전 해당 파일이 없어
-Compose가 실패하는 것은 의도된 차단이며, 앱용 DSN을 대신 넣으면 안 됩니다.
+#789 DB 역할 전환의 Stage 4 승인 뒤에는 별도 승인된 .env.migration을
+AT_MIGRATION_ENV_FILE 변수로 명시해야 새 migration runner가 사용됩니다.
+아래의 이전 명령은 .env.prod 기본값을 유지하지만 현재 운영 절차가 아닙니다.
 
 ## 배포 파이프라인 개요
 

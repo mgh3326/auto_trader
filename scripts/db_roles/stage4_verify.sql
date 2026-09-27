@@ -2,7 +2,7 @@ BEGIN READ ONLY;
 SELECT current_database() AS database_name, session_user, current_user;
 SELECT rolname,rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,
        rolreplication,rolbypassrls,rolinherit
-FROM pg_roles WHERE rolname IN ('at_app','at_migration_owner','at_migration_runner')
+FROM pg_roles WHERE rolname IN ('at_app','at_migration_owner','at_migration_runner','at_desk_login')
 ORDER BY rolname;
 SELECT rolname,rolpassword IS NULL AS password_absent
 FROM pg_authid WHERE rolname='at_migration_owner';

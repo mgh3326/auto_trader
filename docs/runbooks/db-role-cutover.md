@@ -68,6 +68,13 @@ deployment template is not proof that a unit is installed. Confirm all
 installed timers again. Do not begin or continue a stage whose lock interval
 could overlap the 04:10 KST backup. The backup can hold ACCESS SHARE locks
 while owner changes need stronger relation locks.
+Immediately before each stage, paste these read-only observations and stop if
+the timer or service is active, a persistent catch-up firing is pending, or
+the next firing could overlap the stage and rollback window:
+
+    systemctl show at-pg-backup.timer -p ActiveState -p LastTriggerUSec -p NextElapseUSecRealtime -p Persistent
+    systemctl show at-pg-backup.service -p ActiveState -p Result -p ExecMainStatus
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c "SELECT pid,usename,application_name,backend_type,state,query_start FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND application_name LIKE 'pg_dump%' ORDER BY pid"
 
 The following commands assume the operator's approved secret mechanism has
 provided DB_ROLES_DSN in the process environment for the DBA script connection,
@@ -95,7 +102,12 @@ DDL, with no intentional heap rewrite, but ALTER OWNER can wait for or block
 application and TimescaleDB work. Hundreds of relations plus chunks may take
 seconds to minutes in an idle staging copy; production duration is unproven.
 Measure the exact manifest in staging and leave a window for rollback. A lock
-timeout or catalog drift stops the stage; do not raise timeouts ad hoc.
+timeout, lock-table exhaustion, or catalog drift stops the stage; do not
+raise timeouts or max_locks_per_transaction ad hoc. Paste
+SHOW max_locks_per_transaction with the staging lock measurement before the
+Stage 2 approval. Policy recreation changes job IDs and loses the old
+bgw_job_stat counters; the signed journal preserves schedule and config,
+including next_start, so an already-past next_start may run promptly.
 
 ## Stage 1: role creation and owner login rejection
 
@@ -132,12 +144,15 @@ apply and verify commands follow:
     uv run python scripts/db_roles/stage1_apply.py --database auto_trader --journal "$CUTOVER_DIR/stage1.journal.json"
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage1_verify.sql
 
-After apply, the operator must run and paste both denied connection results:
+After apply, the operator must run and paste these denied connection results:
 
     docker exec "$DB_CONTAINER" psql -X -w -U at_migration_owner -d auto_trader -c 'SELECT 1'
     docker exec "$DB_CONTAINER" psql -X -w -h 127.0.0.1 -U at_migration_owner -d auto_trader -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -h ::1 -U at_migration_owner -d auto_trader -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -U at_migration_owner -d 'dbname=auto_trader replication=true' -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -h 127.0.0.1 -U at_migration_owner -d 'dbname=auto_trader replication=true' -c 'SELECT 1'
 
-Both commands must fail specifically with pg_hba.conf rejects connection.
+Every command must fail specifically with pg_hba.conf rejects connection.
 If Stage 1 needs rollback, run its inverse first. Only after it succeeds and
 all three newly created roles were removed may the operator restore the
 original HBA file and verify reload with:
@@ -156,7 +171,7 @@ abandoning Stage 1.
 Paste four role rows. at_migration_owner must be LOGIN with a null password;
 the other three must be NOLOGIN. All four must be NOSUPERUSER, NOCREATEDB,
 NOCREATEROLE, NOREPLICATION, and NOBYPASSRLS. Paste the HBA rule rows and
-rejected socket and TCP login results. Paste all membership rows; no
+rejected socket, IPv4, IPv6 and replication login results. Paste all membership rows; no
 application login may inherit an owner role. Stop if an existing role has
 different attributes or unexpected membership, the HBA rejection fails, or
 the owner role has a password. Do not run the rollback after
@@ -180,6 +195,15 @@ Job IDs change. The journal must map old and new IDs, and its inverse must
 recreate the policy under mgh3326 from the recorded configuration. A custom
 or unknown policy type stops the stage. No direct Timescale internal catalog
 write or data rewrite is allowed.
+The signed inventory fixes application objects and stable TimescaleDB
+materialization objects. The journal also records which internal relations
+are chunks or chunk indexes. If a new chunk appears after the owner transfer,
+retry and rollback accept it only when the TimescaleDB chunks view identifies
+it, and they verify that every current chunk and index follows the target or
+restored owner. An unrelated catalog addition stops. If chunks change before
+the owner transfer, abandon that prepared journal and obtain a fresh signed
+manifest; no owner change has committed. A dropped chunk is skipped only if
+the journal classified it as a chunk or index at preparation time.
 
     uv run python scripts/db_roles/stage2_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage2.approved.json" --sha256 "$STAGE2_SHA" --journal "$CUTOVER_DIR/stage2.journal.json"
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage2_verify.sql
@@ -203,10 +227,38 @@ Approval input: a signed object-level DML and sequence manifest, the exact
 ACLs. The signed database CONNECT keep-role list must cover postgres for the
 backup and Prefect, every currently active non-owner login, the new at_app
 group, at_migration_owner for TimescaleDB policy workers, and the
-pre-provisioned at_migration_runner. Stage 3 revokes PUBLIC
+pre-provisioned at_migration_runner and at_desk_login. Stage 3 revokes PUBLIC
 CONNECT only after granting that reviewed set; rollback restores its exact
-prior ACL. Provision the runner role and its membership before Stage 3, with
-its credential activation reserved for Stage 4. The app gets no schema
+prior effective privileges. Provision the runner and desk logins before Stage
+3 under this stage's approval; the runner credential stays inactive until
+Stage 4. The desk login uses SET ROLE nhplug_operator for its approved
+workflow and needs direct database CONNECT. The following role and membership
+commands are idempotent; stop on any unexpected existing attributes or
+membership. Set passwords with interactive prompts and keep them in the
+approved secret mechanism, never in the manifest or journal.
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader <<'SQL'
+    DO $roles$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_migration_runner') THEN
+        CREATE ROLE at_migration_runner LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_desk_login') THEN
+        CREATE ROLE at_desk_login LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+    END $roles$;
+    GRANT at_migration_owner TO at_migration_runner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+    GRANT nhplug_operator TO at_desk_login WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+    SQL
+    psql -X -d auto_trader -c '\password at_migration_runner'
+    psql -X -d auto_trader -c '\password at_desk_login'
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c "SELECT member.rolname AS login,parent.rolname AS granted_role,m.admin_option,m.inherit_option,m.set_option FROM pg_auth_members m JOIN pg_roles member ON member.oid=m.member JOIN pg_roles parent ON parent.oid=m.roleid WHERE member.rolname IN ('at_migration_runner','at_desk_login') ORDER BY login,granted_role"
+
+After Stage 4 and Stage 3 inverses and connection drain, the provisioning
+inverse is:
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'REVOKE at_migration_owner FROM at_migration_runner; REVOKE nhplug_operator FROM at_desk_login; DROP ROLE at_migration_runner; DROP ROLE at_desk_login'
+
+The app gets no schema
 CREATE, table TRUNCATE or blanket all-tables
 grant. Its identity sequences get USAGE only. The #711 consume and guard
 functions retain their fixed search_path and give no direct EXECUTE to app,
@@ -246,20 +298,62 @@ NOINHERIT operator login, signed
 secret mapping, and a rollback mapping. App logins must inherit only at_app,
 with inherit_option true and set_option/admin_option false. The migration
 runner must use the separate migration env input and establish current_user
-at_migration_owner before Alembic DDL. The compose migration templates select
-.env.migration; the host scripts/migrate.sh entrypoint selects the same input
-and sets the same role gate. Its prior symbol-sync side effects require a
-separate approved application-login invocation after migrations. Application
-services continue to select their app input.
+at_migration_owner before Alembic DDL. The existing migration entrypoints
+keep their pre-cutover .env.prod behavior until this stage is approved. To
+activate the split, the operator provisions .env.migration with the separate
+runner DSN and AT_MIGRATION_SET_ROLE=at_migration_owner, sets
+AT_MIGRATION_ENV_FILE=.env.migration for a Compose migration, or passes
+--db-role-cutover to scripts/migrate.sh. The optional role gate in
+alembic/env.py requires the runner identity and fails closed for an app or
+postgres connection. Application services continue to select their app
+input. Under the split, the three symbol sync scripts run separately with
+the app login immediately after migration. The old entrypoints retain their
+existing sync behavior until activation.
 The host deploy script uses its app secret input and does not invoke Alembic.
 Never copy a migration DSN into an app input or reuse an app DSN for backup.
+
+For the two app inputs established by the operator preflight, run these
+idempotent role and membership commands under the separate Stage 4 approval.
+Any additional deployed DB consumer requires its own named login in the
+signed inventory and the same membership options. Set passwords through
+interactive prompts and store them only in the approved secret mechanism.
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader <<'SQL'
+    DO $roles$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_api_login') THEN
+        CREATE ROLE at_api_login LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_scheduler_login') THEN
+        CREATE ROLE at_scheduler_login LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+    END $roles$;
+    GRANT at_app TO at_api_login WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+    GRANT at_app TO at_scheduler_login WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+    SQL
+    psql -X -d auto_trader -c '\password at_api_login'
+    psql -X -d auto_trader -c '\password at_scheduler_login'
 
     uv run python scripts/db_roles/stage4_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage4.approved.json" --sha256 "$STAGE4_SHA" --journal "$CUTOVER_DIR/stage4.journal.json"
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage4_verify.sql
     PGUSER=at_migration_runner psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SET ROLE at_migration_owner; SELECT session_user,current_user'
+    PGUSER=at_desk_login psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SET ROLE nhplug_operator; SELECT session_user,current_user'
     PGUSER=at_api_login psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT session_user,current_user'
     PGUSER=at_scheduler_login psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT session_user,current_user'
     uv run python scripts/db_roles/stage4_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage4.journal.json"
+
+After the Stage 4 evidence gate passes, run one of these migration selectors.
+APP_IMAGE is the approved deployed image digest and APP_ENV_FILE is the
+approved .env.api path. Then run all three sync commands under the app login:
+
+    AT_MIGRATION_ENV_FILE=.env.migration docker compose --env-file .env.prod -f docker-compose.prod.yml --profile migration up migration
+    AT_MIGRATION_ENV_FILE=.env.migration docker compose --env-file .env.prod -f docker-compose.migration.yml --profile migration up migration
+    scripts/migrate.sh --db-role-cutover
+    docker run --rm --network host --env-file "$APP_ENV_FILE" "$APP_IMAGE" /app/.venv/bin/python scripts/sync_kr_symbol_universe.py
+    docker run --rm --network host --env-file "$APP_ENV_FILE" "$APP_IMAGE" /app/.venv/bin/python scripts/sync_us_symbol_universe.py
+    docker run --rm --network host --env-file "$APP_ENV_FILE" "$APP_IMAGE" /app/.venv/bin/python scripts/sync_upbit_symbol_universe.py
+
+Record each sync command and exit code. Stop if any sync fails. Keep the
+migration and app credential files distinct.
 
 The apply script is an evidence gate; the operator separately performs each
 approved secret input and process rotation. Paste the role-membership rows,
@@ -272,6 +366,10 @@ handoff. Drain old pools explicitly. The script cannot roll back an external
 secret mapping: if verification fails, restore the recorded prior mapping and
 process image through the separate operator procedure, then re-run the SQL
 verification. Do not revoke old access until new consumers pass.
+After restoring the prior app credential mapping, draining these logins and
+running the Stage 4 inverse, undo this stage's login provisioning with:
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'REVOKE at_app FROM at_api_login; REVOKE at_app FROM at_scheduler_login; DROP ROLE at_api_login; DROP ROLE at_scheduler_login'
 
 ## Stage 5: remove application use of the superuser
 
@@ -285,6 +383,11 @@ must never be altered by this application cutover. Rotate only .env.api and
 .env.scheduler to the new app identities, drain those application sessions,
 and preserve .env.prefect and .env.pg-backup as infrastructure inputs. Do not
 revoke or rotate the postgres credential here.
+The signed timer proof must give timezone-aware ISO timestamps for rotation,
+the last successful backup service firing, and observation, in that order;
+the success must be within seven days. It must record service_result=success
+and persistent_catchup_clear=true. Paste the systemctl outputs above and the
+backup service log showing success, without printing dump contents or secrets.
 
     uv run python scripts/db_roles/stage5_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage5.approved.json" --sha256 "$STAGE5_SHA" --journal "$CUTOVER_DIR/stage5.journal.json"
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage5_verify.sql
@@ -297,7 +400,9 @@ the existing root-run backup. No dump is run for this check. The stage
 completes only when no application process can reconnect as postgres and no
 old privileged application session remains. Prefect, backup and DBA sessions
 are classified separately; their continued use is expected.
-If rollback is needed, restore old grants and owners from exact journals in
-reverse stage order before returning a prior app secret mapping or process.
+If rollback is needed, return the prior app secret mapping and process image
+first, while the new app grants still work, and drain every at_app login
+session. Then run Stage 5, Stage 4, Stage 3, Stage 2 and Stage 1 inverses in
+that order. Stage 3 refuses its inverse while an at_app session remains.
 Rollback stops on catalog drift. A data backup is for data recovery and does
 not substitute for ACL or ownership rollback.

@@ -4,9 +4,7 @@ services:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_migration
     env_file:
-      - .env.migration
-    environment:
-      AT_MIGRATION_SET_ROLE: at_migration_owner
+      - ${AT_MIGRATION_ENV_FILE:-.env.prod}
     network_mode: host
     command: >
       sh -c "
@@ -17,6 +15,13 @@ services:
         alembic current &&
         echo '🔄 Running migrations...' &&
         alembic upgrade head &&
+        if [ "$${AT_MIGRATION_SET_ROLE:-}" = 'at_migration_owner' ]; then
+          echo 'Run symbol sync separately with the application login';
+        else
+          echo '🔁 Syncing kr_symbol_universe...' &&
+          PYTHONPATH=/app python scripts/sync_kr_symbol_universe.py &&
+          echo '✅ kr_symbol_universe sync completed';
+        fi &&
         echo '✅ Migrations completed successfully'
       "
     profiles:
