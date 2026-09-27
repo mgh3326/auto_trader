@@ -178,7 +178,7 @@ async def stage_record(conn: asyncpg.Connection, stage: int) -> dict:
                 "schema": "review",
                 "name": name,
                 "identity_args": signature,
-                "app_privileges": "",
+                "app_privileges": "X" if name in core.APP_EXECUTE_HELPERS else "",
             }
             item["expected_owner"] = (await core.catalog_object(conn, item))["owner"]
             items.append(item)

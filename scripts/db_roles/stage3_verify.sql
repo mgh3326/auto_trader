@@ -34,6 +34,9 @@ WHERE n.nspname IN ('public','review','research') AND c.relkind='S'
 ORDER BY sequence_name;
 SELECT p.oid::regprocedure AS function_name, p.prosecdef, p.proconfig,
        has_function_privilege('at_app',p.oid,'EXECUTE') AS app_execute,
+       has_function_privilege('at_app',p.oid,'EXECUTE') =
+         (p.proname IN ('nhplug_body_field','nhplug_body_digest_v1'))
+         AS app_execute_matrix_ok,
        EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
                WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS public_execute
 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace

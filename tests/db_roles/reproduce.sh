@@ -219,7 +219,7 @@ DO $$
 BEGIN
   IF has_table_privilege('at_app', 'public.t789_future_acl', 'SELECT')
      OR has_sequence_privilege('at_app', 'public.t789_future_acl_id_seq', 'USAGE')
-     OR has_function_privilege('PUBLIC', 'public.t789_future_acl_function()', 'EXECUTE') THEN
+     OR has_function_privilege('at_api_login', 'public.t789_future_acl_function()', 'EXECUTE') THEN
     RAISE EXCEPTION 'future migration object default ACL leaked privilege';
   END IF;
 END

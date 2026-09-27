@@ -46,6 +46,7 @@ PROTECTED_FUNCTIONS = {
     "nhplug_auth_immutable": "",
     "reject_kiwoom_authority_evidence_mutation": "",
 }
+APP_EXECUTE_HELPERS = {"nhplug_body_field", "nhplug_body_digest_v1"}
 SECURITY_FUNCTIONS = {"nhplug_consume_authorization", "nhplug_order_guard"}
 MIGRATION_FUNCTIONS = {"nhplug_body_field", "nhplug_body_digest_v1", "reject_kiwoom_authority_evidence_mutation"}
 PRIVS = {"r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE", "U": "USAGE", "X": "EXECUTE"}
@@ -750,8 +751,10 @@ async def apply3(conn: asyncpg.Connection, args: argparse.Namespace, manifest: d
             raise Stop("sequences allow at_app USAGE only")
         if item["kind"] == "relation" and obj["relkind"] != "S" and item.get("app_privileges", "") and any(x not in "rawd" for x in item["app_privileges"]):
             raise Stop("ordinary relation DML manifest contains forbidden privilege")
-        if item["kind"] == "function" and item["name"] in PROTECTED_FUNCTIONS and item.get("app_privileges", ""):
-            raise Stop("protected functions cannot be directly executed by at_app")
+        if item["kind"] == "function" and item["name"] in PROTECTED_FUNCTIONS:
+            expected_execute = "X" if item["name"] in APP_EXECUTE_HELPERS else ""
+            if item.get("app_privileges", "") != expected_execute:
+                raise Stop("protected function EXECUTE matrix differs from approved helper exception")
         if item["kind"] == "function" and item["name"] in PROTECTED_FUNCTIONS:
             required_owner = "at_migration_owner" if item["name"] in MIGRATION_FUNCTIONS else "nhplug_security_owner"
             if item["expected_owner"] != required_owner or bool(obj["prosecdef"]) != (item["name"] in SECURITY_FUNCTIONS):

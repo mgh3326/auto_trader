@@ -47,7 +47,7 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
                 assert changed is not None and changed.name == "Role updated"
 
                 # A normal #711 intent insert exercises the generated digest and
-                # SECURITY DEFINER trigger while the helpers deny direct EXECUTE.
+                # SECURITY DEFINER trigger with only digest helpers executable.
                 account_ref = str(uuid4())
                 await session.execute(
                     text(
@@ -87,11 +87,18 @@ def test_application_login_can_use_normal_service_and_not_control_rows() -> None
                             "  'review.kiwoom_authority_attempts', 'UPDATE'), "
                             "has_function_privilege(current_user, "
                             "  'review.nhplug_consume_authorization(uuid,text,bigint,uuid,date,text,text,bigint)', "
-                            "  'EXECUTE')"
+                            "  'EXECUTE'), "
+                            "has_function_privilege(current_user, "
+                            "  'review.nhplug_body_field(text,text)', 'EXECUTE'), "
+                            "has_function_privilege(current_user, "
+                            "  'review.nhplug_body_digest_v1(text,text,text,bigint,bigint,text,text,text)', "
+                            "  'EXECUTE'), "
+                            "has_function_privilege(current_user, "
+                            "  'review.nhplug_order_guard()', 'EXECUTE')"
                         )
                     )
                 ).one()
-                assert checks == (False, False, False, False)
+                assert checks == (False, False, False, False, True, True, False)
                 await session.execute(
                     text("SELECT id FROM review.nhplug_mock_operator_authorization LIMIT 1")
                 )

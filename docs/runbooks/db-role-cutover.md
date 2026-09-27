@@ -191,8 +191,11 @@ its credential activation reserved for Stage 4. The app gets no schema
 CREATE, table TRUNCATE or blanket all-tables
 grant. Its identity sequences get USAGE only. The #711 consume and guard
 functions retain their fixed search_path and give no direct EXECUTE to app,
-operator, or PUBLIC. Test any helper EXECUTE exception with a staging app
-ledger insert before granting it. Future migration objects must be created
+operator, or PUBLIC. The app receives EXECUTE on exactly
+review.nhplug_body_digest_v1 and review.nhplug_body_field: the generated
+ledger digest requires the first, and the first calls the second. A
+throwaway app-role intent insert passed only after both grants; neither
+helper mutates state. Future migration objects must be created
 after SET ROLE at_migration_owner; a connection as the runner alone is not
 enough to apply that creator's default ACL.
 The defaults deny PUBLIC function execution and leave table and sequence DML
@@ -208,7 +211,8 @@ function as the runner after SET ROLE and checks these denied defaults.
 Paste every protected-table privilege row, sequence row, function row, and
 default-ACL row. Compare normal-domain privileges with the approved manifest;
 the verify SQL is evidence, not an automatic approval. Stop if the app has
-ownership, direct protected-function EXECUTE, sequence SELECT or UPDATE,
+ownership, direct protected-function EXECUTE beyond those two helpers,
+sequence SELECT or UPDATE,
 unexpected DELETE, or any missing normal application DML path.
 
 ## Stage 4: distinct credentials and process drain

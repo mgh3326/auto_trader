@@ -19,6 +19,10 @@ backup, Prefect, and DBA infrastructure: #789 changes only the app inputs
 decisions supersede the earlier proposed NOLOGIN owner and conditional
 app-only legacy-login branch below; the historical analysis remains for
 traceability.
+The disposable #711 insert proved the generated ledger digest requires app
+EXECUTE on `review.nhplug_body_digest_v1` and its nested
+`review.nhplug_body_field` helper. Stage 3 grants those two deterministic
+helpers only; the consume and guard functions stay denied to the app.
 
 ## Decision summary
 
