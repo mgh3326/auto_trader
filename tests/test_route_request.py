@@ -12,6 +12,7 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
     DIRECT_BROKER_MUTATION_TOOLS,
+    HARNESS_DENIED_TOOLS,
 )
 from app.mcp_server.tooling.route_request_registration import (
     ROUTE_REQUEST_TOOL_NAMES,
@@ -250,7 +251,9 @@ def test_registry_introspection_failure_is_static_fail_closed(mcp_type):
     assert out["degraded"] is True
     assert out["standard_tool_sequence"] == []
     assert out["allowed_tools"] == []
-    assert set(out["blocked_actions"]) == DIRECT_BROKER_MUTATION_TOOLS
+    assert set(out["blocked_actions"]) == (
+        DIRECT_BROKER_MUTATION_TOOLS | HARNESS_DENIED_TOOLS
+    )
     assert out["blocked_actions_basis"] == "static_fail_closed"
     assert out["route_contract"]["state"] == "degraded"
     assert out["route_contract"]["execution_ready"] is False
