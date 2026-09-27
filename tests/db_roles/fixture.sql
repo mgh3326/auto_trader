@@ -53,6 +53,7 @@ CREATE TABLE public.t789_postgres_owned (id bigint GENERATED ALWAYS AS IDENTITY 
 CREATE VIEW public.t789_postgres_view AS SELECT id, value FROM public.t789_postgres_owned;
 CREATE FUNCTION public.t789_postgres_function() RETURNS int LANGUAGE sql AS $$SELECT 1$$;
 CREATE TYPE public.t789_postgres_type AS ENUM ('fixture');
+CREATE TYPE public.t789_postgres_composite AS (qty integer, tag text);
 
 SET ROLE mgh3326;
 CREATE TABLE public.t789_mgh_owned (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value text);

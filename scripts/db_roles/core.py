@@ -179,7 +179,7 @@ async def catalog_object(conn: asyncpg.Connection, item: dict) -> dict:
         sql_name = qname(schema, name) + "(" + args + ")"
     elif kind == "type":
         row = await conn.fetchrow(
-            "SELECT t.oid, pg_get_userbyid(t.typowner) owner, t.typacl::text acl, t.typtype::text typtype FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname=$1 AND t.typname=$2 AND t.typrelid=0",
+            "SELECT t.oid, pg_get_userbyid(t.typowner) owner, t.typacl::text acl, t.typtype::text typtype FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname=$1 AND t.typname=$2 AND (t.typrelid=0 OR (t.typtype='c' AND EXISTS (SELECT 1 FROM pg_class c WHERE c.oid=t.typrelid AND c.relkind='c')))",
             schema,
             name,
         )
@@ -229,7 +229,7 @@ async def app_catalog_keys(
         )
         keys.update(("function", r["nspname"], r["proname"], r["args"]) for r in rows)
         rows = await conn.fetch(
-            "SELECT n.nspname,t.typname FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname=ANY($1::text[]) AND t.typrelid=0 AND t.typtype IN ('e','d','r','m') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_type'::regclass AND d.objid=t.oid AND d.deptype='e')",
+            "SELECT n.nspname,t.typname FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname=ANY($1::text[]) AND ((t.typrelid=0 AND t.typtype IN ('e','d','r','m')) OR (t.typtype='c' AND EXISTS (SELECT 1 FROM pg_class c WHERE c.oid=t.typrelid AND c.relkind='c'))) AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_type'::regclass AND d.objid=t.oid AND d.deptype='e')",
             list(APP_SCHEMAS),
         )
         keys.update(("type", r["nspname"], r["typname"], "") for r in rows)
