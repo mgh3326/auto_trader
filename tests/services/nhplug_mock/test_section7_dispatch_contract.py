@@ -49,6 +49,7 @@ from tests.services.nhplug_mock.test_dispatch_state_machine import (  # noqa: F4
     KEY,
     READY,
     FakeBroker,
+    _seoul_today,
     account,
     client_for,
     intent_row,
@@ -128,7 +129,7 @@ async def _row(
         intent,
         readiness=READY,
         idempotency_key=("k_" + suffix + "_" + uuid4().hex)[:60],
-        order_date=day or date.today(),
+        order_date=day or _seoul_today(),
     )
     SUFFIX[row["id"]] = suffix
     return ledger, row, ref
@@ -350,7 +351,7 @@ async def _reach(
             cancel,
             readiness=READY,
             idempotency_key=("c_" + tag + uuid4().hex)[:60],
-            order_date=date.today(),
+            order_date=row["order_date"],
         )
         claim = await c_ledger.claim(
             c_row["id"],
@@ -410,7 +411,7 @@ async def _reach(
             mod,
             readiness=READY,
             idempotency_key=("m_" + tag + uuid4().hex)[:60],
-            order_date=date.today(),
+            order_date=row["order_date"],
         )
         claim = await m_ledger.claim(
             m_row["id"],

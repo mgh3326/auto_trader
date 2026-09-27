@@ -8,7 +8,7 @@ import json
 import os
 import sys
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -102,6 +102,11 @@ async def account(engine: AsyncEngine, suffix: str) -> UUID:
     return await resolve_account_ref(engine, "MOCK-" + suffix, {1: KEY})
 
 
+def _seoul_today() -> date:
+    """The trading day's calendar date on the broker's Asia/Seoul clock."""
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
 async def intent_row(
     engine: AsyncEngine, suffix: str, *, day: date | None = None, price: int = 67400
 ):
@@ -112,7 +117,7 @@ async def intent_row(
         intent,
         readiness=READY,
         idempotency_key="key_" + suffix + "_1234567890",
-        order_date=day or date.today(),
+        order_date=day or _seoul_today(),
     )
     assert should_claim
     return ledger, row, ref
@@ -609,7 +614,7 @@ async def test_second_order_requires_matching_one_use_authorization(
             body,
             readiness=READY,
             idempotency_key="second_order_no_auth_1234",
-            order_date=date.today(),
+            order_date=first["order_date"],
         )
 
     async def authorization(kind: str, target: int) -> UUID:
@@ -644,7 +649,7 @@ async def test_second_order_requires_matching_one_use_authorization(
                 body,
                 readiness=READY,
                 idempotency_key="second_order_bad_" + str(bad)[:8],
-                order_date=date.today(),
+                order_date=first["order_date"],
                 duplicate_of=first["id"],
                 second_order_authorization_id=bad,
             )
@@ -653,7 +658,7 @@ async def test_second_order_requires_matching_one_use_authorization(
         body,
         readiness=READY,
         idempotency_key="second_order_valid_12345",
-        order_date=date.today(),
+        order_date=first["order_date"],
         duplicate_of=first["id"],
         second_order_authorization_id=good,
     )
@@ -674,7 +679,7 @@ async def test_second_order_requires_matching_one_use_authorization(
             body,
             readiness=READY,
             idempotency_key="second_order_reuse_12345",
-            order_date=date.today(),
+            order_date=first["order_date"],
             duplicate_of=first["id"],
             second_order_authorization_id=good,
         )
@@ -948,7 +953,7 @@ async def test_same_account_order_number_collides_only_within_trading_day(
         )
         return row
 
-    today = date.today()
+    today = _seoul_today()
     first = await accept("005930", today, "number_scope_first_1234")
     assert await ledger.verify_own_number(
         first["id"], scoped(listing(999), first), readiness=READY
@@ -2151,7 +2156,7 @@ async def test_cancelled_requires_own_cancel_ack(seeded_engine: AsyncEngine) -> 
         cancel_intent,
         readiness=READY,
         idempotency_key="cancel_evidence_123456",
-        order_date=date.today(),
+        order_date=row["order_date"],
     )
     assert should_claim
     cancel_claim = await ledger.claim(
@@ -2225,7 +2230,7 @@ async def test_modified_requires_own_ack_and_positive_successor_row(
         modify_intent,
         readiness=READY,
         idempotency_key="modify_evidence_123456",
-        order_date=date.today(),
+        order_date=row["order_date"],
     )
     assert should_claim
     modify_claim = await ledger.claim(
@@ -2559,6 +2564,69 @@ async def test_live_dispatcher_blocks_candidate_and_own_ack_wins(
         row["id"], scoped(listing(524), row), readiness=READY
     )
     assert (await ledger.get(row["id"]))["broker_order_id"] == "524"
+
+
+@pytest.mark.asyncio
+async def test_candidate_match_when_utc_date_lags_seoul_trading_day(
+    seeded_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for CI run 36279027745 (attempts 1-2).
+
+    Between 00:00 and 09:00 KST the runner-local UTC date is one day behind
+    the Asia/Seoul trading date. intent_row must stamp the Seoul date:
+    _broker_order_time combines row["order_date"] with the broker
+    time-of-day and compares it with the sending_at window, so a UTC
+    order_date shifts the candidate match a full day outside the window.
+    """
+    seoul_day = date.today() + timedelta(days=1)
+    monkeypatch.setattr(sys.modules[__name__], "_seoul_today", lambda: seoul_day)
+    ledger, row, ref = await intent_row(seeded_engine, "seoul-window")
+    assert row["order_date"] == seoul_day
+    claim = await ledger.claim(
+        row["id"], row["client_request_id"], row["body_digest"], ref, IDENTITY
+    )
+    # Pin sending_at inside 00:00-09:00 KST (03:00 KST = 18:00Z of the
+    # previous UTC day). The order guard trigger allows sending_at to change
+    # only on the claimed->sending fence transition, so this mirrors the
+    # fence() UPDATE with a fixed instant.
+    sending_at = datetime.combine(
+        seoul_day - timedelta(days=1), time(18, 0), tzinfo=UTC
+    )
+    async with seeded_engine.begin() as conn:
+        moved = await conn.execute(
+            text(
+                "UPDATE review.nhplug_mock_order_ledger SET state='sending', "
+                "sending_at=:at, lease_expires_at=:lease "
+                "WHERE id=:id AND claim_token=:token AND state='claimed' "
+                "AND sending_at IS NULL AND now() < claim_deadline RETURNING id"
+            ),
+            {
+                "at": sending_at,
+                "lease": sending_at + timedelta(seconds=60),
+                "id": row["id"],
+                "token": claim.token,
+            },
+        )
+    assert moved.scalar_one_or_none() is not None
+    assert await ledger.record_final(
+        claim, DispatchOutcome("uncertain", "no_proof_code")
+    )
+    broker_time = sending_at.astimezone(ZoneInfo("Asia/Seoul")).strftime("%H%M%S%f")[:9]
+    candidate = OrderRow(
+        777,
+        "005930",
+        1,
+        0,
+        1,
+        side="buy",
+        order_price=Decimal(67400),
+        order_time=broker_time,
+    )
+    assert await ledger.record_uncertain_candidates(
+        row["id"],
+        scoped(OrderListing("all", True, (candidate,), pages=1), row),
+        readiness=READY,
+    ) == ("777",)
 
 
 @pytest.mark.asyncio
