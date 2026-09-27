@@ -26,6 +26,7 @@ from app.services.fill_event_handoff.kick_filter import (
     classify_without_position,
 )
 from app.services.fill_event_handoff.service import FillHandoffRunner, HandoffConfig
+from app.services.fill_event_handoff.state import HandoffState
 
 
 def _fill(ledger_id: int, **overrides: Any) -> dict[str, Any]:
@@ -212,6 +213,25 @@ def test_sell_with_negative_ledger_position_is_unproven() -> None:
     assert verdict.reason == "position_unproven"
 
 
+def test_buy_into_a_proven_negative_position_is_unproven() -> None:
+    # a ledger-proven negative balance is inconsistent, not flat — fail closed
+    verdict = classify_fill_for_kick(
+        _fill(1, side="buy", filled_notional="60000"), _facts("-0.5", 2)
+    )
+    assert verdict.eligible is False
+    assert verdict.reason == "position_unproven"
+    assert verdict.position_before == Decimal("-0.5")
+    assert verdict.position_after == Decimal("-0.4")
+
+
+def test_degenerate_quantity_magnitude_is_malformed_not_an_exception() -> None:
+    # 1e9999999 overflows the Decimal context during position arithmetic —
+    # the classifier must fail closed, not raise out of run()
+    verdict = classify_fill_for_kick(_fill(1, filled_qty="1e9999999"), _facts("0.1"))
+    assert verdict.eligible is False
+    assert verdict.reason == "fill_malformed"
+
+
 @pytest.mark.parametrize(
     "override",
     [
@@ -220,8 +240,12 @@ def test_sell_with_negative_ledger_position_is_unproven() -> None:
         {"filled_qty": "0"},
         {"filled_qty": "-0.1"},
         {"filled_qty": "not-a-number"},
+        {"filled_qty": "NaN"},
+        {"filled_qty": "Infinity"},
         {"side": "buy", "filled_notional": None},
         {"side": "buy", "filled_notional": "not-a-number"},
+        {"side": "buy", "filled_notional": "NaN"},
+        {"side": "buy", "filled_notional": "Infinity"},
     ],
 )
 def test_malformed_fills_are_queue_only(override) -> None:
@@ -269,11 +293,12 @@ def _kick_runner(
 def test_daily_cap_allows_two_kicks_then_caps(tmp_path: Path) -> None:
     # 2026-09-03 01:00 UTC == 10:00 KST — outside every crypto rep window
     runner = _kick_runner(tmp_path, lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC))
-    state = {"cooldowns": {}}
     verdict = KickVerdict(True, "sell_full_exit")
-    first = asyncio.run(runner._kick(_fill(1), state, verdict))
-    second = asyncio.run(runner._kick(_fill(2), state, verdict))
-    third = asyncio.run(runner._kick(_fill(3), state, verdict))
+    with HandoffState(tmp_path) as locked:
+        first = asyncio.run(runner._kick(_fill(1), locked, verdict))
+        second = asyncio.run(runner._kick(_fill(2), locked, verdict))
+        third = asyncio.run(runner._kick(_fill(3), locked, verdict))
+        state = locked.data
     assert first.klass == "kick" and first.flow_run_id
     assert second.klass == "kick" and second.flow_run_id
     # mutant guard: ``count >= cap`` must not become ``>`` — the third kick
@@ -292,24 +317,25 @@ def test_daily_cap_resets_at_kst_midnight(tmp_path: Path) -> None:
         ]
     )
     runner = _kick_runner(tmp_path, lambda: next(moments), cap=1)
-    state = {"cooldowns": {}}
     verdict = KickVerdict(True, "sell_full_exit")
-    first = asyncio.run(runner._kick(_fill(1), state, verdict))
-    assert first.klass == "kick"
-    assert state["kick_days"]["crypto"] == {"date": "20260903", "count": 1}
-    second = asyncio.run(runner._kick(_fill(2), state, verdict))
-    # mutant guard: comparing KST dates must not reuse the prior UTC day
-    assert second.klass == "kick"
-    assert state["kick_days"]["crypto"] == {"date": "20260904", "count": 1}
+    with HandoffState(tmp_path) as locked:
+        first = asyncio.run(runner._kick(_fill(1), locked, verdict))
+        assert first.klass == "kick"
+        assert locked.data["kick_days"]["crypto"] == {"date": "20260903", "count": 1}
+        second = asyncio.run(runner._kick(_fill(2), locked, verdict))
+        # mutant guard: comparing KST dates must not reuse the prior UTC day
+        assert second.klass == "kick"
+        assert locked.data["kick_days"]["crypto"] == {"date": "20260904", "count": 1}
 
 
 def test_zero_cap_caps_every_eligible_fill(tmp_path: Path) -> None:
     runner = _kick_runner(
         tmp_path, lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC), cap=0
     )
-    decision = asyncio.run(
-        runner._kick(_fill(1), {"cooldowns": {}}, KickVerdict(True, "sell_full_exit"))
-    )
+    with HandoffState(tmp_path) as locked:
+        decision = asyncio.run(
+            runner._kick(_fill(1), locked, KickVerdict(True, "sell_full_exit"))
+        )
     assert decision.klass == "capped"
 
 
@@ -322,15 +348,15 @@ def test_cooldown_blocks_without_consuming_daily_cap(tmp_path: Path) -> None:
         ]
     )
     runner = _kick_runner(tmp_path, lambda: next(moments), cooldown=3600)
-    state = {"cooldowns": {}}
     verdict = KickVerdict(True, "sell_full_exit")
-    assert asyncio.run(runner._kick(_fill(1), state, verdict)).klass == "kick"
-    cooled = asyncio.run(runner._kick(_fill(2), state, verdict))
-    assert cooled.klass == "queue_only"
-    assert cooled.reason == "cooldown"
-    # a cooldown deferral is not a cap consumption
-    assert state["kick_days"]["crypto"]["count"] == 1
-    assert asyncio.run(runner._kick(_fill(3), state, verdict)).klass == "kick"
+    with HandoffState(tmp_path) as locked:
+        assert asyncio.run(runner._kick(_fill(1), locked, verdict)).klass == "kick"
+        cooled = asyncio.run(runner._kick(_fill(2), locked, verdict))
+        assert cooled.klass == "queue_only"
+        assert cooled.reason == "cooldown"
+        # a cooldown deferral is not a cap consumption
+        assert locked.data["kick_days"]["crypto"]["count"] == 1
+        assert asyncio.run(runner._kick(_fill(3), locked, verdict)).klass == "kick"
 
 
 def test_rep_window_defers_before_the_cap_is_touched(tmp_path: Path) -> None:
@@ -338,13 +364,137 @@ def test_rep_window_defers_before_the_cap_is_touched(tmp_path: Path) -> None:
     runner = _kick_runner(
         tmp_path, lambda: datetime(2026, 9, 3, 5, 25, tzinfo=UTC), cap=1
     )
-    state = {"cooldowns": {}}
-    decision = asyncio.run(
-        runner._kick(_fill(1), state, KickVerdict(True, "sell_full_exit"))
+    with HandoffState(tmp_path) as locked:
+        decision = asyncio.run(
+            runner._kick(_fill(1), locked, KickVerdict(True, "sell_full_exit"))
+        )
+        assert decision.klass == "queue_only"
+        assert decision.reason == "rep_window"
+        assert (
+            "kick_days" not in locked.data
+            or locked.data["kick_days"]["crypto"]["count"] == 0
+        )
+
+
+def test_kick_count_is_persisted_before_the_prefect_call(tmp_path: Path) -> None:
+    # BLOCKER regression: the reservation must be durable before issue so a
+    # crash can over-count but never let the cap be exceeded across processes.
+    runner = _kick_runner(tmp_path, lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC))
+    verdict = KickVerdict(True, "sell_full_exit")
+    with HandoffState(tmp_path) as locked:
+        first = asyncio.run(runner._kick(_fill(1), locked, verdict))
+        assert first.klass == "kick"
+        # state.json must already hold the count — no later save is needed
+        persisted = json.loads((tmp_path / "state.json").read_text())
+        assert persisted["kick_days"]["crypto"]["count"] == 1
+    # a new process re-reads the persisted count and hits the cap boundary
+    with HandoffState(tmp_path) as locked:
+        second = asyncio.run(runner._kick(_fill(2), locked, verdict))
+        third = asyncio.run(runner._kick(_fill(3), locked, verdict))
+        assert second.klass == "kick"
+        assert third.klass == "capped"
+        assert locked.data["kick_days"]["crypto"]["count"] == 2
+
+
+def test_kick_without_flow_run_id_releases_the_reservation(tmp_path: Path) -> None:
+    async def post(url: str, _body: dict[str, Any]) -> dict[str, Any]:
+        return (
+            {"items": [{"id": "deployment-id"}]}
+            if url.endswith("/filter")
+            else {"id": ""}
+        )
+
+    runner = FillHandoffRunner(
+        HandoffConfig(
+            state_dir=tmp_path,
+            kick_enabled=True,
+            kick_cooldown_seconds=3600,
+            kick_daily_cap=2,
+            prefect_api_url="http://prefect",
+            kick_deployments={"crypto": "crypto-deployment"},
+        ),
+        now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        http_post=post,
     )
-    assert decision.klass == "queue_only"
-    assert decision.reason == "rep_window"
-    assert "kick_days" not in state or state["kick_days"]["crypto"]["count"] == 0
+    with HandoffState(tmp_path) as locked:
+        decision = asyncio.run(
+            runner._kick(_fill(1), locked, KickVerdict(True, "sell_full_exit"))
+        )
+        assert decision.klass == "queue_only"
+        assert decision.reason == "prefect_no_run_id"
+        assert locked.data["kick_days"]["crypto"]["count"] == 0
+        assert locked.data["cooldowns"] == {}
+        persisted = json.loads((tmp_path / "state.json").read_text())
+        assert persisted["kick_days"]["crypto"]["count"] == 0
+
+
+def test_kick_ambiguous_failure_keeps_the_reservation(tmp_path: Path) -> None:
+    async def post(url: str, _body: dict[str, Any]) -> dict[str, Any]:
+        if url.endswith("/filter"):
+            return {"items": [{"id": "deployment-id"}]}
+        raise TimeoutError("response lost — the kick may exist server-side")
+
+    runner = FillHandoffRunner(
+        HandoffConfig(
+            state_dir=tmp_path,
+            kick_enabled=True,
+            kick_cooldown_seconds=3600,
+            kick_daily_cap=2,
+            prefect_api_url="http://prefect",
+            kick_deployments={"crypto": "crypto-deployment"},
+        ),
+        now=lambda: datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        http_post=post,
+    )
+    with HandoffState(tmp_path) as locked:
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                runner._kick(_fill(1), locked, KickVerdict(True, "sell_full_exit"))
+            )
+        # the ambiguous call stays counted so a retry cannot exceed the cap
+        assert locked.data["kick_days"]["crypto"]["count"] == 1
+
+
+# --- _classify_fill: timestamp and read guards -------------------------------
+
+
+@pytest.mark.parametrize(
+    "filled_at",
+    ["2026-09-03T00:00:00", "not-a-timestamp"],
+)
+def test_classify_fill_rejects_unusable_timestamps_without_a_read(
+    tmp_path: Path, filled_at: str
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Repo:
+        async def position_before_fill(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return Decimal("0"), 2
+
+    runner = FillHandoffRunner(HandoffConfig(state_dir=tmp_path, kick_enabled=True))
+    verdict = asyncio.run(runner._classify_fill(_fill(1, filled_at=filled_at), Repo()))
+    assert verdict.eligible is False
+    assert verdict.reason == "fill_malformed"
+    # a naive or unparsable timestamp must never be coerced into a query
+    assert calls == []
+
+
+def test_classify_fill_survives_a_classifier_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Repo:
+        async def position_before_fill(self, **_kwargs: Any) -> Any:
+            return Decimal("0"), 2
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("classifier bug")
+
+    monkeypatch.setattr(handoff_service, "classify_fill_for_kick", boom)
+    runner = FillHandoffRunner(HandoffConfig(state_dir=tmp_path, kick_enabled=True))
+    verdict = asyncio.run(runner._classify_fill(_fill(1), Repo()))
+    assert verdict.eligible is False
+    assert verdict.reason == "classification_failed"
 
 
 # --- run() integration: classification flows through the handoff -------------
@@ -492,6 +642,25 @@ def test_run_failed_position_read_is_queue_only_and_still_durable(
     refs = outcome["_context"].appended[0].refs
     assert refs.kick_filter_class == "queue_only"
     assert refs.kick_filter_reason == "position_read_failed"
+
+
+def test_run_overflowing_quantity_is_malformed_and_still_durable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BLOCKER regression: classification failure must never precede-and-skip
+    # the durable open_question append
+    outcome = _run_outcome(
+        tmp_path,
+        monkeypatch,
+        [_fill(1, filled_qty="1e9999999")],
+        position=("0.1", 1),
+    )
+    assert outcome["durable"] == 1
+    (decision,) = outcome["decisions"]
+    assert decision["class"] == "queue_only"
+    assert decision["reason"] == "fill_malformed"
+    refs = outcome["_context"].appended[0].refs
+    assert refs.kick_filter_reason == "fill_malformed"
 
 
 def test_run_unproven_position_is_queue_only_and_still_durable(

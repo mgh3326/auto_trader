@@ -6,7 +6,7 @@ access lives here — callers supply every fact.
 
 Kick classes (strategy-lab 2026-09-27 fill-to-session-handoff §2 item 3):
 - ``sell_full_exit``          a sell whose post-fill position is <= 0
-- ``buy_new_position``        a buy whose ledger-proven pre-fill position is <= 0
+- ``buy_new_position``        a buy whose ledger-proven pre-fill position is 0
 - ``partial_fill_ge_25pct``   a fill covering >= the configured fraction
 
 Queue-only classes:
@@ -14,9 +14,12 @@ Queue-only classes:
 - ``small_dca_buy``           buy notional below the configured per-currency floor
 - ``buy_add_below_25pct``     a covered buy add below the fraction
 - ``sell_partial_below_25pct`` a partial take-profit/exit below the fraction
-- ``position_unproven``       the ledger cannot prove the pre-fill position
+- ``position_unproven``       the ledger cannot prove the pre-fill position —
+                              including a proven-negative balance, which is an
+                              inconsistent ledger view rather than flat
 - ``position_read_failed``    the position read itself failed
-- ``fill_malformed``          missing/invalid side or quantity
+- ``fill_malformed``          missing/invalid side, quantity, or notional, or
+                              degenerate magnitude that overflows arithmetic
 
 A fill whose ledger key has never been seen (``rows_before == 0``) is
 *unproven*, not flat — this module never treats absent data as a position of
@@ -47,6 +50,7 @@ QUEUE_ONLY_CLASSES = frozenset(
         "position_unproven",
         "position_read_failed",
         "fill_malformed",
+        "classification_failed",
     }
 )
 
@@ -141,14 +145,37 @@ def classify_fill_for_kick(
         return KickVerdict(False, "position_unproven")
     qty = _to_decimal(fill.get("filled_qty"))
     assert qty is not None  # classify_without_position already validated it
-    qty_before = facts.qty_before
     side = str(fill.get("side") or "").strip().lower()
+    try:
+        return _classify_with_position(side, qty, facts, min_position_fraction)
+    except ArithmeticError:
+        # Degenerate magnitudes (e.g. ``1e9999999``) overflow Decimal context
+        # arithmetic — fail closed so a malformed fill still reaches the
+        # durable append instead of escaping ``run()``.
+        return KickVerdict(False, "fill_malformed")
+
+
+def _classify_with_position(
+    side: str,
+    qty: Decimal,
+    facts: FillPositionFacts,
+    min_position_fraction: Decimal,
+) -> KickVerdict:
+    """Position-dependent classification; callers catch ArithmeticError."""
+    qty_before = facts.qty_before
     if side == "buy":
         position_after = qty_before + qty
-        if qty_before <= 0:
+        if qty_before == 0:
             return KickVerdict(
                 True,
                 "buy_new_position",
+                position_before=qty_before,
+                position_after=position_after,
+            )
+        if qty_before < 0:
+            return KickVerdict(
+                False,
+                "position_unproven",
                 position_before=qty_before,
                 position_after=position_after,
             )

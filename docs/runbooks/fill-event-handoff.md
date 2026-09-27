@@ -55,7 +55,8 @@ When kicks are enabled, a fill is kick-eligible only when it is one of:
 
 - `sell_full_exit` — a sell whose ledger position after the fill is zero;
 - `buy_new_position` — a buy whose ledger-proven position before the fill is
-  zero or negative;
+  exactly zero (a proven-negative balance is an inconsistent ledger view, so
+  it classifies `position_unproven` and never kicks);
 - `partial_fill_ge_25pct` — a fill covering at least
   `FILL_HANDOFF_KICK_MIN_POSITION_FRACTION` (default `0.25`) of the position
   before the fill.
@@ -63,9 +64,12 @@ When kicks are enabled, a fill is kick-eligible only when it is one of:
 Queue-only classes are `parking_etf` (configured parking symbols),
 `small_dca_buy` (buy notional below the per-currency floor),
 `buy_add_below_25pct`, `sell_partial_below_25pct`, `position_unproven` (the
-ledger has no earlier rows for the fill's exact key, so zero cannot be proven),
-`position_read_failed` (the position read itself failed — never a guess), and
-`fill_malformed`. Position facts come from an execution-ledger read of net
+ledger has no earlier rows for the fill's exact key, so zero cannot be proven
+— a proven-negative balance is likewise unproven rather than flat),
+`position_read_failed` (the position read itself failed — never a guess),
+`fill_malformed` (bad side/quantity/notional, a missing or timezone-naive
+`filled_at`, or a magnitude that overflows decimal arithmetic), and
+`classification_failed`. Position facts come from an execution-ledger read of net
 signed quantity strictly before the fill, keyed by
 broker/account-mode/venue/instrument-type/symbol/currency and ordered by
 `(filled_at, id)`; opening-lot `manual_import` rows count.
@@ -81,6 +85,10 @@ At most `FILL_HANDOFF_KICK_DAILY_CAP` kicks fire per market per KST day; the
 counter lives in `state.json` under `kick_days` and resets on the KST date
 change. An eligible fill over the cap records class `capped` and keeps its
 open question for the next regular rep, which consumes the queue as before.
+The cap slot and cooldown are persisted to `state.json` *before* the Prefect
+`create_flow_run` call, so a crash mid-issue over-counts rather than exceeds
+the cap; an ambiguous failure keeps the reservation, while a completed
+response without a run id releases it.
 
 Each queued fill records `refs.kick_filter_class` (`kick`/`queue_only`),
 `refs.kick_filter_reason` (the class or deferral reason), and

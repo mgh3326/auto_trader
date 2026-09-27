@@ -10,7 +10,7 @@ import urllib.request
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -115,16 +115,25 @@ def dedupe_key(fill: Mapping[str, Any]) -> str:
 
 
 def _money(value: str) -> str:
-    return format(Decimal(value).normalize(), "f")
+    # Display text only — degenerate ledger data must never crash the run
+    # before the durable append (e.g. a quantity like 1e9999999 overflows
+    # Decimal context arithmetic during normalize()).
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (ArithmeticError, InvalidOperation, ValueError):
+        return str(value)[:32]
 
 
 def handoff_text(fill: Mapping[str, Any]) -> tuple[str, str]:
     direction = "매수" if fill["side"] == "buy" else "매도"
     flow = "투입" if fill["side"] == "buy" else "해제"
     title = f"{fill['symbol']} {direction} 체결 {_money(fill['filled_qty'])}@{_money(fill['filled_price'])} — {fill['currency']} {_money(fill['filled_notional'])} {flow}, 재배치·잔여주문 판단 미결"
-    filled_at = (
-        datetime.fromisoformat(str(fill["filled_at"])).astimezone(KST).isoformat()
-    )
+    try:
+        filled_at = (
+            datetime.fromisoformat(str(fill["filled_at"])).astimezone(KST).isoformat()
+        )
+    except (TypeError, ValueError):
+        filled_at = str(fill["filled_at"])
     body = (
         f"계좌모드: {fill['account_mode']}; venue: {fill['venue']}; KST 체결시각: {filled_at}; "
         f"brokerOrderId: {fill['broker_order_id']}. 이 항목을 읽은 rep는 판단 결과(재배치/보류/사유)를 "
@@ -313,11 +322,16 @@ class FillHandoffRunner:
         )
         if early is not None:
             return early
-        facts: FillPositionFacts | None
         try:
             filled_at = datetime.fromisoformat(str(fill["filled_at"]))
-            if filled_at.tzinfo is None:
-                filled_at = filled_at.replace(tzinfo=UTC)
+        except (KeyError, TypeError, ValueError):
+            return KickVerdict(False, "fill_malformed")
+        if filled_at.tzinfo is None or filled_at.utcoffset() is None:
+            # A naive timestamp cannot be ordered strictly against the
+            # ledger — fail closed rather than guessing a timezone.
+            return KickVerdict(False, "fill_malformed")
+        facts: FillPositionFacts | None
+        try:
             qty_before, rows_before = await repo.position_before_fill(
                 broker=str(fill["broker"]),
                 account_mode=str(fill["account_mode"]),
@@ -333,18 +347,21 @@ class FillHandoffRunner:
             )
         except Exception:  # noqa: BLE001 - a failed read must never guess
             facts = None
-        return classify_fill_for_kick(
-            fill,
-            facts,
-            parking_symbols=self.config.kick_parking_symbols or frozenset(),
-            small_buy_notional=self.config.kick_small_buy_notional or {},
-            min_position_fraction=self.config.kick_min_position_fraction,
-        )
+        try:
+            return classify_fill_for_kick(
+                fill,
+                facts,
+                parking_symbols=self.config.kick_parking_symbols or frozenset(),
+                small_buy_notional=self.config.kick_small_buy_notional or {},
+                min_position_fraction=self.config.kick_min_position_fraction,
+            )
+        except Exception:  # noqa: BLE001 - classification must never skip queueing
+            return KickVerdict(False, "classification_failed")
 
     async def _kick(
         self,
         fill: Mapping[str, Any],
-        state: dict[str, Any],
+        locked: HandoffState,
         verdict: KickVerdict | None,
     ) -> KickDecision:
         """Prefect kick gated by the priority filter, daily cap, and cooldown."""
@@ -362,6 +379,7 @@ class FillHandoffRunner:
         market, now = str(fill["market"]), self.now()
         if in_regular_rep_window(market, now):
             return KickDecision("queue_only", "rep_window")
+        state = locked.data
         kick_days = state.setdefault("kick_days", {})
         today = f"{now.astimezone(KST):%Y%m%d}"
         day = kick_days.get(market)
@@ -388,6 +406,15 @@ class FillHandoffRunner:
             or not isinstance(items[0].get("id"), str)
         ):
             return KickDecision("queue_only", "prefect_lookup_failed")
+        # Reserve the slot and persist BEFORE the create_flow_run call: a
+        # crash after Prefect receives the kick but before the next save
+        # must still count it, or the daily cap could be exceeded across
+        # process failure.  An ambiguous failure (timeout/exception) keeps
+        # the reservation — the kick may exist.  Only a definitive response
+        # without a run id releases it.
+        state["cooldowns"][market] = now.timestamp()
+        day["count"] = int(day.get("count") or 0) + 1
+        locked.save()
         result = await self.http_post(
             f"{self.config.prefect_api_url.rstrip('/')}/api/deployments/{items[0]['id']}/create_flow_run",
             {
@@ -398,10 +425,11 @@ class FillHandoffRunner:
             },
         )
         flow_run_id = result.get("id")
-        if isinstance(flow_run_id, str):
-            state["cooldowns"][market] = now.timestamp()
-            day["count"] = int(day.get("count") or 0) + 1
+        if isinstance(flow_run_id, str) and flow_run_id:
             return KickDecision("kick", verdict.reason, flow_run_id)
+        day["count"] = int(day.get("count") or 0) - 1
+        state["cooldowns"].pop(market, None)
+        locked.save()
         return KickDecision("queue_only", "prefect_no_run_id")
 
     @staticmethod
@@ -436,7 +464,7 @@ class FillHandoffRunner:
         fill: Mapping[str, Any],
         *,
         prompt: str,
-        state: dict[str, Any],
+        locked: HandoffState,
         service: SessionContextService,
         context_row: Any,
         outcome: dict[str, Any],
@@ -466,7 +494,7 @@ class FillHandoffRunner:
         decision: KickDecision | None = None
         if not all_panes and discovery_complete:
             try:
-                decision = await self._kick(fill, state, verdict)
+                decision = await self._kick(fill, locked, verdict)
             except Exception:  # noqa: BLE001 - durable context remains canonical
                 decision = KickDecision("queue_only", "kick_error")
             if decision.flow_run_id:
@@ -614,7 +642,7 @@ class FillHandoffRunner:
                         pushed, decision = await self._fallback_to_herdr_then_kick(
                             fill,
                             prompt=prompt,
-                            state=state,
+                            locked=locked,
                             service=service,
                             context_row=context_row,
                             outcome=outcome,
@@ -627,7 +655,7 @@ class FillHandoffRunner:
                     pushed, decision = await self._fallback_to_herdr_then_kick(
                         fill,
                         prompt=prompt,
-                        state=state,
+                        locked=locked,
                         service=service,
                         context_row=context_row,
                         outcome=outcome,

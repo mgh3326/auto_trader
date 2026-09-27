@@ -21,6 +21,7 @@ from app.services.fill_event_handoff.service import (
     in_regular_rep_window,
     next_rep,
 )
+from app.services.fill_event_handoff.state import HandoffState
 from app.services.lane_events import (
     LANE_EVENT_TEXT_LIMIT,
     LaneEmitResult,
@@ -167,9 +168,10 @@ def test_submission_never_returns_into_a_queued_prompt(tmp_path: Path) -> None:
 
 def test_kick_is_disabled_by_default(tmp_path: Path) -> None:
     runner = FillHandoffRunner(HandoffConfig(state_dir=tmp_path))
-    decision = asyncio.run(
-        runner._kick(_fill(1), {"cooldowns": {}}, KickVerdict(True, "sell_full_exit"))
-    )
+    with HandoffState(tmp_path) as locked:
+        decision = asyncio.run(
+            runner._kick(_fill(1), locked, KickVerdict(True, "sell_full_exit"))
+        )
     assert decision.flow_run_id is None
     assert decision.klass == "queue_only"
     assert decision.reason == "kick_not_configured"
@@ -199,13 +201,13 @@ def test_kick_respects_cooldown_and_creates_prefect_run(tmp_path: Path) -> None:
         now=now,
         http_post=post,
     )
-    state = {"cooldowns": {}}
     verdict = KickVerdict(True, "sell_full_exit")
-    first = asyncio.run(runner._kick(_fill(7), state, verdict))
-    assert first.flow_run_id == "flow-id"
-    assert first.klass == "kick"
-    assert len(calls) == 2
-    second = asyncio.run(runner._kick(_fill(8), state, verdict))
+    with HandoffState(tmp_path) as locked:
+        first = asyncio.run(runner._kick(_fill(7), locked, verdict))
+        assert first.flow_run_id == "flow-id"
+        assert first.klass == "kick"
+        assert len(calls) == 2
+        second = asyncio.run(runner._kick(_fill(8), locked, verdict))
     assert second.flow_run_id is None
     assert second.reason == "cooldown"
 
