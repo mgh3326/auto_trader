@@ -6,7 +6,7 @@ import pytest
 
 import app.services.toss_symbol_master_service as service_mod
 from app.services.brokers.toss.client import TossReadClient
-from scripts.sync_toss_symbol_master import parse_args, run
+from scripts.sync_toss_symbol_master import _alert_failure, parse_args, run
 
 
 def test_parse_args_defaults_to_dry_run() -> None:
@@ -183,4 +183,52 @@ def test_run_warns_loudly_when_no_alert_channel(
     assert any(
         "no operator alert channel is configured" in record.message
         for record in caplog.records
+    )
+
+
+def test_alert_failure_warns_when_send_returns_false(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    notifier = _FakeNotifier(delivered=False)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.runtime.configure_trade_notifier_from_settings",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier",
+        lambda: notifier,
+    )
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(_alert_failure(market="kr", commit=True, reason="RuntimeError"))
+
+    notifier.notify_agent_message.assert_awaited_once()
+    notifier.shutdown.assert_awaited_once()
+    assert any(
+        "operator alert send returned false" in record.message
+        for record in caplog.records
+    )
+
+
+def test_alert_failure_never_raises_on_send_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    notifier = _FakeNotifier()
+    notifier.notify_agent_message = AsyncMock(
+        side_effect=ConnectionError("discord unreachable")
+    )
+    notifier.shutdown = AsyncMock(side_effect=RuntimeError("shutdown failed"))
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.runtime.configure_trade_notifier_from_settings",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.get_trade_notifier",
+        lambda: notifier,
+    )
+
+    asyncio.run(_alert_failure(market="us", commit=False, reason="TimeoutError"))
+
+    assert any(
+        "operator alert send failed" in record.message for record in caplog.records
     )
