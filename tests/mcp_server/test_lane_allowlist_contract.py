@@ -135,6 +135,13 @@ _MUTATION_BUCKET_READS = frozenset(
         "toss_get_order_history",
         "toss_get_orderable_cash",
         "toss_get_positions",
+        # hk #678/#828: read-only tools now classified in HARNESS_DENIED_TOOLS
+        # (inside MUTATION_TOOLS) because the live-session harness argv denies
+        # them. They write nothing; the audited lane manifests may still expose
+        # them for non-route consumers.
+        "decision_table_validate",
+        "get_intraday_investor_flow",
+        "get_upbit_altseason",
     }
 )
 

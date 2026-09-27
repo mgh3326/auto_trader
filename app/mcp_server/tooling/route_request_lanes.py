@@ -321,7 +321,6 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
 STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
     {
         "get_order_history",
-        "kis_live_get_order_history",
         "kis_mock_get_order_history",
         "kiwoom_mock_get_order_history",
         # ROB-1155: kt00007 read-only order-detail lookup. Lands in the legacy
@@ -338,6 +337,30 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "investment_watch_void",
         "investment_watch_expire",
         "sweep_expired_watches",
+    }
+)
+
+# hk #678 ruling (confirmed in the #826 diagnosis): the live-session harness
+# boundary is the spawn argv (`--permission-mode dontAsk --allowedTools
+# <LIVE_ALLOWED_TOOLS>` in robin-prefect kr_live_sessions.py), and these tools
+# are deliberately absent from that list, so every rep that calls them is
+# denied before the call reaches the MCP server.  get_upbit_altseason is
+# denied because it primes the shared Upbit index cache that get_upbit_index
+# serves as truth (the shared-state basis of #678); the other three are denied
+# under the same ruling.  They remain registered in DEFAULT for other
+# consumers, but the route contract must not advertise them: they are bucketted
+# with the mutation classes so they land in blocked_actions, they are
+# subtracted from every lane's allowed candidates, and they are dropped from
+# the emitted standard_tool_sequence (a sequenced-but-denied step is still an
+# advertisement).  The route-side denial is lifted only when the harness
+# allowlist itself changes.
+HARNESS_DENIED_TOOL_BASIS = "live_session_harness_denied_678"
+HARNESS_DENIED_TOOLS: frozenset[str] = frozenset(
+    {
+        "decision_table_validate",
+        "get_intraday_investor_flow",
+        "get_upbit_altseason",
+        "kis_live_get_order_history",
     }
 )
 
@@ -382,6 +405,7 @@ MUTATION_TOOLS: frozenset[str] = (
     | PROPOSAL_LIFECYCLE_TOOLS
     | RESERVE_NET_CONSUMER_TOOLS
     | PERSISTENCE_TOOLS
+    | HARNESS_DENIED_TOOLS
 )
 
 # ROB-658's market-aware direct execution mapping remains only for discovery,
@@ -416,9 +440,14 @@ PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
 # Parallels MARKET_EXECUTION_TOOLS (ROB-658) as an allowed supplement. A minimal
 # per-lane allowance (not a MUTATION_TOOLS -> READ_ONLY reclassification) keeps
 # discovery/bootstrap unchanged.
+#
+# hk #678: kis_live_get_order_history is denied by the live-session harness on
+# every rep, so the buy/sell allowance was removed and the tool moved to
+# HARNESS_DENIED_TOOLS; it now reports as blocked rather than advertising a
+# call that can never run.
 LANE_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
-    "buy": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
-    "sell": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
+    "buy": frozenset({"toss_get_order_history"}),
+    "sell": frozenset({"toss_get_order_history"}),
 }
 
 # Registered reconcile helpers are conditional allowed helpers for proposal-led
@@ -500,9 +529,6 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # ROB-1351: v2 is a pre-arming witness evaluator. It returns tagged
         # forecast kwargs but neither saves them nor creates an epoch marker.
         "evaluate_buy_gate_ab_shadow_v2",
-        # ROB-1348: deterministic decision-table validation. It performs no
-        # database, network, broker, order, or proposal operation.
-        "decision_table_validate",
         # ROB-1303: read-only spike cause attribution. Reads news / DART /
         # earnings rows this repo already stores and returns candidates with
         # their links, or an explicit unattributed verdict. Writes nothing.
@@ -543,7 +569,6 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_holdings_news",
         "get_indicators",
         "get_insider_transactions",
-        "get_intraday_investor_flow",
         "get_investment_opinions",
         "get_investor_trends",
         "get_kimchi_premium",
@@ -575,7 +600,6 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_trade_retrospectives",
         "get_trading_policy",
         "get_trading_scoreboard",
-        "get_upbit_altseason",
         "get_upbit_index",
         "get_user_setting",
         "get_valuation",
@@ -730,8 +754,11 @@ def build_registry_unavailable_plan(
         "purpose": purpose,
         "standard_tool_sequence": [],
         "allowed_tools": [],
-        "blocked_actions": sorted(DIRECT_BROKER_MUTATION_TOOLS),
+        "blocked_actions": sorted(DIRECT_BROKER_MUTATION_TOOLS | HARNESS_DENIED_TOOLS),
         "blocked_actions_basis": "static_fail_closed",
+        "harness_denied_tools": dict.fromkeys(
+            sorted(HARNESS_DENIED_TOOLS), HARNESS_DENIED_TOOL_BASIS
+        ),
         "route_contract": _route_contract(
             lane,
             registered_tools=None,
@@ -791,7 +818,8 @@ def build_route_plan(
             for i, step in enumerate(sequence, start=1)
         ]
         allowed = (
-            set(READ_ONLY_ADVISORY_TOOLS) | set(ACCOUNT_CLEANUP_REQUIRED_TOOLS)
+            (set(READ_ONLY_ADVISORY_TOOLS) | set(ACCOUNT_CLEANUP_REQUIRED_TOOLS))
+            - HARNESS_DENIED_TOOLS
         ) & registered_tools
         if not success:
             allowed.discard(ACCOUNT_CLEANUP_DIRECT_TOOL)
@@ -807,6 +835,10 @@ def build_route_plan(
             "allowed_tools": sorted(allowed),
             "blocked_actions": sorted(blocked),
             "blocked_actions_basis": "live_registered_surface",
+            "harness_denied_tools": dict.fromkeys(
+                sorted(HARNESS_DENIED_TOOLS & registered_tools),
+                HARNESS_DENIED_TOOL_BASIS,
+            ),
             "route_contract": route_contract,
             "verdict_thresholds": verdict_thresholds,
             "policy_version": policy_version,
@@ -829,10 +861,14 @@ def build_route_plan(
         else frozenset()
     )
 
+    # Harness-denied tools are suppressed from the emitted sequence in every
+    # lane: a sequenced-but-denied step would still send the rep into a
+    # guaranteed harness denial (hk #678).
     seq_steps = [
         step
         for step in LANE_SEQUENCES[lane]
         if step["tool"] in registered_tools
+        and step["tool"] not in HARNESS_DENIED_TOOLS
         and (not proposal_led or step["tool"] not in DIRECT_BROKER_MUTATION_TOOLS)
     ]
     if lane_place_tools and not (lane_place_tools & registered_tools):
@@ -863,7 +899,7 @@ def build_route_plan(
         | lane_reserve_net
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
-    allowed = allowed_candidates & registered_tools
+    allowed = (allowed_candidates - HARNESS_DENIED_TOOLS) & registered_tools
     blocked = (MUTATION_TOOLS & registered_tools) - allowed
     route_contract = _route_contract(
         lane,
@@ -883,6 +919,10 @@ def build_route_plan(
         "allowed_tools": sorted(allowed),
         "blocked_actions": sorted(blocked),
         "blocked_actions_basis": "live_registered_surface",
+        "harness_denied_tools": dict.fromkeys(
+            sorted(HARNESS_DENIED_TOOLS & registered_tools),
+            HARNESS_DENIED_TOOL_BASIS,
+        ),
         "route_contract": route_contract,
         "verdict_thresholds": verdict_thresholds,
         "policy_version": policy_version,
@@ -923,6 +963,8 @@ __all__ = [
     "PREVIEW_TOOLS",
     "LANE_EXTRA_ALLOWED",
     "LANE_RECONCILE_ALLOWED",
+    "HARNESS_DENIED_TOOL_BASIS",
+    "HARNESS_DENIED_TOOLS",
     "MUTATION_TOOLS",
     "READ_ONLY_ADVISORY_TOOLS",
     "ALL_KNOWN_TOOLS",
