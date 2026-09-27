@@ -2,6 +2,9 @@ BEGIN READ ONLY;
 SELECT d.datname,d.datacl,
        has_database_privilege('at_app',d.datname,'CONNECT') AS app_connect,
        has_database_privilege('at_migration_owner',d.datname,'CONNECT') AS owner_connect,
+       has_database_privilege('at_migration_runner',d.datname,'CONNECT') AS runner_connect,
+       has_database_privilege('at_desk_login',d.datname,'CONNECT') AS desk_connect,
+       has_database_privilege('postgres',d.datname,'CONNECT') AS backup_connect,
        has_database_privilege('at_app',d.datname,'CREATE') AS app_create,
        has_database_privilege('at_app',d.datname,'TEMPORARY') AS app_temporary
 FROM pg_database d WHERE d.datname=current_database();
