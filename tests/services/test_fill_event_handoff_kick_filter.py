@@ -220,6 +220,8 @@ def test_sell_with_negative_ledger_position_is_unproven() -> None:
         {"filled_qty": "0"},
         {"filled_qty": "-0.1"},
         {"filled_qty": "not-a-number"},
+        {"side": "buy", "filled_notional": None},
+        {"side": "buy", "filled_notional": "not-a-number"},
     ],
 )
 def test_malformed_fills_are_queue_only(override) -> None:
@@ -533,3 +535,56 @@ def test_run_with_kick_disabled_is_byte_identical_to_before(
     assert refs.position_before is None
     assert refs.position_after is None
     assert refs.fill_handoff == "v1"
+
+
+# --- CLI env parsing ----------------------------------------------------------
+
+
+def test_cli_parses_numeric_notional_map_and_kick_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import fill_event_handoff as handoff_cli
+
+    captured: list[HandoffConfig] = []
+
+    class Runner:
+        def __init__(self, config: HandoffConfig, **_kwargs: object) -> None:
+            captured.append(config)
+
+        async def run(self, _db: object) -> dict[str, Any]:
+            return {"ok": True}
+
+    class Session:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(handoff_cli, "FillHandoffRunner", Runner)
+    monkeypatch.setattr(handoff_cli, "AsyncSessionLocal", lambda: Session())
+    monkeypatch.setenv("FILL_HANDOFF_LANES", "")
+    monkeypatch.setenv("FILL_HANDOFF_KICK_DAILY_CAP", "3")
+    # the documented numeric JSON shape must not crash the CLI
+    monkeypatch.setenv("FILL_HANDOFF_KICK_SMALL_BUY_NOTIONAL", '{"KRW":5000,"USD":5}')
+    monkeypatch.setenv("FILL_HANDOFF_KICK_PARKING_SYMBOLS", "sgov, TPLUS ")
+    monkeypatch.setenv("FILL_HANDOFF_KICK_MIN_POSITION_FRACTION", "0.3")
+    assert asyncio.run(handoff_cli.main_async()) == {"ok": True}
+    config = captured[0]
+    assert config.kick_daily_cap == 3
+    assert config.kick_small_buy_notional == {
+        "KRW": Decimal("5000"),
+        "USD": Decimal("5"),
+    }
+    assert config.kick_parking_symbols == frozenset({"SGOV", "TPLUS"})
+    assert config.kick_min_position_fraction == Decimal("0.3")
+
+
+def test_cli_rejects_non_numeric_notional_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import fill_event_handoff as handoff_cli
+
+    monkeypatch.setenv("FILL_HANDOFF_KICK_SMALL_BUY_NOTIONAL", '{"KRW":true}')
+    with pytest.raises(ValueError, match="numeric"):
+        asyncio.run(handoff_cli.main_async())

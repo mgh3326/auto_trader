@@ -45,11 +45,22 @@ def _mapping(value: str | None, env_name: str) -> dict[str, str]:
 
 
 def _decimal_map(value: str | None, env_name: str) -> dict[str, Decimal] | None:
-    """Parse a JSON currency->notional map; unset/blank keeps config defaults."""
+    """Parse a JSON currency->notional map; unset/blank keeps config defaults.
+
+    Unlike ``_mapping`` (a string map), the documented value is numeric JSON —
+    ``{"KRW":5000,"USD":5}`` — so values may be numbers or strings.
+    """
     if value is None or not value.strip():
         return None
-    parsed = _mapping(value, env_name)
-    return {key: Decimal(amount) for key, amount in parsed.items()}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict) or not all(isinstance(k, str) for k in parsed):
+        raise ValueError(f"{env_name} must be a currency-to-notional map")
+    result: dict[str, Decimal] = {}
+    for key, amount in parsed.items():
+        if isinstance(amount, bool) or not isinstance(amount, (str, int, float)):
+            raise ValueError(f"{env_name} values must be numeric")
+        result[key] = Decimal(str(amount))
+    return result
 
 
 def _parking_symbols(value: str | None) -> frozenset[str] | None:

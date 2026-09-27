@@ -109,8 +109,12 @@ def classify_without_position(
         return KickVerdict(False, "fill_malformed")
     if side == "buy":
         notional = _to_decimal(fill.get("filled_notional"))
+        if notional is None:
+            # A buy whose notional cannot be checked against the DCA floor
+            # must not reach position-based classification — fail closed.
+            return KickVerdict(False, "fill_malformed")
         threshold = small_buy_notional.get(str(fill.get("currency") or "").upper())
-        if notional is not None and threshold is not None and notional < threshold:
+        if threshold is not None and notional < threshold:
             return KickVerdict(False, "small_dca_buy")
     return None
 
