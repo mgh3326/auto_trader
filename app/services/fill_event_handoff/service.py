@@ -10,11 +10,12 @@ import urllib.request
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from zoneinfo import ZoneInfo
 
+from app.schemas.investment_reports import MarketLiteral
 from app.schemas.session_context import SessionContextAppendEntry
 from app.services.execution_ledger.fill_event_sanitizer import sanitize_fill
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
@@ -25,10 +26,24 @@ from app.services.lane_events import (
 )
 from app.services.session_context import SessionContextService
 
+from .kick_filter import (
+    DEFAULT_KICK_DAILY_CAP,
+    DEFAULT_MIN_POSITION_FRACTION,
+    DEFAULT_PARKING_SYMBOLS,
+    DEFAULT_SMALL_BUY_NOTIONAL,
+    FillPositionFacts,
+    KickDecision,
+    KickVerdict,
+    classify_fill_for_kick,
+    classify_without_position,
+)
 from .state import HandoffState
 
 KST = ZoneInfo("Asia/Seoul")
 DEDUP_WINDOW = timedelta(hours=24)
+# session_context open_questions exist per market — the schema Literal is the
+# authority for which markets a queued fill can name.
+QUEUEABLE_MARKETS = frozenset(get_args(MarketLiteral))
 PANE_LABEL = re.compile(r"^opa-(crypto|kr|us|nxt)(?:-|$)")
 REP_SCHEDULE: dict[str, tuple[tuple[int, int, str], ...]] = {
     "kr": (
@@ -63,6 +78,37 @@ class HandoffConfig:
     dry_run: bool = False
     lane_events: Mapping[str, str] | None = None
     lane_event: LaneEventConfig | None = None
+    kick_daily_cap: int = DEFAULT_KICK_DAILY_CAP
+    kick_parking_symbols: frozenset[str] | None = None
+    kick_small_buy_notional: Mapping[str, Decimal] | None = None
+    kick_min_position_fraction: Decimal = DEFAULT_MIN_POSITION_FRACTION
+
+    def __post_init__(self) -> None:
+        if self.kick_daily_cap < 0:
+            raise ValueError("kick_daily_cap must be non-negative")
+        if self.kick_min_position_fraction <= 0:
+            raise ValueError("kick_min_position_fraction must be positive")
+        parking = (
+            DEFAULT_PARKING_SYMBOLS
+            if self.kick_parking_symbols is None
+            else frozenset(
+                str(item).strip().upper()
+                for item in self.kick_parking_symbols
+                if str(item).strip()
+            )
+        )
+        object.__setattr__(self, "kick_parking_symbols", parking)
+        notionals = (
+            dict(DEFAULT_SMALL_BUY_NOTIONAL)
+            if self.kick_small_buy_notional is None
+            else {
+                str(k).upper(): Decimal(str(v))
+                for k, v in self.kick_small_buy_notional.items()
+            }
+        )
+        if any(not value.is_finite() or value < 0 for value in notionals.values()):
+            raise ValueError("kick_small_buy_notional values must be non-negative")
+        object.__setattr__(self, "kick_small_buy_notional", notionals)
 
 
 def dedupe_key(fill: Mapping[str, Any]) -> str:
@@ -73,16 +119,25 @@ def dedupe_key(fill: Mapping[str, Any]) -> str:
 
 
 def _money(value: str) -> str:
-    return format(Decimal(value).normalize(), "f")
+    # Display text only — degenerate ledger data must never crash the run
+    # before the durable append (e.g. a quantity like 1e9999999 overflows
+    # Decimal context arithmetic during normalize()).
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (ArithmeticError, InvalidOperation, ValueError):
+        return str(value)[:32]
 
 
 def handoff_text(fill: Mapping[str, Any]) -> tuple[str, str]:
     direction = "매수" if fill["side"] == "buy" else "매도"
     flow = "투입" if fill["side"] == "buy" else "해제"
     title = f"{fill['symbol']} {direction} 체결 {_money(fill['filled_qty'])}@{_money(fill['filled_price'])} — {fill['currency']} {_money(fill['filled_notional'])} {flow}, 재배치·잔여주문 판단 미결"
-    filled_at = (
-        datetime.fromisoformat(str(fill["filled_at"])).astimezone(KST).isoformat()
-    )
+    try:
+        filled_at = (
+            datetime.fromisoformat(str(fill["filled_at"])).astimezone(KST).isoformat()
+        )
+    except (TypeError, ValueError):
+        filled_at = str(fill["filled_at"])
     body = (
         f"계좌모드: {fill['account_mode']}; venue: {fill['venue']}; KST 체결시각: {filled_at}; "
         f"brokerOrderId: {fill['broker_order_id']}. 이 항목을 읽은 rep는 판단 결과(재배치/보류/사유)를 "
@@ -256,23 +311,93 @@ class FillHandoffRunner:
         except Exception:  # noqa: BLE001 - notification is strictly best effort
             return
 
-    async def _kick(self, fill: Mapping[str, Any], state: dict[str, Any]) -> str | None:
+    async def _classify_fill(self, fill: Mapping[str, Any], repo: Any) -> KickVerdict:
+        """Filter verdict for one fill; missing position facts fail closed.
+
+        Position-free classes (parking, small DCA, malformed) skip the ledger
+        read entirely.  Everything else reads the net position strictly before
+        the fill and falls back to ``position_read_failed``/``position_
+        unproven`` — never a guess.
+        """
+        early = classify_without_position(
+            fill,
+            parking_symbols=self.config.kick_parking_symbols or frozenset(),
+            small_buy_notional=self.config.kick_small_buy_notional or {},
+        )
+        if early is not None:
+            return early
+        try:
+            filled_at = datetime.fromisoformat(str(fill["filled_at"]))
+        except (KeyError, TypeError, ValueError):
+            return KickVerdict(False, "fill_malformed")
+        if filled_at.tzinfo is None or filled_at.utcoffset() is None:
+            # A naive timestamp cannot be ordered strictly against the
+            # ledger — fail closed rather than guessing a timezone.
+            return KickVerdict(False, "fill_malformed")
+        facts: FillPositionFacts | None
+        try:
+            qty_before, rows_before = await repo.position_before_fill(
+                broker=str(fill["broker"]),
+                account_mode=str(fill["account_mode"]),
+                venue=str(fill["venue"]),
+                instrument_type=str(fill.get("instrument_type")),
+                symbol=str(fill["symbol"]),
+                currency=str(fill["currency"]),
+                filled_at=filled_at,
+                ledger_id=int(fill["ledger_id"]),
+            )
+            facts = FillPositionFacts(
+                qty_before=Decimal(str(qty_before)), rows_before=int(rows_before)
+            )
+        except Exception:  # noqa: BLE001 - a failed read must never guess
+            facts = None
+        try:
+            return classify_fill_for_kick(
+                fill,
+                facts,
+                parking_symbols=self.config.kick_parking_symbols or frozenset(),
+                small_buy_notional=self.config.kick_small_buy_notional or {},
+                min_position_fraction=self.config.kick_min_position_fraction,
+            )
+        except Exception:  # noqa: BLE001 - classification must never skip queueing
+            return KickVerdict(False, "classification_failed")
+
+    async def _kick(
+        self,
+        fill: Mapping[str, Any],
+        locked: HandoffState,
+        verdict: KickVerdict | None,
+    ) -> KickDecision:
+        """Prefect kick gated by the priority filter, daily cap, and cooldown."""
         if (
             not self.config.kick_enabled
             or not self.config.prefect_api_url
             or not self.config.kick_deployments
             or not self.http_post
         ):
-            return None
+            return KickDecision("queue_only", "kick_not_configured")
+        if verdict is None or not verdict.eligible:
+            return KickDecision(
+                "queue_only", verdict.reason if verdict is not None else "unclassified"
+            )
         market, now = str(fill["market"]), self.now()
         if in_regular_rep_window(market, now):
-            return None
+            return KickDecision("queue_only", "rep_window")
+        state = locked.data
+        kick_days = state.setdefault("kick_days", {})
+        today = f"{now.astimezone(KST):%Y%m%d}"
+        day = kick_days.get(market)
+        if not isinstance(day, dict) or day.get("date") != today:
+            day = {"date": today, "count": 0}
+            kick_days[market] = day
+        if int(day.get("count") or 0) >= self.config.kick_daily_cap:
+            return KickDecision("capped", "daily_cap")
         previous = float(state["cooldowns"].get(market, 0))
         if now.timestamp() - previous < self.config.kick_cooldown_seconds:
-            return None
+            return KickDecision("queue_only", "cooldown")
         name = self.config.kick_deployments.get(market)
         if not name:
-            return None
+            return KickDecision("queue_only", "deployment_unmapped")
         deployments = await self.http_post(
             f"{self.config.prefect_api_url.rstrip('/')}/api/deployments/filter",
             {"deployments": {"name": {"any_": [name]}}},
@@ -284,7 +409,16 @@ class FillHandoffRunner:
             or not isinstance(items[0], dict)
             or not isinstance(items[0].get("id"), str)
         ):
-            return None
+            return KickDecision("queue_only", "prefect_lookup_failed")
+        # Reserve the slot and persist BEFORE the create_flow_run call: a
+        # crash after Prefect receives the kick but before the next save
+        # must still count it, or the daily cap could be exceeded across
+        # process failure.  An ambiguous failure (timeout/exception) keeps
+        # the reservation — the kick may exist.  Only a definitive response
+        # without a run id releases it.
+        state["cooldowns"][market] = now.timestamp()
+        day["count"] = int(day.get("count") or 0) + 1
+        locked.save()
         result = await self.http_post(
             f"{self.config.prefect_api_url.rstrip('/')}/api/deployments/{items[0]['id']}/create_flow_run",
             {
@@ -295,22 +429,52 @@ class FillHandoffRunner:
             },
         )
         flow_run_id = result.get("id")
-        if isinstance(flow_run_id, str):
-            state["cooldowns"][market] = now.timestamp()
-            return flow_run_id
-        return None
+        if isinstance(flow_run_id, str) and flow_run_id:
+            return KickDecision("kick", verdict.reason, flow_run_id)
+        day["count"] = int(day.get("count") or 0) - 1
+        state["cooldowns"].pop(market, None)
+        locked.save()
+        return KickDecision("queue_only", "prefect_no_run_id")
+
+    @staticmethod
+    def _decision_record(
+        fill: Mapping[str, Any],
+        verdict: KickVerdict,
+        decision: KickDecision | None,
+    ) -> dict[str, Any]:
+        """One per-fill decision line for the run outcome log.
+
+        ``decision=None`` is the dry-run preview shape: the recorded class is
+        the would-be filter verdict because no kick/cap state is touched.
+        """
+        record: dict[str, Any] = {
+            "ledger_id": int(fill["ledger_id"]),
+            "market": str(fill["market"]),
+            "filter": verdict.reason,
+            "flow_run_id": None,
+        }
+        if decision is None:
+            record["class"] = "kick" if verdict.eligible else "queue_only"
+            record["reason"] = verdict.reason
+            record["dry_run"] = True
+        else:
+            record["class"] = decision.klass
+            record["reason"] = decision.reason
+            record["flow_run_id"] = decision.flow_run_id
+        return record
 
     async def _fallback_to_herdr_then_kick(
         self,
         fill: Mapping[str, Any],
         *,
         prompt: str,
-        state: dict[str, Any],
+        locked: HandoffState,
         service: SessionContextService,
         context_row: Any,
         outcome: dict[str, Any],
         db: Any,
-    ) -> tuple[int, str | None]:
+        verdict: KickVerdict | None,
+    ) -> tuple[int, KickDecision | None]:
         """Keep the original discovery → prompt → kickoff fallback ordering."""
         all_panes: list[tuple[str, str]] = []
         discovery_complete = True
@@ -331,20 +495,29 @@ class FillHandoffRunner:
         for target, pane in all_panes:
             if self._submit(target, pane, prompt):
                 pushed += 1
-        flow_run_id = None
+        decision: KickDecision | None = None
         if not all_panes and discovery_complete:
             try:
-                flow_run_id = await self._kick(fill, state)
+                decision = await self._kick(fill, locked, verdict)
             except Exception:  # noqa: BLE001 - durable context remains canonical
-                flow_run_id = None
-            if flow_run_id:
+                decision = KickDecision("queue_only", "kick_error")
+            if decision.flow_run_id:
                 outcome["kicked"] += 1
                 if context_row is not None:
                     await service.append_fill_handoff_kick_result(
-                        entry_id=context_row.id, flow_run_id=flow_run_id
+                        entry_id=context_row.id,
+                        flow_run_id=decision.flow_run_id,
                     )
                     await db.commit()
-        return pushed, flow_run_id
+            elif decision.klass == "capped" and context_row is not None:
+                await service.append_fill_handoff_kick_capped(entry_id=context_row.id)
+                await db.commit()
+        elif pushed == 0:
+            decision = KickDecision(
+                "queue_only",
+                "pane_submit_failed" if all_panes else "pane_discovery_incomplete",
+            )
+        return pushed, decision
 
     async def run(self, db: Any) -> dict[str, Any]:
         repo = ExecutionLedgerRepository(db)
@@ -357,6 +530,11 @@ class FillHandoffRunner:
                 "duplicate": 0,
                 "fallback": [],
             }
+            if self.config.kick_enabled:
+                # Per-fill kick-gate decisions for the 2-week measurement; only
+                # present when the kick path is even possible so a disabled
+                # deployment produces byte-identical output to before.
+                outcome["decisions"] = []
             if locked.is_new:
                 if self.config.since_ledger_id is None:
                     # An empty state directory is an installation, not an
@@ -379,7 +557,62 @@ class FillHandoffRunner:
                 after_id=int(state["watermark"]), source=None, limit=500
             )
             for row in rows:
-                fill = sanitize_fill(row)
+                try:
+                    fill = sanitize_fill(row)
+                except Exception:  # noqa: BLE001 - one poison row must not wedge the batch
+                    skipped_id = getattr(row, "id", None)
+                    outcome.setdefault("skipped", []).append(
+                        {"ledger_id": skipped_id, "reason": "sanitize_failed"}
+                    )
+                    if self.config.kick_enabled:
+                        outcome["decisions"].append(
+                            {
+                                "ledger_id": skipped_id,
+                                "market": None,
+                                "filter": "sanitize_failed",
+                                "class": "queue_only",
+                                "reason": "sanitize_failed",
+                                "flow_run_id": None,
+                            }
+                        )
+                    try:
+                        skipped_ledger = int(skipped_id)
+                    except (TypeError, ValueError):
+                        skipped_ledger = None
+                    # dry_run never mutates state — the trailing save would
+                    # otherwise persist the in-memory watermark advance.
+                    if skipped_ledger is not None and not self.config.dry_run:
+                        state["watermark"] = max(
+                            int(state["watermark"]), skipped_ledger
+                        )
+                        locked.save()
+                    continue
+                if str(fill.get("market") or "") not in QUEUEABLE_MARKETS:
+                    # e.g. forex — the fill can never be an open_question and
+                    # must never kick, but it must be recorded and skipped so
+                    # the poller cannot wedge on it.
+                    outcome.setdefault("skipped", []).append(
+                        {
+                            "ledger_id": fill["ledger_id"],
+                            "market": fill["market"],
+                            "reason": "unsupported_market",
+                        }
+                    )
+                    if self.config.kick_enabled:
+                        verdict = KickVerdict(False, "unsupported_market")
+                        outcome["decisions"].append(
+                            self._decision_record(
+                                fill,
+                                verdict,
+                                KickDecision("queue_only", "unsupported_market"),
+                            )
+                        )
+                    if not self.config.dry_run:
+                        state["watermark"] = max(
+                            int(state["watermark"]), int(fill["ledger_id"])
+                        )
+                        locked.save()
+                    continue
                 key, now = dedupe_key(fill), self.now()
                 seen_at = float(state["seen"].get(key, 0))
                 if now.timestamp() - seen_at < DEDUP_WINDOW.total_seconds():
@@ -391,24 +624,39 @@ class FillHandoffRunner:
                 context_row = await service.get_open_question_for_event_key(
                     str(fill["event_key"])
                 )
+                verdict = (
+                    await self._classify_fill(fill, repo)
+                    if self.config.kick_enabled
+                    else None
+                )
                 if context_row is None:
                     title, body = handoff_text(fill)
+                    refs: dict[str, Any] = {
+                        "event_key": fill["event_key"],
+                        "ledger_id": fill["ledger_id"],
+                        "correlation_id": fill["correlation_id"],
+                        "symbols": [fill["symbol"]],
+                        "broker_order_id": fill["broker_order_id"],
+                        "side": fill["side"],
+                        "filled_notional": fill["filled_notional"],
+                        "currency": fill["currency"],
+                        "fill_handoff": "v1",
+                    }
+                    if verdict is not None:
+                        refs["kick_filter_class"] = (
+                            "kick" if verdict.eligible else "queue_only"
+                        )
+                        refs["kick_filter_reason"] = verdict.reason
+                        if verdict.position_before is not None:
+                            refs["position_before"] = str(verdict.position_before)
+                        if verdict.position_after is not None:
+                            refs["position_after"] = str(verdict.position_after)
                     entry = SessionContextAppendEntry(
                         market=fill["market"],
                         entry_type="open_question",
                         title=title,
                         body=body,
-                        refs={
-                            "event_key": fill["event_key"],
-                            "ledger_id": fill["ledger_id"],
-                            "correlation_id": fill["correlation_id"],
-                            "symbols": [fill["symbol"]],
-                            "broker_order_id": fill["broker_order_id"],
-                            "side": fill["side"],
-                            "filled_notional": fill["filled_notional"],
-                            "currency": fill["currency"],
-                            "fill_handoff": "v1",
-                        },
+                        refs=refs,
                         created_by="fill-event-handoff",
                         session_label="fill-handoff",
                     )
@@ -419,6 +667,10 @@ class FillHandoffRunner:
                         await db.commit()
                         outcome["durable"] += 1
                 if self.config.dry_run:
+                    if verdict is not None:
+                        outcome["decisions"].append(
+                            self._decision_record(fill, verdict, None)
+                        )
                     continue
                 state["seen"][key] = now.timestamp()
                 prompt = handoff_lane_event_text(fill)
@@ -426,7 +678,7 @@ class FillHandoffRunner:
                     "lane_event", "lane_event_duplicate", "herdr", "none"
                 ] = "none"
                 pushed = 0
-                flow_run_id = None
+                decision: KickDecision | None = None
                 market = str(fill["market"])
                 lane = (self.config.lane_events or {}).get(market)
                 if lane:
@@ -439,44 +691,55 @@ class FillHandoffRunner:
                     if lane_result.outcome == "emitted":
                         pushed = 1
                         delivery = "lane_event"
+                        decision = KickDecision("queue_only", "lane_event_delivered")
                     elif lane_result.outcome == "duplicate":
                         outcome["duplicate"] += 1
                         delivery = "lane_event_duplicate"
+                        decision = KickDecision("queue_only", "lane_event_duplicate")
                     else:
                         outcome["fallback"].append(lane_result.reason or "os_error")
-                        pushed, flow_run_id = await self._fallback_to_herdr_then_kick(
+                        pushed, decision = await self._fallback_to_herdr_then_kick(
                             fill,
                             prompt=prompt,
-                            state=state,
+                            locked=locked,
                             service=service,
                             context_row=context_row,
                             outcome=outcome,
                             db=db,
+                            verdict=verdict,
                         )
                         if pushed:
                             delivery = "herdr"
                 else:
-                    pushed, flow_run_id = await self._fallback_to_herdr_then_kick(
+                    pushed, decision = await self._fallback_to_herdr_then_kick(
                         fill,
                         prompt=prompt,
-                        state=state,
+                        locked=locked,
                         service=service,
                         context_row=context_row,
                         outcome=outcome,
                         db=db,
+                        verdict=verdict,
                     )
                     if pushed:
                         delivery = "herdr"
+                if decision is None:
+                    decision = KickDecision("queue_only", "delivered_pane")
+                if verdict is not None:
+                    outcome["decisions"].append(
+                        self._decision_record(fill, verdict, decision)
+                    )
                 outcome["pushed"] += pushed
                 await self._notify(
                     fill,
                     pushed=pushed,
-                    kicked=flow_run_id is not None,
+                    kicked=decision.flow_run_id is not None,
                     delivery=delivery,
                 )
                 state["watermark"] = max(
                     int(state["watermark"]), int(fill["ledger_id"])
                 )
                 locked.save()
-            locked.save()
+            if not self.config.dry_run:
+                locked.save()
             return outcome

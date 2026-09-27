@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -279,3 +279,58 @@ class ExecutionLedgerRepository:
             ): Decimal(str(net_qty))
             for broker, account_mode, venue, instrument_type, symbol, currency, net_qty in rows.all()
         }
+
+    async def position_before_fill(
+        self,
+        *,
+        broker: str,
+        account_mode: str,
+        venue: str,
+        instrument_type: Any,
+        symbol: str,
+        currency: str,
+        filled_at: datetime,
+        ledger_id: int,
+    ) -> tuple[Decimal, int]:
+        """Return ``(qty_before, rows_before)`` strictly before one fill.
+
+        This is the position-fact read for the fill-handoff kick filter
+        (task #825): the net signed quantity over every ledger row sharing the
+        fill's exact match key, ordered strictly before it by
+        ``(filled_at, id)``.  All sources count — unlike
+        ``net_quantity_by_match_key_since`` this includes ``manual_import``
+        opening-lot seeds because they carry the pre-ledger position, and the
+        cutover/source filters are deliberately absent.  ``rows_before`` is
+        the coverage witness: zero rows means the ledger has never seen the
+        key, so the caller must treat the pre-fill position as unproven rather
+        than flat.
+        """
+        from sqlalchemy import case
+
+        signed_qty = case(
+            (ExecutionLedger.side == "buy", ExecutionLedger.filled_qty),
+            else_=-ExecutionLedger.filled_qty,
+        )
+        before_boundary = or_(
+            ExecutionLedger.filled_at < filled_at,
+            and_(
+                ExecutionLedger.filled_at == filled_at,
+                ExecutionLedger.id < ledger_id,
+            ),
+        )
+        result = await self.db.execute(
+            select(
+                func.coalesce(func.sum(signed_qty), 0),
+                func.count(ExecutionLedger.id),
+            ).where(
+                ExecutionLedger.broker == broker,
+                ExecutionLedger.account_mode == account_mode,
+                ExecutionLedger.venue == venue,
+                ExecutionLedger.instrument_type == instrument_type,
+                ExecutionLedger.symbol == symbol,
+                ExecutionLedger.currency == currency,
+                before_boundary,
+            )
+        )
+        qty_before, rows_before = result.one()
+        return Decimal(str(qty_before)), int(rows_before)
