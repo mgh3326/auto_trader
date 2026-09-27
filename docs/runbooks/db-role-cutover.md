@@ -146,6 +146,13 @@ original HBA file and verify reload with:
     docker exec -i "$DB_CONTAINER" sh -c 'cat > "$1"' sh "$HBA_FILE" < "$CUTOVER_DIR/pg_hba.before"
     psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT pg_reload_conf()'
 
+If Stage 1 apply fails before writing a journal, its database transaction
+has rolled back. Paste the Stage 1 verify query showing the three new roles
+absent, then restore the original HBA file with the last two commands above.
+If a journal exists despite an apply error, run the inverse and verify role
+removal before restoring HBA. Do not leave a reject fragment installed after
+abandoning Stage 1.
+
 Paste four role rows. at_migration_owner must be LOGIN with a null password;
 the other three must be NOLOGIN. All four must be NOSUPERUSER, NOCREATEDB,
 NOCREATEROLE, NOREPLICATION, and NOBYPASSRLS. Paste the HBA rule rows and
