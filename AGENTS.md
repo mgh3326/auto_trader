@@ -109,6 +109,12 @@
     `test_profile_tool_snapshot.py`로 검증한다. D 제거·C niche 관측의 감사 범위와
     보존 예외는 `docs/runbooks/mcp-surface-cleanup-20260905.md`를 따른다.
 
+18. **#789 DB 역할 전환 후 migration**: Stage 4 승인 뒤 분리된 프로덕션
+    migration runner는 `SET ROLE at_migration_owner`로 DDL을 실행한다.
+    새 객체를 앱이 사용하기 전 해당 migration에 객체별 `at_app` GRANT를 넣는다.
+    개발·CI DB에 역할이 없을 수 있으므로 조건부 GRANT를 사용한다. Stage 4 전에는
+    기존 migration 입력을 유지한다.
+
 ## 최소 명령어
 
 ```bash

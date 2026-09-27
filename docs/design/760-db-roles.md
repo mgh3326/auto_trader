@@ -6,6 +6,27 @@ runtime configuration, role, grant, or database object. Phase 2 requires an expl
 operator decision after the production facts in [Open operator questions](#open-operator-questions)
 are answered.
 
+**#789 implementation amendment, 2026-09-27:** Director-1 selected one owner
+for ordinary migrations and TimescaleDB hypertables, continuous aggregates,
+and policy jobs. TimescaleDB 2.22.1 rejected a background policy job owned by
+a NOLOGIN hypertable owner. Accordingly `at_migration_owner` has LOGIN but no
+password, and ordered pg_hba reject rules must deny its local socket, IPv4,
+and IPv6 connections. This is not an application credential. The production
+2.26.3 job transition remains a separately approved operator stage after a
+version-specific staging proof. Operator-desk classified postgres as shared
+backup, Prefect, and DBA infrastructure: #789 changes only the app inputs
+.env.api and .env.scheduler and never alters or rotates postgres. These
+decisions supersede the earlier proposed NOLOGIN owner and conditional
+app-only legacy-login branch below; the historical analysis remains for
+traceability.
+The reviewed repository migrations also create the paper schema, so the
+application object manifest and creator default privileges include public,
+review, research, and paper. The disposable #711 insert proved the generated ledger digest requires app
+EXECUTE on `review.nhplug_body_digest_v1` and its nested
+`review.nhplug_body_field` helper. Stage 3 grants those two deterministic
+helpers to the app and to nhplug_security_owner, whose SECURITY DEFINER
+guard invokes the digest. The consume and guard functions stay denied to the app.
+
 ## Decision summary
 
 Use distinct, least-privilege PostgreSQL group roles, with separately rotated login
@@ -13,7 +34,7 @@ identities for each deployment class:
 
 | Proposed group role | Login? | Intended authority | Explicit exclusions |
 | --- | --- | --- | --- |
-| `at_migration_owner` | No | Own application schemas and application-created objects; execute reviewed Alembic DDL under an approved migration runner | No `SUPERUSER`, `CREATEROLE`, `BYPASSRLS`, or application deployment credentials |
+| `at_migration_owner` | Yes, with no password and pg_hba rejection | Own application schemas and application-created objects; execute reviewed Alembic DDL under an approved migration runner and own TimescaleDB policy jobs | No `SUPERUSER`, `CREATEROLE`, `BYPASSRLS`, or application deployment credentials |
 | `at_app` | No | The repository application's required table DML and sequence use; shared privilege group for API, TaskIQ, MCP, supported monitors, and approved CLI jobs | No DDL, schema `CREATE`, ownership, role administration, `TRUNCATE`, `REFERENCES`, `TRIGGER`, or broad `ALL TABLES` grants |
 | `nhplug_security_owner` | No | Own the #711 SECURITY DEFINER functions and their protected review objects | No login, no untrusted memberships, no `SUPERUSER`, `CREATEROLE`, or `BYPASSRLS` |
 | `nhplug_operator` | No | Insert the specifically approved #711 key/proof/authorization control rows and read the operator evidence required for that desk workflow | No table ownership, no direct ledger state update, no application login, no `UPDATE`/`DELETE` on authorization controls |
@@ -390,7 +411,7 @@ this list is complete for the cited patterns at this design revision.
 The target database should grant `CONNECT` only to the reviewed group roles and their
 needed deployment logins. `at_app` gets `USAGE`, never `CREATE`, on each schema in its
 approved manifest. The initial repository evidence points to `public`, `review`, and
-`research`, but production catalog output decides the exact schema list. `PUBLIC`
+`research`, and `paper`, but production catalog output decides the exact schema list. `PUBLIC`
 must not retain unreviewed `CREATE` on an application schema, and `at_app` must not
 own any table, schema, sequence, or function.
 
@@ -493,13 +514,13 @@ After the preflight confirms that all named schemas and objects exist, the follo
 the explicit **proposal** for the protected-object portion of the cutover. It is not a
 blind production script: object ownership must be changed first in the reviewed owner
 batch, and any existing non-target grantee must be evaluated rather than silently
-removed. The normal `public`/`research` DML manifest remains a separately reviewed,
+removed. The normal `public`/`research`/`paper` DML manifest remains a separately reviewed,
 object-by-object list.
 
 ```sql
 -- Apply only after the catalog has confirmed each named schema/object.
 GRANT USAGE ON SCHEMA review TO at_app, nhplug_operator, nhplug_security_owner;
-GRANT USAGE ON SCHEMA public, research TO at_app;
+GRANT USAGE ON SCHEMA public, research, paper TO at_app;
 
 REVOKE ALL PRIVILEGES ON TABLE
   review.nhplug_mock_key_version,
@@ -556,6 +577,9 @@ REVOKE ALL ON FUNCTION
   review.nhplug_auth_immutable(),
   review.reject_kiwoom_authority_evidence_mutation()
 FROM PUBLIC, at_app, nhplug_operator;
+GRANT EXECUTE ON FUNCTION review.nhplug_body_field(text,text),
+  review.nhplug_body_digest_v1(text,text,text,bigint,bigint,text,text,text)
+TO at_app, nhplug_security_owner;
 ```
 
 The final `GRANT CONNECT ON DATABASE ...` is database-name specific and must use the
@@ -660,9 +684,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE at_migration_owner
 ALTER DEFAULT PRIVILEGES FOR ROLE nhplug_security_owner
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE at_migration_owner IN SCHEMA public, review, research
+ALTER DEFAULT PRIVILEGES FOR ROLE at_migration_owner IN SCHEMA public, review, research, paper
   REVOKE ALL ON TABLES FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES FOR ROLE at_migration_owner IN SCHEMA public, review, research
+ALTER DEFAULT PRIVILEGES FOR ROLE at_migration_owner IN SCHEMA public, review, research, paper
   REVOKE ALL ON SEQUENCES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE nhplug_security_owner IN SCHEMA review
   REVOKE ALL ON TABLES FROM PUBLIC;
@@ -859,14 +883,14 @@ ORDER BY parent.rolname, r.rolname;
 -- Schemas, table-like objects, sequence ownership/ACLs, and default ACLs.
 SELECT n.nspname, pg_get_userbyid(n.nspowner) AS owner, n.nspacl
 FROM pg_namespace AS n
-WHERE n.nspname IN ('public', 'review', 'research')
+WHERE n.nspname IN ('public', 'review', 'research', 'paper')
 ORDER BY n.nspname;
 SELECT n.nspname, c.relname, c.relkind,
        pg_get_userbyid(c.relowner) AS owner, c.relacl,
        c.relrowsecurity, c.relforcerowsecurity
 FROM pg_class AS c
 JOIN pg_namespace AS n ON n.oid = c.relnamespace
-WHERE n.nspname IN ('public', 'review', 'research')
+WHERE n.nspname IN ('public', 'review', 'research', 'paper')
   AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
 ORDER BY n.nspname, c.relkind, c.relname;
 SELECT pg_get_userbyid(d.defaclrole) AS creator,
@@ -901,7 +925,7 @@ WHERE n.nspname = 'review'
 ORDER BY p.proname, identity_args, grantee, acl.privilege_type;
 SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
 FROM pg_policies
-WHERE schemaname IN ('public', 'review', 'research')
+WHERE schemaname IN ('public', 'review', 'research', 'paper')
 ORDER BY schemaname, tablename, policyname;
 
 -- Do not transfer extension-owned members as ordinary application objects.
@@ -975,7 +999,7 @@ approved secret mechanism. The following illustrates the required hard attribute
 it is proposed mutation SQL, not a command to run now:
 
 ```sql
-CREATE ROLE at_migration_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+CREATE ROLE at_migration_owner LOGIN PASSWORD NULL NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOREPLICATION NOBYPASSRLS;
 CREATE ROLE at_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOREPLICATION NOBYPASSRLS;
@@ -1109,7 +1133,7 @@ SELECT n.nspname,
        has_schema_privilege('nhplug_operator', n.oid, 'USAGE') AS operator_usage,
        has_schema_privilege('nhplug_operator', n.oid, 'CREATE') AS operator_create
 FROM pg_namespace AS n
-WHERE n.nspname IN ('public', 'review', 'research')
+WHERE n.nspname IN ('public', 'review', 'research', 'paper')
 ORDER BY n.nspname;
 
 -- Object-level checks for the sensitive #711 and ROB-1340 splits.
@@ -1391,13 +1415,13 @@ be run against the intended production database by an approved operator.
    SELECT n.nspname, c.relname, c.relkind, pg_get_userbyid(c.relowner), c.relacl
    FROM pg_class AS c
    JOIN pg_namespace AS n ON n.oid = c.relnamespace
-   WHERE n.nspname IN ('public', 'review', 'research')
+   WHERE n.nspname IN ('public', 'review', 'research', 'paper')
      AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
    ORDER BY n.nspname, c.relkind, c.relname;
    SELECT n.nspname, p.oid::regprocedure, pg_get_userbyid(p.proowner), p.prosecdef, p.proacl
    FROM pg_proc AS p
    JOIN pg_namespace AS n ON n.oid = p.pronamespace
-   WHERE n.nspname IN ('public', 'review', 'research')
+   WHERE n.nspname IN ('public', 'review', 'research', 'paper')
    ORDER BY n.nspname, p.oid::regprocedure::text;
    ROLLBACK;
    ```
@@ -1411,11 +1435,11 @@ be run against the intended production database by an approved operator.
    SELECT extname, extversion, pg_get_userbyid(extowner) FROM pg_extension ORDER BY extname;
    SELECT schemaname, tablename, policyname, roles, cmd
    FROM pg_policies
-   WHERE schemaname IN ('public', 'review', 'research')
+   WHERE schemaname IN ('public', 'review', 'research', 'paper')
    ORDER BY schemaname, tablename, policyname;
    SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity
    FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
-   WHERE n.nspname IN ('public', 'review', 'research')
+   WHERE n.nspname IN ('public', 'review', 'research', 'paper')
      AND (c.relrowsecurity OR c.relforcerowsecurity)
    ORDER BY n.nspname, c.relname;
    ROLLBACK;

@@ -322,3 +322,11 @@ uv run alembic downgrade -1
 ```
 
 **중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
+
+**#789 DB 역할 전환 후 프로덕션 마이그레이션 계약:** Stage 4가 승인되어
+마이그레이션 DSN이 분리된 배포에서는 전용 runner가
+`AT_MIGRATION_SET_ROLE=at_migration_owner`로 시작해야 한다. 새 객체의 소유자는
+`at_migration_owner`이며, 기본 권한은 새 테이블·시퀀스·함수의 앱 권한을 주지 않는다.
+앱이 새 객체를 사용하기 전에 해당 migration에 객체별 `at_app` GRANT를 검토해 넣어라.
+개발·CI DB에 `at_app`이 없을 수 있으므로 role 존재 여부를 확인한 조건부 GRANT를
+사용한다. Stage 4 승인 전에는 기존 migration 입력과 실행 경로를 유지한다.
