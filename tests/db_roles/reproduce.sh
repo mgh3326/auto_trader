@@ -157,20 +157,29 @@ rollback_stage() {
 }
 
 run_fixture_jobs() {
-  local job_id successes
+  local job_id job_count aggregate_rows tick_rows
+  job_count="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+    -At -c "SELECT count(*) FROM timescaledb_information.jobs WHERE hypertable_name IN ('t789_ticks','t789_ticks_hour') AND owner::text='at_migration_owner'")"
+  if [[ "$job_count" != 2 ]]; then
+    echo 'fixture policy jobs do not both belong to the new owner' >&2
+    exit 1
+  fi
   while IFS= read -r job_id; do
     if [[ ! "$job_id" =~ ^[0-9]+$ ]]; then
       echo 'fixture policy job ID invalid' >&2
       exit 1
     fi
-    docker exec "$container" psql -X -U mgh3326 -d auto_trader \
-      -v ON_ERROR_STOP=1 -c "CALL run_job($job_id)" >/dev/null
+    docker exec "$container" psql -X -U at_migration_runner -d auto_trader \
+      -v ON_ERROR_STOP=1 -c 'SET ROLE at_migration_owner' \
+      -c "CALL run_job($job_id)" >/dev/null
   done < <(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
     -At -c "SELECT job_id FROM timescaledb_information.jobs WHERE hypertable_name IN ('t789_ticks','t789_ticks_hour') ORDER BY job_id")
-  successes="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
-    -At -c "SELECT count(*) FROM timescaledb_information.job_stats WHERE hypertable_name IN ('t789_ticks','t789_ticks_hour') AND total_successes >= 1")"
-  if [[ "$successes" != 2 ]]; then
-    echo 'refresh and retention jobs did not both succeed' >&2
+  aggregate_rows="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+    -At -c 'SELECT count(*) FROM public.t789_ticks_hour')"
+  tick_rows="$(docker exec "$container" psql -X -U mgh3326 -d auto_trader \
+    -At -c 'SELECT count(*) FROM public.t789_ticks')"
+  if [[ "$aggregate_rows" != 3 || "$tick_rows" != 3 ]]; then
+    echo 'policy execution did not preserve ticks and materialize the aggregate' >&2
     exit 1
   fi
 }
