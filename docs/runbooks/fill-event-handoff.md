@@ -43,11 +43,59 @@ Prefect by that name, then creates a run with the next REPS-derived rep and a
 at every REPS start; no early kickoff occurs inside one. The default cooldown is
 3600 seconds per market.
 
+## Kick priority filter and daily cap
+
+Every fill is still queued as a `session_context` `open_question` before any
+delivery decision; the filter below only changes whether an early Prefect
+kickoff is attempted. With `FILL_HANDOFF_KICK_ENABLED` unset or false the
+runner behaves exactly as before — no ledger position read, no filter refs, no
+cap state.
+
+When kicks are enabled, a fill is kick-eligible only when it is one of:
+
+- `sell_full_exit` — a sell whose ledger position after the fill is zero;
+- `buy_new_position` — a buy whose ledger-proven position before the fill is
+  zero or negative;
+- `partial_fill_ge_25pct` — a fill covering at least
+  `FILL_HANDOFF_KICK_MIN_POSITION_FRACTION` (default `0.25`) of the position
+  before the fill.
+
+Queue-only classes are `parking_etf` (configured parking symbols),
+`small_dca_buy` (buy notional below the per-currency floor),
+`buy_add_below_25pct`, `sell_partial_below_25pct`, `position_unproven` (the
+ledger has no earlier rows for the fill's exact key, so zero cannot be proven),
+`position_read_failed` (the position read itself failed — never a guess), and
+`fill_malformed`. Position facts come from an execution-ledger read of net
+signed quantity strictly before the fill, keyed by
+broker/account-mode/venue/instrument-type/symbol/currency and ordered by
+`(filled_at, id)`; opening-lot `manual_import` rows count.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `FILL_HANDOFF_KICK_DAILY_CAP` | `2` | Maximum Prefect kickoffs per market per KST day, on top of the cooldown and rep-window rules. `0` disables kicks but keeps the classification refs. |
+| `FILL_HANDOFF_KICK_PARKING_SYMBOLS` | `SGOV,BIL,459580,357870` | Comma-separated queue-only parking symbols. |
+| `FILL_HANDOFF_KICK_SMALL_BUY_NOTIONAL` | `{"KRW":5000,"USD":5}` | JSON currency-to-notional map; buys below the floor for their currency are queue-only DCA. |
+| `FILL_HANDOFF_KICK_MIN_POSITION_FRACTION` | `0.25` | Minimum fraction of the pre-fill position a partial fill must cover to kick. |
+
+At most `FILL_HANDOFF_KICK_DAILY_CAP` kicks fire per market per KST day; the
+counter lives in `state.json` under `kick_days` and resets on the KST date
+change. An eligible fill over the cap records class `capped` and keeps its
+open question for the next regular rep, which consumes the queue as before.
+
+Each queued fill records `refs.kick_filter_class` (`kick`/`queue_only`),
+`refs.kick_filter_reason` (the class or deferral reason), and
+`refs.position_before`/`refs.position_after` when a position was read. The run
+JSON gains a `decisions` list (only when kicks are enabled) with one entry per
+fill: `class` (`kick`/`queue_only`/`capped`), `reason`, and `flow_run_id` for
+actual kickoffs. This feeds the two-week measurement of queue count, kick
+count, consumption delay, and unresolved count.
+
 ## State and recovery
 
 `state.json` is atomically replaced under `fcntl.flock`. It retains a monotonic
 watermark, 24-hour `(broker, broker_order_id, side, filled_qty, filled_price)`
-dedupe evidence, and market kickoff cooldowns. A missing state file is an
+dedupe evidence, market kickoff cooldowns, and per-market `kick_days` daily
+counters. A missing state file is an
 installation boundary: the first ordinary `--once` run records the current
 maximum ledger id and processes zero historical rows. It never backfills the
 ledger by default.

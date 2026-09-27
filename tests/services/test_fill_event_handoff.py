@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from app.services.fill_event_handoff import service as handoff_service
+from app.services.fill_event_handoff.kick_filter import KickVerdict
 from app.services.fill_event_handoff.service import (
     FillHandoffRunner,
     HandoffConfig,
@@ -35,6 +36,7 @@ def _fill(ledger_id: int) -> dict[str, Any]:
         "broker": "upbit",
         "account_mode": "live",
         "venue": "upbit",
+        "instrument_type": "crypto",
         "market": "crypto",
         "symbol": "BTC",
         "side": "sell",
@@ -63,6 +65,11 @@ def _prepare_runner_dependencies(
         ) -> list[dict[str, Any]]:
             return rows
 
+        async def position_before_fill(self, **_kwargs: object) -> tuple[object, int]:
+            from decimal import Decimal
+
+            return Decimal("0.1"), 1
+
     class Context:
         event_keys: set[str] = set()
         kick_results: list[str] = []
@@ -79,6 +86,9 @@ def _prepare_runner_dependencies(
 
         async def append_fill_handoff_kick_result(self, **kwargs: object) -> None:
             self.kick_results.append(str(kwargs["flow_run_id"]))
+
+        async def append_fill_handoff_kick_capped(self, **kwargs: object) -> None:
+            return None
 
     monkeypatch.setattr(handoff_service, "ExecutionLedgerRepository", Repo)
     monkeypatch.setattr(handoff_service, "SessionContextService", Context)
@@ -157,7 +167,12 @@ def test_submission_never_returns_into_a_queued_prompt(tmp_path: Path) -> None:
 
 def test_kick_is_disabled_by_default(tmp_path: Path) -> None:
     runner = FillHandoffRunner(HandoffConfig(state_dir=tmp_path))
-    assert asyncio.run(runner._kick(_fill(1), {"cooldowns": {}})) is None
+    decision = asyncio.run(
+        runner._kick(_fill(1), {"cooldowns": {}}, KickVerdict(True, "sell_full_exit"))
+    )
+    assert decision.flow_run_id is None
+    assert decision.klass == "queue_only"
+    assert decision.reason == "kick_not_configured"
 
 
 def test_kick_respects_cooldown_and_creates_prefect_run(tmp_path: Path) -> None:
@@ -185,9 +200,14 @@ def test_kick_respects_cooldown_and_creates_prefect_run(tmp_path: Path) -> None:
         http_post=post,
     )
     state = {"cooldowns": {}}
-    assert asyncio.run(runner._kick(_fill(7), state)) == "flow-id"
+    verdict = KickVerdict(True, "sell_full_exit")
+    first = asyncio.run(runner._kick(_fill(7), state, verdict))
+    assert first.flow_run_id == "flow-id"
+    assert first.klass == "kick"
     assert len(calls) == 2
-    assert asyncio.run(runner._kick(_fill(8), state)) is None
+    second = asyncio.run(runner._kick(_fill(8), state, verdict))
+    assert second.flow_run_id is None
+    assert second.reason == "cooldown"
 
 
 def test_runner_dedupes_rows_advances_watermark_and_keeps_event_idempotent(
