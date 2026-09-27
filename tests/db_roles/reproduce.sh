@@ -6,6 +6,11 @@ cd "$(dirname "$0")/../.."
 container="at789-db-roles-$$"
 fixture_dir="$(mktemp -d)"
 cleanup() {
+  local rc=$?
+  if [[ "${AT789_KEEP_FIXTURE_ON_FAILURE:-0}" == 1 && "$rc" != 0 ]]; then
+    echo "fixture retained for local diagnosis: container=$container directory=$fixture_dir" >&2
+    return
+  fi
   docker stop "$container" >/dev/null 2>&1 || true
   rm -rf "$fixture_dir"
 }

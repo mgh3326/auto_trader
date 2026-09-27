@@ -127,36 +127,36 @@ async def add_policy(conn: asyncpg.Connection, before: dict, owner: str) -> int:
     name = relation(before)
     config = before["config"]
     await conn.execute('SET LOCAL ROLE "' + owner + '"')
-    try:
-        if kind == "policy_retention":
-            new_id = await conn.fetchval("""
-                SELECT add_retention_policy($1::regclass,
-                    drop_after => $2::text::interval,
-                    schedule_interval => $3::text::interval)
-            """, name, config["drop_after"], before["schedule_interval"])
-        else:
-            new_id = await conn.fetchval("""
-                SELECT add_continuous_aggregate_policy($1::regclass,
-                    start_offset => $2::text::interval,
-                    end_offset => $3::text::interval,
-                    schedule_interval => $4::text::interval)
-            """, name, config["start_offset"], config["end_offset"], before["schedule_interval"])
-        await conn.fetchrow("""
-            SELECT * FROM alter_job($1::integer,
-                schedule_interval => $2::text::interval,
-                max_runtime => $3::text::interval,
-                max_retries => $4::integer,
-                retry_period => $5::text::interval,
-                scheduled => $6::boolean,
-                config => $7::jsonb,
-                next_start => $8::text::timestamptz,
-                fixed_schedule => $9::boolean)
-        """, new_id, before["schedule_interval"], before["max_runtime"],
-            before["max_retries"], before["retry_period"], before["scheduled"],
-            json.dumps(config, sort_keys=True), before["next_start"],
-            before["fixed_schedule"])
-    finally:
-        await conn.execute("RESET ROLE")
+    if kind == "policy_retention":
+        new_id = await conn.fetchval("""
+            SELECT add_retention_policy($1::regclass,
+                drop_after => $2::text::interval,
+                schedule_interval => $3::text::interval)
+        """, name, config["drop_after"], before["schedule_interval"])
+    else:
+        new_id = await conn.fetchval("""
+            SELECT add_continuous_aggregate_policy($1::regclass,
+                start_offset => $2::text::interval,
+                end_offset => $3::text::interval,
+                schedule_interval => $4::text::interval)
+        """, name, config["start_offset"], config["end_offset"], before["schedule_interval"])
+    await conn.fetchrow("""
+        SELECT * FROM alter_job($1::integer,
+            schedule_interval => $2::text::interval,
+            max_runtime => $3::text::interval,
+            max_retries => $4::integer,
+            retry_period => $5::text::interval,
+            scheduled => $6::boolean,
+            config => $7::jsonb,
+            next_start => $8::text::timestamptz,
+            fixed_schedule => $9::boolean)
+    """, new_id, before["schedule_interval"], before["max_runtime"],
+        before["max_retries"], before["retry_period"], before["scheduled"],
+        json.dumps(config, sort_keys=True), before["next_start"],
+        before["fixed_schedule"])
+    # SET LOCAL is undone by the surrounding per-job transaction on failure.
+    # RESET on an aborted transaction would hide the original policy error.
+    await conn.execute("RESET ROLE")
     after = await snapshot(conn)
     matched = [j for j in after if j["job_id"] == new_id]
     if len(matched) != 1 or not same_policy(before, matched[0], owner=owner):
