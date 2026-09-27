@@ -43,7 +43,8 @@ Stage 2 is stopped until a DBA demonstrates a supported TimescaleDB 2.26.3
 policy-job owner transition and inverse. In the disposable 2.22.1 fixture,
 changing a hypertable or continuous aggregate owner left its policy job owned
 by mgh3326. The alter_job signature there has no owner argument. Operator-desk
-should run db-role-cutover-readonly.sql and return the complete output, then
+should run db-role-cutover-readonly.sql and
+scripts/db_roles/needs_desk_sql.sql and return both complete outputs, then
 record the reviewed version-specific method and a reversible staging proof.
 The same fixture rejected a transactional remove/add of a retention policy
 under NOLOGIN at_migration_owner: TimescaleDB reported that a hypertable owner
@@ -78,6 +79,15 @@ STAGE2_SHA through STAGE5_SHA are the exact hashes in separate signed stage
 approvals. No command here prints a DSN or credential. The operator must paste
 the command, exit code, and full verify output back to director-1 after each
 stage. Keep journals and signed manifests for rollback; never commit them.
+
+The read-only evidence commands for the open 2.26.3 gate and fresh ownership
+inventory are:
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f docs/runbooks/db-role-cutover-readonly.sql
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/needs_desk_sql.sql
+
+Paste both outputs before a Stage 2 approval. These queries do not authorize
+the ownership transition; its version-specific staging proof remains required.
 
 Each apply is a separate change. The script's transaction uses a 3 second
 lock timeout and a 30 second statement timeout. Ownership changes are catalog
