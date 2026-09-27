@@ -95,7 +95,7 @@ for address in socket tcp; do
     echo "at_migration_owner $address login was not rejected" >&2
     exit 1
   fi
-  if ! rg -q 'pg_hba.conf rejects connection' "$fixture_dir/$address.out"; then
+  if ! grep -q 'pg_hba.conf rejects connection' "$fixture_dir/$address.out"; then
     echo "at_migration_owner $address failed for a reason other than pg_hba" >&2
     exit 1
   fi
@@ -335,7 +335,7 @@ docker exec "$container" psql -X -U mgh3326 -d auto_trader \
   -c "SELECT has_database_privilege('at_migration_owner',current_database(),'CONNECT') AS owner_connect"
 second_order_root="$(docker exec "$container" psql -X -h 127.0.0.1 \
   -U at_api_login -d auto_trader -v ON_ERROR_STOP=1 -At \
-  -c "INSERT INTO review.nhplug_mock_account_ref(account_ref) VALUES ('33333333-3333-3333-3333-333333333333'); INSERT INTO review.nhplug_mock_order_ledger (client_request_id,account_ref,idempotency_key,attempt_no,order_date,operation_kind,side,symbol,quantity,price) VALUES ('22222222-2222-2222-2222-222222222222','33333333-3333-3333-3333-333333333333','T789ROOTKEY0000000001',1,current_date,'place','buy','005930',1,1000) RETURNING id,body_digest" | rg '^[0-9]+\|[0-9a-f]{64}$')"
+  -c "INSERT INTO review.nhplug_mock_account_ref(account_ref) VALUES ('33333333-3333-3333-3333-333333333333'); INSERT INTO review.nhplug_mock_order_ledger (client_request_id,account_ref,idempotency_key,attempt_no,order_date,operation_kind,side,symbol,quantity,price) VALUES ('22222222-2222-2222-2222-222222222222','33333333-3333-3333-3333-333333333333','T789ROOTKEY0000000001',1,current_date,'place','buy','005930',1,1000) RETURNING id,body_digest" | grep -E '^[0-9]+\|[0-9a-f]{64}$')"
 IFS='|' read -r root_id root_digest <<< "$second_order_root"
 if [[ ! "$root_id" =~ ^[0-9]+$ || ! "$root_digest" =~ ^[0-9a-f]{64}$ ]]; then
   echo 'second-order fixture root intent invalid' >&2
@@ -351,7 +351,7 @@ if docker exec "$container" psql -X -h 127.0.0.1 -U at_api_login \
   echo 'fixture second order bypassed active-reservation constraint' >&2
   exit 1
 fi
-if ! rg -q 'uq_nhplug_mock_active_reservation' "$fixture_dir/second-order.out"; then
+if ! grep -q 'uq_nhplug_mock_active_reservation' "$fixture_dir/second-order.out"; then
   echo 'second-order guard failed before digest and authorization completed' >&2
   cat "$fixture_dir/second-order.out" >&2
   exit 1
