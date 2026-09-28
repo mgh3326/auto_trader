@@ -103,15 +103,66 @@ fill: `class` (`kick`/`queue_only`/`capped`), `reason`, and `flow_run_id` for
 actual kickoffs. This feeds the two-week measurement of queue count, kick
 count, consumption delay, and unresolved count.
 
+## Watch-event kicks (#865)
+
+The same `FILL_HANDOFF_KICK_ENABLED` switch governs delivered watch events.
+Delivered `investment_watch_events` rows are still bundled into lane events by
+the bundle runner exactly as before — the watch pass below only decides
+whether an event may also consume an early kickoff slot. It runs inside the
+same `FillHandoffRunner` poll, after the fill loop, and draws from the *same*
+`kick_days`/`cooldowns` state, so fill kicks plus watch kicks together can
+never exceed `FILL_HANDOFF_KICK_DAILY_CAP` per market per KST day.
+
+A delivered watch event is kick-eligible only when **all** of:
+
+- `action_mode == "approval_required"` — exact canonical spelling only
+  (`notify_only`, `preview_only`, `auto_execute_mock`, missing or
+  unrecognized modes are queue-only; a case-variant or whitespace-padded
+  spelling is `action_mode_malformed`, never an authorization);
+- `intent == "buy_review"` (exact spelling) **or** the source alert's
+  `max_action.side` is present (the alert row is LEFT JOINed for
+  `max_action`; a deleted alert or a non-mapping value classifies
+  `max_action_unavailable` — never a guess);
+- the market is inside its tradable session at evaluation time (XKRX/XNYS
+  trading minutes for kr/us; crypto is always tradable) — a clock input
+  that is not a timezone-aware datetime fails closed for every market;
+- `delivered_at` is fresher than the 24-hour dedupe window — an older row
+  is `stale_event`, rides the next regular rep, and can never kick, which
+  also means an expired `watchkick:<id>` replay mark cannot reopen a
+  crash-replay double-kick.
+
+Ladder fires of the same `(market, symbol)` within one poll are a single kick
+candidate: the first eligible event in delivery order attempts the gate, and
+later eligible rungs are recorded `queue_only`/`ladder_grouped`. Bundle
+dedupe stays per `idempotency_key`, so every rung still appears in the bundle
+payload; only the kick candidacy groups by symbol. Each event's classification
+is recorded in `watch_decisions` with `event_id`, `market`, `symbol`,
+`action_mode`, `filter` (classifier reason), `class`
+(`kick`/`queue_only`/`capped`), `reason`, `flow_run_id`, and a `dry_run` flag
+under `--dry-run`; `watch_kicked` counts real kickoffs and `watch_errors`
+records read/seed failures (`watch_read_failed`, `watch_high_watermark_failed`,
+`watch_cursor_corrupt`, `event_malformed`). The Prefect `date_tag` is
+`YYYYMMDD-watch<event_id>`.
+
+The kick pass keeps its own `(delivered_at, event_id)` cursor under
+`watch_kick_watermark`/`watch_kick_delivered_at` in `state.json`, independent
+of the bundle runner's watch cursor. On a fresh state file — or an upgrade
+onto a pre-#865 one — the cursor seeds to the delivered high-water mark and
+processes nothing, so historical watch fires never replay as kicks. The watch
+re-judgement spawner (`app/services/watch_trigger_repricing`, ROB-1286/1304)
+is **not** armed, scheduled, or called by this path; watch kicks reuse the
+existing Prefect deployment kickoff surface only.
+
 ## State and recovery
 
 `state.json` is atomically replaced under `fcntl.flock`. It retains a monotonic
 watermark, 24-hour `(broker, broker_order_id, side, filled_qty, filled_price)`
-dedupe evidence, market kickoff cooldowns, and per-market `kick_days` daily
-counters. A missing state file is an
+dedupe evidence, market kickoff cooldowns, per-market `kick_days` daily
+counters, and the watch-kick cursor pair
+`watch_kick_watermark`/`watch_kick_delivered_at`. A missing state file is an
 installation boundary: the first ordinary `--once` run records the current
-maximum ledger id and processes zero historical rows. It never backfills the
-ledger by default.
+maximum ledger id and delivered watch mark and processes zero historical rows.
+It never backfills the ledger or the watch log by default.
 
 For an intentional continuity seed from the retired Mac poller, its last
 known watermark was `54646`. Before enabling the timer, run the same selected

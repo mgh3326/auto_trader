@@ -235,6 +235,7 @@ tests/services/test_alpaca_paper_source_allocation.py
 tests/services/test_decision_history.py
 tests/services/test_fill_event_handoff.py
 tests/services/test_fill_event_handoff_kick_filter.py
+tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
 tests/services/test_legacy_stock_analysis_adapter.py
 tests/services/test_live_correlation.py
