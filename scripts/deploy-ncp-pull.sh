@@ -62,12 +62,29 @@ ORIGINAL_API_COLOR=""
 ORIGINAL_MCP_COLOR=""
 ORIGINAL_HAPROXY_CONFIG=""
 ORIGINAL_HAPROXY_CONFIG_EXISTS=false
+DRAIN_GUARD=""
+ORIGINAL_DEPLOYED_DIGEST_CONTENT="" ORIGINAL_PREVIOUS_DIGEST_CONTENT=""
+ORIGINAL_DEPLOYED_DIGEST_EXISTS=false ORIGINAL_PREVIOUS_DIGEST_EXISTS=false
+DIGEST_RECORD_MUTATED=false
 
 require_command() { command -v "$1" >/dev/null 2>&1 || { printf 'required command is unavailable: %s\n' "$1" >&2; exit 127; }; }
 require_file() { [[ -f "$1" ]] || { printf 'required env file is unavailable: %s\n' "$1" >&2; exit 78; }; }
 is_digest() { [[ "$1" =~ ^${IMAGE_REPOSITORY}@sha256:[[:xdigit:]]{64}$ ]]; }
 configured_image() { docker inspect --format '{{.Config.Image}}' "$1"; }
-container_exists() { docker inspect --format '{{.Id}}' "$1" >/dev/null 2>&1; }
+container_presence() {
+  local name="$1" detail listed found
+  if detail="$(docker inspect --format '{{.Id}}' "$name" 2>&1)"; then
+    [[ -n "$detail" ]] && return 0
+  fi
+  # Confirm absence through a second daemon query. An inspect error alone may
+  # be a transient daemon failure and must never turn a prior unit into ABSENT.
+  listed="$(docker ps -a --format '{{.Names}}' 2>/dev/null)" || { printf 'cannot determine container presence: %s\n' "$name" >&2; return 2; }
+  found=false
+  while IFS= read -r detail; do if [[ "$detail" == "$name" ]]; then found=true; fi; done <<<"$listed"
+  [[ "$found" == false ]] && return 1
+  printf 'cannot determine container presence: %s\n' "$name" >&2
+  return 2
+}
 container_running() { [[ "$(docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" == true ]]; }
 read_color() { local color; [[ -f "$2" ]] && IFS= read -r color <"$2" && [[ "$color" == blue || "$color" == green ]] && printf '%s\n' "$color"; }
 write_color() { local color="$1" file="$2" tmp; [[ "$color" == blue || "$color" == green ]] || return 64; mkdir -p "$RUN_DIRECTORY"; umask 077; tmp="$(mktemp "${RUN_DIRECTORY}/.$(basename "$file").XXXXXX")"; printf '%s\n' "$color" >"$tmp"; mv -f "$tmp" "$file"; }
@@ -99,29 +116,44 @@ unit_rollback_image() {
 # records intent immediately before removing an instance, including failed
 # starts; rollback visits that log backwards and restores only logged units.
 capture_initial_state() {
-  local name
+  local name presence
   for name in "${APP_CONTAINERS[@]}"; do
-    if container_exists "$name"; then
+    presence=0
+    container_presence "$name" || presence=$?
+    if ((presence == 0)); then
       container_running "$name" || { printf 'container is not running: %s\n' "$name" >&2; return 78; }
       ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name")" || return 1
-    else
+    elif ((presence == 1)); then
       ORIGINAL_IMAGES["$name"]=ABSENT
+    else
+      return 78
     fi
     EXPECTED_IMAGES["$name"]="${ORIGINAL_IMAGES[$name]}"
   done
   ORIGINAL_API_COLOR="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"
   ORIGINAL_MCP_COLOR="$(read_color mcp "$MCP_ACTIVE_COLOR_FILE" 2>/dev/null || true)"
   if [[ -f "$HAPROXY_CONFIG" ]]; then
-    ORIGINAL_HAPROXY_CONFIG="$(cat "$HAPROXY_CONFIG"; printf .)"
+    ORIGINAL_HAPROXY_CONFIG="$(cat "$HAPROXY_CONFIG" && printf .)" || return 1
     ORIGINAL_HAPROXY_CONFIG_EXISTS=true
+  fi
+  if [[ -f "$DEPLOYED_DIGEST_FILE" ]]; then
+    ORIGINAL_DEPLOYED_DIGEST_CONTENT="$(cat "$DEPLOYED_DIGEST_FILE" && printf .)" || return 1
+    ORIGINAL_DEPLOYED_DIGEST_EXISTS=true
+  fi
+  if [[ -f "$DEPLOYED_DIGEST_PREVIOUS_FILE" ]]; then
+    ORIGINAL_PREVIOUS_DIGEST_CONTENT="$(cat "$DEPLOYED_DIGEST_PREVIOUS_FILE" && printf .)" || return 1
+    ORIGINAL_PREVIOUS_DIGEST_EXISTS=true
   fi
 }
 record_replacement() { REPLACED_CONTAINERS+=("$1"); }
 
 running_digest() {
-  local name="$1"
-  container_exists "$name" || { printf 'ABSENT\n'; return 0; }
-  container_running "$name" || { printf 'STOPPED\n'; return 0; }
+  local name="$1" presence=0 state
+  container_presence "$name" 2>/dev/null || presence=$?
+  if ((presence == 1)); then printf 'ABSENT\n'; return 0; fi
+  if ((presence != 0)); then printf 'UNKNOWN\n'; return 0; fi
+  state="$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" || { printf 'UNKNOWN\n'; return 0; }
+  [[ "$state" == true ]] || { printf 'STOPPED\n'; return 0; }
   unit_rollback_image "$name" 2>/dev/null || printf 'UNKNOWN\n'
 }
 report_digests() {
@@ -164,6 +196,7 @@ restore_unit() {
 
 rollback_replaced() {
   local i name failed=0
+  cancel_drains || failed=1
   for ((i=${#REPLACED_CONTAINERS[@]}-1; i>=0; i--)); do
     name="${REPLACED_CONTAINERS[$i]}"
     printf 'restoring %s to %s\n' "$name" "${ORIGINAL_IMAGES[$name]}" >&2
@@ -181,7 +214,20 @@ rollback_replaced() {
   else rm -f "$API_ACTIVE_COLOR_FILE" || failed=1; fi
   if [[ -n "$ORIGINAL_MCP_COLOR" ]]; then write_color "$ORIGINAL_MCP_COLOR" "$MCP_ACTIVE_COLOR_FILE" || failed=1
   else rm -f "$MCP_ACTIVE_COLOR_FILE" || failed=1; fi
+  if [[ "$DIGEST_RECORD_MUTATED" == true ]]; then
+    restore_digest_record "$DEPLOYED_DIGEST_FILE" "$ORIGINAL_DEPLOYED_DIGEST_EXISTS" "$ORIGINAL_DEPLOYED_DIGEST_CONTENT" || failed=1
+    restore_digest_record "$DEPLOYED_DIGEST_PREVIOUS_FILE" "$ORIGINAL_PREVIOUS_DIGEST_EXISTS" "$ORIGINAL_PREVIOUS_DIGEST_CONTENT" || failed=1
+  fi
   return "$failed"
+}
+
+restore_digest_record() {
+  local file="$1" existed="$2" content="$3"
+  if [[ "$existed" == true ]]; then
+    printf '%s' "${content%.}" >"$file"
+  elif [[ ! -d "$file" ]]; then
+    rm -f "$file"
+  fi
 }
 
 mcp_unit_is_skipped() { [[ ",$MCP_UNITS_SKIP," == *",$1,"* ]]; }
@@ -189,9 +235,12 @@ mcp_unit_is_skipped() { [[ ",$MCP_UNITS_SKIP," == *",$1,"* ]]; }
 # Read-only summary used by the dry-run plan: the unit's immutable repo digest
 # when one is discoverable, or an honest marker when it is absent/unresolved.
 unit_image_summary() {
-  local container="$1" image resolved
-  container_exists "$container" || { printf 'absent'; return 0; }
-  container_running "$container" || { printf 'stopped'; return 0; }
+  local container="$1" image resolved presence=0 state
+  container_presence "$container" 2>/dev/null || presence=$?
+  if ((presence == 1)); then printf 'absent'; return 0; fi
+  if ((presence != 0)); then printf 'unresolved (inspect failed)'; return 0; fi
+  state="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" || { printf 'unresolved (inspect failed)'; return 0; }
+  [[ "$state" == true ]] || { printf 'stopped'; return 0; }
   resolved="$(unit_rollback_image "$container" 2>/dev/null || true)"
   is_digest "$resolved" && { printf '%s\n' "$resolved"; return 0; }
   image="$(configured_image "$container" 2>/dev/null || true)"
@@ -233,15 +282,19 @@ wait_haproxy_ready() {
 }
 
 reload_haproxy() {
-  if container_exists "$HAPROXY_CONTAINER"; then docker kill -s HUP "$HAPROXY_CONTAINER" >/dev/null
-  else docker run -d --name "$HAPROXY_CONTAINER" --restart unless-stopped --network host -v "${HAPROXY_CONFIG}:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" -W -db -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null
+  local presence=0
+  container_presence "$HAPROXY_CONTAINER" || presence=$?
+  if ((presence == 0)); then docker kill -s HUP "$HAPROXY_CONTAINER" >/dev/null
+  elif ((presence == 1)); then docker run -d --name "$HAPROXY_CONTAINER" --restart unless-stopped --network host -v "${HAPROXY_CONFIG}:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" -W -db -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null
+  else return 78
   fi
   wait_haproxy_ready
 }
 
-# The foreground inspect is a deterministic scheduling record; the detached
-# child removes only the ID captured before a later replacement can occur.
-schedule_drain() { local name="$1" seconds="$2" id pid_file; id="$(docker inspect --format '{{.Id}}' "$name" 2>/dev/null)" || return 0; printf 'scheduled drain: %s\n' "$name" >&2; pid_file="${RUN_DIRECTORY}/${name}-drain.pid"; nohup bash -c 'sleep "$1"; [[ "$(docker inspect --format "{{.Id}}" "$2" 2>/dev/null || true)" == "$3" ]] && docker rm -f "$2" >/dev/null 2>&1 || true' _ "$seconds" "$name" "$id" >"${RUN_DIRECTORY}/${name}-drain.log" 2>&1 & printf '%s\n' "$!" >"$pid_file"; }
+# The foreground inspect is a deterministic scheduling record. The detached
+# child removes only the captured ID, and only after the pending guard is armed
+# at the very end of a successful promotion. Rollback deletes that guard.
+schedule_drain() { local name="$1" seconds="$2" id pid_file log_file; id="$(docker inspect --format '{{.Id}}' "$name" 2>/dev/null)" || return 0; printf 'scheduled drain: %s\n' "$name" >&2; pid_file="${RUN_DIRECTORY}/${name}-drain.pid"; log_file="${RUN_DIRECTORY}/${name}-drain.log"; : >"$log_file" || return 1; nohup bash -c 'sleep "$1"; [[ "$(cat "$4" 2>/dev/null || true)" == armed ]] && [[ "$(docker inspect --format "{{.Id}}" "$2" 2>/dev/null || true)" == "$3" ]] && docker rm -f "$2" >/dev/null 2>&1 || true' _ "$seconds" "$name" "$id" "$DRAIN_GUARD" >"$log_file" 2>&1 & printf '%s\n' "$!" >"$pid_file"; }
 
 deploy_api() {
   local image="$1" old new mcp old_legacy=""
@@ -280,9 +333,35 @@ deploy_mcp() {
   MCP_DRAIN_PENDING_COLOR="$old"
 }
 
-write_digest() { local digest="$1" tmp old; is_digest "$digest" || return 1; mkdir -p "$RUN_DIRECTORY"; umask 077; tmp="$(mktemp "${RUN_DIRECTORY}/.deployed-digest.XXXXXX")"; printf '%s\n' "$digest" >"$tmp"; if old="$(read_digest "$DEPLOYED_DIGEST_FILE")"; then printf '%s\n' "$old" >"${DEPLOYED_DIGEST_PREVIOUS_FILE}"; fi; mv -f "$tmp" "$DEPLOYED_DIGEST_FILE"; }
-finalize_drains() { [[ -z "$API_DRAIN_PENDING_COLOR" ]] || schedule_drain "at-api-${API_DRAIN_PENDING_COLOR}" "$API_DRAIN_SECONDS"; [[ -z "$MCP_DRAIN_PENDING_COLOR" ]] || schedule_drain "at-mcp-${MCP_DRAIN_PENDING_COLOR}" "$MCP_DRAIN_SECONDS"; }
-current_api_rollback_digest() { local color; if container_exists at-api; then unit_rollback_image at-api; return $?; fi; color="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"; [[ -n "$color" ]] || { printf 'previous API container is required for rollback\n' >&2; return 1; }; unit_rollback_image "at-api-${color}"; }
+write_digest() {
+  local digest="$1" tmp old
+  is_digest "$digest" || return 1
+  [[ ! -d "$DEPLOYED_DIGEST_FILE" && ! -d "$DEPLOYED_DIGEST_PREVIOUS_FILE" ]] || return 1
+  mkdir -p "$RUN_DIRECTORY" || return 1
+  umask 077
+  tmp="$(mktemp "${RUN_DIRECTORY}/.deployed-digest.XXXXXX")" || return 1
+  printf '%s\n' "$digest" >"$tmp" || { rm -f "$tmp"; return 1; }
+  if old="$(read_digest "$DEPLOYED_DIGEST_FILE")"; then
+    printf '%s\n' "$old" >"$DEPLOYED_DIGEST_PREVIOUS_FILE" || { rm -f "$tmp"; return 1; }
+  fi
+  mv -f "$tmp" "$DEPLOYED_DIGEST_FILE" || { rm -f "$tmp"; return 1; }
+}
+finalize_drains() {
+  [[ -n "$API_DRAIN_PENDING_COLOR" || -n "$MCP_DRAIN_PENDING_COLOR" ]] || return 0
+  DRAIN_GUARD="$(mktemp "${RUN_DIRECTORY}/.drain-guard.XXXXXX")" || return 1
+  printf 'pending\n' >"$DRAIN_GUARD" || return 1
+  if [[ -n "$API_DRAIN_PENDING_COLOR" ]]; then schedule_drain "at-api-${API_DRAIN_PENDING_COLOR}" "$API_DRAIN_SECONDS" || return 1; fi
+  if [[ -n "$MCP_DRAIN_PENDING_COLOR" ]]; then schedule_drain "at-mcp-${MCP_DRAIN_PENDING_COLOR}" "$MCP_DRAIN_SECONDS" || return 1; fi
+}
+arm_drains() {
+  local ready
+  [[ -n "$DRAIN_GUARD" ]] || return 0
+  ready="${DRAIN_GUARD}.ready"
+  printf 'armed\n' >"$ready" || return 1
+  mv -f "$ready" "$DRAIN_GUARD"
+}
+cancel_drains() { [[ -z "$DRAIN_GUARD" ]] || rm -f "$DRAIN_GUARD"; }
+current_api_rollback_digest() { local color presence=0; container_presence at-api || presence=$?; if ((presence == 0)); then unit_rollback_image at-api; return $?; fi; ((presence == 1)) || return 78; color="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"; [[ -n "$color" ]] || { printf 'previous API container is required for rollback\n' >&2; return 1; }; unit_rollback_image "at-api-${color}"; }
 set_promoted_expectations() {
   local name
   for name in "${REPLACED_CONTAINERS[@]}"; do
@@ -312,13 +391,26 @@ promote_digest() {
     deployment_failed
     return 1
   fi
+  if ! finalize_drains; then
+    printf 'drain scheduling failed; restoring prior containers\n' >&2
+    for name in "${APP_CONTAINERS[@]}"; do EXPECTED_IMAGES["$name"]="${ORIGINAL_IMAGES[$name]}"; done
+    deployment_failed
+    return 1
+  fi
+  DIGEST_RECORD_MUTATED=true
   if ! write_digest "$digest"; then
     printf 'digest record failed; restoring prior containers\n' >&2
     for name in "${APP_CONTAINERS[@]}"; do EXPECTED_IMAGES["$name"]="${ORIGINAL_IMAGES[$name]}"; done
     deployment_failed
     return 1
   fi
-  finalize_drains; printf 'deployment completed: %s\n' "$digest"
+  if ! arm_drains; then
+    printf 'drain activation failed; restoring prior containers\n' >&2
+    for name in "${APP_CONTAINERS[@]}"; do EXPECTED_IMAGES["$name"]="${ORIGINAL_IMAGES[$name]}"; done
+    deployment_failed
+    return 1
+  fi
+  printf 'deployment completed: %s\n' "$digest"
 }
 prepare() { require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"; validate_mcp_tokens; }
 main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; }

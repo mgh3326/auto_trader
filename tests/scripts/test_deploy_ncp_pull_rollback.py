@@ -43,6 +43,10 @@ def _run(
     absent_name: str = "",
     stopped_name: str = "",
     unresolved_name: str = "",
+    fail_initial_inspect_name: str = "",
+    fail_drain_record: bool = False,
+    fail_drain_arm: bool = False,
+    fail_digest_record: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -71,7 +75,14 @@ def _run(
         cmd = args[0]
         name = args[-1] if args else ''
         if cmd == 'inspect':
+            if name == os.environ.get('FAKE_TRANSIENT_INSPECT_NAME'):
+                marker = pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.transient')
+                if not marker.exists():
+                    marker.touch()
+                    print('Cannot connect to the Docker daemon', file=sys.stderr)
+                    sys.exit(1)
             if name not in state:
+                print('Error: No such object: ' + name, file=sys.stderr)
                 sys.exit(1)
             fmt = args[2]
             value = state[name]
@@ -86,6 +97,8 @@ def _run(
                 print('none' if args[-1] == 'id-' + os.environ.get('FAKE_UNRESOLVED_NAME', '') else os.environ['FAKE_OLD_DIGEST'])
             else:
                 print(os.environ['FAKE_NEW_DIGEST'])
+        elif cmd == 'ps':
+            print('\\n'.join(state))
         elif cmd == 'run':
             name = args[args.index('--name') + 1]
             image = next((a for a in args if a.startswith('ghcr.io/mgh3326/auto_trader@sha256:')), 'haproxy:3.1-alpine')
@@ -121,6 +134,12 @@ def _run(
     )
     (bindir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
     (bindir / "nohup").write_text("#!/usr/bin/env bash\nexit 0\n")
+    if fail_drain_arm:
+        (bindir / "mv").write_text(
+            "#!/usr/bin/env bash\n"
+            'for arg in "$@"; do [[ "$arg" == *drain-guard*.ready ]] && exit 23; done\n'
+            'exec /bin/mv "$@"\n'
+        )
     for path in bindir.iterdir():
         path.chmod(0o755)
     (run_dir / ".env.runtime").write_text("x=y\n")
@@ -139,6 +158,11 @@ def _run(
         + "\n"
     )
     (run_dir / "deployed-digest").write_text(OLD + "\n")
+    if fail_digest_record:
+        (run_dir / "deployed-digest").unlink()
+        (run_dir / "deployed-digest").mkdir()
+    if fail_drain_record:
+        (run_dir / "at-api-blue-drain.pid").mkdir()
     if "--rollback" in args:
         (run_dir / "deployed-digest.previous").write_text(NEW + "\n")
     (run_dir / "api-active-color").write_text("blue\n")
@@ -147,7 +171,7 @@ def _run(
         [str(DEPLOY), *args],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=90,
         env={
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -162,6 +186,7 @@ def _run(
             "FAKE_MISMATCH_NAME": mismatch_name,
             "FAKE_STOPPED_NAME": stopped_name,
             "FAKE_UNRESOLVED_NAME": unresolved_name,
+            "FAKE_TRANSIENT_INSPECT_NAME": fail_initial_inspect_name,
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
             "MCP_HEALTH_ATTEMPTS": "1",
@@ -291,6 +316,48 @@ def test_rollback_digest_mismatch_is_visible_and_nonzero(tmp_path: Path) -> None
     assert "MISMATCH" in result.stdout
 
 
+def test_digest_record_failure_restores_replaced_units(tmp_path: Path) -> None:
+    result, _, state, _ = _run(tmp_path, fail_digest_record=True)
+    assert result.returncode != 0
+    assert state["at-worker"] == OLD
+    assert state["at-scheduler"] == OLD
+    assert "at-api-green" not in state
+    assert "container\texpected\trunning\tstatus" in result.stdout
+    assert (
+        "MISMATCH"
+        not in result.stdout.rsplit("container\texpected\trunning\tstatus", 1)[-1]
+    )
+
+
+def test_drain_record_failure_restores_replaced_units(tmp_path: Path) -> None:
+    result, _, state, _ = _run(tmp_path, fail_drain_record=True)
+    assert result.returncode != 0
+    assert state["at-worker"] == OLD
+    assert state["at-scheduler"] == OLD
+    assert "at-api-green" not in state
+    assert "container\texpected\trunning\tstatus" in result.stdout
+    assert (
+        "MISMATCH"
+        not in result.stdout.rsplit("container\texpected\trunning\tstatus", 1)[-1]
+    )
+
+
+def test_drain_activation_failure_restores_containers_and_digest_files(
+    tmp_path: Path,
+) -> None:
+    result, _, state, run_dir = _run(tmp_path, fail_drain_arm=True)
+    assert result.returncode != 0
+    assert state["at-worker"] == OLD
+    assert state["at-scheduler"] == OLD
+    assert "at-api-green" not in state
+    assert (run_dir / "deployed-digest").read_text() == OLD + "\n"
+    assert not (run_dir / "deployed-digest.previous").exists()
+    assert (
+        "MISMATCH"
+        not in result.stdout.rsplit("container\texpected\trunning\tstatus", 1)[-1]
+    )
+
+
 def test_absent_unit_is_removed_after_failed_later_phase(tmp_path: Path) -> None:
     result, _, state, _ = _run(
         tmp_path, absent_name="at-kis-ws", fail_name="at-mcp-account-read"
@@ -312,6 +379,18 @@ def test_unknown_prior_digest_fails_before_any_mutation(tmp_path: Path) -> None:
     result, calls, _, _ = _run(tmp_path, unresolved_name="at-upbit-ws")
     assert result.returncode != 0
     assert "rollback digest is unavailable for at-upbit-ws" in result.stderr
+    assert not any(
+        call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
+    )
+
+
+def test_transient_snapshot_inspect_failure_fails_before_mutation(
+    tmp_path: Path,
+) -> None:
+    result, calls, state, _ = _run(tmp_path, fail_initial_inspect_name="at-worker")
+    assert result.returncode != 0
+    assert "cannot determine container presence: at-worker" in result.stderr
+    assert state["at-worker"] == OLD
     assert not any(
         call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
     )

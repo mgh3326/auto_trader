@@ -39,13 +39,14 @@ printf 'docker %s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 state="$FAKE_DOCKER_STATE"
 case "$1" in
  inspect)
-   name="${!#}"; [[ -f "$state/$name" ]] || exit 1
+   name="${!#}"; if [[ ! -f "$state/$name" ]]; then printf 'Error: No such object: %s\n' "$name" >&2; exit 1; fi
    if [[ "$3" == *State.Running* ]]; then echo true
    elif [[ "$3" == *Config.Image* ]]; then cat "$state/$name"
    elif [[ "$3" == *RepoDigests* ]]; then echo "$FAKE_OLD_DIGEST"
    else echo "id-$name"; fi
    ;;
  image) echo "$FAKE_NEW_DIGEST" ;;
+ ps) for container in "$state"/*; do [[ -f "$container" ]] && basename "$container"; done; true ;;
  run)
    name=""; image=""; previous=""
    for arg in "$@"; do

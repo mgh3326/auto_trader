@@ -91,13 +91,15 @@ final table compares the expected digest with each container's running digest;
 any mismatch leaves the command nonzero. A tag is used only to pull and resolve
 the image; `docker run` always receives `repo@sha256:...`, so the next
 deployment's `.Config.Image` is stable even after a later `:main` pull.
+If container inspection fails during the preflight snapshot, the script checks
+the container list and stops before mutation unless absence is confirmed.
 
 The script maintains these operator-owned, mode-0600 digest files:
 
 - `/root/at-run/deployed-digest` is the last successful promotion target.
   A skipped KIS WebSocket can retain a different digest, as the table shows.
 - `/root/at-run/deployed-digest.previous` is the prior healthy deployment;
-  each successful deployment atomically rotates the former current value here.
+  each successful deployment records the former current value here.
 
 Automatic rollback uses the per-container preflight snapshot. A floating tag
 is resolved through that container's image metadata; the API digest is never
