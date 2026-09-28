@@ -10,13 +10,16 @@ declared on the live policy.
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from app.schemas.trading_policy import PolicyRecoveryGate
+from app.services.invest_view_model.buy_plan import service as buy_plan_service
 from app.services.invest_view_model.buy_plan.gate_inputs import (
     GateMetricReading,
     evaluate_gate_conditions,
@@ -204,6 +207,20 @@ def test_undated_reading_under_a_freshness_bound_is_unavailable() -> None:
     ) == ("hold", None)
 
 
+def test_future_dated_reading_holds_instead_of_appearing_fresh() -> None:
+    verdicts, met, unavailable, stale = evaluate_gate_conditions(
+        _gate(),
+        readings=_readings(_breadth("62", observed_at=NOW_EPOCH + 60), _lsr("1.2")),
+        now_epoch=NOW_EPOCH,
+    )
+
+    assert (met, unavailable, stale) == (1, 1, 0)
+    assert verdicts[0].state == "unavailable"
+    assert resolve_market_state_coefficient(
+        _gate().size_coefficient, met_count=met, unresolved_count=unavailable + stale
+    ) == ("hold", None)
+
+
 def test_breadth_is_counted_once_inside_the_gate() -> None:
     """The gate has exactly one breadth leg and no second breadth consumer."""
 
@@ -250,6 +267,13 @@ def test_live_schema_rejects_decreasing_coefficients() -> None:
     spec = _gate().model_dump()
     spec["size_coefficient"]["by_met_count"] = {0: 1.0, 1: 0.5, 2: 0.0}
     with pytest.raises(ValidationError, match="non-decreasing"):
+        PolicyRecoveryGate.model_validate(spec)
+
+
+def test_live_schema_rejects_a_different_monotonic_table() -> None:
+    spec = _gate().model_dump()
+    spec["size_coefficient"]["by_met_count"] = {0: 0.5, 1: 0.5, 2: 1.0}
+    with pytest.raises(ValidationError, match="exactly"):
         PolicyRecoveryGate.model_validate(spec)
 
 
@@ -315,6 +339,45 @@ def test_lsr_parser_refuses_a_half_answer() -> None:
     )
 
     assert reading.value is None
+
+
+def test_lsr_parser_cannot_date_pair_from_only_one_leg() -> None:
+    reading = parse_btc_long_short_reading(
+        {
+            "global_account": {
+                "ratio": 1.1,
+                "history": [{"time": "2025-11-10T01:00:00Z"}],
+            },
+            "top_position": {"ratio": 1.2, "history": []},
+        }
+    )
+
+    assert reading.value == Decimal("1.2")
+    assert reading.observed_at is None
+
+
+@pytest.mark.asyncio
+async def test_buy_plan_stale_leg_holds_its_live_coefficient(monkeypatch) -> None:
+    async def breadth() -> GateMetricReading:
+        return _breadth("62")
+
+    async def lsr() -> GateMetricReading:
+        return _lsr("1.2", observed_at=NOW_EPOCH - 20_000)
+
+    monkeypatch.setattr(buy_plan_service, "read_alt_breadth_24h", breadth)
+    monkeypatch.setattr(buy_plan_service, "read_btc_long_short_ratio", lsr)
+    policy = SimpleNamespace(
+        market_rules={"crypto": SimpleNamespace(recovery_gate=_gate())}
+    )
+    rows = await buy_plan_service._build_discovery_gates(
+        policy=policy, now=dt.datetime.fromtimestamp(NOW_EPOCH, dt.UTC)
+    )
+
+    assert len(rows) == 1
+    assert rows[0].stale_count == 1
+    assert rows[0].coefficient is not None
+    assert rows[0].coefficient.state == "hold"
+    assert rows[0].coefficient.value is None
 
 
 # ---------------------------------------------------------------------------

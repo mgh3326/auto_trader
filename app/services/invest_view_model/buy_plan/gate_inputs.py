@@ -22,8 +22,8 @@ Both readers are fail-open to ``None``. The policy's
 a dead upstream leaves the gate un-passable rather than silently open.
 
 task-792 C1 freshness: each reading also carries ``observed_at``, the epoch
-time of the newest underlying observation (newest swept ticker trade
-timestamp / newest Binance report bucket). The gate layer compares it with the
+time of the oldest contributing observation (oldest swept ticker trade
+timestamp / oldest Binance report bucket). The gate layer compares it with the
 condition's ``stale_after_seconds`` and a stale input resolves to ``hold`` —
 it is never trusted and never counted as an inferred miss either.
 
@@ -186,15 +186,14 @@ def parse_btc_long_short_reading(payload: dict[str, Any] | None) -> GateMetricRe
             note="두 리포트 중 하나가 비어 있어 판정 불가(한쪽만으로 대체하지 않음).",
         )
 
-    observed: list[float] = []
+    observed: list[float | None] = []
     for leg in legs:
         history = leg.get("history")
         newest = (
             history[-1].get("time") if isinstance(history, list) and history else None
         )
         epoch = _iso_to_epoch(newest)
-        if epoch is not None:
-            observed.append(epoch)
+        observed.append(epoch)
 
     resolved = max(ratio for ratio in ratios if ratio is not None)
     return GateMetricReading(
@@ -202,7 +201,7 @@ def parse_btc_long_short_reading(payload: dict[str, Any] | None) -> GateMetricRe
         value=resolved,
         source=LONG_SHORT_SOURCE,
         note="global_account / top_position 중 더 높은 값",
-        observed_at=min(observed) if observed else None,
+        observed_at=min(observed) if all(ts is not None for ts in observed) else None,
     )
 
 
@@ -245,8 +244,8 @@ def evaluate_gate_conditions(
 
     A condition is ``unavailable`` when its reading/threshold/operator is
     missing, or when it declares ``stale_after_seconds`` but the reading
-    cannot be dated (freshness unproven is not trusted). It is ``stale``
-    when the dated observation is older than that bound.
+    cannot be dated or is in the future (freshness unproven is not trusted).
+    It is ``stale`` when the dated observation is older than that bound.
     """
 
     verdicts: list[GateConditionVerdict] = []
@@ -275,11 +274,15 @@ def evaluate_gate_conditions(
             state = "unavailable"
             unavailable += 1
         elif stale_after is not None and (
-            observed_at is None or now_epoch - observed_at > stale_after
+            observed_at is None
+            or observed_at > now_epoch
+            or now_epoch - observed_at > stale_after
         ):
-            if observed_at is None:
+            if observed_at is None or observed_at > now_epoch:
                 state = "unavailable"
                 unavailable += 1
+                if observed_at is not None:
+                    note = "관측 시간이 미래이므로 신선도를 증명할 수 없습니다."
             else:
                 state = "stale"
                 stale += 1

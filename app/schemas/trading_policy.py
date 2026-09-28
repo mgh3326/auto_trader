@@ -1579,9 +1579,8 @@ class PolicyRecoveryCondition(BaseModel):
     semantics: str
 
 
-# task-792 C1 — the live sizing-coefficient vocabulary. Deliberate: the 0.25
-# mock-experiment arm (crypto paired virtual ledger only) cannot be declared
-# on the live policy without changing this constant under review.
+# task-792 C1 — the live sizing-coefficient vocabulary. Experimental mock
+# coefficients cannot be declared on the live policy.
 _LIVE_MARKET_STATE_COEFFICIENTS = frozenset({0.0, 0.5, 1.0})
 
 
@@ -1591,8 +1590,7 @@ class PolicyMarketStateCoefficient(BaseModel):
     ``by_met_count`` maps the number of met gate conditions to the multiplier
     applied to crypto new-entry notional. The value vocabulary is exactly
     {0.0, 0.5, 1.0} — enforced by the validator, since ``Literal`` does not
-    admit float members — so the 0.25 experiment arm (confined to the crypto
-    mock paired virtual ledger) cannot be declared on the live policy.
+    admit float members.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1614,8 +1612,7 @@ class PolicyMarketStateCoefficient(BaseModel):
         if invalid:
             raise ValueError(
                 "size_coefficient.by_met_count values must come from the live "
-                "vocabulary {0.0, 0.5, 1.0} — the 0.25 arm is confined to the "
-                f"crypto mock paired virtual ledger; got {invalid}"
+                f"vocabulary {{0.0, 0.5, 1.0}}; got {invalid}"
             )
         return self
 
@@ -1652,6 +1649,11 @@ class PolicyRecoveryGate(BaseModel):
                 "size_coefficient.by_met_count must be non-decreasing in the "
                 "met count — a weaker market state may not carry a larger "
                 "coefficient"
+            )
+        if self.size_coefficient.by_met_count != {0: 0.0, 1: 0.5, 2: 1.0}:
+            raise ValueError(
+                "size_coefficient.by_met_count must be exactly "
+                "{0: 0.0, 1: 0.5, 2: 1.0} for C1"
             )
         return self
 

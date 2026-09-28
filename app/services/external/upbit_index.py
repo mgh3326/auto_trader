@@ -276,14 +276,19 @@ async def _fetch_krw_breadth_24h(
         return None
 
     beating = sum(1 for rate in alt_rates if rate > btc_rate)
-    # task-792 C1 freshness: the newest swept ticker trade_timestamp dates the
-    # observation, so a downstream stale check can hold the decision instead of
-    # trusting (or silently re-deriving) a dead feed.
-    trade_ts = [
-        ts
-        for ts in (t.get("trade_timestamp") for t in ticker_rows)
-        if isinstance(ts, (int, float)) and not isinstance(ts, bool)
+    # task-792 C1 freshness: breadth uses BTC and every alt with a rate.
+    # The oldest contributing ticker dates the combined observation. If any
+    # contributing ticker is undatable, the gate must hold.
+    contributing = [
+        t
+        for t in ticker_rows
+        if str(t.get("market") or "").upper() in rate_by_market
+        and rate_by_market[str(t["market"]).upper()] is not None
     ]
+    trade_ts = [t.get("trade_timestamp") for t in contributing]
+    all_dated = bool(trade_ts) and all(
+        isinstance(ts, (int, float)) and not isinstance(ts, bool) for ts in trade_ts
+    )
     result: dict[str, Any] = {
         "window": "24h",
         "method": "open_api_ticker_24h_derived",
@@ -292,8 +297,8 @@ async def _fetch_krw_breadth_24h(
         "alts_beating_btc_pct": round(beating / len(alt_rates), 4),
         "btc_change_24h": btc_rate,
         "latest_trade_at": (
-            datetime.fromtimestamp(max(trade_ts) / 1000, tz=UTC).isoformat()
-            if trade_ts
+            datetime.fromtimestamp(min(trade_ts) / 1000, tz=UTC).isoformat()
+            if all_dated
             else None
         ),
     }

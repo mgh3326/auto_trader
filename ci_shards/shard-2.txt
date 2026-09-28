@@ -150,6 +150,7 @@ tests/services/invalid_sample_eligibility/test_persistence.py
 tests/services/invest_screener_snapshots/test_alerts.py
 tests/services/invest_screener_snapshots/test_freshness_dispatch.py
 tests/services/invest_screener_snapshots/test_freshness_us_session.py
+tests/services/invest_view_model/buy_plan/test_c1_market_state.py
 tests/services/invest_view_model/buy_plan/test_service.py
 tests/services/invest_view_model/test_consecutive_gainers_public_loader.py
 tests/services/investment_dimensions/test_fundamentals_evidence.py

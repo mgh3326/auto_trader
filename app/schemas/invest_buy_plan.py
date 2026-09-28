@@ -320,9 +320,8 @@ class DiscoveryGateCoefficient(BuyPlanDecimalModel):
     """task-792 C1 — the resolved market-state sizing coefficient m.
 
     ``value`` is one of the live arms {1.0, 0.5, 0.0} when ``state`` is
-    ``resolved``; ``None`` while ``hold``. The 0.25 mock-experiment arm can
-    never appear here — it is confined to the crypto mock paired virtual
-    ledger.
+    ``resolved``; ``None`` while ``hold``. Mock experiment values cannot
+    appear in this live read model.
     """
 
     state: GateCoefficientState
