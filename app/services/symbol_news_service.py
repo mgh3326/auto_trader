@@ -88,6 +88,27 @@ def _utcnow() -> datetime:
     return datetime.now(tz=UTC)
 
 
+# Freshness window shared by every consumer of this service (#904): get_news
+# data_state, the news_stage stale-degraded gate, the holdings sweep rows and
+# the snapshot collector all judge staleness against the same 3h line.
+NEWS_FRESHNESS_MAX_AGE_SECONDS = 180 * 60
+
+
+def news_fetch_is_stale(
+    fetched_at: datetime | None, *, now: datetime | None = None
+) -> bool:
+    """Served content older than the freshness window counts as stale.
+
+    A missing timestamp is treated as stale — absence of provenance is not
+    freshness.
+    """
+    if fetched_at is None:
+        return True
+    aware = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=UTC)
+    observed = now or _utcnow()
+    return (observed - aware).total_seconds() > NEWS_FRESHNESS_MAX_AGE_SECONDS
+
+
 def _aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None

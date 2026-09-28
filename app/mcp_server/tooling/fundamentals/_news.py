@@ -25,7 +25,9 @@ from app.services import symbol_news_service
 _INSTRUMENT_BY_MARKET = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 # Align the on-demand symbol-news envelope with the existing news-readiness
 # policy (180 minutes). The timestamp remains visible even after expiry.
-NEWS_FRESHNESS_MAX_AGE_SECONDS = 180 * 60
+# Canonical definition lives on the service (#904) — keep the alias for
+# existing importers.
+NEWS_FRESHNESS_MAX_AGE_SECONDS = symbol_news_service.NEWS_FRESHNESS_MAX_AGE_SECONDS
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -367,6 +369,14 @@ async def _get_holdings_news_impl(
             row["degraded_reason"] = result.error_code or "news_unavailable"
         elif result.degraded:
             row["degraded_reason"] = result.fetch_error or "degraded"
+        if result.degraded or result.status in ("error", "unavailable"):
+            # A degraded row can still serve stale cache with status="ok";
+            # without these the sweep silently presents it as fresh (#904).
+            freshness = _news_freshness_fields(result)
+            row["data_state"] = freshness["data_state"]
+            row["stale"] = freshness["stale"]
+            row["fetched_at"] = freshness["fetched_at"]
+            row["data_age_seconds"] = freshness["data_age_seconds"]
         return row
 
     results = await asyncio.gather(*[_fetch_one(entry) for entry in candidates])

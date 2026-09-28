@@ -11,27 +11,22 @@ from app.schemas.research_pipeline import (
     StageOutput,
     StageVerdict,
 )
-from app.services.symbol_news_service import SymbolNewsArticle, fetch_symbol_news
+from app.services.symbol_news_service import (
+    SymbolNewsArticle,
+    fetch_symbol_news,
+    news_fetch_is_stale,
+)
 
 logger = logging.getLogger(__name__)
-
-# Align with the get_news freshness policy (NEWS_FRESHNESS_MAX_AGE_SECONDS):
-# a provider-failed response serving cache older than this must not produce a
-# verdict — stale headlines are not news signals (#904).
-PROVIDER_STALE_MAX_AGE_SECONDS = 180 * 60
 
 
 def _served_cache_is_stale(fetched_at: datetime | None) -> bool:
     """True when the served payload derives from cache older than the window.
 
-    A missing timestamp on a degraded fetch is treated as stale — absence of
-    provenance is not freshness.
+    Shares the get_news freshness policy via
+    ``symbol_news_service.news_fetch_is_stale`` (#904).
     """
-    if fetched_at is None:
-        return True
-    aware = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=UTC)
-    age = (datetime.now(tz=UTC) - aware).total_seconds()
-    return age > PROVIDER_STALE_MAX_AGE_SECONDS
+    return news_fetch_is_stale(fetched_at)
 
 
 def _market_from_instrument(instrument_type: str) -> str:
