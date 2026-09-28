@@ -61,30 +61,34 @@ api_port() { [[ "$1" == blue ]] && printf 8001 || printf 8002; }
 mcp_port() { [[ "$1" == blue ]] && printf 8766 || printf 8767; }
 read_digest() { [[ -f "$1" ]] && IFS= read -r digest <"$1" && is_digest "$digest" && printf '%s\n' "$digest"; }
 
-# Rollback references must be immutable. A tag is resolved from the container's
-# RepoDigests; if that is unavailable, only the previously validated API digest
-# may bootstrap it. Without either, fail before replacing a runnable unit.
-rollback_reference() { local image="$1" component="$2"; is_digest "$image" && { printf '%s\n' "$image"; return 0; }; read_digest "$DEPLOYED_DIGEST_FILE" || { printf '%s rollback reference is unavailable\n' "$component" >&2; return 1; }; }
+# Resolve the running container's own immutable repository digest. Docker's
+# container inspect may not expose RepoDigests; image inspect by content ID is
+# the authoritative fallback. A different unit's digest is not a rollback
+# reference for this container.
 unit_rollback_image() {
-  local container="$1" api_digest="$2" image resolved
+  local container="$1" image resolved image_id
   image="$(configured_image "$container" 2>/dev/null)" || { printf 'rollback image is unavailable: %s is absent\n' "$container" >&2; return 1; }
   is_digest "$image" && { printf '%s\n' "$image"; return 0; }
   resolved="$(docker inspect --format '{{index .RepoDigests 0}}' "$container" 2>/dev/null || true)"
   is_digest "$resolved" && { printf '%s\n' "$resolved"; return 0; }
-  is_digest "$api_digest" || { printf 'rollback image is unavailable for %s\n' "$container" >&2; return 1; }
-  printf 'container %s has no immutable image; bootstrapping from API digest\n' "$container" >&2
-  printf '%s\n' "$api_digest"
+  image_id="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null || true)"
+  if [[ -n "$image_id" ]]; then
+    resolved="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image_id" 2>/dev/null || true)"
+    is_digest "$resolved" && { printf '%s\n' "$resolved"; return 0; }
+  fi
+  printf 'rollback digest is unavailable for %s\n' "$container" >&2
+  return 1
 }
 
 # Capture every app container before the first mutation. The replacement log
 # records intent immediately before removing an instance, including failed
 # starts; rollback visits that log backwards and restores only logged units.
 capture_initial_state() {
-  local api_digest="$1" name
+  local name
   for name in "${APP_CONTAINERS[@]}"; do
     if container_exists "$name"; then
       container_running "$name" || { printf 'container is not running: %s\n' "$name" >&2; return 78; }
-      ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name" "$api_digest")" || return 1
+      ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name")" || return 1
     else
       ORIGINAL_IMAGES["$name"]=ABSENT
     fi
@@ -100,13 +104,10 @@ capture_initial_state() {
 record_replacement() { REPLACED_CONTAINERS+=("$1"); }
 
 running_digest() {
-  local name="$1" image resolved
+  local name="$1"
   container_exists "$name" || { printf 'ABSENT\n'; return 0; }
   container_running "$name" || { printf 'STOPPED\n'; return 0; }
-  image="$(configured_image "$name" 2>/dev/null)" || { printf 'UNKNOWN\n'; return 0; }
-  if is_digest "$image"; then printf '%s\n' "$image"; return 0; fi
-  resolved="$(docker inspect --format '{{index .RepoDigests 0}}' "$name" 2>/dev/null || true)"
-  if is_digest "$resolved"; then printf '%s\n' "$resolved"; else printf 'UNKNOWN\n'; fi
+  unit_rollback_image "$name" 2>/dev/null || printf 'UNKNOWN\n'
 }
 report_digests() {
   local name expected running status failed=0
@@ -254,7 +255,7 @@ deploy_mcp() {
 
 write_digest() { local digest="$1" tmp old; is_digest "$digest" || return 1; mkdir -p "$RUN_DIRECTORY"; umask 077; tmp="$(mktemp "${RUN_DIRECTORY}/.deployed-digest.XXXXXX")"; printf '%s\n' "$digest" >"$tmp"; if old="$(read_digest "$DEPLOYED_DIGEST_FILE")"; then printf '%s\n' "$old" >"${DEPLOYED_DIGEST_PREVIOUS_FILE}"; fi; mv -f "$tmp" "$DEPLOYED_DIGEST_FILE"; }
 finalize_drains() { [[ -z "$API_DRAIN_PENDING_COLOR" ]] || schedule_drain "at-api-${API_DRAIN_PENDING_COLOR}" "$API_DRAIN_SECONDS"; [[ -z "$MCP_DRAIN_PENDING_COLOR" ]] || schedule_drain "at-mcp-${MCP_DRAIN_PENDING_COLOR}" "$MCP_DRAIN_SECONDS"; }
-current_api_rollback_digest() { local color image; image="$(configured_image at-api 2>/dev/null || true)"; if [[ -z "$image" ]]; then color="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"; [[ -n "$color" ]] && image="$(configured_image "at-api-${color}" 2>/dev/null || true)"; fi; [[ -n "$image" ]] || { printf 'previous API container is required for rollback\n' >&2; return 1; }; rollback_reference "$image" API; }
+current_api_rollback_digest() { local color; if container_exists at-api; then unit_rollback_image at-api; return $?; fi; color="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"; [[ -n "$color" ]] || { printf 'previous API container is required for rollback\n' >&2; return 1; }; unit_rollback_image "at-api-${color}"; }
 set_promoted_expectations() {
   local name
   for name in "${REPLACED_CONTAINERS[@]}"; do
@@ -293,8 +294,8 @@ promote_digest() {
   finalize_drains; printf 'deployment completed: %s\n' "$digest"
 }
 prepare() { require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"; validate_mcp_tokens; }
-main() { local api_rollback digest; prepare || exit $?; api_rollback="$(current_api_rollback_digest)" || exit 78; capture_initial_state "$api_rollback" || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; }
-manual_rollback() { local previous api_rollback; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; api_rollback="$(current_api_rollback_digest)" || return 78; capture_initial_state "$api_rollback" || return 78; docker pull "$previous"; promote_digest "$previous"; }
+main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; }
+manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
 if [[ "$DEPLOY_MODE" == rollback ]]; then manual_rollback
 else main

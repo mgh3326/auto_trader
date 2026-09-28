@@ -42,6 +42,7 @@ def _run(
     mismatch_name: str = "",
     absent_name: str = "",
     stopped_name: str = "",
+    unresolved_name: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -53,6 +54,8 @@ def _run(
     initial = {name: KIS_OLD if name == "at-kis-ws" else OLD for name in INITIAL}
     if absent_name:
         del initial[absent_name]
+    if unresolved_name:
+        initial[unresolved_name] = "ghcr.io/mgh3326/auto_trader:mutable"
     initial["at-haproxy"] = "haproxy:3.1-alpine"
     state_path.write_text(json.dumps(initial))
     docker = textwrap.dedent(
@@ -79,7 +82,10 @@ def _run(
             else:
                 print('id-' + name)
         elif cmd == 'image':
-            print(os.environ['FAKE_NEW_DIGEST'])
+            if args[-1].startswith('id-'):
+                print('none' if args[-1] == 'id-' + os.environ.get('FAKE_UNRESOLVED_NAME', '') else os.environ['FAKE_OLD_DIGEST'])
+            else:
+                print(os.environ['FAKE_NEW_DIGEST'])
         elif cmd == 'run':
             name = args[args.index('--name') + 1]
             image = next((a for a in args if a.startswith('ghcr.io/mgh3326/auto_trader@sha256:')), 'haproxy:3.1-alpine')
@@ -150,10 +156,12 @@ def _run(
             "FAKE_DOCKER_STATE": str(state_path),
             "FAKE_DOCKER_LOG": str(log_path),
             "FAKE_NEW_DIGEST": NEW,
+            "FAKE_OLD_DIGEST": OLD,
             "FAKE_FAIL_NAME": fail_name,
             "FAKE_FAIL_HEALTH_NAME": fail_health_name,
             "FAKE_MISMATCH_NAME": mismatch_name,
             "FAKE_STOPPED_NAME": stopped_name,
+            "FAKE_UNRESOLVED_NAME": unresolved_name,
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
             "MCP_HEALTH_ATTEMPTS": "1",
@@ -286,6 +294,13 @@ def test_stopped_prior_unit_fails_before_any_mutation(tmp_path: Path) -> None:
     result, calls, _, _ = _run(tmp_path, stopped_name="at-worker")
     assert result.returncode != 0
     assert "container is not running: at-worker" in result.stderr
+    assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
+
+
+def test_unknown_prior_digest_fails_before_any_mutation(tmp_path: Path) -> None:
+    result, calls, _, _ = _run(tmp_path, unresolved_name="at-upbit-ws")
+    assert result.returncode != 0
+    assert "rollback digest is unavailable for at-upbit-ws" in result.stderr
     assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
 
 
