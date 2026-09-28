@@ -216,6 +216,10 @@ def test_every_proposal_enabled_default_tool_is_classified(
     assert PROPOSAL_REVALIDATE_TOOL_NAMES <= default
     assert "toss_proposal_accounts" in default
     assert "toss_proposal_accounts" in READ_ONLY_ADVISORY_TOOLS
+    # #883: the sweep's typed parking_exclusion read rides the same gate.
+    assert "get_parking_exclusion" in default
+    assert "get_parking_exclusion" in READ_ONLY_ADVISORY_TOOLS
+    assert "get_parking_exclusion" not in MUTATION_TOOLS
     assert default <= ALL_KNOWN_TOOLS
     assert ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES == (
         ORDER_PROPOSAL_READ_TOOLS
@@ -249,6 +253,10 @@ def test_read_only_bucket_has_no_phantom_tools():
         *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
         "toss_proposal_accounts",
+        # #883: cash-sweep parking_exclusion read, gated by
+        # settings.ORDER_PROPOSALS_ENABLED (default off) like the proposal
+        # surface it supports.
+        "get_parking_exclusion",
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (
