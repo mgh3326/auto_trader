@@ -16,6 +16,7 @@ tests/integration/services/test_forecast_read_window_candles.py
 tests/integration/test_paper_positions_market_filter.py
 tests/integration/test_rob279_stale_gate_blocked.py
 tests/integration/test_strategy_event_db_roundtrip.py
+tests/jobs/test_kis_mock_expiry_race.py
 tests/mcp_server/test_alpaca_paper_manual_boundary.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py

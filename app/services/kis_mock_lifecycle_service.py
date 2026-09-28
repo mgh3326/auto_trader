@@ -47,6 +47,10 @@ class LedgerNotFoundError(Exception):
     """Raised when a ledger row with the given id does not exist."""
 
 
+class ExpiredLifecycleConflict(ValueError):
+    """A fresh locked row is expired; generic reconciliation must skip it."""
+
+
 class KISMockLifecycleService:
     """Pure record-keeping service for KIS mock order lifecycle."""
 
@@ -179,76 +183,136 @@ class KISMockLifecycleService:
         today = _today_kst()
         decision_ref = operator_decision_ref.strip()
         out: list[dict[str, Any]] = []
-        for ledger_id in ledger_ids:
-            stmt = select(KISMockOrderLedger).where(KISMockOrderLedger.id == ledger_id)
-            if not dry_run:
-                stmt = stmt.with_for_update()
-            row = (await self._db.execute(stmt)).scalar_one_or_none()
-            if row is None:
+        for index, ledger_id in enumerate(ledger_ids):
+            try:
+                result = await self._expire_one_legacy_day_order(
+                    ledger_id=ledger_id,
+                    decision_ref=decision_ref,
+                    expected_strategy=expected_strategy,
+                    min_sessions=min_sessions,
+                    today=today,
+                    dry_run=dry_run,
+                )
+            except Exception:  # noqa: BLE001 - preserve earlier committed row results
+                # A failed commit may have an uncertain outcome. Never claim the
+                # current row stayed unchanged, and never erase earlier results.
+                try:
+                    await self._db.rollback()
+                except Exception:  # noqa: BLE001 - connection may already be lost
+                    pass
                 out.append(
                     {
                         "ledger_id": ledger_id,
                         "before_status": None,
                         "after_status": None,
-                        "decision": "refused",
-                        "reason_code": "row_missing",
+                        "decision": "error",
+                        "reason_code": (
+                            "row_review_unavailable"
+                            if dry_run
+                            else "write_outcome_unknown"
+                        ),
                         "evidence": {"scope": "row_local_and_xkrx_no_broker_read"},
                         "rule_version": RULE_VERSION,
                         "operator_decision_ref": decision_ref,
                     }
                 )
-                await self._db.rollback()
-                continue
-            before = row.lifecycle_state
-            reason, evidence = classify_row(
-                row,
-                expected_strategy=expected_strategy,
-                today=today,
-                min_sessions=min_sessions,
-                calendar=trading_session_status,
-            )
-            if reason == "eligible":
-                if await self._has_local_fill_row(row):
-                    reason = "fill_row_present"
-                else:
-                    evidence["no_local_fill_row"] = True
-            decision = "refused"
-            after = before
-            if reason == "eligible":
-                if dry_run:
-                    decision = "would_expire"
-                else:
-                    # This row remains locked from the service's own read and
-                    # complete eligibility check. The generic transition API
-                    # must never be able to bypass this Q-46 classification.
-                    row.lifecycle_state = "expired"
-                    row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
-                    row.last_reconcile_detail = {
-                        "reason_code": "operator_legacy_day_expired",
-                        "rule_version": RULE_VERSION,
-                        "operator_decision_ref": decision_ref,
-                        "evidence_scope": "row_local_and_xkrx_no_broker_read",
-                        "age_sessions": evidence["age_sessions"],
-                    }
-                    row.reconciled_at = datetime.now(tz=UTC)
-                    await self._db.commit()
-                    decision = "expired"
-                    after = "expired"
-            if decision != "expired":
-                await self._db.rollback()
-            out.append(
-                {
-                    "ledger_id": ledger_id,
-                    "before_status": before,
-                    "after_status": after,
-                    "decision": decision,
-                    "reason_code": reason,
-                    "evidence": evidence,
+                for unprocessed_id in ledger_ids[index + 1 :]:
+                    out.append(
+                        {
+                            "ledger_id": unprocessed_id,
+                            "before_status": None,
+                            "after_status": None,
+                            "decision": "not_processed",
+                            "reason_code": "prior_row_error",
+                            "evidence": {"scope": "row_local_and_xkrx_no_broker_read"},
+                            "rule_version": RULE_VERSION,
+                            "operator_decision_ref": decision_ref,
+                        }
+                    )
+                break
+            else:
+                out.append(result)
+        return out
+
+    async def _expire_one_legacy_day_order(
+        self,
+        *,
+        ledger_id: int,
+        decision_ref: str,
+        expected_strategy: str,
+        min_sessions: int,
+        today: date,
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        """Classify one row and commit only after the locked eligibility check."""
+        stmt = (
+            select(KISMockOrderLedger)
+            .where(KISMockOrderLedger.id == ledger_id)
+            .execution_options(populate_existing=True)
+        )
+        if not dry_run:
+            stmt = stmt.with_for_update()
+        with self._db.no_autoflush:
+            row = (await self._db.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            await self._db.rollback()
+            return {
+                "ledger_id": ledger_id,
+                "before_status": None,
+                "after_status": None,
+                "decision": "refused",
+                "reason_code": "row_missing",
+                "evidence": {"scope": "row_local_and_xkrx_no_broker_read"},
+                "rule_version": RULE_VERSION,
+                "operator_decision_ref": decision_ref,
+            }
+        before = row.lifecycle_state
+        reason, evidence = classify_row(
+            row,
+            expected_strategy=expected_strategy,
+            today=today,
+            min_sessions=min_sessions,
+            calendar=trading_session_status,
+        )
+        if reason == "eligible":
+            if await self._has_local_fill_row(row):
+                reason = "fill_row_present"
+            else:
+                evidence["no_local_fill_row"] = True
+        decision = "refused"
+        after = before
+        if reason == "eligible":
+            if dry_run:
+                decision = "would_expire"
+            else:
+                # This row remains locked from the service's own read and
+                # complete eligibility check. The generic transition API
+                # must never be able to bypass this Q-46 classification.
+                row.lifecycle_state = "expired"
+                row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+                row.last_reconcile_detail = {
+                    "reason_code": "operator_legacy_day_expired",
                     "rule_version": RULE_VERSION,
                     "operator_decision_ref": decision_ref,
+                    "evidence_scope": "row_local_and_xkrx_no_broker_read",
+                    "age_sessions": evidence["age_sessions"],
                 }
-            )
-        return out
+                row.reconciled_at = datetime.now(tz=UTC)
+                await self._db.commit()
+                decision = "expired"
+                after = "expired"
+        if decision != "expired":
+            await self._db.rollback()
+        return {
+            "ledger_id": ledger_id,
+            "before_status": before,
+            "after_status": after,
+            "decision": decision,
+            "reason_code": reason,
+            "evidence": evidence,
+            "rule_version": RULE_VERSION,
+            "operator_decision_ref": decision_ref,
+        }
 
     async def update_order_terms(
         self,
@@ -299,13 +363,24 @@ class KISMockLifecycleService:
         if next_state == "expired":
             raise ValueError("expired_requires_day_classification")
 
-        row = await self._db.get(KISMockOrderLedger, ledger_id)
+        stmt = (
+            select(KISMockOrderLedger)
+            .where(KISMockOrderLedger.id == ledger_id)
+            .execution_options(populate_existing=True)
+        )
+        if not dry_run:
+            stmt = stmt.with_for_update()
+        # The identity map may still hold a pre-expiry pending object from the
+        # holdings fetch. Suppress an autoflush of that stale object and load
+        # the current database row before deciding whether a write is allowed.
+        with self._db.no_autoflush:
+            row = (await self._db.execute(stmt)).scalar_one_or_none()
         if row is None:
             raise LedgerNotFoundError(str(ledger_id))
 
         prior_state = row.lifecycle_state
         if prior_state == "expired":
-            raise ValueError("expired_terminal_immutable")
+            raise ExpiredLifecycleConflict("expired_terminal_immutable")
         would_change = prior_state != next_state
 
         if dry_run:
@@ -354,5 +429,6 @@ class KISMockLifecycleService:
 __all__ = [
     "KISMockLifecycleService",
     "LedgerNotFoundError",
+    "ExpiredLifecycleConflict",
     "OPEN_LIFECYCLE_STATES",
 ]

@@ -88,8 +88,10 @@ def register_kis_mock_terminal_tools(mcp: FastMCP) -> None:
                 "error": "terminal_review_unavailable",
                 "rule_version": RULE_VERSION,
             }
+        incomplete = any(row["decision"] in {"error", "not_processed"} for row in rows)
         return {
-            "success": True,
+            "success": not incomplete,
+            **({"error": "terminal_review_incomplete"} if incomplete else {}),
             "account_mode": "kis_mock",
             "broker": "kis",
             "dry_run": dry_run,

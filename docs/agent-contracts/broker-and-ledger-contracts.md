@@ -183,6 +183,9 @@ KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감�
 운영자 결정 참조와 규칙 버전을 보존한다. 두 번째 호출은 감사 횟수까지 순수
 무변경이다. 브로커 미체결 증거로 해석하지 않는다. 실행 절차와 잔여 위험은
 `docs/runbooks/kis-mock-reconciliation.md`의 #706 항목을 따른다.
+일반 lifecycle 쓰기는 행 잠금과 fresh 재조회로 동시 만료를 확인하며, 만료된
+행에서는 전이를 거부한다. 조정 작업은 해당 충돌을 이벤트 없는 행별 skip으로
+기록한다.
 
 ### KIS Live Order Fill-Evidence Gate (ROB-395)
 

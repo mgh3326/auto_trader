@@ -147,6 +147,13 @@ second invocation does not change the row or audit counters.
 The generic lifecycle transition method rejects a request to enter expired
 and rejects any later transition out of an expired row. Only the locked,
 rechecked legacy DAY method can write this state.
+If holdings reconciliation fetched an order before expiry, its later write
+re-reads the row under a lock. An intervening expiry yields an
+expired_during_reconciliation skip without a transition event; the operator
+decision audit remains intact. If a later requested ID fails after earlier
+IDs committed, the tool returns success false with the committed row results,
+an error row for the uncertain ID, and not_processed rows for the rest. Review
+those rows before retrying; do not treat the whole request as rolled back.
 
 This classification uses persisted local facts and the calendar only. The KIS
 mock pending inquiry is unsupported, so no broker-open-order proof is claimed.
