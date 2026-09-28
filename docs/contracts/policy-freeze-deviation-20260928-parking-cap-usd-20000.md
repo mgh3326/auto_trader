@@ -1,6 +1,6 @@
 # Freeze deviation record — #880 US parking cumulative cap to USD 20,000
 
-Written before the code PR is merged. The authority is hk doc
+Filed in documentation PR #2122 before code PR #2123 is merged. The authority is hk doc
 strategy-lab/2026-09-28/cash-sweep-parking-lane, section 5, decision 2
 (2026-09-28 evening): the operator adopted the US parking cumulative cap
 change from USD 10,000 to USD 20,000 through
@@ -12,7 +12,7 @@ freeze_epoch_id: UNKNOWN
   # No freeze-epoch value was supplied with decision 2. The buy-gate shadow
   # epoch is a separate axis and is not substituted here.
 change_id: task880-parking-cap-usd-20000-20260928
-pr_number: 2122
+pr_number: 2123
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
   hk doc strategy-lab/2026-09-28/cash-sweep-parking-lane, section 5,
@@ -31,6 +31,7 @@ consumer_paths:
   - app/services/order_proposals/parking_allowlist.py
   - app/services/order_proposals/auto_approve.py
   - app/services/order_proposals/parking_exposure.py
+  - app/services/order_proposals/dispatch.py
   - app/services/order_proposals/service.py
 effective_at: >-
   Only after the code PR merges and its code is deployed. The deployment
@@ -96,8 +97,10 @@ task 880: the loader hashes raw file bytes, and the pinned
 policy_content_hash dda6a0541849 is used by sealed and shadow consumers.
 The enforced current value is the code constant PARKING_CUMULATIVE_CAP_USD,
 not that YAML comment. Update the stale comment at the next intentional
-policy version bump; until then, read the code constant and this deviation
-record for the current bound.
+policy version bump. The YAML source field also retains dated descriptions
+of the former cap as provenance and stays byte-identical until that bump.
+Until then, read the code constant and this deviation record for the current
+bound.
 
 The reported SGOV position of 98 shares, approximately USD 9,861, explains
 why the former ceiling blocks additional parking. That estimate is context,
