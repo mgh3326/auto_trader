@@ -1523,6 +1523,7 @@
       "get_operating_briefing",
       "get_order_history",
       "get_orderbook",
+      "get_parking_exclusion",
       "get_portfolio_allocation",
       "get_position",
       "get_protected_positions",
