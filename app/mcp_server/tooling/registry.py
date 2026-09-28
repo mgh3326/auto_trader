@@ -612,10 +612,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     elif profile in LIVE_PROFILES:
         # #891 / Q-53 — the order-family registrars run through the manifest
         # filter, so only the manifest's listed names can land (core/extension
-        # reads plus the per-lane emergency cancel/modify/reconcile/loss_cut
-        # set). Everything else each registrar emits — kis_live_place_order,
-        # the harness-denied kis_live_get_order_history (#678), previews,
-        # mock reconcile — is physically dropped.
+        # reads plus the per-lane emergency cancel/modify/reconcile set and
+        # the loss_cut planning preview). Everything else each registrar
+        # emits — every direct place tool (ROB-864 disables loss_cut on them,
+        # so none are loss_cut paths), the harness-denied
+        # kis_live_get_order_history (#678), previews, mock reconcile — is
+        # physically dropped.
         register_order_tools(mcp)
         if profile is McpProfile.LIVE_KR:
             register_toss_live_order_tools(mcp)

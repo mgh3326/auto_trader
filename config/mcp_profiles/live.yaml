@@ -13,16 +13,31 @@
 #   extension — up to 10 per-market heavy hitters from the usage doc.
 #   emergency — recovery exceptions, existing tools only, kept in their
 #               own group so they are visible: cancel, modify, reconcile,
-#               watch void, and the loss_cut exit path. This is the ONLY
-#               group where order-mutation tools may appear, and only the
-#               names listed per lane.
+#               watch void, and the loss_cut recovery/planning reads. This is
+#               the ONLY group where order-mutation tools may appear, and
+#               only the names listed per lane.
 #
-# Deliberate emergency notes:
-#   * place_order carries the loss_cut exit path via exit_intent="loss_cut"
-#     (approval_issue_id flow). kis_live_place_order is deliberately NOT
-#     listed — ROB-864 disables loss_cut on that direct tool.
+# Counting rule (Q-53): the "20-25 tools per lane" budget applies to
+# core+extension; emergency entries are additive named exceptions.
+# core 15 + extension <= 10 lands every lane inside the budget.
+#
+# loss_cut truth (verified against the code):
+#   * The ONLY existing loss_cut execution path is
+#     order_proposal_create(exit_intent="loss_cut") — kept in CORE.
+#   * The direct place tools (place_order, toss_place_order,
+#     kis_live_place_order) reject exit_intent="loss_cut" outright
+#     (ROB-864, error loss_cut_direct_path_disabled_use_order_proposal_create),
+#     so they are NOT loss_cut paths. Listing them would silently grant
+#     unrestricted direct live placement outside the proposal/Telegram
+#     approval flow — they are therefore not listed anywhere.
+#   * The emergency group instead carries the loss_cut recovery/planning
+#     reads: order_proposal_list_expired_defensive (ROB-929 handoff of
+#     expired/voided loss_cut proposals) and sell_ladder_fill_preview
+#     (non-executing exit-fill preview).
 #   * kis_live_get_order_history stays out entirely — harness-denied for
-#     live sessions (#678, HARNESS_DENIED_TOOLS).
+#     live sessions (#678, HARNESS_DENIED_TOOLS). get_upbit_altseason is the
+#     same denial class but listed on live-crypto per operator decision
+#     Q-58 (registered surface only until the #678 denial is lifted).
 #
 # Every line carries its 30-day call count from the usage evidence doc
 # (calls_30d) and a one-line purpose. Counts are reference only (Sentry
@@ -53,8 +68,8 @@ profiles:
   live-kr:
     description: >-
       KR live lane (KIS/Toss domestic). Proposal-led trading plus the
-      emergency recovery group; order placement outside loss_cut is never
-      direct.
+      emergency recovery group; no direct place-order tool is exposed —
+      every placement (incl. loss_cut) goes through order_proposal_create.
     groups:
       # core 15: quotes, balances, open orders, proposals, watches, records
       core:
@@ -135,12 +150,10 @@ profiles:
         - name: get_news
           calls_30d: 98
           purpose: "Recent market/security news."
-      # emergency/recovery exceptions — existing tools only, own group
+      # emergency/recovery exceptions — existing tools only, own group.
+      # No direct place tool: loss_cut is disabled on all of them (ROB-864);
+      # the loss_cut path is order_proposal_create (core).
       emergency:
-        - name: place_order
-          purpose: "loss_cut exit path: exit_intent='loss_cut' sell via approval_issue_id flow (generic account_mode route; kis_live_place_order deliberately excluded — ROB-864 disables loss_cut there)."
-        - name: toss_place_order
-          purpose: "loss_cut exit path for the Toss KR leg (exit_intent='loss_cut' accepted)."
         - name: cancel_order
           purpose: "Cancel an open order (generic account_mode route)."
         - name: modify_order
@@ -160,10 +173,16 @@ profiles:
         - name: investment_watch_void
           calls_30d: 6
           purpose: "Void an investment watch (watch lifecycle recovery)."
+        - name: order_proposal_list_expired_defensive
+          purpose: "loss_cut recovery read: expired/voided loss_cut+defensive_trim proposals handed off for re-judgment (ROB-929)."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: sell_ladder_fill_preview
+          purpose: "loss_cut planning read: non-executing ladder-exit fill preview (plan the exit, then propose it)."
   live-us:
     description: >-
       US live lane. Proposal-led trading plus the emergency recovery group;
-      order placement outside loss_cut is never direct.
+      no direct place-order tool is exposed — every placement (incl.
+      loss_cut) goes through order_proposal_create.
     groups:
       core:
         - name: get_quote
@@ -243,8 +262,6 @@ profiles:
           calls_30d: 98
           purpose: "Recent market/security news."
       emergency:
-        - name: place_order
-          purpose: "loss_cut exit path: exit_intent='loss_cut' sell via approval_issue_id flow (generic account_mode route)."
         - name: cancel_order
           purpose: "Cancel an open order (generic account_mode route)."
         - name: modify_order
@@ -254,10 +271,16 @@ profiles:
         - name: investment_watch_void
           calls_30d: 6
           purpose: "Void an investment watch (watch lifecycle recovery)."
+        - name: order_proposal_list_expired_defensive
+          purpose: "loss_cut recovery read: expired/voided loss_cut+defensive_trim proposals handed off for re-judgment (ROB-929)."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: sell_ladder_fill_preview
+          purpose: "loss_cut planning read: non-executing ladder-exit fill preview (plan the exit, then propose it)."
   live-crypto:
     description: >-
       Crypto live lane (Upbit). Proposal-led trading plus the emergency
-      recovery group; order placement outside loss_cut is never direct.
+      recovery group; no direct place-order tool is exposed — every
+      placement (incl. loss_cut) goes through order_proposal_create.
     groups:
       core:
         - name: get_quote
@@ -327,9 +350,6 @@ profiles:
         - name: get_market_index
           calls_30d: 113
           purpose: "Market index levels."
-        - name: analyze_stock_batch
-          calls_30d: 570
-          purpose: "Batch multi-symbol analysis (top-20 usage)."
         - name: get_crypto_fear_greed
           calls_30d: 89
           purpose: "Crypto fear/greed sentiment index."
@@ -339,9 +359,10 @@ profiles:
         - name: get_orderbook
           calls_30d: 95
           purpose: "Order book depth for a crypto symbol."
+        - name: get_upbit_altseason
+          calls_30d: 0
+          purpose: "Public Upbit altseason index for C1 breadth (operator Q-58). #678 harness-denied — registers on the profile; live-session harness reachability follows the denial until lifted."
       emergency:
-        - name: place_order
-          purpose: "loss_cut exit path: exit_intent='loss_cut' sell via approval_issue_id flow (generic account_mode route; Upbit)."
         - name: cancel_order
           purpose: "Cancel an open order (generic account_mode route; Upbit)."
         - name: modify_order
@@ -351,3 +372,8 @@ profiles:
         - name: investment_watch_void
           calls_30d: 6
           purpose: "Void an investment watch (watch lifecycle recovery)."
+        - name: order_proposal_list_expired_defensive
+          purpose: "loss_cut recovery read: expired/voided loss_cut+defensive_trim proposals handed off for re-judgment (ROB-929)."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: sell_ladder_fill_preview
+          purpose: "loss_cut planning read: non-executing ladder-exit fill preview (plan the exit, then propose it)."

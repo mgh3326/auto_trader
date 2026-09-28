@@ -4,9 +4,10 @@
 tool lists live in ONE operator-readable file — ``config/mcp_profiles/
 live.yaml`` — split into three groups per lane: ``core`` (15 tools), the
 per-market ``extension`` (up to 10), and ``emergency`` recovery exceptions
-(cancel / modify / reconcile / watch-void / loss_cut paths — existing tools
-only, kept visible in their own group). All three groups load; Q-53 is the
-baseline before runner mechanization.
+(cancel / modify / reconcile / watch-void plus the loss_cut recovery/planning
+reads — existing tools only, kept visible in their own group; the loss_cut
+execution path itself is proposal-led and lives in ``core``). All three
+groups load; Q-53 is the baseline before runner mechanization.
 
 Safety shape (fail-closed, checked at startup/registration time):
 
@@ -91,11 +92,22 @@ _LIVE_ALLOWED_MUTATIONS: frozenset[str] = frozenset(
 # named from the code; a name not on this list is rejected even in
 # ``emergency`` (e.g. kis_live_place_order, whose loss_cut path is disabled
 # by ROB-864, and kis_live_get_order_history, harness-denied per #678).
+#
+# loss_cut truth (verified against the code): the ONLY existing loss_cut
+# execution path is ``order_proposal_create(exit_intent="loss_cut")``, which
+# lives in ``core`` on every live lane. The direct place tools
+# (``place_order``, ``toss_place_order``, ``kis_live_place_order``) reject
+# ``exit_intent="loss_cut"`` outright (ROB-864 —
+# ``loss_cut_direct_path_disabled_use_order_proposal_create``), so they are
+# NOT loss_cut paths; listing them would silently grant unrestricted direct
+# live placement outside the proposal/Telegram approval flow. They are
+# therefore absent from this set entirely. The loss_cut-adjacent recovery
+# reads below are ``order_proposal_list_expired_defensive`` (ROB-929 handoff
+# of expired/voided loss_cut+defensive_trim proposals for re-judgment) and
+# ``sell_ladder_fill_preview`` (non-executing ladder-exit fill preview used
+# to plan an emergency exit before proposing it).
 LIVE_EMERGENCY_TOOL_NAMES: frozenset[str] = frozenset(
     {
-        # loss_cut exit paths (exit_intent="loss_cut")
-        "place_order",
-        "toss_place_order",
         # cancel
         "cancel_order",
         "kis_live_cancel_order",
@@ -110,8 +122,23 @@ LIVE_EMERGENCY_TOOL_NAMES: frozenset[str] = frozenset(
         "live_reconcile_orders",
         # watch void
         "investment_watch_void",
+        # loss_cut recovery/planning reads (execution stays proposal-led):
+        "order_proposal_list_expired_defensive",
+        "sell_ladder_fill_preview",
     }
 )
+
+# Q-58: operator-approved exception. ``get_upbit_altseason`` is #678
+# harness-denied (it primes the shared Upbit index cache that
+# ``get_upbit_index`` serves as truth), but the operator chose to expose it
+# on live-crypto for C1 breadth: a read-only public Upbit index with a
+# process TTL cache. It registers on the profile surface; live-session
+# harness reachability still follows the #678 lane denial until that policy
+# is lifted. The exception is scoped per-profile: the name stays forbidden
+# on live-kr / live-us.
+_HARNESS_DENIED_LIVE_ALLOWED: dict[str, frozenset[str]] = {
+    McpProfile.LIVE_CRYPTO.value: frozenset({"get_upbit_altseason"}),
+}
 
 # Write/persistence tools the operator draft (Q-52) explicitly authorizes on
 # live profiles. Any other write tool may only appear under ``extension``
@@ -206,10 +233,20 @@ def _validate_tool_entry(
         raise _fail(f"{where}.name must be a snake_case tool name, got {name!r}")
 
     emergency_named = name in LIVE_EMERGENCY_TOOL_NAMES
-    if (
-        name in LIVE_FORBIDDEN_TOOL_NAMES
-        or (_LIVE_FORBIDDEN_NAME_RE.search(name) and not emergency_named)
-    ) and not (group == LIVE_GROUP_EMERGENCY and emergency_named):
+    harness_allowed = name in _HARNESS_DENIED_LIVE_ALLOWED.get(
+        profile_name, frozenset()
+    )
+    forbidden = name in LIVE_FORBIDDEN_TOOL_NAMES or (
+        _LIVE_FORBIDDEN_NAME_RE.search(name) and not emergency_named
+    )
+    if forbidden and not harness_allowed:
+        if group == LIVE_GROUP_EMERGENCY:
+            raise _fail(
+                f"{where}.name '{name}' is forbidden on live profiles: not a "
+                "named emergency tool (direct place-order paths are excluded "
+                "entirely — ROB-864 disables loss_cut on them — as are "
+                "proposal-lifecycle, persistence, and harness-denied tools)"
+            )
         raise _fail(
             f"{where}.name '{name}' is forbidden on live profiles outside "
             "the emergency group (broker order/cancel/modify, reconcile, "

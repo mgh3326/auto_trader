@@ -123,24 +123,38 @@ _LIVE_ORDER_NAME_RE = re.compile(
 #   investment_watch_void — watch-void emergency exception (Q-53).
 #   kis_live_reconcile_orders — KR emergency reconcile (Q-53).
 #   toss_modify_order — Toss KR emergency modify (Q-53).
+#   order_proposal_list_expired_defensive — loss_cut recovery read (Q-53).
+#   sell_ladder_fill_preview — loss_cut planning preview (Q-53).
 _MANIFEST_TOOLS_WITHOUT_LANE_AUDIT = frozenset(
     {
         "execution_ledger_fill_events_list_recent",
         "investment_watch_void",
         "kis_live_reconcile_orders",
         "toss_modify_order",
+        "order_proposal_list_expired_defensive",
+        "sell_ladder_fill_preview",
     }
 )
 
 # Names that must NEVER appear on a live profile, even in the emergency
-# group: loss_cut is disabled on the kis_live direct place path (ROB-864),
-# and kis_live_get_order_history is harness-denied (#678).
+# group: loss_cut is disabled on every direct place path (ROB-864 — so
+# place_order/toss_place_order would only grant unrestricted direct
+# placement, verified tester r3), and kis_live_get_order_history is
+# harness-denied (#678).
 _LIVE_NEVER_TOOL_NAMES = frozenset(
     {
+        "place_order",
+        "toss_place_order",
         "kis_live_place_order",
         "kis_live_get_order_history",
     }
 )
+
+# Q-58: the only harness-denied tool permitted on a live profile —
+# operator-approved for live-crypto's C1 breadth read.
+_HARNESS_DENIED_ALLOWED = {
+    McpProfile.LIVE_CRYPTO: frozenset({"get_upbit_altseason"}),
+}
 
 _LIVE_PROFILE_VALUES = sorted(profile.value for profile in LIVE_PROFILES)
 
@@ -182,7 +196,7 @@ def _assert_registered_equals_manifest(
 
 
 def _assert_mutations_confined_to_emergency(
-    tool_names: set[str], emergency_names: set[str]
+    profile: McpProfile, tool_names: set[str], emergency_names: set[str]
 ) -> None:
     """Every mutation-class name present must be a named emergency entry."""
     mutationish = {
@@ -198,7 +212,8 @@ def _assert_mutations_confined_to_emergency(
         f"mutation tools outside the named emergency set: "
         f"{sorted(mutationish - emergency_names)}"
     )
-    assert not (tool_names & HARNESS_DENIED_TOOLS)
+    allowed_denied = _HARNESS_DENIED_ALLOWED.get(profile, frozenset())
+    assert not (tool_names & (HARNESS_DENIED_TOOLS - allowed_denied))
     assert not (tool_names & _LIVE_NEVER_TOOL_NAMES)
 
 
@@ -415,6 +430,36 @@ class TestManifestSchema:
         with pytest.raises(ValueError, match="caps extension at 10"):
             load_live_manifest(bad)
 
+    def test_harness_denied_altseason_rejected_off_crypto(self, tmp_path: Path) -> None:
+        """Q-58 scoped the exception to live-crypto — the same manifest line
+        must fail on live-kr / live-us."""
+        for denied_profile in ("live-kr", "live-us"):
+            profiles = {
+                name: {
+                    "groups": {
+                        "core": [{"name": "get_quote", "calls_30d": 1, "purpose": "x"}],
+                        "extension": [
+                            {"name": "get_news", "calls_30d": 1, "purpose": "x"},
+                            {
+                                "name": "get_upbit_altseason",
+                                "calls_30d": 0,
+                                "purpose": "x",
+                            },
+                        ],
+                        "emergency": [{"name": "cancel_order", "purpose": "x"}],
+                    }
+                }
+                for name in _LIVE_PROFILE_VALUES
+            }
+            # Only the denied lane carries the tool; the others stay clean.
+            for name in _LIVE_PROFILE_VALUES:
+                if name != denied_profile:
+                    profiles[name]["groups"]["extension"].pop()
+            bad = tmp_path / f"live-{denied_profile}.yaml"
+            bad.write_text(yaml.safe_dump({"version": 1, "profiles": profiles}))
+            with pytest.raises(ValueError, match="forbidden on live profiles"):
+                load_live_manifest(bad)
+
 
 class TestManifestEqualsRegistry:
     """The registered live surface must equal the manifest selection exactly."""
@@ -463,11 +508,15 @@ class TestStrictSubsetAndEmergencyConfinement:
         registered = set(
             collect_profile_tools(monkeypatch, gates_enabled=True)[profile.value]
         )
-        _assert_mutations_confined_to_emergency(registered, _emergency(profile))
+        _assert_mutations_confined_to_emergency(
+            profile, registered, _emergency(profile)
+        )
 
     @pytest.mark.parametrize("profile", sorted(LIVE_PROFILES, key=str))
     def test_manifest_mutations_are_only_emergency(self, profile: McpProfile) -> None:
-        _assert_mutations_confined_to_emergency(_selected(profile), _emergency(profile))
+        _assert_mutations_confined_to_emergency(
+            profile, _selected(profile), _emergency(profile)
+        )
 
     @pytest.mark.parametrize("profile", sorted(LIVE_PROFILES, key=str))
     def test_write_tools_either_draft_or_extension_or_emergency(
@@ -593,11 +642,12 @@ class TestRegistrationFailureModes:
             "get_trading_policy",
             "investment_watch_expire",
             "sweep_expired_watches",
+            # Proposal lifecycle stays off live surfaces; only the read-only
+            # order_proposal_list_expired_defensive is named (emergency).
             "proposal_revalidate",
             "order_proposal_void",
             "order_proposal_expire_sweep",
             "order_proposal_redispatch",
-            "order_proposal_list_expired_defensive",
             "support_reserve_net_consume",
             "toss_get_positions",
             "toss_get_orderable_cash",
@@ -605,6 +655,11 @@ class TestRegistrationFailureModes:
             "toss_detect_manual_activity",
             "decision_table_apply",
             "live_reconcile_orders",
+            # ROB-864: loss_cut is disabled on every direct place path, so
+            # they are not loss_cut tools — listing them would only grant
+            # unrestricted direct placement (tester r3 finding).
+            "place_order",
+            "toss_place_order",
             "kis_live_place_order",
             "kis_live_get_order_history",
             "kis_mock_reconciliation_run",
@@ -661,12 +716,12 @@ class TestAssertionRedMutants:
             )
 
     def test_emergency_assertion_catches_place_leak(self) -> None:
-        """kis_live_place_order is not an emergency-eligible name — a leak
-        must turn RED."""
-        mutant = _selected(McpProfile.LIVE_KR) | {"kis_live_place_order"}
+        """place_order is not an emergency-eligible name on any lane — a
+        leak must turn RED (it cannot do loss_cut; ROB-864)."""
+        mutant = _selected(McpProfile.LIVE_KR) | {"place_order"}
         with pytest.raises(AssertionError):
             _assert_mutations_confined_to_emergency(
-                mutant, _emergency(McpProfile.LIVE_KR)
+                McpProfile.LIVE_KR, mutant, _emergency(McpProfile.LIVE_KR)
             )
 
     def test_emergency_assertion_catches_unlisted_mutation_leak(self) -> None:
@@ -675,7 +730,7 @@ class TestAssertionRedMutants:
         mutant = _selected(McpProfile.LIVE_US) | {"alpaca_paper_submit_order"}
         with pytest.raises(AssertionError):
             _assert_mutations_confined_to_emergency(
-                mutant, _emergency(McpProfile.LIVE_US)
+                McpProfile.LIVE_US, mutant, _emergency(McpProfile.LIVE_US)
             )
 
     def test_emergency_assertion_catches_reconcile_leak(self) -> None:
@@ -684,14 +739,23 @@ class TestAssertionRedMutants:
         mutant = _selected(McpProfile.LIVE_CRYPTO) | {"kis_live_reconcile_orders"}
         with pytest.raises(AssertionError):
             _assert_mutations_confined_to_emergency(
-                mutant, _emergency(McpProfile.LIVE_CRYPTO)
+                McpProfile.LIVE_CRYPTO, mutant, _emergency(McpProfile.LIVE_CRYPTO)
             )
 
     def test_emergency_assertion_catches_harness_denied_leak(self) -> None:
         mutant = _selected(McpProfile.LIVE_KR) | {"kis_live_get_order_history"}
         with pytest.raises(AssertionError):
             _assert_mutations_confined_to_emergency(
-                mutant, _emergency(McpProfile.LIVE_KR)
+                McpProfile.LIVE_KR, mutant, _emergency(McpProfile.LIVE_KR)
+            )
+
+    def test_emergency_assertion_catches_off_lane_altseason_leak(self) -> None:
+        """get_upbit_altseason is Q-58-approved ONLY on live-crypto — a leak
+        onto live-kr must turn RED (it stays harness-denied there)."""
+        mutant = _selected(McpProfile.LIVE_KR) | {"get_upbit_altseason"}
+        with pytest.raises(AssertionError):
+            _assert_mutations_confined_to_emergency(
+                McpProfile.LIVE_KR, mutant, _emergency(McpProfile.LIVE_KR)
             )
 
 
@@ -701,8 +765,8 @@ class TestGroupCounts:
     def test_per_lane_group_counts(self) -> None:
         expected = {
             "live-kr": {"core": 15, "extension": 9, "emergency": 11},
-            "live-us": {"core": 15, "extension": 9, "emergency": 5},
-            "live-crypto": {"core": 15, "extension": 10, "emergency": 5},
+            "live-us": {"core": 15, "extension": 9, "emergency": 6},
+            "live-crypto": {"core": 15, "extension": 10, "emergency": 6},
         }
         manifest = _manifest()
         for profile_name, groups in expected.items():

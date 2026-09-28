@@ -512,13 +512,14 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # FILL_WATCH_CONTEXT is a closed-world, context-only consumer profile.
     McpProfile.FILL_WATCH_CONTEXT: set(),
     # #891 / Q-53 — closed-world live surfaces. The manifest's core order-
-    # history reads plus the named emergency cancel/modify/reconcile/loss_cut
-    # set may appear; kis_live_place_order (ROB-864 loss_cut-disabled) and the
-    # harness-denied kis_live_get_order_history never land.
+    # history reads plus the named emergency cancel/modify/reconcile set and
+    # the non-executing sell_ladder_fill_preview (loss_cut planning) may
+    # appear. No direct place tool lands anywhere: ROB-864 disables loss_cut
+    # on all of them, so they are not loss_cut paths and would only grant
+    # unrestricted direct placement (tester r3); the harness-denied
+    # kis_live_get_order_history never lands either.
     McpProfile.LIVE_KR: {
         "toss_get_order_history",
-        "place_order",
-        "toss_place_order",
         "cancel_order",
         "modify_order",
         "kis_live_cancel_order",
@@ -527,20 +528,21 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "toss_cancel_order",
         "toss_modify_order",
         "toss_reconcile_orders",
+        "sell_ladder_fill_preview",
     },
     McpProfile.LIVE_US: {
         "get_order_history",
-        "place_order",
         "cancel_order",
         "modify_order",
         "live_reconcile_orders",
+        "sell_ladder_fill_preview",
     },
     McpProfile.LIVE_CRYPTO: {
         "get_order_history",
-        "place_order",
         "cancel_order",
         "modify_order",
         "live_reconcile_orders",
+        "sell_ladder_fill_preview",
     },
 }
 _ALL_ORDER_TOOL_NAMES = (

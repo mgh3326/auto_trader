@@ -13,8 +13,13 @@ Each profile declares **three groups**, all loaded:
 | group | size | contents |
 |---|---|---|
 | `core` | 15 | quotes, balances, open orders, proposals, watches, records. `get_available_capital`, never `get_cash_balance`. |
-| `extension` | ≤10 | per-market heavy hitters (route_request, get_operating_briefing, analysis_artifact_save, trade_retrospective_pending, execution_ledger_fill_events_list_recent, get_market_index; crypto adds fear_greed/long_short_ratio/orderbook) |
-| `emergency` | named set | recovery exceptions — existing tools only: cancel, modify, reconcile, watch void, loss_cut exit paths |
+| `extension` | ≤10 | per-market heavy hitters (route_request, get_operating_briefing, analysis_artifact_save, trade_retrospective_pending, execution_ledger_fill_events_list_recent, get_market_index; crypto adds fear_greed/long_short_ratio/orderbook and `get_upbit_altseason` per Q-58) |
+| `emergency` | named set | recovery exceptions — existing tools only: cancel, modify, reconcile, watch void, loss_cut recovery/planning reads |
+
+Q-53's "20-25 tools per lane" budget applies to `core` + `extension`
+(15 + ≤10); `emergency` entries are additive named exceptions — an
+all-inclusive cap would be unsatisfiable (crypto's mandated minimum alone is
+29).
 
 Q-53 (2026-09-28) replaced the earlier Q-52 CORE/EXTENDED tiering — there is
 no tier switch; the whitelist is the baseline before runner mechanization
@@ -49,25 +54,55 @@ Hard properties (enforced in `app/mcp_server/tooling/live_profile_registration.p
 
 ## The emergency group (Q-53)
 
-Recovery tools exist so a live session can still cancel/modify/reconcile and
-run the loss_cut exit path — but they stay visible in their own group.
-Named per lane:
+Recovery tools exist so a live session can still cancel/modify/reconcile,
+void a watch, and work the loss_cut path — but they stay visible in their
+own group. Named per lane:
 
-- `live-kr`: `place_order`, `toss_place_order` (loss_cut exit paths via
-  `exit_intent="loss_cut"`), `cancel_order`, `modify_order`,
-  `kis_live_cancel_order`, `kis_live_modify_order`,
-  `kis_live_reconcile_orders`, `toss_cancel_order`, `toss_modify_order`,
-  `toss_reconcile_orders`, `investment_watch_void`
-- `live-us` / `live-crypto`: `place_order`, `cancel_order`, `modify_order`,
-  `live_reconcile_orders`, `investment_watch_void`
+- `live-kr`: `cancel_order`, `modify_order`, `kis_live_cancel_order`,
+  `kis_live_modify_order`, `kis_live_reconcile_orders`,
+  `toss_cancel_order`, `toss_modify_order`, `toss_reconcile_orders`,
+  `investment_watch_void`, `order_proposal_list_expired_defensive`,
+  `sell_ladder_fill_preview`
+- `live-us` / `live-crypto`: `cancel_order`, `modify_order`,
+  `live_reconcile_orders`, `investment_watch_void`,
+  `order_proposal_list_expired_defensive`, `sell_ladder_fill_preview`
+
+### loss_cut truth — why no direct place tool is listed
+
+The ONLY existing loss_cut execution path is
+`order_proposal_create(exit_intent="loss_cut")`, which lives in `core` on
+every lane. All direct place tools (`place_order`, `toss_place_order`,
+`kis_live_place_order`) reject `exit_intent="loss_cut"` outright (ROB-864 —
+`loss_cut_direct_path_disabled_use_order_proposal_create`), so they are NOT
+loss_cut paths: listing them would silently grant unrestricted direct live
+buy/sell outside the proposal/Telegram approval flow (independent-tester
+round-3 finding). The emergency group therefore carries the loss_cut
+recovery/planning reads instead:
+
+- `order_proposal_list_expired_defensive` — read-only handoff of
+  expired/voided loss_cut/defensive_trim proposals for re-judgment (ROB-929;
+  gated on `ORDER_PROPOSALS_ENABLED`).
+- `sell_ladder_fill_preview` — non-executing ladder-exit fill preview to
+  plan an emergency exit before proposing it.
 
 Deliberate non-members:
 
-- `kis_live_place_order` — ROB-864 disables `exit_intent="loss_cut"` on that
-  direct tool, so it cannot serve the loss_cut path and is refused even in
-  the emergency group.
+- `place_order` / `toss_place_order` / `kis_live_place_order` — cannot do
+  loss_cut (ROB-864); exposing them would add direct live placement, which
+  is not an operator-approved live surface.
 - `kis_live_get_order_history` — harness-denied for live sessions (#678,
   `HARNESS_DENIED_TOOLS`); refused in every group.
+
+## The Q-58 crypto exception
+
+`get_upbit_altseason` sits in `HARNESS_DENIED_TOOLS` (#678 — it primes the
+shared Upbit index cache that `get_upbit_index` serves as truth), but the
+operator approved it for live-crypto's C1 breadth read. It is a read-only
+public Upbit index with a process TTL cache and registers on the profile's
+`extension` group. Caveat: live-session harnesses still deny it at the
+lane-policy layer until #678 is lifted — the profile surface exposes it,
+the live-session runtime may not reach it. The exception is scoped: the
+same manifest line is refused on live-kr / live-us.
 
 ## Switching the NCP live sessions to a live-* profile
 
@@ -91,7 +126,8 @@ Desk-owned; do this **only after the #180 freeze** (about
    (`tools/list` count equals the profile's group totals; see
    `tests/mcp_server/profile_tool_snapshot.json` for the expected names).
    Order-mutation names may appear ONLY as the lane's named emergency
-   entries — no `kis_live_place_order`, no `kis_live_get_order_history`.
+   entries — no direct place tool at all (`place_order`, `toss_place_order`,
+   `kis_live_place_order` are all absent), no `kis_live_get_order_history`.
 6. Rollback = set `MCP_PROFILE` back to `default` and restart.
 
 ## Adding a tool (operator-approved PR)
@@ -126,8 +162,10 @@ failures, refusals, and one-minute corrections).
 - `kis_live_get_order_history` — 227 calls/30d but harness-denied for live
   sessions per the #678 ruling (`HARNESS_DENIED_TOOLS`); cannot be added
   without lifting the harness denial first.
-- `kis_live_place_order` — ROB-864 disables the loss_cut exit on it; the
-  generic `place_order` (and `toss_place_order` on KR) carry that path.
+- `place_order` / `toss_place_order` / `kis_live_place_order` — direct
+  place paths: ROB-864 disables `loss_cut` on all of them, so they cannot
+  serve the loss_cut path and would only grant unrestricted direct
+  placement. Not listed anywhere; the proposal flow is the exit path.
 - `get_cash_balance` — 12 calls/30d; superseded by `get_available_capital`
   (208 calls).
 - `get_fx_rate`, `get_indicators`, `screen_stocks`, `search_symbol`,
