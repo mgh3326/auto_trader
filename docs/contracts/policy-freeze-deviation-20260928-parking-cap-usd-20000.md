@@ -90,12 +90,14 @@ An unavailable balance or durable read refuses auto approval, but the guard
 is not a broker-side reservation and cannot prove that simultaneous activity
 outside this proposal path is absent.
 
-The required update to the section 163 explanatory comments in
-config/trading_policy.yaml changes the runtime policy content hash because
-the loader hashes the raw file bytes, including comments. Parsed policy keys
-and values and the declared version do not change. The code PR must update
-the pinned hash assertion and verify that this metadata change does not move
-the separately sealed buy-gate shadow policy projection.
+The section 163 comment in config/trading_policy.yaml still says USD 10,000.
+It is intentionally left unchanged under the director-1 disposition for
+task 880: the loader hashes raw file bytes, and the pinned
+policy_content_hash dda6a0541849 is used by sealed and shadow consumers.
+The enforced current value is the code constant PARKING_CUMULATIVE_CAP_USD,
+not that YAML comment. Update the stale comment at the next intentional
+policy version bump; until then, read the code constant and this deviation
+record for the current bound.
 
 The reported SGOV position of 98 shares, approximately USD 9,861, explains
 why the former ceiling blocks additional parking. That estimate is context,
