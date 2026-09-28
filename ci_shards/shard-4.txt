@@ -452,6 +452,7 @@ tests/test_trade_retrospective_model.py
 tests/test_trade_retrospective_service.py
 tests/test_trade_retrospective_tools.py
 tests/test_trade_retrospective_web_read.py
+tests/test_trader_page_safety.py
 tests/test_trading_decision_session_url.py
 tests/test_upbit_market_websocket.py
 tests/test_upbit_orders.py

@@ -1,0 +1,81 @@
+.trader-page {
+  width: min(960px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 64px;
+  color: var(--fg, #172033);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.trader-page-head h1 { margin: 0 0 4px; font-size: 24px; }
+.trader-page-head { margin-bottom: 20px; }
+
+.trader-panel {
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid var(--border-subtle, #dce2eb);
+  border-radius: 14px;
+  background: var(--surface-card, #fff);
+}
+
+.trader-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.trader-panel-head h2 { margin: 0; font-size: 17px; }
+
+.trader-panel-head button {
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle, #dce2eb);
+  border-radius: 8px;
+  background: var(--surface-2, #f2f4f6);
+  color: inherit;
+  cursor: pointer;
+}
+.trader-panel-head button:disabled { opacity: 0.5; cursor: default; }
+
+.trader-broker { margin-top: 14px; }
+.trader-broker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.trader-broker-head h3 { margin: 0; font-size: 15px; }
+
+.trader-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--surface-2, #f2f4f6);
+}
+.trader-chip-ok { color: #137a3f; }
+.trader-chip-degraded { color: #b45309; }
+.trader-chip-unavailable { color: #b42318; }
+
+.trader-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.trader-table th,
+.trader-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--divider, #f1f3f5);
+  text-align: left;
+}
+.trader-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.trader-note {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2, #f2f4f6);
+  color: #b45309;
+  font-size: 12px;
+}
+.trader-unavailable { color: #b42318; margin: 8px 0 0; }
+.trader-error { color: #b42318; }
+.trader-dim { color: var(--fg-3, #6b7280); font-size: 12px; }

@@ -271,6 +271,7 @@ tests/services/test_toss_live_order_ledger_service.py
 tests/services/test_toss_manual_activity.py
 tests/services/test_trade_journal_aggregates_scoreboard.py
 tests/services/test_trade_journal_read_service.py
+tests/services/test_trader_open_orders_cache.py
 tests/services/us_dual_paper/test_capability_matrix.py
 tests/services/us_dual_paper/test_kis_mock_preview.py
 tests/services/us_dual_paper/test_smoke_cli_preview.py

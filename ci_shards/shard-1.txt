@@ -69,6 +69,7 @@ tests/routers/test_order_previews.py
 tests/routers/test_research_pipeline_router.py
 tests/routers/test_strategy_events_router.py
 tests/routers/test_telegram_callback_route.py
+tests/routers/test_trader_page_router.py
 tests/schemas/test_pagination.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_coordination_wiring.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_ordering_support.py
