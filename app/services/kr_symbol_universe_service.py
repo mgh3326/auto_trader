@@ -3,15 +3,19 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, cast
 
 import httpx
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.models.kr_symbol_universe import KRSymbolUniverse
+from app.models.krx_after_market_eligibility import KrxAfterMarketEligibility
+from app.services.krx_after_market import KrxAfterTradability
 from app.services.nxt_preflight import NxtTradability
 from app.services.symbol_universe_common import has_any_rows, normalize_name, sync_hint
 
@@ -461,6 +465,160 @@ async def get_kr_nxt_tradability(
         return await _get_nxt_tradability_impl(session, symbols)
     finally:
         await session.close()
+
+
+async def _get_krx_after_tradability_impl(
+    db: AsyncSession,
+    symbols: list[str],
+) -> dict[str, KrxAfterTradability]:
+    unique = sorted({s for s in symbols if s})
+    if not unique:
+        return {}
+    list_meta = (
+        await db.execute(
+            select(
+                KrxAfterMarketEligibility.list_asof,
+                KrxAfterMarketEligibility.list_source,
+            )
+            .order_by(KrxAfterMarketEligibility.list_asof.desc())
+            .limit(1)
+        )
+    ).first()
+    stmt = (
+        select(
+            KRSymbolUniverse.symbol,
+            KRSymbolUniverse.exchange,
+            KRSymbolUniverse.security_type,
+            KRSymbolUniverse.krx_trading_suspended,
+            KrxAfterMarketEligibility.symbol.label("listed_symbol"),
+        )
+        .outerjoin(
+            KrxAfterMarketEligibility,
+            KrxAfterMarketEligibility.symbol == KRSymbolUniverse.symbol,
+        )
+        .where(
+            KRSymbolUniverse.symbol.in_(unique),
+            KRSymbolUniverse.is_active.is_(True),
+        )
+    )
+    rows = (await db.execute(stmt)).all()
+    return {
+        row.symbol: KrxAfterTradability(
+            listed=(row.listed_symbol is not None) if list_meta is not None else None,
+            exchange=row.exchange,
+            security_type=row.security_type,
+            krx_trading_suspended=row.krx_trading_suspended,
+            asof=list_meta.list_asof if list_meta is not None else None,
+            list_source=list_meta.list_source if list_meta is not None else None,
+        )
+        for row in rows
+    }
+
+
+async def get_kr_krx_after_tradability(
+    symbols: list[str],
+    db: AsyncSession | None = None,
+) -> dict[str, KrxAfterTradability]:
+    """Return {symbol: KrxAfterTradability} for active KR symbols (#925).
+
+    Missing or inactive symbols are omitted; callers must treat an omitted
+    symbol as not KRX after-market tradable. Read-only.
+    """
+    if not symbols:
+        return {}
+    if db is not None:
+        return await _get_krx_after_tradability_impl(db, symbols)
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
+        return await _get_krx_after_tradability_impl(session, symbols)
+    finally:
+        await session.close()
+
+
+@dataclass(frozen=True)
+class KrxAfterListReplaceResult:
+    listed: int
+    unknown_symbols: tuple[str, ...]
+    listed_non_stock: tuple[str, ...]
+    previous_rows: int
+    list_asof: datetime
+    list_source: str
+
+
+def normalize_krx_after_list_symbols(raw_symbols: Iterable[str]) -> list[str]:
+    """Normalize list codes; any unparseable code rejects the whole list."""
+    normalized: set[str] = set()
+    for raw in raw_symbols:
+        text = str(raw or "").strip().upper()
+        if len(text) == 7 and text.startswith("A"):
+            text = text[1:]
+        symbol = _normalize_symbol_or_none(text)
+        if symbol is None:
+            raise ValueError(f"invalid KRX after-market list code: {raw!r}")
+        normalized.add(symbol)
+    return sorted(normalized)
+
+
+async def replace_krx_after_market_list(
+    db: AsyncSession,
+    *,
+    symbols: Iterable[str],
+    list_asof: datetime,
+    list_source: str,
+) -> KrxAfterListReplaceResult:
+    """Replace the whole KRX after-market eligibility snapshot (#925).
+
+    The only writer of ``krx_after_market_eligibility``. Does not commit — the
+    caller owns the transaction (the CLI rolls back on dry-run).
+    """
+    if list_asof.tzinfo is None or list_asof.utcoffset() is None:
+        raise ValueError("list_asof must be timezone-aware")
+    source = (list_source or "").strip()
+    if not source:
+        raise ValueError("list_source is required (cite the KRX list)")
+    normalized = normalize_krx_after_list_symbols(symbols)
+    if not normalized:
+        raise ValueError("KRX after-market list is empty")
+
+    universe_rows = (
+        await db.execute(
+            select(KRSymbolUniverse.symbol, KRSymbolUniverse.security_type).where(
+                KRSymbolUniverse.symbol.in_(normalized),
+                KRSymbolUniverse.is_active.is_(True),
+            )
+        )
+    ).all()
+    security_types = {row.symbol: row.security_type for row in universe_rows}
+    unknown = tuple(s for s in normalized if s not in security_types)
+    non_stock = tuple(
+        s
+        for s in normalized
+        if s in security_types and (security_types[s] or "").strip().upper() != "STOCK"
+    )
+
+    previous_rows = int(
+        (
+            await db.execute(
+                select(func.count()).select_from(KrxAfterMarketEligibility)
+            )
+        ).scalar_one()
+    )
+    await db.execute(delete(KrxAfterMarketEligibility))
+    db.add_all(
+        KrxAfterMarketEligibility(
+            symbol=symbol, list_source=source, list_asof=list_asof
+        )
+        for symbol in normalized
+    )
+    await db.flush()
+    return KrxAfterListReplaceResult(
+        listed=len(normalized),
+        unknown_symbols=unknown,
+        listed_non_stock=non_stock,
+        previous_rows=previous_rows,
+        list_asof=list_asof,
+        list_source=source,
+    )
 
 
 async def _get_kr_security_type_impl(

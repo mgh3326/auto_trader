@@ -148,6 +148,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   values are unavailable; prior-date timestamps are stale. NXT tradability
   similarly returns `nxt_tradable=null` plus the observed value and reason when
   its as-of is missing or stale.
+- KR quote responses also expose `krx_after_tradable` (#925, KRX after-market
+  16:00-20:00 KST) with `krx_after_tradable_source`/`_list_source`/`_asof`/
+  `_stale`/`_reason`. The source is the operator-imported KRX after-market
+  eligibility list (`krx_after_market_eligibility`); the value is `true` only
+  for a listed KOSPI/KOSDAQ `STOCK` that is not KRX-suspended on a fresh list.
+  ETF/ETN, unknown classification, a stale or missing list, and lookup
+  failures are all `false` (never `null`) with a reason.
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`.
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them.
   - US quote response includes `session` (`premarket`, `regular`, `afterhours`, `closed`), `data_state` (`fresh` during the extended-hours envelope, `stale` when closed), `price_source` (`kis_overseas_last` or `yahoo_fast_info_close`), `delayed: true`, and optional `quote_asof` when KIS supplies parseable quote date/time fields.
