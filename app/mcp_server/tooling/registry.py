@@ -96,6 +96,15 @@ Profile → tool surface mapping
   No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
   report-write, KIS mock, Alpaca, or paper simulator tools are registered.
 
+"live-kr" / "live-us" / "live-crypto" (McpProfile.LIVE_KR / LIVE_US /
+LIVE_CRYPTO):
+  Task 891 / operator decision Q-52 closed-world live-session subsets. The
+  tool list lives in config/mcp_profiles/live.yaml (core + extended tiers,
+  per-profile `tiers:` switch); all existing registrars run through a
+  recording exact-set proxy so the served surface equals the manifest
+  selection exactly. No direct broker order/cancel/modify, reconcile,
+  proposal-lifecycle, or harness-denied tools are registered.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
