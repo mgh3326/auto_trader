@@ -314,11 +314,31 @@ async def test_a_record_writer_errors_stay_fail_open() -> None:
 
 @pytest.mark.asyncio
 async def test_a_record_result_is_not_mutated() -> None:
-    result = _a_result([_record("rsi", "005930", 1, selection_seq=1)])
+    result = _a_result(
+        [
+            _record(
+                "rsi",
+                "005930",
+                1,
+                selection_seq=1,
+                gate_features={"fresh": {"current_price": "100.10"}},
+                selected_via={"source": "rsi", "extra": {"depth": 1}},
+            )
+        ]
+    )
+    result["candidate_records"][0]["raw_row"]["nested"] = {"source_field": "before"}
     snapshot = copy.deepcopy(result)
 
     async def writer(rows: list[ScreenerPickRow]) -> None:
         assert len(rows) == 1
+        row = rows[0]
+        row.source_params["request"]["nested_sink"] = True
+        row.source_params["selected_via"]["extra"]["depth"] = 99
+        row.raw_row["nested"]["source_field"] = "after"
+        row.gate_features["fresh"]["current_price"] = "999"
+        row.call_context["policy"]["frozen_gates"]["sink"] = True
+        row.call_context["selection"]["slots"] = 0
+        row.call_context["source_statuses"]["rsi"] = "corrupted"
 
     await maybe_record_fanout_picks(
         result,

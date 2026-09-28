@@ -10,6 +10,7 @@ No scheduler registration. Callers are existing fanout entrypoints only.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import os
@@ -192,8 +193,10 @@ def _parse_fetched_at(value: object) -> datetime | None:
 
 
 def _mapping_or_none(value: object) -> dict[str, Any] | None:
+    """Detach a mapping fully — projected rows must not alias ``result``."""
+
     if isinstance(value, Mapping):
-        return dict(value)
+        return copy.deepcopy(dict(value))
     return None
 
 
@@ -247,9 +250,8 @@ def _extract_candidate_records(
     )
     collection_version = _as_text(collection.get("collection_version"))
     fetched_at = _parse_fetched_at(collection.get("fetched_at"))
-    policy = result.get("policy") if isinstance(result.get("policy"), Mapping) else {}
     call_context = {
-        "policy": dict(policy),
+        "policy": _mapping_or_none(result.get("policy")) or {},
         "selection": _mapping_or_none(collection.get("selection")) or {},
         "source_statuses": _mapping_or_none(collection.get("source_statuses")) or {},
     }
@@ -275,8 +277,8 @@ def _extract_candidate_records(
         gate_features = _mapping_or_none(record.get("gate_features"))
         selected_via = _mapping_or_none(record.get("selected_via"))
         source_params: dict[str, Any] = {
-            "request": dict(request) if request else {},
-            "preset": _source_preset(meta_source),
+            "request": _mapping_or_none(request) or {},
+            "preset": copy.deepcopy(_source_preset(meta_source)),
             "kind": meta_source.get("kind") or record.get("kind"),
         }
         if selected_via is not None:
@@ -391,8 +393,8 @@ def extract_pick_rows(
                 else {}
             )
             source_params = {
-                "request": dict(request) if request else {},
-                "preset": metadata.get("preset"),
+                "request": _mapping_or_none(request) or {},
+                "preset": copy.deepcopy(metadata.get("preset")),
                 "kind": meta_source.get("kind") or entry.get("kind"),
             }
             rows.append(
