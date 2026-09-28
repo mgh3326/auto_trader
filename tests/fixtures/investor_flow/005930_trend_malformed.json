@@ -1,0 +1,47 @@
+[
+  {
+    "bizdate": "2026-09-28",
+    "closePrice": "75,500",
+    "accumulatedTradingVolume": "12,345,678",
+    "foreignerPureBuyQuant": "+4,513,767",
+    "organPureBuyQuant": "+1,234,567",
+    "individualPureBuyQuant": "-5,748,334",
+    "foreignerHoldRatio": "46.64%"
+  },
+  {
+    "bizdate": "20260925",
+    "closePrice": "75,000",
+    "accumulatedTradingVolume": "10,000,000",
+    "foreignerPureBuyQuant": "",
+    "organPureBuyQuant": "-200,000",
+    "individualPureBuyQuant": "+700,000",
+    "foreignerHoldRatio": "46.50%"
+  },
+  {
+    "bizdate": "20260924",
+    "closePrice": "74,500",
+    "accumulatedTradingVolume": "8,000,000",
+    "foreignerPureBuyQuant": "-300,000",
+    "individualPureBuyQuant": "+200,000",
+    "foreignerHoldRatio": "46.45%"
+  },
+  {
+    "bizdate": "20260923",
+    "closePrice": "74,000",
+    "accumulatedTradingVolume": "9,500,000",
+    "foreignerPureBuyQuant": "+100,000",
+    "organPureBuyQuant": "-50,000",
+    "individualPureBuyQuant": "-",
+    "foreignerHoldRatio": "46.40%"
+  },
+  "not-an-object",
+  {
+    "bizdate": "20260922",
+    "closePrice": "73,800",
+    "accumulatedTradingVolume": "9,000,000",
+    "foreignerPureBuyQuant": "+200,000",
+    "organPureBuyQuant": "+80,000",
+    "individualPureBuyQuant": "-280,000",
+    "foreignerHoldRatio": "46.30%"
+  }
+]

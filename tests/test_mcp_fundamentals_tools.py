@@ -5639,6 +5639,61 @@ class TestInvestorFlowCommon:
         assert block["history"][0]["individual_net"] == -2372813
         assert block["history"][0]["foreign_net"] == -596340
 
+    @pytest.mark.asyncio
+    async def test_build_confirmed_block_prefers_source_individual_net(
+        self, monkeypatch
+    ):
+        # #900: the trend JSON carries individualPureBuyQuant; the confirmed
+        # block must keep it instead of the -(inst+foreign) residual.
+        async def fake_fetch(symbol, days):
+            return {
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-09-28",
+                        "close": 75500,
+                        "institutional_net": 1000,
+                        "foreign_net": 2000,
+                        "individual_net": -3100,
+                        "foreign_holding_rate": 46.64,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(ifc, "_fetch_investor_trends_naver", fake_fetch)
+
+        block, last_confirmed = await ifc.build_confirmed_block("005930", days=5)
+
+        assert last_confirmed == "2026-09-28"
+        assert block["history"][0]["individual_net"] == -3100
+
+    @pytest.mark.asyncio
+    async def test_build_confirmed_block_null_flows_stay_null(self, monkeypatch):
+        # #900: NULL institutional/foreign flows must not crash or fabricate —
+        # individual_net stays NULL when it cannot be derived.
+        async def fake_fetch(symbol, days):
+            return {
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-09-28",
+                        "close": 75500,
+                        "institutional_net": None,
+                        "foreign_net": None,
+                        "individual_net": None,
+                        "foreign_holding_rate": None,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(ifc, "_fetch_investor_trends_naver", fake_fetch)
+
+        block, last_confirmed = await ifc.build_confirmed_block("005930", days=5)
+
+        assert last_confirmed == "2026-09-28"
+        assert block["history"][0]["individual_net"] is None
+        assert block["foreign_ownership_pct"] is None
+
 
 @pytest.mark.asyncio
 class TestGetInvestorTrends:
@@ -5762,6 +5817,102 @@ class TestGetInvestorTrends:
         result = await tools["get_investor_trends"]("005930")
 
         assert "error" in result or "message" in result
+
+    async def test_source_individual_net_is_preserved(self, monkeypatch):
+        """#900: a row that already carries individual_net (the trend JSON's
+        individualPureBuyQuant) must NOT be overwritten by the
+        -(institutional + foreign) derivation."""
+        tools = build_tools()
+
+        async def mock_fetch(code, days):
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-09-28",
+                        "close": 75500,
+                        "institutional_net": 1000,
+                        "foreign_net": 2000,
+                        # Residual differs from -(inst+foreign) on purpose so the
+                        # assertion can only pass when the source value wins.
+                        "individual_net": -3100,
+                    }
+                ],
+            }
+
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
+
+        result = await tools["get_investor_trends"]("005930")
+
+        assert result["data"][0]["individual_net"] == -3100
+
+    async def test_null_flow_fields_stay_null_in_daily(self, monkeypatch):
+        """#900: NULL flow fields must not be coerced to 0 — a missing
+        institutional_net means individual_net stays NULL, not -(0 + foreign)."""
+        tools = build_tools()
+
+        async def mock_fetch(code, days):
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-09-28",
+                        "close": 75500,
+                        "institutional_net": None,
+                        "foreign_net": 2000,
+                    }
+                ],
+            }
+
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
+
+        result = await tools["get_investor_trends"]("005930")
+
+        row = result["data"][0]
+        assert row["institutional_net"] is None
+        assert row["individual_net"] is None
+
+    async def test_weekly_aggregation_is_null_honest(self, monkeypatch):
+        """#900: weekly buckets sum known values but keep NULL when every row
+        lacks the field — never a fabricated zero flow."""
+        tools = build_tools()
+
+        async def mock_fetch(code, days):
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "data": [
+                    {
+                        "date": "2026-09-25",
+                        "close": 75500,
+                        "volume": 100,
+                        "institutional_net": None,
+                        "foreign_net": None,
+                        "individual_net": None,
+                    },
+                    {
+                        "date": "2026-09-24",
+                        "close": 75000,
+                        "volume": 200,
+                        "institutional_net": None,
+                        "foreign_net": None,
+                        "individual_net": None,
+                    },
+                ],
+            }
+
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
+
+        result = await tools["get_investor_trends"]("005930", period="week")
+
+        assert len(result["data"]) == 1
+        bucket = result["data"][0]
+        assert bucket["volume"] == 300
+        assert bucket["institutional_net"] is None
+        assert bucket["foreign_net"] is None
+        assert bucket["individual_net"] is None
 
 
 @pytest.mark.asyncio
