@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-DEPLOY = REPO / "scripts/deploy-ncp-pull.sh"
+DEPLOY = Path(os.environ.get("DEPLOY_UNDER_TEST", REPO / "scripts/deploy-ncp-pull.sh"))
 OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "1" * 64
 KIS_OLD = "ghcr.io/mgh3326/auto_trader@sha256:" + "3" * 64
 NEW = "ghcr.io/mgh3326/auto_trader@sha256:" + "2" * 64
@@ -41,6 +41,7 @@ def _run(
     fail_health_name: str = "",
     mismatch_name: str = "",
     absent_name: str = "",
+    stopped_name: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -71,7 +72,9 @@ def _run(
                 sys.exit(1)
             fmt = args[2]
             value = state[name]
-            if 'Config.Image' in fmt or 'RepoDigests' in fmt:
+            if 'State.Running' in fmt:
+                print('false' if name == os.environ.get('FAKE_STOPPED_NAME') else 'true')
+            elif 'Config.Image' in fmt or 'RepoDigests' in fmt:
                 print(value)
             else:
                 print('id-' + name)
@@ -103,7 +106,13 @@ def _run(
         """
     )
     (bindir / "docker").write_text(docker)
-    (bindir / "curl").write_text("#!/usr/bin/env bash\nif [[ \"$*\" == *--write-out* ]]; then echo 200; fi\n")
+    (bindir / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        'url="${!#}"\n'
+        'if [[ "$FAKE_FAIL_HEALTH_NAME" == at-api-green && "$url" == *":8002/healthz" ]]; then echo 500; exit 0; fi\n'
+        'if [[ "$FAKE_FAIL_HEALTH_NAME" == at-mcp-green && "$url" == *":8767/health" ]]; then echo 500; exit 0; fi\n'
+        'if [[ "$*" == *--write-out* ]]; then echo 200; fi\n'
+    )
     (bindir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
     (bindir / "nohup").write_text("#!/usr/bin/env bash\nexit 0\n")
     for path in bindir.iterdir():
@@ -142,6 +151,7 @@ def _run(
             "FAKE_FAIL_NAME": fail_name,
             "FAKE_FAIL_HEALTH_NAME": fail_health_name,
             "FAKE_MISMATCH_NAME": mismatch_name,
+            "FAKE_STOPPED_NAME": stopped_name,
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
             "MCP_HEALTH_ATTEMPTS": "1",
@@ -202,6 +212,20 @@ def test_skip_is_never_touched_by_later_rollback(tmp_path: Path) -> None:
     assert state["at-worker"] == OLD
 
 
+@pytest.mark.parametrize(
+    "failure", ("at-api-green", "at-worker-new", "at-upbit-ws", "at-mcp-green")
+)
+def test_health_failure_boundaries_restore_prior_state(
+    tmp_path: Path, failure: str
+) -> None:
+    result, _, state, _ = _run(tmp_path, fail_health_name=failure)
+    assert result.returncode != 0
+    for name in INITIAL:
+        assert state[name] == (KIS_OLD if name == "at-kis-ws" else OLD), name
+    assert "at-api-green" not in state
+    assert "at-mcp-green" not in state
+
+
 def test_rollback_order_reverses_prior_replacements(tmp_path: Path) -> None:
     result, calls, _, _ = _run(tmp_path, fail_name="at-upbit-ws")
     assert result.returncode != 0
@@ -210,7 +234,25 @@ def test_rollback_order_reverses_prior_replacements(tmp_path: Path) -> None:
         for call in calls
         if call[0] == "run" and "--name" in call and OLD in call
     ]
+    assert old_runs.index("at-upbit-ws") < old_runs.index("at-scheduler")
     assert old_runs.index("at-scheduler") < old_runs.index("at-worker")
+
+
+def test_mcp_failure_reverses_profile_then_core_replacements(tmp_path: Path) -> None:
+    result, calls, state, _ = _run(tmp_path, fail_name="at-mcp-account-read")
+    assert result.returncode != 0
+    old_runs = [
+        call[call.index("--name") + 1]
+        for call in calls
+        if call[0] == "run" and "--name" in call and OLD in call
+    ]
+    assert old_runs.index("at-mcp-account-read") < old_runs.index(
+        "at-mcp-analysis-readonly"
+    )
+    assert old_runs.index("at-mcp-analysis-readonly") < old_runs.index("at-upbit-ws")
+    assert old_runs.index("at-upbit-ws") < old_runs.index("at-scheduler")
+    assert old_runs.index("at-scheduler") < old_runs.index("at-worker")
+    assert state["at-mcp-analysis-readonly"] == OLD
 
 
 def test_rollback_digest_mismatch_is_visible_and_nonzero(tmp_path: Path) -> None:
@@ -228,6 +270,13 @@ def test_absent_unit_is_removed_after_failed_later_phase(tmp_path: Path) -> None
     )
     assert result.returncode != 0
     assert "at-kis-ws" not in state
+
+
+def test_stopped_prior_unit_fails_before_any_mutation(tmp_path: Path) -> None:
+    result, calls, _, _ = _run(tmp_path, stopped_name="at-worker")
+    assert result.returncode != 0
+    assert "container is not running: at-worker" in result.stderr
+    assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
 
 
 def test_dry_run_has_no_mutations_and_explains_skip(tmp_path: Path) -> None:
