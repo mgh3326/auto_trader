@@ -104,7 +104,10 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
         )
         response = await self._client.get(path, params=signed)
         response.raise_for_status()
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise H5BrokerTruthUnavailable("broker JSON evidence unavailable") from exc
 
     async def read_account(self) -> H5Account:
         body = await self._signed_get("/fapi/v2/account")

@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from app.services.brokers.binance.demo_strategy_loop.strategy import Signal
+from app.services.brokers.binance.demo_strategy_loop.strategy import (
+    Signal,
+    StrategyPlugin,
+)
 from research.nautilus_scalping.rob974_features import FOUR_HOUR_MS, Bar4h
 
 IDENTITY = "H5-LS-ENV-v1"
@@ -57,7 +60,7 @@ def make_signal_key(
 
 
 @dataclass(frozen=True)
-class H5Strategy:
+class H5Strategy(StrategyPlugin):
     """No context filter beyond the registered symmetric 20-bar formula."""
 
     base_url: str = DEMO_URL
