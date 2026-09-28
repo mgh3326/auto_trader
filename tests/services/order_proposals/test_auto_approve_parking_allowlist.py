@@ -581,8 +581,11 @@ def test_single_parking_order_exactly_at_the_raised_cap_is_eligible():
     assert decision.details["notional"] == "10000"
 
 
-def test_parking_sell_over_the_raised_cap_is_also_rejected():
+def test_parking_sell_over_the_raised_cap_is_also_rejected(monkeypatch):
     """The raise applies to both sides; so does the check."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "kis_account_no", "acct-1")
     decision = _decide(
         rung=_rung(
             side="sell", limit_price=Decimal("100.0001"), quantity=Decimal("100")
@@ -591,6 +594,7 @@ def test_parking_sell_over_the_raised_cap_is_also_rejected():
             "success": True,
             "current_price": "100.0001",
             "avg_buy_price": "99",
+            "parking_sell_exempt": True,
         },
         exposure=_flat(),
     )
@@ -765,11 +769,15 @@ def test_malformed_available_exposure_still_rejects(exposure):
 
 
 @pytest.mark.parametrize("side", ("buy", "sell"))
-def test_enabled_parking_order_does_not_trip_or_consume_daily_cap(side):
+def test_enabled_parking_order_does_not_trip_or_consume_daily_cap(side, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "kis_account_no", "acct-1")
     rung = _rung(side=side)
     preview = {"success": True, "current_price": "100"}
     if side == "sell":
         preview["avg_buy_price"] = "1"
+        preview["parking_sell_exempt"] = True
     decision = _decide(
         rung=rung,
         preview=preview,
@@ -865,9 +873,7 @@ def test_failed_preview_still_blocks_a_parking_rung():
     assert decision.reason == "preview_guard_failed"
 
 
-def test_parking_sell_still_needs_the_fee_netted_profit_proof():
-    """§163차 releases marketability and RAISES the per-order cap; the profit
-    proof is untouched, and the per-order check itself still runs."""
+def test_parking_sell_without_explicit_matching_account_stays_manual():
     decision = _decide(
         rung=_rung(side="sell"),
         preview={
@@ -879,23 +885,27 @@ def test_parking_sell_still_needs_the_fee_netted_profit_proof():
     )
 
     assert decision.eligible is False
-    assert decision.reason == "breakeven_band"
+    assert decision.reason == "parking_sell_account_identity_unavailable"
 
 
-def test_parking_sell_that_proves_profit_uses_the_raised_per_order_cap():
+def test_parking_sell_uses_the_raised_per_order_cap(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "kis_account_no", "acct-1")
     decision = _decide(
         rung=_rung(side="sell"),
         preview={
             "success": True,
             "current_price": "100",
             "avg_buy_price": "99",  # outside the band, net of round-trip cost
+            "parking_sell_exempt": True,
         },
         exposure=_flat(),
     )
 
     assert decision.eligible is True
     assert decision.details["per_order_cap_basis"] == "parking_raised"
-    assert decision.details["loss_guard"] == "net_profit_proven"
+    assert decision.details["loss_guard"] == "parking_sell_exempt"
     # USD 2,000 is over the ordinary USD 1,500 cap and under the raised one.
     assert decision.details["notional"] == "2000"
     assert decision.details["per_order_cap"] == "10000"

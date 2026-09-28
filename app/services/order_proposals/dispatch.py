@@ -83,6 +83,7 @@ from app.services.order_proposals.parking_allowlist import (
     parking_scope,
 )
 from app.services.order_proposals.parking_exposure import load_parking_exposure
+from app.services.order_proposals.parking_sell_exemption import explicit_account_matches
 from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
@@ -1002,6 +1003,33 @@ async def dispatch_proposal(
                 )
             )
             limits = None
+        if (
+            limits is not None
+            and getattr(limits, "mode", None) == "expanded"
+            and (
+                (group.action or "place") == "place"
+                and group.exit_intent is None
+                and group.order_type == "limit"
+                and group.side == "sell"
+                and parking_scope(
+                    symbol=group.symbol,
+                    account_mode=group.account_mode,
+                    market=group.market,
+                )
+                is not None
+                and not explicit_account_matches(
+                    group.account_mode, getattr(group, "broker_account_id", None)
+                )
+            )
+        ):
+            fallback_decisions.extend(
+                _manual_fallback_decisions(
+                    rungs=initial_rungs,
+                    reason="parking_sell_account_identity_unavailable",
+                    policy_version=limits.policy_version,
+                )
+            )
+            limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
             cash_funding_shortfall: Decimal | None = None
@@ -1091,6 +1119,7 @@ async def dispatch_proposal(
                     parking_exposure=parking_exposure,
                     cash_funding_shortfall=cash_funding_shortfall,
                     cash_funding_cumulative_notional=cash_funding_cumulative_notional,
+                    now=kwargs["now"],
                 )
                 decisions.append(
                     {
@@ -1132,6 +1161,8 @@ async def dispatch_proposal(
                     window_evaluator=evaluate_window,
                     expected_policy_stamp=window.policy_stamp,
                     now_fn=clock,
+                    parking_sell_auto_enabled=getattr(limits, "mode", None)
+                    == "expanded",
                 )
             outcomes: list[RungOutcome] = await revalidate_fn(**revalidate_kwargs)
             not_evaluated_reason = _not_evaluated_reason_from_outcomes(outcomes)
