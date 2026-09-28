@@ -1,11 +1,13 @@
 # Freeze deviation record — #817 parking ETF sell without approval
 
 Written **before PR #2117 merges** because it relaxes a live auto-approval and
-loss-sell boundary. The operator's 2026-09-28 decision for hk #817 was conveyed
-through the fable-strategy bundle: "from now on parking-ETF sells without
-approval." Here parking means cash held in an ETF without a deposit or FX
-transfer. Task #765 supplied the explicit proposal account prerequisite before
-PR #2117.
+loss-sell boundary. The operator approved starting the policy PR on 2026-09-27
+in hk #817 comment 520, with scope exactly section 4 of hk doc
+strategy-lab/2026-09-27/gpt-pro-v1-review-and-v2-plan. The approval was
+reaffirmed on 2026-09-28 in the fable-strategy bundle (hk doc 6481), on the
+condition that this deviation record is filed before merge. The hk #817 title
+defines parking as cash held without deposit or FX. Task #765 supplied the
+explicit proposal account prerequisite before PR #2117.
 
 ```yaml
 freeze_epoch_id: UNKNOWN
@@ -15,9 +17,12 @@ change_id: task817-parking-sell-no-approval-20260928
 pr_number: 2117
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
-  Operator decision 2026-09-28 for hk #817, conveyed through the
-  fable-strategy bundle: parking ETF sells proceed without an approval tap.
-  Parking is cash held without deposit or FX. Task #765 is the explicit-account
+  Operator approval 2026-09-27 in hk #817 comment 520 to start the policy PR,
+  scoped exactly to section 4 of hk doc
+  strategy-lab/2026-09-27/gpt-pro-v1-review-and-v2-plan. Reaffirmed
+  2026-09-28 in the fable-strategy bundle (hk doc 6481), conditional on filing
+  this deviation record before merge. The hk #817 title defines parking as
+  cash held without deposit or FX. Task #765 is the explicit-account
   prerequisite, merged before PR #2117.
 market: [us, kr]
 account_scope: >-
