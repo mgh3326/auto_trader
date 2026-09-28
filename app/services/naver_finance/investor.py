@@ -17,7 +17,7 @@ from app.services.analyst_normalizer import (
     rating_to_bucket,
 )
 from app.services.naver_finance.detail_cache_port import DetailCachePort
-from app.services.naver_finance.news import _parse_news_soup
+from app.services.naver_finance.news import NaverNewsFetchResult, fetch_stock_news
 from app.services.naver_finance.parser import (
     NAVER_FINANCE_BASE,
     NAVER_FINANCE_ITEM,
@@ -383,16 +383,13 @@ async def _fetch_kr_snapshot(
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         main_url = f"{NAVER_FINANCE_ITEM}/main.naver"
         sise_url = f"{NAVER_FINANCE_ITEM}/sise.naver"
-        news_url = f"{NAVER_FINANCE_ITEM}/news_news.naver"
         company_list_url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
         page_results = await asyncio.gather(
             _fetch_html_with_client(client, main_url, params={"code": code}),
             _fetch_html_with_client(client, sise_url, params={"code": code}),
-            _fetch_html_with_client(
-                client,
-                news_url,
-                params={"code": code, "page": "", "clusterId": ""},
-            ),
+            # The legacy news_news.naver page 410s; symbol news lives behind the
+            # m.stock.naver.com JSON API now (#904).
+            fetch_stock_news(code, limit=news_limit),
             _fetch_html_with_client(
                 client,
                 company_list_url,
@@ -406,8 +403,10 @@ async def _fetch_kr_snapshot(
         sise_soup = (
             page_results[1] if isinstance(page_results[1], BeautifulSoup) else None
         )
-        news_soup = (
-            page_results[2] if isinstance(page_results[2], BeautifulSoup) else None
+        news_result = (
+            page_results[2]
+            if isinstance(page_results[2], NaverNewsFetchResult)
+            else None
         )
         company_list_soup = (
             page_results[3] if isinstance(page_results[3], BeautifulSoup) else None
@@ -424,8 +423,8 @@ async def _fetch_kr_snapshot(
                 code, main_soup, sise_soup
             )
 
-        if news_soup is not None:
-            snapshot["news"] = _parse_news_soup(news_soup, news_limit)
+        if news_result is not None:
+            snapshot["news"] = news_result.items
 
         if company_list_soup is not None:
             current_price = (

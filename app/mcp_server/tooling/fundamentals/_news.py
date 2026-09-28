@@ -100,6 +100,9 @@ def _news_freshness_fields(
     fetched_at_iso = fetched_at.isoformat() if fetched_at is not None else None
     return {
         "data_state": data_state,
+        # Explicit staleness flag (#904): a cached fallback past the freshness
+        # window must be unmissable even if a consumer never reads data_state.
+        "stale": data_state == "stale",
         "derived_as_of": fetched_at_iso,
         "fetched_at": fetched_at_iso,
         "data_age_seconds": data_age_seconds,
@@ -163,6 +166,8 @@ async def handle_get_news(
     if result.degraded:
         payload["degraded"] = True
         payload["fetch_error"] = result.fetch_error
+    if result.parser_skips:
+        payload["parser_skips"] = result.parser_skips
     return payload
 
 

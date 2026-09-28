@@ -46,10 +46,16 @@ from app.services.naver_finance.investor import (
     fetch_investor_trends as fetch_investor_trends,
 )
 from app.services.naver_finance.news import (
-    _parse_news_soup as _parse_news_soup,
+    NaverNewsContractError as NaverNewsContractError,
+)
+from app.services.naver_finance.news import (
+    NaverNewsFetchResult as NaverNewsFetchResult,
 )
 from app.services.naver_finance.news import (
     fetch_news as fetch_news,
+)
+from app.services.naver_finance.news import (
+    fetch_stock_news as fetch_stock_news,
 )
 from app.services.naver_finance.parser import (
     DEFAULT_HEADERS as DEFAULT_HEADERS,
@@ -119,6 +125,8 @@ __all__ = [
     "NAVER_FINANCE_BASE",
     "NAVER_FINANCE_ITEM",
     "NAVER_MOBILE_API",
+    "NaverNewsContractError",
+    "NaverNewsFetchResult",
     "_build_investment_opinions_from_company_list_soup",
     "_collect_opinion_report_infos",
     "_decode_html_content",
@@ -136,7 +144,6 @@ __all__ = [
     "_parse_financial_metrics",
     "_parse_industry_info",
     "_parse_naver_date",
-    "_parse_news_soup",
     "_parse_peer_comparison",
     "_parse_report_detail_soup",
     "_parse_total_infos",
@@ -146,6 +153,7 @@ __all__ = [
     "fetch_investment_opinions",
     "fetch_investor_trends",
     "fetch_news",
+    "fetch_stock_news",
     "fetch_sector_peers",
     "fetch_valuation",
     "fetch_analyst_consensus",

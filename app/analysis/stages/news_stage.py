@@ -15,6 +15,24 @@ from app.services.symbol_news_service import SymbolNewsArticle, fetch_symbol_new
 
 logger = logging.getLogger(__name__)
 
+# Align with the get_news freshness policy (NEWS_FRESHNESS_MAX_AGE_SECONDS):
+# a provider-failed response serving cache older than this must not produce a
+# verdict — stale headlines are not news signals (#904).
+PROVIDER_STALE_MAX_AGE_SECONDS = 180 * 60
+
+
+def _served_cache_is_stale(fetched_at: datetime | None) -> bool:
+    """True when the served payload derives from cache older than the window.
+
+    A missing timestamp on a degraded fetch is treated as stale — absence of
+    provenance is not freshness.
+    """
+    if fetched_at is None:
+        return True
+    aware = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=UTC)
+    age = (datetime.now(tz=UTC) - aware).total_seconds()
+    return age > PROVIDER_STALE_MAX_AGE_SECONDS
+
 
 def _market_from_instrument(instrument_type: str) -> str:
     if instrument_type == "equity_us":
@@ -62,6 +80,10 @@ async def _fetch_recent_headlines(
     result = await fetch_symbol_news(symbol, market, limit=20)
     signals = _compute_signals_from_articles(_to_signal_articles(result.articles))
     signals["status"] = result.status
+    # Provider-error fallback returns status="ok" when stale rows exist, so the
+    # fetch health must travel separately for analyze() to gate on it (#904).
+    signals["degraded"] = result.degraded
+    signals["fetched_at"] = result.fetched_at
     return signals
 
 
@@ -185,6 +207,15 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
             logger.info(
                 "news_stage: provider status=%s for %s -> UNAVAILABLE",
                 raw.get("status"),
+                ctx.symbol,
+            )
+            return self._unavailable()
+
+        if raw.get("degraded") and _served_cache_is_stale(raw.get("fetched_at")):
+            logger.info(
+                "news_stage: provider failed and served cache is stale "
+                "(fetched_at=%s) for %s -> UNAVAILABLE",
+                raw.get("fetched_at"),
                 ctx.symbol,
             )
             return self._unavailable()
