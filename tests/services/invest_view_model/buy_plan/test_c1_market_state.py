@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app.mcp_server.tooling.route_request_lanes import HARD_CONSTRAINTS
 from app.schemas.trading_policy import PolicyRecoveryGate
 from app.services.invest_view_model.buy_plan import service as buy_plan_service
 from app.services.invest_view_model.buy_plan.gate_inputs import (
@@ -236,6 +237,14 @@ def test_breadth_is_counted_once_inside_the_gate() -> None:
         "on_missing_or_stale_input",
         "fixed_at",
     }
+
+
+def test_route_request_summaries_use_the_c1_coefficient() -> None:
+    summaries = HARD_CONSTRAINTS["buy"] + HARD_CONSTRAINTS["bootstrap"]
+    assert all("of 4" not in summary for summary in summaries)
+    assert any("recovery_gate.size_coefficient" in summary for summary in summaries)
+    assert any("0.5 at 1/2" in summary for summary in summaries)
+    assert any("missing or stale input holds" in summary for summary in summaries)
 
 
 def test_coefficient_is_fixed_at_episode_entry() -> None:
