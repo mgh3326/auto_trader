@@ -40,6 +40,7 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
     DIRECT_BROKER_MUTATION_TOOLS,
+    HARNESS_DENIED_MARKET_RELIEF,
     HARNESS_DENIED_TOOLS,
     LANE_SEQUENCES,
     MUTATION_TOOLS,
@@ -52,6 +53,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     RECONCILE_TOOLS,
     RESERVE_NET_CONSUMER_TOOLS,
     STATUS_HELPER_TOOLS,
+    VALID_MARKETS,
     ordered_lane_tool_names,
 )
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -282,6 +284,18 @@ def test_harness_denied_tools_partition_is_exact_and_registered():
     assert HARNESS_DENIED_TOOLS <= MUTATION_TOOLS
     assert HARNESS_DENIED_TOOLS.isdisjoint(READ_ONLY_ADVISORY_TOOLS)
     assert HARNESS_DENIED_TOOLS <= _default_tools()
+
+
+def test_harness_denied_market_relief_is_exact_and_crypto_only():
+    # Q-58 / task #911: only get_upbit_altseason is re-admitted, and only on the
+    # crypto live harness. The relieved name must stay a subset of the denied
+    # bucket (it keeps its MUTATION_TOOLS partition seat) and a valid market.
+    assert HARNESS_DENIED_MARKET_RELIEF == {
+        "crypto": frozenset({"get_upbit_altseason"})
+    }
+    relieved = frozenset().union(*HARNESS_DENIED_MARKET_RELIEF.values())
+    assert relieved <= HARNESS_DENIED_TOOLS
+    assert set(HARNESS_DENIED_MARKET_RELIEF) <= VALID_MARKETS
 
 
 def test_lane_sequences_match_playbook_in_exact_order():
