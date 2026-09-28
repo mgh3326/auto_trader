@@ -101,6 +101,7 @@ from app.services.order_proposals.cash_funding_exemption import (
     resolve_cash_funding_exemption,
 )
 from app.services.order_proposals.parking_allowlist import parking_scope
+from app.services.order_proposals.parking_sell_exemption import ParkingSellContext
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -587,6 +588,7 @@ async def _build_preview(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: ov.LossCutContext | None = None,
     cash_funding_ctx: ov.CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
@@ -603,6 +605,7 @@ async def _build_preview(
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
         cash_funding_ctx=cash_funding_ctx,
+        parking_sell_ctx=parking_sell_ctx,
         allow_marketable_parking_buy=allow_marketable_parking_buy,
     )
     if not isinstance(dry_run_result, dict):
@@ -1842,6 +1845,7 @@ async def _place_order_impl(
     client_order_id: str | None = None,
     cash_funding_target: dict[str, Any] | None = None,
     cash_funding_shortfall: Decimal | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
@@ -1879,6 +1883,22 @@ async def _place_order_impl(
 
     def _order_error(message: str) -> dict[str, Any]:
         return _build_order_error(message, source, normalized_symbol, market_type)
+
+    if parking_sell_ctx is not None and not (
+        proposal_flow
+        and not is_mock
+        and exit_intent is None
+        and parking_sell_ctx.matches(
+            symbol=normalized_symbol,
+            market=market_type,
+            account_mode=proposal_account_mode,
+            side=side_lower,
+            order_type=order_type_lower,
+            quantity=quantity,
+            price=price,
+        )
+    ):
+        return _order_error("parking_sell_binding_invalid")
 
     if client_order_id is not None and (
         not isinstance(client_order_id, str)
@@ -1986,6 +2006,7 @@ async def _place_order_impl(
             price,
             require_fresh_quote=(
                 allow_marketable_parking_buy
+                or parking_sell_ctx is not None
                 or (
                     exit_intent == CASH_FUNDING_EXIT_INTENT
                     and side_lower == "sell"
@@ -2058,6 +2079,7 @@ async def _place_order_impl(
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
                 cash_funding_ctx=cash_funding_ctx,
+                parking_sell_ctx=parking_sell_ctx,
             )
             if sell_error is not None:
                 return sell_error
@@ -2077,6 +2099,7 @@ async def _place_order_impl(
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
                 cash_funding_ctx=cash_funding_ctx,
+                parking_sell_ctx=parking_sell_ctx,
                 allow_marketable_parking_buy=allow_marketable_parking_buy,
             )
         except ValueError as preview_exc:

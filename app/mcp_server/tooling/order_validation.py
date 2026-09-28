@@ -37,6 +37,7 @@ from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
 from app.services.order_proposals.cash_funding_exemption import CashFundingVerdict
+from app.services.order_proposals.parking_sell_exemption import ParkingSellContext
 from app.services.protected_quantity_service import apply_holdings_protection
 
 
@@ -132,6 +133,7 @@ def evaluate_sell_price_guards(
     allow_loss_sell: bool = False,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ) -> str | None:
     """Single source of truth for limit-sell price guards.
 
@@ -152,7 +154,10 @@ def evaluate_sell_price_guards(
                     NOT enforced here — that's the caller's contract in
                     _place_order_impl.
     """
-    if loss_cut_ctx is not None and cash_funding_ctx is not None:
+    if (
+        sum(x is not None for x in (loss_cut_ctx, cash_funding_ctx, parking_sell_ctx))
+        > 1
+    ):
         # Both tokens are safety exceptions with incompatible evidence models;
         # accepting both would make precedence a permission surface.
         raise ValueError("loss_cut_ctx and cash_funding_ctx are mutually exclusive")
@@ -180,6 +185,7 @@ def evaluate_sell_price_guards(
         price < min_sell_price
         and defensive_trim_ctx is None
         and cash_funding_ctx is None
+        and parking_sell_ctx is None
     ):
         return (
             f"Sell price {price} below minimum "
@@ -1137,6 +1143,7 @@ async def _preview_sell(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -1214,6 +1221,7 @@ async def _preview_sell(
             allow_loss_sell=allow_loss_sell,
             loss_cut_ctx=loss_cut_ctx,
             cash_funding_ctx=cash_funding_ctx,
+            parking_sell_ctx=parking_sell_ctx,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -1277,6 +1285,8 @@ async def _preview_sell(
         result["exit_intent"] = "cash_funding"
         result["cash_funding_currency"] = cash_funding_ctx.scope_currency
         result["cash_funding_max_quantity"] = cash_funding_ctx.max_quantity
+    if parking_sell_ctx is not None:
+        result["parking_sell_exempt"] = True
 
     estimated_value = execution_price * order_quantity
     realized_pnl = (execution_price - avg_price) * order_quantity
@@ -1302,6 +1312,7 @@ async def _preview_order(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
@@ -1330,6 +1341,7 @@ async def _preview_order(
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
         cash_funding_ctx=cash_funding_ctx,
+        parking_sell_ctx=parking_sell_ctx,
     )
 
 
@@ -1398,6 +1410,7 @@ async def _validate_sell_side(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -1492,6 +1505,7 @@ async def _validate_sell_side(
             allow_loss_sell=allow_loss_sell,
             loss_cut_ctx=loss_cut_ctx,
             cash_funding_ctx=cash_funding_ctx,
+            parking_sell_ctx=parking_sell_ctx,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)

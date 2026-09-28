@@ -26,13 +26,14 @@ The other keeps applying at a different value:
    accepted-but-unfilled order and would re-meter the next proposal from zero.
    The cumulative cap is the second line, never the only one.
 
-Nothing else changes, and the per-order cap above has not stopped applying --
-only its value moved. The daily cap is excluded only for an explicitly enabled
-parking authorization tuple in ``expanded`` mode; the loss-cut and exit-intent gates, the
+The daily cap is excluded only for an explicitly enabled parking authorization
+tuple in ``expanded`` mode. The loss-cut and exit-intent gates, the
 ``policy_deviation`` tag scan, the veto-capable account/market allowlist, the
-Toss auto-submission freeze, the sell-side break-even band and round-trip-cost
-profit proof, and the mandatory veto thesis all apply to a parking rung exactly
-as they apply to every other rung. ``off`` mode is untouched entirely.
+Toss auto-submission freeze, and the mandatory veto thesis still apply.
+Task 817 separately exempts a proposal-bound, account-proved parking limit sell
+from the average-cost and profit proof gates; see ``parking_sell_exemption``.
+The same tuple and immutable per-order cap apply there. ``off`` mode is
+untouched entirely.
 
 This module is deliberately pure -- stdlib plus ``app.core.symbol`` -- and as
 written reads no settings, environment variable, database, policy document or

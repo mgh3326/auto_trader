@@ -87,11 +87,12 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     exclusion is available only in ``expanded`` mode and only through the same
     exact scope predicate. The per-order and cumulative parking caps remain
     unchanged. Loss-cut/exit intent, the ``policy_deviation`` tag scan, the
-    veto-capable account/market allowlist, the sell-side break-even band and
-    round-trip-cost profit proof, the veto thesis requirement, and every
-    ``off``-mode verdict remain identical for a parking rung and every other
-    rung. See ``parking_allowlist`` for the closed constants and
-    ``parking_exposure`` for the provenance of the measurement.
+    veto-capable account/market allowlist, the veto thesis requirement, and
+    every ``off``-mode verdict remain identical for a parking rung and every
+    other rung. Task 817 separately exempts proposal-bound parking limit sells
+    from the sell profit proof while retaining the other gates. See
+    ``parking_allowlist`` for closed constants and ``parking_exposure`` for
+    measurement provenance.
 
 §177차 -- ``buy.underwater_support_net``
     The averaging-down tier registered by §177차 is auto-approvable through
@@ -115,6 +116,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -145,6 +147,10 @@ from app.services.order_proposals.parking_allowlist import (
     canonical_eligibility_symbol,
     is_parking_daily_cap_exempt,
     parking_scope,
+)
+from app.services.order_proposals.parking_sell_exemption import (
+    explicit_account_matches,
+    kr_regular_session_open,
 )
 from app.services.trading_policy_service import load_trading_policy, policy_content_hash
 
@@ -638,6 +644,7 @@ def evaluate_auto_approve_eligibility(
     parking_exposure: ParkingExposure | None = None,
     cash_funding_shortfall: Decimal | None = None,
     cash_funding_cumulative_notional: Decimal | None = None,
+    now: datetime | None = None,
 ) -> AutoApproveDecision:
     """Classify a rung using the fresh submit-time preview, failing closed.
 
@@ -761,8 +768,7 @@ def evaluate_auto_approve_eligibility(
     # §163차 -- cash-parking allowlist. Evaluated only after every gate above
     # has already passed (mode, action, target evidence, order type, exit
     # intent, veto-capable account/market, approval-required tags), so parking
-    # can never be a way *past* one of them; it only ever relaxes the two gates
-    # named in ``parking_allowlist``. `off` mode never reaches this branch.
+    # can never be a way past one of them. `off` mode never reaches this branch.
     # §S177's distinct cash-funding sell path is resolved below; it uses the
     # same closed scope constants but never turns ordinary off-mode parking
     # orders into an exception.
@@ -773,6 +779,19 @@ def evaluate_auto_approve_eligibility(
         market=market,
     )
     parking = expanded and parking_scope_record is not None
+    parking_sell = (
+        parking
+        and action == "place"
+        and getattr(rung, "side", None) == "sell"
+        and not cash_funding_requested
+    )
+    if parking_sell:
+        if not explicit_account_matches(
+            account_mode, getattr(group, "broker_account_id", None)
+        ):
+            return reject("parking_sell_account_identity_unavailable")
+        if not kr_regular_session_open(market, now):
+            return reject("parking_sell_regular_session_required")
     daily_cap_exempt = is_parking_daily_cap_exempt(
         symbol=getattr(group, "symbol", None),
         account_mode=account_mode,
@@ -784,6 +803,8 @@ def evaluate_auto_approve_eligibility(
             "preview_guard_failed",
             preview_success="false" if preview.get("success") is False else "invalid",
         )
+    if parking_sell and preview.get("parking_sell_exempt") is not True:
+        return reject("parking_sell_preview_binding_missing")
 
     current_price = _decimal(preview.get("current_price"))
     limit_price = _decimal(getattr(rung, "limit_price", None))
@@ -881,6 +902,27 @@ def evaluate_auto_approve_eligibility(
             per_order_cap=_text(per_order_cap),
             **parking_details,
         )
+    if parking_sell:
+        # The account-scoped broker meter is also the same-client Toss account
+        # identity proof. Its failure must demote a sell to a human card even
+        # though a sell does not consume the cumulative buy cap.
+        observed = parking_exposure.exposure if parking_exposure is not None else None
+        if (
+            parking_exposure is None
+            or not parking_exposure.available
+            or observed is None
+            or not observed.is_finite()
+            or observed < 0
+        ):
+            return reject(
+                "parking_exposure_unavailable",
+                parking_exposure_reason=(
+                    "not_supplied"
+                    if parking_exposure is None
+                    else str(parking_exposure.unavailable_reason or "invalid_exposure")
+                ),
+                **parking_details,
+            )
     if parking and getattr(rung, "side", None) == "buy":
         # SECOND line, behind the per-order cap above: cumulative parking
         # exposure. Only a buy adds exposure; a sell reduces it.
@@ -1012,7 +1054,13 @@ def evaluate_auto_approve_eligibility(
         # A successful fresh sell preview means the existing avg-cost loss
         # guard ran and passed. We record that provenance instead of
         # reimplementing the guard with a potentially different threshold.
-        loss_guard = "cash_funding_exempt" if cash_funding_active else "preview_passed"
+        loss_guard = (
+            "cash_funding_exempt"
+            if cash_funding_active
+            else "parking_sell_exempt"
+            if parking_sell
+            else "preview_passed"
+        )
         if cash_funding_active:
             # §S177: cash-equivalent liquidation funds the already-proved
             # planned buy; it is explicitly not a take-profit classification.
@@ -1037,6 +1085,13 @@ def evaluate_auto_approve_eligibility(
                         daily_notional_after=_text(daily_after),
                         daily_cap=_text(limits.daily_cap),
                     )
+        elif parking_sell:
+            # Keep the existing 2% marketable sell fat-finger band independent
+            # of the preview. The preview and broker submit guard check it too.
+            if limit_price < current_price * Decimal("0.98"):
+                return reject("parking_sell_price_band_failed")
+            if limit_price <= current_price:
+                parking_details["marketability"] = "parking_sell_marketable"
         elif expanded:
             # ...but the preview guard fails open on unknown cost basis and is
             # bypassable (defensive_trim / loss_cut / mock), so `expanded`

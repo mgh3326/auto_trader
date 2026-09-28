@@ -776,7 +776,8 @@ market-exposure-changing auto approvals.
 
 For a parking **sell**, this removes the only aggregate limit: no daily total
 or cumulative-parking cap remains. The immutable per-order cap, available held
-quantity, and existing `take_profit` proof remain required.
+quantity remain required. Task 817 adds the separate proposal-bound sell
+exception in §10; the older `take_profit` requirement remains for other sells.
 
 The mechanism of the known cumulative-cap limits is unchanged, but their
 effective binding amount is not symmetric by market:
@@ -899,3 +900,55 @@ hit the existing market-loss block.
 3. `measured_shortfall` is measured at proposal creation and is not atomic
    with submit. Auto approval additionally refreshes it at dispatch, but no
    distributed reservation turns either reading into an atomic funding claim.
+
+## 10. Proposal-bound parking SELL without a planned buy (task 817)
+
+Parking means cash held in SGOV, BIL, 459580, or 357870 without making a
+deposit or FX trade. An operator may sell it for a cash shortage or by explicit
+instruction. The ordinary parking SELL has no `funding_target` or planned-buy
+requirement. This is distinct from §9 `cash_funding`, whose target and measured
+shortfall evidence contract remains unchanged. A distribution ex-date price
+drop can make a parking ETF appear below average cost and is not, by itself,
+a reason to block conversion back to cash. The operator checks the parking
+balance weekly.
+
+In `expanded` auto-approval mode only, a persisted `place` proposal with an
+explicit account and a live **limit SELL** may use this exception on the exact
+`parking_allowlist` symbol/account-mode/market tuples. The broker-selected
+account must equal the proposal's exact account ID; an absent, noncanonical,
+or mismatched ID produces a usable human approval card. The account-scoped
+parking meter must also be available. For Toss this includes the same-client
+broker account-list check from task 765; a failed list or durable meter read
+demotes to the card. No account is filled from settings into the proposal.
+Task 765 must merge before task 817.
+
+The bound exception is constructed from the persisted proposal and rung after
+the existing idempotency and target-evidence checks. Fresh preview and submit
+must agree on the proposal, tuple, account, side, order type, quantity, and
+price. The broker send hook checks account and KR regular-session status again
+immediately before mutation. A direct MCP order call has no such binding and
+retains its ordinary average-cost guard. Existing env and `confirm=True`
+broker mutation gates remain default-disabled and unchanged.
+
+The exception bypasses the average-cost limit-sell floor, break-even band,
+fee-net profit proof, and the advisory `de_minimis_trim_watch` constraint.
+The latter has no runtime consumer. It permits a marketable **limit** sell,
+including an average-cost loss, so execution can precede the veto card.
+The retained `SELL_MARKETABLE_MAX_DISCOUNT` band blocks a limit more than 2%
+below the current fresh price in preview and submit. The auto classifier
+checks the band independently. Market orders, unsupported actions, and other
+exit intents do not inherit this exception.
+
+The exact tuple's immutable per-order cap is **raised, not removed**: USD
+10,000 for US tuples and KRW 10,000,000 for KR tuples. Executable notional is
+`max(limit_price, current_price) × quantity`, so discounting the limit cannot
+understate the cap. The all-field `policy_deviation` tag scan, veto-capable
+account/market allowlist, fresh preview, held-quantity and ordinary broker
+submission checks, and a renderable veto thesis remain mandatory. A failed
+guard demotes to the human card or blocks submit before mutation. The parking
+buy cumulative cap and existing `cash_funding` cumulative proof do not change.
+
+KR parking sells require the XKRX **regular** session at dispatch and at the
+pre-send boundary. Pre-open, NXT, after-hours, holidays, and the close of a
+shortened session are outside it. No scheduler, migration, automatic trigger,
+or new direct-order permission is added. No live smoke is part of task 817.
