@@ -211,7 +211,7 @@ def test_each_late_phase_failure_restores_all_replaced_units(
     result, calls, state, _ = _run(tmp_path, fail_name=failure)
     assert result.returncode != 0
     for name in INITIAL:
-        assert state[name] == (KIS_OLD if name == "at-kis-ws" else OLD), name
+        assert state.get(name) == (KIS_OLD if name == "at-kis-ws" else OLD), name
     assert "at-api-green" not in state
     assert "at-worker-new" not in state
     assert "expected" in result.stdout.lower()

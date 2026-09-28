@@ -44,13 +44,14 @@ Install the versioned operator script with restricted permissions:
 install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
 ```
 
-The script requires existing `at-api` and `at-scheduler` containers before it
-will replace any unit. This intentional preflight ensures a failed readiness
-check has a concrete previous image to restore. The first promotion may lack
-`at-worker` or `at-kis-ws`; their rollback references bootstrap from the API
-image. A hand-started `at-upbit-ws` using a local/non-digest tag (for example
-`auto_trader:ncp-main`) also bootstraps from the API image instead of retaining
-that mutable tag.
+Before pulling, the script requires an existing active API and checks every
+present app container is running and has its own resolvable immutable GHCR
+repository digest. It reads the container's configured digest, then image
+metadata for a mutable tag. If neither identifies that unit's own digest, it
+exits before replacing anything. A local-only tagged container must be
+replaced by the operator with an image that has a GHCR repository digest
+before this deployment can proceed. Absent optional units remain absent on
+rollback if the run created them before failing.
 
 ## Promote an image
 
@@ -77,33 +78,64 @@ digest with profile-scoped environment policy (including the required
 approval-hash modes for TradingCodex execution). HAProxy must remain bound only
 to loopback and the configured tailnet address; it is never a public listener.
 
-The script prints the GHCR repo digest after pulling it. It retries the inactive
+The script resolves the GHCR repo digest after pulling it. It retries the inactive
 API color's loopback `/healthz` for up to 60 seconds by default. If the new API
 does not return HTTP 200, the worker is not running and does not emit its
 TaskIQ startup line, or either WebSocket is not running and does not emit a
 `Unified WebSocket health ... connected=True` (or equivalent `connected=True`)
-startup line before the bounded wait expires, it recreates all five units with
-pinned rollback references and verifies the restored API, worker, and both
-WebSockets. A failed MCP promotion restores the MCP fleet's captured image
-state and active color before the same core rollback. A tag is used only to pull and
-resolve the image; `docker run` always receives `repo@sha256:...`, so the next
+startup line before the bounded wait expires, it restores every unit this run
+already replaced, in reverse replacement order, using each unit's prior
+digest. Untouched units stay untouched. A later MCP failure uses the same
+rollback path, then restores the prior HAProxy config and active colors. The
+final table compares the expected digest with each container's running digest;
+any mismatch leaves the command nonzero. A tag is used only to pull and resolve
+the image; `docker run` always receives `repo@sha256:...`, so the next
 deployment's `.Config.Image` is stable even after a later `:main` pull.
 
 The script maintains these operator-owned, mode-0600 digest files:
 
-- `/root/at-run/deployed-digest` is the currently healthy deployment.
+- `/root/at-run/deployed-digest` is the last successful promotion target.
+  A skipped KIS WebSocket can retain a different digest, as the table shows.
 - `/root/at-run/deployed-digest.previous` is the prior healthy deployment;
   each successful deployment atomically rotates the former current value here.
 
-For an automatic readiness rollback, a container's existing digest reference
-takes precedence. A legacy floating-tag API/scheduler container instead uses
-`deployed-digest` for this first transition. A missing worker/KIS WebSocket or
-local-tagged Upbit WebSocket uses the API image as its bootstrap reference;
-that API reference is still validated as a repo digest (or resolved through
-`deployed-digest`). If neither route provides a valid repo digest, the script
-fails explicitly before replacing containers; it never silently restarts a
-floating tag. A successful automatic rollback restores `deployed-digest` to
-the recovered digest.
+Automatic rollback uses the per-container preflight snapshot. A floating tag
+is resolved through that container's image metadata; the API digest is never
+substituted for another unit. If resolution fails, no replacement begins.
+Automatic rollback does not rotate either digest file. A successful promotion
+rotates the prior target into `deployed-digest.previous`.
+
+## KIS WebSocket skip flag and dry-run plan
+
+Both flags combine with a tag or with --rollback, in any order:
+
+    /root/at-run/deploy-ncp-pull.sh sha-abcdef0 --skip-kis-ws
+    /root/at-run/deploy-ncp-pull.sh --dry-run sha-abcdef0
+    /root/at-run/deploy-ncp-pull.sh --rollback --skip-kis-ws
+    /root/at-run/deploy-ncp-pull.sh --dry-run --skip-kis-ws
+
+--dry-run prints a read-only plan and exits. It reports the intended digest
+resolved from the locally inspectable image, the planned action for every
+unit, and, when --skip-kis-ws is set, the skip reason and retained KIS
+digest. When no local repo digest is inspectable it prints the literal word
+unresolved instead of claiming a digest; a real run pulls first and resolves
+there. Dry-run performs no docker pull, run, rm, stop, rename, or kill and
+writes no HAProxy route or color files. A rollback dry-run instead reads
+deployed-digest.previous and reports it (or unresolved) as the target.
+
+--skip-kis-ws is an explicit operator decision. The script performs no
+automatic host-local holder detection; reliable detection is not established
+in this repository, so the flag is the only authority. It wins regardless of
+any optional holder evidence. Pass it whenever fillwire holds the KIS fill
+stream (the fillwire #180 observation window) and the existing at-kis-ws
+must remain undisturbed. A skipped at-kis-ws is never stopped, removed,
+renamed, or recreated — including during rollback after a later phase
+failure.
+
+The retained KIS digest can legitimately differ from the promoted digest.
+After the run the operator must inspect the final per-container digest
+table: every replaced unit must report the intended digest as running, while
+at-kis-ws reports its own retained digest.
 
 ## Operator rollback
 

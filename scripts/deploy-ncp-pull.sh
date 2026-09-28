@@ -5,10 +5,25 @@ set -Eeuo pipefail
 
 readonly IMAGE_REPOSITORY="ghcr.io/mgh3326/auto_trader"
 readonly HAPROXY_IMAGE="haproxy:3.1-alpine"
-if (($# == 0)); then DEPLOY_MODE=deploy; IMAGE_TAG=main
-elif [[ "$1" == --rollback && $# == 1 ]]; then DEPLOY_MODE=rollback; IMAGE_TAG=""
-elif [[ "$1" != -* && $# == 1 ]]; then DEPLOY_MODE=deploy; IMAGE_TAG="$1"
-else printf 'usage: %s [tag] | --rollback\n' "$0" >&2; exit 64; fi
+usage() { printf 'usage: %s [tag|--rollback] [--skip-kis-ws] [--dry-run]\n' "$0" >&2; exit 64; }
+
+SKIP_KIS_WS=0 DRY_RUN=0 DEPLOY_MODE=deploy IMAGE_TAG=main TAG_SET=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-kis-ws) SKIP_KIS_WS=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    --rollback) DEPLOY_MODE=rollback ;;
+    -*) usage ;;
+    *)
+      if ((TAG_SET)); then usage; fi
+      TAG_SET=1 IMAGE_TAG="$arg" ;;
+  esac
+done
+if [[ "$DEPLOY_MODE" == rollback ]]; then
+  if ((TAG_SET)); then usage; fi
+  IMAGE_TAG=""
+fi
+readonly SKIP_KIS_WS DRY_RUN DEPLOY_MODE IMAGE_TAG
 
 readonly IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 readonly RUN_DIRECTORY="${AT_RUN_DIRECTORY:-/root/at-run}"
@@ -170,6 +185,18 @@ rollback_replaced() {
 }
 
 mcp_unit_is_skipped() { [[ ",$MCP_UNITS_SKIP," == *",$1,"* ]]; }
+
+# Read-only summary used by the dry-run plan: the unit's immutable repo digest
+# when one is discoverable, or an honest marker when it is absent/unresolved.
+unit_image_summary() {
+  local container="$1" image resolved
+  container_exists "$container" || { printf 'absent'; return 0; }
+  container_running "$container" || { printf 'stopped'; return 0; }
+  resolved="$(unit_rollback_image "$container" 2>/dev/null || true)"
+  is_digest "$resolved" && { printf '%s\n' "$resolved"; return 0; }
+  image="$(configured_image "$container" 2>/dev/null || true)"
+  if [[ -n "$image" ]]; then printf 'unresolved (configured: %s)' "$image"; else printf 'unresolved'; fi
+}
 env_value() { local key="$1" file line value=""; for file in "$RUNTIME_ENV_FILE" "$SECRETS_ENV_FILE"; do line="$(awk -v key="$key" '$0 ~ "^[[:space:]]*(export[[:space:]]+)?" key "=" { sub("^[[:space:]]*(export[[:space:]]+)?" key "=", ""); print }' "$file" | tail -n 1)"; [[ -n "$line" ]] && value="$line"; done; value="${value#\"}"; value="${value%\"}"; value="${value#\'}"; value="${value%\'}"; [[ -n "${value//[[:space:]]/}" ]] && printf '%s' "$value"; }
 validate_mcp_tokens() { local i; env_value MCP_AUTH_TOKEN >/dev/null || { printf 'MCP_AUTH_TOKEN is required\n' >&2; return 78; }; for i in "${!MCP_NAMES[@]}"; do mcp_unit_is_skipped "${MCP_NAMES[$i]}" && continue; env_value "${MCP_TOKENS[$i]}" >/dev/null || { printf '%s is required\n' "${MCP_TOKENS[$i]}" >&2; return 78; }; done; }
 
@@ -233,7 +260,7 @@ deploy_singletons() {
   local image="$1"
   record_replacement at-scheduler; docker rm -f at-scheduler >/dev/null 2>&1 || true; run_scheduler "$image" >/dev/null || return 1
   record_replacement at-upbit-ws; docker rm -f at-upbit-ws >/dev/null 2>&1 || true; run_ws at-upbit-ws "$image" upbit >/dev/null || return 1; wait_ws at-upbit-ws || return 1
-  if [[ "${SKIP_KIS_WS:-false}" == true ]]; then
+  if ((SKIP_KIS_WS)); then
     printf 'at-kis-ws skipped; retaining digest %s\n' "${ORIGINAL_IMAGES[at-kis-ws]}"
   else
     record_replacement at-kis-ws; docker rm -f at-kis-ws >/dev/null 2>&1 || true; run_ws at-kis-ws "$image" kis >/dev/null || return 1; wait_ws at-kis-ws || return 1
@@ -297,6 +324,70 @@ prepare() { require_command docker; require_command curl; require_command awk; r
 main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; }
 manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
-if [[ "$DEPLOY_MODE" == rollback ]]; then manual_rollback
+# Read-only plan. Inspect calls only: no pull/run/rm/stop/rename/kill and no
+# route or color file writes. When no immutable reference is available the
+# plan says unresolved rather than claiming a digest.
+dry_run() {
+  local target="" planned verb old_api old_mcp new_api new_mcp i name
+  require_command docker
+  printf 'dry-run: read-only plan; no image pull, no container mutation, no route or file writes\n'
+  if [[ "$DEPLOY_MODE" == rollback ]]; then
+    printf 'mode: rollback\n'
+    if target="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")"; then
+      printf 'rollback target digest: %s\n' "$target"
+    else
+      printf 'rollback target digest: unresolved (%s is absent or invalid)\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE"
+    fi
+    verb='restore to'
+  else
+    printf 'mode: deploy\n'
+    printf 'target image: %s\n' "$IMAGE"
+    target="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || true)"
+    if is_digest "$target"; then
+      printf 'intended digest: %s\n' "$target"
+    else
+      target=""
+      printf 'intended digest: unresolved (no local repo digest for %s; a real run pulls first)\n' "$IMAGE"
+    fi
+    verb='promote to'
+  fi
+  planned="${target:-unresolved}"
+  old_api="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"
+  old_mcp="$(read_color mcp "$MCP_ACTIVE_COLOR_FILE" 2>/dev/null || true)"
+  if [[ -n "$old_api" ]]; then new_api="$(other_color "$old_api")"; else new_api=blue; fi
+  if [[ -n "$old_mcp" ]]; then new_mcp="$(other_color "$old_mcp")"; else new_mcp=blue; fi
+  printf 'planned actions per unit:\n'
+  if [[ -n "$old_api" ]]; then
+    printf '  at-api-%s -> at-api-%s: %s %s; current: %s\n' "$old_api" "$new_api" "$verb" "$planned" "$(unit_image_summary "at-api-$old_api")"
+  else
+    printf '  at-api -> at-api-%s: %s %s; current: %s\n' "$new_api" "$verb" "$planned" "$(unit_image_summary at-api)"
+  fi
+  printf '  at-worker: %s %s via at-worker-new rename; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-worker)"
+  printf '  at-scheduler: %s %s; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-scheduler)"
+  printf '  at-upbit-ws: %s %s; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-upbit-ws)"
+  if ((SKIP_KIS_WS)); then
+    printf '  at-kis-ws: skip; reason: explicit --skip-kis-ws request; retained digest: %s\n' "$(unit_image_summary at-kis-ws)"
+  else
+    printf '  at-kis-ws: %s %s; current: %s\n' "$verb" "$planned" "$(unit_image_summary at-kis-ws)"
+  fi
+  if [[ -n "$old_mcp" ]]; then
+    printf '  at-mcp-%s -> at-mcp-%s: %s %s; current: %s\n' "$old_mcp" "$new_mcp" "$verb" "$planned" "$(unit_image_summary "at-mcp-$old_mcp")"
+  else
+    printf '  at-mcp -> at-mcp-%s: %s %s; current active: unknown\n' "$new_mcp" "$verb" "$planned"
+  fi
+  for i in "${!MCP_NAMES[@]}"; do
+    name="at-mcp-${MCP_NAMES[$i]}"
+    if mcp_unit_is_skipped "${MCP_NAMES[$i]}"; then
+      printf '  %s: skip; reason: MCP_UNITS_SKIP; retained: %s\n' "$name" "$(unit_image_summary "$name")"
+    else
+      printf '  %s: %s %s; current: %s\n' "$name" "$verb" "$planned" "$(unit_image_summary "$name")"
+    fi
+  done
+  printf '  at-haproxy: render config and reload via SIGHUP (start if absent); deferred in dry-run\n'
+  printf 'end of plan; a real run prints a per-container digest table for operator comparison\n'
+}
+
+if ((DRY_RUN)); then dry_run
+elif [[ "$DEPLOY_MODE" == rollback ]]; then manual_rollback
 else main
 fi
