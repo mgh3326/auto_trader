@@ -24,11 +24,17 @@ ApprovalLaneReason = Literal[
     "notional_unavailable",
 ]
 PlacementForm = Literal["resting_order", "watch"]
-GateConditionState = Literal["met", "not_met", "unavailable"]
+# ``stale`` (task-792 C1): the input answered but its newest observation is
+# older than the condition's ``stale_after_seconds`` bound — untrusted, and
+# never folded into an inferred miss either.
+GateConditionState = Literal["met", "not_met", "unavailable", "stale"]
 # ``indeterminate`` is not a softer "closed": the policy says a missing
 # threshold must not be inferred or counted as met, so an unreadable input
 # leaves the gate un-passable but also un-proven.
 GateState = Literal["open", "closed", "indeterminate"]
+# C1 market-state coefficient decision: ``hold`` whenever any gate input is
+# missing or stale — the coefficient is never resolved from partial input.
+GateCoefficientState = Literal["resolved", "hold"]
 FundingVerdict = Literal["sufficient", "shortfall", "unknown"]
 # A read model that told us it was incomplete. Kept as a first-class value so
 # a degraded upstream can never render as a confident zero (verify-r1 B3/B4).
@@ -310,6 +316,27 @@ class DiscoveryGateCondition(BuyPlanDecimalModel):
         return _decimal_str(value)
 
 
+class DiscoveryGateCoefficient(BuyPlanDecimalModel):
+    """task-792 C1 — the resolved market-state sizing coefficient m.
+
+    ``value`` is one of the live arms {1.0, 0.5, 0.0} when ``state`` is
+    ``resolved``; ``None`` while ``hold``. The 0.25 mock-experiment arm can
+    never appear here — it is confined to the crypto mock paired virtual
+    ledger.
+    """
+
+    state: GateCoefficientState
+    value: Decimal | None = None
+    basis_met_count: int | None = None
+    applies_to: str
+    on_missing_or_stale_input: str
+    fixed_at: str
+
+    @field_serializer("value")
+    def _ser(self, value: Decimal | None) -> str | None:
+        return _decimal_str(value)
+
+
 class DiscoveryGateRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -320,7 +347,9 @@ class DiscoveryGateRow(BaseModel):
     of: int
     met_count: int
     unavailable_count: int
+    stale_count: int = 0
     semantics: str | None = None
+    coefficient: DiscoveryGateCoefficient | None = None
     conditions: list[DiscoveryGateCondition] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 

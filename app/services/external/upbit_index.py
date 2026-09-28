@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -276,6 +276,14 @@ async def _fetch_krw_breadth_24h(
         return None
 
     beating = sum(1 for rate in alt_rates if rate > btc_rate)
+    # task-792 C1 freshness: the newest swept ticker trade_timestamp dates the
+    # observation, so a downstream stale check can hold the decision instead of
+    # trusting (or silently re-deriving) a dead feed.
+    trade_ts = [
+        ts
+        for ts in (t.get("trade_timestamp") for t in ticker_rows)
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool)
+    ]
     result: dict[str, Any] = {
         "window": "24h",
         "method": "open_api_ticker_24h_derived",
@@ -283,6 +291,11 @@ async def _fetch_krw_breadth_24h(
         "alts_beating_btc": beating,
         "alts_beating_btc_pct": round(beating / len(alt_rates), 4),
         "btc_change_24h": btc_rate,
+        "latest_trade_at": (
+            datetime.fromtimestamp(max(trade_ts) / 1000, tz=UTC).isoformat()
+            if trade_ts
+            else None
+        ),
     }
     if include_constituents:
         constituents = _build_altseason_constituents(

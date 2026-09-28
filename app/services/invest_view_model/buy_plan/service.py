@@ -30,6 +30,7 @@ from app.schemas.invest_buy_plan import (
     BuyPlanMarket,
     BuyPlanResponse,
     CashAccountRow,
+    DiscoveryGateCoefficient,
     DiscoveryGateCondition,
     DiscoveryGateRow,
     FundingBroker,
@@ -56,8 +57,10 @@ from app.services.invest_view_model.buy_plan.computation import (
 from app.services.invest_view_model.buy_plan.gate_inputs import (
     GATE_CACHE_TTL_SECONDS,
     GateMetricReading,
+    evaluate_gate_conditions,
     read_alt_breadth_24h,
     read_btc_long_short_ratio,
+    resolve_market_state_coefficient,
 )
 from app.services.trading_policy_service import (
     load_trading_policy,
@@ -276,7 +279,9 @@ class BuyPlanService:
         )
         buy_watches = _build_active_buy_watches(watches, policy=policy, wanted=wanted)
         gates = (
-            await _build_discovery_gates(policy=policy) if "crypto" in wanted else []
+            await _build_discovery_gates(policy=policy, now=as_of)
+            if "crypto" in wanted
+            else []
         )
         funding = _build_funding(
             home,
@@ -1030,7 +1035,9 @@ def _build_active_buy_watches(
     return rows
 
 
-async def _build_discovery_gates(*, policy: Any) -> list[DiscoveryGateRow]:
+async def _build_discovery_gates(
+    *, policy: Any, now: dt.datetime
+) -> list[DiscoveryGateRow]:
     crypto_rules = policy.market_rules.get("crypto")
     gate = getattr(crypto_rules, "recovery_gate", None)
     if gate is None:
@@ -1042,42 +1049,33 @@ async def _build_discovery_gates(*, policy: Any) -> list[DiscoveryGateRow]:
     lsr = await read_btc_long_short_ratio()
     readings[lsr.metric] = lsr
 
-    conditions: list[DiscoveryGateCondition] = []
-    met = 0
-    unavailable = 0
-    for condition in gate.conditions:
-        reading = readings.get(condition.metric)
-        threshold = _dec(condition.threshold)
-        value = reading.value if reading is not None else None
-        if value is None or threshold is None or not condition.operator:
-            state = "unavailable"
-            unavailable += 1
-        else:
-            passed = _compare(condition.operator, value, threshold)
-            state = "met" if passed else "not_met"
-            if passed:
-                met += 1
-        conditions.append(
-            DiscoveryGateCondition(
-                condition_id=condition.id,
-                metric=condition.metric,
-                comparison=condition.operator,
-                threshold=threshold,
-                unit=condition.unit,
-                current_value=value,
-                state=state,  # type: ignore[arg-type]
-                # Provenance comes from the policy's own ``sources`` list, not
-                # from a constant duplicated in the reader — the policy file is
-                # what declares which upstreams this metric is allowed to come
-                # from, so it cannot drift out of sync with the gate.
-                source="+".join(condition.sources) if condition.sources else None,
-                note=reading.note
-                if reading is not None
-                else "이 지표를 읽는 소스가 배선돼 있지 않습니다.",
-            )
+    verdicts, met, unavailable, stale = evaluate_gate_conditions(
+        gate, readings=readings, now_epoch=now.timestamp()
+    )
+    units = {c.id: c.unit for c in gate.conditions}
+    conditions = [
+        DiscoveryGateCondition(
+            condition_id=verdict.condition_id,
+            metric=verdict.metric,
+            comparison=next(
+                c.operator for c in gate.conditions if c.id == verdict.condition_id
+            ),
+            threshold=verdict.threshold,
+            unit=units.get(verdict.condition_id),
+            current_value=verdict.value,
+            state=verdict.state,
+            # Provenance comes from the policy's own ``sources`` list, not
+            # from a constant duplicated in the reader — the policy file is
+            # what declares which upstreams this metric is allowed to come
+            # from, so it cannot drift out of sync with the gate.
+            source="+".join(verdict.sources) if verdict.sources else None,
+            note=verdict.note,
         )
+        for verdict in verdicts
+    ]
 
-    if unavailable:
+    unresolved = unavailable + stale
+    if unresolved:
         # policy: missing_or_null_threshold = do_not_infer_or_count_as_met.
         # An unreadable input can never be counted toward the gate, so the
         # honest states are "already open on what we could read" or
@@ -1086,9 +1084,32 @@ async def _build_discovery_gates(*, policy: Any) -> list[DiscoveryGateRow]:
     else:
         state = "open" if met >= gate.min_conditions_met else "closed"
 
+    # task-792 C1 — the gate's single market-state sizing coefficient. Any
+    # missing or stale input resolves to hold; the met count alone never
+    # produces an inferred 0/2.
+    coefficient: DiscoveryGateCoefficient | None = None
+    spec = getattr(gate, "size_coefficient", None)
+    if spec is not None:
+        coeff_state, coeff_value = resolve_market_state_coefficient(
+            spec, met_count=met, unresolved_count=unresolved
+        )
+        coefficient = DiscoveryGateCoefficient(
+            state=coeff_state,
+            value=coeff_value,
+            basis_met_count=met if coeff_state == "resolved" else None,
+            applies_to=spec.applies_to,
+            on_missing_or_stale_input=spec.on_missing_or_stale_input,
+            fixed_at=spec.fixed_at,
+        )
+
     notes = [
         f"미확인 조건은 충족으로 세지 않습니다 ({gate.missing_or_null_threshold}).",
     ]
+    if spec is not None:
+        notes.append(
+            "C1 시장상태 계수 m — 2/2 충족 ×1.0, 1/2 ×0.5, 0/2 ×0. "
+            "입력 결손·stale이 하나라도 있으면 hold(0/2 추정 금지)."
+        )
     if getattr(gate, "advisory", False):
         notes.append("이 게이트는 advisory입니다 — 코드가 주문을 막지 않습니다.")
 
@@ -1101,26 +1122,13 @@ async def _build_discovery_gates(*, policy: Any) -> list[DiscoveryGateRow]:
             of=gate.of,
             met_count=met,
             unavailable_count=unavailable,
+            stale_count=stale,
             semantics=gate.semantics,
+            coefficient=coefficient,
             conditions=conditions,
             notes=notes,
         )
     ]
-
-
-def _compare(operator: str, value: Decimal, threshold: Decimal) -> bool:
-    if operator == "gt":
-        return value > threshold
-    if operator == "gte":
-        return value >= threshold
-    if operator == "lt":
-        return value < threshold
-    if operator == "lte":
-        return value <= threshold
-    if operator == "eq":
-        return value == threshold
-    # An operator this board does not implement must not silently pass.
-    return False
 
 
 def _requirements(
@@ -1522,6 +1530,12 @@ def _value_sources() -> list[ValueSource]:
             source="market_rules.crypto.recovery_gate.conditions[].sources "
             "(정책이 선언한 업스트림)",
             note=f"캐시 {GATE_CACHE_TTL_SECONDS}초. 확인 불가 조건은 충족으로 세지 않습니다.",
+        ),
+        ValueSource(
+            field="discovery_gates[].coefficient",
+            source="market_rules.crypto.recovery_gate.size_coefficient "
+            "(C1 시장상태 계수)",
+            note="2/2=1.0, 1/2=0.5, 0/2=0.0 — 입력 결손·stale 시 hold.",
         ),
         ValueSource(
             field="funding.accounts[].available_cash",

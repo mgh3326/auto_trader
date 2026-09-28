@@ -1,16 +1,21 @@
 """Crypto (Upbit) adapter for ROB-1230 P-1 — policy_table.v1 rows.
 
 Read-only. Imports only GET-shaped functions from
-``app.services.brokers.upbit.client`` (accounts/ticker/candles) and the
-active-alerts read path of the investment-reports repository. Deliberately
-does **not** import ``app.services.brokers.upbit.orders`` — none of its
-order-placement/cancel functions are needed here, and P-1's acceptance gate
-requires a zero-order-tool import graph.
+``app.services.brokers.upbit.client`` (accounts/ticker/candles), the read-only
+recovery-gate input readers (Upbit altseason breadth + Binance long/short
+ratio), the parsed recovery-gate spec, and the active-alerts read path of the
+investment-reports repository. Deliberately does **not** import
+``app.services.brokers.upbit.orders`` — none of its order-placement/cancel
+functions are needed here, and P-1's acceptance gate requires a
+zero-order-tool import graph.
 
 Split into ``fetch_raw_inputs`` (network + DB I/O) and
 ``compute_policy_table`` (pure, deterministic given those inputs) so a run's
 raw inputs can be dumped and replayed to prove byte-identical output on
-identical input (ROB-1230 acceptance #3).
+identical input (ROB-1230 acceptance #3). task-792 C1 keeps that contract:
+the recovery-gate spec and both gate input payloads are captured into
+``RawInputs`` at fetch time, so the market-state block replays byte-identical
+too.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.schemas.trading_policy import PolicyRecoveryGate
 from app.services.brokers.upbit.client import (
     fetch_krw_orderable_balance,
     fetch_my_coins,
@@ -31,6 +37,12 @@ from app.services.brokers.upbit.client import (
     parse_upbit_account_row,
 )
 from app.services.halt_detection import classify_ohlcv_rows
+from app.services.invest_view_model.buy_plan.gate_inputs import (
+    evaluate_gate_conditions,
+    parse_alt_breadth_reading,
+    parse_btc_long_short_reading,
+    resolve_market_state_coefficient,
+)
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from research.kr_corpus.d3_engine.models import Position
 from research.kr_corpus.d3_engine.policies import update_underwater_close
@@ -79,6 +91,13 @@ class RawInputs:
     # ``volume`` for halt detection; three-element rows from an older replay
     # dump still classify (zero-variation rule only), so existing dumps replay.
     candles: dict[str, list[list[str]]]
+    # task-792 C1 — the recovery-gate spec and its two input payloads, captured
+    # at fetch time so a replayed dump resolves the same market state. All
+    # three are absent from pre-C1 dumps (``None`` → market_state reports
+    # hold/unavailable rather than an inferred verdict).
+    altseason: dict[str, Any] | None = None
+    long_short_ratio: dict[str, Any] | None = None
+    recovery_gate: dict[str, Any] | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -88,6 +107,9 @@ class RawInputs:
             "top_traded": self.top_traded,
             "orderable_krw": self.orderable_krw,
             "candles": self.candles,
+            "altseason": self.altseason,
+            "long_short_ratio": self.long_short_ratio,
+            "recovery_gate": self.recovery_gate,
         }
 
     @classmethod
@@ -99,6 +121,9 @@ class RawInputs:
             top_traded=payload["top_traded"],
             orderable_krw=payload["orderable_krw"],
             candles=payload["candles"],
+            altseason=payload.get("altseason"),
+            long_short_ratio=payload.get("long_short_ratio"),
+            recovery_gate=payload.get("recovery_gate"),
         )
 
 
@@ -164,15 +189,61 @@ async def _fetch_candles_raw(symbol: str) -> list[list[str]] | None:
     return rows
 
 
+async def _fetch_gate_payloads_raw() -> tuple[
+    dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None
+]:
+    """task-792 C1 raw capture: both gate input payloads + the gate spec.
+
+    Fail-open per leg — a dead upstream is captured as ``None`` and the
+    compute side renders the market-state decision as hold, exactly like the
+    live board's unreadable-input path.
+    """
+
+    async def _altseason() -> dict[str, Any] | None:
+        try:
+            from app.services.external.upbit_index import fetch_upbit_altseason
+
+            return await fetch_upbit_altseason()
+        except Exception:  # noqa: BLE001 — captured as absent input, not fatal
+            return None
+
+    async def _lsr() -> dict[str, Any] | None:
+        try:
+            from app.mcp_server.tooling.fundamentals._crypto import (
+                handle_get_long_short_ratio,
+            )
+
+            payload = await handle_get_long_short_ratio("BTC", "1h", 1)
+            return payload if isinstance(payload, dict) else None
+        except Exception:  # noqa: BLE001 — captured as absent input
+            return None
+
+    def _gate_spec() -> dict[str, Any] | None:
+        try:
+            from app.services.trading_policy_service import load_trading_policy
+
+            doc = load_trading_policy()
+            crypto_rules = doc.market_rules.get("crypto")
+            gate = getattr(crypto_rules, "recovery_gate", None)
+            return gate.model_dump() if gate is not None else None
+        except Exception:  # noqa: BLE001 — captured as absent spec
+            return None
+
+    altseason, lsr = await asyncio.gather(_altseason(), _lsr())
+    return altseason, lsr, _gate_spec()
+
+
 async def fetch_raw_inputs(*, top_n: int = DEFAULT_TOP_N) -> RawInputs:
     """Do all network/DB I/O once; return a JSON-safe, replayable snapshot."""
 
     as_of = datetime.now(UTC)
-    holdings, top_traded, orderable_krw = await asyncio.gather(
+    holdings, top_traded, orderable_krw, gate_payloads = await asyncio.gather(
         _fetch_holdings_raw(),
         fetch_top_traded_coins(fiat=QUOTE_CURRENCY),
         fetch_krw_orderable_balance(),
+        _fetch_gate_payloads_raw(),
     )
+    altseason, long_short_ratio, recovery_gate = gate_payloads
     watch_alerts = await _fetch_watch_alerts_raw(as_of=as_of)
 
     holding_symbols = {row["symbol"] for row in holdings}
@@ -217,6 +288,9 @@ async def fetch_raw_inputs(*, top_n: int = DEFAULT_TOP_N) -> RawInputs:
         top_traded=top_traded_str,
         orderable_krw=str(Decimal(str(orderable_krw))),
         candles=candles,
+        altseason=altseason,
+        long_short_ratio=long_short_ratio,
+        recovery_gate=recovery_gate,
     )
 
 
@@ -428,6 +502,86 @@ def _build_row(
     return row
 
 
+def _build_market_state(raw: RawInputs) -> dict[str, Any]:
+    """task-792 C1 — resolve the recovery gate's market-state coefficient.
+
+    Pure given RawInputs: the gate spec was captured into ``recovery_gate`` at
+    fetch time and both input payloads into ``altseason`` /
+    ``long_short_ratio``. A missing spec or an unreadable/stale input resolves
+    to ``hold`` — the met count alone never produces an inferred verdict.
+    """
+
+    if raw.recovery_gate is None:
+        return {
+            "available": False,
+            "decision": "hold",
+            "coefficient": None,
+            "reason": (
+                "recovery_gate spec absent from raw inputs (pre-C1 dump or "
+                "capture failure) — hold, never an inferred 0/2"
+            ),
+        }
+    try:
+        gate = PolicyRecoveryGate.model_validate(raw.recovery_gate)
+    except Exception as exc:  # noqa: BLE001 — spec must validate to be trusted
+        return {
+            "available": False,
+            "decision": "hold",
+            "coefficient": None,
+            "reason": f"recovery_gate spec failed to validate: {exc!r}",
+        }
+
+    breadth_reading = parse_alt_breadth_reading(raw.altseason)
+    lsr_reading = parse_btc_long_short_reading(raw.long_short_ratio)
+    readings = {
+        breadth_reading.metric: breadth_reading,
+        lsr_reading.metric: lsr_reading,
+    }
+    as_of_epoch = datetime.fromisoformat(raw.as_of).timestamp()
+    verdicts, met, unavailable, stale = evaluate_gate_conditions(
+        gate, readings=readings, now_epoch=as_of_epoch
+    )
+    decision, coefficient = resolve_market_state_coefficient(
+        gate.size_coefficient, met_count=met, unresolved_count=unavailable + stale
+    )
+    spec = gate.size_coefficient
+    return {
+        "available": True,
+        "policy_key": "market_rules.crypto.recovery_gate.size_coefficient",
+        "decision": decision,
+        "coefficient": coefficient,
+        "basis_met_count": met if decision == "resolved" else None,
+        "applies_to": spec.applies_to,
+        "by_met_count": {
+            str(count): Decimal(str(value))
+            for count, value in sorted(spec.by_met_count.items())
+        },
+        "met_count": met,
+        "of": gate.of,
+        "min_conditions_met": gate.min_conditions_met,
+        "unavailable_count": unavailable,
+        "stale_count": stale,
+        "on_missing_or_stale_input": spec.on_missing_or_stale_input,
+        "fixed_at": spec.fixed_at,
+        "legs": [
+            {
+                "id": verdict.condition_id,
+                "metric": verdict.metric,
+                "state": verdict.state,
+                "value": verdict.value,
+                "threshold": verdict.threshold,
+                "observed_at_epoch": verdict.observed_at,
+                "note": verdict.note,
+            }
+            for verdict in verdicts
+        ],
+        # task-792 C1 — breadth participates exactly once, inside this gate.
+        # The retired no_chasing breadth-below-50 ineligibility is folded into
+        # this decision; no second breadth multiplier exists.
+        "breadth_counted_once": True,
+    }
+
+
 def compute_policy_table(
     raw: RawInputs, *, top_n: int = DEFAULT_TOP_N
 ) -> dict[str, Any]:
@@ -525,6 +679,17 @@ def compute_policy_table(
     if headroom < 0:
         headroom = Decimal(0)
 
+    # task-792 C1 — the gate breadth is the share of KRW-quoted alts whose 24h
+    # change exceeds KRW-BTC's (BTC-relative), NOT the share with an absolute
+    # positive 24h gain. The absolute-gain sweep over top-traded markets is
+    # kept only under its own honestly-labeled key below; it is not the
+    # breadth input and is never a second multiplier.
+    breadth_payload = (
+        raw.altseason.get("breadth") if isinstance(raw.altseason, dict) else None
+    )
+    if not isinstance(breadth_payload, dict):
+        breadth_payload = None
+
     payload: dict[str, Any] = {
         "schema": "policy_table.v1",
         "market": MARKET,
@@ -561,12 +726,30 @@ def compute_policy_table(
         },
         "market_context": {
             "alt_breadth": {
+                "definition": (
+                    "share of KRW-quoted alts whose 24h change exceeds "
+                    "KRW-BTC's 24h change (BTC-relative)"
+                ),
+                "available": breadth_payload is not None,
+                "alts_total": (breadth_payload or {}).get("alts_total"),
+                "alts_beating_btc": (breadth_payload or {}).get("alts_beating_btc"),
+                "alts_beating_btc_pct": (
+                    Decimal(str(breadth_payload["alts_beating_btc_pct"]))
+                    if breadth_payload is not None
+                    and breadth_payload.get("alts_beating_btc_pct") is not None
+                    else None
+                ),
+                "btc_change_24h": (breadth_payload or {}).get("btc_change_24h"),
+                "latest_trade_at": (breadth_payload or {}).get("latest_trade_at"),
+            },
+            "top_traded_sign_stats": {
                 "swept_market_count": swept_count,
                 "positive_24h_count": positive_count,
                 "negative_24h_count": negative_count,
                 "positive_pct": positive_pct,
                 "top_n_by_trade_value_24h": top_n_symbols,
             },
+            "market_state": _build_market_state(raw),
             "recovery_gate_material": recovery_gate_material,
         },
         "rows": rows,

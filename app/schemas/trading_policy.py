@@ -1571,7 +1571,53 @@ class PolicyRecoveryCondition(BaseModel):
     operator: PolicyComparison | None
     threshold: int | float | None
     unit: str
+    # Optional freshness envelope (task-792 C1): the reader must date its
+    # observation, and a reading older than this many seconds is ``stale``
+    # rather than trusted — under the gate's missing/stale rule that resolves
+    # to hold, never an inferred miss.
+    stale_after_seconds: int | None = Field(default=None, gt=0)
     semantics: str
+
+
+# task-792 C1 — the live sizing-coefficient vocabulary. Deliberate: the 0.25
+# mock-experiment arm (crypto paired virtual ledger only) cannot be declared
+# on the live policy without changing this constant under review.
+_LIVE_MARKET_STATE_COEFFICIENTS = frozenset({0.0, 0.5, 1.0})
+
+
+class PolicyMarketStateCoefficient(BaseModel):
+    """task-792 C1 — the crypto recovery gate's single sizing coefficient.
+
+    ``by_met_count`` maps the number of met gate conditions to the multiplier
+    applied to crypto new-entry notional. The value vocabulary is exactly
+    {0.0, 0.5, 1.0} — enforced by the validator, since ``Literal`` does not
+    admit float members — so the 0.25 experiment arm (confined to the crypto
+    mock paired virtual ledger) cannot be declared on the live policy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    applies_to: str
+    by_met_count: dict[int, float]
+    on_missing_or_stale_input: Literal["hold"]
+    fixed_at: Literal["episode_first_order"]
+
+    @model_validator(mode="after")
+    def _coefficients_stay_in_the_live_vocabulary(
+        self,
+    ) -> PolicyMarketStateCoefficient:
+        invalid = [
+            value
+            for value in self.by_met_count.values()
+            if value not in _LIVE_MARKET_STATE_COEFFICIENTS
+        ]
+        if invalid:
+            raise ValueError(
+                "size_coefficient.by_met_count values must come from the live "
+                "vocabulary {0.0, 0.5, 1.0} — the 0.25 arm is confined to the "
+                f"crypto mock paired virtual ledger; got {invalid}"
+            )
+        return self
 
 
 class PolicyRecoveryGate(BaseModel):
@@ -1583,8 +1629,31 @@ class PolicyRecoveryGate(BaseModel):
     min_conditions_met: int
     of: int
     missing_or_null_threshold: str
+    size_coefficient: PolicyMarketStateCoefficient
     conditions: list[PolicyRecoveryCondition]
     advisory_context: list[PolicyRecoveryCondition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _size_coefficient_covers_every_met_count(self) -> PolicyRecoveryGate:
+        expected = set(range(self.of + 1))
+        if set(self.size_coefficient.by_met_count) != expected:
+            raise ValueError(
+                "size_coefficient.by_met_count must name every met count "
+                f"0..{self.of}; got {sorted(self.size_coefficient.by_met_count)}"
+            )
+        ordered = [
+            self.size_coefficient.by_met_count[count] for count in sorted(expected)
+        ]
+        if any(
+            later < earlier
+            for earlier, later in zip(ordered, ordered[1:], strict=False)
+        ):
+            raise ValueError(
+                "size_coefficient.by_met_count must be non-decreasing in the "
+                "met count — a weaker market state may not carry a larger "
+                "coefficient"
+            )
+        return self
 
 
 class PolicySupportResistanceRule(BaseModel):

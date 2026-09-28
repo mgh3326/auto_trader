@@ -138,6 +138,66 @@ def _strip_s664_kr_one_share_exception(current: dict, baseline: dict) -> None:
         del current["one_share_exception"]
 
 
+# task-792 C1 (2026-09-28) — the recovery gate's whole delta is the single
+# market-state coefficient block, the freshness bounds on the two conditions,
+# the semantics rewrite, and the no_chasing criterion swap that folds the old
+# breadth-below-50 ineligibility into the same C1 decision. Everything else on
+# market_rules.crypto is closed-equivalence-pinned.
+_T792_C1_GATE_SEMANTICS = (
+    "C1 market-state coefficient (task-792): crypto new-entry notional is "
+    "scaled by m = 1.0 at 2/2 met, 0.5 at 1/2, 0 at 0/2. A missing or "
+    "stale input for either condition yields hold, never an inferred 0/2. "
+    "advisory_context is qualitative reference only, is not part of the "
+    "gate count, and receives thresholds in the crypto-gate redesign round."
+)
+_T792_C1_SIZE_COEFFICIENT = {
+    "applies_to": "crypto_new_entry_notional",
+    "by_met_count": {0: 0.0, 1: 0.5, 2: 1.0},
+    "on_missing_or_stale_input": "hold",
+    "fixed_at": "episode_first_order",
+}
+_T792_C1_STALE_BOUNDS = {"alt_breadth_24h": 1800, "btc_long_short_ratio": 10800}
+_T792_C1_NO_CHASING_CRITERION = (
+    "new-alt entry sizing follows recovery_gate.size_coefficient — the same "
+    "C1 market-state decision; the breadth-below-50-percent ineligibility is "
+    "retired because breadth is counted once inside the recovery gate"
+)
+_T792_C1_OLD_NO_CHASING_CRITERION = (
+    "new alt candidates are ineligible when 24h alt breadth is below 50 percent"
+)
+
+
+def _strip_t792_c1_market_state(current_crypto: dict, baseline_crypto: dict) -> None:
+    """Pin the exact task-792 C1 delta on market_rules.crypto and undo it.
+
+    C1 is the only permitted difference between the current and baseline
+    recovery_gate / no_chasing blocks: the size_coefficient table, the two
+    stale_after_seconds bounds, the semantics rewrite, and the no_chasing
+    criteria swap. Any additional drift fails here rather than riding along
+    on the C1 version bump.
+    """
+
+    gate = current_crypto["recovery_gate"]
+    assert gate["size_coefficient"] == _T792_C1_SIZE_COEFFICIENT
+    assert "size_coefficient" not in baseline_crypto["recovery_gate"]
+    assert gate["semantics"] == _T792_C1_GATE_SEMANTICS
+    for condition in gate["conditions"]:
+        bound = _T792_C1_STALE_BOUNDS.get(condition["id"])
+        if bound is None:
+            assert "stale_after_seconds" not in condition
+            continue
+        assert condition["stale_after_seconds"] == bound
+        del condition["stale_after_seconds"]
+    gate["semantics"] = baseline_crypto["recovery_gate"]["semantics"]
+    del gate["size_coefficient"]
+
+    assert _T792_C1_NO_CHASING_CRITERION in current_crypto["no_chasing"]["criteria"]
+    assert (
+        _T792_C1_OLD_NO_CHASING_CRITERION in baseline_crypto["no_chasing"]["criteria"]
+    )
+    current_crypto["no_chasing"]["criteria"] = baseline_crypto["no_chasing"]["criteria"]
+
+
 def _raw() -> dict:
     return yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
 
@@ -312,8 +372,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-24.1"
-    assert policy_content_hash() == "8b044f30df1b"
+    assert doc.version == "2026-09-28.1"
+    assert policy_content_hash() == "f908cf3ce066"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -327,7 +387,7 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     current = _raw()
     doc = TradingPolicyDocument.model_validate(current)
 
-    assert doc.version == "2026-09-24.1"
+    assert doc.version == "2026-09-28.1"
     assert doc.cash_proxy.exit_intent == "cash_funding"
     assert doc.cash_proxy.symbol_list_duplicated_here is False
     assert doc.cash_proxy.exempt_gates == [
@@ -521,7 +581,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-24.1"
+    assert current["version"] == "2026-09-28.1"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -569,7 +629,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-24.1"
+    assert current["version"] == "2026-09-28.1"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -712,7 +772,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-24.1"
+    assert doc.version == "2026-09-28.1"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1558,6 +1618,14 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     reserve_base["owned_symbol_add_exempt_from_symbol_cap"] = reserve_cur[
         "owned_symbol_add_exempt_from_symbol_cap"
     ]
+    # task-792 C1 (2026-09-28) — size_coefficient is a required schema block
+    # now; the historical baseline predates it, so the baseline copy is given
+    # the current block solely to keep it parseable, exactly like the §S177/
+    # §142 seeds above. The two conditions' stale_after_seconds are additive
+    # (default None) so the baseline parses without them.
+    baseline["market_rules"]["crypto"]["recovery_gate"]["size_coefficient"] = deepcopy(
+        current_raw["market_rules"]["crypto"]["recovery_gate"]["size_coefficient"]
+    )
     baseline_dump = TradingPolicyDocument.model_validate(baseline).model_dump()
     current_dump = TradingPolicyDocument.model_validate(current_raw).model_dump()
 
@@ -1852,6 +1920,36 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
         del normalized_current_dump["decision_rules"]["sell.trim_preplace"][
             "tie_breaks"
         ][key]
+
+    # task-792 C1 (2026-09-28) — the recovery gate's only deltas are the
+    # size_coefficient block (seeded identical into the baseline above), the
+    # two conditions' stale_after_seconds freshness bounds, the semantics
+    # rewrite, and the no_chasing criterion swap that folds the old
+    # breadth-below-50 ineligibility into the same C1 decision. Pin each and
+    # normalize so the closed equivalence below still covers everything else.
+    cur_gate = normalized_current_dump["market_rules"]["crypto"]["recovery_gate"]
+    base_gate = baseline_dump["market_rules"]["crypto"]["recovery_gate"]
+    assert cur_gate["size_coefficient"]["by_met_count"] == {0: 0.0, 1: 0.5, 2: 1.0}
+    assert cur_gate["size_coefficient"]["on_missing_or_stale_input"] == "hold"
+    assert cur_gate["size_coefficient"]["fixed_at"] == "episode_first_order"
+    assert cur_gate["size_coefficient"] == base_gate["size_coefficient"]
+    for cur_cond, base_cond in zip(
+        cur_gate["conditions"], base_gate["conditions"], strict=True
+    ):
+        bound = _T792_C1_STALE_BOUNDS.get(cur_cond["id"])
+        if bound is None:
+            assert cur_cond["stale_after_seconds"] is None
+            continue
+        assert cur_cond["stale_after_seconds"] == bound
+        assert base_cond["stale_after_seconds"] is None
+        cur_cond["stale_after_seconds"] = None
+    assert cur_gate["semantics"] == _T792_C1_GATE_SEMANTICS
+    cur_gate["semantics"] = base_gate["semantics"]
+    cur_chasing = normalized_current_dump["market_rules"]["crypto"]["no_chasing"]
+    assert cur_chasing["criteria"][1] == _T792_C1_NO_CHASING_CRITERION
+    cur_chasing["criteria"] = baseline_dump["market_rules"]["crypto"]["no_chasing"][
+        "criteria"
+    ]
 
     # Only the six explicitly enumerated cap deltas and the enumerated
     # §115차 additions are accepted; every other pre-existing key/value,
@@ -2730,7 +2828,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-24.1"
+    assert doc.version == "2026-09-28.1"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3366,6 +3464,13 @@ def test_s139_leaves_the_crypto_and_kr_approval_caps_untouched():
         "sell.loss_guard_min_multiple",
     ):
         assert current["thresholds"][key] == baseline["thresholds"][key]
+    # task-792 C1 rewrote recovery_gate into a market-state coefficient and
+    # folded the no_chasing breadth criterion into it. The delta is pinned
+    # and stripped, not ignored — everything else on crypto must still equal
+    # the baseline byte-for-byte.
+    _strip_t792_c1_market_state(
+        current["market_rules"]["crypto"], baseline["market_rules"]["crypto"]
+    )
     assert (
         current["market_rules"]["crypto"]["no_chasing"]
         == baseline["market_rules"]["crypto"]["no_chasing"]
@@ -3520,7 +3625,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-24.1"
+    assert doc.version == "2026-09-28.1"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
