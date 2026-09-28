@@ -10,7 +10,7 @@ section C is a draft and is outside this change.
 ```yaml
 freeze_epoch_id: UNKNOWN
 change_id: s877-underwater-one-share-add-20260928
-pr_number: TBD_ON_IMPLEMENTATION_PR
+pr_number: 2132
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
   hk:doc strategy-lab/2026-09-28/policy-corrections-kr-order-lifetime
@@ -35,7 +35,7 @@ consumer_paths:
 effective_at: on merge of the implementation PR, after this record is merged
 live_only_claim: false
 mock_projection_hash_before: dda6a0541849
-mock_projection_hash_after: TBD_FROM_IMPLEMENTATION
+mock_projection_hash_after: 8bc4db3fe010
 mock_experiment_effect: UNKNOWN
 rollback: >-
   Revert the implementation PR. This record remains as an audit of the
@@ -61,8 +61,10 @@ population. The raw policy content hash and version necessarily change and
 must be recorded as a new cohort stamp. No claim is made that every mock pilot
 is unaffected: a mock account evaluating this tier can produce a larger add.
 The before hash above is the first 12 characters of SHA-256 over the raw policy
-file at origin/main cab5da08d; whether that field denotes a different mock
-projection remains unconfirmed, as in the 2026-09-24 precedent.
+file at origin/main cab5da08d; the after hash is the implementation's pinned
+policy_content_hash at PR #2132 head 32547eeee86fe1c40d1832c1bb5122c9095cb69a.
+Whether that field denotes a different mock projection remains unconfirmed,
+as in the 2026-09-24 precedent.
 The D+20 outcome tag is rounded_up_to_one_share under underwater-d20-v1;
 the existing scoring horizon and thresholds remain unchanged.
 
