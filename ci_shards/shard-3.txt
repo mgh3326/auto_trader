@@ -37,6 +37,7 @@ tests/mcp_server/test_execution_ledger_fill_events_tool.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
+tests/mcp_server/test_kis_mock_terminal_registration.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_portfolio_helpers.py
@@ -237,6 +238,7 @@ tests/services/test_fill_event_handoff.py
 tests/services/test_fill_event_handoff_kick_filter.py
 tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
+tests/services/test_kis_mock_terminal_expiry.py
 tests/services/test_legacy_stock_analysis_adapter.py
 tests/services/test_live_correlation.py
 tests/services/test_live_place_provenance.py
@@ -345,6 +347,7 @@ tests/test_investment_snapshots_feature_flag.py
 tests/test_investor_flow_snapshot_fields.py
 tests/test_kis_domestic_balance_snapshot.py
 tests/test_kis_holdings_service.py
+tests/test_kis_mock_expired_migration.py
 tests/test_kis_mock_holdings_delta_smoke_cleanup.py
 tests/test_kis_mock_order_ledger.py
 tests/test_kis_mock_overseas_holdings_delta_smoke_cleanup.py

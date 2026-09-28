@@ -18,6 +18,11 @@
 레인 allowlist 정본: `config/mcp_lane_allowlists/` (`tool<TAB>basis` 보존).
 계약 테스트: `tests/mcp_server/test_lane_allowlist_contract.py` — 레인별 배정 프로필의 실제 등록 합집합 검증.
 등록 스냅샷: `tests/mcp_server/test_profile_tool_snapshot.py`; D 제거·C niche 관측: `docs/runbooks/mcp-surface-cleanup-20260905.md`.
+Task 881의 `kis_mock_ledger_expire_day_orders`는 별도 registrar로
+hermes-paper-kis에만 등록한다. default/live 및 다른 모든 profile에는 없으며
+스냅샷과 과거 감사 예외 테스트가 이 물리적 경계를 검증한다. DB-only 도구여도
+KIS_MOCK_ENABLED 및 기존 필수 설정 게이트, dry_run 기본 true와 쓰기 confirm
+true를 유지한다.
 
 ### Runtime LLM ownership boundary
 
