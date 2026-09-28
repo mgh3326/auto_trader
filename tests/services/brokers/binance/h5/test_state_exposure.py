@@ -56,7 +56,7 @@ def _local_counter_process(data, ready, key):
 
 
 def test_independent_process_local_counter_exhibits_three_position_counterexample():
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     with ctx.Manager() as manager:
         data = manager.dict({f"s{i}": signal_values(key=f"s{i}") for i in range(3)})
         ready = ctx.Barrier(3)
@@ -80,8 +80,9 @@ def test_independent_process_local_counter_exhibits_three_position_counterexampl
     ],
 )
 def test_independent_concurrent_processes_cannot_exceed_caps(symbols, allowed):
-    # fork inherits the test's sanitized imports; workers create no DB engine.
-    ctx = multiprocessing.get_context("fork")
+    # Each spawned process imports the service independently and uses only
+    # the shared fake table store; no process opens a real DB connection.
+    ctx = multiprocessing.get_context("spawn")
     with ctx.Manager() as manager:
         data, lock = manager.dict(), manager.RLock()
         store = FakeStore(data, lock)
