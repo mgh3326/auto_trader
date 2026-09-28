@@ -188,6 +188,7 @@ tests/services/order_proposals/test_broker_gateway.py
 tests/services/order_proposals/test_cash_funding_service.py
 tests/services/order_proposals/test_loss_cut_approval.py
 tests/services/order_proposals/test_models_smoke.py
+tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
 tests/services/order_proposals/test_void_authorization.py

@@ -145,6 +145,10 @@ AUTO_APPROVE_UNEVALUATED_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
     # account's cumulative SGOV/BIL exposure.
     ("parking_exposure_unavailable", "파킹 보유액 조회 가능"),
     ("parking_cap_exceeded", "파킹 누적 보유 상한 잔여"),
+    ("parking_sell_account_identity_unavailable", "파킹 매도 계좌 식별 일치"),
+    ("parking_sell_regular_session_required", "파킹 KR 매도 정규장 여부"),
+    ("parking_sell_preview_binding_missing", "파킹 매도 preview 예외 귀속"),
+    ("parking_sell_price_band_failed", "파킹 매도 지정가 현재가 하한"),
 )
 
 
