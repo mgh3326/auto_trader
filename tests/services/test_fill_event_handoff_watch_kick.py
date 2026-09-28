@@ -1488,3 +1488,83 @@ def test_noninteger_event_id_is_malformed_not_truncated(
     assert outcome["watch_kicked"] == 0
     assert _create_calls(calls) == []
     assert "event_malformed" in outcome["watch_errors"]
+
+
+@pytest.mark.parametrize("watermark", ["²", "٣", 2**63, -(2**63), 2**64])
+def test_unparseable_or_out_of_bigint_watermark_is_corrupt_and_reseeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, watermark: Any
+) -> None:
+    # r3 finding 1: str.isdigit() accepts characters such as superscript
+    # two that int() cannot parse — the crash escaped the cursor parser and
+    # aborted the whole pass (a pending fill is still processed below).
+    # r3 finding 2: a watermark outside signed BIGINT range overflows the
+    # source query bind — corrupt state reseeds instead of wedging.
+    outcome, calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        fills=[_fill(832)],
+        position=("0.1", 0),  # unproven: fill stays queue-only, no prefect call
+        watches=[_watch(833)],
+        state_extra={
+            "watch_kick_watermark": watermark,
+            "watch_kick_delivered_at": None,
+        },
+    )
+    assert outcome["durable"] == 1
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "watch_cursor_corrupt" in outcome["watch_errors"]
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    assert persisted["watch_kick_watermark"] == 833
+
+
+def test_out_of_bigint_watermark_never_reaches_list_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # r3 finding 2 wedge check: the corrupt watermark must be rejected
+    # before any list_after attempt — a source that raises on the query
+    # must not surface watch_read_failed, and the cursor reseeds to the
+    # delivered high-water mark.
+    class OverflowingSource:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        async def high_watermark(self) -> WatchKickCursor:
+            return WatchKickCursor(
+                datetime.fromisoformat("2026-09-03T00:55:00+00:00"), 834
+            )
+
+        async def list_after(self, _cursor: Any, *, limit: int) -> Any:
+            raise OverflowError("BIGINT out of range")
+
+    outcome, calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        watches=[_watch(834)],
+        state_extra={
+            "watch_kick_watermark": 2**63,
+            "watch_kick_delivered_at": None,
+        },
+        watch_source=OverflowingSource,
+    )
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "watch_cursor_corrupt" in outcome["watch_errors"]
+    assert "watch_read_failed" not in outcome["watch_errors"]
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    assert persisted["watch_kick_watermark"] == 834
+
+
+@pytest.mark.parametrize("event_id", [2**63, 2**64, "²"])
+def test_unparseable_or_out_of_bigint_event_id_is_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_id: Any
+) -> None:
+    # r3 finding 2 (clean filter): an event id outside signed BIGINT range
+    # or unparsable by int() is dropped as event_malformed — it must not
+    # kick, poison cursor advancement, or wedge the pass.
+    bad = _watch(900)
+    bad["event_id"] = event_id
+    outcome, calls, _ = _run(tmp_path, monkeypatch, watches=[bad])
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "event_malformed" in outcome["watch_errors"]

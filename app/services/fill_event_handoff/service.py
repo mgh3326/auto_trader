@@ -72,18 +72,32 @@ REP_WINDOW = timedelta(minutes=30)
 WATCH_KICK_BATCH_LIMIT = 500
 
 
-def _exact_int(value: Any) -> int | None:
-    """Exact-integer parse; ``None`` for fractional/bool/other garbage.
+_PG_BIGINT_MAX = (1 << 63) - 1
 
-    ``int()`` silently truncates floats (``int(0.5) == 0``), which would
-    launder a corrupt cursor or event id into a valid-looking replay point.
+
+def _exact_int(value: Any) -> int | None:
+    """Exact signed-BIGINT parse; ``None`` for fractional/bool/other garbage.
+
+    ``int()`` silently truncates floats (``int(0.5) == 0``) and accepts
+    values outside PostgreSQL BIGINT range — either launders a corrupt
+    cursor or event id into a valid-looking replay point, or overflows the
+    driver bind and wedges the pass.  ``str.isdigit()`` is also wider than
+    what ``int()`` parses (e.g. superscript ``"²"``), so digit strings are
+    constrained to ASCII.
     """
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if value >= 0 else None
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value)
+        parsed = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not (stripped.isascii() and stripped.isdigit()):
+            return None
+        parsed = int(stripped)
+    else:
+        return None
+    if 0 <= parsed <= _PG_BIGINT_MAX:
+        return parsed
     return None
 
 
