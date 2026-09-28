@@ -262,24 +262,79 @@ class TestParsePeerComparison:
 # ---------------------------------------------------------------------------
 
 
-SAMPLE_NEWS_HTML = """
-<html>
-<body>
-<table class="type5">
-    <tr>
-        <td class="title"><a href="/item/news_read.naver?article_id=123">삼성전자, 신제품 발표</a></td>
-        <td class="info">연합뉴스</td>
-        <td class="date">2024.01.15</td>
-    </tr>
-    <tr>
-        <td class="title"><a href="/item/news_read.naver?article_id=124">반도체 시장 전망</a></td>
-        <td class="info">한국경제</td>
-        <td class="date">2024.01.14</td>
-    </tr>
-</table>
-</body>
-</html>
-"""
+# Synthesized from the desk-probed key list for the m.stock.naver.com news API
+# (#904 hk comment): array of groups [{total, items:[article]}]. This is NOT a
+# captured real response — it is assembled from the probed field names.
+SAMPLE_NEWS_JSON_PAYLOAD: list[dict[str, Any]] = [
+    {
+        "total": 2,
+        "items": [
+            {
+                "id": "0010001234",
+                "officeId": "001",
+                "articleId": "0001234",
+                "officeName": "연합뉴스",
+                "datetime": "202609281530",
+                "type": "article",
+                "title": "삼성전자, 신제품 발표",
+                "titleFull": "삼성전자, 신제품 발표",
+                "body": "삼성전자가 신제품을 발표했다.",
+                "photoType": 1,
+                "imageOriginLink": (
+                    "https://imgnews.pstatic.net/image/001/20260928/x.jpg"
+                ),
+                "mobileNewsUrl": ("https://n.news.naver.com/mnews/article/001/0001234"),
+            },
+            {
+                "id": "0090005678",
+                "officeId": "009",
+                "articleId": "0005678",
+                "officeName": "한국경제",
+                "datetime": "202609281430",
+                "type": "article",
+                "title": "반도체 시장 전망",
+                "titleFull": "반도체 시장 전망",
+                "body": "반도체 시장 전망 요약.",
+                "photoType": 0,
+                "imageOriginLink": None,
+                "mobileNewsUrl": ("https://n.news.naver.com/mnews/article/009/0005678"),
+            },
+        ],
+    },
+    {
+        "total": 1,
+        "items": [
+            {
+                "id": "0010009999",
+                "officeId": "001",
+                "articleId": "0009999",
+                "officeName": "연합뉴스",
+                "datetime": "202609271800",
+                "type": "article",
+                "title": "이전 그룹의 기사",
+                "titleFull": "이전 그룹의 기사",
+                "body": "",
+                "photoType": 0,
+                "imageOriginLink": None,
+                "mobileNewsUrl": ("https://n.news.naver.com/mnews/article/001/0009999"),
+            },
+        ],
+    },
+]
+
+
+def _normalized_news_item() -> dict[str, Any]:
+    """The normalized dict shape ``fetch_stock_news`` emits for one article."""
+    return {
+        "title": "삼성전자, 신제품 발표",
+        "url": "https://n.news.naver.com/mnews/article/001/0001234",
+        "source": "연합뉴스",
+        "datetime": "2026-09-28T15:30:00+09:00",
+        "id": "0010001234",
+        "officeId": "001",
+        "articleId": "0001234",
+    }
+
 
 SAMPLE_PROFILE_HTML = """
 <html>
@@ -621,46 +676,142 @@ SAMPLE_VALUATION_MINIMAL_SISE_HTML = """
 @pytest.mark.asyncio
 @pytest.mark.unit
 class TestFetchNews:
-    """Tests for fetch_news function."""
+    """fetch_stock_news / fetch_news against the m.stock.naver.com JSON shape.
+
+    Fixture is synthesized from the #904 desk-probed key list; the legacy
+    table.type5 HTML path was retired upstream (410 Gone).
+    """
+
+    def _patch_json(
+        self, monkeypatch: pytest.MonkeyPatch, payload: Any
+    ) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        async def mock_fetch_json(
+            url: str, params: dict[str, Any] | None = None
+        ) -> Any:
+            seen["url"] = url
+            seen["params"] = params
+            return payload
+
+        monkeypatch.setattr(naver_finance.news, "_fetch_json", mock_fetch_json)
+        return seen
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
+        seen = self._patch_json(monkeypatch, SAMPLE_NEWS_JSON_PAYLOAD)
 
-        monkeypatch.setattr(naver_finance.news, "_fetch_html", mock_fetch_html)
+        result = await naver_finance.fetch_stock_news("005930", limit=10)
 
+        assert seen["url"] == "https://m.stock.naver.com/api/news/stock/005930"
+        assert seen["params"]["page"] == 1
+        assert result.skipped == {}
+        assert [item["title"] for item in result.items] == [
+            "삼성전자, 신제품 발표",
+            "반도체 시장 전망",
+            "이전 그룹의 기사",
+        ]
+        first = result.items[0]
+        assert first["source"] == "연합뉴스"
+        assert first["datetime"] == "2026-09-28T15:30:00+09:00"
+        assert first["url"] == ("https://n.news.naver.com/mnews/article/001/0001234")
+        assert first["id"] == "0010001234"
+        assert first["officeId"] == "001"
+        assert first["articleId"] == "0001234"
+
+    async def test_fetch_news_compat_returns_items(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_json(monkeypatch, SAMPLE_NEWS_JSON_PAYLOAD)
         result = await naver_finance.fetch_news("005930", limit=10)
-
-        assert len(result) == 2
-        assert result[0]["title"] == "삼성전자, 신제품 발표"
-        assert result[0]["source"] == "연합뉴스"
-        assert result[0]["datetime"] == "2024-01-15"
-        assert "news_read.naver" in result[0]["url"]
+        assert [item["title"] for item in result] == [
+            "삼성전자, 신제품 발표",
+            "반도체 시장 전망",
+            "이전 그룹의 기사",
+        ]
 
     async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
+        self._patch_json(monkeypatch, SAMPLE_NEWS_JSON_PAYLOAD)
+        result = await naver_finance.fetch_stock_news("005930", limit=1)
+        assert len(result.items) == 1
+        assert result.items[0]["title"] == "삼성전자, 신제품 발표"
+
+    async def test_empty_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_json(monkeypatch, [])
+        result = await naver_finance.fetch_stock_news("005930")
+        assert result.items == []
+        assert result.skipped == {}
+
+    async def test_malformed_items_are_skipped_with_counted_reasons(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = [
+            "not-a-dict-group",
+            {"items": "not-a-list"},
+            {
+                "total": 5,
+                "items": [
+                    "not-a-dict-item",
+                    {
+                        "officeId": "001",
+                        "mobileNewsUrl": "https://x/a",
+                        "datetime": "202609281530",
+                    },
+                    {
+                        "title": "URL 없는 기사",
+                        "datetime": "202609281530",
+                        "officeId": "001",
+                    },
+                    {
+                        "title": "시간 깨진 기사",
+                        "mobileNewsUrl": "https://x/b",
+                        "datetime": "not-a-time",
+                    },
+                    SAMPLE_NEWS_JSON_PAYLOAD[0]["items"][0],
+                    # duplicate id — same article re-served in another group
+                    dict(SAMPLE_NEWS_JSON_PAYLOAD[0]["items"][0]),
+                ],
+            },
+        ]
+        self._patch_json(monkeypatch, payload)
+
+        result = await naver_finance.fetch_stock_news("005930", limit=10)
+
+        assert len(result.items) == 1
+        assert result.items[0]["id"] == "0010001234"
+        assert result.skipped == {
+            "invalid_group": 2,
+            "invalid_item": 1,
+            "missing_title": 1,
+            "missing_url": 1,
+            "invalid_datetime": 1,
+            "duplicate": 1,
+        }
+
+    async def test_non_list_payload_raises_contract_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_json(monkeypatch, {"error": "blocked"})
+        with pytest.raises(naver_finance.NaverNewsContractError):
+            await naver_finance.fetch_stock_news("005930")
+
+    async def test_provider_http_error_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        async def mock_fetch_json(
             url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
+        ) -> Any:
+            raise httpx.HTTPStatusError(
+                "410 Gone",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(410),
+            )
 
-        monkeypatch.setattr(naver_finance.news, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.news, "_fetch_json", mock_fetch_json)
 
-        result = await naver_finance.fetch_news("005930", limit=1)
-
-        assert len(result) == 1
-
-    async def test_empty_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.news, "_fetch_html", mock_fetch_html)
-
-        result = await naver_finance.fetch_news("005930")
-        assert result == []
+        with pytest.raises(httpx.HTTPStatusError):
+            await naver_finance.fetch_stock_news("005930")
 
 
 @pytest.mark.asyncio
@@ -1196,9 +1347,6 @@ class TestFetchKrSnapshot:
             if "sise.naver" in url:
                 request_counts["sise"] += 1
                 return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
-            if "news_news.naver" in url:
-                request_counts["news"] += 1
-                return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
             if "company_list.naver" in url:
                 request_counts["company_list"] += 1
                 return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
@@ -1215,6 +1363,10 @@ class TestFetchKrSnapshot:
                     )
             return BeautifulSoup("<html></html>", "lxml")
 
+        async def mock_fetch_stock_news(code: str, limit: int = 20):
+            request_counts["news"] += 1
+            return naver_finance.NaverNewsFetchResult(items=[_normalized_news_item()])
+
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
@@ -1227,6 +1379,9 @@ class TestFetchKrSnapshot:
             "_fetch_html_with_client",
             mock_fetch_html_with_client,
             raising=False,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "fetch_stock_news", mock_fetch_stock_news
         )
 
         snapshot = await naver_finance._fetch_kr_snapshot(
@@ -1262,8 +1417,6 @@ class TestFetchKrSnapshot:
                 return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
             if "sise.naver" in url:
                 raise RuntimeError("sise unavailable")
-            if "news_news.naver" in url:
-                return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
             if "company_list.naver" in url:
                 return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
             if "company_read.naver" in url:
@@ -1278,6 +1431,9 @@ class TestFetchKrSnapshot:
                     )
             return BeautifulSoup("<html></html>", "lxml")
 
+        async def mock_fetch_stock_news(code: str, limit: int = 20):
+            return naver_finance.NaverNewsFetchResult(items=[_normalized_news_item()])
+
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
@@ -1290,6 +1446,9 @@ class TestFetchKrSnapshot:
             "_fetch_html_with_client",
             mock_fetch_html_with_client,
             raising=False,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "fetch_stock_news", mock_fetch_stock_news
         )
 
         snapshot = await naver_finance._fetch_kr_snapshot(

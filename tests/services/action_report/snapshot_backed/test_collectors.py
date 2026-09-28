@@ -1345,7 +1345,16 @@ async def test_news_collector_articles_per_symbol_from_seam():
             fetched_at=dt.datetime(2026, 5, 5, tzinfo=dt.UTC),
             provider_metadata={"sentiment": "positive"},
         )
-        return SymbolNewsFetchResult(symbol, market, "finnhub", "ok", limit, 1, [art])
+        return SymbolNewsFetchResult(
+            symbol,
+            market,
+            "finnhub",
+            "ok",
+            limit,
+            1,
+            [art],
+            fetched_at=dt.datetime.now(tz=dt.UTC),
+        )
 
     collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
     results = await collector.collect(_request(market="us", symbols=["AAPL", "MSFT"]))
@@ -1377,6 +1386,57 @@ async def test_news_collector_per_symbol_failure_is_fail_open():
     assert payload["fetch_records"][0]["status"] == "error"
     # fail-open: never raises, degrades to partial
     assert results[0].freshness_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_news_collector_degraded_stale_fetch_marks_snapshot_stale():
+    """#904: a provider error serving stale cache must not read as fresh."""
+    from app.services.symbol_news_service import (
+        SymbolNewsArticle,
+        SymbolNewsFetchResult,
+    )
+
+    stale_fetch = dt.datetime.now(tz=dt.UTC) - dt.timedelta(days=11)
+
+    async def fake_fetch(symbol: str, market: str, limit: int):
+        art = SymbolNewsArticle(
+            provider="naver",
+            market=market,
+            symbol=symbol,
+            external_article_id="id-1",
+            title="old headline",
+            source_name="연합뉴스",
+            canonical_url="https://x/1",
+            summary="s",
+            published_at=stale_fetch,
+            fetched_at=stale_fetch,
+        )
+        return SymbolNewsFetchResult(
+            symbol,
+            market,
+            "naver",
+            "ok",
+            limit,
+            1,
+            [art],
+            degraded=True,
+            fetch_error="HTTPStatusError:410",
+            cache_hit=True,
+            fallback_source="news_articles",
+            fetched_at=stale_fetch,
+        )
+
+    collector = NewsSnapshotCollector(MagicMock(), news_fetch_fn=fake_fetch)
+    results = await collector.collect(_request(market="kr", symbols=["005930"]))
+
+    payload = results[0].payload_json
+    record = payload["fetch_records"][0]
+    assert record["status"] == "ok"
+    assert record["degraded"] is True
+    assert record["fetch_error"] == "HTTPStatusError:410"
+    assert record["stale"] is True
+    assert record["fetched_at"] == stale_fetch.isoformat()
+    assert results[0].freshness_status == "soft_stale"
 
 
 @pytest.mark.asyncio
