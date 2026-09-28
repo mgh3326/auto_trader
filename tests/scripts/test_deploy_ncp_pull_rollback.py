@@ -43,6 +43,7 @@ def _run(
     success_mismatch_name: str = "",
     absent_name: str = "",
     stopped_name: str = "",
+    stopped_after_promotion_name: str = "",
     unresolved_name: str = "",
     fail_initial_inspect_name: str = "",
     fail_haproxy_hup_once: bool = False,
@@ -91,7 +92,10 @@ def _run(
             fmt = args[2]
             value = state[name]
             if 'State.Running' in fmt:
-                print('false' if name == os.environ.get('FAKE_STOPPED_NAME') else 'true')
+                stopped_initial = name == os.environ.get('FAKE_STOPPED_NAME')
+                stopped_new = (name == os.environ.get('FAKE_STOPPED_AFTER_PROMOTION_NAME')
+                               and value == os.environ['FAKE_NEW_DIGEST'])
+                print('false' if stopped_initial or stopped_new else 'true')
             elif 'Config.Image' in fmt or 'RepoDigests' in fmt:
                 print(value)
             else:
@@ -201,6 +205,7 @@ def _run(
             "FAKE_MISMATCH_NAME": mismatch_name,
             "FAKE_SUCCESS_MISMATCH_NAME": success_mismatch_name,
             "FAKE_STOPPED_NAME": stopped_name,
+            "FAKE_STOPPED_AFTER_PROMOTION_NAME": stopped_after_promotion_name,
             "FAKE_UNRESOLVED_NAME": unresolved_name,
             "FAKE_TRANSIENT_INSPECT_NAME": fail_initial_inspect_name,
             "FAKE_FAIL_HAPROXY_HUP_ONCE": "1" if fail_haproxy_hup_once else "0",
@@ -233,6 +238,91 @@ def test_skip_keeps_kis_instance_and_reports_retained_digest(tmp_path: Path) -> 
     assert KIS_OLD in result.stdout
     assert "skip" in result.stdout.lower()
     assert state["at-worker"] == NEW
+
+
+@pytest.mark.parametrize("args", (("--skip-kis-ws",), ("--rollback", "--skip-kis-ws")))
+def test_stopped_skipped_kis_is_preserved_and_reported_by_real_run(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    result, calls, state, run_dir = _run(tmp_path, args=args, stopped_name="at-kis-ws")
+    assert result.returncode == 0, result.stderr
+    assert any(call[0] == "pull" for call in calls)
+    assert ["inspect", "--format", "{{.State.Running}}", "at-kis-ws"] in calls
+    assert f"at-kis-ws\t{KIS_OLD}\tSTOPPED\tSKIPPED_STOPPED" in result.stdout
+    assert "deployment completed:" in result.stdout
+    assert state["at-kis-ws"] == KIS_OLD
+    assert _mutations(calls, "at-kis-ws") == []
+    assert (run_dir / "deployed-digest").read_text() == NEW + "\n"
+
+
+def test_stopped_skipped_kis_with_unresolved_digest_reports_unknown(
+    tmp_path: Path,
+) -> None:
+    result, calls, state, _ = _run(
+        tmp_path,
+        args=("--skip-kis-ws",),
+        stopped_name="at-kis-ws",
+        unresolved_name="at-kis-ws",
+    )
+    assert result.returncode == 0, result.stderr
+    assert any(call[0] == "pull" for call in calls)
+    assert "at-kis-ws\tUNKNOWN\tSTOPPED\tSKIPPED_STOPPED" in result.stdout
+    assert state["at-kis-ws"] == "ghcr.io/mgh3326/auto_trader:mutable"
+    assert _mutations(calls, "at-kis-ws") == []
+
+
+def test_stopped_kis_without_skip_fails_capture_before_mutation(tmp_path: Path) -> None:
+    result, calls, _, _ = _run(tmp_path, stopped_name="at-kis-ws")
+    assert result.returncode == 78
+    assert "container is not running: at-kis-ws" in result.stderr
+    assert not any(
+        call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
+    )
+
+
+def test_stopped_other_unit_with_skip_fails_capture_before_mutation(
+    tmp_path: Path,
+) -> None:
+    result, calls, _, _ = _run(
+        tmp_path, args=("--skip-kis-ws",), stopped_name="at-worker"
+    )
+    assert result.returncode == 78
+    assert "container is not running: at-worker" in result.stderr
+    assert not any(
+        call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
+    )
+
+
+def test_skip_does_not_exempt_another_unit_stopped_after_promotion(
+    tmp_path: Path,
+) -> None:
+    result, calls, state, _ = _run(
+        tmp_path,
+        args=("--skip-kis-ws",),
+        stopped_after_promotion_name="at-scheduler",
+    )
+    assert result.returncode != 0
+    assert "deployment digest mismatch" in result.stderr
+    assert f"at-scheduler\t{NEW}\tSTOPPED\tMISMATCH" in result.stdout
+    assert state["at-scheduler"] == OLD
+    assert state["at-worker"] == OLD
+    assert state["at-upbit-ws"] == OLD
+    assert "at-api-green" not in state
+    assert _mutations(calls, "at-kis-ws") == []
+    assert any(
+        call[0] == "run" and "--name" in call and "at-scheduler" in call and OLD in call
+        for call in calls
+    )
+
+
+def test_running_skipped_kis_retains_match_report(tmp_path: Path) -> None:
+    result, calls, state, _ = _run(tmp_path, args=("--skip-kis-ws",))
+    assert result.returncode == 0, result.stderr
+    assert any(call[0] == "pull" for call in calls)
+    assert f"at-kis-ws\t{KIS_OLD}\t{KIS_OLD}\tMATCH" in result.stdout
+    assert "SKIPPED_STOPPED" not in result.stdout
+    assert state["at-kis-ws"] == KIS_OLD
+    assert _mutations(calls, "at-kis-ws") == []
 
 
 def test_manual_rollback_skip_also_keeps_kis_instance(tmp_path: Path) -> None:

@@ -86,7 +86,6 @@ container_presence() {
   printf 'cannot determine container presence: %s\n' "$name" >&2
   return 2
 }
-container_running() { [[ "$(docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" == true ]]; }
 read_color() { local color; [[ -f "$2" ]] && IFS= read -r color <"$2" && [[ "$color" == blue || "$color" == green ]] && printf '%s\n' "$color"; }
 write_color() { local color="$1" file="$2" tmp; [[ "$color" == blue || "$color" == green ]] || return 64; mkdir -p "$RUN_DIRECTORY"; umask 077; tmp="$(mktemp "${RUN_DIRECTORY}/.$(basename "$file").XXXXXX")"; printf '%s\n' "$color" >"$tmp"; mv -f "$tmp" "$file"; }
 other_color() { [[ "$1" == blue ]] && printf '%s\n' green || printf '%s\n' blue; }
@@ -117,13 +116,19 @@ unit_rollback_image() {
 # records intent immediately before removing an instance, including failed
 # starts; rollback visits that log backwards and restores only logged units.
 capture_initial_state() {
-  local name presence
+  local name presence state
   for name in "${APP_CONTAINERS[@]}"; do
     presence=0
     container_presence "$name" || presence=$?
     if ((presence == 0)); then
-      container_running "$name" || { printf 'container is not running: %s\n' "$name" >&2; return 78; }
-      ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name")" || return 1
+      state="$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" || { printf 'cannot determine container running state: %s\n' "$name" >&2; return 78; }
+      if [[ "$state" == false && "$name" == at-kis-ws ]] && ((SKIP_KIS_WS)); then
+        # This unit is deliberately untouched; retain its digest when known.
+        ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name" 2>/dev/null || printf 'UNKNOWN\n')"
+      else
+        [[ "$state" == true ]] || { printf 'container is not running: %s\n' "$name" >&2; return 78; }
+        ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name")" || return 1
+      fi
     elif ((presence == 1)); then
       ORIGINAL_IMAGES["$name"]=ABSENT
     else
@@ -159,7 +164,8 @@ running_digest() {
   if ((presence == 1)); then printf 'ABSENT\n'; return 0; fi
   if ((presence != 0)); then printf 'UNKNOWN\n'; return 0; fi
   state="$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" || { printf 'UNKNOWN\n'; return 0; }
-  [[ "$state" == true ]] || { printf 'STOPPED\n'; return 0; }
+  [[ "$state" == false ]] && { printf 'STOPPED\n'; return 0; }
+  [[ "$state" == true ]] || { printf 'UNKNOWN\n'; return 0; }
   unit_rollback_image "$name" 2>/dev/null || printf 'UNKNOWN\n'
 }
 report_digests() {
@@ -169,7 +175,9 @@ report_digests() {
     expected="${EXPECTED_IMAGES[$name]:-ABSENT}"
     running="$(running_digest "$name")"
     status=MATCH
-    if [[ "$expected" != "$running" ]]; then status=MISMATCH; failed=1; fi
+    if ((SKIP_KIS_WS)) && [[ "$name" == at-kis-ws && "$running" == STOPPED ]]; then
+      status=SKIPPED_STOPPED
+    elif [[ "$expected" != "$running" ]]; then status=MISMATCH; failed=1; fi
     printf '%s\t%s\t%s\t%s\n' "$name" "$expected" "$running" "$status"
   done
   return "$failed"
