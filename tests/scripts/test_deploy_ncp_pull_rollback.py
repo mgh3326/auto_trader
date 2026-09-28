@@ -44,6 +44,8 @@ def _run(
     stopped_name: str = "",
     unresolved_name: str = "",
     fail_initial_inspect_name: str = "",
+    fail_haproxy_hup_once: bool = False,
+    absent_haproxy: bool = False,
     fail_drain_record: bool = False,
     fail_drain_arm: bool = False,
     fail_digest_record: bool = False,
@@ -60,7 +62,8 @@ def _run(
         del initial[absent_name]
     if unresolved_name:
         initial[unresolved_name] = "ghcr.io/mgh3326/auto_trader:mutable"
-    initial["at-haproxy"] = "haproxy:3.1-alpine"
+    if not absent_haproxy:
+        initial["at-haproxy"] = "haproxy:3.1-alpine"
     state_path.write_text(json.dumps(initial))
     docker = textwrap.dedent(
         """\
@@ -117,7 +120,13 @@ def _run(
                     state.pop(item, None)
         elif cmd == 'rename':
             state[args[2]] = state.pop(args[1])
-        elif cmd in ('pull', 'stop', 'kill'):
+        elif cmd == 'kill':
+            if os.environ.get('FAKE_FAIL_HAPROXY_HUP_ONCE') == '1':
+                marker = pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.hup')
+                if not marker.exists():
+                    marker.touch()
+                    sys.exit(23)
+        elif cmd in ('pull', 'stop'):
             pass
         else:
             sys.exit(42)
@@ -187,6 +196,7 @@ def _run(
             "FAKE_STOPPED_NAME": stopped_name,
             "FAKE_UNRESOLVED_NAME": unresolved_name,
             "FAKE_TRANSIENT_INSPECT_NAME": fail_initial_inspect_name,
+            "FAKE_FAIL_HAPROXY_HUP_ONCE": "1" if fail_haproxy_hup_once else "0",
             "AT_HEALTHZ_ATTEMPTS": "1",
             "AT_HEALTHZ_SLEEP_SECONDS": "0",
             "MCP_HEALTH_ATTEMPTS": "1",
@@ -394,6 +404,31 @@ def test_transient_snapshot_inspect_failure_fails_before_mutation(
     assert not any(
         call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
     )
+
+
+def test_haproxy_reload_failure_restores_prior_route_and_containers(
+    tmp_path: Path,
+) -> None:
+    result, _, state, run_dir = _run(tmp_path, fail_haproxy_hup_once=True)
+    assert result.returncode != 0
+    assert state["at-worker"] == OLD
+    assert state["at-api-blue"] == OLD
+    assert "at-api-green" not in state
+    assert (run_dir / "api-active-color").read_text() == "blue\n"
+    assert (run_dir / "mcp-active-color").read_text() == "blue\n"
+    assert "container\texpected\trunning\tstatus" in result.stdout
+
+
+def test_new_haproxy_is_removed_when_later_phase_fails(tmp_path: Path) -> None:
+    result, _, state, run_dir = _run(
+        tmp_path, absent_haproxy=True, fail_name="at-worker-new"
+    )
+    assert result.returncode != 0
+    assert state["at-worker"] == OLD
+    assert "at-api-green" not in state
+    assert "at-haproxy" not in state
+    assert not (run_dir / "haproxy.cfg").exists()
+    assert (run_dir / "api-active-color").read_text() == "blue\n"
 
 
 def test_dry_run_has_no_mutations_and_explains_skip(tmp_path: Path) -> None:

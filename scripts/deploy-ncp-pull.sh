@@ -62,6 +62,7 @@ ORIGINAL_API_COLOR=""
 ORIGINAL_MCP_COLOR=""
 ORIGINAL_HAPROXY_CONFIG=""
 ORIGINAL_HAPROXY_CONFIG_EXISTS=false
+ORIGINAL_HAPROXY_PRESENT=false
 DRAIN_GUARD=""
 ORIGINAL_DEPLOYED_DIGEST_CONTENT="" ORIGINAL_PREVIOUS_DIGEST_CONTENT=""
 ORIGINAL_DEPLOYED_DIGEST_EXISTS=false ORIGINAL_PREVIOUS_DIGEST_EXISTS=false
@@ -132,6 +133,11 @@ capture_initial_state() {
   done
   ORIGINAL_API_COLOR="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"
   ORIGINAL_MCP_COLOR="$(read_color mcp "$MCP_ACTIVE_COLOR_FILE" 2>/dev/null || true)"
+  presence=0
+  container_presence "$HAPROXY_CONTAINER" || presence=$?
+  if ((presence == 0)); then ORIGINAL_HAPROXY_PRESENT=true
+  elif ((presence != 1)); then return 78
+  fi
   if [[ -f "$HAPROXY_CONFIG" ]]; then
     ORIGINAL_HAPROXY_CONFIG="$(cat "$HAPROXY_CONFIG" && printf .)" || return 1
     ORIGINAL_HAPROXY_CONFIG_EXISTS=true
@@ -202,7 +208,17 @@ rollback_replaced() {
     printf 'restoring %s to %s\n' "$name" "${ORIGINAL_IMAGES[$name]}" >&2
     restore_unit "$name" || failed=1
   done
-  if [[ "$ORIGINAL_HAPROXY_CONFIG_EXISTS" == true ]]; then
+  if [[ "$ORIGINAL_HAPROXY_PRESENT" == false ]]; then
+    docker rm -f "$HAPROXY_CONTAINER" >/dev/null 2>&1 || true
+    local presence=0
+    container_presence "$HAPROXY_CONTAINER" || presence=$?
+    ((presence == 1)) || failed=1
+    if [[ "$ORIGINAL_HAPROXY_CONFIG_EXISTS" == true ]]; then
+      printf '%s' "${ORIGINAL_HAPROXY_CONFIG%.}" >"$HAPROXY_CONFIG" || failed=1
+    else
+      rm -f "$HAPROXY_CONFIG" || failed=1
+    fi
+  elif [[ "$ORIGINAL_HAPROXY_CONFIG_EXISTS" == true ]]; then
     printf '%s' "${ORIGINAL_HAPROXY_CONFIG%.}" >"$HAPROXY_CONFIG"
     reload_haproxy || failed=1
   elif [[ -n "$ORIGINAL_API_COLOR" ]]; then
@@ -284,8 +300,8 @@ wait_haproxy_ready() {
 reload_haproxy() {
   local presence=0
   container_presence "$HAPROXY_CONTAINER" || presence=$?
-  if ((presence == 0)); then docker kill -s HUP "$HAPROXY_CONTAINER" >/dev/null
-  elif ((presence == 1)); then docker run -d --name "$HAPROXY_CONTAINER" --restart unless-stopped --network host -v "${HAPROXY_CONFIG}:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" -W -db -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null
+  if ((presence == 0)); then docker kill -s HUP "$HAPROXY_CONTAINER" >/dev/null || return 1
+  elif ((presence == 1)); then docker run -d --name "$HAPROXY_CONTAINER" --restart unless-stopped --network host -v "${HAPROXY_CONFIG}:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" -W -db -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null || return 1
   else return 78
   fi
   wait_haproxy_ready
@@ -360,7 +376,7 @@ arm_drains() {
   printf 'armed\n' >"$ready" || return 1
   mv -f "$ready" "$DRAIN_GUARD"
 }
-cancel_drains() { [[ -z "$DRAIN_GUARD" ]] || rm -f "$DRAIN_GUARD"; }
+cancel_drains() { [[ -z "$DRAIN_GUARD" ]] || rm -f "$DRAIN_GUARD" "${DRAIN_GUARD}.ready"; }
 current_api_rollback_digest() { local color presence=0; container_presence at-api || presence=$?; if ((presence == 0)); then unit_rollback_image at-api; return $?; fi; ((presence == 1)) || return 78; color="$(read_color api "$API_ACTIVE_COLOR_FILE" 2>/dev/null || true)"; [[ -n "$color" ]] || { printf 'previous API container is required for rollback\n' >&2; return 1; }; unit_rollback_image "at-api-${color}"; }
 set_promoted_expectations() {
   local name
