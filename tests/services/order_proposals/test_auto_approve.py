@@ -2042,7 +2042,7 @@ async def test_toss_kr_parking_notional_excludes_kis_and_other_toss_accounts(
 async def test_kis_and_toss_us_parking_faces_have_independent_durable_caps(
     db_session,
 ):
-    """KIS US and Toss US do not consume one another's USD 10,000 meter."""
+    """KIS US and Toss US do not consume one another's USD 20,000 cumulative meter."""
     service = OrderProposalsService(db_session)
     now = datetime.now(UTC)
     account_id = "731"

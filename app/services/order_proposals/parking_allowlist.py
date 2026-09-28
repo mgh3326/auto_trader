@@ -84,7 +84,7 @@ PARKING_PER_ORDER_CAP_USD: Decimal = Decimal("10000")
 # measurement has known residual gaps (BL-37 account labelling, BL-38
 # pre-submit reservation, BL-39 cross-day window; see the runbook §8.7), and
 # the per-order cap above is what keeps each of those bounded per order.
-PARKING_CUMULATIVE_CAP_USD: Decimal = Decimal("10000")
+PARKING_CUMULATIVE_CAP_USD: Decimal = Decimal("20000")
 
 # The KR values are deliberately separate from USD values. No FX conversion
 # enters either comparison: a KR proposal is compared only with a KRW cap and

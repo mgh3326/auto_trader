@@ -26,10 +26,10 @@ Two halves, and both are required
    only rows with ``ovrs_cblc_qty > 0``, so an order that was auto-approved and
    sent but has **not filled yet** has no balance row at all. A balance-only
    cap therefore re-meters the very next proposal from zero and approves the
-   same amount again -- two separate USD 10,000 proposals both clear, for USD
-   20,000 of automation. The durable half closes exactly that window, reusing
-   the KST-day window, advisory lock and row filter of the already-vetted
-   ``auto_approved_daily_notional``.
+   same amount again -- three separate USD 10,000 proposals all clear, for USD
+   30,000 of automation against the USD 20,000 cumulative cap. The durable half
+   closes that gap, reusing the KST-day window, advisory lock and row filter of
+   the already-vetted ``auto_approved_daily_notional``.
 
 Double counting is deliberate
 -----------------------------

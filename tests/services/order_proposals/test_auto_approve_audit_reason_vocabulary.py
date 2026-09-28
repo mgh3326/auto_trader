@@ -328,15 +328,15 @@ async def test_matching_toss_account_path_is_unchanged(monkeypatch):
     assert eligible.eligible is True
     assert eligible.details["parking_exposure_after"] == "9862.48"
 
-    _, over_cap = await _decide(monkeypatch, broker_account_id="731", held="5700")
+    _, over_cap = await _decide(monkeypatch, broker_account_id="731", held="15700")
     assert over_cap.eligible is False
     assert over_cap.reason == "parking_cap_exceeded"
     [attempt] = project_auto_approve_rejections(_stored(over_cap))
     [rung] = attempt["rungs"]
     assert rung["reason_code"] == "parking_cap_exceeded"
-    assert rung["inputs"]["parking_exposure_before"] == "5700"
-    assert rung["inputs"]["parking_exposure_after"] == "10028.38"
-    assert rung["inputs"]["parking_cap"] == "10000"
+    assert rung["inputs"]["parking_exposure_before"] == "15700"
+    assert rung["inputs"]["parking_exposure_after"] == "20028.38"
+    assert rung["inputs"]["parking_cap"] == "20000"
 
 
 @pytest.mark.parametrize(
