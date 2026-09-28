@@ -916,7 +916,9 @@ In `expanded` auto-approval mode only, a persisted `place` proposal with an
 explicit account and a live **limit SELL** may use this exception on the exact
 `parking_allowlist` symbol/account-mode/market tuples. The broker-selected
 account must equal the proposal's exact account ID; an absent, noncanonical,
-or mismatched ID produces a usable human approval card. The account-scoped
+or mismatched ID produces a human approval card. A loss sell on that card
+still faces the ordinary average-cost guard when tapped; correct the failed
+account or meter condition and create a new proposal before selling. The account-scoped
 parking meter must also be available. For Toss this includes the same-client
 broker account-list check from task 765; a failed list or durable meter read
 demotes to the card. No account is filled from settings into the proposal.
@@ -929,6 +931,15 @@ price. The broker send hook checks account and KR regular-session status again
 immediately before mutation. A direct MCP order call has no such binding and
 retains its ordinary average-cost guard. Existing env and `confirm=True`
 broker mutation gates remain default-disabled and unchanged.
+
+For KR parking sells, the XKRX calendar sets the regular window, with a
+conservative 10:00 KST lower bound on the published 2026-11-19 exam date.
+The exchange's 2026 special-session notice must be checked before that date;
+until then, the auto path cannot treat 09:00-10:00 as a regular session.
+The [2025 KRX ETF notice](https://kind.krx.co.kr/external/2025/10/30/000102/20251030000137/99303.htm)
+states that exam-day trading began at 10:00. The
+[Ministry of Education schedule](https://www.moe.go.kr/boardCnts/viewRenew.do?boardID=294&boardSeq=100526&lev=0&m=020402)
+sets the 2026 exam date; it does not establish the 2026 exchange hours.
 
 The exception bypasses the average-cost limit-sell floor, break-even band,
 fee-net profit proof, and the advisory `de_minimis_trim_watch` constraint.

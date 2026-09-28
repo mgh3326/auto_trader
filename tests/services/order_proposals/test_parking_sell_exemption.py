@@ -285,6 +285,24 @@ def test_kr_sells_require_xkrx_regular_session(monkeypatch, when):
     )
 
 
+@pytest.mark.parametrize("year,month,day", ((2025, 11, 13), (2026, 11, 19)))
+def test_kr_exam_day_conservative_late_open(monkeypatch, year, month, day):
+    from zoneinfo import ZoneInfo
+
+    local = ZoneInfo("Asia/Seoul")
+    account = _account(monkeypatch, "kis_live")
+    group = _group("459580", "kis_live", "equity_kr", account)
+    before_open = datetime(year, month, day, 9, 59, 59, tzinfo=local)
+    at_open = datetime(year, month, day, 10, 0, tzinfo=local)
+    assert not kr_regular_session_open("equity_kr", before_open)
+    assert kr_regular_session_open("equity_kr", at_open)
+    result = _decision(group, _rung("990"), current="1000", now=before_open)
+    assert (result.eligible, result.reason) == (
+        False,
+        "parking_sell_regular_session_required",
+    )
+
+
 def test_shortened_session_close_is_exclusive(monkeypatch):
     from app.services.order_proposals import parking_sell_exemption as module
 

@@ -10,13 +10,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.core.config import settings
 from app.services.market_events.session_calendar import regular_session_bounds
 from app.services.order_proposals.parking_allowlist import parking_scope
+
+# The library XKRX calendar currently reports the ordinary 09:00 opening on
+# these exam days. KRX delayed the 2025 regular opening until 10:00; the 2026
+# exam date is published, but its exchange notice is not yet available. Apply
+# the same conservative lower bound so this auto-approval cannot use pre-open.
+_KRX_CONSERVATIVE_LATE_OPEN_DATES = frozenset((date(2025, 11, 13), date(2026, 11, 19)))
 
 
 def explicit_account_matches(account_mode: Any, broker_account_id: Any) -> bool:
@@ -49,7 +55,13 @@ def kr_regular_session_open(market: Any, now: datetime | None) -> bool:
     instant = now.astimezone(UTC)
     from zoneinfo import ZoneInfo
 
-    bounds = regular_session_bounds("kr", now.astimezone(ZoneInfo("Asia/Seoul")).date())
+    local_now = now.astimezone(ZoneInfo("Asia/Seoul"))
+    if (
+        local_now.date() in _KRX_CONSERVATIVE_LATE_OPEN_DATES
+        and local_now.time() < time(10)
+    ):
+        return False
+    bounds = regular_session_bounds("kr", local_now.date())
     return bounds is not None and bounds[0] <= instant < bounds[1]
 
 
