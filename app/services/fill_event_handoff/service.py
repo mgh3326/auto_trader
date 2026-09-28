@@ -72,11 +72,24 @@ REP_WINDOW = timedelta(minutes=30)
 WATCH_KICK_BATCH_LIMIT = 500
 
 
+def _exact_int(value: Any) -> int | None:
+    """Exact-integer parse; ``None`` for fractional/bool/other garbage.
+
+    ``int()`` silently truncates floats (``int(0.5) == 0``), which would
+    launder a corrupt cursor or event id into a valid-looking replay point.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
+
+
 def _watch_row_order_key(row: Mapping[str, Any]) -> tuple[str, int]:
-    try:
-        return str(row.get("delivered_at") or ""), int(row["event_id"])
-    except (KeyError, TypeError, ValueError):
-        return str(row.get("delivered_at") or ""), -1
+    event_id = _exact_int(row.get("event_id"))
+    return str(row.get("delivered_at") or ""), -1 if event_id is None else event_id
 
 
 def _watch_kick_cursor_from_state(
@@ -84,21 +97,23 @@ def _watch_kick_cursor_from_state(
 ) -> WatchKickCursor | None:
     """Parse the persisted cursor; ``None`` marks corrupt state.
 
-    A corrupt cursor (negative watermark, unparseable or naive
-    ``delivered_at``) must never be fed to ``list_after`` — ``id > -1``
-    would silently replay the entire delivered backlog as kick candidates.
+    A corrupt cursor (negative or fractional watermark, unparseable or
+    naive ``delivered_at``) must never be fed to ``list_after`` —
+    ``id > -1`` or ``id > 0`` after truncation would silently replay the
+    delivered backlog as kick candidates.
     """
+    watermark = _exact_int(state.get("watch_kick_watermark"))
+    if watermark is None:
+        return None
+    delivered_raw = state.get("watch_kick_delivered_at")
     try:
-        delivered_raw = state.get("watch_kick_delivered_at")
         cursor = WatchKickCursor(
             None
             if delivered_raw is None
             else datetime.fromisoformat(str(delivered_raw)),
-            int(state["watch_kick_watermark"]),
+            watermark,
         )
-    except (KeyError, TypeError, ValueError):
-        return None
-    if cursor.event_id < 0:
+    except (TypeError, ValueError):
         return None
     if cursor.delivered_at is not None and (
         cursor.delivered_at.tzinfo is None
@@ -743,7 +758,8 @@ class FillHandoffRunner:
         clean: list[Mapping[str, Any]] = []
         for event in rows:
             try:
-                int(event["event_id"])
+                if _exact_int(event.get("event_id")) is None:
+                    raise ValueError("malformed event_id")
                 delivered = event.get("delivered_at")
                 if delivered is None:
                     raise ValueError("missing delivered_at")

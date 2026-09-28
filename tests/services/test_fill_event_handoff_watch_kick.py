@@ -1448,3 +1448,43 @@ def test_interleaved_symbols_give_the_slot_to_first_eligible_delivery(
     assert reasons[40] == ("queue_only", "action_mode_notify_only")
     assert reasons[41] == ("kick", "action_side")
     assert reasons[42] == ("capped", "daily_cap")
+
+
+@pytest.mark.parametrize(
+    "watermark",
+    [0.5, 1.9, True, "0.5", [3], {"x": 1}, -2],
+)
+def test_noninteger_or_negative_watermark_is_corrupt_not_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, watermark: Any
+) -> None:
+    # r2 finding 1: a fractional/garbage persisted watermark must not be
+    # int()-truncated into a valid replay point — it is corrupt state and
+    # reseeds to the delivered high-water mark instead of kicking backlog.
+    outcome, calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        watches=[_watch(10)],
+        state_extra={
+            "watch_kick_watermark": watermark,
+            "watch_kick_delivered_at": None,
+        },
+    )
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "watch_cursor_corrupt" in outcome["watch_errors"]
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    assert persisted["watch_kick_watermark"] == 10
+
+
+@pytest.mark.parametrize("event_id", [830.5, 12.0, True])
+def test_noninteger_event_id_is_malformed_not_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_id: Any
+) -> None:
+    # r2 finding 2: a fractional event id must not truncate into a real row
+    # identity — it is dropped as event_malformed and never kicks.
+    bad = _watch(900)
+    bad["event_id"] = event_id
+    outcome, calls, _ = _run(tmp_path, monkeypatch, watches=[bad])
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "event_malformed" in outcome["watch_errors"]
