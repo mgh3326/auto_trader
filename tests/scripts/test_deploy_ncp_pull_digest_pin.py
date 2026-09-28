@@ -191,6 +191,7 @@ def test_second_deploy_starts_inactive_green_and_drains_only_after_hup(
     assert log.index("kill -s HUP at-haproxy") < log.rindex(
         "inspect --format {{.Id}} at-api-blue"
     )
+    assert "scheduled drain: at-api-blue" in p.stderr
     assert run_dir.joinpath("api-active-color").read_text() == "green\n"
 
 
@@ -416,6 +417,7 @@ def test_mcp_drain_is_scheduled_only_after_its_haproxy_switch(tmp_path: Path) ->
     assert log.rindex("kill -s HUP at-haproxy") < log.rindex(
         "inspect --format {{.Id}} at-mcp-blue"
     )
+    assert "scheduled drain: at-mcp-blue" in p.stderr
 
 
 def test_missing_mcp_token_fails_closed_before_image_pull(tmp_path: Path) -> None:
