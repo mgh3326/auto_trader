@@ -356,42 +356,16 @@ SAMPLE_PROFILE_HTML = """
 </html>
 """
 
-SAMPLE_INVESTOR_TRENDS_HTML = """
-<html>
-<body>
-<!-- First table.type2 is empty (matches real Naver structure) -->
-<table class="type2">
-    <tbody><tr><td></td></tr></tbody>
-</table>
-<!-- Second table.type2 has the actual data (ROB-448: 9 cells — the 외국인 column is a
-     2-level header with 순매수 / 보유주수 / 보유율) -->
-<table class="type2">
-    <tr>
-        <td>2024.01.15</td>
-        <td>75,000</td>
-        <td>▲500</td>
-        <td>+0.67%</td>
-        <td>10,000,000</td>
-        <td>1,000,000</td>
-        <td>-500,000</td>
-        <td>2,790,424,635</td>
-        <td>47.73%</td>
-    </tr>
-    <tr>
-        <td>2024.01.14</td>
-        <td>74,500</td>
-        <td>▼300</td>
-        <td>-0.40%</td>
-        <td>8,000,000</td>
-        <td>-200,000</td>
-        <td>300,000</td>
-        <td>2,789,924,635</td>
-        <td>47.72%</td>
-    </tr>
-</table>
-</body>
-</html>
-"""
+# Synthesized from the desk-verified trend endpoint shape
+# (m.stock.naver.com/api/stock/{code}/trend) — see tests/fixtures/investor_flow/.
+_TREND_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "investor_flow"
+
+
+def _load_trend_fixture(name: str = "005930_trend_synthesized.json") -> Any:
+    import json
+
+    return json.loads((_TREND_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
 
 # ROB-486: 리스트 fixture 날짜를 상대값으로 생성해 recency 윈도우 시한폭탄을 막는다.
 _OPINION_LIST_DATE_RECENT_1 = date.today() - timedelta(days=30)
@@ -862,121 +836,255 @@ class TestFetchCompanyProfile:
 @pytest.mark.asyncio
 @pytest.mark.unit
 class TestFetchInvestorTrends:
-    """Tests for fetch_investor_trends function."""
+    """Tests for fetch_investor_trends (Naver mobile trend JSON, #900)."""
 
-    async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
+    async def test_success_parses_fixture(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def mock_fetch_json(
             url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(SAMPLE_INVESTOR_TRENDS_HTML, "lxml")
+        ) -> Any:
+            captured["url"] = url
+            captured["params"] = params
+            return _load_trend_fixture()
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
 
         result = await naver_finance.fetch_investor_trends("005930", days=20)
 
+        assert captured["url"] == "https://m.stock.naver.com/api/stock/005930/trend"
+        assert captured["params"] == {"pageSize": 20}
         assert result["symbol"] == "005930"
-        assert len(result["data"]) == 2
+        assert result["skipped"] == {}
+        assert len(result["data"]) == 4
 
-        # First day
         day1 = result["data"][0]
-        assert day1["date"] == "2024-01-15"
-        assert day1["close"] == 75000
-        assert day1["change"] == 500  # ▲500
-        assert day1["institutional_net"] == 1000000
-        assert day1["foreign_net"] == -500000
-        # ROB-448: foreign holding shares (count) + rate (percent, 0..100)
-        assert day1["foreign_holding_shares"] == 2790424635
-        assert day1["foreign_holding_rate"] == pytest.approx(47.73)
+        assert day1["date"] == "2026-09-28"
+        assert day1["close"] == 75500
+        # change is derived from the next row's closePrice (newest-first).
+        assert day1["change"] == 500
+        assert day1["change_pct"] == pytest.approx(500 / 75000)
+        assert day1["volume"] == 12345678
+        # Signed comma strings keep their sign.
+        assert day1["foreign_net"] == 4513767
+        assert day1["institutional_net"] == 1234567
+        assert day1["individual_net"] == -5748334
+        # Percent string parses to a 0..100 rate (not a fraction).
+        assert day1["foreign_holding_rate"] == pytest.approx(46.64)
+        # Not in the payload — NULL, never fabricated.
+        assert day1["foreign_holding_shares"] is None
 
-        # Second day
         day2 = result["data"][1]
-        assert day2["date"] == "2024-01-14"
-        assert day2["change"] == -300  # ▼300
-        assert day2["foreign_holding_rate"] == pytest.approx(47.72)
+        assert day2["date"] == "2026-09-25"
+        assert day2["foreign_net"] == -500000
+        assert day2["institutional_net"] == -200000
+        assert day2["individual_net"] == 700000
+        assert day2["change"] == 500
+        assert day2["change_pct"] == pytest.approx(500 / 74500)
+
+        # Oldest row has no prior close in the payload -> no derived change.
+        oldest = result["data"][-1]
+        assert oldest["date"] == "2026-09-23"
+        assert oldest["foreign_net"] == 0
+        assert oldest["change"] is None
+        assert oldest["change_pct"] is None
 
     async def test_days_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(SAMPLE_INVESTOR_TRENDS_HTML, "lxml")
+        captured: dict[str, Any] = {}
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        async def mock_fetch_json(
+            url: str, params: dict[str, Any] | None = None
+        ) -> Any:
+            captured["params"] = params
+            return _load_trend_fixture()
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
 
         result = await naver_finance.fetch_investor_trends("005930", days=1)
 
+        assert captured["params"] == {"pageSize": 1}
         assert len(result["data"]) == 1
+        assert result["data"][0]["date"] == "2026-09-28"
 
-    async def test_legacy_7cell_layout_degrades_to_none(
+    async def test_malformed_rows_skipped_with_counted_reasons(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # ROB-448: a 7-cell row (no holding columns) must degrade to None, not IndexError.
-        html = """
-        <html><body>
-        <table class="type2"><tbody><tr><td></td></tr></tbody></table>
-        <table class="type2">
-            <tr><td>2024.01.15</td><td>75,000</td><td>▲500</td><td>+0.67%</td>
-                <td>10,000,000</td><td>1,000,000</td><td>-500,000</td></tr>
-        </table>
-        </body></html>
-        """
-
-        async def mock_fetch_html(
+        async def mock_fetch_json(
             url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(html, "lxml")
+        ) -> Any:
+            return _load_trend_fixture("005930_trend_malformed.json")
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
+
+        result = await naver_finance.fetch_investor_trends("005930", days=20)
+
+        # Only the last (fully valid) row survives.
+        assert [r["date"] for r in result["data"]] == ["2026-09-22"]
+        assert result["skipped"] == {
+            "invalid bizdate": 1,
+            "invalid foreignerPureBuyQuant": 2,  # empty string + bad grouping
+            "missing organPureBuyQuant": 1,
+            "invalid individualPureBuyQuant": 1,
+            "row is not a JSON object": 1,
+        }
+
+    async def test_missing_flow_fields_skip_row_but_keep_valid_siblings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def mock_fetch_json(
+            url: str, params: dict[str, Any] | None = None
+        ) -> Any:
+            return [
+                {
+                    "bizdate": "20260928",
+                    "closePrice": "75,500",
+                    "foreignerPureBuyQuant": "+100",
+                    # organPureBuyQuant missing entirely
+                    "individualPureBuyQuant": "-50",
+                },
+                {
+                    "bizdate": "20260925",
+                    "closePrice": "75,000",
+                    "foreignerPureBuyQuant": "-200",
+                    "organPureBuyQuant": "-",
+                    "individualPureBuyQuant": "+150",
+                },
+                {
+                    "bizdate": "20260924",
+                    "closePrice": "74,500",
+                    "foreignerPureBuyQuant": "+300",
+                    "organPureBuyQuant": "+40",
+                    "individualPureBuyQuant": "-340",
+                },
+            ]
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
+
+        result = await naver_finance.fetch_investor_trends("005930", days=20)
+
+        assert [r["date"] for r in result["data"]] == ["2026-09-24"]
+        assert result["skipped"] == {
+            "missing organPureBuyQuant": 1,
+            "invalid organPureBuyQuant": 1,
+        }
+
+    async def test_optional_fields_malformed_keep_row_with_nulls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def mock_fetch_json(
+            url: str, params: dict[str, Any] | None = None
+        ) -> Any:
+            return [
+                {
+                    "bizdate": "20260928",
+                    "closePrice": "",
+                    "accumulatedTradingVolume": "-",
+                    "foreignerPureBuyQuant": "+100",
+                    "organPureBuyQuant": "+40",
+                    "individualPureBuyQuant": "-140",
+                    "foreignerHoldRatio": "abc",
+                }
+            ]
+
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
 
         result = await naver_finance.fetch_investor_trends("005930", days=20)
 
         assert len(result["data"]) == 1
-        assert result["data"][0]["foreign_net"] == -500000
-        assert result["data"][0]["foreign_holding_shares"] is None
-        assert result["data"][0]["foreign_holding_rate"] is None
+        row = result["data"][0]
+        assert row["foreign_net"] == 100
+        assert row["close"] is None
+        assert row["volume"] is None
+        assert row["foreign_holding_rate"] is None
+        assert row["change"] is None
+        assert row["change_pct"] is None
 
-    async def test_empty_response_no_data_table_returns_empty_data(
+    async def test_non_list_payload_returns_empty_data(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # #895: since 2026-09-10 frgn.naver answers HTTP 200 but the page no
-        # longer carries a table.type2 with digit-leading date rows. The parser
-        # must yield the documented empty shape (data == []) without raising so
-        # the job-level zero-commit floor can classify the day and fail loudly.
-        html = (
-            Path(__file__).parent
-            / "fixtures"
-            / "investor_flow"
-            / "frgn_no_data_table.html"
-        ).read_text(encoding="utf-8")
-
-        async def mock_fetch_html(
+        # A maintenance/error body that decodes to a dict instead of a list
+        # must yield the documented empty shape (data == []), never raise — but
+        # it is counted as an invalid-response skip so it is distinguishable
+        # from a legitimately empty day.
+        async def mock_fetch_json(
             url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(html, "lxml")
+        ) -> Any:
+            return {"error": "maintenance"}
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
 
         result = await naver_finance.fetch_investor_trends("005930", days=20)
 
         assert result["symbol"] == "005930"
         assert result["data"] == []
+        assert result["skipped"] == {"payload is not a JSON list": 1}
 
-    async def test_page_without_type2_tables_returns_empty_data(
+    async def test_empty_list_payload_returns_empty_data(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # #895 variant: an interstitial/error page with no table.type2 at all
-        # must also produce the empty shape rather than raise.
-        html = "<html><body><div id='wrap'>서비스 점검 중입니다.</div></body></html>"
-
-        async def mock_fetch_html(
+        async def mock_fetch_json(
             url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(html, "lxml")
+        ) -> Any:
+            return []
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_json", mock_fetch_json)
 
         result = await naver_finance.fetch_investor_trends("005930", days=20)
 
         assert result["data"] == []
+        assert result["skipped"] == {}
+
+
+@pytest.mark.unit
+class TestParseTrendHelpers:
+    """Direct unit tests for the trend JSON parsers (#900)."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("+4,513,767", 4513767),
+            ("-500,000", -500000),
+            ("+0", 0),
+            ("0", 0),
+            ("45,13,767", None),  # non-canonical grouping = corruption, reject
+            ("1,23", None),
+            ("1234,567", None),
+            ("+1,234,567", 1234567),
+            (4513767, 4513767),
+            (5.0, 5),
+            ("-", None),
+            ("+", None),
+            ("", None),
+            ("   ", None),
+            (None, None),
+            (True, None),
+            (5.5, None),
+            ("5.5", None),
+            ("abc", None),
+            ("+4,513,767원", None),
+        ],
+    )
+    def test_parse_trend_int(self, value: Any, expected: int | None) -> None:
+        assert naver_finance.investor._parse_trend_int(value) == expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("20260928", "2026-09-28"),
+            ("20240101", "2024-01-01"),
+            ("2026-09-28", None),
+            ("2026928", None),
+            ("20261301", None),
+            ("20260931", None),
+            ("", None),
+            (None, None),
+            ("abcd1234", None),
+        ],
+    )
+    def test_parse_trend_bizdate(self, value: Any, expected: str | None) -> None:
+        assert naver_finance.investor._parse_trend_bizdate(value) == expected
 
 
 @pytest.mark.unit

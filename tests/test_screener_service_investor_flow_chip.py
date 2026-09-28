@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import delete
 
 from app.schemas.investor_flow import InvestorFlowItem
 from app.services.invest_view_model.screener_service import (
@@ -267,3 +268,90 @@ async def test_investor_flow_momentum_preset_uses_snapshot_discovery(
     assert foreign_streak_row.investorFlowChip.tone == "foreign_buy"
     assert foreign_streak_row.investorFlowChip.label == "외국인 4일 순매수"
     assert result.warnings == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_investor_flow_momentum_null_columns_fail_closed(db_session, monkeypatch):
+    """#900: NULL flow/holding columns must not crash the momentum loader —
+    a NULL-streak NULL-rank non-double-buy row simply fails the predicate."""
+    import app.services.invest_screener_snapshots.partition_health as ph
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot as IFS
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+    )
+    from app.services.invest_view_model.screener_service import (
+        _load_investor_flow_discovery_from_snapshots,
+    )
+
+    repo = InvestorFlowSnapshotsRepository(db_session)
+    latest_partition = dt.date(2099, 5, 14)
+    # NULL flows/streaks/ranks + NULL holding columns: the WHERE clause
+    # (double_buy OR streak>=3 OR rank NOT NULL) all evaluate NULL/false →
+    # excluded without error. A valid sibling proves the loader still yields rows.
+    await repo.upsert(
+        InvestorFlowSnapshotUpsert(
+            market="kr",
+            symbol="916001",
+            snapshot_date=latest_partition,
+            foreign_net=None,
+            institution_net=None,
+            individual_net=None,
+            foreign_holding_shares=None,
+            foreign_holding_rate=None,
+            source="naver_finance",
+        )
+    )
+    await repo.upsert(
+        InvestorFlowSnapshotUpsert(
+            market="kr",
+            symbol="403550",
+            snapshot_date=latest_partition,
+            foreign_net=20859,
+            institution_net=-12931,
+            individual_net=125586,
+            foreign_net_buy_rank=3,
+            foreign_consecutive_buy_days=4,
+            foreign_holding_shares=None,  # #900: always NULL under the new feed
+            foreign_holding_rate=None,
+            source="naver_finance",
+        )
+    )
+    await db_session.commit()
+
+    real_resolver = ph.resolve_healthy_partition
+
+    async def _stub(session, *, model, **kwargs):
+        if model is IFS:
+            return HealthyPartition(
+                partition_date=latest_partition,
+                row_count=9999,
+                coverage_ratio=1.0,
+                is_fallback=False,
+                healthy=True,
+            )
+        return await real_resolver(session, model=model, **kwargs)
+
+    # The loader imports resolve_healthy_partition from the module at call time,
+    # so patching the module attribute is what it sees.
+    monkeypatch.setattr(ph, "resolve_healthy_partition", _stub)
+
+    try:
+        result = await _load_investor_flow_discovery_from_snapshots(
+            db_session, market="kr", limit=20
+        )
+
+        assert result is not None
+        symbols = {r["symbol"] for r in result.rows}
+        assert "916001" not in symbols  # NULL predicates fail closed
+        # sibling still qualifies via its streak/rank despite NULL holding cols
+        assert "403550" in symbols
+    finally:
+        await db_session.execute(
+            delete(IFS).where(
+                IFS.market == "kr",
+                IFS.symbol.in_(["916001", "403550"]),
+                IFS.snapshot_date == latest_partition,
+            )
+        )
+        await db_session.commit()

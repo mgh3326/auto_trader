@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -24,6 +25,7 @@ from app.services.naver_finance.parser import (
     _extract_current_price_from_main_soup,
     _fetch_html,
     _fetch_html_with_client,
+    _fetch_json,
     _parse_naver_date,
 )
 from app.services.naver_finance.valuation import _parse_valuation_from_soups
@@ -194,100 +196,182 @@ def _parse_holding_rate(text: str | None) -> float | None:
         return None
 
 
+# Naver mobile trend JSON endpoint. frgn.naver is a client-rendered SPA since
+# 2026-09; this endpoint carries the same investor-flow table as JSON rows
+# (newest first).
+NAVER_TREND_API = "https://m.stock.naver.com/api/stock"
+
+# investor_flow_snapshots column <- trend JSON field mapping (task #900):
+#   snapshot_date           <- bizdate ("YYYYMMDD" -> KST calendar date, ISO str)
+#   foreign_net             <- foreignerPureBuyQuant   (signed comma qty, shares)
+#   institution_net         <- organPureBuyQuant       (signed comma qty, shares)
+#   individual_net          <- individualPureBuyQuant  (signed comma qty, shares)
+#   close                   <- closePrice              (comma number, KRW)
+#   change_rate             <- derived: emitted as change_pct = (close -
+#                              prev_close) / prev_close (a fraction; the builder
+#                              x100's it into the percent column). prev_close is
+#                              the NEXT item's closePrice (payload is newest
+#                              first). NULL for the oldest row in the window.
+#   volume                  <- accumulatedTradingVolume (comma int, shares)
+#   foreign_holding_rate    <- foreignerHoldRatio ("46.64%" -> 46.64, 0..100)
+#   foreign_holding_shares  <- NULL: the payload has no share count and shares =
+#                              holdRatio x listed shares is NOT derivable (no
+#                              listed-share count in the payload).
+#   institutional net-buy AMOUNT <- NULL: not derivable. The payload's
+#                              organPureBuyQuant is a share QUANTITY, and
+#                              quantity x closePrice is NOT the traded amount
+#                              (net-buy amount requires per-trade execution
+#                              prices). The column stores quantity only.
+#   foreign_net_buy_rank / foreign_net_sell_rank / institution_net_*_rank /
+#   *_consecutive_*_days / double_buy / double_sell <- derived downstream by
+#                              builder._apply_streaks/_apply_ranks and
+#                              repository._with_derived_flags.
+_TREND_REQUIRED_FIELDS = (
+    "bizdate",
+    "foreignerPureBuyQuant",
+    "organPureBuyQuant",
+    "individualPureBuyQuant",
+)
+
+
+def _parse_trend_int(value: Any) -> int | None:
+    """Strict parser for trend quantity fields ('+4,513,767' -> 4513767).
+
+    Rejects '-' / '' / missing keys / decimals / non-numeric text — the caller
+    treats a required-field failure as a skipped row. Commas must be in
+    canonical thousands grouping: '45,13,767' is upstream corruption and is
+    rejected rather than silently re-interpreted.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value == int(value) else None
+    text = str(value).strip()
+    if not text or text in {"-", "+"}:
+        return None
+    if not re.fullmatch(r"[+-]?(\d+|\d{1,3}(,\d{3})+)", text):
+        return None
+    return int(text.replace(",", ""))
+
+
+def _parse_trend_bizdate(value: Any) -> str | None:
+    """'YYYYMMDD' -> 'YYYY-MM-DD' (KST calendar date); None when malformed."""
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{8}", text):
+        return None
+    try:
+        parsed = dt.date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+    except ValueError:
+        return None
+    return parsed.isoformat()
+
+
+def _parse_trend_row(
+    item: Any,
+    *,
+    prev_close: int | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse one trend item -> (row, None) or (None, skip-reason)."""
+    if not isinstance(item, dict):
+        return None, "row is not a JSON object"
+    for field in _TREND_REQUIRED_FIELDS:
+        if field not in item:
+            return None, f"missing {field}"
+    date_str = _parse_trend_bizdate(item.get("bizdate"))
+    if date_str is None:
+        return None, "invalid bizdate"
+    foreign_net = _parse_trend_int(item.get("foreignerPureBuyQuant"))
+    if foreign_net is None:
+        return None, "invalid foreignerPureBuyQuant"
+    institutional_net = _parse_trend_int(item.get("organPureBuyQuant"))
+    if institutional_net is None:
+        return None, "invalid organPureBuyQuant"
+    individual_net = _parse_trend_int(item.get("individualPureBuyQuant"))
+    if individual_net is None:
+        return None, "invalid individualPureBuyQuant"
+    close = _parse_trend_int(item.get("closePrice"))
+    change = None
+    change_pct = None
+    if close is not None and prev_close:
+        change = int(close - prev_close)
+        change_pct = (close - prev_close) / prev_close
+    row = {
+        "date": date_str,
+        "close": close,
+        "change": change,
+        "change_pct": change_pct,
+        "volume": _parse_trend_int(item.get("accumulatedTradingVolume")),
+        "institutional_net": institutional_net,
+        "foreign_net": foreign_net,
+        "individual_net": individual_net,
+        # Not in the payload — stays NULL rather than fabricated.
+        "foreign_holding_shares": None,
+        "foreign_holding_rate": _parse_holding_rate(item.get("foreignerHoldRatio")),
+    }
+    return row, None
+
+
+def _parse_trend_payload(
+    payload: Any, *, days: int
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Convert a trend JSON list into row dicts + skip-reason counts."""
+    if not isinstance(payload, list):
+        # A dict/scalar body is an upstream error or maintenance shape, not a
+        # legitimately empty day — count it so '0 rows' stays diagnosable.
+        return [], {"payload is not a JSON list": 1}
+    items = payload
+    data: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+    for index, item in enumerate(items):
+        if len(data) >= days:
+            break
+        # prev_close = next item's closePrice (newest-first ordering); used to
+        # derive change/change_pct. Falls back to the raw next element even if
+        # that element itself is malformed — the *previous trading day's* close
+        # is still the correct base for this row's change.
+        prev_close: int | None = None
+        if index + 1 < len(items):
+            prev_close = _parse_trend_int(
+                items[index + 1].get("closePrice")
+                if isinstance(items[index + 1], dict)
+                else None
+            )
+        row, reason = _parse_trend_row(item, prev_close=prev_close)
+        if row is None:
+            key = reason or "unknown"
+            skipped[key] = skipped.get(key, 0) + 1
+            continue
+        data.append(row)
+    return data, skipped
+
+
 async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
     """Fetch foreign/institutional investor trading trends.
 
-    URL: finance.naver.com/item/frgn.naver?code={code}
+    URL: m.stock.naver.com/api/stock/{code}/trend?pageSize={days} (JSON list,
+    newest first). The old frgn.naver HTML page is a client-rendered SPA and no
+    longer carries the table (task #900).
 
     Args:
         code: 6-digit Korean stock code
         days: Number of days of data to fetch
 
     Returns:
-        Daily investor flow data (foreign, institutional, individual net trades)
+        {symbol, days, data: [...], skipped: {reason: count}} — the same row
+        contract the HTML parser produced, plus `individual_net` straight from
+        the payload and `skipped` so malformed rows are counted, not silent.
     """
-    url = f"{NAVER_FINANCE_ITEM}/frgn.naver"
-    soup = await _fetch_html(url, params={"code": code})
-
-    trends: dict[str, Any] = {
+    url = f"{NAVER_TREND_API}/{code}/trend"
+    payload = await _fetch_json(url, params={"pageSize": days})
+    data, skipped = _parse_trend_payload(payload, days=days)
+    return {
         "symbol": code,
         "days": days,
-        "data": [],
+        "data": data,
+        "skipped": skipped,
     }
-
-    # There are multiple table.type2 on the page
-    # The one with actual investor data has rows with 7+ cells
-    # Columns: 날짜, 종가, 전일비, 등락률, 거래량, 기관, 외국인
-    tables = soup.select("table.type2")
-    target_table = None
-
-    for table in tables:
-        # Find the table that has data rows with 7 cells
-        rows = table.select("tr")
-        for row in rows:
-            cells = row.select("td")
-            if len(cells) >= 7:
-                # Check if first cell looks like a date
-                first_cell = cells[0].get_text(strip=True)
-                if first_cell and first_cell[0].isdigit():
-                    target_table = table
-                    break
-        if target_table:
-            break
-
-    if not target_table:
-        return trends
-
-    rows = target_table.select("tr")
-    for row in rows:
-        cells = row.select("td")
-        # ROB-448: the 외국인 column is a 2-level header → the data row actually has 9
-        # cells (the old "7 cells" comment was stale). Columns:
-        #   날짜(0), 종가(1), 전일비(2), 등락률(3), 거래량(4), 기관 순매수(5),
-        #   외국인 순매수(6), 외국인 보유주수(7), 외국인 보유율(8)
-        if len(cells) < 7:
-            continue
-
-        try:
-            date_text = cells[0].get_text(strip=True)
-            if not date_text or not date_text[0].isdigit():
-                continue
-
-            # Parse 전일비 which includes direction text (상승/하락)
-            change_text = cells[2].get_text(strip=True)
-
-            data_point = {
-                "date": _parse_naver_date(date_text),
-                "close": _parse_korean_number(cells[1].get_text(strip=True)),
-                "change": _parse_korean_number(change_text),
-                "change_pct": _parse_korean_number(cells[3].get_text(strip=True)),
-                "volume": _parse_korean_number(cells[4].get_text(strip=True)),
-                "institutional_net": _parse_korean_number(
-                    cells[5].get_text(strip=True)
-                ),
-                "foreign_net": _parse_korean_number(cells[6].get_text(strip=True)),
-                # ROB-448: foreign holding shares (count) + rate (%, 0..100). Guarded so
-                # a legacy 7-cell layout degrades to None instead of IndexError.
-                "foreign_holding_shares": (
-                    _parse_korean_number(cells[7].get_text(strip=True))
-                    if len(cells) >= 9
-                    else None
-                ),
-                "foreign_holding_rate": (
-                    _parse_holding_rate(cells[8].get_text(strip=True))
-                    if len(cells) >= 9
-                    else None
-                ),
-            }
-
-            trends["data"].append(data_point)
-
-            if len(trends["data"]) >= days:
-                break
-        except (IndexError, ValueError):
-            continue
-
-    return trends
 
 
 async def _fetch_report_detail(nid: str) -> dict[str, Any] | None:

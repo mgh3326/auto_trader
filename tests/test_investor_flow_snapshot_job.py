@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
-from bs4 import BeautifulSoup
 
 from app.jobs import investor_flow_snapshots as job
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
@@ -31,6 +32,33 @@ class _SessionFactory(AbstractAsyncContextManager):
 def bind_job_session(monkeypatch, db_session):
     monkeypatch.setattr(job, "AsyncSessionLocal", lambda: _SessionFactory(db_session))
     return db_session
+
+
+# Every symbol this file can commit — purge AFTER each test, not just before.
+# Committed rows leak into the shared run DB and shift resolve_healthy_partition
+# coverage for unrelated screener tests (observed: stale-warning tests in
+# test_invest_view_model_screener_service resolving a leftover 2026-05-12
+# partition instead of their own 2099-xx rows).
+_JOB_COMMITTED_SYMBOLS = (
+    "900311",
+    "900312",
+    "900313",
+    "900314",
+    "900315",
+    "900316",
+    "005930",
+    "000660",
+)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_job_committed_rows(db_session):
+    yield
+    for model in (InvestorFlowSnapshot, KRSymbolUniverse):
+        await db_session.execute(
+            sa.delete(model).where(model.symbol.in_(_JOB_COMMITTED_SYMBOLS))
+        )
+    await db_session.commit()
 
 
 def _payload(
@@ -153,8 +181,8 @@ _KR_WEEKEND_SATURDAY = dt.date(2026, 9, 26)
 _KR_WEEKDAY_HOLIDAY_FRIDAY = dt.date(2026, 10, 9)
 _KR_WEEKDAY_HOLIDAY_MONDAY = dt.date(2026, 10, 5)
 
-_FRGN_EMPTY_FIXTURE = (
-    Path(__file__).parent / "fixtures" / "investor_flow" / "frgn_no_data_table.html"
+_TREND_MALFORMED_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "investor_flow" / "005930_trend_malformed.json"
 )
 
 
@@ -340,15 +368,39 @@ async def test_commit_empty_universe_on_closed_day_stays_successful(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_empty_upstream_page_end_to_end_fails_loudly(monkeypatch):
-    # End-to-end #895 reproduction: real parser over the empty-response fixture,
-    # real builder, real job — the same chain that silently committed 0 rows.
-    html = _FRGN_EMPTY_FIXTURE.read_text(encoding="utf-8")
+async def test_empty_upstream_payload_end_to_end_fails_loudly(monkeypatch):
+    # End-to-end #895/#900 chain: real trend-JSON parser over an empty payload,
+    # real builder, real job — the same chain that must fail loudly when every
+    # symbol yields no rows on a trading day. (Supersedes #895's HTML-fixture
+    # variant test_empty_upstream_page_end_to_end_fails_loudly: frgn.naver is
+    # a client-rendered SPA and the trend fetcher reads the JSON API.)
+    async def mock_fetch_json(url, params=None):
+        return []
 
-    async def mock_fetch_html(url, params=None):
-        return BeautifulSoup(html, "lxml")
+    monkeypatch.setattr(naver_investor, "_fetch_json", mock_fetch_json)
 
-    monkeypatch.setattr(naver_investor, "_fetch_html", mock_fetch_html)
+    with pytest.raises(
+        job.InvestorFlowEmptyCommitError, match=r"KRX trading day 2026-09-28"
+    ):
+        await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930",), commit=True, today=_KR_TRADING_MONDAY
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_all_invalid_rows_end_to_end_fails_loudly(monkeypatch):
+    # #900: every trend row malformed -> all skipped with counted reasons ->
+    # zero payloads -> the #895 gate must still fire (not silently succeed).
+    payload = json.loads(_TREND_MALFORMED_FIXTURE.read_text(encoding="utf-8"))
+    # Drop the fixture's single valid row so zero payloads are built.
+    all_invalid = payload[:-1]
+
+    async def mock_fetch_json(url, params=None):
+        return all_invalid
+
+    monkeypatch.setattr(naver_investor, "_fetch_json", mock_fetch_json)
 
     with pytest.raises(
         job.InvestorFlowEmptyCommitError, match=r"KRX trading day 2026-09-28"
