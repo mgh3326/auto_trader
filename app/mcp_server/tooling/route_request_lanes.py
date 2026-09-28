@@ -142,7 +142,7 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
 # Per-lane hard-constraint summaries. Reference policy KEYS, never values.
 HARD_CONSTRAINTS: dict[str, list[str]] = {
     "buy": [
-        "recovery gate: deploy reserve only when >= recovery_gate.min_conditions_met of 4 conditions",
+        "crypto new-entry sizing: recovery_gate.size_coefficient m is 1.0 at 2/2, 0.5 at 1/2, 0 at 0/2; missing or stale input holds the decision; breadth counts once",
         "loss guard (sell-side): sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
@@ -183,7 +183,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
     ],
     "bootstrap": [
         "context-load only; no order mutation in this lane",
-        "recovery gate frame: recovery_gate.min_conditions_met of 4",
+        "crypto recovery market state: use recovery_gate.size_coefficient for new-entry sizing; missing or stale input holds the decision",
         "account routing: buys prefer Toss (fee-free); KIS deposit spent down in-account",
     ],
 }

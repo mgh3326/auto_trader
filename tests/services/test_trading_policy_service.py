@@ -10,7 +10,13 @@ def _policy_key_references(value: object) -> list[str]:
     references: list[str] = []
     if isinstance(value, dict):
         for key, child in value.items():
-            if key.endswith("_policy_key") and isinstance(child, str):
+            # by_met_count (task-792 C1) uses integer keys — only string keys
+            # can carry the *_policy_key suffix.
+            if (
+                isinstance(key, str)
+                and key.endswith("_policy_key")
+                and isinstance(child, str)
+            ):
                 references.append(child)
             references.extend(_policy_key_references(child))
     elif isinstance(value, list):
@@ -22,7 +28,7 @@ def _policy_key_references(value: object) -> list[str]:
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
     assert stamp["version"] == svc.load_trading_policy().version
-    assert stamp["version"] == "2026-09-24.1"
+    assert stamp["version"] == "2026-09-28.1"
     assert len(stamp["content_hash"]) == 12
     assert svc.policy_content_hash() == svc.policy_content_hash()
 
