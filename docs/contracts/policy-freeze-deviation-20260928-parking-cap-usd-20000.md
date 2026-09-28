@@ -92,8 +92,7 @@ is not a broker-side reservation and cannot prove that simultaneous activity
 outside this proposal path is absent.
 
 The section 163 comment in config/trading_policy.yaml still says USD 10,000.
-It is intentionally left unchanged under the director-1 disposition for
-task 880: the loader hashes raw file bytes, and the pinned
+It is intentionally left unchanged: the loader hashes raw file bytes, and the pinned
 policy_content_hash dda6a0541849 is used by sealed and shadow consumers.
 The enforced current value is the code constant PARKING_CUMULATIVE_CAP_USD,
 not that YAML comment. Update the stale comment at the next intentional
