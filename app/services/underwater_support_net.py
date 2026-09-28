@@ -69,6 +69,11 @@ class UnderwaterTierPolicy:
     required_rebound_improvement_pct_min: Decimal
     max_add_notional_pct_of_position: Decimal
     loss_guard_multiple: Decimal
+    # #877 — when the 50% computation floors below one whole share the add
+    # is sized to exactly one share. The per-order/daily auto-approve caps
+    # and orderable cash still bind downstream; this flag only moves the
+    # advisory size, never an approval boundary.
+    one_share_exception_for_adds: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +133,11 @@ def load_underwater_tier_policy(policy: Any | None = None) -> UnderwaterTierPoli
     # The escape price is the existing loss guard's, read from its own key
     # rather than restated here, so the two can never disagree.
     guard = document.thresholds["sell.loss_guard_min_multiple"].value
+    one_share = _required_key(conditions, "one_share_exception_for_adds")
+    if not isinstance(one_share, bool):
+        raise UnderwaterPolicyError(
+            f"{UNDERWATER_RULE_KEY} one_share_exception_for_adds must be a boolean"
+        )
     return UnderwaterTierPolicy(
         unrealized_pnl_pct_max_inclusive=Decimal(
             str(_required_key(conditions, "unrealized_pnl_pct_max_inclusive"))
@@ -144,6 +154,7 @@ def load_underwater_tier_policy(policy: Any | None = None) -> UnderwaterTierPoli
             str(_required_key(conditions, "max_add_notional_pct_of_position"))
         ),
         loss_guard_multiple=Decimal(str(guard)),
+        one_share_exception_for_adds=one_share,
     )
 
 
@@ -237,12 +248,25 @@ def evaluate_underwater_support_net(
     )
     result["max_add_notional"] = _amount(max_add_notional)
     add_quantity = Decimal("0")
+    rounded_up = False
     if lot.rung_price > 0:
         add_quantity = (max_add_notional / lot.rung_price).to_integral_value(
             rounding=ROUND_FLOOR
         )
+        # #877 — the approved one-share exception: a 50% computation that
+        # floors below one whole share becomes exactly one share. Every
+        # other clause still runs on that share (the >=3pp improvement is
+        # measured on it below), and the per-order/daily caps and orderable
+        # cash still bind downstream — this only moves the advisory size.
+        if add_quantity < 1 and contract.one_share_exception_for_adds:
+            add_quantity = Decimal("1")
+            rounded_up = True
     result["rung_price"] = _amount(lot.rung_price)
     result["add_quantity"] = _amount(add_quantity)
+    # underwater-d20-v1 cohort tag: True only when the exception fired, so
+    # the scorer can score rounded adds separately without re-deriving the
+    # computation.
+    result["rounded_up_to_one_share"] = rounded_up
 
     before = required_rebound_pct(
         average_cost=lot.average_cost,
