@@ -90,6 +90,13 @@ An unavailable balance or durable read refuses auto approval, but the guard
 is not a broker-side reservation and cannot prove that simultaneous activity
 outside this proposal path is absent.
 
+The required update to the section 163 explanatory comments in
+config/trading_policy.yaml changes the runtime policy content hash because
+the loader hashes the raw file bytes, including comments. Parsed policy keys
+and values and the declared version do not change. The code PR must update
+the pinned hash assertion and verify that this metadata change does not move
+the separately sealed buy-gate shadow policy projection.
+
 The reported SGOV position of 98 shares, approximately USD 9,861, explains
 why the former ceiling blocks additional parking. That estimate is context,
 not a fresh broker balance or proof of unused capacity. A live decision still
