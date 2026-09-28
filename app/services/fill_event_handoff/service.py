@@ -38,6 +38,12 @@ from .kick_filter import (
     classify_without_position,
 )
 from .state import HandoffState
+from .watch_kick import (
+    DbWatchKickSource,
+    WatchKickCursor,
+    classify_watch_for_kick,
+    is_tradable_now,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 DEDUP_WINDOW = timedelta(hours=24)
@@ -63,6 +69,103 @@ REP_SCHEDULE: dict[str, tuple[tuple[int, int, str], ...]] = {
     ),
 }
 REP_WINDOW = timedelta(minutes=30)
+WATCH_KICK_BATCH_LIMIT = 500
+
+
+_PG_BIGINT_MAX = (1 << 63) - 1
+
+
+def _exact_int(value: Any) -> int | None:
+    """Exact signed-BIGINT parse; ``None`` for fractional/bool/other garbage.
+
+    ``int()`` silently truncates floats (``int(0.5) == 0``) and accepts
+    values outside PostgreSQL BIGINT range — either launders a corrupt
+    cursor or event id into a valid-looking replay point, or overflows the
+    driver bind and wedges the pass.  ``str.isdigit()`` is also wider than
+    what ``int()`` parses (e.g. superscript ``"²"``), and ``int()`` raises
+    on digit strings past its ~4300-char limit, so digit strings are
+    constrained to ASCII and BIGINT's 19-digit length, and any residual
+    parse failure is caught and returned as ``None``.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        # BIGINT max is 19 digits; longer strings are unparseable junk and
+        # int() itself raises past ~4300 digits (CVE-2020-10735) — the parse
+        # below must never let an exception escape this helper.
+        if len(stripped) > 19 or not stripped.isascii() or not stripped.isdigit():
+            return None
+        try:
+            parsed = int(stripped)
+        except (ValueError, OverflowError):
+            return None
+    else:
+        return None
+    if 0 <= parsed <= _PG_BIGINT_MAX:
+        return parsed
+    return None
+
+
+def _watch_row_order_key(row: Mapping[str, Any]) -> tuple[str, int]:
+    event_id = _exact_int(row.get("event_id"))
+    return str(row.get("delivered_at") or ""), -1 if event_id is None else event_id
+
+
+def _watch_kick_cursor_from_state(
+    state: Mapping[str, Any],
+) -> WatchKickCursor | None:
+    """Parse the persisted cursor; ``None`` marks corrupt state.
+
+    A corrupt cursor (negative or fractional watermark, unparseable or
+    naive ``delivered_at``) must never be fed to ``list_after`` —
+    ``id > -1`` or ``id > 0`` after truncation would silently replay the
+    delivered backlog as kick candidates.
+    """
+    watermark = _exact_int(state.get("watch_kick_watermark"))
+    if watermark is None:
+        return None
+    delivered_raw = state.get("watch_kick_delivered_at")
+    try:
+        cursor = WatchKickCursor(
+            None
+            if delivered_raw is None
+            else datetime.fromisoformat(str(delivered_raw)),
+            watermark,
+        )
+    except (TypeError, ValueError):
+        return None
+    if cursor.delivered_at is not None and (
+        cursor.delivered_at.tzinfo is None
+        or cursor.delivered_at.tzinfo.utcoffset(cursor.delivered_at) is None
+    ):
+        return None
+    return cursor
+
+
+def _advance_watch_kick_cursor(
+    current: WatchKickCursor,
+    rows: Sequence[Mapping[str, Any]],
+    resolved: set[int],
+) -> WatchKickCursor:
+    """Advance past resolved rows in delivery order; stall before a gap."""
+    cursor = current
+    for row in rows:
+        row_id = int(row["event_id"])
+        if row_id not in resolved:
+            break
+        delivered_at = row.get("delivered_at")
+        if delivered_at is None:
+            break
+        candidate = WatchKickCursor(datetime.fromisoformat(str(delivered_at)), row_id)
+        if cursor.delivered_at is None or (
+            candidate.delivered_at,
+            candidate.event_id,
+        ) > (cursor.delivered_at, cursor.event_id):
+            cursor = candidate
+    return cursor
 
 
 @dataclass(frozen=True)
@@ -369,6 +472,27 @@ class FillHandoffRunner:
         verdict: KickVerdict | None,
     ) -> KickDecision:
         """Prefect kick gated by the priority filter, daily cap, and cooldown."""
+        return await self._gated_kick(
+            market=str(fill["market"]),
+            tag=f"fill{fill['ledger_id']}",
+            locked=locked,
+            verdict=verdict,
+        )
+
+    async def _gated_kick(
+        self,
+        *,
+        market: str,
+        tag: str,
+        locked: HandoffState,
+        verdict: KickVerdict | None,
+    ) -> KickDecision:
+        """Shared kick gate for fills and watch events.
+
+        Every kick — fill (#825) or watch (#865) — funnels through the same
+        ``kick_days`` daily-cap counter and ``cooldowns`` map, so both kinds
+        together can never exceed ``kick_daily_cap`` per market per KST day.
+        """
         if (
             not self.config.kick_enabled
             or not self.config.prefect_api_url
@@ -380,7 +504,7 @@ class FillHandoffRunner:
             return KickDecision(
                 "queue_only", verdict.reason if verdict is not None else "unclassified"
             )
-        market, now = str(fill["market"]), self.now()
+        now = self.now()
         if in_regular_rep_window(market, now):
             return KickDecision("queue_only", "rep_window")
         state = locked.data
@@ -424,7 +548,7 @@ class FillHandoffRunner:
             {
                 "parameters": {
                     "rep": next_rep(market, now),
-                    "date_tag": f"{now.astimezone(KST):%Y%m%d}-fill{fill['ledger_id']}",
+                    "date_tag": f"{now.astimezone(KST):%Y%m%d}-{tag}",
                 }
             },
         )
@@ -519,6 +643,219 @@ class FillHandoffRunner:
             )
         return pushed, decision
 
+    def _classify_watch(self, event: Mapping[str, Any], now: datetime) -> KickVerdict:
+        """Filter verdict for one delivered watch event; fails closed.
+
+        The tradable-hours flag is evaluated from the injected clock, and the
+        source alert's ``max_action`` arrives pre-joined on the row — an
+        unreadable side signal (``None``) can only ever produce queue-only.
+        A delivered row older than the dedupe window is stale: it rides the
+        next regular rep and can never kick — which also bounds the
+        ``watchkick:<id>`` replay mark so its TTL expiry can never reopen a
+        crash-replay double-kick.
+        """
+        tradable = is_tradable_now(str(event.get("market") or ""), now)
+        verdict = classify_watch_for_kick(
+            event,
+            event.get("alert_max_action"),
+            tradable=tradable,
+        )
+        if not verdict.eligible:
+            return verdict
+        try:
+            delivered_at = datetime.fromisoformat(str(event.get("delivered_at")))
+            stale = (
+                delivered_at.tzinfo is None
+                or delivered_at.tzinfo.utcoffset(delivered_at) is None
+                or now - delivered_at >= DEDUP_WINDOW
+            )
+        except (TypeError, ValueError):
+            stale = True
+        if stale:
+            return KickVerdict(False, "stale_event")
+        return verdict
+
+    async def _seed_watch_kick_cursor(
+        self, db: Any, state: dict[str, Any], outcome: dict[str, Any]
+    ) -> None:
+        """Install-boundary seed: never replay the delivered-event backlog."""
+        try:
+            high = await DbWatchKickSource(db).high_watermark()
+        except Exception:  # noqa: BLE001 - seeding must not break the fill pass
+            outcome["watch_errors"].append("watch_high_watermark_failed")
+            return
+        state["watch_kick_watermark"] = int(high.event_id)
+        state["watch_kick_delivered_at"] = (
+            None if high.delivered_at is None else high.delivered_at.isoformat()
+        )
+
+    async def _notify_watch(
+        self, event: Mapping[str, Any], *, decision: KickDecision
+    ) -> None:
+        if not self.config.discord_webhook:
+            return
+        content = (
+            f"{event.get('symbol')} {event.get('metric')} {event.get('operator')} "
+            f"{event.get('threshold')} watch 발화 — kick "
+            f"{'yes' if decision.flow_run_id else 'no'} "
+            f"/ {decision.klass}:{decision.reason}"
+        )
+        request = urllib.request.Request(
+            self.config.discord_webhook,
+            data=json.dumps({"content": content}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            await asyncio.to_thread(urllib.request.urlopen, request, timeout=10)
+        except Exception:  # noqa: BLE001 - notification is strictly best effort
+            return
+
+    @staticmethod
+    def _watch_decision_record(
+        event: Mapping[str, Any],
+        verdict: KickVerdict,
+        decision: KickDecision | None,
+    ) -> dict[str, Any]:
+        """One per-event decision line; ``decision=None`` is the dry-run shape."""
+        record: dict[str, Any] = {
+            "event_id": int(event["event_id"]),
+            "market": str(event.get("market") or ""),
+            "symbol": str(event.get("symbol") or ""),
+            "action_mode": str(event.get("action_mode") or ""),
+            "filter": verdict.reason,
+            "flow_run_id": None,
+        }
+        if decision is None:
+            record["class"] = "kick" if verdict.eligible else "queue_only"
+            record["reason"] = verdict.reason
+            record["dry_run"] = True
+        else:
+            record["class"] = decision.klass
+            record["reason"] = decision.reason
+            record["flow_run_id"] = decision.flow_run_id
+        return record
+
+    async def _run_watch_kicks(
+        self, db: Any, locked: HandoffState, outcome: dict[str, Any]
+    ) -> None:
+        """Classify newly delivered watch events under the shared kick cap.
+
+        Same-symbol ladder fires within one poll form one kick candidate (the
+        first eligible row in delivery order) — the bundle dedupe key is the
+        per-alert idempotency key, so the candidate grouping key must be the
+        (market, symbol) pair, which this grouping supplies.  A read failure
+        leaves the cursor untouched so the next pass retries the same window.
+        """
+        state = locked.data
+        if "watch_kick_watermark" not in state:
+            # A fresh install or an upgrade onto a pre-kick state file seeds
+            # the cursor and processes nothing — history never kicks.
+            await self._seed_watch_kick_cursor(db, state, outcome)
+            if not self.config.dry_run:
+                locked.save()
+            return
+        cursor = _watch_kick_cursor_from_state(state)
+        if cursor is None:
+            # Corrupt persisted cursor: reseed to the delivered high-water
+            # mark like a fresh install — backlog is history, never a queue
+            # of pending kicks.
+            outcome["watch_errors"].append("watch_cursor_corrupt")
+            await self._seed_watch_kick_cursor(db, state, outcome)
+            if not self.config.dry_run:
+                locked.save()
+            return
+        try:
+            rows = await DbWatchKickSource(db).list_after(
+                cursor, limit=WATCH_KICK_BATCH_LIMIT
+            )
+            # Re-sort defensively; an unparseable id must not poison the
+            # whole batch ordering — it sorts first and is dropped below.
+            rows = sorted(rows, key=_watch_row_order_key)
+        except Exception:  # noqa: BLE001 - the fill handoff must not be wedged
+            outcome["watch_errors"].append("watch_read_failed")
+            return
+        now = self.now()
+        resolved: set[int] = set()
+        clean: list[Mapping[str, Any]] = []
+        for event in rows:
+            try:
+                if _exact_int(event.get("event_id")) is None:
+                    raise ValueError("malformed event_id")
+                delivered = event.get("delivered_at")
+                if delivered is None:
+                    raise ValueError("missing delivered_at")
+                parsed = datetime.fromisoformat(str(delivered))
+                if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+                    raise ValueError("naive delivered_at")
+            except (KeyError, TypeError, ValueError):
+                # A row that cannot be identified or cursor-tracked is dropped
+                # with an error record rather than wedging the pass.
+                outcome["watch_errors"].append("event_malformed")
+                continue
+            clean.append(event)
+        # Rows are processed in delivery order, not per symbol group, so the
+        # first ELIGIBLE row globally — not the first eligible row of the
+        # first-seen symbol — consumes the cap slot.  ``candidates`` records
+        # which (market, symbol) groups already spent their one kick attempt.
+        candidates: set[tuple[str, str]] = set()
+        for event in clean:
+            event_id = int(event["event_id"])
+            group_key = (
+                str(event.get("market") or "").strip().lower(),
+                str(event.get("symbol") or "").strip().upper(),
+            )
+            try:
+                verdict = self._classify_watch(event, now)
+            except Exception:  # noqa: BLE001 - a classifier bug resolves too
+                verdict = KickVerdict(False, "classification_failed")
+            decision: KickDecision | None
+            if not verdict.eligible:
+                decision = KickDecision("queue_only", verdict.reason)
+            elif group_key in candidates:
+                decision = KickDecision("queue_only", "ladder_grouped")
+            elif self.config.dry_run:
+                candidates.add(group_key)
+                decision = None
+            else:
+                candidates.add(group_key)
+                # Crash-replay dedupe, mirroring the fill path's `seen`
+                # map: the mark is written before the gate so the gate's
+                # own reservation save persists it atomically.  A crash
+                # between a successful kick and the cursor advance would
+                # otherwise re-gate this event next poll.
+                kick_seen = f"watchkick:{event_id}"
+                seen_at = float(state["seen"].get(kick_seen, 0))
+                if now.timestamp() - seen_at < DEDUP_WINDOW.total_seconds():
+                    decision = KickDecision("queue_only", "already_kicked")
+                else:
+                    state["seen"][kick_seen] = now.timestamp()
+                    try:
+                        decision = await self._gated_kick(
+                            market=group_key[0],
+                            tag=f"watch{event_id}",
+                            locked=locked,
+                            verdict=verdict,
+                        )
+                    except Exception:  # noqa: BLE001 - record is canonical
+                        decision = KickDecision("queue_only", "kick_error")
+            outcome["watch_decisions"].append(
+                self._watch_decision_record(event, verdict, decision)
+            )
+            if decision is not None:
+                if decision.flow_run_id:
+                    outcome["watch_kicked"] += 1
+                if decision.klass in {"kick", "capped"}:
+                    await self._notify_watch(event, decision=decision)
+            resolved.add(event_id)
+        if self.config.dry_run:
+            return
+        advanced = _advance_watch_kick_cursor(cursor, clean, resolved)
+        state["watch_kick_watermark"] = advanced.event_id
+        state["watch_kick_delivered_at"] = (
+            None if advanced.delivered_at is None else advanced.delivered_at.isoformat()
+        )
+
     async def run(self, db: Any) -> dict[str, Any]:
         repo = ExecutionLedgerRepository(db)
         with HandoffState(self.config.state_dir) as locked:
@@ -531,10 +868,14 @@ class FillHandoffRunner:
                 "fallback": [],
             }
             if self.config.kick_enabled:
-                # Per-fill kick-gate decisions for the 2-week measurement; only
-                # present when the kick path is even possible so a disabled
-                # deployment produces byte-identical output to before.
+                # Per-fill and per-watch kick-gate decisions for the 2-week
+                # measurement; only present when the kick path is even
+                # possible so a disabled deployment produces byte-identical
+                # output to before.
                 outcome["decisions"] = []
+                outcome["watch_decisions"] = []
+                outcome["watch_kicked"] = 0
+                outcome["watch_errors"] = []
             if locked.is_new:
                 if self.config.since_ledger_id is None:
                     # An empty state directory is an installation, not an
@@ -542,6 +883,10 @@ class FillHandoffRunner:
                     # its high-water mark and let the next fill be the first
                     # operator handoff.
                     state["watermark"] = await repo.max_ledger_id()
+                    if self.config.kick_enabled:
+                        # The delivered watch backlog is history, not a kick
+                        # queue — seed the cursor alongside the ledger mark.
+                        await self._seed_watch_kick_cursor(db, state, outcome)
                     if not self.config.dry_run:
                         locked.save()
                     return outcome
@@ -740,6 +1085,8 @@ class FillHandoffRunner:
                     int(state["watermark"]), int(fill["ledger_id"])
                 )
                 locked.save()
+            if self.config.kick_enabled:
+                await self._run_watch_kicks(db, locked, outcome)
             if not self.config.dry_run:
                 locked.save()
             return outcome
