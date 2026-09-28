@@ -713,8 +713,8 @@ correcting ETF ticks affects all KRX ETF orders and requires a separate review.
 
 The two US parking symbols are additionally authorized on a separate Toss
 surface. At §173, this used the same immutable USD controls as the KIS US face
-and changed no cap value or policy key. Both faces now use the §880 cumulative
-cap:
+and changed no cap value or policy key. Both faces now use the USD 20,000
+cumulative cap authorized for task #880:
 
 | symbol | account mode × market | currency | per-order cap | cumulative buy cap | daily cap |
 | --- | --- | --- | --- | --- | --- |
