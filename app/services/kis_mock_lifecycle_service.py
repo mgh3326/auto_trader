@@ -26,7 +26,6 @@ from app.schemas.execution_contracts import (
 )
 from app.services.kis_mock_terminal_expiry import (
     RULE_VERSION,
-    CalendarStatus,
     classify_row,
     validate_request,
 )
@@ -38,6 +37,10 @@ from app.services.market_events.session_calendar import trading_session_status
 # safely re-prove or invalidate that completed leg (ROB-1019).
 OPEN_LIFECYCLE_STATES: frozenset[str] = frozenset({"accepted", "pending", "fill"})
 _CONCLUDED_FILL_REASON_CODES: frozenset[str] = frozenset({"fill_detected"})
+
+
+def _today_kst() -> date:
+    return datetime.now(timezone(timedelta(hours=9))).date()
 
 
 class LedgerNotFoundError(Exception):
@@ -159,8 +162,6 @@ class KISMockLifecycleService:
         min_sessions: int,
         dry_run: bool = True,
         confirm: bool = False,
-        today: date | None = None,
-        calendar: CalendarStatus = trading_session_status,
     ) -> list[dict[str, Any]]:
         """Audited Q-46 expiry, with eligibility rechecked under the row lock.
 
@@ -175,7 +176,7 @@ class KISMockLifecycleService:
             raise ValueError("min_sessions_invalid")
         if not dry_run and confirm is not True:
             raise ValueError("confirm_required")
-        today = today or datetime.now(timezone(timedelta(hours=9))).date()
+        today = _today_kst()
         decision_ref = operator_decision_ref.strip()
         out: list[dict[str, Any]] = []
         for ledger_id in ledger_ids:
@@ -204,7 +205,7 @@ class KISMockLifecycleService:
                 expected_strategy=expected_strategy,
                 today=today,
                 min_sessions=min_sessions,
-                calendar=calendar,
+                calendar=trading_session_status,
             )
             if reason == "eligible":
                 if await self._has_local_fill_row(row):
@@ -217,18 +218,20 @@ class KISMockLifecycleService:
                 if dry_run:
                     decision = "would_expire"
                 else:
-                    await self.apply_lifecycle_transition(
-                        ledger_id=ledger_id,
-                        next_state="expired",
-                        reason_code="operator_legacy_day_expired",
-                        detail={
-                            "rule_version": RULE_VERSION,
-                            "operator_decision_ref": decision_ref,
-                            "evidence_scope": "row_local_and_xkrx_no_broker_read",
-                            "age_sessions": evidence["age_sessions"],
-                        },
-                        dry_run=False,
-                    )
+                    # This row remains locked from the service's own read and
+                    # complete eligibility check. The generic transition API
+                    # must never be able to bypass this Q-46 classification.
+                    row.lifecycle_state = "expired"
+                    row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
+                    row.last_reconcile_detail = {
+                        "reason_code": "operator_legacy_day_expired",
+                        "rule_version": RULE_VERSION,
+                        "operator_decision_ref": decision_ref,
+                        "evidence_scope": "row_local_and_xkrx_no_broker_read",
+                        "age_sessions": evidence["age_sessions"],
+                    }
+                    row.reconciled_at = datetime.now(tz=UTC)
+                    await self._db.commit()
                     decision = "expired"
                     after = "expired"
             if decision != "expired":
@@ -293,12 +296,16 @@ class KISMockLifecycleService:
     ) -> dict[str, Any]:
         if next_state not in ORDER_LIFECYCLE_STATES:
             raise ValueError(f"unknown lifecycle state: {next_state!r}")
+        if next_state == "expired":
+            raise ValueError("expired_requires_day_classification")
 
         row = await self._db.get(KISMockOrderLedger, ledger_id)
         if row is None:
             raise LedgerNotFoundError(str(ledger_id))
 
         prior_state = row.lifecycle_state
+        if prior_state == "expired":
+            raise ValueError("expired_terminal_immutable")
         would_change = prior_state != next_state
 
         if dry_run:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.review import KISMockOrderLedger
+from app.services import kis_mock_lifecycle_service as lifecycle_module
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
 from app.services.kis_mock_terminal_expiry import (
     RULE_VERSION,
@@ -67,6 +69,12 @@ def _calendar(_market: str, day: date) -> str:
     return "closed" if day.weekday() >= 5 else "open"
 
 
+@pytest.fixture(autouse=True)
+def _fixed_service_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lifecycle_module, "_today_kst", lambda: TODAY)
+    monkeypatch.setattr(lifecycle_module, "trading_session_status", _calendar)
+
+
 def test_request_requires_exact_unique_bounded_ids_and_reference():
     assert validate_request([1, 2], REF, STRATEGY) is None
     for ids in ([], [True], [0], [-1], [1.0], ["1"], [1, 1], list(range(1, 52))):
@@ -74,6 +82,14 @@ def test_request_requires_exact_unique_bounded_ids_and_reference():
     assert validate_request([1], " ", STRATEGY) == "operator_decision_ref_invalid"
     assert validate_request([1], "x" * 121, STRATEGY) == "operator_decision_ref_invalid"
     assert validate_request([1], REF, "unknown") == "expected_strategy_invalid"
+
+
+def test_expiry_writer_does_not_accept_caller_supplied_clock_or_calendar():
+    parameters = inspect.signature(
+        KISMockLifecycleService.expire_legacy_day_orders
+    ).parameters
+    assert "today" not in parameters
+    assert "calendar" not in parameters
 
 
 @pytest.mark.parametrize(
@@ -234,6 +250,24 @@ def test_real_xkrx_chuseok_boundary_is_too_recent():
     assert evidence["age_sessions"] == 0
 
 
+def test_real_xkrx_exact_two_session_cutoff():
+    today = date(2026, 9, 28)
+    for order_day, expected_reason, expected_age in (
+        (date(2026, 9, 21), "eligible", 2),
+        (date(2026, 9, 22), "too_recent", 1),
+    ):
+        row = _row(
+            trade_date=datetime(
+                order_day.year, order_day.month, order_day.day, 3, tzinfo=UTC
+            )
+        )
+        reason, evidence = classify_row(
+            row, expected_strategy=STRATEGY, today=today, min_sessions=2
+        )
+        assert reason == expected_reason
+        assert evidence["age_sessions"] == expected_age
+
+
 @pytest.mark.asyncio
 async def test_service_dry_run_confirm_expiry_and_repeat_are_audit_idempotent(
     db_session: AsyncSession,
@@ -247,8 +281,6 @@ async def test_service_dry_run_confirm_expiry_and_repeat_are_audit_idempotent(
         "operator_decision_ref": REF,
         "expected_strategy": STRATEGY,
         "min_sessions": 2,
-        "today": TODAY,
-        "calendar": _calendar,
     }
     dry = await service.expire_legacy_day_orders(**kwargs)
     assert dry[0]["decision"] == "would_expire"
@@ -268,13 +300,98 @@ async def test_service_dry_run_confirm_expiry_and_repeat_are_audit_idempotent(
     assert row.last_reconcile_detail["rule_version"] == RULE_VERSION
     assert row.last_reconcile_detail["operator_decision_ref"] == REF
     detail = dict(row.last_reconcile_detail)
+    row_id = row.id
     repeat = await service.expire_legacy_day_orders(
         **kwargs, dry_run=False, confirm=True
     )
     assert repeat[0]["reason_code"] == "already_terminal"
+    with pytest.raises(ValueError, match="expired_terminal_immutable"):
+        await service.apply_lifecycle_transition(
+            ledger_id=row_id,
+            next_state="pending",
+            reason_code="bypass_attempt",
+            detail={},
+            dry_run=False,
+        )
     await db_session.refresh(row)
     assert row.reconcile_attempts == 1
     assert row.last_reconcile_detail == detail
+
+
+@pytest.mark.asyncio
+async def test_generic_lifecycle_transition_cannot_bypass_expiry_guards(
+    db_session: AsyncSession,
+) -> None:
+    row = _row(order_type="ioc", last_reconcile_detail=None)
+    db_session.add(row)
+    await db_session.commit()
+    service = KISMockLifecycleService(db_session)
+    for dry_run in (True, False):
+        with pytest.raises(ValueError, match="expired_requires_day_classification"):
+            await service.apply_lifecycle_transition(
+                ledger_id=row.id,
+                next_state="expired",
+                reason_code="bypass_attempt",
+                detail={"untrusted": "data"},
+                dry_run=dry_run,
+            )
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "pending"
+    assert row.reconcile_attempts == 0
+    assert row.reconciled_at is None
+    assert row.last_reconcile_detail is None
+
+
+@pytest.mark.asyncio
+async def test_service_calendar_failure_refuses_without_write(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> None:
+    row = _row()
+    db_session.add(row)
+    await db_session.commit()
+    monkeypatch.setattr(
+        lifecycle_module, "trading_session_status", lambda _market, _day: "unknown"
+    )
+    result = await KISMockLifecycleService(db_session).expire_legacy_day_orders(
+        ledger_ids=[row.id],
+        operator_decision_ref=REF,
+        expected_strategy=STRATEGY,
+        min_sessions=2,
+        dry_run=False,
+        confirm=True,
+    )
+    assert result[0]["reason_code"] == "calendar_unknown"
+    await db_session.refresh(row)
+    assert row.lifecycle_state == "pending"
+    assert row.reconcile_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_service_real_xkrx_cutoff_writes_only_exact_eligible_row(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> None:
+    cutoff = _row(trade_date=datetime(2026, 9, 21, 3, tzinfo=UTC))
+    newer = _row(trade_date=datetime(2026, 9, 22, 3, tzinfo=UTC))
+    db_session.add_all([cutoff, newer])
+    await db_session.commit()
+    monkeypatch.setattr(lifecycle_module, "_today_kst", lambda: date(2026, 9, 28))
+    monkeypatch.setattr(
+        lifecycle_module, "trading_session_status", trading_session_status
+    )
+    result = await KISMockLifecycleService(db_session).expire_legacy_day_orders(
+        ledger_ids=[cutoff.id, newer.id],
+        operator_decision_ref=REF,
+        expected_strategy=STRATEGY,
+        min_sessions=2,
+        dry_run=False,
+        confirm=True,
+    )
+    assert [item["reason_code"] for item in result] == ["eligible", "too_recent"]
+    assert [item["evidence"]["age_sessions"] for item in result] == [2, 1]
+    await db_session.refresh(cutoff)
+    await db_session.refresh(newer)
+    assert cutoff.lifecycle_state == "expired"
+    assert newer.lifecycle_state == "pending"
 
 
 @pytest.mark.asyncio
@@ -295,8 +412,6 @@ async def test_service_mixed_ids_and_local_fill_sibling_refuse(
         operator_decision_ref=REF,
         expected_strategy=STRATEGY,
         min_sessions=2,
-        today=TODAY,
-        calendar=_calendar,
         dry_run=False,
         confirm=True,
     )
@@ -336,8 +451,6 @@ async def test_service_refusal_rows_remain_unmodified_in_mixed_write_call(
         operator_decision_ref=REF,
         expected_strategy=STRATEGY,
         min_sessions=2,
-        today=TODAY,
-        calendar=_calendar,
         dry_run=False,
         confirm=True,
     )
@@ -395,8 +508,6 @@ async def test_execution_fill_row_refuses_expiry(db_session: AsyncSession) -> No
         operator_decision_ref=REF,
         expected_strategy=STRATEGY,
         min_sessions=2,
-        today=TODAY,
-        calendar=_calendar,
         dry_run=False,
         confirm=True,
     )

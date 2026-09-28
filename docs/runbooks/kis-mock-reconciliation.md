@@ -27,7 +27,7 @@ holdings-delta reconciler.
 | `anomaly` | Holdings snapshot missing, baseline missing, or holdings disagree post-fill |
 | `expired` | Operator Q-46 legacy DAY classification, with bounded row-local audit |
 
-`reconciled`, `failed`, `stale` are terminal. `anomaly` is an operator
+`reconciled`, `failed`, `stale`, `cancelled`, and `expired` are terminal. `anomaly` is an operator
 hand-off and is not terminal success/failure.
 
 Fine-grained reasons (`reason_code`) live in `last_reconcile_detail`:
@@ -126,17 +126,27 @@ and time, and regular domestic ORD_DVSN 00 (positive-price limit) or 01
 `app/services/brokers/kis/mock_scalping_exec/adapters.py` also calls the save
 helper, but its scalping role and absent accepted response cause refusal.
 Mirror or report-item reservation fields also cause refusal.
+Any row whose writing path is unknown or cannot be positively tied to the
+native order-cash response is refused; order_type alone never proves DAY.
 
 The row must carry pending_unconfirmed with attributed_fill_qty exactly zero,
 and neither the local KIS mock lifecycle nor the execution ledger may contain
 a matching fill row. The XKRX calendar must classify the trade date and at
 least the configured number of completed trading sessions before today.
+The count excludes both the order's own session and today: it includes only
+open XKRX sessions strictly after the trade date and strictly before today.
+For example, at the 2026-09-28 cutoff with N=2, 2026-09-21 has two completed
+sessions (September 22 and 23) and is eligible by age, while September 22 has
+one and is too recent; the intervening Chuseok closure adds no sessions.
 Unknown calendar dates, missing or inconsistent order terms, unknown fill,
 partial or filled rows, too-recent rows, and already-terminal rows remain
 unchanged with explicit refusal codes. A confirmed eligible row becomes the
 distinct expired lifecycle state through KISMockLifecycleService. Its bounded
 audit detail retains the operator decision reference and rule version; a
 second invocation does not change the row or audit counters.
+The generic lifecycle transition method rejects a request to enter expired
+and rejects any later transition out of an expired row. Only the locked,
+rechecked legacy DAY method can write this state.
 
 This classification uses persisted local facts and the calendar only. The KIS
 mock pending inquiry is unsupported, so no broker-open-order proof is claimed.
