@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import delete
 
 from app.schemas.investor_flow import InvestorFlowItem
 from app.services.invest_view_model.screener_service import (
@@ -335,12 +336,22 @@ async def test_investor_flow_momentum_null_columns_fail_closed(db_session, monke
     # so patching the module attribute is what it sees.
     monkeypatch.setattr(ph, "resolve_healthy_partition", _stub)
 
-    result = await _load_investor_flow_discovery_from_snapshots(
-        db_session, market="kr", limit=20
-    )
+    try:
+        result = await _load_investor_flow_discovery_from_snapshots(
+            db_session, market="kr", limit=20
+        )
 
-    assert result is not None
-    symbols = {r["symbol"] for r in result.rows}
-    assert "916001" not in symbols  # NULL predicates fail closed
-    # sibling still qualifies via its streak/rank despite NULL holding columns
-    assert "403550" in symbols
+        assert result is not None
+        symbols = {r["symbol"] for r in result.rows}
+        assert "916001" not in symbols  # NULL predicates fail closed
+        # sibling still qualifies via its streak/rank despite NULL holding cols
+        assert "403550" in symbols
+    finally:
+        await db_session.execute(
+            delete(IFS).where(
+                IFS.market == "kr",
+                IFS.symbol.in_(["916001", "403550"]),
+                IFS.snapshot_date == latest_partition,
+            )
+        )
+        await db_session.commit()

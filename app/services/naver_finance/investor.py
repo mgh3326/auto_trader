@@ -238,7 +238,9 @@ def _parse_trend_int(value: Any) -> int | None:
     """Strict parser for trend quantity fields ('+4,513,767' -> 4513767).
 
     Rejects '-' / '' / missing keys / decimals / non-numeric text — the caller
-    treats a required-field failure as a skipped row.
+    treats a required-field failure as a skipped row. Commas must be in
+    canonical thousands grouping: '45,13,767' is upstream corruption and is
+    rejected rather than silently re-interpreted.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -246,13 +248,12 @@ def _parse_trend_int(value: Any) -> int | None:
         return value
     if isinstance(value, float):
         return int(value) if value == int(value) else None
-    text = str(value).strip().replace(",", "")
+    text = str(value).strip()
     if not text or text in {"-", "+"}:
         return None
-    try:
-        return int(text)
-    except ValueError:
+    if not re.fullmatch(r"[+-]?(\d+|\d{1,3}(,\d{3})+)", text):
         return None
+    return int(text.replace(",", ""))
 
 
 def _parse_trend_bizdate(value: Any) -> str | None:
@@ -316,7 +317,11 @@ def _parse_trend_payload(
     payload: Any, *, days: int
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Convert a trend JSON list into row dicts + skip-reason counts."""
-    items = payload if isinstance(payload, list) else []
+    if not isinstance(payload, list):
+        # A dict/scalar body is an upstream error or maintenance shape, not a
+        # legitimately empty day — count it so '0 rows' stays diagnosable.
+        return [], {"payload is not a JSON list": 1}
+    items = payload
     data: list[dict[str, Any]] = []
     skipped: dict[str, int] = {}
     for index, item in enumerate(items):

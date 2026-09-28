@@ -773,7 +773,7 @@ class TestFetchInvestorTrends:
         assert [r["date"] for r in result["data"]] == ["2026-09-22"]
         assert result["skipped"] == {
             "invalid bizdate": 1,
-            "invalid foreignerPureBuyQuant": 1,
+            "invalid foreignerPureBuyQuant": 2,  # empty string + bad grouping
             "missing organPureBuyQuant": 1,
             "invalid individualPureBuyQuant": 1,
             "row is not a JSON object": 1,
@@ -854,8 +854,9 @@ class TestFetchInvestorTrends:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A maintenance/error body that decodes to a dict instead of a list
-        # must yield the documented empty shape (data == []), never raise — the
-        # #895 zero-commit floor relies on this to classify the day.
+        # must yield the documented empty shape (data == []), never raise — but
+        # it is counted as an invalid-response skip so it is distinguishable
+        # from a legitimately empty day.
         async def mock_fetch_json(
             url: str, params: dict[str, Any] | None = None
         ) -> Any:
@@ -867,7 +868,7 @@ class TestFetchInvestorTrends:
 
         assert result["symbol"] == "005930"
         assert result["data"] == []
-        assert result["skipped"] == {}
+        assert result["skipped"] == {"payload is not a JSON list": 1}
 
     async def test_empty_list_payload_returns_empty_data(
         self, monkeypatch: pytest.MonkeyPatch
@@ -896,7 +897,10 @@ class TestParseTrendHelpers:
             ("-500,000", -500000),
             ("+0", 0),
             ("0", 0),
-            ("45,13,767", 4513767),  # commas are stripped wherever they sit
+            ("45,13,767", None),  # non-canonical grouping = corruption, reject
+            ("1,23", None),
+            ("1234,567", None),
+            ("+1,234,567", 1234567),
             (4513767, 4513767),
             (5.0, 5),
             ("-", None),

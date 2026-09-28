@@ -36,6 +36,15 @@
   },
   "not-an-object",
   {
+    "bizdate": "20260921",
+    "closePrice": "73,900",
+    "accumulatedTradingVolume": "8,500,000",
+    "foreignerPureBuyQuant": "45,13,767",
+    "organPureBuyQuant": "+90,000",
+    "individualPureBuyQuant": "-135,000",
+    "foreignerHoldRatio": "46.28%"
+  },
+  {
     "bizdate": "20260922",
     "closePrice": "73,800",
     "accumulatedTradingVolume": "9,000,000",
