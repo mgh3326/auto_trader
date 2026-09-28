@@ -122,6 +122,7 @@ class _UnderwaterAddGates:
     max_placements_per_symbol_per_day: int
     partial_fill: str
     per_symbol_notional_band_applies: bool
+    one_share_exception_for_adds: bool
 
     @classmethod
     def from_policy(cls, policy: Any) -> _UnderwaterAddGates:
@@ -154,6 +155,7 @@ class _UnderwaterAddGates:
                 "max_placements_per_symbol_per_day",
                 "partial_fill",
                 "per_symbol_notional_band_applies",
+                "one_share_exception_for_adds",
             )
             if key not in conditions
         ]
@@ -191,6 +193,9 @@ class _UnderwaterAddGates:
             per_symbol_notional_band_applies=bool(
                 conditions["per_symbol_notional_band_applies"]
             ),
+            one_share_exception_for_adds=bool(
+                conditions["one_share_exception_for_adds"]
+            ),
         )
         # Operator-frozen literals, same fail-closed treatment the reserve-net
         # gates get: a substituted policy shape must not silently widen an add.
@@ -204,6 +209,7 @@ class _UnderwaterAddGates:
             or gates.max_placements_per_symbol_per_day != 1
             or gates.partial_fill != "allowed"
             or gates.per_symbol_notional_band_applies is not False
+            or gates.one_share_exception_for_adds is not True
         ):
             raise ValueError(
                 "underwater add gate literals do not match buy.underwater_support_net"
@@ -229,6 +235,7 @@ class _UnderwaterAddGates:
             ),
             "partial_fill": self.partial_fill,
             "per_symbol_notional_band_applies": (self.per_symbol_notional_band_applies),
+            "one_share_exception_for_adds": (self.one_share_exception_for_adds),
         }
 
 

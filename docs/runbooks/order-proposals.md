@@ -337,6 +337,17 @@ forwards it unchanged. KR decision-table apply forwards the explicit
 the broker account read, and the meter rechecks it. Missing remains a created proposal with a manual
 approval card, not an automatic account selection.
 
+For the cash-sweep playbook (#883), the kr/us execution lanes additionally
+expose two read-only tools: `toss_proposal_accounts` (above) and
+`get_parking_exclusion` — a typed, parameter-free read of the operator-set
+`user_settings.parking_exclusion` amounts to leave unparked per currency.
+Only its `status=="ok"` responses authorize sweeping; `status=="unknown"`
+(malformed or unreadable stored value) means park nothing — it is never a
+zero exclusion. Writing the value stays operator-only via
+`set_user_setting("parking_exclusion", …)` on the default profile, which is
+not on the lane manifests. See `app/mcp_server/README.md` for the exact
+response shape.
+
 When proposal persistence succeeds but approval dispatch is blocked, the
 success response additionally contains
 `approval_dispatch={status:"blocked", code, observed_at, valid_until,

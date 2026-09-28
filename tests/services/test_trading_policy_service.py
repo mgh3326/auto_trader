@@ -28,7 +28,7 @@ def _policy_key_references(value: object) -> list[str]:
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
     assert stamp["version"] == svc.load_trading_policy().version
-    assert stamp["version"] == "2026-09-28.1"
+    assert stamp["version"] == "2026-09-28.2"
     assert len(stamp["content_hash"]) == 12
     assert svc.policy_content_hash() == svc.policy_content_hash()
 

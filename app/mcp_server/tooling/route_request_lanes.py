@@ -145,7 +145,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "crypto new-entry sizing: recovery_gate.size_coefficient m is 1.0 at 2/2, 0.5 at 1/2, 0 at 0/2; missing or stale input holds the decision; breadth counts once",
         "loss guard (sell-side): sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
-        "DAY order expiry at order.day_expiry_kst -> re-place next day",
+        "DAY order expiry per broker under order.day_expiry_kst — toss_live regular-session dies 15:30 KST (after-hours is a new order); kis_live to_confirm; unfilled -> re-place next day",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "sector concentration advisory: surface and record portfolio.sector_cluster_cap_pct; never use it as a buy admission block",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
@@ -163,7 +163,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
-        "DAY order expiry at order.day_expiry_kst -> re-place next day",
+        "DAY order expiry per broker under order.day_expiry_kst — toss_live regular-session dies 15:30 KST (after-hours is a new order); kis_live to_confirm; unfilled -> re-place next day",
         "preserve core lot; portfolio.sector_cluster_cap_pct is an advisory concentration signal, not a sell block",
         "order intent: order_proposal_create only; Telegram human approval required",
         "sell from the holding account selected in the proposal",
@@ -586,6 +586,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_ohlcv",
         "get_operating_briefing",
         "get_orderbook",
+        # #883: typed parking_exclusion read for the cash sweep; the closed
+        # "unknown" status on malformed values is never a zero exclusion.
+        "get_parking_exclusion",
         "get_portfolio_allocation",
         "get_position",
         "get_quote",

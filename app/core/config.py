@@ -258,6 +258,7 @@ class Settings(BaseSettings):
     kis_mock_account_no: str | None = None
     kis_mock_access_token: str | None = None
     kis_mock_scalping_enabled: bool = False
+    kis_mock_terminal_min_sessions: int = Field(default=2, ge=2, le=20)
 
     # ROB-671: gate the aggressive "unsettled regular-session buy → 15:30 death"
     # expiry downgrade. Default off — a regular-session BUY keeps expected_expiry
