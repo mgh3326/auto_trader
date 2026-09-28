@@ -96,6 +96,17 @@ Profile → tool surface mapping
   No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
   report-write, KIS mock, Alpaca, or paper simulator tools are registered.
 
+"live-kr" / "live-us" / "live-crypto" (McpProfile.LIVE_KR / LIVE_US /
+LIVE_CRYPTO):
+  Task 891 / operator decision Q-53 closed-world live-session subsets. The
+  tool list lives in config/mcp_profiles/live.yaml (three groups per lane:
+  core 15 / per-market extension up to 10 / emergency cancel-modify-
+  reconcile-watch-void-loss_cut exceptions, all loaded); all existing
+  registrars run through a recording exact-set proxy so the served surface
+  equals the manifest selection exactly. Proposal-lifecycle and
+  harness-denied tools are never registered; order mutations exist only as
+  the manifest's named emergency entries.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -157,6 +168,11 @@ from app.mcp_server.tooling.investment_snapshots_registration import (
 )
 from app.mcp_server.tooling.kis_mock_terminal_registration import (
     register_kis_mock_terminal_tools,
+)
+from app.mcp_server.tooling.live_profile_registration import (
+    LIVE_PROFILES,
+    LiveProfileMCP,
+    wrap_live_profile_mcp,
 )
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
@@ -390,6 +406,17 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
         mcp = restrict_kiwoom_kr_profile_tools(mcp)
 
+    live_profile_mcp: LiveProfileMCP | None = None
+    if profile in LIVE_PROFILES:
+        # #891 / Q-53 — closed-world live surface. The manifest-selected set
+        # (config/mcp_profiles/live.yaml, all three groups) is the physical
+        # registration boundary: every shared registrar runs, but any tool it
+        # emits that is not listed for this profile is dropped before it can
+        # reach the surface, and the completeness check at the end fails the
+        # boot if a manifest name was not produced by any registrar.
+        live_profile_mcp = wrap_live_profile_mcp(mcp, profile)
+        mcp = cast("FastMCP", live_profile_mcp)
+
     # Always: side-effect-free research + read-only tools
     register_market_data_tools(mcp)
     register_fundamentals_tools(mcp)
@@ -582,8 +609,28 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # Without these a crypto session could research but never trade.
         register_order_tools(mcp)
         register_live_reconcile_tools(mcp)
+    elif profile in LIVE_PROFILES:
+        # #891 / Q-53 — the order-family registrars run through the manifest
+        # filter, so only the manifest's listed names can land (core/extension
+        # reads plus the per-lane emergency cancel/modify/reconcile set and
+        # the loss_cut planning preview). Everything else each registrar
+        # emits — every direct place tool (ROB-864 disables loss_cut on them,
+        # so none are loss_cut paths), the harness-denied
+        # kis_live_get_order_history (#678), previews, mock reconcile — is
+        # physically dropped.
+        register_order_tools(mcp)
+        if profile is McpProfile.LIVE_KR:
+            register_toss_live_order_tools(mcp)
+            register_kis_live_order_tools(mcp)
+        else:
+            register_live_reconcile_tools(mcp)
 
     register_bootstrap_pack()
+
+    if live_profile_mcp is not None:
+        # Startup/test-time completeness gate: the registered live surface
+        # must equal the manifest selection exactly.
+        live_profile_mcp.assert_complete()
 
 
 __all__ = ["register_all_tools"]
