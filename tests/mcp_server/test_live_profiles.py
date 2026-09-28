@@ -485,6 +485,35 @@ class TestManifestEqualsRegistry:
         )
 
 
+class TestQ65SweepToolsBoot:
+    """#918 / Q-65 — the two cash-sweep reads boot on live-kr/live-us with
+    ORDER_PROPOSALS_ENABLED on, and stay physically off live-crypto."""
+
+    @pytest.mark.parametrize(
+        "profile", [McpProfile.LIVE_KR, McpProfile.LIVE_US], ids=["kr", "us"]
+    )
+    def test_sweep_tools_register_with_proposals_enabled(
+        self, monkeypatch: pytest.MonkeyPatch, profile: McpProfile
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        recorder = RegistrationRecorder()
+        # register_all_tools calls assert_complete internally; reaching the
+        # assert means the closed-world manifest surface booted clean.
+        register_all_tools(cast(Any, recorder), profile=profile)
+        assert {"get_parking_exclusion", "toss_proposal_accounts"} <= set(
+            recorder.tools
+        )
+
+    def test_sweep_tools_stay_off_live_crypto(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        recorder = RegistrationRecorder()
+        register_all_tools(cast(Any, recorder), profile=McpProfile.LIVE_CRYPTO)
+        registered = set(recorder.tools)
+        assert not {"get_parking_exclusion", "toss_proposal_accounts"} & registered
+
+
 class TestStrictSubsetAndEmergencyConfinement:
     @pytest.mark.parametrize("profile", sorted(LIVE_PROFILES, key=str))
     def test_manifest_is_strict_subset_of_default(
@@ -604,13 +633,13 @@ class TestRegistrationFailureModes:
         paper_list_pending_orders — registered only under the DEFAULT order
         branch the live path does not run) must fail registration."""
         raw = yaml.safe_load(LIVE_MANIFEST_PATH.read_text())
-        raw["profiles"]["live-kr"]["groups"]["extension"].append(
-            {
-                "name": "paper_list_pending_orders",
-                "calls_30d": 0,
-                "purpose": "mutant: exists in taxonomy but unwired for live",
-            }
-        )
+        # #918: extension is at the Q-53 cap of 10, so the mutant swaps in
+        # place instead of appending — otherwise the cap check fires first.
+        raw["profiles"]["live-kr"]["groups"]["extension"][-1] = {
+            "name": "paper_list_pending_orders",
+            "calls_30d": 0,
+            "purpose": "mutant: exists in taxonomy but unwired for live",
+        }
         mutant = tmp_path / "live.yaml"
         mutant.write_text(yaml.safe_dump(raw))
         monkeypatch.setattr(
@@ -763,8 +792,8 @@ class TestGroupCounts:
 
     def test_per_lane_group_counts(self) -> None:
         expected = {
-            "live-kr": {"core": 15, "extension": 9, "emergency": 9},
-            "live-us": {"core": 15, "extension": 9, "emergency": 4},
+            "live-kr": {"core": 15, "extension": 10, "emergency": 9},
+            "live-us": {"core": 15, "extension": 10, "emergency": 4},
             "live-crypto": {"core": 15, "extension": 10, "emergency": 4},
         }
         manifest = _manifest()
