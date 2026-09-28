@@ -133,7 +133,7 @@ def test_partial_tp_uses_only_broker_proven_remainder() -> None:
         completed_bar_close=None,
         now=now,
     )
-    assert gap is not None and gap.reason == "tp1" and gap.qty == Decimal("0.5")
+    assert gap is not None and gap.reason == "tp2" and gap.qty == Decimal("1")
 
 
 @pytest.mark.parametrize(

@@ -42,6 +42,8 @@ def choose_exit(
 ) -> ExitDecision | None:
     """Priority: hard stop, bar-close stop, time exit, TP2, TP1.
 
+    TP2 outranks TP1: a quote at or beyond +5%/-5% closes the entire
+    broker-proven remainder, even when the +3% half is still outstanding.
     An ambiguous historical bar touching stop and TP is stopped first.
     Every result is reduceOnly, limited to fresh broker-proven remainder.
     """
@@ -74,14 +76,14 @@ def choose_exit(
         hours=24
     ):
         reason = "time_exit"
+    elif quote_price >= tp2 if long else quote_price <= tp2:
+        reason = "tp2"
     elif (
         quote_price >= tp1 if long else quote_price <= tp1
     ) and holding.closed_qty < floor_to_step(
         holding.entry_qty * Decimal("0.5"), holding.step_size
     ):
         reason = "tp1"
-    elif quote_price >= tp2 if long else quote_price <= tp2:
-        reason = "tp2"
     else:
         return None
     if reason == "tp1":

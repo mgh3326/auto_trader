@@ -162,7 +162,10 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
             "/fapi/v1/ticker/bookTicker", params={"symbol": symbol}
         )
         response.raise_for_status()
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise H5BrokerTruthUnavailable("broker response body unreadable") from exc
         if not isinstance(body, dict) or body.get("symbol") != symbol:
             raise H5BrokerTruthUnavailable("book quote symbol mismatch")
         bid = _positive_decimal(body.get("bidPrice"), "bid")
@@ -190,7 +193,10 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
             },
         )
         response.raise_for_status()
-        rows = response.json()
+        try:
+            rows = response.json()
+        except ValueError as exc:
+            raise H5BrokerTruthUnavailable("broker response body unreadable") from exc
         if (
             not isinstance(rows, list)
             or len(rows) != 1
@@ -213,7 +219,10 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
             "/fapi/v1/exchangeInfo", params={"symbol": symbol}
         )
         response.raise_for_status()
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise H5BrokerTruthUnavailable("broker response body unreadable") from exc
         rows = body.get("symbols") if isinstance(body, dict) else None
         if not isinstance(rows, list):
             raise H5BrokerTruthUnavailable("exchange filters unavailable")
@@ -344,7 +353,14 @@ class H5DemoClient(BinanceFuturesDemoExecutionClient):
         self._assert_h5()
         if symbol not in UNIVERSE or not client_order_id.startswith("h5-"):
             raise ValueError("order outside H5 identity")
-        result = await super().get_order(symbol=symbol, client_order_id=client_order_id)
+        try:
+            result = await super().get_order(
+                symbol=symbol, client_order_id=client_order_id
+            )
+        except ValueError as exc:
+            raise H5BrokerTruthUnavailable(
+                "order evidence response unreadable"
+            ) from exc
         raw = result.raw_response_redacted
         if (
             raw.get("symbol") != symbol

@@ -64,6 +64,8 @@ stop, completed-bar adverse 3% stop, six complete bars or 24-hour time
 exit, 50% TP at favorable 3%, then remainder TP at favorable 5%. If an
 historical bar touches stop and TP with unknown sequence, stop wins. Every
 close is reduceOnly and limited to broker-proven remaining quantity.
+Within the TP branch, the 5% threshold takes priority: a quote already beyond
+5% closes the entire remaining holding, including an outstanding first half.
 Three stop losses per KST day stop new entries. NAV loss at least 3% from
 KST day start latches the entry stop until the next KST day; drawdown at least 15% from observed peak
 stops the lane. A daily loss gate does not bound realized loss.
