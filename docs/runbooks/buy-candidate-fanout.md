@@ -34,12 +34,38 @@ perform the public snapshot tool's held-position lookup.
 ## Revalidation and funnel
 
 Rows are deduped with the database-standard symbol form (`BRK-B` / `BRK/B` →
-`BRK.B`) while keeping every `matched_sources` entry. Only the first ten deduped
-symbols receive full fresh-analysis revalidation of current price, support,
-consensus, RSI, trade-restriction state, and the analysis result's top-level
-`data_state`. The full response is used deliberately: the shared compact KR
-regular-session response can omit that aggregate freshness key. The fan-out
-does not change the shared compact contract.
+`BRK.B`) while keeping every `matched_sources` entry. Admission to the bounded
+full-analysis pool is **per-source-family round-robin**, not first-come:
+families rotate in declared order (RSI, pullback, turnover, snapshot
+support/flow, snapshot value/catalyst) and take one *new* symbol per round —
+a family whose next row is a duplicate keeps scanning until it offers a fresh
+symbol, and an empty family yields so leftover slots redistribute to the
+remaining families. With all five families live the shape is 5 × 2 = 10
+slots; a dominant family can never consume the pool while another family has
+candidates. The `candidates` list keeps dedupe order; `selection` on each
+candidate and `collection.selected_symbol_order` record the pick order. Only
+selected symbols receive full fresh-analysis revalidation of current price,
+support, consensus, RSI, trade-restriction state, and the analysis result's
+top-level `data_state`. The full response is used deliberately: the shared
+compact KR regular-session response can omit that aggregate freshness key.
+The fan-out does not change the shared compact contract.
+
+## Candidate record (A-record)
+
+Every source row that entered a source's bounded top-N slice — kept or
+stale-dropped, admitted or not — is emitted once in `candidate_records` with
+its source, family, ordinal rank, `admission`
+(`admitted` / `not_admitted` / `dropped_preselection`), `admission_reason`,
+`selection_seq` for round-robin picks, `source_status`, `data_asof`,
+`source_price`, the untouched `raw_row`, and `gate_features` for revalidated
+candidates (freshness, funnel stage statuses, RSI/upside flags). Rows without
+a canonicalizable symbol can never become a log row and are counted in
+`dropped_reasons` instead. The outer pick-log observer writes one
+`review.screener_pick_log` row per record under `collection_version`
+`funnel-a1`; older rows keep `collection_version` NULL and are not backfilled.
+A failed source read degrades to `source_status="error"` on its payload —
+the call still records the other sources, and `collection.source_statuses`
+keeps every planned source run's disposition.
 
 Snapshot price, support, and consensus evidence may be at most one session
 stale and is input-only; it cannot establish a gate pass until that fresh

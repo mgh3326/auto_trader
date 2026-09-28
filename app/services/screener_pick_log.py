@@ -37,7 +37,14 @@ FANOUT_VERSION_PREFIX = "buy_candidate_fanout"
 
 @dataclass(frozen=True, slots=True)
 class ScreenerPickRow:
-    """One source-ranked pick extracted from a fanout return."""
+    """One source-ranked pick extracted from a fanout return.
+
+    With the task-884 A-record shape (``collection_version`` set) one row is
+    emitted per considered candidate — including candidates that were not
+    admitted to fresh revalidation — carrying the admission decision, its
+    reason, the source call status, the raw source row, and conditional gate
+    features when the candidate was revalidated.
+    """
 
     call_id: uuid.UUID
     recorded_at: datetime
@@ -56,6 +63,16 @@ class ScreenerPickRow:
     fanout_version: str
     fanout_code_sha256: str
     source_params: dict[str, Any]
+    collection_version: str | None = None
+    admission: str | None = None
+    admission_reason: str | None = None
+    selection_seq: int | None = None
+    source_status: str | None = None
+    data_asof: str | None = None
+    fetched_at: datetime | None = None
+    raw_row: dict[str, Any] | None = None
+    gate_features: dict[str, Any] | None = None
+    call_context: dict[str, Any] | None = None
 
 
 def env_gate_enabled() -> bool:
@@ -124,6 +141,25 @@ def _as_text(value: object) -> str | None:
     return None
 
 
+def _exact_or_float_text(raw: object) -> str | None:
+    """Exact decimal text; floats arrive via Decimal(str(...)), never raw."""
+
+    if raw is None:
+        return None
+    try:
+        return exact_decimal_text(raw)
+    except TypeError:
+        # Fanout currently emits Python floats for current_price. Convert
+        # via Decimal(str(...)) so the column stays text, never a float.
+        if (
+            isinstance(raw, float)
+            and raw == raw
+            and raw not in {float("inf"), float("-inf")}
+        ):
+            return format(Decimal(str(raw)), "f")
+        return None
+
+
 def _price_from_candidate(candidate: Mapping[str, Any]) -> str | None:
     funnel = candidate.get("funnel")
     funnel_data = funnel if isinstance(funnel, Mapping) else {}
@@ -134,21 +170,152 @@ def _price_from_candidate(candidate: Mapping[str, Any]) -> str | None:
         candidate.get("current_price"),
         candidate.get("latest_close"),
     ):
-        if raw is None:
-            continue
-        try:
-            return exact_decimal_text(raw)
-        except TypeError:
-            # Fanout currently emits Python floats for current_price. Convert
-            # via Decimal(str(...)) so the column stays text, never a float.
-            if (
-                isinstance(raw, float)
-                and raw == raw
-                and raw not in {float("inf"), float("-inf")}
-            ):
-                return format(Decimal(str(raw)), "f")
-            continue
+        text = _exact_or_float_text(raw)
+        if text is not None:
+            return text
     return None
+
+
+def _parse_fetched_at(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        stamp = value
+    elif isinstance(value, str):
+        try:
+            stamp = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
+
+
+def _mapping_or_none(value: object) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return None
+
+
+def _source_context(result: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    sources_by_name: dict[str, Mapping[str, Any]] = {}
+    for item in result.get("sources") or []:
+        if isinstance(item, Mapping) and item.get("source"):
+            sources_by_name[str(item["source"])] = item
+    return sources_by_name
+
+
+def _source_request(meta_source: Mapping[str, Any]) -> Mapping[str, Any]:
+    metadata = (
+        meta_source.get("metadata")
+        if isinstance(meta_source.get("metadata"), Mapping)
+        else {}
+    )
+    request = (
+        metadata.get("request") if isinstance(metadata.get("request"), Mapping) else {}
+    )
+    return request
+
+
+def _source_preset(meta_source: Mapping[str, Any]) -> object:
+    metadata = (
+        meta_source.get("metadata")
+        if isinstance(meta_source.get("metadata"), Mapping)
+        else {}
+    )
+    return metadata.get("preset")
+
+
+def _extract_candidate_records(
+    result: Mapping[str, Any],
+    records: Sequence[object],
+    *,
+    recorded_at_utc: datetime,
+    recorded_at_kst: str,
+    call_id: uuid.UUID,
+    digest: str,
+    market: str,
+    default_limit: int | None,
+) -> list[ScreenerPickRow]:
+    """Task-884 A-record path: one log row per considered source candidate."""
+
+    sources_by_name = _source_context(result)
+    collection = (
+        result.get("collection")
+        if isinstance(result.get("collection"), Mapping)
+        else {}
+    )
+    collection_version = _as_text(collection.get("collection_version"))
+    fetched_at = _parse_fetched_at(collection.get("fetched_at"))
+    policy = result.get("policy") if isinstance(result.get("policy"), Mapping) else {}
+    call_context = {
+        "policy": dict(policy),
+        "selection": _mapping_or_none(collection.get("selection")) or {},
+        "source_statuses": _mapping_or_none(collection.get("source_statuses")) or {},
+    }
+    fanout_version = (
+        f"{FANOUT_VERSION_PREFIX}:top_n_per_source={default_limit}"
+        f":collection={collection_version or 'unknown'}"
+    )
+    rows: list[ScreenerPickRow] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        symbol = str(record.get("symbol") or "").strip()
+        source = str(record.get("source") or "").strip()
+        if not symbol or not source:
+            continue
+        key = (source, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        meta_source = sources_by_name.get(source, {})
+        request = _source_request(meta_source)
+        gate_features = _mapping_or_none(record.get("gate_features"))
+        selected_via = _mapping_or_none(record.get("selected_via"))
+        source_params: dict[str, Any] = {
+            "request": dict(request) if request else {},
+            "preset": _source_preset(meta_source),
+            "kind": meta_source.get("kind") or record.get("kind"),
+        }
+        if selected_via is not None:
+            source_params["selected_via"] = selected_via
+        price_text = _exact_or_float_text(record.get("source_price"))
+        if price_text is None and gate_features is not None:
+            price_text = _exact_or_float_text(gate_features.get("fresh_current_price"))
+        rows.append(
+            ScreenerPickRow(
+                call_id=call_id,
+                recorded_at=recorded_at_utc,
+                recorded_at_kst=recorded_at_kst,
+                market=market,
+                source=source,
+                family=str(record.get("family") or meta_source.get("family") or source),
+                kind=str(record.get("kind") or meta_source.get("kind") or ""),
+                symbol=symbol,
+                rank=_as_int(record.get("rank")),
+                decision_price_text=price_text,
+                source_sort_by=_as_text(request.get("sort_by")),
+                source_sort_order=_as_text(request.get("sort_order")),
+                source_limit=_as_int(request.get("limit")) or default_limit,
+                source_preset=_as_text(_source_preset(meta_source)),
+                fanout_version=fanout_version,
+                fanout_code_sha256=digest,
+                source_params=source_params,
+                collection_version=collection_version,
+                admission=_as_text(record.get("admission")),
+                admission_reason=_as_text(record.get("admission_reason")),
+                selection_seq=_as_int(record.get("selection_seq")),
+                source_status=_as_text(record.get("source_status")),
+                data_asof=_as_text(record.get("data_asof")),
+                fetched_at=fetched_at,
+                raw_row=_mapping_or_none(record.get("raw_row")),
+                gate_features=gate_features,
+                call_context=call_context,
+            )
+        )
+    return rows
 
 
 def extract_pick_rows(
@@ -172,10 +339,20 @@ def extract_pick_rows(
     default_limit = _as_int(bounds.get("top_n_per_source"))
     fanout_version = f"{FANOUT_VERSION_PREFIX}:top_n_per_source={default_limit}"
 
-    sources_by_name: dict[str, Mapping[str, Any]] = {}
-    for item in result.get("sources") or []:
-        if isinstance(item, Mapping) and item.get("source"):
-            sources_by_name[str(item["source"])] = item
+    candidate_records = result.get("candidate_records")
+    if isinstance(candidate_records, list):
+        return _extract_candidate_records(
+            result,
+            candidate_records,
+            recorded_at_utc=recorded_at_utc,
+            recorded_at_kst=recorded_at_kst,
+            call_id=resolved_call_id,
+            digest=digest,
+            market=market,
+            default_limit=default_limit,
+        )
+
+    sources_by_name = _source_context(result)
 
     rows: list[ScreenerPickRow] = []
     seen: set[tuple[str, str]] = set()
@@ -269,6 +446,16 @@ async def _default_write(rows: Sequence[ScreenerPickRow]) -> None:
                     fanout_version=row.fanout_version,
                     fanout_code_sha256=row.fanout_code_sha256,
                     source_params=row.source_params,
+                    collection_version=row.collection_version,
+                    admission=row.admission,
+                    admission_reason=row.admission_reason,
+                    selection_seq=row.selection_seq,
+                    source_status=row.source_status,
+                    data_asof=row.data_asof,
+                    fetched_at=row.fetched_at,
+                    raw_row=row.raw_row,
+                    gate_features=row.gate_features,
+                    call_context=row.call_context,
                 )
                 for row in rows
             ]

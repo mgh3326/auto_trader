@@ -103,7 +103,11 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # re-bootstrap of persistent local test DBs.
 # v47 (ROB-728): review.protected_positions ORM tables plus the immutable
 # protected_position_revisions trigger used by the test-only PostgreSQL schema.
-SCHEMA_BOOTSTRAP_VERSION = 47
+# v48 (#884): review.screener_pick_log gains the nullable A-record columns
+# (collection_version/admission/admission_reason/selection_seq/source_status/
+# data_asof/fetched_at/raw_row/gate_features/call_context) via create_all; the
+# production additive migration is 20260928_884_fanout_a_record.
+SCHEMA_BOOTSTRAP_VERSION = 48
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

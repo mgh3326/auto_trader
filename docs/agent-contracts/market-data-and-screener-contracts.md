@@ -70,10 +70,23 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 
 `discover_buy_candidates_fanout` itself still performs no writes. When
 `SCREENER_PICK_LOG_ENABLED=true` (default false), an outer observer in
-`buy_candidate_fanout_registration` records returned per-source picks to
-`review.screener_pick_log`. Fail-open. Prices are exact decimal text, never
+`buy_candidate_fanout_registration` records to `review.screener_pick_log`.
+Fail-open. Prices are exact decimal text, never
 float. Additive migration only — operator runs `alembic upgrade head`.
 No scheduler. Not a policy/weight input.
+
+Since task #884 (`collection_version="funnel-a1"`) the log is a full A-record:
+one row per (call, source, symbol) for every source top-10 row that entered
+the bounded slice — admitted or not — carrying `family`, `rank` (ordinal in
+the source emission), `admission` ∈ `admitted | not_admitted |
+dropped_preselection`, `admission_reason`, `selection_seq`, `source_status`,
+`data_asof`, `fetched_at`, `raw_row`, `gate_features` (conditional funnel
+features for revalidated candidates), and `call_context` (policy stamp,
+selection method, per-source call statuses). Pre-884 rows keep NULL
+`collection_version`; they are never backfilled. Full-analysis admission is
+per-source-family round-robin (declared family order, one new symbol per
+family per round, empty families yield) so a dominant family cannot take the
+whole 10-slot pool.
 
 ### screen_stocks_snapshot / screen_stocks_enrich MCP 도구 분리 (ROB-1309)
 
