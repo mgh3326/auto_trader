@@ -1120,6 +1120,9 @@ def test_underwater_add_gates_are_read_from_the_policy_and_echoed():
         "max_placements_per_symbol_per_day": 1,
         "partial_fill": "allowed",
         "per_symbol_notional_band_applies": False,
+        # #877 — the declared one-share add exception rides the same
+        # fail-closed echo; dropping or renaming the key fails the fan-out.
+        "one_share_exception_for_adds": True,
     }
 
 

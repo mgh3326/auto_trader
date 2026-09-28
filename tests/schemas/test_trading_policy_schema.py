@@ -21,7 +21,11 @@ from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     classify_sell_profit,
 )
-from app.services.trading_policy_service import load_trading_policy, policy_content_hash
+from app.services.trading_policy_service import (
+    get_policy_for,
+    load_trading_policy,
+    policy_content_hash,
+)
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
 _ROB1289_BASELINE = (
@@ -372,8 +376,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-28.1"
-    assert policy_content_hash() == "dda6a0541849"
+    assert doc.version == "2026-09-28.2"
+    assert policy_content_hash() == "8bc4db3fe010"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -387,7 +391,7 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     current = _raw()
     doc = TradingPolicyDocument.model_validate(current)
 
-    assert doc.version == "2026-09-28.1"
+    assert doc.version == "2026-09-28.2"
     assert doc.cash_proxy.exit_intent == "cash_funding"
     assert doc.cash_proxy.symbol_list_duplicated_here is False
     assert doc.cash_proxy.exempt_gates == [
@@ -581,7 +585,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-28.1"
+    assert current["version"] == "2026-09-28.2"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -629,7 +633,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-28.1"
+    assert current["version"] == "2026-09-28.2"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -772,7 +776,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-28.1"
+    assert doc.version == "2026-09-28.2"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1573,6 +1577,10 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     # remove both below so this remains an exact check of every prior surface.
     baseline["cash_yields"] = deepcopy(current_raw["cash_yields"])
     baseline["transfer_costs"] = deepcopy(current_raw["transfer_costs"])
+    # #876 (2026-09-28) adds the advisory kr_trading_sessions session table as
+    # a required block; same seed-then-strip treatment as §S175.
+    assert "kr_trading_sessions" not in baseline
+    baseline["kr_trading_sessions"] = deepcopy(current_raw["kr_trading_sessions"])
     # ROB-1298 KEY_DIFF — the §115차 tier is appended to the current document
     # only. The schema now requires tie_breaks.tier_priority to match the
     # declared tier order, so the baseline copy is given the same appended tier
@@ -1640,6 +1648,12 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     del current_dump["transfer_costs"]
     del baseline_dump["cash_yields"]
     del baseline_dump["transfer_costs"]
+    # #876 — the advisory session table is stripped from BOTH sides so the
+    # remaining comparison stays a closed equivalence over every prior key.
+    # Its window literals are pinned by the schema validator and by
+    # test_kr_trading_sessions_* below, not by this comparison.
+    del current_dump["kr_trading_sessions"]
+    del baseline_dump["kr_trading_sessions"]
 
     # §148차 (2026-08-24) — additive semantics-only clarification. The
     # contradiction repair is allowed to extend the prose, but it may not
@@ -1806,6 +1820,11 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert underwater_conditions["per_order_cap_raised"] is False
     assert underwater_conditions["new_symbol_discovery_gate_unchanged"] is True
     assert underwater_conditions["review_date"] == "2026-10-05"
+    # #877 (2026-09-28) — the approved one-share add exception and its
+    # underwater-d20-v1 cohort tag. Both are pinned here so a silent removal
+    # or rename fails this closed-equivalence test rather than shipping.
+    assert underwater_conditions["one_share_exception_for_adds"] is True
+    assert underwater_conditions["d20_sizing_flag_field"] == ("rounded_up_to_one_share")
     del current_dump["decision_rules"]["buy.underwater_support_net"]
 
     assert "sell.loss_cut" not in baseline_dump["decision_rules"]
@@ -1950,6 +1969,25 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     cur_chasing["criteria"] = baseline_dump["market_rules"]["crypto"]["no_chasing"][
         "criteria"
     ]
+
+    # #876 (2026-09-28) — order.day_expiry_kst is re-typed from a scalar
+    # "20:00" into the approved per-broker split and its semantics reworded.
+    # Pin the exact new value here (a silent third broker key, a KIS time
+    # asserted without measurement, or a Toss time other than the measured
+    # 15:30 fails) and normalize value+semantics to the baseline; lanes and
+    # unit must still match untouched.
+    cur_expiry = normalized_current_dump["thresholds"]["order.day_expiry_kst"]
+    base_expiry = baseline_dump["thresholds"]["order.day_expiry_kst"]
+    assert base_expiry["value"] == "20:00"
+    assert cur_expiry["value"] == {
+        "toss_live": "15:30",
+        "kis_live": "to_confirm",
+    }
+    assert cur_expiry["lanes"] == base_expiry["lanes"] == ["buy", "sell"]
+    assert cur_expiry["unit"] == base_expiry["unit"] == "kst_time"
+    assert "nxt_tradable alone does NOT" in cur_expiry["semantics"]
+    cur_expiry["value"] = base_expiry["value"]
+    cur_expiry["semantics"] = base_expiry["semantics"]
 
     # Only the six explicitly enumerated cap deltas and the enumerated
     # §115차 additions are accepted; every other pre-existing key/value,
@@ -2828,7 +2866,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-28.1"
+    assert doc.version == "2026-09-28.2"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3625,7 +3663,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-28.1"
+    assert doc.version == "2026-09-28.2"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
@@ -4079,3 +4117,112 @@ def test_s177_source_records_the_three_rules_and_the_honest_limits():
     assert "rather than a waiver" in doc.source
     # the parking term's honest limit
     assert "conservative lower bound" in doc.source
+
+
+# ---------------------------------------------------------------------------
+# #876 (2026-09-28) — broker-split order.day_expiry_kst and the advisory
+# kr_trading_sessions reference table.
+# ---------------------------------------------------------------------------
+
+
+def test_876_day_expiry_kst_is_broker_split_and_kis_is_not_asserted():
+    """Toss regular-session expiry is the measured 15:30; KIS is to_confirm.
+
+    The KIS live_order_expiry classifier (ROB-671) declares accept-session
+    expectations, but the 2026-09-14 KRX after-market launch postdates that
+    measurement — this key asserts no KIS time.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    expiry = doc.thresholds["order.day_expiry_kst"]
+
+    assert expiry.lanes == ["buy", "sell"]
+    assert expiry.value == {"toss_live": "15:30", "kis_live": "to_confirm"}
+    assert expiry.unit == "kst_time"
+    # The retired misreadings must be named as retired, not silently dropped.
+    assert "nxt_tradable alone does NOT" in expiry.semantics
+    assert "NEW order" in expiry.semantics
+
+
+def test_876_kr_trading_sessions_table_carries_the_after_market_windows():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    sessions = doc.kr_trading_sessions.sessions
+
+    assert sessions["nxt_premarket"].open_kst == "08:00"
+    assert sessions["nxt_premarket"].close_kst == "08:50"
+    assert sessions["nxt_after"].open_kst == "15:30"
+    assert sessions["nxt_after"].close_kst == "20:00"
+    krx = sessions["krx_after_market"]
+    assert krx.open_kst == "16:00"
+    assert krx.close_kst == "20:00"
+    assert krx.matching == "continuous"
+    assert krx.price_band == "±30% of the same-day base price"
+
+
+@pytest.mark.parametrize(
+    ("session", "field", "value"),
+    [
+        ("nxt_premarket", "close_kst", "08:55"),
+        ("nxt_after", "open_kst", "15:35"),
+        ("nxt_after", "close_kst", "19:30"),
+        ("krx_after_market", "open_kst", "16:30"),
+        ("krx_after_market", "close_kst", "19:00"),
+        ("krx_after_market", "matching", "single_price"),
+        ("krx_after_market", "price_band", "±15%"),
+    ],
+)
+def test_876_kr_trading_sessions_drift_fails_the_build(session, field, value):
+    raw = _raw()
+    raw["kr_trading_sessions"]["sessions"][session][field] = value
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_876_kr_trading_sessions_missing_session_fails_the_build():
+    raw = _raw()
+    del raw["kr_trading_sessions"]["sessions"]["krx_after_market"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_876_policy_view_echoes_the_session_table_for_every_lane():
+    """Sessions read the table through get_trading_policy like cash_yields."""
+
+    view = get_policy_for("kr", "buy")
+    sessions = view["kr_trading_sessions"]["sessions"]
+    assert sessions["krx_after_market"]["open_kst"] == "16:00"
+    assert (
+        get_policy_for("us", "sell")["kr_trading_sessions"]
+        == (view["kr_trading_sessions"])
+    )
+
+
+def test_876_broker_map_values_are_reserved_for_day_expiry_kst():
+    """An unrelated threshold must not smuggle in an arbitrary dict value."""
+
+    raw = _raw()
+    raw["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] = {"kr": "10"}
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_876_market_override_map_values_are_reserved_for_day_expiry_kst():
+    raw = _raw()
+    raw["market_overrides"]["kr"]["buy.max_new_entries_per_day"] = {"toss_live": "3"}
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "broker_map",
+    [
+        {"toss_live": "15:30"},  # dropped kis_live to_confirm marker
+        {"toss_live": "15:30", "kis_live": "20:00", "nxt": "20:00"},
+        {"toss_live": "15:30", "kis_mock": "15:30"},
+    ],
+)
+def test_876_day_expiry_kst_map_must_declare_exactly_the_live_modes(broker_map):
+    raw = _raw()
+    raw["thresholds"]["order.day_expiry_kst"]["value"] = broker_map
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)

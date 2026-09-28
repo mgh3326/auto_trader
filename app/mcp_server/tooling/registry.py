@@ -155,6 +155,9 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 from app.mcp_server.tooling.investment_snapshots_registration import (
     register_investment_snapshots_tools,
 )
+from app.mcp_server.tooling.kis_mock_terminal_registration import (
+    register_kis_mock_terminal_tools,
+)
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
@@ -229,6 +232,7 @@ from app.mcp_server.tooling.tradingcodex_execution_registration import (
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
+    register_parking_exclusion_tool,
     register_user_settings_tools,
 )
 from app.mcp_server.tooling.watch_repricing_registration import (
@@ -465,6 +469,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_order_proposal_tools(mcp)
         if profile is McpProfile.DEFAULT:
             register_toss_proposal_accounts(mcp)
+            # #883 — the cash sweep's typed parking_exclusion read; default
+            # profile only (the kr/us lane manifests expose it from there).
+            register_parking_exclusion_tool(mcp)
         register_proposal_revalidate()
 
     # Profile-gated: side-effect order surfaces
@@ -531,6 +538,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
+        register_kis_mock_terminal_tools(mcp)
         # Intentionally NOT: register_order_tools, register_kis_live_order_tools
     elif profile is McpProfile.US_PAPER:
         from app.mcp_server.tooling.alpaca_paper_automated_orders import (

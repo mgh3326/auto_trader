@@ -103,11 +103,12 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # re-bootstrap of persistent local test DBs.
 # v47 (ROB-728): review.protected_positions ORM tables plus the immutable
 # protected_position_revisions trigger used by the test-only PostgreSQL schema.
-# v48 (#884): review.screener_pick_log gains the nullable A-record columns
+# v48 (Task 881): include distinct KIS mock expired lifecycle state.
+# v49 (#884): review.screener_pick_log gains the nullable A-record columns
 # (collection_version/admission/admission_reason/selection_seq/source_status/
 # data_asof/fetched_at/raw_row/gate_features/call_context) via create_all; the
 # production additive migration is 20260928_884_fanout_a_record.
-SCHEMA_BOOTSTRAP_VERSION = 48
+SCHEMA_BOOTSTRAP_VERSION = 49
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -884,7 +885,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD CONSTRAINT ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10 "
     "CHECK (lifecycle_state IN ("
     "'planned','previewed','submitted','accepted','pending',"
-    "'fill','reconciled','stale','failed','anomaly','cancelled'"
+    "'fill','reconciled','stale','failed','anomaly','cancelled','expired'"
     "))",
     # ---- investment_watch_alerts (ROB-403) ----
     "ALTER TABLE review.investment_watch_alerts ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)",
