@@ -54,6 +54,19 @@ def trade_day_kst(dt: datetime) -> str:
     return dt.astimezone(KST).strftime("%Y%m%d")
 
 
+def kst_day_window(dt: datetime) -> tuple[datetime, datetime]:
+    """Return the [start, end) aware bounds of the KST calendar day holding ``dt``.
+
+    ``filled_at`` and friends are TIMESTAMPTZ instants, so the window is built in
+    KST and returned as tz-aware bounds suitable for direct SQL comparisons.
+    Naive input is treated as UTC (same convention as ``trade_day_kst``).
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    start = dt.astimezone(KST).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
 def format_datetime(dt: datetime | None = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
     """
     Format datetime to string. If no datetime is provided, use current KST time.

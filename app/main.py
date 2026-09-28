@@ -78,6 +78,8 @@ from app.routers import (
     telegram_callback,
     test,
     trade_journals,
+    trader_page,
+    trader_spa,
     user_defaults,
     websocket,
 )
@@ -232,6 +234,8 @@ def create_app() -> FastAPI:
     app.include_router(invest_session_context.router)
     app.include_router(invest_app_spa.router)
     app.include_router(invest_web_spa.router)
+    app.include_router(trader_page.router)
+    app.include_router(trader_spa.router)
     app.include_router(trade_journals.router)
     app.include_router(research_retrospective.router)
     app.include_router(research_pipeline.router)
