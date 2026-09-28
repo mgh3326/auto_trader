@@ -80,7 +80,8 @@ def _response(
 async def test_read_hits_within_ttl() -> None:
     cache = _make_cache()
     resp = _response()
-    await cache.store(resp, T0, 45)
+    seen = await cache.generation()
+    await cache.store(resp, T0, 45, seen_gen=seen)
 
     hit, cached_at = await cache.read(T0 + dt.timedelta(seconds=30))
 
@@ -92,7 +93,7 @@ async def test_read_hits_within_ttl() -> None:
 @pytest.mark.asyncio
 async def test_read_misses_after_ttl() -> None:
     cache = _make_cache()
-    await cache.store(_response(), T0, 45)
+    await cache.store(_response(), T0, 45, seen_gen=await cache.generation())
 
     hit, _ = await cache.read(T0 + dt.timedelta(seconds=45))
 
@@ -104,7 +105,7 @@ async def test_read_misses_after_ttl() -> None:
 async def test_generation_bump_invalidates_snapshot() -> None:
     redis = _FakeRedis()
     cache = _make_cache(redis)
-    await cache.store(_response(), T0, 45)
+    await cache.store(_response(), T0, 45, seen_gen=await cache.generation())
     await redis.incr(GEN_KEY)
 
     hit, _ = await cache.read(T0 + dt.timedelta(seconds=5))
@@ -117,7 +118,7 @@ async def test_generation_bump_invalidates_snapshot() -> None:
 async def test_redis_outage_falls_back_to_ttl_only() -> None:
     redis = _FakeRedis()
     cache = _make_cache(redis)
-    await cache.store(_response(), T0, 45)
+    await cache.store(_response(), T0, 45, seen_gen=await cache.generation())
 
     redis.down = True
     hit, _ = await cache.read(T0 + dt.timedelta(seconds=10))
@@ -129,14 +130,32 @@ async def test_redis_outage_falls_back_to_ttl_only() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_store_picks_up_generation_bumped_mid_fetch() -> None:
-    """A fill committed between read and store must not get masked."""
+async def test_fill_mid_fetch_is_not_absorbed_by_store() -> None:
+    """The real race: gen read before the fetch, fill lands mid-fetch."""
     redis = _FakeRedis()
     cache = _make_cache(redis)
-    await redis.incr(GEN_KEY)  # gen is now 1 before the snapshot is stored
 
-    await cache.store(_response(), T0, 45)
-    # store() re-reads the generation, so the snapshot is pinned to gen 1.
+    # Service order: capture gen, then fetch broker orders, then store.
+    seen = await cache.generation()  # 0 — pinned before the fetch starts
+    await redis.incr(GEN_KEY)  # a fill commits while the fetch is in flight
+    await cache.store(_response(), T0, 45, seen_gen=seen)
+
+    # The snapshot was fetched pre-fill: the next read MUST miss, not serve
+    # it for the TTL with the bumped generation absorbed.
+    assert (await cache.read(T0 + dt.timedelta(seconds=1)))[0] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_store_with_current_gen_hits_until_bump() -> None:
+    """No mid-fetch fill: pinned gen stays current until the next bump."""
+    redis = _FakeRedis()
+    cache = _make_cache(redis)
+    await redis.incr(GEN_KEY)  # gen 1 exists before the snapshot is stored
+
+    seen = await cache.generation()
+    await cache.store(_response(), T0, 45, seen_gen=seen)
+
     assert (await cache.read(T0 + dt.timedelta(seconds=1)))[0] is not None
 
     await redis.incr(GEN_KEY)  # a fill lands -> gen 2
@@ -155,7 +174,7 @@ async def test_invalidate_local_drops_snapshot_but_keeps_last_ok() -> None:
         ]
     )
     cache.record_last_ok(resp)
-    await cache.store(resp, T0, 45)
+    await cache.store(resp, T0, 45, seen_gen=await cache.generation())
 
     cache.invalidate_local()
 
@@ -188,7 +207,7 @@ async def test_record_last_ok_ignores_failed_sources() -> None:
 async def test_module_invalidate_clears_and_bumps(monkeypatch) -> None:
     redis = _FakeRedis()
     cache = _make_cache(redis)
-    await cache.store(_response(), T0, 45)
+    await cache.store(_response(), T0, 45, seen_gen=await cache.generation())
     monkeypatch.setattr(cache_mod, "OPEN_ORDERS_CACHE", cache)
 
     await cache_mod.invalidate_open_orders_cache()

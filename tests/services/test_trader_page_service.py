@@ -89,10 +89,13 @@ class _FakeOrdersService:
     def __init__(self, results: list[OpenOrdersResponse]) -> None:
         self.results = list(results)
         self.calls = 0
+        self.during_fetch = None
 
     async def list_open_orders(self, *, market: str = "all") -> OpenOrdersResponse:
         self.calls += 1
         assert market == "all"
+        if self.during_fetch is not None:
+            await self.during_fetch()
         return self.results.pop(0)
 
 
@@ -236,7 +239,9 @@ async def test_fill_event_hook_invalidates_cached_snapshot(monkeypatch) -> None:
 async def test_fill_hook_skips_duplicate_rows(monkeypatch) -> None:
     cache_inst, redis = _cache()
     monkeypatch.setattr(cache_mod, "OPEN_ORDERS_CACHE", cache_inst)
-    await cache_inst.store(_orders_response([], T0), T0, 45)
+    await cache_inst.store(
+        _orders_response([], T0), T0, 45, seen_gen=await cache_inst.generation()
+    )
 
     await run_post_upsert_downstream(
         broker="kis",
@@ -249,6 +254,63 @@ async def test_fill_hook_skips_duplicate_rows(monkeypatch) -> None:
     hit, _ = await cache_inst.read(T0 + dt.timedelta(seconds=1))
     assert hit is not None  # a duplicate delivery does not churn the cache
     assert redis.store.get(cache_mod.GEN_KEY) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fill_during_fetch_makes_next_call_refetch() -> None:
+    """A fill committing mid-fetch must not be absorbed into the snapshot."""
+    cache_inst, redis = _cache()
+    orders = _FakeOrdersService([_orders_response([], T0), _orders_response([], T0)])
+    service = _service(orders=orders, cache=cache_inst)
+
+    async def bump_mid_fetch() -> None:
+        await redis.incr(cache_mod.GEN_KEY)
+
+    orders.during_fetch = bump_mid_fetch
+    first = await service.open_orders()
+    assert first.cache.hit is False
+    assert orders.calls == 1
+
+    # The snapshot was fetched pre-fill: cached state must be dropped, not
+    # served for the TTL with the bumped generation absorbed.
+    orders.during_fetch = None
+    second = await service.open_orders()
+    assert orders.calls == 2
+    assert second.cache.hit is False
+
+    # Settled now: third call hits the fresh snapshot.
+    third = await service.open_orders()
+    assert orders.calls == 2
+    assert third.cache.hit is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fill_hook_invalidates_on_updated_row(monkeypatch) -> None:
+    """An 'updated' upsert is a committed correction — it must bust the cache.
+
+    'updated' sits inside DUPLICATE_STATUSES for notification suppression, but
+    a corrected fill row can move broker open orders; only exact 'unchanged'
+    replays may skip invalidation.
+    """
+    cache_inst, redis = _cache()
+    monkeypatch.setattr(cache_mod, "OPEN_ORDERS_CACHE", cache_inst)
+    await cache_inst.store(
+        _orders_response([], T0), T0, 45, seen_gen=await cache_inst.generation()
+    )
+
+    await run_post_upsert_downstream(
+        broker="kis",
+        upsert_status="updated",
+        fill_order=None,
+        raw_event=None,
+        hooks=DownstreamHooks(),
+    )
+
+    hit, _ = await cache_inst.read(T0 + dt.timedelta(seconds=1))
+    assert hit is None
+    assert redis.store.get(cache_mod.GEN_KEY) == "1"
 
 
 def _fill_row(**overrides: Any) -> ExecutionLedger:

@@ -185,7 +185,7 @@ test("open orders panel renders per-broker sections and never blanks a failed br
   const panel = await screen.findByTestId("panel-open-orders");
 
   // Failed broker shows 'unavailable' with last successful read — not 'no orders'.
-  const unavailable = await within(panel).findByTestId("unavailable-toss");
+  const unavailable = await within(panel).findByTestId("unavailable-toss-kr");
   expect(unavailable).toHaveTextContent("미체결 조회 불가");
   expect(unavailable).toHaveTextContent("마지막 성공 조회");
   expect(within(panel).queryByText("미체결 주문 없음")).not.toBeInTheDocument();
@@ -200,6 +200,79 @@ test("open orders panel renders per-broker sections and never blanks a failed br
 
   // Cache TTL is displayed.
   expect(panel).toHaveTextContent("캐시 TTL 45s");
+});
+
+test("mixed-market broker failure never collapses into 'no orders'", async () => {
+  // kis/kr down while kis/us is healthy-but-empty: the failed KR read must
+  // show its own unavailable line, and the empty claim must be scoped to the
+  // markets that actually read successfully.
+  const mixed: TraderOpenOrdersResponse = {
+    ...openOrdersResponse,
+    count: 0,
+    items: [],
+    sources: [
+      {
+        broker: "kis",
+        market: "kr",
+        status: "unavailable",
+        count: 0,
+        message: "timeout",
+        fetched_at: "2026-09-28T03:00:00Z",
+        last_ok_at: "2026-09-28T02:10:00Z",
+      },
+      {
+        broker: "kis",
+        market: "us",
+        status: "ok",
+        count: 0,
+        message: null,
+        fetched_at: "2026-09-28T03:00:00Z",
+        last_ok_at: "2026-09-28T03:00:00Z",
+      },
+      {
+        broker: "toss",
+        market: "kr",
+        status: "ok",
+        count: 0,
+        message: null,
+        fetched_at: "2026-09-28T03:00:00Z",
+        last_ok_at: "2026-09-28T03:00:00Z",
+      },
+      {
+        broker: "upbit",
+        market: "crypto",
+        status: "ok",
+        count: 0,
+        message: null,
+        fetched_at: "2026-09-28T03:00:00Z",
+        last_ok_at: "2026-09-28T03:00:00Z",
+      },
+    ],
+  };
+  fetchMock.mockImplementation((url: string) => {
+    if (url.startsWith("/trading/api/trader/open-orders"))
+      return Promise.resolve(jsonResponse(mixed));
+    if (url.startsWith("/trading/api/trader/fills/today"))
+      return Promise.resolve(jsonResponse(fillsResponse));
+    if (url.startsWith("/trading/api/trader/watches"))
+      return Promise.resolve(jsonResponse(watchesResponse));
+    return Promise.resolve(jsonResponse({}, 404));
+  });
+
+  render(<TraderPage />);
+  const panel = await screen.findByTestId("panel-open-orders");
+
+  const kis = within(panel).getByTestId("broker-kis");
+  const line = await within(kis).findByTestId("unavailable-kis-kr");
+  expect(line).toHaveTextContent("미체결 조회 불가");
+  expect(line).toHaveTextContent("마지막 성공 조회");
+
+  // The remaining claim is scoped to the markets that read OK — a bare
+  // broker-level "미체결 주문 없음" would be a lie about the KR failure.
+  expect(within(kis).queryByText("미체결 주문 없음")).not.toBeInTheDocument();
+  expect(
+    within(kis).getByText("정상 조회된 시장에는 미체결 주문 없음"),
+  ).toBeInTheDocument();
 });
 
 test("fills panel shows KST day, fill rows, and the toss poller gap note", async () => {

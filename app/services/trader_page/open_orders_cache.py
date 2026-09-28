@@ -70,7 +70,7 @@ class TraderOpenOrdersCache:
             or now >= self._expires_at
         ):
             return None, None
-        gen = await self._generation()
+        gen = await self.generation()
         if gen is not None and gen != self._seen_gen:
             self.invalidate_local()
             return None, None
@@ -81,13 +81,19 @@ class TraderOpenOrdersCache:
         payload: OpenOrdersResponse,
         now: datetime,
         ttl_seconds: int,
+        *,
+        seen_gen: int | None,
     ) -> None:
+        """Pin the snapshot to the generation captured BEFORE the broker fetch.
+
+        Callers must pass the generation they read before fetching orders:
+        a fill committed mid-fetch then shows up as a generation mismatch on
+        the next read instead of being absorbed into a stale snapshot.
+        """
         self._snapshot = payload
         self._cached_at = now
         self._expires_at = now + timedelta(seconds=ttl_seconds)
-        # Read the generation after the fetch so a fill that committed mid-read
-        # is picked up as a mismatch on the next call rather than masked.
-        self._seen_gen = await self._generation()
+        self._seen_gen = seen_gen
 
     def record_last_ok(self, response: OpenOrdersResponse) -> None:
         for source in response.sources:
@@ -111,7 +117,7 @@ class TraderOpenOrdersCache:
                 return None
         return self._redis
 
-    async def _generation(self) -> int | None:
+    async def generation(self) -> int | None:
         client = await self._redis_client()
         if client is None:
             return None

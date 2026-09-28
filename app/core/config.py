@@ -1075,9 +1075,7 @@ class Settings(BaseSettings):
     # Task 889 — /trader read-only operator page. The open-orders snapshot TTL
     # is deliberately short (AC: 30-60 s); a committed fill also busts it
     # immediately through the execution-ledger post-upsert downstream hook.
-    trader_open_orders_cache_ttl_seconds: Annotated[int, Field(ge=30, le=60)] = (
-        45
-    )
+    trader_open_orders_cache_ttl_seconds: Annotated[int, Field(ge=30, le=60)] = 45
 
     public_base_url: str = "https://mgh3326.duckdns.org"
     # Explicit public host for approval deep links.  Unlike the historic

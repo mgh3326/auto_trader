@@ -192,8 +192,25 @@ def test_trader_api_middleware_401_and_spa_redirect() -> None:
 
     client = TestClient(AuthMiddleware(inner), raise_server_exceptions=False)
 
-    api = client.get("/trading/api/trader/open-orders")
-    assert api.status_code == 401
+    for path in (
+        "/trading/api/trader/open-orders",
+        "/trading/api/trader/open-orders?refresh=1",
+        "/trading/api/trader/fills/today",
+        "/trading/api/trader/watches",
+    ):
+        api = client.get(path)
+        assert api.status_code == 401, path
+
+    # Non-GET verbs carry no read or write authority either.
+    for method in ("post", "put", "delete"):
+        response = client.request(method, "/trading/api/trader/open-orders")
+        assert response.status_code == 401, method
+        page = client.request(
+            method, "/trader/", follow_redirects=False
+        )
+        # Middleware passes non-GET HTML requests through to routing, which
+        # has no non-GET handler — 404/405 prove nothing executed.
+        assert page.status_code in (303, 404, 405), (method, page.status_code)
 
     page = client.get("/trader/", follow_redirects=False)
     assert page.status_code == 303

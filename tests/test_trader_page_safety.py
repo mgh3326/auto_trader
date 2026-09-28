@@ -78,22 +78,31 @@ ALLOWED_ORDER_PROPOSALS_ENUM_SURFACE = {
 
 # Method/function names that mutate orders, approvals, watches, or ledgers.
 # An attribute call or bare name call to any of these inside the new modules
-# means a mutation path became reachable.
+# means a mutation path became reachable. The scan checks the call target's
+# final attribute, so `svc.place_order()` is caught regardless of the
+# receiver's name; bound aliases assigned to a local still evade it — the
+# subprocess import guard above is the other half of the pin.
 FORBIDDEN_CALL_NAMES = {
     "place_order",
     "cancel_order",
     "cancel_orders",
     "modify_order",
     "amend_order",
+    "submit_order",
+    "send_order",
     "approve",
     "approve_proposal",
     "reject_proposal",
+    "dispatch",
     "record_fill_evidence",
     "upsert_fill",
     "commit_fill",
     "update_alert_status",
+    "update_alert_lifecycle",
     "activate_alert",
     "cancel_alert",
+    "expire_alerts",
+    "create_alert",
     "insert_report",
     "execute",
 }

@@ -38,12 +38,11 @@ function BrokerSection({
 }) {
   const mine = sources.filter((s) => s.broker === broker);
   const rows = items.filter((r) => r.broker === broker);
-  const allUnavailable = mine.length > 0 && mine.every((s) => s.status === "unavailable");
-  const lastOk = mine
-    .map((s) => s.last_ok_at)
-    .filter((v): v is string => Boolean(v))
-    .sort()
-    .at(-1);
+  // Any failed (broker, market) read gets its own unavailable line — a
+  // partial failure (e.g. KIS KR down while US is fine) must never collapse
+  // into a broker-level "no orders" claim.
+  const failed = mine.filter((s) => s.status !== "ok");
+  const anyReadable = mine.some((s) => s.status === "ok" || s.status === "degraded");
 
   return (
     <section className="trader-broker" data-testid={`broker-${broker}`}>
@@ -60,16 +59,29 @@ function BrokerSection({
         ))}
       </header>
 
-      {allUnavailable ? (
-        <p className="trader-unavailable" data-testid={`unavailable-${broker}`}>
-          {BROKER_LABEL[broker]} 미체결 조회 불가 — 마지막 성공 조회:{" "}
-          {lastOk ? fmtDateTime(lastOk) : "기록 없음"}
-          {mine.some((s) => s.message) ? (
-            <span className="trader-dim"> ({mine.map((s) => s.message).filter(Boolean).join("; ")})</span>
-          ) : null}
+      {failed.map((s) => (
+        <p
+          key={`${s.broker}-${s.market}-unavailable`}
+          className="trader-unavailable"
+          data-testid={`unavailable-${s.broker}-${s.market}`}
+        >
+          {BROKER_LABEL[s.broker]} {MARKET_LABEL[s.market]}{" "}
+          {s.status === "degraded" ? "일부 조회 실패" : "미체결 조회 불가"} —
+          {s.status === "degraded"
+            ? `마지막 조회: ${s.fetched_at ? fmtDateTime(s.fetched_at) : "기록 없음"}`
+            : `마지막 성공 조회: ${s.last_ok_at ? fmtDateTime(s.last_ok_at) : "기록 없음"}`}
+          {s.message ? <span className="trader-dim"> ({s.message})</span> : null}
         </p>
-      ) : rows.length === 0 ? (
-        <p className="trader-dim">미체결 주문 없음</p>
+      ))}
+
+      {rows.length === 0 ? (
+        anyReadable ? (
+          <p className="trader-dim">
+            {failed.length > 0
+              ? "정상 조회된 시장에는 미체결 주문 없음"
+              : "미체결 주문 없음"}
+          </p>
+        ) : null
       ) : (
         <table className="trader-table">
           <thead>

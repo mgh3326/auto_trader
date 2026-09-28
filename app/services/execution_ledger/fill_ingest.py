@@ -279,10 +279,14 @@ async def run_post_upsert_downstream(
     committed_hook = hooks.on_fill_committed or on_fill_committed
 
     duplicate = upsert_status in DUPLICATE_STATUSES
-    if not duplicate:
-        # A fresh fill event can close broker open orders — drop the /trader
-        # snapshot before any other downstream work so even an early return
-        # (duplicate-shaped payloads excluded) never serves it stale.
+    # Invalidation is narrower than notification suppression: only an exact
+    # "unchanged" replay is safe to skip. A committed "updated" row means the
+    # ledger evidence changed, and a no-row event still announces broker
+    # activity — both can move open orders, so both bust the snapshot.
+    if upsert_status != "unchanged":
+        # A non-replay fill event can close broker open orders — drop the
+        # /trader snapshot before any other downstream work so even an early
+        # return never serves it stale.
         try:
             await committed_hook()
         except Exception:  # noqa: BLE001 - cache invalidation never breaks fills

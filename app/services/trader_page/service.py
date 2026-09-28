@@ -68,9 +68,13 @@ class TraderPageService:
             response, cached_at = await self._cache.read(now)
         hit = response is not None
         if response is None:
+            # Capture the invalidation generation BEFORE the broker fan-out:
+            # a fill committing mid-fetch then mismatches on the next read
+            # instead of being stamped onto data that predates it.
+            seen_gen = await self._cache.generation()
             response = await self._orders.list_open_orders(market="all")
             self._cache.record_last_ok(response)
-            await self._cache.store(response, now, self._ttl)
+            await self._cache.store(response, now, self._ttl, seen_gen=seen_gen)
             cached_at = now
         sources = [
             TraderOpenOrderSource(
