@@ -127,6 +127,10 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
         expected[profile].add("toss_proposal_accounts")
     # Task 881 adds one audited operator expiry tool after the dated audit.
     expected["hermes-paper-kis"].add("kis_mock_ledger_expire_day_orders")
+    # #883: the cash sweep's typed parking_exclusion read is registered on the
+    # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
+    # generic broad profiles.
+    expected["default"].add("get_parking_exclusion")
     actual = collect_profile_tools(monkeypatch, gates_enabled=True)
     assert {profile: set(names) for profile, names in actual.items()} == expected, (
         "surface must preserve A/B/C/U and only the reviewed D exceptions"

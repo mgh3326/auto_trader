@@ -26,6 +26,7 @@ tests/mcp_server/test_investment_report_context_get_description.py
 tests/mcp_server/test_kis_live_place_order_routing_surface.py
 tests/mcp_server/test_lane_allowlist_contract.py
 tests/mcp_server/test_mirror_counterfactual_tool.py
+tests/mcp_server/test_parking_exclusion.py
 tests/mcp_server/test_protected_positions_tool.py
 tests/mcp_server/test_rob1311_r2_blockers.py
 tests/mcp_server/test_sector_concentration.py

@@ -2254,6 +2254,11 @@ These tools provide a generic key-value storage for user preferences and setting
 Common settings:
 - `manual_cash`: Stores manually-managed cash amounts (e.g., `{"amount": 15000000}`) for accounts not backed by APIs (Toss, etc.)
 - `account_costs`: Stores broker fee/cost profiles and thresholds used for routing suggestions.
+- `parking_exclusion`: Per-currency cash amounts the sweep leaves unparked
+  (e.g., `{"KRW": 500000, "USD": "100.50"}`). Keys must be a subset of
+  `["KRW", "USD"]`; amounts are non-negative finite numbers or decimal
+  strings. Read on the sweep lanes via `get_parking_exclusion` — never
+  through `get_user_setting`, which stays off those lanes.
 
 ### `account_costs` user setting
 
@@ -2395,6 +2400,43 @@ Behavior:
 - Creates the setting if it doesn't exist, updates it if it does (upsert)
 - `updated_at` is automatically set to the current timestamp
 - The (user_id, key) pair is unique; attempting to create a duplicate key for the same user will update the existing entry
+- `key="parking_exclusion"` additionally requires `value` to be an object
+  whose keys are a subset of `["KRW", "USD"]` with non-negative finite
+  amounts; malformed values are rejected with a validation error before any
+  write, and valid amounts are stored canonicalized to decimal strings.
+
+### `get_parking_exclusion` spec (#883)
+
+Typed, read-only projection of `user_settings.parking_exclusion` for the
+cash-sweep playbook. Takes no parameters — it can only ever read that one
+key for the MCP user, so no other setting is reachable through it.
+Registered on the `default` profile behind `ORDER_PROPOSALS_ENABLED` and
+exposed on the `kr`/`us` lane manifests.
+
+Parameters: none.
+
+Returns:
+
+```json
+{
+  "success": true,
+  "status": "ok",
+  "exclusions": {"KRW": "500000", "USD": "100.50"},
+  "reason": null,
+  "updated_at": "2026-09-28T09:00:00+00:00"
+}
+```
+
+Closed `status` vocabulary:
+
+- `"ok"` — `exclusions` maps every sweep currency (`KRW`, `USD`) to an exact
+  decimal string. A missing row, or a currency absent from a well-formed
+  value, reports `"0"` for that currency (the documented default: park
+  everything).
+- `"unknown"` — `exclusions` is `null` and `reason` is `"malformed_value"`
+  (`success` still `true`) or `"read_failed"` (`success` `false`). An
+  unknown exclusion is **never** equivalent to zero: the caller must park
+  nothing until the operator fixes the stored value.
 
 ## Caller Identity Header (required)
 

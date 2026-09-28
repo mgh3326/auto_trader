@@ -586,6 +586,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_ohlcv",
         "get_operating_briefing",
         "get_orderbook",
+        # #883: typed parking_exclusion read for the cash sweep; the closed
+        # "unknown" status on malformed values is never a zero exclusion.
+        "get_parking_exclusion",
         "get_portfolio_allocation",
         "get_position",
         "get_quote",

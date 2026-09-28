@@ -232,6 +232,7 @@ from app.mcp_server.tooling.tradingcodex_execution_registration import (
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
+    register_parking_exclusion_tool,
     register_user_settings_tools,
 )
 from app.mcp_server.tooling.watch_repricing_registration import (
@@ -468,6 +469,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_order_proposal_tools(mcp)
         if profile is McpProfile.DEFAULT:
             register_toss_proposal_accounts(mcp)
+            # #883 — the cash sweep's typed parking_exclusion read; default
+            # profile only (the kr/us lane manifests expose it from there).
+            register_parking_exclusion_tool(mcp)
         register_proposal_revalidate()
 
     # Profile-gated: side-effect order surfaces
