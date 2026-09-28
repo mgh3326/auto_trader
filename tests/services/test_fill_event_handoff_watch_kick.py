@@ -1299,3 +1299,152 @@ async def test_db_source_cursor_excludes_pending_and_respects_delivery_order(
     assert "t865-event-second" in keys
     assert "t865-event-pending" not in keys
     assert "t865-event-first" not in keys
+
+
+# --- tester round-1 findings: regression tests --------------------------------
+#
+# Each test names the t865-verify-r1 counterexample it pins down.
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        " Approval_Required ",
+        "APPROVAL_REQUIRED",
+        "approval_required ",
+        "Approval_Required",
+    ],
+)
+def test_noncanonical_approval_mode_never_authorizes_a_kick(mode: str) -> None:
+    # r1 finding 1: normalization must not launder corrupt action_mode into
+    # an authorization — only the canonical spelling kicks.
+    verdict = classify_watch_for_kick(
+        _watch(1, action_mode=mode, intent="buy_review"),
+        {"side": "buy"},
+        tradable=True,
+    )
+    assert verdict.eligible is False
+    assert verdict.reason == "action_mode_malformed"
+
+
+def test_noncanonical_known_mode_spelling_is_malformed_not_named() -> None:
+    verdict = classify_watch_for_kick(
+        _watch(1, action_mode=" Notify_Only "), {"side": "buy"}, tradable=True
+    )
+    assert verdict.eligible is False
+    assert verdict.reason == "action_mode_malformed"
+
+
+def test_noncanonical_buy_review_intent_never_authorizes() -> None:
+    verdict = classify_watch_for_kick(
+        _watch(1, intent=" Buy_Review "), None, tradable=True
+    )
+    assert verdict.eligible is False
+    assert verdict.reason == "max_action_unavailable"
+
+
+def test_non_datetime_clock_input_is_never_tradable_for_crypto() -> None:
+    # r1 finding 5: crypto must fail closed on garbage clock input too.
+    assert is_tradable_now("crypto", "not-a-datetime") is False  # type: ignore[arg-type]
+    assert is_tradable_now("crypto", None) is False  # type: ignore[arg-type]
+    assert is_tradable_now("crypto", 12345) is False  # type: ignore[arg-type]
+
+
+def test_naive_clock_input_fails_closed() -> None:
+    naive = datetime(2026, 9, 3, 1, 0)
+    assert is_tradable_now("crypto", naive) is False
+    assert is_tradable_now("kr", naive) is False
+
+
+@pytest.mark.parametrize(
+    "state_extra",
+    [
+        {"watch_kick_watermark": -1, "watch_kick_delivered_at": None},
+        {"watch_kick_watermark": "not-an-int", "watch_kick_delivered_at": None},
+        {"watch_kick_watermark": 5, "watch_kick_delivered_at": "not-a-date"},
+        # naive cursor timestamp is ambiguous — corrupt, not resumable
+        {"watch_kick_watermark": 5, "watch_kick_delivered_at": "2026-09-03T00:55:00"},
+    ],
+)
+def test_corrupt_cursor_reseeds_and_never_replays_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_extra: dict[str, Any]
+) -> None:
+    # r1 finding 2: a corrupt persisted cursor must not be fed to the query —
+    # id > -1 would replay the whole delivered backlog as kick candidates.
+    outcome, calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        watches=[_watch(10)],
+        state_extra=state_extra,
+    )
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "watch_cursor_corrupt" in outcome["watch_errors"]
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    # reseeded to the delivered high-water mark — backlog stays history
+    assert persisted["watch_kick_watermark"] == 10
+    assert persisted["watch_kick_delivered_at"] == "2026-09-03T00:55:00+00:00"
+
+
+def test_stale_event_older_than_dedupe_window_never_kicks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # r1 finding 3: the crash-replay shape — seen mark expired (>24h), cursor
+    # never advanced.  The event is now stale and can never kick again.
+    old = _watch(30, delivered_at="2026-09-01T23:30:00+00:00")
+    outcome, calls, _ = _run(tmp_path, monkeypatch, watches=[old])
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    (record,) = outcome["watch_decisions"]
+    assert record["class"] == "queue_only"
+    assert record["reason"] == "stale_event"
+
+
+def test_delivered_exactly_at_the_dedupe_window_edge_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edge = _watch(31, delivered_at="2026-09-02T01:00:00+00:00")  # exactly -24h
+    outcome, calls, _ = _run(tmp_path, monkeypatch, watches=[edge])
+    assert _create_calls(calls) == []
+    assert outcome["watch_decisions"][0]["reason"] == "stale_event"
+
+
+def test_event_delivered_inside_the_window_still_kicks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fresh = _watch(32, delivered_at="2026-09-02T01:01:00+00:00")  # -23h59m
+    outcome, calls, _ = _run(tmp_path, monkeypatch, watches=[fresh])
+    assert outcome["watch_kicked"] == 1
+    assert len(_create_calls(calls)) == 1
+
+
+def test_interleaved_symbols_give_the_slot_to_first_eligible_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # r1 finding 4: grouping must not reorder the kick competition — the
+    # first ELIGIBLE row in global delivery order takes the slot.
+    outcome, calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        watches=[
+            _watch(
+                40,
+                symbol="AAA",
+                action_mode="notify_only",
+                delivered_at="2026-09-03T00:55:00+00:00",
+            ),
+            _watch(41, symbol="BBB", delivered_at="2026-09-03T00:56:00+00:00"),
+            _watch(42, symbol="AAA", delivered_at="2026-09-03T00:57:00+00:00"),
+        ],
+        cap=1,
+    )
+    assert outcome["watch_kicked"] == 1
+    (create,) = _create_calls(calls)
+    assert create["parameters"]["date_tag"] == "20260903-watch41"
+    reasons = {
+        entry["event_id"]: (entry["class"], entry["reason"])
+        for entry in outcome["watch_decisions"]
+    }
+    assert reasons[40] == ("queue_only", "action_mode_notify_only")
+    assert reasons[41] == ("kick", "action_side")
+    assert reasons[42] == ("capped", "daily_cap")

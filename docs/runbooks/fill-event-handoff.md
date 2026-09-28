@@ -115,13 +115,21 @@ never exceed `FILL_HANDOFF_KICK_DAILY_CAP` per market per KST day.
 
 A delivered watch event is kick-eligible only when **all** of:
 
-- `action_mode == "approval_required"` (`notify_only`, `preview_only`,
-  `auto_execute_mock`, missing or unrecognized modes are queue-only);
-- `intent == "buy_review"` **or** the source alert's `max_action.side` is
-  present (the alert row is LEFT JOINed for `max_action`; a deleted alert or a
-  non-mapping value classifies `max_action_unavailable` — never a guess);
+- `action_mode == "approval_required"` — exact canonical spelling only
+  (`notify_only`, `preview_only`, `auto_execute_mock`, missing or
+  unrecognized modes are queue-only; a case-variant or whitespace-padded
+  spelling is `action_mode_malformed`, never an authorization);
+- `intent == "buy_review"` (exact spelling) **or** the source alert's
+  `max_action.side` is present (the alert row is LEFT JOINed for
+  `max_action`; a deleted alert or a non-mapping value classifies
+  `max_action_unavailable` — never a guess);
 - the market is inside its tradable session at evaluation time (XKRX/XNYS
-  trading minutes for kr/us; crypto is always tradable).
+  trading minutes for kr/us; crypto is always tradable) — a clock input
+  that is not a timezone-aware datetime fails closed for every market;
+- `delivered_at` is fresher than the 24-hour dedupe window — an older row
+  is `stale_event`, rides the next regular rep, and can never kick, which
+  also means an expired `watchkick:<id>` replay mark cannot reopen a
+  crash-replay double-kick.
 
 Ladder fires of the same `(market, symbol)` within one poll are a single kick
 candidate: the first eligible event in delivery order attempts the gate, and
@@ -133,7 +141,8 @@ is recorded in `watch_decisions` with `event_id`, `market`, `symbol`,
 (`kick`/`queue_only`/`capped`), `reason`, `flow_run_id`, and a `dry_run` flag
 under `--dry-run`; `watch_kicked` counts real kickoffs and `watch_errors`
 records read/seed failures (`watch_read_failed`, `watch_high_watermark_failed`,
-`event_malformed`). The Prefect `date_tag` is `YYYYMMDD-watch<event_id>`.
+`watch_cursor_corrupt`, `event_malformed`). The Prefect `date_tag` is
+`YYYYMMDD-watch<event_id>`.
 
 The kick pass keeps its own `(delivered_at, event_id)` cursor under
 `watch_kick_watermark`/`watch_kick_delivered_at` in `state.json`, independent

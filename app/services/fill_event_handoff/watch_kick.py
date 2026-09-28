@@ -6,9 +6,12 @@ only decides whether a delivered watch event may consume a shared kick slot.
 
 Kick-eligible requires ALL of:
 
-- ``action_mode == "approval_required"``
-- ``intent == "buy_review"`` OR the source alert's ``max_action.side`` present
-- the market inside its tradable session at evaluation time
+- ``action_mode == "approval_required"`` — the exact canonical spelling; a
+  case-variant or whitespace-padded mode is ``action_mode_malformed``
+- ``intent == "buy_review"`` (exact spelling) OR the source alert's
+  ``max_action.side`` present
+- the market inside its tradable session at evaluation time, proven by a
+  timezone-aware clock input
 
 Everything else is queue-only.  ``notify_only`` events can never kick.  Facts
 that cannot be read (missing alert row, absent ``max_action``) fail closed —
@@ -61,6 +64,13 @@ def is_tradable_now(market: str, now: datetime) -> bool:
     calendar error (unknown exchange, out-of-range date) fails closed: a
     market whose hours cannot be confirmed is never kick-eligible.
     """
+    if (
+        not isinstance(now, datetime)
+        or now.tzinfo is None
+        or now.tzinfo.utcoffset(now) is None
+    ):
+        # A garbage or ambiguous clock input can never prove market hours.
+        return False
     if market == "crypto":
         return True
     name = _TRADABLE_CALENDARS.get(market)
@@ -87,17 +97,21 @@ def classify_watch_without_action(event: Any, *, tradable: bool) -> KickVerdict 
     market = str(event.get("market") or "").strip().lower()
     if market not in SUPPORTED_MARKETS:
         return KickVerdict(False, "unsupported_market")
-    action_mode = str(event.get("action_mode") or "").strip().lower()
+    action_mode = event.get("action_mode")
+    normalized_mode = str(action_mode or "").strip().lower()
     if action_mode != APPROVAL_REQUIRED_ACTION_MODE:
-        if not action_mode:
+        # Authorization is strict-equality only — a case-variant or
+        # whitespace-padded mode is corrupt input, not approval_required.
+        if not normalized_mode:
             return KickVerdict(False, "action_mode_missing")
-        if action_mode in _WATCH_ACTION_MODES:
-            return KickVerdict(False, f"action_mode_{action_mode}")
+        if normalized_mode in _WATCH_ACTION_MODES and action_mode != normalized_mode:
+            return KickVerdict(False, "action_mode_malformed")
+        if normalized_mode in _WATCH_ACTION_MODES:
+            return KickVerdict(False, f"action_mode_{normalized_mode}")
         return KickVerdict(False, "action_mode_unknown")
     if not tradable:
         return KickVerdict(False, "market_closed")
-    intent = str(event.get("intent") or "").strip().lower()
-    if intent == BUY_REVIEW_INTENT:
+    if event.get("intent") == BUY_REVIEW_INTENT:
         return KickVerdict(True, BUY_REVIEW_INTENT)
     return None
 
