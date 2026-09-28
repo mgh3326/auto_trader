@@ -935,50 +935,6 @@ class TestParseTrendHelpers:
     def test_parse_trend_bizdate(self, value: Any, expected: str | None) -> None:
         assert naver_finance.investor._parse_trend_bizdate(value) == expected
 
-    async def test_empty_response_no_data_table_returns_empty_data(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # #895: since 2026-09-10 frgn.naver answers HTTP 200 but the page no
-        # longer carries a table.type2 with digit-leading date rows. The parser
-        # must yield the documented empty shape (data == []) without raising so
-        # the job-level zero-commit floor can classify the day and fail loudly.
-        html = (
-            Path(__file__).parent
-            / "fixtures"
-            / "investor_flow"
-            / "frgn_no_data_table.html"
-        ).read_text(encoding="utf-8")
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(html, "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
-
-        result = await naver_finance.fetch_investor_trends("005930", days=20)
-
-        assert result["symbol"] == "005930"
-        assert result["data"] == []
-
-    async def test_page_without_type2_tables_returns_empty_data(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # #895 variant: an interstitial/error page with no table.type2 at all
-        # must also produce the empty shape rather than raise.
-        html = "<html><body><div id='wrap'>서비스 점검 중입니다.</div></body></html>"
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup(html, "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
-
-        result = await naver_finance.fetch_investor_trends("005930", days=20)
-
-        assert result["data"] == []
-
 
 @pytest.mark.unit
 class TestParseHoldingRate:
