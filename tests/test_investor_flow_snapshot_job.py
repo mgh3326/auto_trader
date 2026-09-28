@@ -6,6 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 
 from app.jobs import investor_flow_snapshots as job
@@ -31,6 +32,33 @@ class _SessionFactory(AbstractAsyncContextManager):
 def bind_job_session(monkeypatch, db_session):
     monkeypatch.setattr(job, "AsyncSessionLocal", lambda: _SessionFactory(db_session))
     return db_session
+
+
+# Every symbol this file can commit — purge AFTER each test, not just before.
+# Committed rows leak into the shared run DB and shift resolve_healthy_partition
+# coverage for unrelated screener tests (observed: stale-warning tests in
+# test_invest_view_model_screener_service resolving a leftover 2026-05-12
+# partition instead of their own 2099-xx rows).
+_JOB_COMMITTED_SYMBOLS = (
+    "900311",
+    "900312",
+    "900313",
+    "900314",
+    "900315",
+    "900316",
+    "005930",
+    "000660",
+)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_job_committed_rows(db_session):
+    yield
+    for model in (InvestorFlowSnapshot, KRSymbolUniverse):
+        await db_session.execute(
+            sa.delete(model).where(model.symbol.in_(_JOB_COMMITTED_SYMBOLS))
+        )
+    await db_session.commit()
 
 
 def _payload(
