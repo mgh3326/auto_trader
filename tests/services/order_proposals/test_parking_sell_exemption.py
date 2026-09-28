@@ -226,6 +226,7 @@ def test_retained_cap_tag_veto_and_fat_finger_gates(monkeypatch):
             "thesis_required_for_veto_card",
         ),
         (group, _rung(price="97"), "parking_sell_price_band_failed"),
+        (group, _rung(price="101"), "parking_sell_price_band_failed"),
     )
     for candidate, rung, expected in cases:
         result = _decision(candidate, rung, current="100")
@@ -350,6 +351,18 @@ async def test_kis_preview_and_submit_sell_guards_keep_band(monkeypatch):
         parking_sell_ctx=ctx,
     )
     assert "marketable band floor" in deep_error["error"]
+    _, _, resting_error = await order_validation._validate_sell_side(
+        symbol="SGOV",
+        normalized_symbol="SGOV",
+        market_type="equity_us",
+        quantity=2.0,
+        order_type="limit",
+        price=99.0,
+        current_price=98.0,
+        order_error_fn=lambda message: {"error": message},
+        parking_sell_ctx=ctx,
+    )
+    assert "must be marketable" in resting_error["error"]
 
 
 @pytest.mark.asyncio
@@ -387,6 +400,16 @@ async def test_toss_preview_and_submit_sell_guard_keep_band(monkeypatch):
     )
     assert passed is None
     assert "marketable band floor" in blocked["error"]
+    resting = await orders_toss_variants._sell_loss_guard(
+        object(),
+        "SGOV",
+        "limit",
+        Decimal("99"),
+        {},
+        parking_sell_ctx=ctx,
+        current_price=Decimal("98"),
+    )
+    assert "must be marketable" in resting["error"]
 
 
 @pytest.mark.asyncio
@@ -574,6 +597,7 @@ async def test_missing_account_dispatches_usable_manual_card(
         ("cap", "per_order_cap_exceeded"),
         ("tag", "approval_required_tag"),
         ("band", "parking_sell_price_band_failed"),
+        ("resting", "parking_sell_price_band_failed"),
         ("session", "parking_sell_regular_session_required"),
         ("veto", "thesis_required_for_veto_card"),
         ("account", "parking_sell_account_identity_unavailable"),
@@ -586,7 +610,15 @@ async def test_retained_guard_rejects_before_offline_submit(
     market = "equity_kr" if case == "session" else "equity_us"
     symbol = "459580" if case == "session" else "SGOV"
     current = "1000" if case == "session" else "100"
-    price = "990" if case == "session" else "97" if case == "band" else "99"
+    price = (
+        "990"
+        if case == "session"
+        else "97"
+        if case == "band"
+        else "101"
+        if case == "resting"
+        else "99"
+    )
     quantity = "101" if case == "cap" else "2"
     when = datetime(2026, 9, 27, 23, 59, tzinfo=UTC) if case == "session" else REGULAR
     service = OrderProposalsService(db_session)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -169,6 +170,13 @@ def evaluate_sell_price_guards(
     # _validate_sell_side. Operator-requested: mock must let 손절/스톱로스 be practiced.
     if allow_loss_sell:
         return None
+    if parking_sell_ctx is not None and (
+        not math.isfinite(current_price)
+        or not math.isfinite(price)
+        or current_price <= 0
+        or price > current_price
+    ):
+        return "Parking sell limit price must be marketable at the fresh current price"
     if loss_cut_ctx is not None:
         # ROB-800 — sanctioned loss_cut: floor exempt, current-price guard
         # relaxed to a downward slip band. Fat-finger deep discounts stay blocked.

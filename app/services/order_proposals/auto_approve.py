@@ -1086,12 +1086,11 @@ def evaluate_auto_approve_eligibility(
                         daily_cap=_text(limits.daily_cap),
                     )
         elif parking_sell:
-            # Keep the existing 2% marketable sell fat-finger band independent
-            # of the preview. The preview and broker submit guard check it too.
-            if limit_price < current_price * Decimal("0.98"):
+            # This release is for a marketable limit sell only. Keep both ends
+            # of the fresh-price band independent of preview and submit.
+            if not current_price * Decimal("0.98") <= limit_price <= current_price:
                 return reject("parking_sell_price_band_failed")
-            if limit_price <= current_price:
-                parking_details["marketability"] = "parking_sell_marketable"
+            parking_details["marketability"] = "parking_sell_marketable"
         elif expanded:
             # ...but the preview guard fails open on unknown cost basis and is
             # bypassable (defensive_trim / loss_cut / mock), so `expanded`

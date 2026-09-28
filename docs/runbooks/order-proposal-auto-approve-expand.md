@@ -935,8 +935,9 @@ fee-net profit proof, and the advisory `de_minimis_trim_watch` constraint.
 The latter has no runtime consumer. It permits a marketable **limit** sell,
 including an average-cost loss, so execution can precede the veto card.
 The retained `SELL_MARKETABLE_MAX_DISCOUNT` band blocks a limit more than 2%
-below the current fresh price in preview and submit. The auto classifier
-checks the band independently. Market orders, unsupported actions, and other
+below the current fresh price in preview and submit. This lane also rejects a
+limit above the current fresh price, which would rest instead of selling
+parked cash. The auto classifier checks both ends independently. Market orders, unsupported actions, and other
 exit intents do not inherit this exception.
 
 The exact tuple's immutable per-order cap is **raised, not removed**: USD
