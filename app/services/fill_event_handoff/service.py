@@ -82,8 +82,10 @@ def _exact_int(value: Any) -> int | None:
     values outside PostgreSQL BIGINT range — either launders a corrupt
     cursor or event id into a valid-looking replay point, or overflows the
     driver bind and wedges the pass.  ``str.isdigit()`` is also wider than
-    what ``int()`` parses (e.g. superscript ``"²"``), so digit strings are
-    constrained to ASCII.
+    what ``int()`` parses (e.g. superscript ``"²"``), and ``int()`` raises
+    on digit strings past its ~4300-char limit, so digit strings are
+    constrained to ASCII and BIGINT's 19-digit length, and any residual
+    parse failure is caught and returned as ``None``.
     """
     if isinstance(value, bool):
         return None
@@ -91,9 +93,15 @@ def _exact_int(value: Any) -> int | None:
         parsed = value
     elif isinstance(value, str):
         stripped = value.strip()
-        if not (stripped.isascii() and stripped.isdigit()):
+        # BIGINT max is 19 digits; longer strings are unparseable junk and
+        # int() itself raises past ~4300 digits (CVE-2020-10735) — the parse
+        # below must never let an exception escape this helper.
+        if len(stripped) > 19 or not stripped.isascii() or not stripped.isdigit():
             return None
-        parsed = int(stripped)
+        try:
+            parsed = int(stripped)
+        except (ValueError, OverflowError):
+            return None
     else:
         return None
     if 0 <= parsed <= _PG_BIGINT_MAX:

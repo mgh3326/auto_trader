@@ -1568,3 +1568,55 @@ def test_unparseable_or_out_of_bigint_event_id_is_malformed(
     assert outcome["watch_kicked"] == 0
     assert _create_calls(calls) == []
     assert "event_malformed" in outcome["watch_errors"]
+
+
+@pytest.mark.parametrize("digits", [20, 4301, 5000])
+def test_exact_int_rejects_long_ascii_digit_string_without_raising(
+    digits: int,
+) -> None:
+    # r4 finding: int() raises ValueError past its ~4300-digit limit
+    # (CVE-2020-10735) — long-but-valid JSON digit strings must return None
+    # instead. BIGINT max is 19 digits, so anything longer is junk anyway.
+    assert handoff_service._exact_int("9" * digits) is None
+
+
+@pytest.mark.parametrize("watermark", ["7" * 20, "7" * 5000])
+def test_long_ascii_cursor_string_is_corrupt_not_a_pass_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, watermark: str
+) -> None:
+    # r4 finding: an overlong digit-string watermark crashed int() and
+    # aborted the whole pass — it is corrupt state: reseed to the delivered
+    # high-water mark while a pending fill still lands durable.
+    outcome, calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        fills=[_fill(832)],
+        position=("0.1", 0),  # unproven: fill stays queue-only, no prefect call
+        watches=[_watch(833)],
+        state_extra={
+            "watch_kick_watermark": watermark,
+            "watch_kick_delivered_at": None,
+        },
+    )
+    assert outcome["durable"] == 1
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "watch_cursor_corrupt" in outcome["watch_errors"]
+    persisted = json.loads((tmp_path / "state.json").read_text())
+    assert persisted["watch_kick_watermark"] == 833
+
+
+@pytest.mark.parametrize("event_id", ["8" * 20, "8" * 5000])
+def test_long_ascii_event_id_is_malformed_not_a_watch_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_id: str
+) -> None:
+    # r4 finding: an overlong digit-string event id raised inside the row
+    # sort and surfaced as watch_read_failed — it must drop as
+    # event_malformed without kicking or wedging the pass.
+    bad = _watch(900)
+    bad["event_id"] = event_id
+    outcome, calls, _ = _run(tmp_path, monkeypatch, watches=[bad])
+    assert outcome["watch_kicked"] == 0
+    assert _create_calls(calls) == []
+    assert "event_malformed" in outcome["watch_errors"]
+    assert "watch_read_failed" not in outcome["watch_errors"]
