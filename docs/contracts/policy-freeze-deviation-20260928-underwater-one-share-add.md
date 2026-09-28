@@ -62,7 +62,7 @@ must be recorded as a new cohort stamp. No claim is made that every mock pilot
 is unaffected: a mock account evaluating this tier can produce a larger add.
 The before hash above is the first 12 characters of SHA-256 over the raw policy
 file at origin/main cab5da08d; the after hash is the implementation's pinned
-policy_content_hash at PR #2132 head 32547eeee86fe1c40d1832c1bb5122c9095cb69a.
+policy_content_hash in PR #2132.
 Whether that field denotes a different mock projection remains unconfirmed,
 as in the 2026-09-24 precedent.
 The D+20 outcome tag is rounded_up_to_one_share under underwater-d20-v1;
