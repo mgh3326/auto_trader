@@ -205,9 +205,7 @@ def test_trader_api_middleware_401_and_spa_redirect() -> None:
     for method in ("post", "put", "delete"):
         response = client.request(method, "/trading/api/trader/open-orders")
         assert response.status_code == 401, method
-        page = client.request(
-            method, "/trader/", follow_redirects=False
-        )
+        page = client.request(method, "/trader/", follow_redirects=False)
         # Middleware passes non-GET HTML requests through to routing, which
         # has no non-GET handler — 404/405 prove nothing executed.
         assert page.status_code in (303, 404, 405), (method, page.status_code)
