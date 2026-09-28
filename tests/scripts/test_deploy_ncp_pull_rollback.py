@@ -203,7 +203,13 @@ def test_manual_rollback_skip_also_keeps_kis_instance(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    ("at-worker-new", "at-scheduler", "at-upbit-ws", "at-kis-ws", "at-mcp-account-read"),
+    (
+        "at-worker-new",
+        "at-scheduler",
+        "at-upbit-ws",
+        "at-kis-ws",
+        "at-mcp-account-read",
+    ),
 )
 def test_each_late_phase_failure_restores_all_replaced_units(
     tmp_path: Path, failure: str
@@ -217,7 +223,10 @@ def test_each_late_phase_failure_restores_all_replaced_units(
     assert "expected" in result.stdout.lower()
     assert "running" in result.stdout.lower()
     if failure != "at-worker-new":
-        assert any(call[0] == "run" and "--name" in call and "at-worker" in call for call in calls)
+        assert any(
+            call[0] == "run" and "--name" in call and "at-worker" in call
+            for call in calls
+        )
 
 
 def test_skip_is_never_touched_by_later_rollback(tmp_path: Path) -> None:
@@ -294,24 +303,28 @@ def test_stopped_prior_unit_fails_before_any_mutation(tmp_path: Path) -> None:
     result, calls, _, _ = _run(tmp_path, stopped_name="at-worker")
     assert result.returncode != 0
     assert "container is not running: at-worker" in result.stderr
-    assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
+    assert not any(
+        call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
+    )
 
 
 def test_unknown_prior_digest_fails_before_any_mutation(tmp_path: Path) -> None:
     result, calls, _, _ = _run(tmp_path, unresolved_name="at-upbit-ws")
     assert result.returncode != 0
     assert "rollback digest is unavailable for at-upbit-ws" in result.stderr
-    assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
+    assert not any(
+        call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
+    )
 
 
 def test_dry_run_has_no_mutations_and_explains_skip(tmp_path: Path) -> None:
-    result, calls, state, run_dir = _run(
-        tmp_path, args=("--dry-run", "--skip-kis-ws")
-    )
+    result, calls, state, run_dir = _run(tmp_path, args=("--dry-run", "--skip-kis-ws"))
     assert result.returncode == 0, result.stderr
     assert state["at-kis-ws"] == KIS_OLD
     assert state["at-worker"] == OLD
-    assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
+    assert not any(
+        call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls
+    )
     assert (run_dir / "api-active-color").read_text() == "blue\n"
     assert (run_dir / "mcp-active-color").read_text() == "blue\n"
     assert (run_dir / "deployed-digest").read_text() == OLD + "\n"

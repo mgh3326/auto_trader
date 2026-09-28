@@ -251,7 +251,9 @@ def test_scheduler_failure_restores_its_previous_image(tmp_path: Path) -> None:
     assert any(OLD in line for line in scheduler_runs)
 
 
-def test_ws_failure_restores_replaced_singletons_without_touching_later_ws(tmp_path: Path) -> None:
+def test_ws_failure_restores_replaced_singletons_without_touching_later_ws(
+    tmp_path: Path,
+) -> None:
     p, log, _ = run(tmp_path, api_color="blue", fail_once_container="at-upbit-ws")
     assert p.returncode != 0
     for name in ("at-scheduler", "at-upbit-ws"):
