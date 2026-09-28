@@ -41,12 +41,13 @@ class TestOrderLifecycleState:
                 "anomaly",
                 "cancelled",
                 "canceled",
+                "expired",
             }
         )
 
     def test_terminal_states(self):
         assert ec.TERMINAL_LIFECYCLE_STATES == frozenset(
-            {"reconciled", "failed", "stale", "cancelled", "canceled"}
+            {"reconciled", "failed", "stale", "cancelled", "canceled", "expired"}
         )
 
     def test_in_flight_states(self):

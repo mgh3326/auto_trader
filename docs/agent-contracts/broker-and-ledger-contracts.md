@@ -172,6 +172,18 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 
 **주의**: `kis_mock_order_ledger.correlation_id`/`strategy` 는 과거 NULL 행 때문에 nullable 유지 — DB 제약은 pre-submit 신호 테이블에 걸려 있다. 원장 백필은 별건.
 
+### KIS mock legacy DAY 만료 분류 (Task 881, Q-46)
+
+`kis_mock_ledger_expire_day_orders`는 hermes-paper-kis 전용 수동 도구다.
+브로커 조회·변경 없이 로컬 주문 행, 체결 행, XKRX 달력만 읽는다. 전략·귀속 ID,
+국내 현금주식 주문 경로의 양성 응답과 정확한 주문번호·시각, 일반 ORD_DVSN
+00/01에 맞는 가격·주문형태, 0 체결 기록, N거래일 경과를 모두 증명해야 한다.
+N의 기본값은 2다. 불명확하거나 이미 종료된 행은 쓰지 않는다. 확정 쓰기는
+KISMockLifecycleService만 수행하며 별도 expired 상태와 제한된 감사 사유에
+운영자 결정 참조와 규칙 버전을 보존한다. 두 번째 호출은 감사 횟수까지 순수
+무변경이다. 브로커 미체결 증거로 해석하지 않는다. 실행 절차와 잔여 위험은
+`docs/runbooks/kis-mock-reconciliation.md`의 #706 항목을 따른다.
+
 ### KIS Live Order Fill-Evidence Gate (ROB-395)
 
 `kis_live_place_order(dry_run=False)` (KR domestic) records **accepted-only** to

@@ -25,6 +25,7 @@ holdings-delta reconciler.
 | `stale` | No holdings delta after the stale threshold |
 | `failed` | Broker rejected at submit time |
 | `anomaly` | Holdings snapshot missing, baseline missing, or holdings disagree post-fill |
+| `expired` | Operator Q-46 legacy DAY classification, with bounded row-local audit |
 
 `reconciled`, `failed`, `stale` are terminal. `anomaly` is an operator
 hand-off and is not terminal success/failure.
@@ -96,3 +97,48 @@ from a script or test.
   operator via the anomaly path.
 * `holdings_mismatch` — post-fill holdings disagree with the expected
   position; do NOT auto-resolve. Escalate to operator.
+
+## #706 legacy DAY terminal review (Task 881)
+
+The hermes-paper-kis profile alone registers
+`kis_mock_ledger_expire_day_orders`. This is an operator-invoked ledger
+classification; it does not construct a KIS client, read the broker, send an
+order, or run on a schedule. It requires KIS_MOCK_ENABLED and the existing
+required mock configuration even though this operation is DB-only. The
+configured minimum age is KIS_MOCK_TERMINAL_MIN_SESSIONS, default 2.
+
+First inspect the explicit candidate IDs with
+`kis_mock_ledger_expire_day_orders(ledger_ids=[...], operator_decision_ref="hk #706 Q-46", expected_strategy="actual_strategy")`.
+The default dry_run is true. After reviewing every row's before status,
+row-local evidence, rule version, decision, and after status, the operator may
+invoke the same IDs and reference with `dry_run=False, confirm=True`. This
+runbook does not authorize that execution; the operator does it after the
+specified #180 freeze and #706 window.
+
+The rule requires a KR cash equity row in the kis_mock account, the expected
+strategy and correlation ID, a native accepted response with exact order number
+and time, and regular domestic ORD_DVSN 00 (positive-price limit) or 01
+(zero-price market). The native route is
+`app/mcp_server/tooling/order_execution.py` →
+`app/mcp_server/tooling/kis_mock_ledger.py::_record_kis_mock_order` →
+`_save_kis_mock_order_ledger`; the broker cash-order request mapping is in
+`app/services/brokers/kis/domestic_orders.py::order_korea_stock`.
+`app/services/brokers/kis/mock_scalping_exec/adapters.py` also calls the save
+helper, but its scalping role and absent accepted response cause refusal.
+Mirror or report-item reservation fields also cause refusal.
+
+The row must carry pending_unconfirmed with attributed_fill_qty exactly zero,
+and neither the local KIS mock lifecycle nor the execution ledger may contain
+a matching fill row. The XKRX calendar must classify the trade date and at
+least the configured number of completed trading sessions before today.
+Unknown calendar dates, missing or inconsistent order terms, unknown fill,
+partial or filled rows, too-recent rows, and already-terminal rows remain
+unchanged with explicit refusal codes. A confirmed eligible row becomes the
+distinct expired lifecycle state through KISMockLifecycleService. Its bounded
+audit detail retains the operator decision reference and rule version; a
+second invocation does not change the row or audit counters.
+
+This classification uses persisted local facts and the calendar only. The KIS
+mock pending inquiry is unsupported, so no broker-open-order proof is claimed.
+The residual risk is an unrecorded broker fill or open order; the operator
+must inspect the dry-run evidence and retain the Q-46 decision reference.
