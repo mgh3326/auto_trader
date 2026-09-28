@@ -342,7 +342,7 @@ and only costs a Telegram tap on money that is being parked, not invested.
 | dimension | value |
 | --- | --- |
 | symbols | `SGOV`, `BIL` — closed `frozenset`, hardcoded in `app/services/order_proposals/parking_allowlist.py` |
-| account mode × market | `kis_live` × `equity_us` **only** |
+| account mode × market | `kis_live` × `equity_us` and `toss_live` × `equity_us` only; separate account meters (see §8.10) |
 | mode | `expanded` only. `off` never reaches the branch. |
 | marketability | released on the **buy** side only |
 | per-order cap | 🔴 **raised** USD 1,500 → **USD 10,000**, and still enforced — this is a value change, not a removal |
