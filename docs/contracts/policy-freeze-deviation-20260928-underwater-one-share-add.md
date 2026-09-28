@@ -34,7 +34,7 @@ consumer_paths:
   - docs/playbooks/trading-decision-playbook.md
 effective_at: on merge of the implementation PR, after this record is merged
 live_only_claim: false
-mock_projection_hash_before: TBD_FROM_BASE
+mock_projection_hash_before: dda6a0541849
 mock_projection_hash_after: TBD_FROM_IMPLEMENTATION
 mock_experiment_effect: UNKNOWN
 rollback: >-
@@ -60,6 +60,9 @@ The tier remains a held-lot add and does not enter the new-entry buy-gate A/B
 population. The raw policy content hash and version necessarily change and
 must be recorded as a new cohort stamp. No claim is made that every mock pilot
 is unaffected: a mock account evaluating this tier can produce a larger add.
+The before hash above is the first 12 characters of SHA-256 over the raw policy
+file at origin/main cab5da08d; whether that field denotes a different mock
+projection remains unconfirmed, as in the 2026-09-24 precedent.
 The D+20 outcome tag is rounded_up_to_one_share under underwater-d20-v1;
 the existing scoring horizon and thresholds remain unchanged.
 
