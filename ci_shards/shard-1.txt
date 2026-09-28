@@ -16,6 +16,7 @@ tests/integration/services/test_forecast_read_window_candles.py
 tests/integration/test_paper_positions_market_filter.py
 tests/integration/test_rob279_stale_gate_blocked.py
 tests/integration/test_strategy_event_db_roundtrip.py
+tests/jobs/test_kis_mock_expiry_race.py
 tests/mcp_server/test_alpaca_paper_manual_boundary.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py
@@ -78,6 +79,7 @@ tests/scripts/test_at_job_runner.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
+tests/scripts/test_deploy_ncp_pull_rollback.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_list_recent_fill_events_cli.py

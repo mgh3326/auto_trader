@@ -371,7 +371,9 @@ async def test_commit_empty_universe_on_closed_day_stays_successful(monkeypatch)
 async def test_empty_upstream_payload_end_to_end_fails_loudly(monkeypatch):
     # End-to-end #895/#900 chain: real trend-JSON parser over an empty payload,
     # real builder, real job — the same chain that must fail loudly when every
-    # symbol yields no rows on a trading day.
+    # symbol yields no rows on a trading day. (Supersedes #895's HTML-fixture
+    # variant test_empty_upstream_page_end_to_end_fails_loudly: frgn.naver is
+    # a client-rendered SPA and the trend fetcher reads the JSON API.)
     async def mock_fetch_json(url, params=None):
         return []
 
