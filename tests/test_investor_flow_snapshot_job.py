@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from bs4 import BeautifulSoup
 
 from app.jobs import investor_flow_snapshots as job
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services.investor_flow_snapshots.builder import InvestorFlowBuildResult
 from app.services.investor_flow_snapshots.repository import InvestorFlowSnapshotUpsert
+from app.services.naver_finance import investor as naver_investor
 
 
 class _SessionFactory(AbstractAsyncContextManager):
@@ -136,4 +139,222 @@ async def test_non_kr_market_rejected(bind_job_session):
     with pytest.raises(ValueError, match="Unsupported investor-flow snapshot market"):
         await job.run_investor_flow_snapshot_build(
             job.InvestorFlowSnapshotBuildRequest(market="us")
+        )
+
+
+# --- #895 zero-commit floor ---------------------------------------------------
+# Real XKRX session data (verified against exchange_calendars): Monday
+# 2026-09-28 is an open session; Saturday 2026-09-26 and the weekday holidays
+# 2026-10-05 (Mon) / 2026-10-09 (Fri) are closed. Using real calendar dates —
+# not a monkeypatched classifier — is what pins the gate to XKRX rather than a
+# weekday check.
+_KR_TRADING_MONDAY = dt.date(2026, 9, 28)
+_KR_WEEKEND_SATURDAY = dt.date(2026, 9, 26)
+_KR_WEEKDAY_HOLIDAY_FRIDAY = dt.date(2026, 10, 9)
+_KR_WEEKDAY_HOLIDAY_MONDAY = dt.date(2026, 10, 5)
+
+_FRGN_EMPTY_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "investor_flow" / "frgn_no_data_table.html"
+)
+
+
+async def _empty_builder(**kwargs):
+    return InvestorFlowBuildResult(
+        payloads=[],
+        warnings=tuple(
+            f"{symbol}: no investor-flow rows returned" for symbol in kwargs["symbols"]
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_zero_rows_on_trading_day_fails_loudly(monkeypatch):
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", _empty_builder)
+
+    with pytest.raises(
+        job.InvestorFlowEmptyCommitError, match=r"KRX trading day 2026-09-28"
+    ):
+        await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930", "000660"), commit=True, today=_KR_TRADING_MONDAY
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_commit_zero_rows_on_weekend_stays_successful(monkeypatch):
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", _empty_builder)
+
+    exc = None
+    result = None
+    try:
+        result = await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930",), commit=True, today=_KR_WEEKEND_SATURDAY
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        exc = e
+
+    assert exc is None
+    assert result is not None
+    assert result.snapshots_built == 0
+    assert result.committed is True
+    assert result.warnings == ("batch 1: 005930: no investor-flow rows returned",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "closed_weekday", [_KR_WEEKDAY_HOLIDAY_FRIDAY, _KR_WEEKDAY_HOLIDAY_MONDAY]
+)
+async def test_commit_zero_rows_on_weekday_holiday_stays_successful(
+    monkeypatch, closed_weekday
+):
+    # A weekday check would raise here; XKRX says these are closed sessions.
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", _empty_builder)
+
+    exc = None
+    result = None
+    try:
+        result = await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930",), commit=True, today=closed_weekday
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        exc = e
+
+    assert exc is None
+    assert result is not None
+    assert result.snapshots_built == 0
+
+
+@pytest.mark.asyncio
+async def test_commit_partial_success_is_not_counted_as_zero(
+    bind_job_session, db_session, monkeypatch
+):
+    symbols = ("900314", "900315")
+    await db_session.execute(
+        sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.symbol.in_(symbols))
+    )
+    await db_session.commit()
+
+    async def partial_builder(**kwargs):
+        batch = kwargs["symbols"]
+        return InvestorFlowBuildResult(
+            payloads=[_payload(batch[0])],
+            warnings=tuple(
+                f"{symbol}: no investor-flow rows returned" for symbol in batch[1:]
+            ),
+        )
+
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", partial_builder)
+
+    exc = None
+    result = None
+    try:
+        result = await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=symbols, commit=True, today=_KR_TRADING_MONDAY
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        exc = e
+
+    assert exc is None
+    assert result is not None
+    assert result.snapshots_built == 1
+    assert result.committed is True
+
+
+@pytest.mark.asyncio
+async def test_dry_run_zero_rows_on_trading_day_stays_successful(monkeypatch):
+    # commit=False is the approval-packet path; the floor must stay silent there.
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", _empty_builder)
+
+    exc = None
+    result = None
+    try:
+        result = await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930",), commit=False, today=_KR_TRADING_MONDAY
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        exc = e
+
+    assert exc is None
+    assert result is not None
+    assert result.committed is False
+    assert result.snapshots_built == 0
+
+
+@pytest.mark.asyncio
+async def test_commit_zero_rows_unclassifiable_date_fails_closed(monkeypatch):
+    # Fail-closed: an XKRX calendar that cannot classify the run date cannot
+    # excuse an empty commit (session_calendar contract).
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", _empty_builder)
+    monkeypatch.setattr(job, "trading_session_status", lambda *a, **kw: "unknown")
+
+    with pytest.raises(job.InvestorFlowEmptyCommitError, match="could not classify"):
+        await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930",), commit=True, today=_KR_TRADING_MONDAY
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_commit_empty_universe_on_trading_day_fails_loudly(monkeypatch):
+    async def no_symbols(market):
+        return []
+
+    monkeypatch.setattr(job, "resolve_active_universe", no_symbols)
+    monkeypatch.setattr(job, "build_investor_flow_snapshots", _empty_builder)
+
+    with pytest.raises(
+        job.InvestorFlowEmptyCommitError, match=r"KRX trading day 2026-09-28"
+    ):
+        await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                all_symbols=True, commit=True, today=_KR_TRADING_MONDAY
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_commit_empty_universe_on_closed_day_stays_successful(monkeypatch):
+    async def no_symbols(market):
+        return []
+
+    monkeypatch.setattr(job, "resolve_active_universe", no_symbols)
+
+    result = await job.run_investor_flow_snapshot_build(
+        job.InvestorFlowSnapshotBuildRequest(
+            all_symbols=True, commit=True, today=_KR_WEEKEND_SATURDAY
+        )
+    )
+
+    assert result.snapshots_built == 0
+    assert result.warnings == ("no symbols resolved",)
+
+
+@pytest.mark.asyncio
+async def test_empty_upstream_page_end_to_end_fails_loudly(monkeypatch):
+    # End-to-end #895 reproduction: real parser over the empty-response fixture,
+    # real builder, real job — the same chain that silently committed 0 rows.
+    html = _FRGN_EMPTY_FIXTURE.read_text(encoding="utf-8")
+
+    async def mock_fetch_html(url, params=None):
+        return BeautifulSoup(html, "lxml")
+
+    monkeypatch.setattr(naver_investor, "_fetch_html", mock_fetch_html)
+
+    with pytest.raises(
+        job.InvestorFlowEmptyCommitError, match=r"KRX trading day 2026-09-28"
+    ):
+        await job.run_investor_flow_snapshot_build(
+            job.InvestorFlowSnapshotBuildRequest(
+                symbols=("005930",), commit=True, today=_KR_TRADING_MONDAY
+            )
         )
