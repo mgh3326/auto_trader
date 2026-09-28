@@ -184,7 +184,10 @@ def _map_us_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
         change_rate = _to_float(row.get("regularMarketChangePercent", 0))
 
     volume = _to_int(row.get("regularMarketVolume"))
-    market_cap = _to_float(row.get("marketCap"))
+    # Optional, not defaulted: a missing marketCap must stay None so the
+    # get_top_stocks US quality bar can fail it closed — a 0.0/nan would
+    # silently read as "below the floor" (or slip past a < comparison).
+    market_cap = _to_optional_float(row.get("marketCap"))
     trade_amount = None
 
     return {

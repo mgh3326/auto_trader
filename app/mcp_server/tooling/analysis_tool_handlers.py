@@ -15,6 +15,7 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
+from app.core.config import settings
 from app.mcp_server.tooling import (
     analysis_quick,
     analysis_screening,
@@ -145,12 +146,25 @@ async def get_top_stocks_impl(
     # caller still gets up to limit_clamped quality rows (KR ranking endpoints
     # already fetch their full page in one call — see fluctuation_rank/
     # volume_rank/market_cap_rank — so a larger client-side slice is free).
+    # US (retro U-3): floors resolve from settings when the caller did not pass
+    # them — the unfiltered US movers lists are dominated by sub-floor small
+    # caps and leveraged/inverse ETFs, so the quality bar is default-ON.  The
+    # same include_illiquid escape hatch that bypasses the KR foreigners
+    # liquidity bar bypasses the *default* US bar (settings floors and the
+    # leveraged/inverse ETF exclusion); explicit caller floors still apply.
+    if market == "us" and not include_illiquid:
+        if min_market_cap is None:
+            min_market_cap = float(settings.us_top_stocks_min_market_cap)
+        if min_turnover is None:
+            min_turnover = float(settings.us_top_stocks_min_turnover)
     _quality_filter_requested = min_market_cap is not None or min_turnover is not None
     fetch_limit = (
         min(limit_clamped * 4, 100) if _quality_filter_requested else limit_clamped
     )
     excluded_by_market_cap = 0
+    excluded_by_missing_market_cap = 0
     excluded_by_turnover = 0
+    excluded_by_instrument = 0
     source = {"kr": "kis", "us": "yfinance", "crypto": "upbit"}.get(
         market,
         "",
@@ -243,9 +257,53 @@ async def get_top_stocks_impl(
                 row["rank"] = new_rank
 
         elif market == "us":
-            rankings, source = await analysis_screening._get_us_rankings(
-                ranking_type, limit_clamped
+            # Retro U-3 (#922): the KR quality floor semantics apply here —
+            # missing market_cap/turnover evidence can never pass a resolved
+            # floor, and leveraged/inverse products are excluded like the KR
+            # name-token rule (is_us_leveraged_inverse_name mirrors
+            # _KR_TOSS_EXCLUDED_NAME_TOKENS in invest_view_model's
+            # screener_service). The floors are settings-backed defaults; pass
+            # include_illiquid=true to bypass the whole default bar.
+            from app.mcp_server.tooling.screening.instrument_type import (
+                is_us_leveraged_inverse_name,
             )
+
+            mapped_rows, source = await analysis_screening._get_us_rankings(
+                ranking_type, fetch_limit
+            )
+            rankings = []
+            for mapped in mapped_rows:
+                if not include_illiquid and is_us_leveraged_inverse_name(
+                    mapped.get("name")
+                ):
+                    excluded_by_instrument += 1
+                    continue
+                if min_market_cap is not None:
+                    mc = mapped.get("market_cap")
+                    if mc is None:
+                        # Fail closed: unknown cap cannot establish the floor.
+                        excluded_by_market_cap += 1
+                        excluded_by_missing_market_cap += 1
+                        continue
+                    if mc < min_market_cap:
+                        excluded_by_market_cap += 1
+                        continue
+                if min_turnover is not None:
+                    turnover = mapped.get("trade_amount")
+                    if turnover is None:
+                        price = mapped.get("price")
+                        volume = mapped.get("volume")
+                        if price is not None and volume is not None:
+                            turnover = price * volume
+                            mapped["trade_amount"] = turnover
+                    if turnover is None or turnover < min_turnover:
+                        excluded_by_turnover += 1
+                        continue
+                rankings.append(mapped)
+                if len(rankings) >= limit_clamped:
+                    break
+            for new_rank, row in enumerate(rankings, start=1):
+                row["rank"] = new_rank
 
         elif market == "crypto":
             rankings, source = await analysis_screening._get_crypto_rankings(
@@ -358,11 +416,30 @@ async def get_top_stocks_impl(
     # into the misleading "market may be entirely bullish" message below — that
     # message means "KIS returned no losers at all", not "the quality filter
     # removed everyone". Surface the real reason instead (never fabricate rows).
+    # The same honest-degraded contract applies to the US quality bar (#922).
     if (
         len(rankings) == 0
-        and market == "kr"
-        and (excluded_by_market_cap or excluded_by_turnover)
+        and market in ("kr", "us")
+        and (excluded_by_market_cap or excluded_by_turnover or excluded_by_instrument)
     ):
+        if market == "us":
+            degraded_reason = (
+                f"all {excluded_by_market_cap + excluded_by_turnover + excluded_by_instrument} "
+                f"matching row(s) fell below the US quality bar "
+                f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}, "
+                f"leveraged_inverse_excluded={excluded_by_instrument}, "
+                f"missing_market_cap_excluded={excluded_by_missing_market_cap}); "
+                "pass include_illiquid=true to bypass the default bar or lower "
+                "the floors"
+            )
+        else:
+            degraded_reason = (
+                f"all {excluded_by_market_cap + excluded_by_turnover} matching "
+                f"row(s) fell below the requested quality floor or lacked "
+                f"trusted normalized coverage "
+                f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}); "
+                "refresh normalized valuation snapshots or retry with a lower floor"
+            )
         return {
             "rankings": [],
             "total_count": 0,
@@ -372,18 +449,21 @@ async def get_top_stocks_impl(
             "source": source,
             **({"data_state": data_state} if data_state is not None else {}),
             "status": "degraded",
-            "degraded_reason": (
-                f"all {excluded_by_market_cap + excluded_by_turnover} matching "
-                f"row(s) fell below the requested quality floor or lacked "
-                f"trusted normalized coverage "
-                f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}); "
-                "refresh normalized valuation snapshots or retry with a lower floor"
-            ),
+            "degraded_reason": degraded_reason,
             **(
                 {
                     "market_cap_filter": {
                         "min_market_cap": min_market_cap,
                         "excluded_count": excluded_by_market_cap,
+                        **(
+                            {
+                                "missing_market_cap_excluded_count": (
+                                    excluded_by_missing_market_cap
+                                )
+                            }
+                            if market == "us"
+                            else {}
+                        ),
                     }
                 }
                 if min_market_cap is not None
@@ -397,6 +477,15 @@ async def get_top_stocks_impl(
                     }
                 }
                 if min_turnover is not None
+                else {}
+            ),
+            **(
+                {
+                    "instrument_filter": {
+                        "excluded_leveraged_inverse_etf_count": excluded_by_instrument
+                    }
+                }
+                if market == "us" and not include_illiquid
                 else {}
             ),
         }
@@ -431,11 +520,20 @@ async def get_top_stocks_impl(
         response["market_cap_filter"] = {
             "min_market_cap": min_market_cap,
             "excluded_count": excluded_by_market_cap,
+            **(
+                {"missing_market_cap_excluded_count": (excluded_by_missing_market_cap)}
+                if market == "us"
+                else {}
+            ),
         }
     if min_turnover is not None:
         response["turnover_filter"] = {
             "min_turnover": min_turnover,
             "excluded_count": excluded_by_turnover,
+        }
+    if market == "us" and not include_illiquid:
+        response["instrument_filter"] = {
+            "excluded_leveraged_inverse_etf_count": excluded_by_instrument,
         }
     return response
 

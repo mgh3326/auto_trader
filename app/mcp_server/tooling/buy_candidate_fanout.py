@@ -113,6 +113,27 @@ _LIVE_SOURCES: tuple[_LiveSource, ...] = (
     _LiveSource("trade_amount", "trade_amount", "desc"),
 )
 
+
+@dataclass(frozen=True, slots=True)
+class _TopStocksSource:
+    """A get_top_stocks-backed live source (retro U-3 / #922).
+
+    The quality floors live inside ``get_top_stocks`` — this source reads the
+    filtered response and lifts the filter echo into payload metadata so the
+    A-record provenance shows which floors were applied.
+    """
+
+    source: str
+    family: str
+    ranking_type: Literal["volume", "market_cap", "gainers", "losers"]
+
+
+_US_TOP_STOCK_SOURCES: tuple[_TopStocksSource, ...] = (
+    # The U-3 source: unfiltered US losers were small caps and leveraged
+    # ETFs; the source relies on get_top_stocks's default-ON US quality bar.
+    _TopStocksSource("us_top_stocks:losers", "us_top_stocks", "losers"),
+)
+
 _SNAPSHOT_SOURCE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "snapshot_support_flow",
@@ -153,6 +174,7 @@ _SUPPORT_FAMILY_ALIASES: tuple[tuple[str, str], ...] = (
 )
 
 _LiveReader = Callable[[_LiveSource, str, int], Awaitable[dict[str, Any]]]
+_TopStocksReader = Callable[[_TopStocksSource, str, int], Awaitable[dict[str, Any]]]
 _SnapshotReader = Callable[
     [str, tuple[str, ...], str, int], Awaitable[list[dict[str, Any]]]
 ]
@@ -929,6 +951,61 @@ async def _read_live_source(
     }
 
 
+async def _read_top_stocks_source(
+    source: _TopStocksSource, market: str, top_n: int
+) -> dict[str, Any]:
+    """Read a filtered get_top_stocks source (retro U-3 / #922).
+
+    Floors are deliberately NOT passed: ``get_top_stocks`` resolves the
+    settings-backed US defaults itself.  The response's filter echo is lifted
+    into payload metadata so every A-record carries the applied floor values.
+    A degraded-but-empty response is an ``empty`` source run, not an error —
+    the quality bar legitimately emptied the list.
+    """
+
+    from app.mcp_server.tooling.analysis_tool_handlers import get_top_stocks_impl
+
+    request: dict[str, Any] = {
+        "market": market,
+        "ranking_type": source.ranking_type,
+        "limit": top_n,
+    }
+    response = await get_top_stocks_impl(**request)
+    if response.get("error"):
+        return {
+            "source": source.source,
+            "family": source.family,
+            "kind": "live",
+            "rows": [],
+            "dropped_rows": [],
+            "metadata": {
+                "request": request,
+                "source_status": SOURCE_STATUS_ERROR,
+                "error_type": "error_response",
+            },
+        }
+    metadata: dict[str, Any] = {
+        "request": request,
+        "upstream_total_count": response.get("total_count"),
+    }
+    for key in (
+        "market_cap_filter",
+        "turnover_filter",
+        "instrument_filter",
+        "status",
+        "degraded_reason",
+    ):
+        if key in response:
+            metadata[key] = response[key]
+    return {
+        "source": source.source,
+        "family": source.family,
+        "kind": "live",
+        "rows": list(response.get("rankings") or []),
+        "metadata": metadata,
+    }
+
+
 async def _read_snapshot_group(
     family: str, presets: tuple[str, ...], market: str, top_n: int
 ) -> list[dict[str, Any]]:
@@ -1101,6 +1178,23 @@ async def _read_live_payload(
         payload,
         expected_source=source.source,
         expected_family=source.source,
+        expected_kind="live",
+    )
+
+
+async def _read_top_stocks_payload(
+    source: _TopStocksSource, market: str, top_n: int, reader: _TopStocksReader
+) -> dict[str, Any]:
+    """Same per-source isolation contract as _read_live_payload."""
+
+    try:
+        payload = await reader(source, market, top_n)
+    except Exception as exc:  # noqa: BLE001 - planned source run, status recorded
+        return _error_payload(source.source, source.family, "live", exc)
+    return _normalize_payload(
+        payload,
+        expected_source=source.source,
+        expected_family=source.family,
         expected_kind="live",
     )
 
@@ -1665,34 +1759,70 @@ def _first_failed_reason(funnel: Mapping[str, Mapping[str, Any]]) -> str | None:
 
 async def discover_buy_candidates_fanout_impl(
     *,
-    market: Literal["kr"] = "kr",
+    market: Literal["kr", "us"] = "kr",
     _live_reader: _LiveReader | None = None,
     _snapshot_reader: _SnapshotReader | None = None,
+    _top_stocks_reader: _TopStocksReader | None = None,
     _fresh_revalidator: _FreshRevalidator | None = None,
     _policy_loader: _PolicyLoader = load_trading_policy,
 ) -> dict[str, Any]:
-    """Discover a bounded KR candidate pool and record an observation funnel.
+    """Discover a bounded candidate pool and record an observation funnel.
 
     The return is explicitly non-actionable.  It has no account/broker access,
     performs no writes, and must not be used as PnL scoring or immediate
     threshold-tuning evidence.
+
+    ``market="kr"`` runs the original five source families.  ``market="us"``
+    (retro U-3 / #922) runs the filtered ``get_top_stocks`` losers source as
+    the ``us_top_stocks`` family; the market-cap/turnover floors and the
+    leveraged/inverse ETF exclusion live inside ``get_top_stocks`` itself.
     """
+
+    market = (market or "").strip().lower()
+    if market not in ("kr", "us"):
+        return {
+            "success": False,
+            "market": market,
+            "observation_only": True,
+            "error": f"unsupported market for discovery fan-out: {market!r}",
+        }
 
     for family, presets in _SNAPSHOT_SOURCE_GROUPS:
         _validate_snapshot_preset_group(family, presets)
     gates = _FanoutGates.from_policy(_policy_loader())
     live_reader = _live_reader or _read_live_source
     snapshot_reader = _snapshot_reader or _read_snapshot_group
+    top_stocks_reader = _top_stocks_reader or _read_top_stocks_source
     fresh_revalidator = _fresh_revalidator or _fresh_revalidate
+
+    # The source plan is per-market: KR keeps the original five families, US
+    # runs the filtered get_top_stocks losers family. The round-robin,
+    # dedupe, funnel and A-record machinery below are market-agnostic.
+    if market == "us":
+        live_sources: tuple[_LiveSource, ...] = ()
+        snapshot_source_groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
+        top_stocks_sources = _US_TOP_STOCK_SOURCES
+    else:
+        live_sources = _LIVE_SOURCES
+        snapshot_source_groups = _SNAPSHOT_SOURCE_GROUPS
+        top_stocks_sources = ()
 
     collected_at = dt.datetime.now(dt.UTC)
     # Per-source isolation: a failed read degrades to an error payload so the
     # call still records every planned source run and the surviving evidence.
-    live_payloads, snapshot_groups = await asyncio.gather(
+    live_payloads, top_stocks_payloads, snapshot_groups = await asyncio.gather(
         asyncio.gather(
             *(
                 _read_live_payload(source, market, TOP_N_PER_SOURCE, live_reader)
-                for source in _LIVE_SOURCES
+                for source in live_sources
+            )
+        ),
+        asyncio.gather(
+            *(
+                _read_top_stocks_payload(
+                    source, market, TOP_N_PER_SOURCE, top_stocks_reader
+                )
+                for source in top_stocks_sources
             )
         ),
         asyncio.gather(
@@ -1700,11 +1830,11 @@ async def discover_buy_candidates_fanout_impl(
                 _read_snapshot_payloads(
                     family, presets, market, TOP_N_PER_SOURCE, snapshot_reader
                 )
-                for family, presets in _SNAPSHOT_SOURCE_GROUPS
+                for family, presets in snapshot_source_groups
             )
         ),
     )
-    payloads: list[dict[str, Any]] = [*live_payloads]
+    payloads: list[dict[str, Any]] = [*live_payloads, *top_stocks_payloads]
     for group in snapshot_groups:
         payloads.extend(group)
 

@@ -1291,6 +1291,15 @@ class Settings(BaseSettings):
     # Fail-open. No scheduler. Operator enables after alembic upgrade head.
     SCREENER_PICK_LOG_ENABLED: bool = False
 
+    # get_top_stocks(market="us") quality floors (#922 / strategy-lab retro U-3).
+    # Raw USD. Unlike the opt-in KR floors these are defaults because the
+    # unfiltered US movers lists are dominated by sub-floor small caps and
+    # leveraged/inverse ETFs. Rows missing market_cap/turnover evidence fail
+    # closed (excluded and counted); include_illiquid=true bypasses the whole
+    # default bar, and explicit tool args override these defaults.
+    us_top_stocks_min_market_cap: float = 2_000_000_000
+    us_top_stocks_min_turnover: float = 1_000_000
+
     # Naver Remote-Debug Audit (ROB-323)
     remote_debug_audit_enabled: bool = False
 
