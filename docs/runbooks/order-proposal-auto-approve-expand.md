@@ -29,7 +29,7 @@ only one:
 | | boundary | scope |
 | --- | --- | --- |
 | 1st | per-order **USD 10,000** (raised) | every parking rung, both sides |
-| 2nd | cumulative parking exposure **USD 10,000** | parking **buys**, across orders |
+| 2nd | cumulative parking exposure **USD 20,000** | parking **buys**, across orders |
 
 The second is measured from the broker balance **plus the same-day durable
 record of already-auto-approved parking buys**, and fails closed. Both halves
@@ -346,7 +346,7 @@ and only costs a Telegram tap on money that is being parked, not invested.
 | mode | `expanded` only. `off` never reaches the branch. |
 | marketability | released on the **buy** side only |
 | per-order cap | 🔴 **raised** USD 1,500 → **USD 10,000**, and still enforced — this is a value change, not a removal |
-| 2nd boundary | cumulative parking exposure ≤ **USD 10,000**, buy side, where exposure = broker balance **+** same-day auto-approved parking buys (see §8.3) |
+| 2nd boundary | cumulative parking exposure ≤ **USD 20,000**, buy side, where exposure = broker balance **+** same-day auto-approved parking buys (see §8.3) |
 | shared daily cap (§S170) | 🔴 **excluded on both buy and sell** for this explicitly enabled scope in `expanded` mode: it neither blocks the parking rung nor consumes budget for a later ordinary order |
 
 Neither constant is a settings key, an environment variable, or a
@@ -370,19 +370,19 @@ spellings is a losing game. What it buys is that re-introducing configurability
 *the obvious way* turns red in CI. The real boundary is that this file is
 operator-PR-only, like the policy document.
 
-### 8.2 Why only exact `kis_live` market tuples
+### 8.2 Exact account and market tuples (§163 historical KIS scope)
 
 The cumulative cap is only meaningful if parking exposure can be read back at
 all. `kis_live` has the existing read surface for each authorized market:
 `equity_us` uses `KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt` (USD),
 while `equity_kr` uses `KISClient.fetch_my_stocks` → `evlu_amt` (KRW).
-`toss_live` is veto-capable in principle behind
+At the time of §163, `toss_live` was veto-capable in principle behind
 `ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED` for both `equity_us` and `equity_kr`,
-but its exposure lives on a different broker surface. Metering a KIS balance to
+but its exposure lived on a different broker surface. Metering a KIS balance to
 authorize a Toss order would be a wrong-account cap, which is worse than no
-parking treatment at all. No `toss_live` tuple is authorized, so Toss parking
-orders keep the ordinary gates. A proposal outside an exact KIS
-symbol×account×market tuple gets nothing.
+parking treatment at all. That historical exclusion was superseded by the
+account-bound Toss KR (§S174) and US (§173) scopes below. A proposal outside an
+exact authorized symbol×account×market tuple gets no parking treatment.
 
 🔴 **This is an account *label*, not a proven account identity — do not read
 more into it than the code does.** Both halves of the measurement are scoped
@@ -411,9 +411,9 @@ A row that *declares* a currency other than USD fails closed.
 **🔴 Half 2 — same-day auto-approved parking buys.**
 `KISAccount._filter_nonzero_holdings` keeps only rows with
 `ovrs_cblc_qty > 0`, so an order that was auto-approved and **sent but has not
-filled** has no balance row at all. Measured from the balance alone, two
-separate USD 10,000 SGOV proposals both see zero exposure and both clear —
-USD 20,000 against a USD 10,000 cap. `OrderProposalsService
+filled** has no balance row at all. Measured from the balance alone, three
+separate USD 10,000 SGOV proposals could each see zero exposure and clear —
+USD 30,000 against the current USD 20,000 cap. `OrderProposalsService
 .auto_approved_parking_notional` closes that window, reusing the KST-day
 window, advisory lock and row filter of the already-vetted
 `auto_approved_daily_notional`. It counts parking **buys** only (a sell reduces
@@ -459,7 +459,7 @@ Every one of these rejects the auto-approval and produces a human card:
 | no durable reader was supplied (balance-only is the broken measure) | `… / durable_reader_missing` |
 | the durable read raised or timed out | `… / durable_read_failed` |
 | the durable read returned a missing/unparseable/negative value | `… / durable_notional_invalid` |
-| projected exposure > USD 10,000 | `parking_cap_exceeded` |
+| projected exposure > USD 20,000 | `parking_cap_exceeded` |
 
 `parking_exposure` defaults to `None` on the classifier, and `None` is the
 fail-closed value — a caller that forgets to supply it cannot clear the
@@ -712,13 +712,14 @@ correcting ETF ticks affects all KRX ETF orders and requires a separate review.
 ### 8.10 Toss US extension (§173) — a separate USD account meter
 
 The two US parking symbols are additionally authorized on a separate Toss
-surface. This is a new exception with the same immutable USD controls already
-used by the KIS US face; no cap value or policy key is changed:
+surface. At §173, this used the same immutable USD controls as the KIS US face
+and changed no cap value or policy key. Both faces now use the §880 cumulative
+cap:
 
 | symbol | account mode × market | currency | per-order cap | cumulative buy cap | daily cap |
 | --- | --- | --- | --- | --- | --- |
-| `SGOV` | `toss_live` × `equity_us` | USD | 10,000 | 10,000 | exempt |
-| `BIL` | `toss_live` × `equity_us` | USD | 10,000 | 10,000 | exempt |
+| `SGOV` | `toss_live` × `equity_us` | USD | 10,000 | 20,000 | exempt |
+| `BIL` | `toss_live` × `equity_us` | USD | 10,000 | 20,000 | exempt |
 
 Each closed scope binds `balance_provider=toss_us_holdings`,
 `balance_symbol_field=symbol`, `balance_evaluation_field=market_value.amount`,
@@ -750,9 +751,9 @@ must pass one sequence explicitly. The historical ae231402 SGOV proposal
 has a NULL sequence and remains `account_identity_unavailable`.
 
 The Toss US face and the KIS US face are deliberately independent meters. Each
-can consume its own USD 10,000 cumulative-buy cap, so the accepted US aggregate
-upper bound is **USD 20,000** (KIS USD 10,000 + Toss USD 10,000), not one shared
-USD 10,000 pool. This is the same per-face structure accepted for the two KR
+can consume its own USD 20,000 cumulative-buy cap, so the accepted US aggregate
+upper bound is **USD 40,000** (KIS USD 20,000 + Toss USD 20,000), not one shared
+USD 20,000 pool. This is the same per-face structure accepted for the two KR
 faces in §S174. The existing daily-cap exclusion applies through the exact
 expanded parking marker; no scheduler or automatic trigger is added.
 
@@ -790,8 +791,9 @@ effective binding amount is not symmetric by market:
   KST midnight therefore occurs together; the daily cap was never a backstop
   for the US intra-session reset.
 
-For **US**, the prior USD 20,000 daily cap was already looser than the
-USD 10,000 cumulative parking-buy cap. For the pre-existing **KIS KR face**,
+For **US**, when §S170 shipped, the prior USD 20,000 daily cap was looser than
+the then-current USD 10,000 cumulative parking-buy cap; the current cumulative
+cap is USD 20,000. For the pre-existing **KIS KR face**,
 the prior KRW 5,000,000 daily cap was the binding gate below its KRW 15,000,000
 cumulative parking-buy cap. §S170 moves that one face from **KRW 5,000,000 to
 KRW 15,000,000**; the **3×** BL-37/BL-39 statement applies only to that
