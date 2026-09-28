@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import multiprocessing
 from decimal import Decimal
+from multiprocessing.managers import SyncManager
 from types import SimpleNamespace
 
 import pytest
@@ -57,9 +58,11 @@ def _local_counter_process(data, ready, key):
 
 def test_independent_process_local_counter_exhibits_three_position_counterexample():
     ctx = multiprocessing.get_context("spawn")
-    with ctx.Manager() as manager:
+    # Loopback TCP keeps the shared store on an address class the ROB-1880
+    # socket guard permits; the default AF_UNIX manager socket is blocked.
+    with SyncManager(ctx=ctx, address=("127.0.0.1", 0)) as manager:
         data = manager.dict({f"s{i}": signal_values(key=f"s{i}") for i in range(3)})
-        ready = ctx.Barrier(3)
+        ready = manager.Barrier(3)
         processes = [
             ctx.Process(target=_local_counter_process, args=(data, ready, f"s{i}"))
             for i in range(3)
@@ -83,13 +86,13 @@ def test_independent_concurrent_processes_cannot_exceed_caps(symbols, allowed):
     # Each spawned process imports the service independently and uses only
     # the shared fake table store; no process opens a real DB connection.
     ctx = multiprocessing.get_context("spawn")
-    with ctx.Manager() as manager:
+    with SyncManager(ctx=ctx, address=("127.0.0.1", 0)) as manager:
         data, lock = manager.dict(), manager.RLock()
         store = FakeStore(data, lock)
         store.put(BinanceH5LaneState, lane_values())
         for index, symbol in enumerate(symbols):
             store.put(BinanceH5Signal, signal_values(key=f"s{index}", symbol=symbol))
-        ready, results = ctx.Barrier(3), ctx.Queue()
+        ready, results = manager.Barrier(3), manager.Queue()
         processes = [
             ctx.Process(
                 target=_reserve_process, args=(data, lock, ready, results, f"s{i}")
@@ -230,6 +233,8 @@ def _evidence(**changes):
         "status": "PARTIALLY_FILLED",
         "reduce_only": False,
         "position_side": "BOTH",
+        "order_created_at": NOW,
+        "order_updated_at": NOW,
     }
     values.update(changes)
     return H5OrderEvidence(**values)
@@ -269,6 +274,40 @@ def test_partial_fill_and_restart_apply_only_incremental_evidence():
         asyncio.run(restarted.settle_intent(intent.client_order_id, now=NOW)).state
         == "settled"
     )
+
+
+def test_late_recovery_keeps_original_broker_holding_clock():
+    store = FakeStore()
+    store.put(BinanceH5Signal, signal_values(state="entry_reserved"))
+    store.put(BinanceH5Intent, intent_values())
+    state = H5StateService(store.factory)
+    signal, _ = asyncio.run(
+        state.apply_order_evidence(
+            _evidence(status="FILLED", executed_qty=Decimal("1")),
+            broker_position_amt=Decimal("1"),
+            exit_bar_close_ts=None,
+            now=NOW + dt.timedelta(days=2),
+        )
+    )
+    assert signal.entered_at == NOW
+    assert NOW + dt.timedelta(days=2) - signal.entered_at > dt.timedelta(hours=24)
+
+
+def test_missing_execution_clock_keeps_intent_unresolved():
+    store = FakeStore()
+    store.put(BinanceH5Signal, signal_values(state="entry_reserved"))
+    store.put(BinanceH5Intent, intent_values())
+    with pytest.raises(H5StateBlocked, match="clock evidence"):
+        asyncio.run(
+            H5StateService(store.factory).apply_order_evidence(
+                _evidence(order_created_at=None, order_updated_at=None),
+                broker_position_amt=Decimal("0.4"),
+                exit_bar_close_ts=None,
+                now=NOW,
+            )
+        )
+    assert store.values(BinanceH5Intent)[0]["state"] == "sending"
+    assert store.values(BinanceH5Signal)[0]["entry_qty"] == 0
 
 
 def test_partial_close_pnl_and_remaining_quantity_are_evidence_first():

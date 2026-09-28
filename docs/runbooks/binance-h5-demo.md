@@ -52,6 +52,12 @@ order status plus position evidence. The shared Demo ledger is written only
 through BinanceDemoLedgerService. Its root is released after flat position
 and empty open orders are proven.
 
+Recovery also requires the broker order creation and update timestamps.
+The holding clock starts at order creation as the conservative earliest
+possible fill, so a delayed cumulative-fill lookup never extends the 24h
+deadline. Closed-trip time uses the broker order update, not the lookup time.
+These fields are carried by the broker [Query Order response](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-Order).
+
 Every tick reads one-minute lows/highs since actual entry fill, including
 between four-hour closes. The exit priority is intrabar adverse 5% hard
 stop, completed-bar adverse 3% stop, six complete bars or 24-hour time

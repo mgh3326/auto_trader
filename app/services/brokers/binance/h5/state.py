@@ -99,6 +99,8 @@ class H5OrderEvidence:
     status: str
     reduce_only: bool
     position_side: str | None
+    order_created_at: dt.datetime | None = None
+    order_updated_at: dt.datetime | None = None
 
 
 def _signal_snapshot(row: BinanceH5Signal) -> H5SignalSnapshot:
@@ -561,6 +563,14 @@ class H5StateService:
         """
         if evidence.status not in _BROKER_STATUSES:
             raise H5StateBlocked("unknown broker order status")
+        if evidence.executed_qty > 0 and (
+            evidence.order_created_at is None
+            or evidence.order_updated_at is None
+            or evidence.order_created_at.tzinfo is None
+            or evidence.order_updated_at.tzinfo is None
+            or not evidence.order_created_at <= evidence.order_updated_at <= now
+        ):
+            raise H5StateBlocked("broker execution clock evidence unavailable")
         if not all(
             value.is_finite()
             for value in (
@@ -638,7 +648,10 @@ class H5StateService:
                     prior_cost = signal.entry_qty * (signal.entry_price or Decimal(0))
                     signal.entry_qty += delta_qty
                     signal.entry_price = (prior_cost + delta_quote) / signal.entry_qty
-                    signal.entered_at = signal.entered_at or now
+                    # Order creation is the conservative earliest possible
+                    # fill time when a restart first sees cumulative fills.
+                    # A late lookup must never restart the 24h holding clock.
+                    signal.entered_at = signal.entered_at or evidence.order_created_at
                     signal.state = "holding"
             intent.broker_order_id = evidence.broker_order_id
             intent.broker_status = evidence.status
@@ -662,7 +675,7 @@ class H5StateService:
             elif expected == 0 and signal.entry_qty > 0 and intent.reduce_only:
                 signal.state = "closed"
                 signal.exit_reason = intent.leg_key.split(":", 1)[0]
-                signal.exit_at = now
+                signal.exit_at = evidence.order_updated_at
                 signal.exit_bar_close_ts = exit_bar_close_ts
             elif expected > 0:
                 signal.state = "holding"

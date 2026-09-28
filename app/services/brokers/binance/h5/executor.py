@@ -58,6 +58,14 @@ class H5TickResult:
 
 
 def _evidence(order: FuturesDemoOrderStatusResult) -> H5OrderEvidence:
+    raw = order.raw_response_redacted
+
+    def broker_time(field: str) -> dt.datetime | None:
+        value = raw.get(field)
+        if type(value) is not int or not 0 < value < 2**63:
+            return None
+        return dt.datetime.fromtimestamp(value / 1000, tz=dt.UTC)
+
     return H5OrderEvidence(
         client_order_id=order.client_order_id,
         broker_order_id=order.broker_order_id,
@@ -69,6 +77,8 @@ def _evidence(order: FuturesDemoOrderStatusResult) -> H5OrderEvidence:
         status=order.status,
         reduce_only=order.reduce_only,
         position_side=order.position_side,
+        order_created_at=broker_time("time"),
+        order_updated_at=broker_time("updateTime"),
     )
 
 
@@ -209,7 +219,8 @@ class H5Executor:
         current, current_intent = await self.state.apply_order_evidence(
             evidence,
             broker_position_amt=amt,
-            exit_bar_close_ts=(now_ms(now) // FOUR_HOUR_MS) * FOUR_HOUR_MS,
+            exit_bar_close_ts=(now_ms(evidence.order_updated_at or now) // FOUR_HOUR_MS)
+            * FOUR_HOUR_MS,
             now=now,
         )
         try:

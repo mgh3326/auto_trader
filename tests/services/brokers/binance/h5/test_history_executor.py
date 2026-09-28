@@ -307,6 +307,10 @@ def test_restart_resolves_recorded_send_by_exact_client_id_without_submit(monkey
                 status="FILLED",
                 reduce_only=False,
                 position_side="BOTH",
+                raw_response_redacted={
+                    "time": int(NOW.timestamp() * 1000),
+                    "updateTime": int(NOW.timestamp() * 1000),
+                },
             )
 
         async def get_all_positions(self):

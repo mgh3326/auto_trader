@@ -273,6 +273,8 @@ def test_restart_unknown_fence_and_partial_fill_evidence():
             "FILLED",
             False,
             "BOTH",
+            NOW,
+            NOW,
         )
         held, settled = await restarted.apply_order_evidence(
             ev, broker_position_amt=D(1), exit_bar_close_ts=None, now=NOW
@@ -305,6 +307,8 @@ def test_restart_unknown_fence_and_partial_fill_evidence():
             "PARTIALLY_FILLED",
             True,
             "BOTH",
+            NOW,
+            NOW,
         )
         held, pending = await restarted.apply_order_evidence(
             partial, broker_position_amt=D(".8"), exit_bar_close_ts=None, now=NOW
@@ -330,6 +334,8 @@ def test_restart_unknown_fence_and_partial_fill_evidence():
             "FILLED",
             True,
             "BOTH",
+            NOW,
+            NOW,
         )
         held, settled = await restarted.apply_order_evidence(
             final, broker_position_amt=D(".5"), exit_bar_close_ts=None, now=NOW
