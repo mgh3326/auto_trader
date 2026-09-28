@@ -202,14 +202,43 @@ async def test_five_families_are_bounded_deduped_and_funnelled() -> None:
 
     assert len(revalidation_calls) == 1
     assert len(revalidation_calls[0]) == TOP_N_REVALIDATION
-    unrevalidated = result["candidates"][TOP_N_REVALIDATION]
-    assert unrevalidated["revalidation"]["status"] == "not_revalidated_top_n_limit"
+    # Family round-robin pick order, not dedupe insertion order.
+    assert revalidation_calls[0] == [
+        "BRK.B",
+        "005930",
+        "SNAP.SUPPORT_PROXIMITY",
+        "SNAP.HIGH_YIELD_VALUE",
+        "SNAP.INVESTOR_FLOW_MOMENTUM",
+        "SNAP.UNDERVALUED_BREAKOUT",
+        "SNAP.DOUBLE_BUY",
+        "SNAP.PROFITABLE_COMPANY",
+        "SNAP.STABLE_GROWTH",
+        "SNAP.GROWTH_EXPECTATION_TOSS",
+    ]
+    unrevalidated = [
+        candidate
+        for candidate in result["candidates"]
+        if candidate["revalidation"]["status"] == "not_revalidated_top_n_limit"
+    ]
+    assert [candidate["symbol"] for candidate in unrevalidated] == [
+        "SNAP.UNDERVALUED_GROWTH"
+    ]
+    assert unrevalidated[0]["selection"]["selected"] is False
     assert result["bounds"] == {
         "top_n_per_source": 10,
         "top_n_revalidation": 10,
         "max_snapshot_presets_per_call": 5,
         "snapshot_max_stale_sessions": 1,
         "snapshot_values_are_input_only_until_fresh_revalidation": True,
+        "revalidation_slot_allocation": "family_round_robin",
+        "revalidation_family_order": [
+            "rsi",
+            "change_rate",
+            "trade_amount",
+            "snapshot_support_flow",
+            "snapshot_value_catalyst",
+        ],
+        "revalidation_picks_per_family_round": 1,
     }
     assert result["digest_observation"]["actionable_count"] == 0
     assert (
@@ -1173,3 +1202,399 @@ def test_missing_underwater_condition_key_fails_the_fanout_closed():
 
     with pytest.raises(ValueError, match="missing conditions"):
         fanout._FanoutGates.from_policy(drifted)
+
+
+# ---------------------------------------------------------------------------
+# Task #884 — per-source-family round-robin slot allocation and the full
+# candidate A-record emitted for the outer pick-log observer.
+# ---------------------------------------------------------------------------
+
+
+def _rows(symbols: list[str]) -> list[dict[str, Any]]:
+    return [_source_row(symbol) for symbol in symbols]
+
+
+def _live_reader_with_rows(
+    rows_by_source: dict[str, list[dict[str, Any]]],
+    *,
+    failing: set[str] | None = None,
+) -> Any:
+    async def live_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        if failing and source.source in failing:
+            raise RuntimeError(f"{source.source} upstream down")
+        return {
+            "source": source.source,
+            "family": source.source,
+            "kind": "live",
+            "rows": list(rows_by_source.get(source.source, [])),
+            "metadata": {
+                "request": {
+                    "market": market,
+                    "sort_by": source.sort_by,
+                    "sort_order": source.sort_order,
+                    "limit": top_n,
+                }
+            },
+        }
+
+    return live_reader
+
+
+_SNAPSHOT_PRESETS = {
+    "snapshot_support_flow": (
+        "support_proximity",
+        "investor_flow_momentum",
+        "double_buy",
+        "stable_growth",
+        "undervalued_growth",
+    ),
+    "snapshot_value_catalyst": (
+        "cheap_value",
+        "high_yield_value",
+        "undervalued_breakout",
+        "profitable_company",
+        "growth_expectation_toss",
+    ),
+}
+
+
+def _snapshot_reader_with_rows(
+    rows_by_source: dict[str, list[dict[str, Any]]],
+    *,
+    dropped_by_source: dict[str, list[dict[str, Any]]] | None = None,
+) -> Any:
+    async def snapshot_reader(
+        family: str, presets: tuple[str, ...], market: str, top_n: int
+    ) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for preset in presets:
+            source = f"{family}:{preset}"
+            dropped = list((dropped_by_source or {}).get(source, []))
+            metadata: dict[str, Any] = {"preset": preset}
+            if dropped:
+                metadata["source_status"] = "stale_dropped"
+                metadata["source_drop_reasons"] = {
+                    "snapshot_more_than_one_session_stale": len(dropped)
+                }
+            payloads.append(
+                {
+                    "source": source,
+                    "family": family,
+                    "kind": "snapshot",
+                    "rows": list(rows_by_source.get(source, [])),
+                    "dropped_rows": dropped,
+                    "metadata": metadata,
+                }
+            )
+        return payloads
+
+    return snapshot_reader
+
+
+async def _ok_revalidator(symbols: list[str], market: str) -> dict[str, dict[str, Any]]:
+    return {symbol: _fresh_row() for symbol in symbols}
+
+
+def _picked_by_family(result: dict[str, Any]) -> dict[str, int]:
+    by_family = result["digest_observation"]["selection_summary"]["by_family"]
+    return {family: stats["picked"] for family, stats in by_family.items()}
+
+
+@pytest.mark.asyncio
+async def test_dominant_family_cannot_consume_whole_revalidation_pool() -> None:
+    """A family with 10 candidates gets only its round-robin turns."""
+
+    revalidation_calls: list[list[str]] = []
+
+    async def revalidator(symbols: list[str], market: str) -> dict[str, dict[str, Any]]:
+        revalidation_calls.append(list(symbols))
+        return await _ok_revalidator(symbols, market)
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=_live_reader_with_rows(
+            {
+                "rsi": _rows([f"RSI-{index}" for index in range(10)]),
+                "change_rate": _rows([f"CR-{index}" for index in range(4)]),
+                "trade_amount": _rows([f"TA-{index}" for index in range(4)]),
+            }
+        ),
+        _snapshot_reader=_snapshot_reader_with_rows(
+            {
+                **{
+                    f"snapshot_support_flow:{preset}": _rows([f"SSF-{preset}"])
+                    for preset in _SNAPSHOT_PRESETS["snapshot_support_flow"]
+                },
+                **{
+                    f"snapshot_value_catalyst:{preset}": _rows([f"SVC-{preset}"])
+                    for preset in _SNAPSHOT_PRESETS["snapshot_value_catalyst"]
+                },
+            }
+        ),
+        _fresh_revalidator=revalidator,
+    )
+
+    assert _picked_by_family(result) == {
+        "rsi": 2,
+        "change_rate": 2,
+        "trade_amount": 2,
+        "snapshot_support_flow": 2,
+        "snapshot_value_catalyst": 2,
+    }
+    assert len(result["collection"]["selected_symbol_order"]) == (TOP_N_REVALIDATION)
+    assert revalidation_calls == [result["collection"]["selected_symbol_order"]]
+    # The dominant family's unselected rows are still recorded.
+    rsi_records = [
+        record for record in result["candidate_records"] if record["family"] == "rsi"
+    ]
+    assert len(rsi_records) == 10
+    assert [
+        (record["admission"], record["admission_reason"], record["selection_seq"])
+        for record in rsi_records
+    ] == [
+        ("admitted", "family_round_robin_pick", 1),
+        ("admitted", "family_round_robin_pick", 6),
+        *[("not_admitted", "slot_pool_exhausted", None) for _ in range(8)],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_empty_families_yield_and_slots_redistribute() -> None:
+    """Families with no fresh candidates release their slots to the rest."""
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=_live_reader_with_rows(
+            {
+                "rsi": _rows([f"RSI-{index}" for index in range(6)]),
+                "change_rate": [],
+                "trade_amount": [],
+            }
+        ),
+        _snapshot_reader=_snapshot_reader_with_rows(
+            {
+                f"snapshot_support_flow:{preset}": _rows(
+                    [f"SSF-{preset}-{index}" for index in range(2)]
+                )
+                for preset in _SNAPSHOT_PRESETS["snapshot_support_flow"]
+            }
+        ),
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    assert _picked_by_family(result) == {
+        "rsi": 5,
+        "change_rate": 0,
+        "trade_amount": 0,
+        "snapshot_support_flow": 5,
+        "snapshot_value_catalyst": 0,
+    }
+    # Two live families alternate deterministically: rsi, ssf, rsi, ssf, ...
+    picks = [
+        record
+        for record in result["candidate_records"]
+        if record["selection_seq"] is not None
+    ]
+    picks.sort(key=lambda record: record["selection_seq"])
+    assert [record["family"] for record in picks] == [
+        "rsi",
+        "snapshot_support_flow",
+    ] * 5
+    statuses = result["collection"]["source_statuses"]
+    assert statuses["change_rate"] == "empty"
+    assert statuses["trade_amount"] == "empty"
+    assert statuses["snapshot_value_catalyst:cheap_value"] == "empty"
+    assert result["collection"]["selection"]["method"] == "family_round_robin"
+
+
+@pytest.mark.asyncio
+async def test_selection_order_and_admissions_are_deterministic() -> None:
+    """Identical payloads must produce identical picks and record decisions."""
+
+    live_rows = {
+        "rsi": _rows(["AAA", "RSI-2", "RSI-3"]),
+        "change_rate": _rows(["AAA", "CR-2"]),
+        "trade_amount": _rows(["TA-1"]),
+    }
+    snapshot_rows = {
+        "snapshot_support_flow:support_proximity": _rows(["AAA", "SSF-2"]),
+        "snapshot_value_catalyst:cheap_value": _rows(["AAA", "SVC-2"]),
+    }
+
+    async def run() -> dict[str, Any]:
+        return await discover_buy_candidates_fanout_impl(
+            _live_reader=_live_reader_with_rows(live_rows),
+            _snapshot_reader=_snapshot_reader_with_rows(snapshot_rows),
+            _fresh_revalidator=_ok_revalidator,
+        )
+
+    first, second = await run(), await run()
+    assert (
+        first["collection"]["selected_symbol_order"]
+        == second["collection"]["selected_symbol_order"]
+    )
+
+    def fingerprint(result: dict[str, Any]) -> list[tuple[Any, ...]]:
+        return [
+            (
+                record["source"],
+                record["rank"],
+                record["symbol"],
+                record["admission"],
+                record["admission_reason"],
+                record["selection_seq"],
+            )
+            for record in result["candidate_records"]
+        ]
+
+    assert fingerprint(first) == fingerprint(second)
+    # AAA was surfaced by four sources; only the first family turn picks it.
+    aaa_records = [
+        record for record in first["candidate_records"] if record["symbol"] == "AAA"
+    ]
+    assert len(aaa_records) == 4
+    by_source = {record["source"]: record for record in aaa_records}
+    assert by_source["rsi"]["admission_reason"] == "family_round_robin_pick"
+    assert by_source["rsi"]["selection_seq"] == 1
+    for source in (
+        "change_rate",
+        "snapshot_support_flow:support_proximity",
+        "snapshot_value_catalyst:cheap_value",
+    ):
+        record = by_source[source]
+        assert record["admission"] == "admitted"
+        assert (
+            record["admission_reason"] == "duplicate_symbol_admitted_via_other_source"
+        )
+        assert record["selected_via"] == {
+            "source": "rsi",
+            "family": "rsi",
+            "rank": 1,
+        }
+
+
+@pytest.mark.asyncio
+async def test_stale_dropped_rows_are_recorded_but_never_selected() -> None:
+    """Pre-selection drops still produce A-records with the drop reason."""
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=_live_reader_with_rows({"rsi": _rows(["RSI-1"])}),
+        _snapshot_reader=_snapshot_reader_with_rows(
+            {},
+            dropped_by_source={
+                "snapshot_support_flow:support_proximity": _rows(["STALE-1", "STALE-2"])
+            },
+        ),
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    stale = [
+        record
+        for record in result["candidate_records"]
+        if record["source"] == "snapshot_support_flow:support_proximity"
+    ]
+    assert [
+        (
+            record["rank"],
+            record["symbol"],
+            record["admission"],
+            record["admission_reason"],
+            record["source_status"],
+        )
+        for record in stale
+    ] == [
+        (
+            1,
+            "STALE.1",
+            "dropped_preselection",
+            "snapshot_more_than_one_session_stale",
+            "stale_dropped",
+        ),
+        (
+            2,
+            "STALE.2",
+            "dropped_preselection",
+            "snapshot_more_than_one_session_stale",
+            "stale_dropped",
+        ),
+    ]
+    assert all(
+        candidate["symbol"] not in {"STALE.1", "STALE.2"}
+        for candidate in result["candidates"]
+    )
+    assert (
+        result["collection"]["source_statuses"][
+            "snapshot_support_flow:support_proximity"
+        ]
+        == "stale_dropped"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_source_degrades_to_error_status_not_a_failed_call() -> None:
+    """A broken source reader leaves a status row, not an aborted fan-out."""
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=_live_reader_with_rows(
+            {"trade_amount": _rows(["TA-1"])}, failing={"rsi"}
+        ),
+        _snapshot_reader=_snapshot_reader_with_rows({}),
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    assert result["success"] is True
+    statuses = result["collection"]["source_statuses"]
+    assert statuses["rsi"] == "error"
+    assert statuses["trade_amount"] == "ok"
+    assert statuses["change_rate"] == "empty"
+    assert all(record["source"] != "rsi" for record in result["candidate_records"])
+    rsi_stats = next(
+        stats
+        for stats in result["digest_observation"]["source_stats"]
+        if stats["source"] == "rsi"
+    )
+    assert rsi_stats["source_status"] == "error"
+    assert rsi_stats["incoming_count"] == 0
+    assert result["collection"]["selected_symbol_order"] == ["TA.1"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_records_cover_every_considered_source_row() -> None:
+    """One A-record per (source, rank) row; nothing considered is missing."""
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=_live_reader_with_rows(
+            {
+                "rsi": _rows([f"RSI-{index}" for index in range(7)]),
+                "change_rate": _rows(["CR-1"]),
+                "trade_amount": _rows(["TA-1", "TA-2"]),
+            }
+        ),
+        _snapshot_reader=_snapshot_reader_with_rows({}),
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    records = result["candidate_records"]
+    assert len(records) == 7 + 1 + 2
+    key_set = {(record["source"], record["symbol"]) for record in records}
+    assert len(key_set) == len(records)
+    assert all(
+        record["admission"] in {"admitted", "not_admitted"}
+        and record["admission_reason"]
+        and record["rank"] >= 1
+        for record in records
+    )
+    per_source_ranks: dict[str, list[int]] = {}
+    for record in records:
+        per_source_ranks.setdefault(record["source"], []).append(record["rank"])
+    assert per_source_ranks == {
+        "rsi": [1, 2, 3, 4, 5, 6, 7],
+        "change_rate": [1],
+        "trade_amount": [1, 2],
+    }
+    # 10 unique candidates -> every one admitted (pool never fills).
+    assert {record["admission"] for record in records} == {"admitted"}
+    gate_rows = [record for record in records if record["gate_features"] is not None]
+    assert {record["symbol"] for record in gate_rows} == set(
+        result["collection"]["selected_symbol_order"]
+    )
+    assert result["collection"]["collection_version"] == "funnel-a1"
+    assert result["collection"]["fetched_at"].endswith("+00:00")

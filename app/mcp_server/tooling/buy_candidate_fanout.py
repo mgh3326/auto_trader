@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -30,6 +31,64 @@ TOP_N_PER_SOURCE = 10
 TOP_N_REVALIDATION = 10
 MAX_SNAPSHOT_PRESETS_PER_CALL = 5
 SNAPSHOT_MAX_STALE_SESSIONS = 1
+
+# Admission to the bounded full-analysis pool is per-source-family round-robin
+# in declared family order, one candidate per family per round.  A family that
+# cannot offer a new symbol yields its turn to the next family, so leftover
+# slots redistribute deterministically instead of going first-come to the
+# earliest declared family.  With five live families the nominal shape is
+# 5 x 2 = the ten bounded slots.
+REVALIDATION_SLOT_METHOD = "family_round_robin"
+REVALIDATION_PICKS_PER_FAMILY_ROUND = 1
+
+# Collection marker stamped on every emitted A-record row.  The outer pick-log
+# writer copies it so pre-A-record rows stay distinguishable (no backfill).
+COLLECTION_VERSION = "funnel-a1"
+
+# Admission decisions recorded per considered candidate row.
+ADMISSION_ADMITTED = "admitted"
+ADMISSION_NOT_ADMITTED = "not_admitted"
+ADMISSION_DROPPED_PRESELECTION = "dropped_preselection"
+
+ADMISSION_REASON_ROUND_ROBIN_PICK = "family_round_robin_pick"
+ADMISSION_REASON_DUPLICATE_SYMBOL = "duplicate_symbol_admitted_via_other_source"
+ADMISSION_REASON_SLOT_POOL_EXHAUSTED = "slot_pool_exhausted"
+
+# Per-source call disposition.  ``empty`` and ``error`` sources emit no
+# candidate rows; their status is still recorded per call under
+# ``collection.source_statuses`` and ``digest_observation.source_stats``.
+SOURCE_STATUS_OK = "ok"
+SOURCE_STATUS_EMPTY = "empty"
+SOURCE_STATUS_STALE_DROPPED = "stale_dropped"
+SOURCE_STATUS_ERROR = "error"
+_SOURCE_STATUSES = frozenset(
+    {
+        SOURCE_STATUS_OK,
+        SOURCE_STATUS_EMPTY,
+        SOURCE_STATUS_STALE_DROPPED,
+        SOURCE_STATUS_ERROR,
+    }
+)
+
+# Best-effort raw evidence keys on a source row.  The full row is preserved in
+# ``raw_row`` regardless; these are only lifted for the queryable columns.
+_SOURCE_PRICE_KEYS = (
+    "price",
+    "current_price",
+    "close",
+    "stck_prpr",
+    "prpr",
+    "trade_price",
+    "last_price",
+)
+_SOURCE_DATA_ASOF_KEYS = (
+    "date",
+    "trade_date",
+    "stlmDt",
+    "snapshotDate",
+    "asof",
+    "base_date",
+)
 
 # Eligibility requires a named, top-level full-analysis freshness result.  A
 # compact/legacy payload that omits this field is neither fresh nor stale: it is
@@ -885,21 +944,41 @@ async def _read_snapshot_group(
     payloads: list[dict[str, Any]] = []
     async with AsyncSessionLocal() as session:
         for preset in presets:
-            response = await build_screener_results(
-                preset,
-                service,
-                resolver,
-                market=market,
-                session=session,
-            )
-            freshness = response.freshness.model_dump(mode="json")
-            source_rows = [
-                row.model_dump(mode="json") for row in response.results[:top_n]
-            ]
+            # One preset failure must not erase the sibling presets' evidence;
+            # the errored source is still recorded as a planned source run.
+            try:
+                response = await build_screener_results(
+                    preset,
+                    service,
+                    resolver,
+                    market=market,
+                    session=session,
+                )
+                freshness = response.freshness.model_dump(mode="json")
+                emitted_rows = [
+                    row.model_dump(mode="json") for row in response.results[:top_n]
+                ]
+            except Exception as exc:  # noqa: BLE001 - status only, never secrets
+                payloads.append(
+                    _error_payload(
+                        f"{family}:{preset}",
+                        family,
+                        "snapshot",
+                        exc,
+                        preset=preset,
+                        scheduled_presets=presets,
+                    )
+                )
+                continue
             staleness = _snapshot_staleness_contract(freshness, market)
+            source_rows = emitted_rows
+            dropped_rows: list[dict[str, Any]] = []
             source_drop_reasons: dict[str, int] = {}
             if source_rows and not staleness["within_limit"]:
+                # The rows are preserved for the A-record even though they
+                # never enter the deduped population.
                 source_drop_reasons[str(staleness["reason"])] = len(source_rows)
+                dropped_rows = source_rows
                 source_rows = []
             payloads.append(
                 {
@@ -907,6 +986,7 @@ async def _read_snapshot_group(
                     "family": family,
                     "kind": "snapshot",
                     "rows": source_rows,
+                    "dropped_rows": dropped_rows,
                     "metadata": {
                         "preset": preset,
                         "scheduled_preset_group": list(presets),
@@ -915,10 +995,429 @@ async def _read_snapshot_group(
                         "snapshot_staleness_contract": staleness,
                         "incoming_count_before_staleness_filter": len(response.results),
                         "source_drop_reasons": source_drop_reasons,
+                        "source_status": (
+                            SOURCE_STATUS_STALE_DROPPED
+                            if dropped_rows
+                            else SOURCE_STATUS_OK
+                            if source_rows
+                            else SOURCE_STATUS_EMPTY
+                        ),
                     },
                 }
             )
     return payloads
+
+
+def _error_payload(
+    source: str,
+    family: str,
+    kind: str,
+    exc: BaseException,
+    *,
+    preset: str | None = None,
+    scheduled_presets: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """A planned source run that failed: zero rows, status preserved."""
+
+    metadata: dict[str, Any] = {
+        "source_status": SOURCE_STATUS_ERROR,
+        # Type name only; exception text may carry provider detail.
+        "error_type": type(exc).__name__,
+    }
+    if preset is not None:
+        metadata["preset"] = preset
+    if scheduled_presets is not None:
+        metadata["scheduled_preset_group"] = list(scheduled_presets)
+        metadata["scheduled_preset_count"] = len(scheduled_presets)
+    return {
+        "source": source,
+        "family": family,
+        "kind": kind,
+        "rows": [],
+        "dropped_rows": [],
+        "metadata": metadata,
+    }
+
+
+def _normalize_payload(
+    payload: object,
+    *,
+    expected_source: str,
+    expected_family: str,
+    expected_kind: str,
+) -> dict[str, Any]:
+    """Coerce a reader payload into the canonical shape without losing status."""
+
+    data = dict(payload) if isinstance(payload, Mapping) else {}
+    raw_metadata = data.get("metadata")
+    metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    dropped = data.get("dropped_rows")
+    if not isinstance(dropped, list):
+        dropped = []
+    status = str(metadata.get("source_status") or "")
+    if status not in _SOURCE_STATUSES:
+        if metadata.get("error_type"):
+            status = SOURCE_STATUS_ERROR
+        elif dropped:
+            status = SOURCE_STATUS_STALE_DROPPED
+        elif rows:
+            status = SOURCE_STATUS_OK
+        else:
+            status = SOURCE_STATUS_EMPTY
+    metadata["source_status"] = status
+    return {
+        "source": str(data.get("source") or expected_source),
+        "family": str(data.get("family") or expected_family),
+        "kind": str(data.get("kind") or expected_kind),
+        "rows": rows,
+        "dropped_rows": dropped,
+        "metadata": metadata,
+    }
+
+
+def _payload_preset(payload: Mapping[str, Any]) -> str:
+    metadata = payload.get("metadata")
+    metadata_data = metadata if isinstance(metadata, Mapping) else {}
+    preset = str(metadata_data.get("preset") or "")
+    if preset:
+        return preset
+    source = str(payload.get("source") or "")
+    return source.rsplit(":", 1)[-1] if ":" in source else ""
+
+
+async def _read_live_payload(
+    source: _LiveSource, market: str, top_n: int, reader: _LiveReader
+) -> dict[str, Any]:
+    """One failing live source degrades to an error status, not a failed call."""
+
+    try:
+        payload = await reader(source, market, top_n)
+    except Exception as exc:  # noqa: BLE001 - planned source run, status recorded
+        return _error_payload(source.source, source.source, "live", exc)
+    return _normalize_payload(
+        payload,
+        expected_source=source.source,
+        expected_family=source.source,
+        expected_kind="live",
+    )
+
+
+async def _read_snapshot_payloads(
+    family: str,
+    presets: tuple[str, ...],
+    market: str,
+    top_n: int,
+    reader: _SnapshotReader,
+) -> list[dict[str, Any]]:
+    """A failing/missing snapshot preset keeps its planned-run status."""
+
+    try:
+        group = await reader(family, presets, market, top_n)
+    except Exception as exc:  # noqa: BLE001 - planned source run, status recorded
+        return [
+            _error_payload(
+                f"{family}:{preset}",
+                family,
+                "snapshot",
+                exc,
+                preset=preset,
+                scheduled_presets=presets,
+            )
+            for preset in presets
+        ]
+    items = list(group) if isinstance(group, (list, tuple)) else []
+    payloads: list[dict[str, Any]] = []
+    seen_presets: set[str] = set()
+    for index, item in enumerate(items):
+        payload = _normalize_payload(
+            item,
+            expected_source=f"{family}:unexpected_{index}",
+            expected_family=family,
+            expected_kind="snapshot",
+        )
+        preset = _payload_preset(payload)
+        if preset in presets:
+            seen_presets.add(preset)
+        payload["metadata"].setdefault("preset", preset or None)
+        payloads.append(payload)
+    for preset in presets:
+        if preset not in seen_presets:
+            payloads.append(
+                {
+                    "source": f"{family}:{preset}",
+                    "family": family,
+                    "kind": "snapshot",
+                    "rows": [],
+                    "dropped_rows": [],
+                    "metadata": {
+                        "preset": preset,
+                        "scheduled_preset_group": list(presets),
+                        "scheduled_preset_count": len(presets),
+                        "source_status": SOURCE_STATUS_ERROR,
+                        "error_type": "SourcePayloadMissing",
+                    },
+                }
+            )
+    order = {preset: index for index, preset in enumerate(presets)}
+    payloads.sort(key=lambda item: order.get(_payload_preset(item), len(presets)))
+    return payloads
+
+
+def _payload_data_asof(payload: Mapping[str, Any]) -> str | None:
+    metadata = payload.get("metadata")
+    metadata_data = metadata if isinstance(metadata, Mapping) else {}
+    freshness = metadata_data.get("snapshot_freshness")
+    freshness_data = freshness if isinstance(freshness, Mapping) else {}
+    primary = freshness_data.get("primary")
+    primary_data = primary if isinstance(primary, Mapping) else {}
+    value = primary_data.get("snapshotDate")
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _row_data_asof(row: Mapping[str, Any], fallback: str | None) -> str | None:
+    for key in _SOURCE_DATA_ASOF_KEYS:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return fallback
+
+
+def _first_present(row: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        if row.get(key) is not None:
+            return row[key]
+    return None
+
+
+def _new_candidate_record(
+    payload: Mapping[str, Any],
+    row: Mapping[str, Any],
+    *,
+    ordinal: int,
+    symbol: str,
+    data_asof_fallback: str | None,
+) -> dict[str, Any]:
+    metadata = payload.get("metadata")
+    metadata_data = metadata if isinstance(metadata, Mapping) else {}
+    return {
+        "source": str(payload["source"]),
+        "family": str(payload["family"]),
+        "kind": str(payload["kind"]),
+        "rank": ordinal,
+        "symbol": symbol,
+        "admission": None,
+        "admission_reason": None,
+        "selection_seq": None,
+        "selected_via": None,
+        "source_status": str(metadata_data.get("source_status") or SOURCE_STATUS_EMPTY),
+        "data_asof": _row_data_asof(row, data_asof_fallback),
+        "source_price": _first_present(row, _SOURCE_PRICE_KEYS),
+        "raw_row": dict(row),
+        "gate_features": None,
+    }
+
+
+def _source_drop_reason(payload: Mapping[str, Any]) -> str:
+    metadata = payload.get("metadata")
+    metadata_data = metadata if isinstance(metadata, Mapping) else {}
+    reasons = metadata_data.get("source_drop_reasons")
+    if isinstance(reasons, Mapping) and reasons:
+        return str(next(iter(reasons)))
+    return "source_rows_dropped_preselection"
+
+
+def _interleave_source_records(
+    source_records: Sequence[Sequence[dict[str, Any]]],
+) -> deque[dict[str, Any]]:
+    """Cyclic within-family ordering: sources rotate by emitted rank."""
+
+    queue: deque[dict[str, Any]] = deque()
+    depth = max((len(rows) for rows in source_records), default=0)
+    for index in range(depth):
+        for rows in source_records:
+            if index < len(rows):
+                queue.append(rows[index])
+    return queue
+
+
+def _candidate_records_and_queues(
+    payloads: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, deque[dict[str, Any]]]]:
+    """One A-record per (source, rank) row plus the family selection queues.
+
+    ``rank`` is the 1-based position in the source's emitted top-N slice, so a
+    malformed or symbol-less row does not shift the recorded ranks.  Rows that
+    cannot yield a canonical symbol are not candidates and are only counted in
+    ``source_stats`` (they can never be a log row).
+    """
+
+    records: list[dict[str, Any]] = []
+    family_order: list[str] = []
+    family_source_records: dict[str, list[list[dict[str, Any]]]] = {}
+    for payload in payloads:
+        family = str(payload["family"])
+        if family not in family_source_records:
+            family_source_records[family] = []
+            family_order.append(family)
+        data_asof_fallback = _payload_data_asof(payload)
+        kept_records: list[dict[str, Any]] = []
+        rows = payload.get("rows")
+        kept_rows = rows if isinstance(rows, list) else []
+        seen_symbols: set[str] = set()
+        for index, row in enumerate(kept_rows[:TOP_N_PER_SOURCE]):
+            if not isinstance(row, Mapping):
+                continue
+            symbol = _canonical_symbol(row.get("symbol") or row.get("code"))
+            if symbol is None or symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            record = _new_candidate_record(
+                payload,
+                row,
+                ordinal=index + 1,
+                symbol=symbol,
+                data_asof_fallback=data_asof_fallback,
+            )
+            records.append(record)
+            kept_records.append(record)
+        family_source_records[family].append(kept_records)
+        dropped = payload.get("dropped_rows")
+        dropped_rows = dropped if isinstance(dropped, list) else []
+        drop_reason = _source_drop_reason(payload)
+        seen_dropped: set[str] = set()
+        for index, row in enumerate(dropped_rows[:TOP_N_PER_SOURCE]):
+            if not isinstance(row, Mapping):
+                continue
+            symbol = _canonical_symbol(row.get("symbol") or row.get("code"))
+            if symbol is None or symbol in seen_dropped:
+                continue
+            seen_dropped.add(symbol)
+            record = _new_candidate_record(
+                payload,
+                row,
+                ordinal=index + 1,
+                symbol=symbol,
+                data_asof_fallback=data_asof_fallback,
+            )
+            record["admission"] = ADMISSION_DROPPED_PRESELECTION
+            record["admission_reason"] = drop_reason
+            records.append(record)
+    family_queues = {
+        family: _interleave_source_records(sources)
+        for family, sources in family_source_records.items()
+    }
+    return records, family_order, family_queues
+
+
+def _round_robin_select(
+    family_queues: Mapping[str, deque[dict[str, Any]]],
+    family_order: Sequence[str],
+    slots: int,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Families rotate in declared order, one fresh symbol per family per round.
+
+    A family that fronts a duplicate symbol consumes it and keeps looking until
+    it offers a new symbol or runs out of rows; an empty family simply yields.
+    """
+
+    picks: list[dict[str, Any]] = []
+    selected: set[str] = set()
+    while len(picks) < slots and any(family_queues.values()):
+        for family in family_order:
+            if len(picks) >= slots:
+                break
+            queue = family_queues.get(family)
+            if not queue:
+                continue
+            while queue:
+                record = queue.popleft()
+                if record["symbol"] in selected:
+                    continue
+                selected.add(record["symbol"])
+                picks.append(record)
+                break
+    return picks, selected
+
+
+def _resolve_admissions(
+    records: Sequence[dict[str, Any]],
+    picks: Sequence[dict[str, Any]],
+    selected: set[str],
+) -> None:
+    pick_by_symbol = {record["symbol"]: record for record in picks}
+    for seq, record in enumerate(picks, start=1):
+        record["admission"] = ADMISSION_ADMITTED
+        record["admission_reason"] = ADMISSION_REASON_ROUND_ROBIN_PICK
+        record["selection_seq"] = seq
+    for record in records:
+        if record["admission"] is not None:
+            continue
+        pick = pick_by_symbol.get(record["symbol"])
+        if record["symbol"] in selected and pick is not None:
+            record["admission"] = ADMISSION_ADMITTED
+            record["admission_reason"] = ADMISSION_REASON_DUPLICATE_SYMBOL
+            record["selected_via"] = {
+                "source": pick["source"],
+                "family": pick["family"],
+                "rank": pick["rank"],
+            }
+        else:
+            record["admission"] = ADMISSION_NOT_ADMITTED
+            record["admission_reason"] = ADMISSION_REASON_SLOT_POOL_EXHAUSTED
+
+
+def _gate_features(candidate: Mapping[str, Any], gates: _FanoutGates) -> dict[str, Any]:
+    """Compact conditional features for a revalidated candidate (B-slice)."""
+
+    funnel = candidate.get("funnel")
+    funnel_data = funnel if isinstance(funnel, Mapping) else {}
+    freshness = candidate.get("freshness")
+    freshness_data = freshness if isinstance(freshness, Mapping) else {}
+    upside = funnel_data.get("upside")
+    upside_data = upside if isinstance(upside, Mapping) else {}
+    upside_pct = _as_float(upside_data.get("honest_upside_pct"))
+    rsi_stage = funnel_data.get("rsi")
+    rsi_data = rsi_stage if isinstance(rsi_stage, Mapping) else {}
+    rsi_14 = _as_float(rsi_data.get("rsi_14"))
+    support_stage = funnel_data.get("support_source_count")
+    support_data = support_stage if isinstance(support_stage, Mapping) else {}
+    base = funnel_data.get("base_eligibility")
+    base_data = base if isinstance(base, Mapping) else {}
+    revalidation = candidate.get("revalidation")
+    revalidation_data = revalidation if isinstance(revalidation, Mapping) else {}
+    support_families = support_data.get("source_families")
+    return {
+        "revalidation_status": revalidation_data.get("status"),
+        "freshness_status": freshness_data.get("status"),
+        "freshness_reason": freshness_data.get("reason"),
+        "fresh_current_price": base_data.get("current_price"),
+        "rsi_14": rsi_14,
+        "honest_upside_pct": upside_pct,
+        "upside_gte_25": upside_pct >= 25 if upside_pct is not None else None,
+        "upside_gte_30": upside_pct >= 30 if upside_pct is not None else None,
+        "upside_gte_40": upside_pct >= 40 if upside_pct is not None else None,
+        "rsi_lte_max": rsi_14 <= gates.rsi_max if rsi_14 is not None else None,
+        "support_source_family_count": (
+            len(support_families) if isinstance(support_families, list) else None
+        ),
+        "funnel_stage_statuses": {
+            stage: (funnel_data.get(stage) or {}).get("status")
+            for stage in _FUNNEL_STAGE_NAMES
+        },
+        "first_failed_reason": _first_failed_reason(funnel_data),
+        "regular_evidence_eligible": bool(candidate.get("regular_evidence_eligible")),
+        "rsi_only_fail_candidate": bool(candidate.get("rsi_only_fail_candidate")),
+        "observation_gate_path_complete": bool(
+            candidate.get("observation_gate_path_complete")
+        ),
+    }
 
 
 def _full_analysis_rsi(analysis: Mapping[str, Any]) -> float | None:
@@ -1051,6 +1550,7 @@ def _initial_source_stats(payload: Mapping[str, Any]) -> dict[str, Any]:
         "source": payload["source"],
         "family": payload["family"],
         "kind": payload["kind"],
+        "source_status": str(metadata_data.get("source_status") or SOURCE_STATUS_EMPTY),
         "incoming_count": incoming_count,
         "top_n_count": min(incoming_count, TOP_N_PER_SOURCE),
         "candidate_rows_after_source_validity": visible_count,
@@ -1146,6 +1646,8 @@ def _dedupe_candidates(
                             "rank": row.get("rank"),
                         }
                     )
+                else:
+                    _count_reason(source_stats[source], "duplicate_symbol_in_source")
     ordered = list(candidates.values())
     for candidate in ordered:
         for source in candidate["matched_sources"]:
@@ -1183,13 +1685,21 @@ async def discover_buy_candidates_fanout_impl(
     snapshot_reader = _snapshot_reader or _read_snapshot_group
     fresh_revalidator = _fresh_revalidator or _fresh_revalidate
 
+    collected_at = dt.datetime.now(dt.UTC)
+    # Per-source isolation: a failed read degrades to an error payload so the
+    # call still records every planned source run and the surviving evidence.
     live_payloads, snapshot_groups = await asyncio.gather(
         asyncio.gather(
-            *(live_reader(source, market, TOP_N_PER_SOURCE) for source in _LIVE_SOURCES)
+            *(
+                _read_live_payload(source, market, TOP_N_PER_SOURCE, live_reader)
+                for source in _LIVE_SOURCES
+            )
         ),
         asyncio.gather(
             *(
-                snapshot_reader(family, presets, market, TOP_N_PER_SOURCE)
+                _read_snapshot_payloads(
+                    family, presets, market, TOP_N_PER_SOURCE, snapshot_reader
+                )
                 for family, presets in _SNAPSHOT_SOURCE_GROUPS
             )
         ),
@@ -1198,15 +1708,24 @@ async def discover_buy_candidates_fanout_impl(
     for group in snapshot_groups:
         payloads.extend(group)
 
+    # The A-record covers every source row that entered the bounded top-N
+    # slice (kept or stale-dropped), before the selector runs.
+    candidate_records, family_order, family_queues = _candidate_records_and_queues(
+        payloads
+    )
+    picks, selected_symbols = _round_robin_select(
+        family_queues, family_order, TOP_N_REVALIDATION
+    )
+    _resolve_admissions(candidate_records, picks, selected_symbols)
+    pick_by_symbol = {record["symbol"]: record for record in picks}
+
     candidates, source_stats = _dedupe_candidates(payloads, market)
-    fresh_targets = candidates[:TOP_N_REVALIDATION]
+    fresh_targets = [record["symbol"] for record in picks]
     fresh_by_symbol: dict[str, dict[str, Any]] = {}
     revalidation_error: str | None = None
     if fresh_targets:
         try:
-            fresh_by_symbol = await fresh_revalidator(
-                [candidate["symbol"] for candidate in fresh_targets], market
-            )
+            fresh_by_symbol = await fresh_revalidator(fresh_targets, market)
         except Exception as exc:  # noqa: BLE001 - fail closed without source details
             revalidation_error = type(exc).__name__
 
@@ -1215,9 +1734,23 @@ async def discover_buy_candidates_fanout_impl(
     freshness_undetermined_count = 0
     freshness_undetermined_reasons: dict[str, int] = {}
     funnel_stage_counts = _empty_funnel_stage_counts()
-    for index, candidate in enumerate(candidates):
+    for candidate in candidates:
         symbol = candidate["symbol"]
-        if index >= TOP_N_REVALIDATION:
+        pick = pick_by_symbol.get(symbol)
+        candidate["selection"] = {
+            "selected": pick is not None,
+            "selection_seq": pick["selection_seq"] if pick is not None else None,
+            "selected_via": (
+                {
+                    "source": pick["source"],
+                    "family": pick["family"],
+                    "rank": pick["rank"],
+                }
+                if pick is not None
+                else None
+            ),
+        }
+        if pick is None:
             fresh: Mapping[str, Any] | None = None
             candidate["revalidation"] = {
                 "status": "not_revalidated_top_n_limit",
@@ -1274,6 +1807,17 @@ async def discover_buy_candidates_fanout_impl(
             elif failure_reason is not None:
                 _count_reason(stats, failure_reason)
 
+    # Conditional gate features only exist for the selected (revalidated) set.
+    gate_features_by_symbol = {
+        candidate["symbol"]: _gate_features(candidate, gates)
+        for candidate in candidates
+        if candidate["symbol"] in selected_symbols
+    }
+    for record in candidate_records:
+        features = gate_features_by_symbol.get(record["symbol"])
+        if features is not None:
+            record["gate_features"] = features
+
     return {
         "success": True,
         "market": market,
@@ -1288,9 +1832,32 @@ async def discover_buy_candidates_fanout_impl(
             "max_snapshot_presets_per_call": MAX_SNAPSHOT_PRESETS_PER_CALL,
             "snapshot_max_stale_sessions": SNAPSHOT_MAX_STALE_SESSIONS,
             "snapshot_values_are_input_only_until_fresh_revalidation": True,
+            "revalidation_slot_allocation": REVALIDATION_SLOT_METHOD,
+            "revalidation_family_order": family_order,
+            "revalidation_picks_per_family_round": (
+                REVALIDATION_PICKS_PER_FAMILY_ROUND
+            ),
         },
         "policy": {**policy_version_stamp(), "frozen_gates": gates.as_dict()},
         "funnel_stage_order": list(_FUNNEL_STAGE_NAMES),
+        "collection": {
+            "collection_version": COLLECTION_VERSION,
+            "fetched_at": collected_at.isoformat(),
+            "selection": {
+                "method": REVALIDATION_SLOT_METHOD,
+                "family_order": family_order,
+                "picks_per_family_round": REVALIDATION_PICKS_PER_FAMILY_ROUND,
+                "slots": TOP_N_REVALIDATION,
+            },
+            "selected_symbol_order": [record["symbol"] for record in picks],
+            "source_statuses": {
+                str(payload["source"]): str(
+                    payload.get("metadata", {}).get("source_status")
+                    or SOURCE_STATUS_EMPTY
+                )
+                for payload in payloads
+            },
+        },
         "sources": [
             {
                 "source": payload["source"],
@@ -1301,6 +1868,7 @@ async def discover_buy_candidates_fanout_impl(
             for payload in payloads
         ],
         "candidates": candidates,
+        "candidate_records": candidate_records,
         "digest_observation": {
             "observation_only": True,
             "not_for_pnl_scoring_or_immediate_threshold_tuning": True,
@@ -1317,12 +1885,32 @@ async def discover_buy_candidates_fanout_impl(
                 "actionable": 0,
             },
             "budget_state": "deferred_without_broker_or_account_access",
+            "selection_summary": {
+                "method": REVALIDATION_SLOT_METHOD,
+                "slots": TOP_N_REVALIDATION,
+                "selected_count": len(picks),
+                "by_family": {
+                    family: {
+                        "candidate_rows": sum(
+                            1
+                            for record in candidate_records
+                            if record["family"] == family
+                        ),
+                        "picked": sum(
+                            1 for record in picks if record["family"] == family
+                        ),
+                    }
+                    for family in family_order
+                },
+            },
         },
     }
 
 
 __all__ = [
+    "COLLECTION_VERSION",
     "MAX_SNAPSHOT_PRESETS_PER_CALL",
+    "REVALIDATION_SLOT_METHOD",
     "SNAPSHOT_MAX_STALE_SESSIONS",
     "TOP_N_PER_SOURCE",
     "TOP_N_REVALIDATION",

@@ -75,7 +75,10 @@
     성숙의 AND다. caller wiring은 epoch marker serving 뒤 별도 PR에서만 한다.
 13. **screener pick log**: `buy_candidate_fanout` 안에서 쓰지 마라 (no-write
     계약). 관측 레코더는 바깥, `SCREENER_PICK_LOG_ENABLED` 기본 false,
-    fail-open, 스케줄러 금지. 가격은 exact decimal 문자열.
+    fail-open, 스케줄러 금지. 가격은 exact decimal 문자열. #884부터
+    `collection_version="funnel-a1"` 아래 A-record는 채택 여부와 무관하게
+    고려된 소스 후보 전수를 기록하고(admission+reason 포함) 과거 행은
+    소급 채우지 않는다.
 14. **NHPLUG 모의 Stage 2 (#711)**: 데이터·주문은 moapi.nhplug.com:8443의 고정 경로만,
     계좌는 /n2/acctinfo의 acct_type=03 검증을 거친 같은 클라이언트의 모의 계좌만 사용한다.
     build 후 scheme·host·port·path·act_no·본문을 send 직전에 재검증하고 redirect·자동 재시도는 금지한다.
