@@ -143,8 +143,9 @@ If --skip-kis-ws was supplied and at-kis-ws was already stopped, its digest
 table row reports SKIPPED_STOPPED: expected is its last known immutable digest
 when available (otherwise UNKNOWN), and running is STOPPED. This is an
 intentional skip, not a digest mismatch; the container is left untouched.
-Without the flag, a stopped at-kis-ws still fails capture. Any other stopped
-unit still fails capture or digest verification and triggers the usual rollback.
+Without the flag, a stopped at-kis-ws still fails capture. Any other unit
+stopped at capture also fails before mutation; if it stops after promotion,
+digest verification fails and triggers the usual rollback.
 
 ## Operator rollback
 
