@@ -511,6 +511,12 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.WATCH_REPRICING: set(),
     # FILL_WATCH_CONTEXT is a closed-world, context-only consumer profile.
     McpProfile.FILL_WATCH_CONTEXT: set(),
+    # #891 / Q-52 — closed-world live surfaces. Only read-only order-history
+    # tools may appear; every place/modify/cancel/reconcile sibling is dropped
+    # by the manifest filter.
+    McpProfile.LIVE_KR: {"toss_get_order_history"},
+    McpProfile.LIVE_US: {"get_order_history"},
+    McpProfile.LIVE_CRYPTO: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -566,6 +572,12 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.WATCH_REPRICING,
         # FILL_WATCH_CONTEXT is its own two-tool, context-only closed world.
         McpProfile.FILL_WATCH_CONTEXT,
+        # #891 / Q-52 — live profiles are manifest-bounded closed worlds; they
+        # run the shared registrars through an allowlist proxy, so they carry
+        # only the manifest's research names, not the whole surface.
+        McpProfile.LIVE_KR,
+        McpProfile.LIVE_US,
+        McpProfile.LIVE_CRYPTO,
     )
 ]
 
@@ -1079,6 +1091,11 @@ class TestResolveMcpProfile:
 
     def test_account_read(self) -> None:
         assert resolve_mcp_profile("account_read") is McpProfile.ACCOUNT_READ
+
+    def test_resolves_live_profiles(self) -> None:
+        assert resolve_mcp_profile("live-kr") is McpProfile.LIVE_KR
+        assert resolve_mcp_profile("live-us") is McpProfile.LIVE_US
+        assert resolve_mcp_profile("live-crypto") is McpProfile.LIVE_CRYPTO
 
     def test_tradingcodex_execution(self) -> None:
         assert (

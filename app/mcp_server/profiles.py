@@ -40,6 +40,13 @@ class McpProfile(StrEnum):
     # #137 Phase 0 — an isolated, context-only artifact consumer. This is
     # intentionally not a relaxed proposal/watch profile.
     FILL_WATCH_CONTEXT = "fill-watch-context"
+    # #891 / Q-52 (2026-09-28) — closed-world live-session surfaces. Each is a
+    # strict subset of the already-registered tools, selected by the single
+    # operator-readable manifest config/mcp_profiles/live.yaml (CORE+EXTENDED
+    # tiers). No direct broker order/cancel/modify tool is reachable.
+    LIVE_KR = "live-kr"
+    LIVE_US = "live-us"
+    LIVE_CRYPTO = "live-crypto"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

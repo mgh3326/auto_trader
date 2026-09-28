@@ -131,6 +131,19 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
     # generic broad profiles.
     expected["default"].add("get_parking_exclusion")
+    # #891 / Q-52 — the live-* surfaces postdate the 2026-09-03 audit; their
+    # expected surface is the operator manifest config/mcp_profiles/live.yaml
+    # (tiers applied).
+    from app.mcp_server.tooling.live_profile_registration import (
+        live_profile_tool_names,
+    )
+
+    for live_profile in (
+        McpProfile.LIVE_KR,
+        McpProfile.LIVE_US,
+        McpProfile.LIVE_CRYPTO,
+    ):
+        expected[live_profile.value] = set(live_profile_tool_names(live_profile))
     actual = collect_profile_tools(monkeypatch, gates_enabled=True)
     assert {profile: set(names) for profile, names in actual.items()} == expected, (
         "surface must preserve A/B/C/U and only the reviewed D exceptions"

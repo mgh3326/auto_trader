@@ -2327,6 +2327,11 @@ class TestGetFxRateToolRegistration:
                 McpProfile.ALPACA_PAPER_CLEAN,
                 # FILL_WATCH_CONTEXT is a two-tool, context-only closed world.
                 McpProfile.FILL_WATCH_CONTEXT,
+                # #891 — live profiles are manifest-bounded closed worlds;
+                # get_fx_rate is not in the manifest.
+                McpProfile.LIVE_KR,
+                McpProfile.LIVE_US,
+                McpProfile.LIVE_CRYPTO,
             )
         ],
     )

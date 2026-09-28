@@ -1,0 +1,370 @@
+# Task #891 / operator decision Q-52 (2026-09-28).
+#
+# The ONE file that lists every tool the live-session MCP profiles
+# (live-kr / live-us / live-crypto) may register. Nothing reaches a live
+# profile unless it is listed here; every listed name must resolve to an
+# already-registered tool or startup fails.
+#
+# Tiers: `core` is the operator's ~15-tool spine; `extended` is the
+# doc-evidenced remainder. `tiers:` under each profile is the single switch
+# selecting which tiers load — default [core, extended] until the operator
+# decides the final cut (tracked in the task report).
+#
+# Every line carries its 30-day call count from the usage evidence doc
+# (calls_30d) and a one-line purpose. Write/persistence tools are allowed
+# only when they are in the operator draft or appear under `extended` with
+# the doc's evidence. Direct broker order/cancel/modify tools are forbidden
+# here and rejected at load time.
+#
+# Adding a tool = operator-approved PR touching this file; quarterly Sentry
+# review removes unused tools. See docs/runbooks/live-mcp-profiles.md.
+version: 1
+evidence:
+  doc: "hk:doc report/2026-09-28/q52-mcp-usage-30d"
+  window: "2026-08-29..2026-09-28"
+  note: >-
+    Counts are 30-day calls observed on the default profile (10,376 calls,
+    87 tools; top-20 = 84%). Reads are mostly untagged by lane so the same
+    doc counts apply per lane. Deliberate exclusions with doc basis:
+    get_cash_balance (12 calls; superseded by get_available_capital, 208);
+    kis_live_get_order_history (227 calls but harness-denied for live
+    sessions per the #678 ruling — it is in HARNESS_DENIED_TOOLS);
+    list_active_watches (60), get_indicators (69), get_trading_policy (64),
+    get_forecasts (80), analysis_artifact_get (84), get_fx_rate, get_quote_fresh,
+    get_position, screen_stocks, forecast_accuracy_recent,
+    session_bootstrap_pack — below cutoff or not evidenced for live lanes;
+    any can return via an operator-approved PR.
+profiles:
+  live-kr:
+    description: >-
+      KR live lane (KIS/Toss domestic). Proposal-led trading only:
+      order_proposal_* writes a proposal for the existing approval path;
+      direct broker order/cancel/modify tools are never present.
+    tiers: [core, extended]
+    tools:
+      - name: get_quote
+        tier: core
+        calls_30d: 1626
+        purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
+      - name: forecast_save
+        tier: core
+        calls_30d: 792
+        purpose: "Persist a forecast for later accuracy resolution."
+      - name: route_request
+        tier: core
+        calls_30d: 785
+        purpose: "Lane router: intent+market -> proposal-led allowed/blocked plan."
+      - name: forecast_resolve
+        tier: core
+        calls_30d: 717
+        purpose: "Resolve a saved forecast against the observed outcome."
+      - name: get_support_resistance
+        tier: core
+        calls_30d: 570
+        purpose: "Support/resistance levels for a symbol."
+      - name: analyze_stock_batch
+        tier: core
+        calls_30d: 570
+        purpose: "Batch full-pipeline analysis (signal/confidence/position)."
+      - name: order_proposal_list
+        tier: core
+        calls_30d: 418
+        purpose: "List order proposals and their states (read)."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: get_ohlcv
+        tier: core
+        calls_30d: 397
+        purpose: "OHLCV candles for a symbol."
+      - name: toss_get_order_history
+        tier: core
+        calls_30d: 356
+        purpose: "Toss Securities order history/fill read for the KR account."
+      - name: order_proposal_create
+        tier: core
+        calls_30d: 355
+        purpose: "Create an order proposal for approval; never submits to broker."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: session_context_append
+        tier: core
+        calls_30d: 327
+        purpose: "Append a durable session-context entry (operator draft write)."
+      - name: order_proposal_get
+        tier: core
+        calls_30d: 220
+        purpose: "Read one order proposal by id."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: get_available_capital
+        tier: core
+        calls_30d: 208
+        purpose: "Available-to-trade capital per account_mode."
+      - name: get_holdings
+        tier: core
+        calls_30d: 207
+        purpose: "Current holdings per account_mode."
+      - name: investment_watch_events_list_recent
+        tier: core
+        calls_30d: 196
+        purpose: "Recent fired investment-watch events (read)."
+      - name: analysis_artifact_save
+        tier: extended
+        calls_30d: 249
+        purpose: "Persist a structured analysis artifact (write; doc-missing-from-draft addition)."
+      - name: investment_watch_create
+        tier: extended
+        calls_30d: 192
+        purpose: "Create an investment watch trigger (operator draft write)."
+      - name: trade_retrospective_pending
+        tier: extended
+        calls_30d: 173
+        purpose: "List fills awaiting retrospective review (read; doc-missing-from-draft addition)."
+      - name: get_operating_briefing
+        tier: extended
+        calls_30d: 126
+        purpose: "Operating briefing: market status, filters, exposure, pending proposals."
+      - name: session_context_get_recent
+        tier: extended
+        calls_30d: 119
+        purpose: "Read recent session-context entries (doc-missing-from-draft addition)."
+      - name: get_market_index
+        tier: extended
+        calls_30d: 113
+        purpose: "Market index snapshot (KOSPI/KOSDAQ/US majors)."
+      - name: save_trade_retrospective
+        tier: extended
+        calls_30d: 110
+        purpose: "Save a completed trade retrospective (operator draft write)."
+      - name: execution_ledger_fill_events_list_recent
+        tier: extended
+        calls_30d: 99
+        purpose: "Recent execution-ledger fill events (doc-missing-from-draft addition)."
+      - name: get_news
+        tier: extended
+        calls_30d: 98
+        purpose: "Latest market news headlines."
+      - name: investment_watch_void
+        tier: extended
+        calls_30d: 6
+        purpose: "Void an investment watch (operator draft write; lifecycle pair of watch_create)."
+  live-us:
+    description: >-
+      US live lane (overseas/Alpaca). Same proposal-led spine as live-kr;
+      order history reads through the generic get_order_history tool.
+    tiers: [core, extended]
+    tools:
+      - name: get_quote
+        tier: core
+        calls_30d: 1626
+        purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
+      - name: forecast_save
+        tier: core
+        calls_30d: 792
+        purpose: "Persist a forecast for later accuracy resolution."
+      - name: route_request
+        tier: core
+        calls_30d: 785
+        purpose: "Lane router: intent+market -> proposal-led allowed/blocked plan."
+      - name: forecast_resolve
+        tier: core
+        calls_30d: 717
+        purpose: "Resolve a saved forecast against the observed outcome."
+      - name: get_support_resistance
+        tier: core
+        calls_30d: 570
+        purpose: "Support/resistance levels for a symbol."
+      - name: analyze_stock_batch
+        tier: core
+        calls_30d: 570
+        purpose: "Batch full-pipeline analysis (signal/confidence/position)."
+      - name: order_proposal_list
+        tier: core
+        calls_30d: 418
+        purpose: "List order proposals and their states (read)."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: get_ohlcv
+        tier: core
+        calls_30d: 397
+        purpose: "OHLCV candles for a symbol."
+      - name: order_proposal_create
+        tier: core
+        calls_30d: 355
+        purpose: "Create an order proposal for approval; never submits to broker."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: session_context_append
+        tier: core
+        calls_30d: 327
+        purpose: "Append a durable session-context entry (operator draft write)."
+      - name: order_proposal_get
+        tier: core
+        calls_30d: 220
+        purpose: "Read one order proposal by id."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: get_available_capital
+        tier: core
+        calls_30d: 208
+        purpose: "Available-to-trade capital per account_mode."
+      - name: get_holdings
+        tier: core
+        calls_30d: 207
+        purpose: "Current holdings per account_mode."
+      - name: investment_watch_events_list_recent
+        tier: core
+        calls_30d: 196
+        purpose: "Recent fired investment-watch events (read)."
+      - name: investment_watch_create
+        tier: core
+        calls_30d: 192
+        purpose: "Create an investment watch trigger (operator draft write)."
+      - name: analysis_artifact_save
+        tier: extended
+        calls_30d: 249
+        purpose: "Persist a structured analysis artifact (write; doc-missing-from-draft addition)."
+      - name: trade_retrospective_pending
+        tier: extended
+        calls_30d: 173
+        purpose: "List fills awaiting retrospective review (read; doc-missing-from-draft addition)."
+      - name: get_operating_briefing
+        tier: extended
+        calls_30d: 126
+        purpose: "Operating briefing: market status, filters, exposure, pending proposals."
+      - name: session_context_get_recent
+        tier: extended
+        calls_30d: 119
+        purpose: "Read recent session-context entries (doc-missing-from-draft addition)."
+      - name: get_market_index
+        tier: extended
+        calls_30d: 113
+        purpose: "Market index snapshot (KOSPI/KOSDAQ/US majors)."
+      - name: save_trade_retrospective
+        tier: extended
+        calls_30d: 110
+        purpose: "Save a completed trade retrospective (operator draft write)."
+      - name: execution_ledger_fill_events_list_recent
+        tier: extended
+        calls_30d: 99
+        purpose: "Recent execution-ledger fill events (doc-missing-from-draft addition)."
+      - name: get_news
+        tier: extended
+        calls_30d: 98
+        purpose: "Latest market news headlines."
+      - name: investment_watch_void
+        tier: extended
+        calls_30d: 6
+        purpose: "Void an investment watch (operator draft write; lifecycle pair of watch_create)."
+      - name: get_order_history
+        tier: extended
+        calls_30d: 3
+        purpose: "Generic order history read across live account_modes (overseas path)."
+  live-crypto:
+    description: >-
+      Crypto live lane (Upbit). Same proposal-led spine plus the
+      operator-requested crypto sentiment reads (orderbook, fear/greed,
+      long/short ratio); watch lifecycle is retained for desk watch flows.
+    tiers: [core, extended]
+    tools:
+      - name: get_quote
+        tier: core
+        calls_30d: 1626
+        purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
+      - name: forecast_save
+        tier: core
+        calls_30d: 792
+        purpose: "Persist a forecast for later accuracy resolution."
+      - name: route_request
+        tier: core
+        calls_30d: 785
+        purpose: "Lane router: intent+market -> proposal-led allowed/blocked plan."
+      - name: forecast_resolve
+        tier: core
+        calls_30d: 717
+        purpose: "Resolve a saved forecast against the observed outcome."
+      - name: get_support_resistance
+        tier: core
+        calls_30d: 570
+        purpose: "Support/resistance levels for a symbol."
+      - name: analyze_stock_batch
+        tier: core
+        calls_30d: 570
+        purpose: "Batch full-pipeline analysis (signal/confidence/position)."
+      - name: order_proposal_list
+        tier: core
+        calls_30d: 418
+        purpose: "List order proposals and their states (read)."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: get_ohlcv
+        tier: core
+        calls_30d: 397
+        purpose: "OHLCV candles for a symbol."
+      - name: order_proposal_create
+        tier: core
+        calls_30d: 355
+        purpose: "Create an order proposal for approval; never submits to broker."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: session_context_append
+        tier: core
+        calls_30d: 327
+        purpose: "Append a durable session-context entry (operator draft write)."
+      - name: order_proposal_get
+        tier: core
+        calls_30d: 220
+        purpose: "Read one order proposal by id."
+        gate: ORDER_PROPOSALS_ENABLED
+      - name: get_available_capital
+        tier: core
+        calls_30d: 208
+        purpose: "Available-to-trade capital per account_mode."
+      - name: get_holdings
+        tier: core
+        calls_30d: 207
+        purpose: "Current holdings per account_mode."
+      - name: investment_watch_events_list_recent
+        tier: core
+        calls_30d: 196
+        purpose: "Recent fired investment-watch events (read)."
+      - name: get_orderbook
+        tier: core
+        calls_30d: 95
+        purpose: "Orderbook depth for a symbol (operator-requested crypto read)."
+      - name: analysis_artifact_save
+        tier: extended
+        calls_30d: 249
+        purpose: "Persist a structured analysis artifact (write; doc-missing-from-draft addition)."
+      - name: investment_watch_create
+        tier: extended
+        calls_30d: 192
+        purpose: "Create an investment watch trigger (operator draft write)."
+      - name: trade_retrospective_pending
+        tier: extended
+        calls_30d: 173
+        purpose: "List fills awaiting retrospective review (read; doc-missing-from-draft addition)."
+      - name: get_operating_briefing
+        tier: extended
+        calls_30d: 126
+        purpose: "Operating briefing: market status, filters, exposure, pending proposals."
+      - name: session_context_get_recent
+        tier: extended
+        calls_30d: 119
+        purpose: "Read recent session-context entries (doc-missing-from-draft addition)."
+      - name: save_trade_retrospective
+        tier: extended
+        calls_30d: 110
+        purpose: "Save a completed trade retrospective (operator draft write)."
+      - name: execution_ledger_fill_events_list_recent
+        tier: extended
+        calls_30d: 99
+        purpose: "Recent execution-ledger fill events (doc-missing-from-draft addition)."
+      - name: get_news
+        tier: extended
+        calls_30d: 98
+        purpose: "Latest market news headlines."
+      - name: get_crypto_fear_greed
+        tier: extended
+        calls_30d: 89
+        purpose: "Crypto fear/greed index (operator-requested crypto read)."
+      - name: get_crypto_long_short_ratio
+        tier: extended
+        calls_30d: 56
+        purpose: "Crypto long/short positioning ratio (operator-requested crypto read)."
+      - name: investment_watch_void
+        tier: extended
+        calls_30d: 6
+        purpose: "Void an investment watch (operator draft write; lifecycle pair of watch_create)."
