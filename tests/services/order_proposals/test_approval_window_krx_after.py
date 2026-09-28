@@ -300,3 +300,22 @@ async def test_recheck_closes_the_krx_window_exactly_at_20(monkeypatch):
         short_group, short, now=_at(20, 0)
     )
     assert expired_window.code is ApprovalWindowCode.NO_EXECUTABLE_WINDOW
+
+
+@pytest.mark.parametrize(
+    ("allow_nxt", "allow_krx_after", "expected"),
+    [
+        (True, True, ("nxt_premarket", "regular", "nxt_after")),
+        (True, False, ("nxt_premarket", "regular", "nxt_after")),
+        (False, True, ("regular", "krx_after")),
+        (False, False, ("regular",)),
+    ],
+)
+def test_allowed_sessions_precedence(allow_nxt, allow_krx_after, expected):
+    """NXT proof always wins: KRX evidence never rewrites an NXT name's stamp."""
+    assert (
+        policy._kr_allowed_sessions(
+            allow_nxt=allow_nxt, allow_krx_after=allow_krx_after
+        )
+        == expected
+    )
