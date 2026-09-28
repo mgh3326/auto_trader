@@ -1316,7 +1316,7 @@ async def test_date_reservation_index_mutant_is_assertion_red(
                     "request": uuid4(),
                     "acct": ref,
                     "key": "mutant_next_day_123456",
-                    "day": date.today() + timedelta(days=1),
+                    "day": row["order_date"] + timedelta(days=1),
                 },
             )
             active = (
