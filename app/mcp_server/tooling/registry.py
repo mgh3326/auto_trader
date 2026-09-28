@@ -98,12 +98,14 @@ Profile → tool surface mapping
 
 "live-kr" / "live-us" / "live-crypto" (McpProfile.LIVE_KR / LIVE_US /
 LIVE_CRYPTO):
-  Task 891 / operator decision Q-52 closed-world live-session subsets. The
-  tool list lives in config/mcp_profiles/live.yaml (core + extended tiers,
-  per-profile `tiers:` switch); all existing registrars run through a
-  recording exact-set proxy so the served surface equals the manifest
-  selection exactly. No direct broker order/cancel/modify, reconcile,
-  proposal-lifecycle, or harness-denied tools are registered.
+  Task 891 / operator decision Q-53 closed-world live-session subsets. The
+  tool list lives in config/mcp_profiles/live.yaml (three groups per lane:
+  core 15 / per-market extension up to 10 / emergency cancel-modify-
+  reconcile-watch-void-loss_cut exceptions, all loaded); all existing
+  registrars run through a recording exact-set proxy so the served surface
+  equals the manifest selection exactly. Proposal-lifecycle and
+  harness-denied tools are never registered; order mutations exist only as
+  the manifest's named emergency entries.
 
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
@@ -406,8 +408,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
     live_profile_mcp: LiveProfileMCP | None = None
     if profile in LIVE_PROFILES:
-        # #891 / Q-52 — closed-world live surface. The manifest-selected set
-        # (config/mcp_profiles/live.yaml, tiers applied) is the physical
+        # #891 / Q-53 — closed-world live surface. The manifest-selected set
+        # (config/mcp_profiles/live.yaml, all three groups) is the physical
         # registration boundary: every shared registrar runs, but any tool it
         # emits that is not listed for this profile is dropped before it can
         # reach the surface, and the completeness check at the end fails the
@@ -608,14 +610,18 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_order_tools(mcp)
         register_live_reconcile_tools(mcp)
     elif profile in LIVE_PROFILES:
-        # #891 — the order-family registrars run through the manifest filter,
-        # so only the manifest's read-only *_get_order_history names can land;
-        # every place/modify/cancel/reconcile sibling is physically dropped.
-        # register_kis_live_order_tools is intentionally not called:
-        # kis_live_get_order_history is harness-denied for live sessions
-        # (#678) and forbidden in the manifest.
+        # #891 / Q-53 — the order-family registrars run through the manifest
+        # filter, so only the manifest's listed names can land (core/extension
+        # reads plus the per-lane emergency cancel/modify/reconcile/loss_cut
+        # set). Everything else each registrar emits — kis_live_place_order,
+        # the harness-denied kis_live_get_order_history (#678), previews,
+        # mock reconcile — is physically dropped.
         register_order_tools(mcp)
-        register_toss_live_order_tools(mcp)
+        if profile is McpProfile.LIVE_KR:
+            register_toss_live_order_tools(mcp)
+            register_kis_live_order_tools(mcp)
+        else:
+            register_live_reconcile_tools(mcp)
 
     register_bootstrap_pack()
 

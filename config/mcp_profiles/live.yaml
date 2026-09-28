@@ -1,23 +1,38 @@
-# Task #891 / operator decision Q-52 (2026-09-28).
+# Task #891 / operator decision Q-53 (2026-09-28; replaces the Q-52
+# CORE/EXTENDED tiering).
 #
 # The ONE file that lists every tool the live-session MCP profiles
 # (live-kr / live-us / live-crypto) may register. Nothing reaches a live
 # profile unless it is listed here; every listed name must resolve to an
 # already-registered tool or startup fails.
 #
-# Tiers: `core` is the operator's ~15-tool spine; `extended` is the
-# doc-evidenced remainder. `tiers:` under each profile is the single switch
-# selecting which tiers load — default [core, extended] until the operator
-# decides the final cut (tracked in the task report).
+# Three groups per lane, all loaded:
+#   core      — 15 tools: quotes, balances, open orders, proposals,
+#               watches, records. get_available_capital, never
+#               get_cash_balance.
+#   extension — up to 10 per-market heavy hitters from the usage doc.
+#   emergency — recovery exceptions, existing tools only, kept in their
+#               own group so they are visible: cancel, modify, reconcile,
+#               watch void, and the loss_cut exit path. This is the ONLY
+#               group where order-mutation tools may appear, and only the
+#               names listed per lane.
+#
+# Deliberate emergency notes:
+#   * place_order carries the loss_cut exit path via exit_intent="loss_cut"
+#     (approval_issue_id flow). kis_live_place_order is deliberately NOT
+#     listed — ROB-864 disables loss_cut on that direct tool.
+#   * kis_live_get_order_history stays out entirely — harness-denied for
+#     live sessions (#678, HARNESS_DENIED_TOOLS).
 #
 # Every line carries its 30-day call count from the usage evidence doc
-# (calls_30d) and a one-line purpose. Write/persistence tools are allowed
-# only when they are in the operator draft or appear under `extended` with
-# the doc's evidence. Direct broker order/cancel/modify tools are forbidden
-# here and rejected at load time.
+# (calls_30d) and a one-line purpose. Counts are reference only (Sentry
+# figures exclude failures, refusals, wrong calls replaced within a minute,
+# and reads that never led to a write); emergency entries may omit the
+# count since inclusion there is categorical, not usage-driven.
 #
 # Adding a tool = operator-approved PR touching this file; quarterly Sentry
-# review removes unused tools. See docs/runbooks/live-mcp-profiles.md.
+# review removes unused tools. This whitelist is the baseline before runner
+# mechanization and will be re-cut later. See docs/runbooks/live-mcp-profiles.md.
 version: 1
 evidence:
   doc: "hk:doc report/2026-09-28/q52-mcp-usage-30d"
@@ -37,334 +52,302 @@ evidence:
 profiles:
   live-kr:
     description: >-
-      KR live lane (KIS/Toss domestic). Proposal-led trading only:
-      order_proposal_* writes a proposal for the existing approval path;
-      direct broker order/cancel/modify tools are never present.
-    tiers: [core, extended]
-    tools:
-      - name: get_quote
-        tier: core
-        calls_30d: 1626
-        purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
-      - name: forecast_save
-        tier: core
-        calls_30d: 792
-        purpose: "Persist a forecast for later accuracy resolution."
-      - name: route_request
-        tier: core
-        calls_30d: 785
-        purpose: "Lane router: intent+market -> proposal-led allowed/blocked plan."
-      - name: forecast_resolve
-        tier: core
-        calls_30d: 717
-        purpose: "Resolve a saved forecast against the observed outcome."
-      - name: get_support_resistance
-        tier: core
-        calls_30d: 570
-        purpose: "Support/resistance levels for a symbol."
-      - name: analyze_stock_batch
-        tier: core
-        calls_30d: 570
-        purpose: "Batch full-pipeline analysis (signal/confidence/position)."
-      - name: order_proposal_list
-        tier: core
-        calls_30d: 418
-        purpose: "List order proposals and their states (read)."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: get_ohlcv
-        tier: core
-        calls_30d: 397
-        purpose: "OHLCV candles for a symbol."
-      - name: toss_get_order_history
-        tier: core
-        calls_30d: 356
-        purpose: "Toss Securities order history/fill read for the KR account."
-      - name: order_proposal_create
-        tier: core
-        calls_30d: 355
-        purpose: "Create an order proposal for approval; never submits to broker."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: session_context_append
-        tier: core
-        calls_30d: 327
-        purpose: "Append a durable session-context entry (operator draft write)."
-      - name: order_proposal_get
-        tier: core
-        calls_30d: 220
-        purpose: "Read one order proposal by id."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: get_available_capital
-        tier: core
-        calls_30d: 208
-        purpose: "Available-to-trade capital per account_mode."
-      - name: get_holdings
-        tier: core
-        calls_30d: 207
-        purpose: "Current holdings per account_mode."
-      - name: investment_watch_events_list_recent
-        tier: core
-        calls_30d: 196
-        purpose: "Recent fired investment-watch events (read)."
-      - name: analysis_artifact_save
-        tier: extended
-        calls_30d: 249
-        purpose: "Persist a structured analysis artifact (write; doc-missing-from-draft addition)."
-      - name: investment_watch_create
-        tier: extended
-        calls_30d: 192
-        purpose: "Create an investment watch trigger (operator draft write)."
-      - name: trade_retrospective_pending
-        tier: extended
-        calls_30d: 173
-        purpose: "List fills awaiting retrospective review (read; doc-missing-from-draft addition)."
-      - name: get_operating_briefing
-        tier: extended
-        calls_30d: 126
-        purpose: "Operating briefing: market status, filters, exposure, pending proposals."
-      - name: session_context_get_recent
-        tier: extended
-        calls_30d: 119
-        purpose: "Read recent session-context entries (doc-missing-from-draft addition)."
-      - name: get_market_index
-        tier: extended
-        calls_30d: 113
-        purpose: "Market index snapshot (KOSPI/KOSDAQ/US majors)."
-      - name: save_trade_retrospective
-        tier: extended
-        calls_30d: 110
-        purpose: "Save a completed trade retrospective (operator draft write)."
-      - name: execution_ledger_fill_events_list_recent
-        tier: extended
-        calls_30d: 99
-        purpose: "Recent execution-ledger fill events (doc-missing-from-draft addition)."
-      - name: get_news
-        tier: extended
-        calls_30d: 98
-        purpose: "Latest market news headlines."
-      - name: investment_watch_void
-        tier: extended
-        calls_30d: 6
-        purpose: "Void an investment watch (operator draft write; lifecycle pair of watch_create)."
+      KR live lane (KIS/Toss domestic). Proposal-led trading plus the
+      emergency recovery group; order placement outside loss_cut is never
+      direct.
+    groups:
+      # core 15: quotes, balances, open orders, proposals, watches, records
+      core:
+        - name: get_quote
+          calls_30d: 1626
+          purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
+        - name: get_ohlcv
+          calls_30d: 397
+          purpose: "OHLCV candles for a symbol/timeframe."
+        - name: get_support_resistance
+          calls_30d: 570
+          purpose: "Support/resistance levels for a symbol."
+        - name: get_available_capital
+          calls_30d: 208
+          purpose: "Orderable cash balance (replaces get_cash_balance, 12 calls)."
+        - name: get_holdings
+          calls_30d: 207
+          purpose: "Current holdings/positions with avg cost."
+        - name: toss_get_order_history
+          calls_30d: 356
+          purpose: "Open/recent Toss order history (KR lane order status)."
+        - name: order_proposal_create
+          calls_30d: 355
+          purpose: "Create an order proposal for the approval path."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: order_proposal_get
+          calls_30d: 220
+          purpose: "Read one order proposal's state."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: order_proposal_list
+          calls_30d: 418
+          purpose: "List order proposals for the lane."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: investment_watch_create
+          calls_30d: 192
+          purpose: "Create an investment watch (entry/exit triggers)."
+        - name: investment_watch_events_list_recent
+          calls_30d: 196
+          purpose: "Recent watch trigger events."
+        - name: session_context_append
+          calls_30d: 327
+          purpose: "Append a note to the session context record."
+        - name: forecast_save
+          calls_30d: 792
+          purpose: "Save a forecast record for the learning loop."
+        - name: forecast_resolve
+          calls_30d: 717
+          purpose: "Resolve a forecast outcome for scoring."
+        - name: save_trade_retrospective
+          calls_30d: 110
+          purpose: "Persist a trade retrospective record."
+      # extension: up to 10 per-market heavy hitters
+      extension:
+        - name: route_request
+          calls_30d: 785
+          purpose: "Intent router: which tools a request may use."
+        - name: get_operating_briefing
+          calls_30d: 126
+          purpose: "Operator briefing (positions, proposals, alerts)."
+        - name: analysis_artifact_save
+          calls_30d: 249
+          purpose: "Persist an analysis artifact."
+        - name: trade_retrospective_pending
+          calls_30d: 173
+          purpose: "Trades awaiting retrospective review."
+        - name: execution_ledger_fill_events_list_recent
+          calls_30d: 99
+          purpose: "Recent fill events from the execution ledger (fill-event read)."
+        - name: get_market_index
+          calls_30d: 113
+          purpose: "Market index levels."
+        - name: analyze_stock_batch
+          calls_30d: 570
+          purpose: "Batch multi-symbol analysis (top-20 usage)."
+        - name: session_context_get_recent
+          calls_30d: 119
+          purpose: "Read recent session context entries."
+        - name: get_news
+          calls_30d: 98
+          purpose: "Recent market/security news."
+      # emergency/recovery exceptions — existing tools only, own group
+      emergency:
+        - name: place_order
+          purpose: "loss_cut exit path: exit_intent='loss_cut' sell via approval_issue_id flow (generic account_mode route; kis_live_place_order deliberately excluded — ROB-864 disables loss_cut there)."
+        - name: toss_place_order
+          purpose: "loss_cut exit path for the Toss KR leg (exit_intent='loss_cut' accepted)."
+        - name: cancel_order
+          purpose: "Cancel an open order (generic account_mode route)."
+        - name: modify_order
+          purpose: "Modify an open order (generic account_mode route)."
+        - name: kis_live_cancel_order
+          purpose: "Cancel an open KIS live KR order (typed path)."
+        - name: kis_live_modify_order
+          purpose: "Modify an open KIS live KR order (typed path)."
+        - name: kis_live_reconcile_orders
+          purpose: "Reconcile KIS live KR orders against broker fill evidence (dry_run default)."
+        - name: toss_cancel_order
+          purpose: "Cancel an open Toss live order (typed path)."
+        - name: toss_modify_order
+          purpose: "Modify an open Toss live order (typed path)."
+        - name: toss_reconcile_orders
+          purpose: "Reconcile Toss live orders against broker evidence (dry_run default)."
+        - name: investment_watch_void
+          calls_30d: 6
+          purpose: "Void an investment watch (watch lifecycle recovery)."
   live-us:
     description: >-
-      US live lane (overseas/Alpaca). Same proposal-led spine as live-kr;
-      order history reads through the generic get_order_history tool.
-    tiers: [core, extended]
-    tools:
-      - name: get_quote
-        tier: core
-        calls_30d: 1626
-        purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
-      - name: forecast_save
-        tier: core
-        calls_30d: 792
-        purpose: "Persist a forecast for later accuracy resolution."
-      - name: route_request
-        tier: core
-        calls_30d: 785
-        purpose: "Lane router: intent+market -> proposal-led allowed/blocked plan."
-      - name: forecast_resolve
-        tier: core
-        calls_30d: 717
-        purpose: "Resolve a saved forecast against the observed outcome."
-      - name: get_support_resistance
-        tier: core
-        calls_30d: 570
-        purpose: "Support/resistance levels for a symbol."
-      - name: analyze_stock_batch
-        tier: core
-        calls_30d: 570
-        purpose: "Batch full-pipeline analysis (signal/confidence/position)."
-      - name: order_proposal_list
-        tier: core
-        calls_30d: 418
-        purpose: "List order proposals and their states (read)."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: get_ohlcv
-        tier: core
-        calls_30d: 397
-        purpose: "OHLCV candles for a symbol."
-      - name: order_proposal_create
-        tier: core
-        calls_30d: 355
-        purpose: "Create an order proposal for approval; never submits to broker."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: session_context_append
-        tier: core
-        calls_30d: 327
-        purpose: "Append a durable session-context entry (operator draft write)."
-      - name: order_proposal_get
-        tier: core
-        calls_30d: 220
-        purpose: "Read one order proposal by id."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: get_available_capital
-        tier: core
-        calls_30d: 208
-        purpose: "Available-to-trade capital per account_mode."
-      - name: get_holdings
-        tier: core
-        calls_30d: 207
-        purpose: "Current holdings per account_mode."
-      - name: investment_watch_events_list_recent
-        tier: core
-        calls_30d: 196
-        purpose: "Recent fired investment-watch events (read)."
-      - name: investment_watch_create
-        tier: core
-        calls_30d: 192
-        purpose: "Create an investment watch trigger (operator draft write)."
-      - name: analysis_artifact_save
-        tier: extended
-        calls_30d: 249
-        purpose: "Persist a structured analysis artifact (write; doc-missing-from-draft addition)."
-      - name: trade_retrospective_pending
-        tier: extended
-        calls_30d: 173
-        purpose: "List fills awaiting retrospective review (read; doc-missing-from-draft addition)."
-      - name: get_operating_briefing
-        tier: extended
-        calls_30d: 126
-        purpose: "Operating briefing: market status, filters, exposure, pending proposals."
-      - name: session_context_get_recent
-        tier: extended
-        calls_30d: 119
-        purpose: "Read recent session-context entries (doc-missing-from-draft addition)."
-      - name: get_market_index
-        tier: extended
-        calls_30d: 113
-        purpose: "Market index snapshot (KOSPI/KOSDAQ/US majors)."
-      - name: save_trade_retrospective
-        tier: extended
-        calls_30d: 110
-        purpose: "Save a completed trade retrospective (operator draft write)."
-      - name: execution_ledger_fill_events_list_recent
-        tier: extended
-        calls_30d: 99
-        purpose: "Recent execution-ledger fill events (doc-missing-from-draft addition)."
-      - name: get_news
-        tier: extended
-        calls_30d: 98
-        purpose: "Latest market news headlines."
-      - name: investment_watch_void
-        tier: extended
-        calls_30d: 6
-        purpose: "Void an investment watch (operator draft write; lifecycle pair of watch_create)."
-      - name: get_order_history
-        tier: extended
-        calls_30d: 3
-        purpose: "Generic order history read across live account_modes (overseas path)."
+      US live lane. Proposal-led trading plus the emergency recovery group;
+      order placement outside loss_cut is never direct.
+    groups:
+      core:
+        - name: get_quote
+          calls_30d: 1626
+          purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
+        - name: get_ohlcv
+          calls_30d: 397
+          purpose: "OHLCV candles for a symbol/timeframe."
+        - name: get_support_resistance
+          calls_30d: 570
+          purpose: "Support/resistance levels for a symbol."
+        - name: get_available_capital
+          calls_30d: 208
+          purpose: "Orderable cash balance (replaces get_cash_balance, 12 calls)."
+        - name: get_holdings
+          calls_30d: 207
+          purpose: "Current holdings/positions with avg cost."
+        - name: get_order_history
+          calls_30d: 3
+          purpose: "Open/recent order history (generic account_mode route)."
+        - name: order_proposal_create
+          calls_30d: 355
+          purpose: "Create an order proposal for the approval path."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: order_proposal_get
+          calls_30d: 220
+          purpose: "Read one order proposal's state."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: order_proposal_list
+          calls_30d: 418
+          purpose: "List order proposals for the lane."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: investment_watch_create
+          calls_30d: 192
+          purpose: "Create an investment watch (entry/exit triggers)."
+        - name: investment_watch_events_list_recent
+          calls_30d: 196
+          purpose: "Recent watch trigger events."
+        - name: session_context_append
+          calls_30d: 327
+          purpose: "Append a note to the session context record."
+        - name: forecast_save
+          calls_30d: 792
+          purpose: "Save a forecast record for the learning loop."
+        - name: forecast_resolve
+          calls_30d: 717
+          purpose: "Resolve a forecast outcome for scoring."
+        - name: save_trade_retrospective
+          calls_30d: 110
+          purpose: "Persist a trade retrospective record."
+      extension:
+        - name: route_request
+          calls_30d: 785
+          purpose: "Intent router: which tools a request may use."
+        - name: get_operating_briefing
+          calls_30d: 126
+          purpose: "Operator briefing (positions, proposals, alerts)."
+        - name: analysis_artifact_save
+          calls_30d: 249
+          purpose: "Persist an analysis artifact."
+        - name: trade_retrospective_pending
+          calls_30d: 173
+          purpose: "Trades awaiting retrospective review."
+        - name: execution_ledger_fill_events_list_recent
+          calls_30d: 99
+          purpose: "Recent fill events from the execution ledger (fill-event read)."
+        - name: get_market_index
+          calls_30d: 113
+          purpose: "Market index levels."
+        - name: analyze_stock_batch
+          calls_30d: 570
+          purpose: "Batch multi-symbol analysis (top-20 usage)."
+        - name: session_context_get_recent
+          calls_30d: 119
+          purpose: "Read recent session context entries."
+        - name: get_news
+          calls_30d: 98
+          purpose: "Recent market/security news."
+      emergency:
+        - name: place_order
+          purpose: "loss_cut exit path: exit_intent='loss_cut' sell via approval_issue_id flow (generic account_mode route)."
+        - name: cancel_order
+          purpose: "Cancel an open order (generic account_mode route)."
+        - name: modify_order
+          purpose: "Modify an open order (generic account_mode route)."
+        - name: live_reconcile_orders
+          purpose: "Reconcile US/overseas live orders against broker fill evidence (dry_run default)."
+        - name: investment_watch_void
+          calls_30d: 6
+          purpose: "Void an investment watch (watch lifecycle recovery)."
   live-crypto:
     description: >-
-      Crypto live lane (Upbit). Same proposal-led spine plus the
-      operator-requested crypto sentiment reads (orderbook, fear/greed,
-      long/short ratio); watch lifecycle is retained for desk watch flows.
-    tiers: [core, extended]
-    tools:
-      - name: get_quote
-        tier: core
-        calls_30d: 1626
-        purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
-      - name: forecast_save
-        tier: core
-        calls_30d: 792
-        purpose: "Persist a forecast for later accuracy resolution."
-      - name: route_request
-        tier: core
-        calls_30d: 785
-        purpose: "Lane router: intent+market -> proposal-led allowed/blocked plan."
-      - name: forecast_resolve
-        tier: core
-        calls_30d: 717
-        purpose: "Resolve a saved forecast against the observed outcome."
-      - name: get_support_resistance
-        tier: core
-        calls_30d: 570
-        purpose: "Support/resistance levels for a symbol."
-      - name: analyze_stock_batch
-        tier: core
-        calls_30d: 570
-        purpose: "Batch full-pipeline analysis (signal/confidence/position)."
-      - name: order_proposal_list
-        tier: core
-        calls_30d: 418
-        purpose: "List order proposals and their states (read)."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: get_ohlcv
-        tier: core
-        calls_30d: 397
-        purpose: "OHLCV candles for a symbol."
-      - name: order_proposal_create
-        tier: core
-        calls_30d: 355
-        purpose: "Create an order proposal for approval; never submits to broker."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: session_context_append
-        tier: core
-        calls_30d: 327
-        purpose: "Append a durable session-context entry (operator draft write)."
-      - name: order_proposal_get
-        tier: core
-        calls_30d: 220
-        purpose: "Read one order proposal by id."
-        gate: ORDER_PROPOSALS_ENABLED
-      - name: get_available_capital
-        tier: core
-        calls_30d: 208
-        purpose: "Available-to-trade capital per account_mode."
-      - name: get_holdings
-        tier: core
-        calls_30d: 207
-        purpose: "Current holdings per account_mode."
-      - name: investment_watch_events_list_recent
-        tier: core
-        calls_30d: 196
-        purpose: "Recent fired investment-watch events (read)."
-      - name: get_orderbook
-        tier: core
-        calls_30d: 95
-        purpose: "Orderbook depth for a symbol (operator-requested crypto read)."
-      - name: analysis_artifact_save
-        tier: extended
-        calls_30d: 249
-        purpose: "Persist a structured analysis artifact (write; doc-missing-from-draft addition)."
-      - name: investment_watch_create
-        tier: extended
-        calls_30d: 192
-        purpose: "Create an investment watch trigger (operator draft write)."
-      - name: trade_retrospective_pending
-        tier: extended
-        calls_30d: 173
-        purpose: "List fills awaiting retrospective review (read; doc-missing-from-draft addition)."
-      - name: get_operating_briefing
-        tier: extended
-        calls_30d: 126
-        purpose: "Operating briefing: market status, filters, exposure, pending proposals."
-      - name: session_context_get_recent
-        tier: extended
-        calls_30d: 119
-        purpose: "Read recent session-context entries (doc-missing-from-draft addition)."
-      - name: save_trade_retrospective
-        tier: extended
-        calls_30d: 110
-        purpose: "Save a completed trade retrospective (operator draft write)."
-      - name: execution_ledger_fill_events_list_recent
-        tier: extended
-        calls_30d: 99
-        purpose: "Recent execution-ledger fill events (doc-missing-from-draft addition)."
-      - name: get_news
-        tier: extended
-        calls_30d: 98
-        purpose: "Latest market news headlines."
-      - name: get_crypto_fear_greed
-        tier: extended
-        calls_30d: 89
-        purpose: "Crypto fear/greed index (operator-requested crypto read)."
-      - name: get_crypto_long_short_ratio
-        tier: extended
-        calls_30d: 56
-        purpose: "Crypto long/short positioning ratio (operator-requested crypto read)."
-      - name: investment_watch_void
-        tier: extended
-        calls_30d: 6
-        purpose: "Void an investment watch (operator draft write; lifecycle pair of watch_create)."
+      Crypto live lane (Upbit). Proposal-led trading plus the emergency
+      recovery group; order placement outside loss_cut is never direct.
+    groups:
+      core:
+        - name: get_quote
+          calls_30d: 1626
+          purpose: "Current quote for a symbol (compact projection; doc: 'quote')."
+        - name: get_ohlcv
+          calls_30d: 397
+          purpose: "OHLCV candles for a symbol/timeframe."
+        - name: get_support_resistance
+          calls_30d: 570
+          purpose: "Support/resistance levels for a symbol."
+        - name: get_available_capital
+          calls_30d: 208
+          purpose: "Orderable cash balance (replaces get_cash_balance, 12 calls)."
+        - name: get_holdings
+          calls_30d: 207
+          purpose: "Current holdings/positions with avg cost."
+        - name: get_order_history
+          calls_30d: 3
+          purpose: "Open/recent order history (generic account_mode route; Upbit)."
+        - name: order_proposal_create
+          calls_30d: 355
+          purpose: "Create an order proposal for the approval path."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: order_proposal_get
+          calls_30d: 220
+          purpose: "Read one order proposal's state."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: order_proposal_list
+          calls_30d: 418
+          purpose: "List order proposals for the lane."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: investment_watch_create
+          calls_30d: 192
+          purpose: "Create an investment watch (entry/exit triggers)."
+        - name: investment_watch_events_list_recent
+          calls_30d: 196
+          purpose: "Recent watch trigger events."
+        - name: session_context_append
+          calls_30d: 327
+          purpose: "Append a note to the session context record."
+        - name: forecast_save
+          calls_30d: 792
+          purpose: "Save a forecast record for the learning loop."
+        - name: forecast_resolve
+          calls_30d: 717
+          purpose: "Resolve a forecast outcome for scoring."
+        - name: save_trade_retrospective
+          calls_30d: 110
+          purpose: "Persist a trade retrospective record."
+      extension:
+        - name: route_request
+          calls_30d: 785
+          purpose: "Intent router: which tools a request may use."
+        - name: get_operating_briefing
+          calls_30d: 126
+          purpose: "Operator briefing (positions, proposals, alerts)."
+        - name: analysis_artifact_save
+          calls_30d: 249
+          purpose: "Persist an analysis artifact."
+        - name: trade_retrospective_pending
+          calls_30d: 173
+          purpose: "Trades awaiting retrospective review."
+        - name: execution_ledger_fill_events_list_recent
+          calls_30d: 99
+          purpose: "Recent fill events from the execution ledger (fill-event read)."
+        - name: get_market_index
+          calls_30d: 113
+          purpose: "Market index levels."
+        - name: analyze_stock_batch
+          calls_30d: 570
+          purpose: "Batch multi-symbol analysis (top-20 usage)."
+        - name: get_crypto_fear_greed
+          calls_30d: 89
+          purpose: "Crypto fear/greed sentiment index."
+        - name: get_crypto_long_short_ratio
+          calls_30d: 56
+          purpose: "Crypto long/short positioning ratio."
+        - name: get_orderbook
+          calls_30d: 95
+          purpose: "Order book depth for a crypto symbol."
+      emergency:
+        - name: place_order
+          purpose: "loss_cut exit path: exit_intent='loss_cut' sell via approval_issue_id flow (generic account_mode route; Upbit)."
+        - name: cancel_order
+          purpose: "Cancel an open order (generic account_mode route; Upbit)."
+        - name: modify_order
+          purpose: "Modify an open order (generic account_mode route; Upbit)."
+        - name: live_reconcile_orders
+          purpose: "Reconcile crypto live orders against broker fill evidence (dry_run default)."
+        - name: investment_watch_void
+          calls_30d: 6
+          purpose: "Void an investment watch (watch lifecycle recovery)."

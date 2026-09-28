@@ -511,12 +511,37 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.WATCH_REPRICING: set(),
     # FILL_WATCH_CONTEXT is a closed-world, context-only consumer profile.
     McpProfile.FILL_WATCH_CONTEXT: set(),
-    # #891 / Q-52 — closed-world live surfaces. Only read-only order-history
-    # tools may appear; every place/modify/cancel/reconcile sibling is dropped
-    # by the manifest filter.
-    McpProfile.LIVE_KR: {"toss_get_order_history"},
-    McpProfile.LIVE_US: {"get_order_history"},
-    McpProfile.LIVE_CRYPTO: set(),
+    # #891 / Q-53 — closed-world live surfaces. The manifest's core order-
+    # history reads plus the named emergency cancel/modify/reconcile/loss_cut
+    # set may appear; kis_live_place_order (ROB-864 loss_cut-disabled) and the
+    # harness-denied kis_live_get_order_history never land.
+    McpProfile.LIVE_KR: {
+        "toss_get_order_history",
+        "place_order",
+        "toss_place_order",
+        "cancel_order",
+        "modify_order",
+        "kis_live_cancel_order",
+        "kis_live_modify_order",
+        "kis_live_reconcile_orders",
+        "toss_cancel_order",
+        "toss_modify_order",
+        "toss_reconcile_orders",
+    },
+    McpProfile.LIVE_US: {
+        "get_order_history",
+        "place_order",
+        "cancel_order",
+        "modify_order",
+        "live_reconcile_orders",
+    },
+    McpProfile.LIVE_CRYPTO: {
+        "get_order_history",
+        "place_order",
+        "cancel_order",
+        "modify_order",
+        "live_reconcile_orders",
+    },
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES

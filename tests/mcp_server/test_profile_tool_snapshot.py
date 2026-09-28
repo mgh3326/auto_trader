@@ -131,9 +131,9 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
     # generic broad profiles.
     expected["default"].add("get_parking_exclusion")
-    # #891 / Q-52 — the live-* surfaces postdate the 2026-09-03 audit; their
+    # #891 / Q-53 — the live-* surfaces postdate the 2026-09-03 audit; their
     # expected surface is the operator manifest config/mcp_profiles/live.yaml
-    # (tiers applied).
+    # (all three groups).
     from app.mcp_server.tooling.live_profile_registration import (
         live_profile_tool_names,
     )
