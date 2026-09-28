@@ -610,7 +610,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
 def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     """§163차 is recorded in this document but held nowhere in it.
 
-    The allowlist and the USD 10,000 cumulative parking cap are hardcoded
+    The allowlist and the USD 20,000 cumulative parking cap are hardcoded
     closed constants in ``app/services/order_proposals/parking_allowlist.py``.
     Keeping them out of the policy document is the point: a §163차 that added
     a ``parking_cap`` key would put the replacement loss boundary behind a YAML
@@ -681,7 +681,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
         ("BIL", "toss_live", "equity_us"),
     }
     assert PARKING_PER_ORDER_CAP_USD == 10000
-    assert PARKING_CUMULATIVE_CAP_USD == 10000
+    assert PARKING_CUMULATIVE_CAP_USD == 20000
     assert PARKING_PER_ORDER_CAP_KRW == 10000000
     assert PARKING_CUMULATIVE_CAP_KRW == 15000000
     assert "SGOV and BIL on kis_live/equity_us" in current["source"]
