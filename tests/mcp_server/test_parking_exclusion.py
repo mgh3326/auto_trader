@@ -355,12 +355,18 @@ class TestExposureBoundary:
             assert not (added & MUTATION_TOOLS)
             assert not (added & handler_writers)
 
-    def test_get_parking_exclusion_registers_on_default_only(self, monkeypatch) -> None:
+    def test_get_parking_exclusion_registers_on_exactly_three_profiles(
+        self, monkeypatch
+    ) -> None:
+        """#883 registered it on default only; Q-65 (#918) also admits it on
+        the live-kr/live-us manifests. Pin the exact three-profile set so a
+        leak onto live-crypto or any other profile turns RED."""
         from tests.mcp_server._registration_recorder import collect_profile_tools
 
+        expected = {"default", "live-kr", "live-us"}
         profiles = collect_profile_tools(monkeypatch, gates_enabled=True)
         for profile, tools in profiles.items():
-            if profile == "default":
+            if profile in expected:
                 assert "get_parking_exclusion" in tools
             else:
                 assert "get_parking_exclusion" not in tools, (
@@ -368,9 +374,10 @@ class TestExposureBoundary:
                 )
 
         off = collect_profile_tools(monkeypatch, gates_enabled=False)
-        assert "get_parking_exclusion" not in off["default"], (
-            "ORDER_PROPOSALS_ENABLED=false must keep the read absent"
-        )
+        for profile, tools in off.items():
+            assert "get_parking_exclusion" not in tools, (
+                f"ORDER_PROPOSALS_ENABLED=false must keep the read absent ({profile})"
+            )
 
     def test_user_settings_tool_names_pair_is_not_widened(self) -> None:
         from app.mcp_server.tooling.user_settings_registration import (
