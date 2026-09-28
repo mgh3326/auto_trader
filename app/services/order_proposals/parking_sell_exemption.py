@@ -14,8 +14,6 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from asyncpg.pgproto.pgproto import UUID as AsyncpgUUID
-
 from app.core.config import settings
 from app.services.market_events.session_calendar import regular_session_bounds
 from app.services.order_proposals.parking_allowlist import parking_scope
@@ -68,6 +66,12 @@ def _decimal(value: Any) -> Decimal | None:
 def _proposal_uuid(value: Any) -> uuid.UUID | None:
     if type(value) is uuid.UUID:
         return value
+    if value is None:
+        return None
+    # Keep default-off TaskIQ registration free of the asyncpg import. This
+    # codec type is needed only while binding a persisted proposal UUID.
+    from asyncpg.pgproto.pgproto import UUID as AsyncpgUUID
+
     if type(value) is AsyncpgUUID:
         # PostgreSQL's UUID codec returns this exact built-in extension type.
         # String conversion is limited to that trusted DB type, never a caller
