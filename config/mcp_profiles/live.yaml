@@ -13,9 +13,9 @@
 #   extension — up to 10 per-market heavy hitters from the usage doc.
 #   emergency — recovery exceptions, existing tools only, kept in their
 #               own group so they are visible: cancel, modify, reconcile,
-#               watch void, and the loss_cut recovery/planning reads. This is
-#               the ONLY group where order-mutation tools may appear, and
-#               only the names listed per lane.
+#               watch void — and nothing else (operator ruling Q-62). This
+#               is the ONLY group where order-mutation tools may appear,
+#               and only the names listed per lane.
 #
 # Counting rule (Q-53): the "20-25 tools per lane" budget applies to
 # core+extension; emergency entries are additive named exceptions.
@@ -29,11 +29,7 @@
 #     (ROB-864, error loss_cut_direct_path_disabled_use_order_proposal_create),
 #     so they are NOT loss_cut paths. Listing them would silently grant
 #     unrestricted direct live placement outside the proposal/Telegram
-#     approval flow — they are therefore not listed anywhere.
-#   * The emergency group instead carries the loss_cut recovery/planning
-#     reads: order_proposal_list_expired_defensive (ROB-929 handoff of
-#     expired/voided loss_cut proposals) and sell_ladder_fill_preview
-#     (non-executing exit-fill preview).
+#     approval flow — operator ruling Q-62 keeps them out entirely.
 #   * kis_live_get_order_history stays out entirely — harness-denied for
 #     live sessions (#678, HARNESS_DENIED_TOOLS). get_upbit_altseason is the
 #     same denial class but listed on live-crypto per operator decision
@@ -173,11 +169,6 @@ profiles:
         - name: investment_watch_void
           calls_30d: 6
           purpose: "Void an investment watch (watch lifecycle recovery)."
-        - name: order_proposal_list_expired_defensive
-          purpose: "loss_cut recovery read: expired/voided loss_cut+defensive_trim proposals handed off for re-judgment (ROB-929)."
-          gate: ORDER_PROPOSALS_ENABLED
-        - name: sell_ladder_fill_preview
-          purpose: "loss_cut planning read: non-executing ladder-exit fill preview (plan the exit, then propose it)."
   live-us:
     description: >-
       US live lane. Proposal-led trading plus the emergency recovery group;
@@ -271,11 +262,6 @@ profiles:
         - name: investment_watch_void
           calls_30d: 6
           purpose: "Void an investment watch (watch lifecycle recovery)."
-        - name: order_proposal_list_expired_defensive
-          purpose: "loss_cut recovery read: expired/voided loss_cut+defensive_trim proposals handed off for re-judgment (ROB-929)."
-          gate: ORDER_PROPOSALS_ENABLED
-        - name: sell_ladder_fill_preview
-          purpose: "loss_cut planning read: non-executing ladder-exit fill preview (plan the exit, then propose it)."
   live-crypto:
     description: >-
       Crypto live lane (Upbit). Proposal-led trading plus the emergency
@@ -372,8 +358,3 @@ profiles:
         - name: investment_watch_void
           calls_30d: 6
           purpose: "Void an investment watch (watch lifecycle recovery)."
-        - name: order_proposal_list_expired_defensive
-          purpose: "loss_cut recovery read: expired/voided loss_cut+defensive_trim proposals handed off for re-judgment (ROB-929)."
-          gate: ORDER_PROPOSALS_ENABLED
-        - name: sell_ladder_fill_preview
-          purpose: "loss_cut planning read: non-executing ladder-exit fill preview (plan the exit, then propose it)."

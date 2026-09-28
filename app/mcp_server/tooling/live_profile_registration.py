@@ -4,9 +4,9 @@
 tool lists live in ONE operator-readable file — ``config/mcp_profiles/
 live.yaml`` — split into three groups per lane: ``core`` (15 tools), the
 per-market ``extension`` (up to 10), and ``emergency`` recovery exceptions
-(cancel / modify / reconcile / watch-void plus the loss_cut recovery/planning
-reads — existing tools only, kept visible in their own group; the loss_cut
-execution path itself is proposal-led and lives in ``core``). All three
+(cancel / modify / reconcile / watch-void only per operator ruling Q-62 —
+existing tools only, kept visible in their own group; the loss_cut
+execution path is proposal-led and lives in ``core``). All three
 groups load; Q-53 is the baseline before runner mechanization.
 
 Safety shape (fail-closed, checked at startup/registration time):
@@ -100,12 +100,9 @@ _LIVE_ALLOWED_MUTATIONS: frozenset[str] = frozenset(
 # ``exit_intent="loss_cut"`` outright (ROB-864 —
 # ``loss_cut_direct_path_disabled_use_order_proposal_create``), so they are
 # NOT loss_cut paths; listing them would silently grant unrestricted direct
-# live placement outside the proposal/Telegram approval flow. They are
-# therefore absent from this set entirely. The loss_cut-adjacent recovery
-# reads below are ``order_proposal_list_expired_defensive`` (ROB-929 handoff
-# of expired/voided loss_cut+defensive_trim proposals for re-judgment) and
-# ``sell_ladder_fill_preview`` (non-executing ladder-exit fill preview used
-# to plan an emergency exit before proposing it).
+# live placement outside the proposal/Telegram approval flow. Operator
+# ruling Q-62 resolved it: they are absent from this set entirely and the
+# emergency group carries cancel/modify/reconcile/watch-void ONLY.
 LIVE_EMERGENCY_TOOL_NAMES: frozenset[str] = frozenset(
     {
         # cancel
@@ -122,9 +119,6 @@ LIVE_EMERGENCY_TOOL_NAMES: frozenset[str] = frozenset(
         "live_reconcile_orders",
         # watch void
         "investment_watch_void",
-        # loss_cut recovery/planning reads (execution stays proposal-led):
-        "order_proposal_list_expired_defensive",
-        "sell_ladder_fill_preview",
     }
 )
 

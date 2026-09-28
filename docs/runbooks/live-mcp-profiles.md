@@ -14,7 +14,7 @@ Each profile declares **three groups**, all loaded:
 |---|---|---|
 | `core` | 15 | quotes, balances, open orders, proposals, watches, records. `get_available_capital`, never `get_cash_balance`. |
 | `extension` | ≤10 | per-market heavy hitters (route_request, get_operating_briefing, analysis_artifact_save, trade_retrospective_pending, execution_ledger_fill_events_list_recent, get_market_index; crypto adds fear_greed/long_short_ratio/orderbook and `get_upbit_altseason` per Q-58) |
-| `emergency` | named set | recovery exceptions — existing tools only: cancel, modify, reconcile, watch void, loss_cut recovery/planning reads |
+| `emergency` | named set | recovery exceptions — existing tools only: cancel, modify, reconcile, watch void — and nothing else (Q-62) |
 
 Q-53's "20-25 tools per lane" budget applies to `core` + `extension`
 (15 + ≤10); `emergency` entries are additive named exceptions — an
@@ -52,38 +52,31 @@ Hard properties (enforced in `app/mcp_server/tooling/live_profile_registration.p
   `save_trade_retrospective`); other writes appear only in `extension`
   (doc-evidenced) or `emergency` (named exceptions).
 
-## The emergency group (Q-53)
+## The emergency group (Q-53 / Q-62)
 
-Recovery tools exist so a live session can still cancel/modify/reconcile,
-void a watch, and work the loss_cut path — but they stay visible in their
-own group. Named per lane:
+Recovery tools exist so a live session can still cancel/modify/reconcile
+and void an over-eager watch — and they stay visible in their own group.
+Operator ruling Q-62 fixed the membership: cancel, modify, reconcile, watch
+void **only**. Named per lane:
 
 - `live-kr`: `cancel_order`, `modify_order`, `kis_live_cancel_order`,
   `kis_live_modify_order`, `kis_live_reconcile_orders`,
   `toss_cancel_order`, `toss_modify_order`, `toss_reconcile_orders`,
-  `investment_watch_void`, `order_proposal_list_expired_defensive`,
-  `sell_ladder_fill_preview`
+  `investment_watch_void`
 - `live-us` / `live-crypto`: `cancel_order`, `modify_order`,
-  `live_reconcile_orders`, `investment_watch_void`,
-  `order_proposal_list_expired_defensive`, `sell_ladder_fill_preview`
+  `live_reconcile_orders`, `investment_watch_void`
 
 ### loss_cut truth — why no direct place tool is listed
 
 The ONLY existing loss_cut execution path is
 `order_proposal_create(exit_intent="loss_cut")`, which lives in `core` on
-every lane. All direct place tools (`place_order`, `toss_place_order`,
-`kis_live_place_order`) reject `exit_intent="loss_cut"` outright (ROB-864 —
+every lane (Telegram two-click + `approval_issue_id`). All direct place
+tools (`place_order`, `toss_place_order`, `kis_live_place_order`) reject
+`exit_intent="loss_cut"` outright (ROB-864 —
 `loss_cut_direct_path_disabled_use_order_proposal_create`), so they are NOT
 loss_cut paths: listing them would silently grant unrestricted direct live
 buy/sell outside the proposal/Telegram approval flow (independent-tester
-round-3 finding). The emergency group therefore carries the loss_cut
-recovery/planning reads instead:
-
-- `order_proposal_list_expired_defensive` — read-only handoff of
-  expired/voided loss_cut/defensive_trim proposals for re-judgment (ROB-929;
-  gated on `ORDER_PROPOSALS_ENABLED`).
-- `sell_ladder_fill_preview` — non-executing ladder-exit fill preview to
-  plan an emergency exit before proposing it.
+round-3 finding; operator Q-62 ruled them out entirely).
 
 Deliberate non-members:
 

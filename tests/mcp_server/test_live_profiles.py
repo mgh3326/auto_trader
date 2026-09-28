@@ -123,16 +123,12 @@ _LIVE_ORDER_NAME_RE = re.compile(
 #   investment_watch_void — watch-void emergency exception (Q-53).
 #   kis_live_reconcile_orders — KR emergency reconcile (Q-53).
 #   toss_modify_order — Toss KR emergency modify (Q-53).
-#   order_proposal_list_expired_defensive — loss_cut recovery read (Q-53).
-#   sell_ladder_fill_preview — loss_cut planning preview (Q-53).
 _MANIFEST_TOOLS_WITHOUT_LANE_AUDIT = frozenset(
     {
         "execution_ledger_fill_events_list_recent",
         "investment_watch_void",
         "kis_live_reconcile_orders",
         "toss_modify_order",
-        "order_proposal_list_expired_defensive",
-        "sell_ladder_fill_preview",
     }
 )
 
@@ -642,12 +638,15 @@ class TestRegistrationFailureModes:
             "get_trading_policy",
             "investment_watch_expire",
             "sweep_expired_watches",
-            # Proposal lifecycle stays off live surfaces; only the read-only
-            # order_proposal_list_expired_defensive is named (emergency).
+            # Proposal lifecycle and exit-planning tools stay off live
+            # surfaces: operator Q-62 fixed the emergency group to
+            # cancel/modify/reconcile/watch-void only.
             "proposal_revalidate",
             "order_proposal_void",
             "order_proposal_expire_sweep",
             "order_proposal_redispatch",
+            "order_proposal_list_expired_defensive",
+            "sell_ladder_fill_preview",
             "support_reserve_net_consume",
             "toss_get_positions",
             "toss_get_orderable_cash",
@@ -764,9 +763,9 @@ class TestGroupCounts:
 
     def test_per_lane_group_counts(self) -> None:
         expected = {
-            "live-kr": {"core": 15, "extension": 9, "emergency": 11},
-            "live-us": {"core": 15, "extension": 9, "emergency": 6},
-            "live-crypto": {"core": 15, "extension": 10, "emergency": 6},
+            "live-kr": {"core": 15, "extension": 9, "emergency": 9},
+            "live-us": {"core": 15, "extension": 9, "emergency": 4},
+            "live-crypto": {"core": 15, "extension": 10, "emergency": 4},
         }
         manifest = _manifest()
         for profile_name, groups in expected.items():
