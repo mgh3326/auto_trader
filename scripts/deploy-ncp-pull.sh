@@ -63,6 +63,7 @@ ORIGINAL_MCP_COLOR=""
 ORIGINAL_HAPROXY_CONFIG=""
 ORIGINAL_HAPROXY_CONFIG_EXISTS=false
 ORIGINAL_HAPROXY_PRESENT=false
+KIS_STOPPED_AT_CAPTURE=false
 DRAIN_GUARD=""
 ORIGINAL_DEPLOYED_DIGEST_CONTENT="" ORIGINAL_PREVIOUS_DIGEST_CONTENT=""
 ORIGINAL_DEPLOYED_DIGEST_EXISTS=false ORIGINAL_PREVIOUS_DIGEST_EXISTS=false
@@ -124,6 +125,7 @@ capture_initial_state() {
       state="$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" || { printf 'cannot determine container running state: %s\n' "$name" >&2; return 78; }
       if [[ "$state" == false && "$name" == at-kis-ws ]] && ((SKIP_KIS_WS)); then
         # This unit is deliberately untouched; retain its digest when known.
+        KIS_STOPPED_AT_CAPTURE=true
         ORIGINAL_IMAGES["$name"]="$(unit_rollback_image "$name" 2>/dev/null || printf 'UNKNOWN\n')"
       else
         [[ "$state" == true ]] || { printf 'container is not running: %s\n' "$name" >&2; return 78; }
@@ -175,9 +177,9 @@ report_digests() {
     expected="${EXPECTED_IMAGES[$name]:-ABSENT}"
     running="$(running_digest "$name")"
     status=MATCH
-    if ((SKIP_KIS_WS)) && [[ "$name" == at-kis-ws && "$running" == STOPPED ]]; then
+    if ((SKIP_KIS_WS)) && [[ "$name" == at-kis-ws && "$KIS_STOPPED_AT_CAPTURE" == true && "$running" == STOPPED ]]; then
       status=SKIPPED_STOPPED
-    elif [[ "$expected" != "$running" ]]; then status=MISMATCH; failed=1; fi
+    elif [[ "$running" == UNKNOWN || "$expected" != "$running" ]]; then status=MISMATCH; failed=1; fi
     printf '%s\t%s\t%s\t%s\n' "$name" "$expected" "$running" "$status"
   done
   return "$failed"

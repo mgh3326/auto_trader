@@ -44,6 +44,8 @@ def _run(
     absent_name: str = "",
     stopped_name: str = "",
     stopped_after_promotion_name: str = "",
+    stop_after_pull_name: str = "",
+    start_after_pull_name: str = "",
     unresolved_name: str = "",
     fail_initial_inspect_name: str = "",
     fail_haproxy_hup_once: bool = False,
@@ -92,10 +94,13 @@ def _run(
             fmt = args[2]
             value = state[name]
             if 'State.Running' in fmt:
-                stopped_initial = name == os.environ.get('FAKE_STOPPED_NAME')
+                pulled = pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.pulled').exists()
+                stopped_initial = (name == os.environ.get('FAKE_STOPPED_NAME')
+                                   and not (pulled and name == os.environ.get('FAKE_START_AFTER_PULL_NAME')))
+                stopped_after_pull = pulled and name == os.environ.get('FAKE_STOP_AFTER_PULL_NAME')
                 stopped_new = (name == os.environ.get('FAKE_STOPPED_AFTER_PROMOTION_NAME')
                                and value == os.environ['FAKE_NEW_DIGEST'])
-                print('false' if stopped_initial or stopped_new else 'true')
+                print('false' if stopped_initial or stopped_after_pull or stopped_new else 'true')
             elif 'Config.Image' in fmt or 'RepoDigests' in fmt:
                 print(value)
             else:
@@ -136,7 +141,9 @@ def _run(
                 if not marker.exists():
                     marker.touch()
                     sys.exit(23)
-        elif cmd in ('pull', 'stop'):
+        elif cmd == 'pull':
+            pathlib.Path(os.environ['FAKE_DOCKER_STATE'] + '.pulled').touch()
+        elif cmd == 'stop':
             pass
         else:
             sys.exit(42)
@@ -206,6 +213,8 @@ def _run(
             "FAKE_SUCCESS_MISMATCH_NAME": success_mismatch_name,
             "FAKE_STOPPED_NAME": stopped_name,
             "FAKE_STOPPED_AFTER_PROMOTION_NAME": stopped_after_promotion_name,
+            "FAKE_STOP_AFTER_PULL_NAME": stop_after_pull_name,
+            "FAKE_START_AFTER_PULL_NAME": start_after_pull_name,
             "FAKE_UNRESOLVED_NAME": unresolved_name,
             "FAKE_TRANSIENT_INSPECT_NAME": fail_initial_inspect_name,
             "FAKE_FAIL_HAPROXY_HUP_ONCE": "1" if fail_haproxy_hup_once else "0",
@@ -322,6 +331,44 @@ def test_running_skipped_kis_retains_match_report(tmp_path: Path) -> None:
     assert f"at-kis-ws\t{KIS_OLD}\t{KIS_OLD}\tMATCH" in result.stdout
     assert "SKIPPED_STOPPED" not in result.stdout
     assert state["at-kis-ws"] == KIS_OLD
+    assert _mutations(calls, "at-kis-ws") == []
+
+
+def test_running_skipped_kis_stopping_after_capture_fails_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    result, calls, state, run_dir = _run(
+        tmp_path, args=("--skip-kis-ws",), stop_after_pull_name="at-kis-ws"
+    )
+    assert result.returncode != 0
+    assert any(call[0] == "pull" for call in calls)
+    assert "deployment digest mismatch" in result.stderr
+    assert f"at-kis-ws\t{KIS_OLD}\tSTOPPED\tMISMATCH" in result.stdout
+    assert "SKIPPED_STOPPED" not in result.stdout
+    assert state["at-kis-ws"] == KIS_OLD
+    assert state["at-worker"] == OLD
+    assert state["at-scheduler"] == OLD
+    assert "at-api-green" not in state
+    assert _mutations(calls, "at-kis-ws") == []
+    assert (run_dir / "deployed-digest").read_text() == OLD + "\n"
+
+
+def test_stopped_skipped_kis_restarting_without_digest_is_mismatch(
+    tmp_path: Path,
+) -> None:
+    result, calls, state, _ = _run(
+        tmp_path,
+        args=("--skip-kis-ws",),
+        stopped_name="at-kis-ws",
+        start_after_pull_name="at-kis-ws",
+        unresolved_name="at-kis-ws",
+    )
+    assert result.returncode != 0
+    assert any(call[0] == "pull" for call in calls)
+    assert "at-kis-ws\tUNKNOWN\tUNKNOWN\tMISMATCH" in result.stdout
+    assert "SKIPPED_STOPPED" not in result.stdout
+    assert state["at-kis-ws"] == "ghcr.io/mgh3326/auto_trader:mutable"
+    assert state["at-worker"] == OLD
     assert _mutations(calls, "at-kis-ws") == []
 
 
