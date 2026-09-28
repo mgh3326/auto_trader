@@ -122,7 +122,7 @@ report_digests() {
 }
 
 restore_unit() {
-  local name="$1" image="${ORIGINAL_IMAGES[$1]}" i profile
+  local name="$1" image="${ORIGINAL_IMAGES[$1]}" i
   docker rm -f "$name" >/dev/null 2>&1 || true
   [[ "$image" != ABSENT ]] || return 0
   case "$name" in
@@ -272,7 +272,7 @@ deployment_failed() {
   return 1
 }
 promote_digest() {
-  local digest="$1"
+  local digest="$1" name
   deploy_api "$digest" || { deployment_failed; return 1; }
   deploy_worker "$digest" || { deployment_failed; return 1; }
   deploy_singletons "$digest" || { deployment_failed; return 1; }

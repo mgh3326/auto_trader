@@ -133,6 +133,8 @@ def _run(
         + "\n"
     )
     (run_dir / "deployed-digest").write_text(OLD + "\n")
+    if "--rollback" in args:
+        (run_dir / "deployed-digest.previous").write_text(NEW + "\n")
     (run_dir / "api-active-color").write_text("blue\n")
     (run_dir / "mcp-active-color").write_text("blue\n")
     result = subprocess.run(
@@ -180,6 +182,14 @@ def test_skip_keeps_kis_instance_and_reports_retained_digest(tmp_path: Path) -> 
     assert "at-kis-ws" in result.stdout
     assert KIS_OLD in result.stdout
     assert "skip" in result.stdout.lower()
+    assert state["at-worker"] == NEW
+
+
+def test_manual_rollback_skip_also_keeps_kis_instance(tmp_path: Path) -> None:
+    result, calls, state, _ = _run(tmp_path, args=("--rollback", "--skip-kis-ws"))
+    assert result.returncode == 0, result.stderr
+    assert state["at-kis-ws"] == KIS_OLD
+    assert _mutations(calls, "at-kis-ws") == []
     assert state["at-worker"] == NEW
 
 
@@ -288,5 +298,8 @@ def test_dry_run_has_no_mutations_and_explains_skip(tmp_path: Path) -> None:
     assert state["at-worker"] == OLD
     assert not any(call[0] in {"pull", "run", "rm", "stop", "rename", "kill"} for call in calls)
     assert (run_dir / "api-active-color").read_text() == "blue\n"
+    assert (run_dir / "mcp-active-color").read_text() == "blue\n"
+    assert (run_dir / "deployed-digest").read_text() == OLD + "\n"
+    assert not (run_dir / "haproxy.cfg").exists()
     assert "at-kis-ws" in result.stdout
     assert "skip" in result.stdout.lower()
