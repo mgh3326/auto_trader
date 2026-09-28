@@ -12,7 +12,7 @@ freeze_epoch_id: UNKNOWN
   # No freeze-epoch value was supplied with decision 2. The buy-gate shadow
   # epoch is a separate axis and is not substituted here.
 change_id: task880-parking-cap-usd-20000-20260928
-pr_number: TBD_ON_PR
+pr_number: 2122
 merge_sha: TBD_ON_MERGE
 operator_decision_ref: >-
   hk doc strategy-lab/2026-09-28/cash-sweep-parking-lane, section 5,
