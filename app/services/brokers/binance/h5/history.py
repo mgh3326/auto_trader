@@ -84,6 +84,7 @@ async def collect_minutes(
 
     for cursor in range(start_ms, end_ms, _PAGE_MINUTES * MINUTE_MS):
         stop = min(cursor + _PAGE_MINUTES * MINUTE_MS, end_ms)
+        assert_h5_client(client)
         rows = await rob993_bars.fetch_1m_minute_bars(
             client._client,
             symbol,

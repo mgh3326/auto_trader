@@ -23,7 +23,8 @@ The CLI prints an event or a blocked error class without credentials.
 The adapter pages exactly 5,040 one-minute rows per symbol over 11 bounded
 requests to obtain 21 complete four-hour bars; the ROB-993 500-row default
 cannot supply that history. Missing minutes yield no four-hour bar. Only a
-completed decision bucket is evaluated. The ROB-993 StrategyPlugin.evaluate
+completed decision bucket is evaluated. Every history page revalidates the
+H5 client and exact Demo transport origin before dispatch. The ROB-993 StrategyPlugin.evaluate
 interface is used with the exact registered long and short envelope formula.
 The signal key is symbol, KST minute, side and the original decimal close
 text separated by vertical bars. The entry uses a fresh executable book ask

@@ -69,9 +69,20 @@ def test_independent_process_local_counter_exhibits_three_position_counterexampl
         ]
         for process in processes:
             process.start()
-        for process in processes:
-            process.join(10)
-            assert process.exitcode == 0
+        try:
+            for process in processes:
+                # Spawn children re-import the app package, which takes
+                # several seconds; a short join would leave them racing
+                # the manager's teardown into refused connections.
+                process.join(60)
+                if process.exitcode is None:
+                    process.terminate()
+                assert process.exitcode == 0
+        finally:
+            for process in processes:
+                if process.is_alive():
+                    process.kill()
+                process.join(5)
         assert sum(row["state"] == "entry_reserved" for row in data.values()) == 3
 
 
@@ -101,10 +112,18 @@ def test_independent_concurrent_processes_cannot_exceed_caps(symbols, allowed):
         ]
         for process in processes:
             process.start()
-        for process in processes:
-            process.join(10)
-            assert process.exitcode == 0
-        outcomes = [results.get(timeout=2) for _ in processes]
+        try:
+            for process in processes:
+                process.join(60)
+                if process.exitcode is None:
+                    process.terminate()
+                assert process.exitcode == 0
+        finally:
+            for process in processes:
+                if process.is_alive():
+                    process.kill()
+                process.join(5)
+        outcomes = [results.get(timeout=10) for _ in processes]
         assert outcomes.count("reserved") == allowed
         assert (
             sum(

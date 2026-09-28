@@ -95,6 +95,31 @@ def test_paged_history_yields_21_complete_bars() -> None:
     assert bar_price_text(bars[-1], "close") == "100"
 
 
+def test_each_history_page_revalidates_demo_origin_before_dispatch():
+    start = 1000 * FOUR_HOUR_MS
+
+    class SwitchingTransport(_MinuteTransport):
+        async def get(self, path, *, params):
+            response = await super().get(path, params=params)
+            self.base_url = "https://fapi.binance.com"
+            return response
+
+    transport = SwitchingTransport(_minute_rows(start, 21 * 240))
+    blocked = False
+    try:
+        asyncio.run(
+            collect_signal_history(
+                _FakeH5Client(transport),
+                "BTCUSDT",
+                decision_ts=start + 21 * FOUR_HOUR_MS,
+            )
+        )
+    except ValueError:
+        blocked = True
+    assert blocked is True
+    assert transport.calls == 1
+
+
 def test_first_post_entry_close_is_complete_but_pre_entry_extrema_are_excluded():
     start = 1000 * FOUR_HOUR_MS
     client = _FakeH5Client(_MinuteTransport(_minute_rows(start, 240, adverse_index=0)))
