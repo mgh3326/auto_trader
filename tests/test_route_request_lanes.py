@@ -341,6 +341,19 @@ def test_hard_constraints_reference_policy_and_proposal_contract():
         assert "toss_cancel_order" not in joined
 
 
+def test_day_expiry_constraint_is_broker_split_not_generic_2000():
+    """#876 — both lanes must carry the measured Toss 15:30 expiry and the
+    honest KIS to_confirm, never the retired generic 20:00."""
+
+    for lane in ("buy", "sell"):
+        joined = " ".join(L.HARD_CONSTRAINTS[lane])
+        assert "order.day_expiry_kst" in joined
+        assert "toss_live" in joined
+        assert "15:30" in joined
+        assert "to_confirm" in joined
+        assert "20:00" not in joined
+
+
 def test_buy_discovery_have_negative_class_constraint():
     for lane in ("buy", "discovery"):
         joined = " ".join(L.HARD_CONSTRAINTS[lane]).lower()
