@@ -40,6 +40,7 @@ def _run(
     fail_name: str = "",
     fail_health_name: str = "",
     mismatch_name: str = "",
+    success_mismatch_name: str = "",
     absent_name: str = "",
     stopped_name: str = "",
     unresolved_name: str = "",
@@ -107,7 +108,12 @@ def _run(
             image = next((a for a in args if a.startswith('ghcr.io/mgh3326/auto_trader@sha256:')), 'haproxy:3.1-alpine')
             if name == os.environ.get('FAKE_FAIL_NAME') and image == os.environ['FAKE_NEW_DIGEST']:
                 sys.exit(23)
-            state[name] = os.environ['FAKE_NEW_DIGEST'] if name == os.environ.get('FAKE_MISMATCH_NAME') and image != os.environ['FAKE_NEW_DIGEST'] else image
+            if name == os.environ.get('FAKE_SUCCESS_MISMATCH_NAME') and image == os.environ['FAKE_NEW_DIGEST']:
+                state[name] = os.environ['FAKE_OLD_DIGEST']
+            elif name == os.environ.get('FAKE_MISMATCH_NAME') and image != os.environ['FAKE_NEW_DIGEST']:
+                state[name] = os.environ['FAKE_NEW_DIGEST']
+            else:
+                state[name] = image
             print('id-' + name)
         elif cmd == 'logs':
             if name == os.environ.get('FAKE_FAIL_HEALTH_NAME') and state.get(name) == os.environ['FAKE_NEW_DIGEST']:
@@ -193,6 +199,7 @@ def _run(
             "FAKE_FAIL_NAME": fail_name,
             "FAKE_FAIL_HEALTH_NAME": fail_health_name,
             "FAKE_MISMATCH_NAME": mismatch_name,
+            "FAKE_SUCCESS_MISMATCH_NAME": success_mismatch_name,
             "FAKE_STOPPED_NAME": stopped_name,
             "FAKE_UNRESOLVED_NAME": unresolved_name,
             "FAKE_TRANSIENT_INSPECT_NAME": fail_initial_inspect_name,
@@ -324,6 +331,17 @@ def test_rollback_digest_mismatch_is_visible_and_nonzero(tmp_path: Path) -> None
     assert result.returncode != 0
     assert "at-worker" in result.stdout
     assert "MISMATCH" in result.stdout
+
+
+def test_success_path_digest_mismatch_rolls_back_and_exits_nonzero(
+    tmp_path: Path,
+) -> None:
+    result, _, state, _ = _run(tmp_path, success_mismatch_name="at-scheduler")
+    assert result.returncode != 0
+    assert "deployment digest mismatch" in result.stderr
+    assert f"at-scheduler\t{NEW}\t{OLD}\tMISMATCH" in result.stdout
+    assert state["at-worker"] == OLD
+    assert state["at-scheduler"] == OLD
 
 
 def test_digest_record_failure_restores_replaced_units(tmp_path: Path) -> None:
