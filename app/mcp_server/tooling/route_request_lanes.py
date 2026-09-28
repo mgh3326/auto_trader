@@ -511,6 +511,8 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         *US_DUAL_PAPER_TOOL_NAMES,
         *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
+        # Explicit broker sequence discovery for Toss parking proposals.
+        "toss_proposal_accounts",
         "route_request",
         "analysis_artifact_get",
         "analysis_artifact_list",

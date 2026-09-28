@@ -809,7 +809,9 @@ class TestTradingCodexExecutionProfile:
         expected = TRADINGCODEX_EXECUTION_TOOL_NAMES
         if not settings.ORDER_PROPOSALS_ENABLED:
             expected = expected - (
-                ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES
+                ORDER_PROPOSAL_TOOL_NAMES
+                | PROPOSAL_REVALIDATE_TOOL_NAMES
+                | {"toss_proposal_accounts"}
             )
         assert set(mcp.tools) == expected
 

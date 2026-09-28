@@ -1073,7 +1073,8 @@
       "proposal_revalidate",
       "route_request",
       "session_bootstrap_pack",
-      "suggest_order_account"
+      "suggest_order_account",
+      "toss_proposal_accounts"
     ]
   },
   "gates_enabled": {
@@ -1642,6 +1643,7 @@
       "toss_modify_order",
       "toss_place_order",
       "toss_preview_order",
+      "toss_proposal_accounts",
       "toss_reconcile_orders",
       "trade_retrospective_pending",
       "update_manual_holdings",
@@ -2154,6 +2156,7 @@
       "toss_get_positions",
       "toss_place_order",
       "toss_preview_order",
+      "toss_proposal_accounts",
       "trade_retrospective_pending"
     ],
     "us-paper": [
@@ -2335,7 +2338,8 @@
       "proposal_revalidate",
       "route_request",
       "session_bootstrap_pack",
-      "suggest_order_account"
+      "suggest_order_account",
+      "toss_proposal_accounts"
     ]
   }
 }

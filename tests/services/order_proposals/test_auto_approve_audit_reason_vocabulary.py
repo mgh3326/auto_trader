@@ -198,7 +198,16 @@ def _toss_holdings(amount: str):
     return _read
 
 
-async def _decide(monkeypatch, *, broker_account_id, held="5534.1"):
+async def _listed_toss_accounts(seqs=(731,)):
+    from app.services.brokers.toss.dto import TossAccount
+
+    return [
+        TossAccount(account_no=f"fake-{seq}", account_seq=seq, account_type="STOCK")
+        for seq in seqs
+    ]
+
+
+async def _decide(monkeypatch, *, broker_account_id, held="5534.1", seqs=(731,)):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "toss_api_account_seq", 731)
@@ -209,6 +218,7 @@ async def _decide(monkeypatch, *, broker_account_id, held="5534.1"):
         symbol=group.symbol,
         broker_account_id=group.broker_account_id,
         fetch_toss_holdings=_toss_holdings(held),
+        fetch_toss_accounts=lambda: _listed_toss_accounts(seqs),
         durable_notional_fn=_no_pending,
     )
     decision = evaluate_auto_approve_eligibility(
@@ -262,6 +272,53 @@ async def test_null_toss_account_is_still_demoted_but_now_audited_truthfully(
     assert card is not None
     assert "invalid_reason_code" not in card
     assert "`parking_exposure_unavailable` / `account_identity_unavailable`" in card
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("account_id", "seqs", "reason"),
+    [
+        (None, (731,), "account_identity_unavailable"),
+        (None, (731, 732), "account_identity_unavailable"),
+        ("0731", (731,), "account_identity_unavailable"),
+        ("732", (731, 732), "account_identity_mismatch"),
+        ("731", (732,), "account_identity_unknown"),
+    ],
+)
+async def test_toss_parking_account_guards_demote_to_human_card(
+    monkeypatch, account_id, seqs, reason
+):
+    exposure, decision = await _decide(
+        monkeypatch, broker_account_id=account_id, seqs=seqs
+    )
+    assert exposure.available is False
+    assert exposure.unavailable_reason == reason
+    assert decision.eligible is False
+    assert decision.reason == "parking_exposure_unavailable"
+    assert decision.details["parking_exposure_reason"] == reason
+    [attempt] = project_auto_approve_rejections(_stored(decision))
+    [rung] = attempt["rungs"]
+    assert rung["inputs"]["parking_exposure_reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_explicit_listed_account_is_eligible_even_with_multiple_accounts(
+    monkeypatch,
+):
+    exposure, decision = await _decide(
+        monkeypatch, broker_account_id="731", seqs=(732, 731)
+    )
+    assert exposure.available is True
+    assert decision.eligible is True
+
+
+@pytest.mark.asyncio
+async def test_duplicate_broker_sequence_does_not_prove_identity(monkeypatch):
+    exposure, decision = await _decide(
+        monkeypatch, broker_account_id="731", seqs=(731, 731)
+    )
+    assert exposure.unavailable_reason == "account_identity_unknown"
+    assert decision.eligible is False
 
 
 @pytest.mark.asyncio

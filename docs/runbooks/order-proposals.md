@@ -323,6 +323,20 @@ Persists a new proposal group + its rungs. `rungs` is a list of
 `{success, proposal_id, lifecycle_state, rungs}` on success or
 `{success: false, error}` on validation failure.
 
+For a Toss live parking symbol, the proposer first calls the read-only
+`toss_proposal_accounts` tool and explicitly copies the chosen account's
+canonical decimal `broker_account_id` into the top-level create argument.
+The tool returns every broker-listed sequence and never chooses one, including
+when several accounts exist. A strategy-lab or live-session MCP proposer must
+make that choice from this broker account read for the account it intends to
+trade. It must not derive the sequence from settings, rationale, a prior
+proposal, or a portfolio label. The in-repo watch repricing judge can carry
+the chosen value in `ProposalDraft.broker_account_id`; the proposal chain
+forwards it unchanged. KR decision-table apply forwards the explicit
+`action.broker_account_id` only for a Toss parking symbol; it must come from
+the broker account read, and the meter rechecks it. Missing remains a created proposal with a manual
+approval card, not an automatic account selection.
+
 When proposal persistence succeeds but approval dispatch is blocked, the
 success response additionally contains
 `approval_dispatch={status:"blocked", code, observed_at, valid_until,

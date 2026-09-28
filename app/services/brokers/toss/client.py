@@ -101,6 +101,11 @@ class TossReadClient:
         await self._client.aclose()
 
     @property
+    def selected_account_seq(self) -> int | None:
+        """Account sequence this client will send on account-scoped reads."""
+        return self._account_seq
+
+    @property
     def snapshot_scope_identity(self) -> str:
         """Non-secret identity for shared-snapshot cache scoping (ROB-1310 R10).
 

@@ -294,6 +294,8 @@ The Stage 1 account, balance, and quote reads remain on the pinned mock data hos
 
 토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
 
+- **파킹 제안 계좌 (#765)**: proposer는 read-only `toss_proposal_accounts`의 broker-listed account sequence 중 의도한 하나를 top-level `broker_account_id`로 명시한다. 설정·rationale·이전 제안에서 자동 채우지 않는다. Toss 파킹 meter는 명시값이 설정된 holdings reader의 sequence와 정확히 같고 broker account list에 정확히 1건 존재한 뒤에만 holdings를 읽는다. NULL/비정규형은 `account_identity_unavailable`, 다른 설정 계좌는 `account_identity_mismatch`, broker list 부재/중복은 `account_identity_unknown`, 계좌 조회 실패는 `account_lookup_failed`로 수동 카드다. 다계좌도 암묵 선택하지 않는다. 비파킹 제안은 이 검사 밖이다.
+
 - **클라이언트**: `app/services/brokers/toss/` — `transport.py`(host allowlist `openapi.tossinvest.com` + **https 강제**, 3xx 거부), `auth.TossOAuthTokenManager`(OAuth, **client당 유효 토큰 1개**라 Redis 공유+단일비행+failed-token double-check, ROB-262 패턴), `rate_limiter`(`TOSS_RATE_LIMITER_BACKEND=local` 기본의 프로세스 전역 싱글톤; `redis` opt-in은 client-id fingerprint별 원자 슬라이딩 윈도 공유, 장애 시 local로 fail-closed 강등; 그룹별 TPS, 09:00–09:10 ORDER 3TPS), `errors.parse_toss_response`(envelope + non-json typed), `client.TossReadClient`(read + place/modify/cancel)
 - **주문 MCP 도구**: `app/mcp_server/tooling/orders_toss_variants.py` — `toss_preview/place/modify/cancel_order`, `toss_get_order_history/positions/orderable_cash` (account_mode `toss_live`). dry_run+confirm 이중 게이트, 손실매도 가드, opposite-pending 사전검사, `clientOrderId` 멱등
 - **레저**: `review.toss_live_order_ledger` (`app/services/toss_live_order_ledger_service.py`, accepted-only + `record_send` 멱등 replay) + `toss_reconcile_orders`(단건 상세 fill-evidence, ROB-395/407 패턴)

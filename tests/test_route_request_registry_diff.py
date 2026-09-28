@@ -214,6 +214,8 @@ def test_every_proposal_enabled_default_tool_is_classified(
 
     assert ORDER_PROPOSAL_TOOL_NAMES <= default
     assert PROPOSAL_REVALIDATE_TOOL_NAMES <= default
+    assert "toss_proposal_accounts" in default
+    assert "toss_proposal_accounts" in READ_ONLY_ADVISORY_TOOLS
     assert default <= ALL_KNOWN_TOOLS
     assert ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES == (
         ORDER_PROPOSAL_READ_TOOLS
@@ -246,6 +248,7 @@ def test_read_only_bucket_has_no_phantom_tools():
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
         *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
+        "toss_proposal_accounts",
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (

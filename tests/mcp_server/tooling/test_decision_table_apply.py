@@ -33,7 +33,10 @@ from app.services.decision_table_apply import (
     DecisionTableApplyDependencies,
     apply_decision_table,
 )
-from app.services.decision_table_apply.service import _apply_record_correlation_id
+from app.services.decision_table_apply.service import (
+    _apply_record_correlation_id,
+    _proposal_kwargs,
+)
 from tests._mcp_tooling_support import DummyMCP
 from tests.mcp_server._registration_recorder import collect_profile_tools
 
@@ -328,6 +331,34 @@ def test_happy_artifact_fixture_is_real_get_response_shape() -> None:
     assert response["artifact"]["payload"]["schema_version"] == (
         "kr-nxt-decision-table/v1.1"
     )
+
+
+def test_toss_parking_decision_table_forwards_only_explicit_account():
+    row = deepcopy(
+        _happy_response()["artifact"]["payload"]["decision_table"]["rows"][0]
+    )
+    row["symbols"] = ["459580"]
+
+    def kwargs():
+        return _proposal_kwargs(
+            row,
+            market="kr",
+            parent_artifact_uuid="fake-parent",
+            table_hash="fake-hash",
+            scenario_id="fake-scenario",
+        )
+
+    assert "broker_account_id" not in kwargs()
+    row["action"]["broker_account_id"] = "731"
+    assert kwargs()["broker_account_id"] == "731"
+    row["action"]["broker_account_id"] = 731
+    with pytest.raises(ValueError, match="invalid_broker_account_id"):
+        kwargs()
+
+    # A nonparking action keeps its historical kwargs, even if it carries
+    # unrelated data under the same key.
+    row["symbols"] = ["196170"]
+    assert "broker_account_id" not in kwargs()
 
 
 @pytest.mark.parametrize("gates_enabled", [False, True])
