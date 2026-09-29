@@ -78,6 +78,11 @@ PLACE_MODIFIABLE_STATES: Final[frozenset[str]] = frozenset(
 MODIFY_MODIFIABLE_STATES: Final[frozenset[str]] = frozenset({"accepted", "confirmed"})
 _NOT_SENT_STATES: Final[frozenset[str]] = frozenset({"intent", "claimed", "withdrawn"})
 _SEND_UNKNOWN_STATES: Final[frozenset[str]] = frozenset({"sending", "uncertain"})
+# Rows a reconcile run is expected to settle: send-unknown rows and bound rows
+# whose broker picture it re-verifies.
+_RECONCILE_TARGET_STATES: Final[frozenset[str]] = _SEND_UNKNOWN_STATES | frozenset(
+    {"accepted", "open", "partially_filled"}
+)
 _BOUND_STATES: Final[frozenset[str]] = frozenset(
     {
         "accepted",
@@ -985,7 +990,11 @@ async def get_order_detail(
         return refusal_response(tool, refusal)
     broker: dict[str, Any]
     if not listing.complete:
-        broker = {"broker_view": "unknown", "listing_reason": listing.reason}
+        broker = {
+            "broker_view": "unknown",
+            "reason": "order_listing_incomplete",
+            "listing_reason": listing.reason,
+        }
     elif (found := listing.find(int(number))) is None:
         broker = {"broker_view": "not_listed", "note": EMPTY_IS_NOT_EVIDENCE}
     else:
@@ -996,7 +1005,9 @@ async def get_order_detail(
         }
     return {
         **_base(tool),
-        "success": broker["broker_view"] == "listed" or bool(rows),
+        # Ledger rows alone never make an incomplete listing a success.
+        "success": listing.complete
+        and (broker["broker_view"] == "listed" or bool(rows)),
         "status": broker["broker_view"],
         "order_id": number,
         "order_date": day.strftime("%Y%m%d"),
@@ -1028,6 +1039,73 @@ def _planned_action(row: dict[str, Any]) -> str:
     if state in {"intent", "claimed", "sending"}:
         return "recovery_if_expired"
     return "none"
+
+
+def _reconcile_status(
+    *,
+    incomplete_scopes: list[str],
+    unverified: list[int],
+    unresolved: list[int],
+    resolved: list[int],
+) -> str:
+    """One rule for the confirmed answer and the dry-run prediction.
+
+    ``reconciled`` only when every targeted row is resolved. An unverified row
+    or an incomplete scope is ``unknown``; otherwise any unresolved row makes the
+    run ``partial`` (some rows resolved) or ``uncertain`` (none resolved).
+    """
+
+    if incomplete_scopes or unverified:
+        return "unknown"
+    if unresolved:
+        return "partial" if resolved else "uncertain"
+    return "reconciled"
+
+
+def _dry_run_prediction(
+    rows: list[dict[str, Any]], all_listing: OrderListing, incomplete: list[str]
+) -> dict[str, Any]:
+    """Predict the confirmed status without writes.
+
+    A send-unknown row is predicted unresolved when no confirmed write can bind
+    it: a sending row, an uncertain row without its own number, or one whose
+    number the complete all-scope listing does not show. Bound rows, and
+    uncertain rows whose number is listed, are settled only by the confirmed
+    run's ledger checks, which can still report ``unknown``; with no row
+    predicted unresolved the prediction is ``verification_pending``, never
+    ``reconciled``.
+    """
+
+    unresolved: list[int] = []
+    pending: list[int] = []
+    for row in rows:
+        if row["state"] not in _RECONCILE_TARGET_STATES:
+            continue
+        number = row["ack_evidence_order_id"]
+        if row["state"] == "sending" or (
+            row["state"] == "uncertain"
+            and (
+                number is None
+                or not all_listing.complete
+                or all_listing.find(int(number)) is None
+            )
+        ):
+            unresolved.append(row["id"])
+        else:
+            pending.append(row["id"])
+    status = _reconcile_status(
+        incomplete_scopes=incomplete,
+        unverified=[],
+        unresolved=unresolved,
+        resolved=pending,
+    )
+    if status == "reconciled" and pending:
+        status = "verification_pending"
+    return {
+        "would_be_status": status,
+        "would_be_unresolved_row_ids": unresolved,
+        "verification_pending_row_ids": pending,
+    }
 
 
 @_sanitized("nh_mock_reconcile_orders")
@@ -1074,17 +1152,29 @@ async def reconcile_orders(
         "listings": listings,
         **_open_orders(all_listing, open_listing, rows),
     }
+    incomplete_scopes = [
+        name
+        for name, listing in (
+            ("all", all_listing),
+            ("open", open_listing),
+            ("filled", filled_listing),
+        )
+        if not listing.complete
+    ]
     if planning_only:
         return {
             **base,
             "success": True,
             "status": "dry_run",
             "ledger_writes": 0,
+            "incomplete_scopes": incomplete_scopes,
+            **_dry_run_prediction(rows, all_listing, incomplete_scopes),
             "rows": [
                 {**_row_summary(r), "planned_action": _planned_action(r)} for r in rows
             ],
         }
 
+    targeted = {r["id"] for r in rows if r["state"] in _RECONCILE_TARGET_STATES}
     results: dict[int, dict[str, Any]] = {}
     if all_listing.complete:
         for row in rows:
@@ -1149,22 +1239,21 @@ async def reconcile_orders(
         or result.get("reconcile") in {"unknown", "skipped"}
         or result.get("action") == "error"
     )
-    incomplete_scopes = [
-        name
-        for name, listing in (
-            ("all", all_listing),
-            ("open", open_listing),
-            ("filled", filled_listing),
-        )
-        if not listing.complete
-    ]
-    status = "unknown" if incomplete_scopes or unverified else "reconciled"
+    unresolved_ids = [r["id"] for r in unresolved]
+    resolved = sorted(targeted - set(unresolved_ids) - set(unverified))
+    status = _reconcile_status(
+        incomplete_scopes=incomplete_scopes,
+        unverified=unverified,
+        unresolved=unresolved_ids,
+        resolved=resolved,
+    )
     return {
         **base,
         "success": status == "reconciled" and not unresolved,
         "status": status,
         "incomplete_scopes": incomplete_scopes,
         "unverified_row_ids": unverified,
+        "resolved_row_ids": resolved,
         "recovered": None
         if recovered is None
         else {
@@ -1172,7 +1261,7 @@ async def reconcile_orders(
             "claim_deadline_withdrawn": recovered[1],
             "lease_expired_uncertain": recovered[2],
         },
-        "unresolved_row_ids": [r["id"] for r in unresolved],
+        "unresolved_row_ids": unresolved_ids,
         "rows": [
             {**_row_summary(r), "result": results.get(r["id"])} for r in final_rows
         ],
