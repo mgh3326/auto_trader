@@ -218,10 +218,19 @@ async def build_investor_flow_snapshots(
             ) as exc:  # pragma: no cover - defensive external-source boundary
                 return [], (f"{normalized}: fetch failed: {exc.__class__.__name__}",)
         rows = result.get("data") if isinstance(result, Mapping) else None
+        # Fetcher-level skip reasons (malformed trend rows) are surfaced as
+        # warnings so an all-invalid symbol is diagnosable instead of silent.
+        skipped = result.get("skipped") if isinstance(result, Mapping) else None
+        local_warnings: list[str] = [
+            f"{normalized}: {count} row(s) skipped: {reason}"
+            for reason, count in sorted((skipped or {}).items())
+        ]
         if not rows:
-            return [], (f"{normalized}: no investor-flow rows returned",)
+            return [], (
+                *local_warnings,
+                f"{normalized}: no investor-flow rows returned",
+            )
         built: list[InvestorFlowSnapshotUpsert] = []
-        local_warnings: list[str] = []
         for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
                 local_warnings.append(f"{normalized}: row {index} is not an object")

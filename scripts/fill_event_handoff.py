@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,32 @@ def _mapping(value: str | None, env_name: str) -> dict[str, str]:
     ):
         raise ValueError(f"{env_name} must be a string map")
     return parsed
+
+
+def _decimal_map(value: str | None, env_name: str) -> dict[str, Decimal] | None:
+    """Parse a JSON currency->notional map; unset/blank keeps config defaults.
+
+    Unlike ``_mapping`` (a string map), the documented value is numeric JSON —
+    ``{"KRW":5000,"USD":5}`` — so values may be numbers or strings.
+    """
+    if value is None or not value.strip():
+        return None
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict) or not all(isinstance(k, str) for k in parsed):
+        raise ValueError(f"{env_name} must be a currency-to-notional map")
+    result: dict[str, Decimal] = {}
+    for key, amount in parsed.items():
+        if isinstance(amount, bool) or not isinstance(amount, (str, int, float)):
+            raise ValueError(f"{env_name} values must be numeric")
+        result[key] = Decimal(str(amount))
+    return result
+
+
+def _parking_symbols(value: str | None) -> frozenset[str] | None:
+    """Comma-separated parking symbols; unset/blank keeps config defaults."""
+    if value is None or not value.strip():
+        return None
+    return frozenset(item.strip() for item in value.split(",") if item.strip())
 
 
 def _lanes(value: str | None) -> dict[str, str]:
@@ -106,6 +133,17 @@ async def main_async(
         herdr_targets=_targets(os.getenv("FILL_HANDOFF_HERDR_TARGETS")),
         kick_enabled=_enabled(os.getenv("FILL_HANDOFF_KICK_ENABLED")),
         kick_cooldown_seconds=int(os.getenv("FILL_HANDOFF_KICK_COOLDOWN_S", "3600")),
+        kick_daily_cap=int(os.getenv("FILL_HANDOFF_KICK_DAILY_CAP", "2")),
+        kick_parking_symbols=_parking_symbols(
+            os.getenv("FILL_HANDOFF_KICK_PARKING_SYMBOLS")
+        ),
+        kick_small_buy_notional=_decimal_map(
+            os.getenv("FILL_HANDOFF_KICK_SMALL_BUY_NOTIONAL"),
+            "FILL_HANDOFF_KICK_SMALL_BUY_NOTIONAL",
+        ),
+        kick_min_position_fraction=Decimal(
+            os.getenv("FILL_HANDOFF_KICK_MIN_POSITION_FRACTION", "0.25")
+        ),
         kick_deployments=_mapping(
             os.getenv("FILL_HANDOFF_KICK_DEPLOYMENTS"),
             "FILL_HANDOFF_KICK_DEPLOYMENTS",

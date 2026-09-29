@@ -72,7 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 PARENT_REVISION = "20260820_rob1290_reconcile"
-HEAD_REVISION = "20260908_task137_ctx_outcomes"
+HEAD_REVISION = "20260928_task847_h5_state"
 
 _SCRATCH_PREFIX = "w5_alembic_chain_"
 
@@ -103,6 +103,8 @@ def _admin_kwargs(url, *, database: str) -> dict[str, object]:
 #: schema -- otherwise the migration collides with what create_all already
 #: made. Same maintenance point the sibling roundtrip tests carry.
 _POST_PARENT_TABLES: tuple[str, ...] = (
+    "review.protected_position_revisions",
+    "review.protected_positions",
     "review.kiwoom_authority_cessation_receipts",
     "review.kiwoom_authority_attempts",
     "review.telegram_callback_recovery_cursor",
@@ -114,6 +116,14 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.buy_gate_ab_collection_epoch_v2",
     "review.kiwoom_coordination_lifecycle",
     "review.fill_watch_context_outcomes",
+    # Task 847 H5 durable state is later than this reconstructed boundary;
+    # binance_h5_intents references binance_h5_signals, so it drops first.
+    "review.binance_h5_intents",
+    "review.binance_h5_signals",
+    "review.binance_h5_lane_state",
+    "review.binance_h5_opportunities",
+    "review.binance_h5_nav_samples",
+    "krx_after_market_eligibility",
 )
 
 
@@ -154,6 +164,16 @@ async def scratch_database() -> AsyncIterator[str]:
                     text(
                         "ALTER TABLE review.order_proposal_rungs "
                         "DROP COLUMN void_reason_group"
+                    )
+                )
+                # ROB-691 expired_at is later than this reconstructed
+                # boundary.  Current metadata already contains the nullable
+                # column, so drop it and let the migration add it back (the
+                # widened status CHECK is recreated by the migration itself).
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.toss_live_order_ledger "
+                        "DROP COLUMN expired_at"
                     )
                 )
         finally:

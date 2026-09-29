@@ -131,6 +131,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "get_forecasts",
         "get_fx_rate",
         "get_holdings",
+        "get_protected_positions",
         "get_holdings_news",
         "get_indicators",
         "get_insider_transactions",

@@ -15,6 +15,7 @@ export type AssetType = "equity" | "etf" | "crypto" | "fund" | "other";
 export type Currency = "KRW" | "USD";
 export type AssetCategory = "kr_stock" | "us_stock" | "crypto";
 export type PriceState = "live" | "missing" | "stale";
+export type ProtectionState = "unprotected" | "covered" | "encroached" | "shortfall" | "unverified";
 
 export interface CashAmounts {
   krw?: number | null;
@@ -58,6 +59,11 @@ export interface Holding {
   isTradeable?: boolean;
   manualOnly?: boolean;
   sellableQuantity?: number | null;
+  sellableObserved?: boolean;
+  brokerSellableQuantity?: number | null;
+  protectedQuantity?: number;
+  tacticalSellableQuantity?: number | null;
+  protectionState?: ProtectionState;
   pendingSellQuantity?: number;
   referenceQuantity?: number | null;
 }
@@ -78,6 +84,11 @@ export interface GroupedSourceBreakdown {
   isTradeable?: boolean;
   manualOnly?: boolean;
   sellableQuantity?: number;
+  sellableObserved?: boolean;
+  brokerSellableQuantity?: number | null;
+  protectedQuantity?: number;
+  tacticalSellableQuantity?: number | null;
+  protectionState?: ProtectionState;
   pendingSellQuantity?: number;
   referenceQuantity?: number;
 }
@@ -93,6 +104,11 @@ export interface GroupedHolding {
   totalQuantity: number;
   tradeableQuantity?: number;
   sellableQuantity?: number;
+  sellableObserved?: boolean;
+  brokerSellableQuantity?: number | null;
+  protectedQuantity?: number;
+  tacticalSellableQuantity?: number | null;
+  protectionState?: ProtectionState;
   pendingSellQuantity?: number;
   referenceQuantity?: number;
   averageCost?: number | null;

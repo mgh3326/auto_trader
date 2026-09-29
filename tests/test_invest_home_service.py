@@ -64,6 +64,39 @@ def test_classify_account_kind_maps_sources() -> None:
 
 
 @pytest.mark.unit
+def test_protection_identity_keeps_readable_live_toss_separate_from_mutation_gate() -> (
+    None
+):
+    from app.services.invest_home_service import InvestHomeService
+
+    toss = _h(
+        source="toss_api",
+        symbol="005930",
+        market="KR",
+        isTradeable=False,
+        manualOnly=False,
+    )
+    upbit = _h(
+        source="upbit",
+        symbol="BTC",
+        market="CRYPTO",
+        assetType="crypto",
+        assetCategory="crypto",
+    )
+
+    assert InvestHomeService._protection_identity(toss) == (
+        "toss_live",
+        "kr",
+        "005930",
+    )
+    assert InvestHomeService._protection_identity(upbit) == (
+        "upbit_live",
+        "crypto",
+        "KRW-BTC",
+    )
+
+
+@pytest.mark.unit
 def test_manual_holding_schema_forces_reference_only_defaults() -> None:
     holding = _h(
         source="toss_manual",
@@ -1162,7 +1195,7 @@ async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_reader
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_sellable():
+async def test_cross_facade_whole_snapshot_composes_readers_once_and_keeps_l1_fields():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
 
     whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
@@ -1211,7 +1244,11 @@ async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_se
             market="US",
             currency="USD",
             assetCategory="us_stock",
-            sellableQuantity=None,
+            sellableQuantity=3.0,
+            sellableObserved=True,
+            brokerSellableQuantity=3.0,
+            protectedQuantity=2.0,
+            protectionState="covered",
         ),
     )
     manual_reader = _CountingReader("manual")
@@ -1262,17 +1299,18 @@ async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_se
     )
     assert payload is not None
 
-    def _contains_sellable(value):
-        if isinstance(value, dict):
-            return any(
-                "sellable" in str(key).lower() or _contains_sellable(item)
-                for key, item in value.items()
-            )
-        if isinstance(value, list):
-            return any(_contains_sellable(item) for item in value)
-        return False
-
-    assert not _contains_sellable(payload)
+    cached_toss = next(
+        holding
+        for holding in payload["response"]["holdings"]
+        if holding["source"] == "toss_api"
+    )
+    assert cached_toss["sellableQuantity"] == 3.0
+    assert cached_toss["brokerSellableQuantity"] == 3.0
+    # This cache-focused fixture has no protected declaration, so serialization
+    # keeps the raw broker evidence and canonical unprotected state.
+    assert cached_toss["protectedQuantity"] == 0.0
+    assert cached_toss["protectionState"] == "unprotected"
+    assert "pendingSellQuantity" not in cached_toss
 
 
 @pytest.mark.asyncio

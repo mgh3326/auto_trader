@@ -120,15 +120,23 @@ def test_cash_funding_boundary_failures_demote_to_human_card():
 
 
 def test_cash_funding_cumulative_cap_demotes_to_human_card():
-    # max(limit, current) * quantity = 200; 9,801 + 200 exceeds 10,000 USD.
-    decision = _decision(cash_funding_cumulative_notional=Decimal("9801"))
+    # max(limit, current) * quantity = 200; 19,801 + 200 exceeds 20,000 USD.
+    decision = _decision(cash_funding_cumulative_notional=Decimal("19801"))
 
     assert (decision.eligible, decision.reason) == (
         False,
         "cash_funding_cumulative_cap_exceeded",
     )
-    assert decision.details["cash_funding_cumulative_before"] == "9801"
-    assert decision.details["cash_funding_cumulative_cap"] == "10000"
+    assert decision.details["cash_funding_cumulative_before"] == "19801"
+    assert decision.details["cash_funding_cumulative_cap"] == "20000"
+
+
+def test_cash_funding_exact_cumulative_cap_is_eligible():
+    decision = _decision(cash_funding_cumulative_notional=Decimal("19800"))
+
+    assert (decision.eligible, decision.reason) == (True, "eligible")
+    assert decision.details["cash_funding_cumulative_after"] == "20000"
+    assert decision.details["cash_funding_cumulative_cap"] == "20000"
 
 
 def test_non_cash_proxy_loss_sale_cannot_reach_cash_funding_auto_path():
@@ -195,7 +203,7 @@ def test_cash_funding_cumulative_cap_gates_raised_cap_and_off_mode_distance():
         rung=high_need_rung,
         limits=_OFF_LIMITS,
         cash_funding_shortfall=Decimal("1900"),
-        cash_funding_cumulative_notional=Decimal("9000"),
+        cash_funding_cumulative_notional=Decimal("19000"),
     )
     allowed = _decision(
         group=high_need_group,
@@ -205,15 +213,15 @@ def test_cash_funding_cumulative_cap_gates_raised_cap_and_off_mode_distance():
         cash_funding_cumulative_notional=Decimal("0"),
     )
 
-    # 2,000 clears only the immutable USD 10,000 raised cap.  The second
-    # boundary still demotes the same rung once its projected sum is 11,000.
+    # 2,000 clears the unchanged USD 10,000 per-order cap. The second
+    # boundary demotes the same rung once its projected sum is 21,000.
     assert (cumulative_denied.eligible, cumulative_denied.reason) == (
         False,
         "cash_funding_cumulative_cap_exceeded",
     )
-    assert cumulative_denied.details["cash_funding_cumulative_before"] == "9000"
-    assert cumulative_denied.details["cash_funding_cumulative_after"] == "11000"
-    assert cumulative_denied.details["cash_funding_cumulative_cap"] == "10000"
+    assert cumulative_denied.details["cash_funding_cumulative_before"] == "19000"
+    assert cumulative_denied.details["cash_funding_cumulative_after"] == "21000"
+    assert cumulative_denied.details["cash_funding_cumulative_cap"] == "20000"
     assert "per_order_cap" not in cumulative_denied.details
     # This is deliberately `off`: the cash-funding sell authorization is
     # independent of the §163 parking-buy mode and skips the sell distance

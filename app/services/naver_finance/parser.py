@@ -110,6 +110,28 @@ async def _fetch_html_with_client(
     return BeautifulSoup(_decode_html_content(response.content), "lxml")
 
 
+async def _fetch_json(url: str, params: dict[str, Any] | None = None) -> Any:
+    """Fetch a Naver JSON endpoint and return the decoded payload.
+
+    Same conventions as ``_fetch_html``: fresh AsyncClient with timeout=10 and
+    follow_redirects=True, browser-mimicking DEFAULT_HEADERS, raise_for_status.
+    No retry/backoff — per-symbol failures surface to the caller just like the
+    HTML path did.
+    """
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        return await _fetch_json_with_client(client, url, params=params)
+
+
+async def _fetch_json_with_client(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    response = await client.get(url, params=params, headers=DEFAULT_HEADERS)
+    response.raise_for_status()
+    return response.json()
+
+
 def _extract_current_price_from_main_soup(main_soup: BeautifulSoup) -> int | None:
     price_elem = main_soup.select_one("p.no_today em span.blind")
     if price_elem:

@@ -1981,7 +1981,8 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert holding.sourceOfTruth is True
     assert holding.isTradeable is False
     assert holding.manualOnly is False
-    assert holding.sellableQuantity is None
+    assert holding.sellableQuantity == 1.25
+    assert holding.sellableObserved is True
     assert holding.referenceQuantity == 1.5
 
 
@@ -2059,8 +2060,7 @@ async def test_toss_api_home_reader_buying_power_fail_open_when_cash_missing(
 
 @pytest.mark.asyncio
 async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch):
-    """A routed Toss holding remains tradeable, but read paths do not expose
-    a sellable quantity sourced from the shared snapshot."""
+    """A routed Toss holding remains tradeable and exposes raw sellability."""
     from decimal import Decimal
 
     from app.core.config import settings as _cfg
@@ -2106,7 +2106,8 @@ async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch
 
     holding = result.holdings[0]
     assert holding.isTradeable is True
-    assert holding.sellableQuantity is None
+    assert holding.sellableQuantity == 1.25
+    assert holding.sellableObserved is True
     assert holding.pendingSellQuantity == 0.0
 
 
@@ -2195,9 +2196,9 @@ async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
 
     await readers.TossApiHomeReader().fetch(user_id=1)
 
-    # ROB-1310: mutation enablement never turns a general home read into an
-    # ORDER_INFO sellable fan-out.
-    assert captured["need_sellable"] is False
+    # #728 uses the cache-aware sellable projection for every live Toss home
+    # read, independently from whether live order mutation is currently armed.
+    assert captured["need_sellable"] is True
 
 
 @pytest.mark.asyncio
@@ -2230,10 +2231,11 @@ async def test_toss_api_home_reader_passes_sellable_cache_when_mutations_on(
 
     await readers.TossApiHomeReader().fetch(user_id=1)
 
-    # The shared portfolio snapshot is the read model; the per-symbol
-    # sellable cache is reserved for order-adjacent invalidation/preflight.
-    assert captured["sellable_cache"] is None
-    assert captured["need_sellable"] is False
+    # The existing per-symbol cache is the display read source. A cache miss
+    # may fetch broker evidence, but tactical projection itself remains in the
+    # service layer rather than changing the Toss DTO.
+    assert captured["sellable_cache"] is not None
+    assert captured["need_sellable"] is True
 
 
 @pytest.mark.asyncio

@@ -57,7 +57,10 @@ from app.mcp_server.tooling.market_data_registration import register_market_data
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
-from app.mcp_server.tooling.order_proposal_tools import register_order_proposal_tools
+from app.mcp_server.tooling.order_proposal_tools import (
+    register_order_proposal_tools,
+    register_toss_proposal_accounts,
+)
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.proposal_revalidate_registration import (
     register_proposal_revalidate_tools,
@@ -134,6 +137,7 @@ def register_watch_repricing_tools(
     register_operating_briefing_tools(filtered)
     register_investment_report_tools(filtered, include_snapshot_generator=False)
     register_order_proposal_tools(filtered)
+    register_toss_proposal_accounts(filtered)
     register_proposal_revalidate_tools(
         filtered,
         registered_tool_names=(

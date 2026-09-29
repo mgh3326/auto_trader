@@ -154,3 +154,22 @@ def test_user_settings_tool_names_are_registered() -> None:
     )
 
     assert USER_SETTINGS_TOOL_NAMES == {"get_user_setting", "set_user_setting"}
+
+
+def test_set_user_setting_description_embeds_the_shared_bound() -> None:
+    """The MCP description must derive the manual_cash bound from the shared
+    constant, not hardcode it (#675 AC2)."""
+    from app.mcp_server.tooling.user_settings_registration import (
+        register_user_settings_tools,
+    )
+    from app.services.manual_cash_settings import MANUAL_CASH_MAX_KRW
+
+    captured: dict[str, str] = {}
+
+    class _Recorder:
+        def tool(self, *, name: str, description: str):
+            captured[name] = description
+            return lambda fn: fn
+
+    register_user_settings_tools(_Recorder())  # type: ignore[arg-type]
+    assert f"0..{MANUAL_CASH_MAX_KRW}" in captured["set_user_setting"]

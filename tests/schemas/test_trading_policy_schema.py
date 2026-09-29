@@ -11,6 +11,7 @@ import app.schemas.trading_policy as policy_schema
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.schemas.trading_policy import (
     CrashDayNewEntryHoldException,
+    OneShareExceptionPolicy,
     PreplannedSupportLadderPolicy,
     SupportReserveNetDecisionRule,
     TradingPolicyDocument,
@@ -20,7 +21,11 @@ from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     classify_sell_profit,
 )
-from app.services.trading_policy_service import load_trading_policy, policy_content_hash
+from app.services.trading_policy_service import (
+    get_policy_for,
+    load_trading_policy,
+    policy_content_hash,
+)
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
 _ROB1289_BASELINE = (
@@ -85,6 +90,116 @@ _S139_ALLOWED_POLICY_DELTAS = (
         10000,
     ),
 )
+
+
+# §664 (2026-09-24) — the KR new-entry one-share exception is the only delta
+# on buy.per_symbol_notional_krw_range: an additive one_share_exception block
+# and a semantics sentence appended to the unchanged original. The band value
+# itself is NOT a delta. Historical closed-equivalence tests call
+# _strip_s664_kr_one_share_exception, which pins the exact block and wording
+# before restoring the pre-§664 form, so a silent widening fails there.
+_S664_KR_BAND_KEY = "buy.per_symbol_notional_krw_range"
+_S664_KR_ONE_SHARE_EXCEPTION = {
+    "enabled": True,
+    "absolute_ceiling_krw": 10000000,
+    "max_deep_rungs": 1,
+}
+_S664_KR_BAND_BASE_SEMANTICS = (
+    "per-symbol order sizing for new entries (policy threshold, not account "
+    "balance; KR lane only)"
+)
+_S664_KR_BAND_SEMANTICS_SUFFIX = (
+    "; one_share_exception mirrors the US §139차 rule — a new-entry symbol "
+    "whose single share exceeds the band upper bound may enter with exactly one "
+    "share, bounded by orderable cash and the KR per-order auto-approve cap "
+    "(2,000,000; above it the order is carded, not rejected)"
+)
+
+
+def _strip_s664_kr_one_share_exception(current: dict, baseline: dict) -> None:
+    """Pin the §664 delta on a current threshold dict and undo it in place.
+
+    Works on both raw YAML dicts (no ``one_share_exception`` key in the
+    baseline) and model dumps (baseline key present as ``None``).
+    """
+
+    exception = {
+        key: value
+        for key, value in current["one_share_exception"].items()
+        if value is not None
+    }
+    assert exception == _S664_KR_ONE_SHARE_EXCEPTION
+    assert baseline.get("one_share_exception") is None
+    assert current["value"] == baseline["value"] == [200000, 400000]
+    assert baseline["semantics"] == _S664_KR_BAND_BASE_SEMANTICS
+    assert current["semantics"] == (
+        _S664_KR_BAND_BASE_SEMANTICS + _S664_KR_BAND_SEMANTICS_SUFFIX
+    )
+    current["semantics"] = baseline["semantics"]
+    if "one_share_exception" in baseline:
+        current["one_share_exception"] = baseline["one_share_exception"]
+    else:
+        del current["one_share_exception"]
+
+
+# task-792 C1 (2026-09-28) — the recovery gate's whole delta is the single
+# market-state coefficient block, the freshness bounds on the two conditions,
+# the semantics rewrite, and the no_chasing criterion swap that folds the old
+# breadth-below-50 ineligibility into the same C1 decision. Everything else on
+# market_rules.crypto is closed-equivalence-pinned.
+_T792_C1_GATE_SEMANTICS = (
+    "C1 market-state coefficient (task-792): crypto new-entry notional is "
+    "scaled by m = 1.0 at 2/2 met, 0.5 at 1/2, 0 at 0/2. A missing or "
+    "stale input for either condition yields hold, never an inferred 0/2. "
+    "advisory_context is qualitative reference only, is not part of the "
+    "gate count, and receives thresholds in the crypto-gate redesign round."
+)
+_T792_C1_SIZE_COEFFICIENT = {
+    "applies_to": "crypto_new_entry_notional",
+    "by_met_count": {0: 0.0, 1: 0.5, 2: 1.0},
+    "on_missing_or_stale_input": "hold",
+    "fixed_at": "episode_first_order",
+}
+_T792_C1_STALE_BOUNDS = {"alt_breadth_24h": 1800, "btc_long_short_ratio": 10800}
+_T792_C1_NO_CHASING_CRITERION = (
+    "new-alt entry sizing follows recovery_gate.size_coefficient — the same "
+    "C1 market-state decision; the breadth-below-50-percent ineligibility is "
+    "retired because breadth is counted once inside the recovery gate"
+)
+_T792_C1_OLD_NO_CHASING_CRITERION = (
+    "new alt candidates are ineligible when 24h alt breadth is below 50 percent"
+)
+
+
+def _strip_t792_c1_market_state(current_crypto: dict, baseline_crypto: dict) -> None:
+    """Pin the exact task-792 C1 delta on market_rules.crypto and undo it.
+
+    C1 is the only permitted difference between the current and baseline
+    recovery_gate / no_chasing blocks: the size_coefficient table, the two
+    stale_after_seconds bounds, the semantics rewrite, and the no_chasing
+    criteria swap. Any additional drift fails here rather than riding along
+    on the C1 version bump.
+    """
+
+    gate = current_crypto["recovery_gate"]
+    assert gate["size_coefficient"] == _T792_C1_SIZE_COEFFICIENT
+    assert "size_coefficient" not in baseline_crypto["recovery_gate"]
+    assert gate["semantics"] == _T792_C1_GATE_SEMANTICS
+    for condition in gate["conditions"]:
+        bound = _T792_C1_STALE_BOUNDS.get(condition["id"])
+        if bound is None:
+            assert "stale_after_seconds" not in condition
+            continue
+        assert condition["stale_after_seconds"] == bound
+        del condition["stale_after_seconds"]
+    gate["semantics"] = baseline_crypto["recovery_gate"]["semantics"]
+    del gate["size_coefficient"]
+
+    assert _T792_C1_NO_CHASING_CRITERION in current_crypto["no_chasing"]["criteria"]
+    assert (
+        _T792_C1_OLD_NO_CHASING_CRITERION in baseline_crypto["no_chasing"]["criteria"]
+    )
+    current_crypto["no_chasing"]["criteria"] = baseline_crypto["no_chasing"]["criteria"]
 
 
 def _raw() -> dict:
@@ -261,8 +376,8 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-09-08.1"
-    assert policy_content_hash() == "6d5a858ff5cb"
+    assert doc.version == "2026-09-28.2"
+    assert policy_content_hash() == "8bc4db3fe010"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -276,7 +391,7 @@ def test_s177_cash_proxy_and_fx_policy_are_schema_pinned() -> None:
     current = _raw()
     doc = TradingPolicyDocument.model_validate(current)
 
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-28.2"
     assert doc.cash_proxy.exit_intent == "cash_funding"
     assert doc.cash_proxy.symbol_list_duplicated_here is False
     assert doc.cash_proxy.exempt_gates == [
@@ -470,7 +585,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-08.1"
+    assert current["version"] == "2026-09-28.2"
     assert "§156차 auto-approval authorization revision 2026-08-26" in current["source"]
     assert "§156차 scope addendum ④⑤ 2026-08-26" in current["source"]
     assert "§156차 final scope addendum ② 2026-08-26" in current["source"]
@@ -499,7 +614,7 @@ def test_s156_scope_addendum_pins_version_and_preserves_auto_approve_keyset():
 def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     """§163차 is recorded in this document but held nowhere in it.
 
-    The allowlist and the USD 10,000 cumulative parking cap are hardcoded
+    The allowlist and the USD 20,000 cumulative parking cap are hardcoded
     closed constants in ``app/services/order_proposals/parking_allowlist.py``.
     Keeping them out of the policy document is the point: a §163차 that added
     a ``parking_cap`` key would put the replacement loss boundary behind a YAML
@@ -518,7 +633,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
 
-    assert current["version"] == "2026-09-08.1"
+    assert current["version"] == "2026-09-28.2"
     assert "§163차 cash-parking ticker allowlist 2026-08-28" in current["source"]
     assert "NO POLICY KEY IS ADDED OR CHANGED BY THIS ENTRY" in current["source"]
     assert "the daily cap is unchanged and still applied" in current["source"]
@@ -570,7 +685,7 @@ def test_s163_parking_allowlist_adds_no_policy_key_or_value():
         ("BIL", "toss_live", "equity_us"),
     }
     assert PARKING_PER_ORDER_CAP_USD == 10000
-    assert PARKING_CUMULATIVE_CAP_USD == 10000
+    assert PARKING_CUMULATIVE_CAP_USD == 20000
     assert PARKING_PER_ORDER_CAP_KRW == 10000000
     assert PARKING_CUMULATIVE_CAP_KRW == 15000000
     assert "SGOV and BIL on kis_live/equity_us" in current["source"]
@@ -661,7 +776,7 @@ def test_support_reserve_net_literal_policy_prefix_is_frozen():
 def test_s148_clarifies_scope_and_preserves_remaining_policy_literals() -> None:
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["buy.support_reserve_net"]
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-28.2"
     assert (
         "§148차 A(k) eligibility wording contradiction resolution 2026-08-24"
         in doc.source
@@ -1462,6 +1577,10 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     # remove both below so this remains an exact check of every prior surface.
     baseline["cash_yields"] = deepcopy(current_raw["cash_yields"])
     baseline["transfer_costs"] = deepcopy(current_raw["transfer_costs"])
+    # #876 (2026-09-28) adds the advisory kr_trading_sessions session table as
+    # a required block; same seed-then-strip treatment as §S175.
+    assert "kr_trading_sessions" not in baseline
+    baseline["kr_trading_sessions"] = deepcopy(current_raw["kr_trading_sessions"])
     # ROB-1298 KEY_DIFF — the §115차 tier is appended to the current document
     # only. The schema now requires tie_breaks.tier_priority to match the
     # declared tier order, so the baseline copy is given the same appended tier
@@ -1507,6 +1626,14 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     reserve_base["owned_symbol_add_exempt_from_symbol_cap"] = reserve_cur[
         "owned_symbol_add_exempt_from_symbol_cap"
     ]
+    # task-792 C1 (2026-09-28) — size_coefficient is a required schema block
+    # now; the historical baseline predates it, so the baseline copy is given
+    # the current block solely to keep it parseable, exactly like the §S177/
+    # §142 seeds above. The two conditions' stale_after_seconds are additive
+    # (default None) so the baseline parses without them.
+    baseline["market_rules"]["crypto"]["recovery_gate"]["size_coefficient"] = deepcopy(
+        current_raw["market_rules"]["crypto"]["recovery_gate"]["size_coefficient"]
+    )
     baseline_dump = TradingPolicyDocument.model_validate(baseline).model_dump()
     current_dump = TradingPolicyDocument.model_validate(current_raw).model_dump()
 
@@ -1521,6 +1648,12 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     del current_dump["transfer_costs"]
     del baseline_dump["cash_yields"]
     del baseline_dump["transfer_costs"]
+    # #876 — the advisory session table is stripped from BOTH sides so the
+    # remaining comparison stays a closed equivalence over every prior key.
+    # Its window literals are pinned by the schema validator and by
+    # test_kr_trading_sessions_* below, not by this comparison.
+    del current_dump["kr_trading_sessions"]
+    del baseline_dump["kr_trading_sessions"]
 
     # §148차 (2026-08-24) — additive semantics-only clarification. The
     # contradiction repair is allowed to extend the prose, but it may not
@@ -1582,6 +1715,10 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
         "one_share_exception": None,
     }
     del current_dump["thresholds"]["screen.independent_support_source_count_min"]
+    _strip_s664_kr_one_share_exception(
+        current_dump["thresholds"][_S664_KR_BAND_KEY],
+        baseline_dump["thresholds"][_S664_KR_BAND_KEY],
+    )
     current_dump["thresholds"]["screen.support_within_pct"]["semantics"] = (
         baseline_dump["thresholds"]["screen.support_within_pct"]["semantics"]
     )
@@ -1683,6 +1820,11 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     assert underwater_conditions["per_order_cap_raised"] is False
     assert underwater_conditions["new_symbol_discovery_gate_unchanged"] is True
     assert underwater_conditions["review_date"] == "2026-10-05"
+    # #877 (2026-09-28) — the approved one-share add exception and its
+    # underwater-d20-v1 cohort tag. Both are pinned here so a silent removal
+    # or rename fails this closed-equivalence test rather than shipping.
+    assert underwater_conditions["one_share_exception_for_adds"] is True
+    assert underwater_conditions["d20_sizing_flag_field"] == ("rounded_up_to_one_share")
     del current_dump["decision_rules"]["buy.underwater_support_net"]
 
     assert "sell.loss_cut" not in baseline_dump["decision_rules"]
@@ -1798,6 +1940,55 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
             "tie_breaks"
         ][key]
 
+    # task-792 C1 (2026-09-28) — the recovery gate's only deltas are the
+    # size_coefficient block (seeded identical into the baseline above), the
+    # two conditions' stale_after_seconds freshness bounds, the semantics
+    # rewrite, and the no_chasing criterion swap that folds the old
+    # breadth-below-50 ineligibility into the same C1 decision. Pin each and
+    # normalize so the closed equivalence below still covers everything else.
+    cur_gate = normalized_current_dump["market_rules"]["crypto"]["recovery_gate"]
+    base_gate = baseline_dump["market_rules"]["crypto"]["recovery_gate"]
+    assert cur_gate["size_coefficient"]["by_met_count"] == {0: 0.0, 1: 0.5, 2: 1.0}
+    assert cur_gate["size_coefficient"]["on_missing_or_stale_input"] == "hold"
+    assert cur_gate["size_coefficient"]["fixed_at"] == "episode_first_order"
+    assert cur_gate["size_coefficient"] == base_gate["size_coefficient"]
+    for cur_cond, base_cond in zip(
+        cur_gate["conditions"], base_gate["conditions"], strict=True
+    ):
+        bound = _T792_C1_STALE_BOUNDS.get(cur_cond["id"])
+        if bound is None:
+            assert cur_cond["stale_after_seconds"] is None
+            continue
+        assert cur_cond["stale_after_seconds"] == bound
+        assert base_cond["stale_after_seconds"] is None
+        cur_cond["stale_after_seconds"] = None
+    assert cur_gate["semantics"] == _T792_C1_GATE_SEMANTICS
+    cur_gate["semantics"] = base_gate["semantics"]
+    cur_chasing = normalized_current_dump["market_rules"]["crypto"]["no_chasing"]
+    assert cur_chasing["criteria"][1] == _T792_C1_NO_CHASING_CRITERION
+    cur_chasing["criteria"] = baseline_dump["market_rules"]["crypto"]["no_chasing"][
+        "criteria"
+    ]
+
+    # #876 (2026-09-28) — order.day_expiry_kst is re-typed from a scalar
+    # "20:00" into the approved per-broker split and its semantics reworded.
+    # Pin the exact new value here (a silent third broker key, a KIS time
+    # asserted without measurement, or a Toss time other than the measured
+    # 15:30 fails) and normalize value+semantics to the baseline; lanes and
+    # unit must still match untouched.
+    cur_expiry = normalized_current_dump["thresholds"]["order.day_expiry_kst"]
+    base_expiry = baseline_dump["thresholds"]["order.day_expiry_kst"]
+    assert base_expiry["value"] == "20:00"
+    assert cur_expiry["value"] == {
+        "toss_live": "15:30",
+        "kis_live": "to_confirm",
+    }
+    assert cur_expiry["lanes"] == base_expiry["lanes"] == ["buy", "sell"]
+    assert cur_expiry["unit"] == base_expiry["unit"] == "kst_time"
+    assert "nxt_tradable alone does NOT" in cur_expiry["semantics"]
+    cur_expiry["value"] = base_expiry["value"]
+    cur_expiry["semantics"] = base_expiry["semantics"]
+
     # Only the six explicitly enumerated cap deltas and the enumerated
     # §115차 additions are accepted; every other pre-existing key/value,
     # including the retained exclusions list, must still
@@ -1901,6 +2092,84 @@ def test_us_notional_usd_range_one_share_exception_missing_required_field_reject
     ]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+def test_s664_kr_notional_range_parses_with_krw_one_share_exception():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    kr_range = doc.thresholds[_S664_KR_BAND_KEY]
+    exception = kr_range.one_share_exception
+    assert kr_range.value == [200000, 400000]
+    assert kr_range.unit == "krw"
+    assert exception is not None
+    assert exception.model_dump(exclude_none=True) == _S664_KR_ONE_SHARE_EXCEPTION
+    assert exception.absolute_ceiling_unit == "krw"
+    assert exception.absolute_ceiling == 10000000
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # the ceiling must be in the band's own currency
+        lambda exc: exc.update(absolute_ceiling_usd=exc.pop("absolute_ceiling_krw")),
+        # exactly one ceiling
+        lambda exc: exc.update(absolute_ceiling_usd=10000),
+        lambda exc: exc.pop("absolute_ceiling_krw"),
+        # a ceiling at or under the band ceiling is incoherent
+        lambda exc: exc.update(absolute_ceiling_krw=400000),
+        lambda exc: exc.update(absolute_ceiling_krw=0),
+        lambda exc: exc.update(absolute_ceiling_krw=float("nan")),
+        lambda exc: exc.update(max_deep_rungs=0),
+        lambda exc: exc.update(unknown=1),
+    ],
+)
+def test_s664_malformed_kr_one_share_exception_is_rejected(mutate):
+    raw = _raw()
+    mutate(raw["thresholds"][_S664_KR_BAND_KEY]["one_share_exception"])
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s664_exception_model_requires_exactly_one_ceiling_on_its_own():
+    """The model rejects two ceilings even before the band's unit is checked."""
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        OneShareExceptionPolicy.model_validate(
+            {
+                "enabled": True,
+                "absolute_ceiling_usd": 10000,
+                "absolute_ceiling_krw": 10000000,
+                "max_deep_rungs": 1,
+            }
+        )
+
+
+def test_s664_exception_on_a_non_band_threshold_is_rejected():
+    raw = _raw()
+    raw["thresholds"]["screen.rsi_max"]["one_share_exception"] = dict(
+        _S664_KR_ONE_SHARE_EXCEPTION
+    )
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_s664_changes_no_cap_gate_or_concentration_value():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    auto_approve = doc.order_proposals.auto_approve
+    assert auto_approve.per_order_cap == {"kr": 2000000, "us": 1500, "crypto": 5000000}
+    assert auto_approve.daily_cap == {"kr": 5000000, "us": 20000, "crypto": 10000000}
+    for key, expected in {
+        **_S147_INVARIANT_BUY_GATES,
+        **_S147_INVARIANT_SIZING_AND_CAPS,
+        "screen.support_strength_min": "moderate",
+    }.items():
+        assert doc.thresholds[key].value == expected, key
+
+
+def test_s664_source_records_the_relaxation_and_its_counter_evidence():
+    source = _raw()["source"]
+    assert "§664 KR new-entry one-share exception 2026-09-24" in source
+    assert "This IS a sizing relaxation and is recorded as one" in source
+    assert "5-10x a standard tranche loss" in source
 
 
 # ---------------------------------------------------------------------------
@@ -2597,7 +2866,7 @@ def test_s142_is_declared_versioned_and_not_retroactive():
     """The bugfix is stamped, and it never re-anchors an older placement."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-28.2"
     assert "§142차 breakeven band boundary repair 2026-08-23" in doc.source
     assert "NOT retroactive" in doc.source
 
@@ -3221,13 +3490,25 @@ def test_s139_leaves_the_crypto_and_kr_approval_caps_untouched():
         _policy_path_set(current_auto, suffix, baseline_value)
     assert current_auto == baseline_auto
 
-    # The new-coin discovery gates §139차 promises not to touch.
+    # The new-coin discovery gates §139차 promises not to touch. §664 later
+    # adds the KR one-share exception; it is pinned and stripped, not ignored.
+    _strip_s664_kr_one_share_exception(
+        current["thresholds"][_S664_KR_BAND_KEY],
+        deepcopy(baseline["thresholds"][_S664_KR_BAND_KEY]),
+    )
     for key in (
         "buy.deep_limit_pct_range",
         "buy.per_symbol_notional_krw_range",
         "sell.loss_guard_min_multiple",
     ):
         assert current["thresholds"][key] == baseline["thresholds"][key]
+    # task-792 C1 rewrote recovery_gate into a market-state coefficient and
+    # folded the no_chasing breadth criterion into it. The delta is pinned
+    # and stripped, not ignored — everything else on crypto must still equal
+    # the baseline byte-for-byte.
+    _strip_t792_c1_market_state(
+        current["market_rules"]["crypto"], baseline["market_rules"]["crypto"]
+    )
     assert (
         current["market_rules"]["crypto"]["no_chasing"]
         == baseline["market_rules"]["crypto"]["no_chasing"]
@@ -3311,6 +3592,8 @@ def test_s147_invariants_match_the_rob1289_baseline_exactly():
             assert cur["one_share_exception"]["absolute_ceiling_usd"] == 10000
             assert base["one_share_exception"]["absolute_ceiling_usd"] == 700
             cur["one_share_exception"] = base["one_share_exception"]
+        if key == _S664_KR_BAND_KEY:
+            _strip_s664_kr_one_share_exception(cur, base)
         if key == "screen.support_within_pct":
             assert cur["semantics"] == "support must be within this distance"
             cur["semantics"] = base["semantics"]
@@ -3380,7 +3663,7 @@ def test_s147_source_records_the_abolition_and_the_q4_tension():
     """Provenance is append-only and carries the ledger's honest Q4 record."""
 
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-09-08.1"
+    assert doc.version == "2026-09-28.2"
     assert "§147차 concurrent-new-entry slot limit ABOLISHED 2026-08-24" in doc.source
     assert "bounded by ORDERABLE CASH ALONE" in doc.source
     # the §129차 provenance is NOT rewritten out of history
@@ -3834,3 +4117,112 @@ def test_s177_source_records_the_three_rules_and_the_honest_limits():
     assert "rather than a waiver" in doc.source
     # the parking term's honest limit
     assert "conservative lower bound" in doc.source
+
+
+# ---------------------------------------------------------------------------
+# #876 (2026-09-28) — broker-split order.day_expiry_kst and the advisory
+# kr_trading_sessions reference table.
+# ---------------------------------------------------------------------------
+
+
+def test_876_day_expiry_kst_is_broker_split_and_kis_is_not_asserted():
+    """Toss regular-session expiry is the measured 15:30; KIS is to_confirm.
+
+    The KIS live_order_expiry classifier (ROB-671) declares accept-session
+    expectations, but the 2026-09-14 KRX after-market launch postdates that
+    measurement — this key asserts no KIS time.
+    """
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    expiry = doc.thresholds["order.day_expiry_kst"]
+
+    assert expiry.lanes == ["buy", "sell"]
+    assert expiry.value == {"toss_live": "15:30", "kis_live": "to_confirm"}
+    assert expiry.unit == "kst_time"
+    # The retired misreadings must be named as retired, not silently dropped.
+    assert "nxt_tradable alone does NOT" in expiry.semantics
+    assert "NEW order" in expiry.semantics
+
+
+def test_876_kr_trading_sessions_table_carries_the_after_market_windows():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    sessions = doc.kr_trading_sessions.sessions
+
+    assert sessions["nxt_premarket"].open_kst == "08:00"
+    assert sessions["nxt_premarket"].close_kst == "08:50"
+    assert sessions["nxt_after"].open_kst == "15:30"
+    assert sessions["nxt_after"].close_kst == "20:00"
+    krx = sessions["krx_after_market"]
+    assert krx.open_kst == "16:00"
+    assert krx.close_kst == "20:00"
+    assert krx.matching == "continuous"
+    assert krx.price_band == "±30% of the same-day base price"
+
+
+@pytest.mark.parametrize(
+    ("session", "field", "value"),
+    [
+        ("nxt_premarket", "close_kst", "08:55"),
+        ("nxt_after", "open_kst", "15:35"),
+        ("nxt_after", "close_kst", "19:30"),
+        ("krx_after_market", "open_kst", "16:30"),
+        ("krx_after_market", "close_kst", "19:00"),
+        ("krx_after_market", "matching", "single_price"),
+        ("krx_after_market", "price_band", "±15%"),
+    ],
+)
+def test_876_kr_trading_sessions_drift_fails_the_build(session, field, value):
+    raw = _raw()
+    raw["kr_trading_sessions"]["sessions"][session][field] = value
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_876_kr_trading_sessions_missing_session_fails_the_build():
+    raw = _raw()
+    del raw["kr_trading_sessions"]["sessions"]["krx_after_market"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_876_policy_view_echoes_the_session_table_for_every_lane():
+    """Sessions read the table through get_trading_policy like cash_yields."""
+
+    view = get_policy_for("kr", "buy")
+    sessions = view["kr_trading_sessions"]["sessions"]
+    assert sessions["krx_after_market"]["open_kst"] == "16:00"
+    assert (
+        get_policy_for("us", "sell")["kr_trading_sessions"]
+        == (view["kr_trading_sessions"])
+    )
+
+
+def test_876_broker_map_values_are_reserved_for_day_expiry_kst():
+    """An unrelated threshold must not smuggle in an arbitrary dict value."""
+
+    raw = _raw()
+    raw["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] = {"kr": "10"}
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_876_market_override_map_values_are_reserved_for_day_expiry_kst():
+    raw = _raw()
+    raw["market_overrides"]["kr"]["buy.max_new_entries_per_day"] = {"toss_live": "3"}
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "broker_map",
+    [
+        {"toss_live": "15:30"},  # dropped kis_live to_confirm marker
+        {"toss_live": "15:30", "kis_live": "20:00", "nxt": "20:00"},
+        {"toss_live": "15:30", "kis_mock": "15:30"},
+    ],
+)
+def test_876_day_expiry_kst_map_must_declare_exactly_the_live_modes(broker_map):
+    raw = _raw()
+    raw["thresholds"]["order.day_expiry_kst"]["value"] = broker_map
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)

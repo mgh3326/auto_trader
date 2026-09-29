@@ -11,6 +11,7 @@ get_available_capital	prompt
 get_crypto_fear_greed	prompt
 get_fx_rate	prompt
 get_holdings	prompt
+get_protected_positions	spec:693-lot-protection
 get_holdings_news	prompt
 get_indicators	prompt
 get_latest_market_brief	prompt

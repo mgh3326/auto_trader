@@ -40,6 +40,8 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
     DIRECT_BROKER_MUTATION_TOOLS,
+    HARNESS_DENIED_MARKET_RELIEF,
+    HARNESS_DENIED_TOOLS,
     LANE_SEQUENCES,
     MUTATION_TOOLS,
     ORDER_PROPOSAL_READ_TOOLS,
@@ -51,6 +53,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     RECONCILE_TOOLS,
     RESERVE_NET_CONSUMER_TOOLS,
     STATUS_HELPER_TOOLS,
+    VALID_MARKETS,
     ordered_lane_tool_names,
 )
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -106,8 +109,18 @@ def test_buckets_are_disjoint():
     assert "evaluate_buy_gate_ab_shadow" not in MUTATION_TOOLS
     assert "evaluate_buy_gate_ab_shadow_v2" in READ_ONLY_ADVISORY_TOOLS
     assert "evaluate_buy_gate_ab_shadow_v2" not in MUTATION_TOOLS
-    assert "decision_table_validate" in READ_ONLY_ADVISORY_TOOLS
-    assert "decision_table_validate" not in MUTATION_TOOLS
+    assert "decision_table_validate" in HARNESS_DENIED_TOOLS
+    assert "decision_table_validate" in MUTATION_TOOLS
+    assert "decision_table_validate" not in READ_ONLY_ADVISORY_TOOLS
+    assert "get_intraday_investor_flow" in HARNESS_DENIED_TOOLS
+    assert "get_intraday_investor_flow" in MUTATION_TOOLS
+    assert "get_intraday_investor_flow" not in READ_ONLY_ADVISORY_TOOLS
+    assert "get_upbit_altseason" in HARNESS_DENIED_TOOLS
+    assert "get_upbit_altseason" in MUTATION_TOOLS
+    assert "get_upbit_altseason" not in READ_ONLY_ADVISORY_TOOLS
+    assert "kis_live_get_order_history" in HARNESS_DENIED_TOOLS
+    assert "kis_live_get_order_history" in MUTATION_TOOLS
+    assert "kis_live_get_order_history" not in READ_ONLY_ADVISORY_TOOLS
     assert "decision_table_apply" in PERSISTENCE_TOOLS
     assert "decision_table_apply" in MUTATION_TOOLS
     assert "decision_table_apply" not in READ_ONLY_ADVISORY_TOOLS
@@ -123,6 +136,7 @@ def test_mutation_action_taxonomy_is_disjoint_and_total():
         PREVIEW_REVALIDATION_TOOLS,
         RECONCILE_TOOLS,
         STATUS_HELPER_TOOLS,
+        HARNESS_DENIED_TOOLS,
     )
     for left, right in combinations(action_classes, 2):
         assert left.isdisjoint(right)
@@ -202,6 +216,12 @@ def test_every_proposal_enabled_default_tool_is_classified(
 
     assert ORDER_PROPOSAL_TOOL_NAMES <= default
     assert PROPOSAL_REVALIDATE_TOOL_NAMES <= default
+    assert "toss_proposal_accounts" in default
+    assert "toss_proposal_accounts" in READ_ONLY_ADVISORY_TOOLS
+    # #883: the sweep's typed parking_exclusion read rides the same gate.
+    assert "get_parking_exclusion" in default
+    assert "get_parking_exclusion" in READ_ONLY_ADVISORY_TOOLS
+    assert "get_parking_exclusion" not in MUTATION_TOOLS
     assert default <= ALL_KNOWN_TOOLS
     assert ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES == (
         ORDER_PROPOSAL_READ_TOOLS
@@ -234,6 +254,11 @@ def test_read_only_bucket_has_no_phantom_tools():
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
         *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
+        "toss_proposal_accounts",
+        # #883: cash-sweep parking_exclusion read, gated by
+        # settings.ORDER_PROPOSALS_ENABLED (default off) like the proposal
+        # surface it supports.
+        "get_parking_exclusion",
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (
@@ -244,6 +269,33 @@ def test_read_only_bucket_has_no_phantom_tools():
 def test_partition_is_total_at_default_settings():
     default = _default_tools()
     assert default == (READ_ONLY_ADVISORY_TOOLS | MUTATION_TOOLS) & default
+
+
+def test_harness_denied_tools_partition_is_exact_and_registered():
+    # hk #678 / #828: the four harness-denied tools stay DEFAULT-registered for
+    # non-route consumers, but the route contract carries them as a disjoint
+    # denied bucket — still classified (partition stays total), never read-only.
+    assert HARNESS_DENIED_TOOLS == {
+        "decision_table_validate",
+        "get_intraday_investor_flow",
+        "get_upbit_altseason",
+        "kis_live_get_order_history",
+    }
+    assert HARNESS_DENIED_TOOLS <= MUTATION_TOOLS
+    assert HARNESS_DENIED_TOOLS.isdisjoint(READ_ONLY_ADVISORY_TOOLS)
+    assert HARNESS_DENIED_TOOLS <= _default_tools()
+
+
+def test_harness_denied_market_relief_is_exact_and_crypto_only():
+    # Q-58 / task #911: only get_upbit_altseason is re-admitted, and only on the
+    # crypto live harness. The relieved name must stay a subset of the denied
+    # bucket (it keeps its MUTATION_TOOLS partition seat) and a valid market.
+    assert HARNESS_DENIED_MARKET_RELIEF == {
+        "crypto": frozenset({"get_upbit_altseason"})
+    }
+    relieved = frozenset().union(*HARNESS_DENIED_MARKET_RELIEF.values())
+    assert relieved <= HARNESS_DENIED_TOOLS
+    assert set(HARNESS_DENIED_MARKET_RELIEF) <= VALID_MARKETS
 
 
 def test_lane_sequences_match_playbook_in_exact_order():

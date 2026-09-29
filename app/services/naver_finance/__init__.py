@@ -19,10 +19,13 @@ from app.services.naver_finance.consensus import (
     fetch_analyst_consensus as fetch_analyst_consensus,
 )
 from app.services.naver_finance.investor import (
-    _build_investment_opinions_from_company_list_soup as _build_investment_opinions_from_company_list_soup,
+    NAVER_RESEARCH_API as NAVER_RESEARCH_API,
 )
 from app.services.naver_finance.investor import (
-    _collect_opinion_report_infos as _collect_opinion_report_infos,
+    NaverResearchContractError as NaverResearchContractError,
+)
+from app.services.naver_finance.investor import (
+    _build_investment_opinions_from_research_items as _build_investment_opinions_from_research_items,
 )
 from app.services.naver_finance.investor import (
     _fetch_current_price as _fetch_current_price,
@@ -31,13 +34,25 @@ from app.services.naver_finance.investor import (
     _fetch_kr_snapshot as _fetch_kr_snapshot,
 )
 from app.services.naver_finance.investor import (
-    _fetch_report_detail as _fetch_report_detail,
+    _fetch_research_detail as _fetch_research_detail,
 )
 from app.services.naver_finance.investor import (
-    _fetch_report_detail_with_client as _fetch_report_detail_with_client,
+    _fetch_research_detail_with_client as _fetch_research_detail_with_client,
 )
 from app.services.naver_finance.investor import (
-    _parse_report_detail_soup as _parse_report_detail_soup,
+    _fetch_research_json_with_client as _fetch_research_json_with_client,
+)
+from app.services.naver_finance.investor import (
+    _fetch_research_list as _fetch_research_list,
+)
+from app.services.naver_finance.investor import (
+    _fetch_research_list_with_client as _fetch_research_list_with_client,
+)
+from app.services.naver_finance.investor import (
+    _parse_research_detail_payload as _parse_research_detail_payload,
+)
+from app.services.naver_finance.investor import (
+    _parse_research_list_payload as _parse_research_list_payload,
 )
 from app.services.naver_finance.investor import (
     fetch_investment_opinions as fetch_investment_opinions,
@@ -46,10 +61,16 @@ from app.services.naver_finance.investor import (
     fetch_investor_trends as fetch_investor_trends,
 )
 from app.services.naver_finance.news import (
-    _parse_news_soup as _parse_news_soup,
+    NaverNewsContractError as NaverNewsContractError,
+)
+from app.services.naver_finance.news import (
+    NaverNewsFetchResult as NaverNewsFetchResult,
 )
 from app.services.naver_finance.news import (
     fetch_news as fetch_news,
+)
+from app.services.naver_finance.news import (
+    fetch_stock_news as fetch_stock_news,
 )
 from app.services.naver_finance.parser import (
     DEFAULT_HEADERS as DEFAULT_HEADERS,
@@ -119,8 +140,11 @@ __all__ = [
     "NAVER_FINANCE_BASE",
     "NAVER_FINANCE_ITEM",
     "NAVER_MOBILE_API",
-    "_build_investment_opinions_from_company_list_soup",
-    "_collect_opinion_report_infos",
+    "NAVER_RESEARCH_API",
+    "NaverNewsContractError",
+    "NaverNewsFetchResult",
+    "NaverResearchContractError",
+    "_build_investment_opinions_from_research_items",
     "_decode_html_content",
     "_extract_current_price_from_main_soup",
     "_fetch_current_price",
@@ -128,17 +152,20 @@ __all__ = [
     "_fetch_html_with_client",
     "_fetch_integration",
     "_fetch_kr_snapshot",
-    "_fetch_report_detail",
-    "_fetch_report_detail_with_client",
+    "_fetch_research_detail",
+    "_fetch_research_detail_with_client",
+    "_fetch_research_json_with_client",
+    "_fetch_research_list",
+    "_fetch_research_list_with_client",
     "_fetch_sector_name",
     "_fetch_sector_stock_codes",
     "_parse_basic_info",
     "_parse_financial_metrics",
     "_parse_industry_info",
     "_parse_naver_date",
-    "_parse_news_soup",
     "_parse_peer_comparison",
-    "_parse_report_detail_soup",
+    "_parse_research_detail_payload",
+    "_parse_research_list_payload",
     "_parse_total_infos",
     "_parse_valuation_from_soups",
     "fetch_company_profile",
@@ -146,6 +173,7 @@ __all__ = [
     "fetch_investment_opinions",
     "fetch_investor_trends",
     "fetch_news",
+    "fetch_stock_news",
     "fetch_sector_peers",
     "fetch_valuation",
     "fetch_analyst_consensus",

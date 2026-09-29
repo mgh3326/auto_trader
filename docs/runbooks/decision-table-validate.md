@@ -34,14 +34,94 @@ The tool reports these rules: `table_not_object`, `missing_decision_table`,
 `rungs_price_bounds_inverted`, `rungs_price_not_tick_aligned`,
 `rungs_missing_field`, `price_recompute_mismatch`,
 `qty_recompute_mismatch`, `tick_grid_violation`, `sizing_band_violation`,
-`deep_limit_violation`, `loss_guard_violation`, `below_min_order_amount`,
+`one_share_exception_rung_limit`, `deep_limit_violation`,
+`loss_guard_violation`, `below_min_order_amount`,
 `same_day_chain_or_opposite_order`, `sector_concentration`, and
 `invalid_parent_correlation_id`. v1 is accepted only with the advisory
 `schema_version_deprecated_v1` until 2026-09-12; any other schema version
 gets the blocking `schema_version_mismatch`.
 
 `unknown_top_level_key`, `extensions_entry_absent`, and
-`sector_concentration` are advisory; every other listed rule blocks. Each
+`sector_concentration` are advisory; every other listed rule blocks.
+
+**KR one-share exception (§664).** `sizing_band_violation` checks each buy
+rung's `price_min × qty` against `buy.per_symbol_notional_krw_range`
+([200,000, 400,000]). Its `one_share_exception` admits an over-band KR buy
+rung only when **all** hold:
+
+1. `qty == 1`, the single share (`price_min`) exceeds 400,000, and
+   `max(price_min, price_max) <= absolute_ceiling_krw` (10,000,000,
+   inclusive; an unreadable or overflowing `price_max` is judged above it).
+2. The row's `symbols` list is exactly one canonical KRX code (six ASCII
+   `[0-9A-Z]`, no padding) that is not a cash-parking allowlist symbol
+   (459580/357870 — their raised parking per-order cap would otherwise
+   auto-approve a one-share buy above 2,000,000).
+3. The row stays inside the **strict no-free-text grammar**
+   (`app/services/decision_table_validate/one_share_exception.py`). Every
+   string the row carries is a closed enum or an exact template; every other
+   value is a typed number or bool:
+   - no non-ASCII and no Unicode control/format (Cc/Cf, e.g. zero-width)
+     character anywhere in the row, keys included;
+   - row keys ⊆ `scenario_id, priority, symbols, conditions, action,
+     invalidation, sector_concentration`; `priority` is an int;
+   - `scenario_id` is exactly `one-share-entry-<symbol>` or
+     `one-share-entry-<symbol>-<1..3 digits>`;
+   - `invalidation` is absent or `[]`;
+   - `sector_concentration` is absent or a dict with numeric values under
+     `projected_pct`, `projected_percent`, `current_pct`, `cap_pct` only;
+   - the action is `proposal_action: place`, `side: buy`, `order_type: limit`,
+     `account_mode` ∈ `kis_live, toss_live, kis_mock, kiwoom_mock`, with optional
+     `time_in_force: DAY`, `apply_kind: proposal`, positive numeric
+     `reference_price` / `minimum_order_amount`, and `required_thesis_fields`
+     ⊆ `scenario_id, decision_table_hash, policy_version` (no duplicates);
+   - rungs carry exactly the integer keys `rung, price_min, price_max, qty,
+     tick` (no `formula`);
+   - every condition carries exactly `metric, source, operator, value,
+     max_age_seconds` (`max_age_seconds` an int in [1, 86400]);
+   - **exactly one** condition is the flat proof: `metric: position_quantity`,
+     `operator: eq`, numeric `value: 0`, and `source` **equal to**
+     `get_holdings.accounts[<action.account_mode>].positions[<symbol>].quantity`;
+   - every other condition's `(metric, source)` **equals** one template:
+
+     | metric | exact `source` | operators | value |
+     |---|---|---|---|
+     | `live_price_band` | `get_quote(symbol,market='kr').price` | `between` | numeric range `{min,max}_{inclusive,exclusive}` |
+     | `krx_previous_close` | `get_quote(symbol,market='kr').previous_close` | `eq lt lte gt gte` | number |
+     | `nxt_tradable` | `get_quote(symbol,market='kr').nxt_tradable` | `eq` | bool |
+     | `premarket_session_change_pct` | `(get_quote(symbol,market='kr').price / get_quote(symbol,market='kr').previous_close - 1) * 100` | `lt lte gt gte` | number |
+     | `rsi_14_last_completed_daily_bar` | `analyze_stock_batch(symbol,quick=false).indicators.rsi.14` | `lt lte gt gte` | number |
+     | `fresh_support_s1_price` | `analyze_stock_batch(symbol,quick=false).support_resistance.supports[0].price` | `eq lt lte gt gte` | number |
+     | `fresh_resistance_r1_price` | `analyze_stock_batch(symbol,quick=false).support_resistance.resistances[0].price` | `eq lt lte gt gte` | number |
+     | `toss_open_orders_count_same_symbol` | `toss_get_order_history(status="open").orders[symbol==sym].length` | `eq` | int |
+     | `kis_open_orders_count_same_symbol` | `kis_live_get_order_history(status="pending",market="kr").orders[symbol==sym].length` | `eq` | int |
+
+   Numbers are JSON numbers, never strings. A new metric or spelling needs a
+   code change to `_MARKET_CONDITIONS` before it can appear on an exception
+   row.
+
+**Product cost:** exception rows cannot carry prose invalidation, rung
+formulas, a matched tier, or any condition outside the template table.
+**Residual limit:** a table that *only lies* — it declares a held symbol flat
+and says nothing else — is not detectable by a pure validator.
+
+Silence about holdings is **not** a new entry. A denied rung keeps
+`sizing_band_violation` with the denial reason in `expected`
+(`non_ascii_or_control_character`, `row_field_not_in_grammar`,
+`scenario_id_not_template`, `invalidation_not_empty`,
+`sector_concentration_not_numeric_closed`, `action_not_in_grammar`,
+`rung_not_in_grammar`, `thesis_field_not_in_enum`, `condition_not_a_template`,
+`no_bound_flat_position_condition`, `cash_parking_symbol`, …). Once any rung of a symbol
+uses the exception, that symbol may have at most `max_deep_rungs` (1) buy
+rungs across the whole table — every row and account, counted on an
+NFKC/strip/upper-normalized key — else each involved row gets the blocking
+`one_share_exception_rung_limit`. Sells never consult the exception; the US
+band's exception is not honoured by this validator (unchanged). Auto-approval
+is untouched: a one-share order above the KR per-order cap (2,000,000) is
+demoted to a human card as `per_order_cap_exceeded`. Limit: the validator is
+pure and cannot read holdings, so it trusts the declared flat proof.
+`decision_table_apply` does not evaluate row conditions either; the live check
+is the helmsman session's condition match before `apply(dry_run=false)` (spec
+§3 workflow). Each
 violation contains the detected table shape and a link
 to the [canonical v1.1 shape](../specs/mcp-session-tools-v1.md#canonical-decision-table-shape-v11).
 

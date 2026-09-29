@@ -14,10 +14,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+import httpx
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
@@ -63,6 +66,8 @@ class SymbolNewsFetchResult:
     cache_hit: bool = False
     fallback_source: str | None = None
     provider_provenance: list[dict[str, str | None]] = field(default_factory=list)
+    # Provider-parse drops counted by reason (missing_title, missing_url, ...).
+    parser_skips: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -76,10 +81,32 @@ class _PersistedNewsLoad:
 class _ProviderNewsFetch:
     articles: list[SymbolNewsArticle]
     fetched_at: datetime
+    skipped: dict[str, int] = field(default_factory=dict)
 
 
 def _utcnow() -> datetime:
     return datetime.now(tz=UTC)
+
+
+# Freshness window shared by every consumer of this service (#904): get_news
+# data_state, the news_stage stale-degraded gate, the holdings sweep rows and
+# the snapshot collector all judge staleness against the same 3h line.
+NEWS_FRESHNESS_MAX_AGE_SECONDS = 180 * 60
+
+
+def news_fetch_is_stale(
+    fetched_at: datetime | None, *, now: datetime | None = None
+) -> bool:
+    """Served content older than the freshness window counts as stale.
+
+    A missing timestamp is treated as stale — absence of provenance is not
+    freshness.
+    """
+    if fetched_at is None:
+        return True
+    aware = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=UTC)
+    observed = now or _utcnow()
+    return (observed - aware).total_seconds() > NEWS_FRESHNESS_MAX_AGE_SECONDS
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -136,16 +163,27 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def _naver_external_id(url: str) -> str | None:
-    """``officeId:articleId`` from a Naver news_read URL, else None."""
+    """``officeId:articleId`` from a Naver news URL, else None.
+
+    Handles both the legacy ``?article_id=&office_id=`` query form and the
+    current ``/article/{officeId}/{articleId}`` path form served by
+    n.news.naver.com / m.stock.naver.com mobile links (#904).
+    """
     try:
-        q = parse_qs(urlparse(url).query)
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query)
     except ValueError:
         return None
     article_id = (q.get("article_id") or [None])[0]
     office_id = (q.get("office_id") or [None])[0]
     if office_id and article_id:
         return f"{office_id}:{article_id}"
-    return article_id or None
+    if article_id:
+        return article_id
+    path_match = re.search(r"/article/([0-9A-Za-z]+)/([0-9A-Za-z]+)", parsed.path)
+    if path_match:
+        return f"{path_match.group(1)}:{path_match.group(2)}"
+    return None
 
 
 def _url_hash(url: str) -> str | None:
@@ -178,14 +216,23 @@ def symbol_news_store_hints(symbol: str, title: str) -> dict[str, Any] | None:
     return _store_hints(symbol, "kr", title)
 
 
+def _naver_item_external_id(raw: dict[str, Any], url: str) -> str | None:
+    """Prefer the provider's structured ids; fall back to parsing the URL."""
+    office_id = raw.get("officeId")
+    article_id = raw.get("articleId")
+    if office_id and article_id:
+        return f"{office_id}:{article_id}"
+    return _naver_external_id(url) or (str(raw["id"]) if raw.get("id") else None)
+
+
 async def _fetch_naver(symbol: str, limit: int) -> _ProviderNewsFetch:
     """Pure normalize: URL dedupe only — no filtering, no relevance verdicts."""
-    items = await naver_finance.fetch_news(symbol, limit=limit)
+    feed = await naver_finance.fetch_stock_news(symbol, limit=limit)
     # Acquisition time exists only after the provider successfully returned.
     fetched_at = _utcnow()
     out: list[SymbolNewsArticle] = []
     seen_urls: set[str] = set()
-    for raw in items:
+    for raw in feed.items:
         url = (raw.get("url") or "").strip()
         title = (raw.get("title") or "").strip()
         if not url or not title:
@@ -198,7 +245,7 @@ async def _fetch_naver(symbol: str, limit: int) -> _ProviderNewsFetch:
                 provider="naver",
                 market="kr",
                 symbol=symbol,
-                external_article_id=_naver_external_id(url),
+                external_article_id=_naver_item_external_id(raw, url),
                 title=title,
                 source_name=raw.get("source") or None,
                 canonical_url=url,
@@ -209,7 +256,7 @@ async def _fetch_naver(symbol: str, limit: int) -> _ProviderNewsFetch:
                 provider_metadata={"source_item": raw},
             )
         )
-    return _ProviderNewsFetch(out, fetched_at)
+    return _ProviderNewsFetch(out, fetched_at, skipped=dict(feed.skipped))
 
 
 def _stored_to_article(
@@ -414,12 +461,14 @@ async def fetch_symbol_news(
         fetched: list[SymbolNewsArticle] | None
         fetched_at: datetime | None = None
         fetch_error: str | None = None
+        parser_skips: dict[str, int] | None = None
         try:
             provider_fetch = await asyncio.wait_for(
                 _fetch_naver(symbol, limit), timeout=timeout_s
             )
             fetched = provider_fetch.articles
             fetched_at = provider_fetch.fetched_at
+            parser_skips = provider_fetch.skipped or None
         except Exception as exc:  # noqa: BLE001 — fall back to DB cache
             logger.warning(
                 "symbol_news_service: naver fetch failed: symbol=%s err=%s",
@@ -427,7 +476,13 @@ async def fetch_symbol_news(
                 exc,
             )
             fetched = None
-            fetch_error = type(exc).__name__
+            # Keep the terminal status in the surfaced error — "HTTPStatusError"
+            # alone hid that the retired endpoint answers 410 Gone (#904).
+            fetch_error = (
+                f"{type(exc).__name__}:{exc.response.status_code}"
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None
+                else type(exc).__name__
+            )
 
         persisted = await _persist_and_load(
             symbol,
@@ -507,6 +562,7 @@ async def fetch_symbol_news(
                     status=provenance_status,
                     error_code=fetch_error,
                 ),
+                parser_skips=parser_skips,
             )
         # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
         if fetched is None:
@@ -558,6 +614,7 @@ async def fetch_symbol_news(
                 mode="live",
                 status=status,
             ),
+            parser_skips=parser_skips,
         )
 
     if market not in ("us", "crypto"):

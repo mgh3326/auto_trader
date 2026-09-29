@@ -17,6 +17,7 @@ reader in this codebase. Never reaches live ``fapi.binance.com``.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import httpx
 
@@ -71,6 +72,9 @@ async def fetch_1m_minute_bars(
     symbol: str,
     *,
     limit: int = 500,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    raw_price_sink: Callable[[int, tuple[str, str, str, str]], None] | None = None,
 ) -> tuple[MinuteBar, ...]:
     """Fetch the latest closed 1m klines for ``symbol`` as :class:`MinuteBar`.
 
@@ -80,9 +84,16 @@ async def fetch_1m_minute_bars(
     forward-fill, complete-only" contract starts at the minute layer, not
     just the 4h layer.
     """
-    resp = await client.get(
-        _KLINES_PATH, params={"symbol": symbol, "interval": "1m", "limit": limit}
-    )
+    params: dict[str, str | int] = {
+        "symbol": symbol,
+        "interval": "1m",
+        "limit": limit,
+    }
+    if start_time_ms is not None:
+        params["startTime"] = start_time_ms
+    if end_time_ms is not None:
+        params["endTime"] = end_time_ms
+    resp = await client.get(_KLINES_PATH, params=params)
     resp.raise_for_status()
     rows = resp.json()
     if not rows:
@@ -93,6 +104,8 @@ async def fetch_1m_minute_bars(
         close_time_ms = int(row[6])
         if close_time_ms > now_ms:
             continue  # in-progress candle — not yet closed
+        if raw_price_sink is not None:
+            raw_price_sink(int(row[0]), (row[1], row[2], row[3], row[4]))
         bars.append(
             MinuteBar(
                 ts=int(row[0]),

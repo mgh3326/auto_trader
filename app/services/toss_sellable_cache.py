@@ -5,13 +5,11 @@ rate-limit group (6 TPS / 3 TPS peak), so fanning it out per holding serializes
 to ~N/6 s. Redis shares warm values across API, worker, and MCP processes;
 batched reads avoid replacing the broker N+1 with a Redis N+1.
 
-General holdings/home/briefing reads no longer consume this per-symbol cache
-(ROB-1310). It remains an invalidation/read primitive for explicitly
-broker-adjacent callers and post-mutation correction. Display/advisory data is
-never a sell-sizing authority: Toss order tools re-validate sellable at broker
-submit (``orders_toss_variants``), and KIS/Upbit sell validation reads its own
+The C5/C7 display projections may consume this cache as raw broker evidence;
+the cache is never a sell-sizing authority. Toss order tools re-validate
+sellable directly at broker submit, and KIS/Upbit sell validation reads its own
 broker live. Confirmed fills and successful sell place/cancel/modify calls
-invalidate the affected symbol. Redis failures are fail-open.
+invalidate the affected symbol. Redis failures are fail-open for reads.
 """
 
 from __future__ import annotations

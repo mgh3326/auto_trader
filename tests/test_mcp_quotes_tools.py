@@ -391,6 +391,9 @@ def _isolate_kr_nxt_tradability(monkeypatch):
         return {}
 
     monkeypatch.setattr(market_data_quotes, "get_kr_nxt_tradability", no_tradability)
+    monkeypatch.setattr(
+        market_data_quotes, "get_kr_krx_after_tradability", no_tradability
+    )
 
 
 def _nxt_quote_book(
@@ -1643,6 +1646,109 @@ async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
     assert result["nxt_tradable_reason"] == "stale_asof"
     assert result["nxt_tradable_source"] == "kr_symbol_universe"
     assert result["nxt_tradable_asof"] is not None
+
+
+def _krx_after_quote_setup(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    return tools, market_data_quotes
+
+
+def _krx_after_capability(**overrides):
+    import datetime as dt
+
+    from app.services.krx_after_market import KrxAfterTradability
+
+    fields = {
+        "listed": True,
+        "exchange": "KOSPI",
+        "security_type": "STOCK",
+        "krx_trading_suspended": False,
+        "asof": dt.datetime.now(dt.UTC) - dt.timedelta(hours=1),
+        "list_source": "krx-notice-test",
+    }
+    fields.update(overrides)
+    return KrxAfterTradability(**fields)
+
+
+@pytest.mark.asyncio
+async def test_get_quote_kr_exposes_krx_after_tradable(monkeypatch):
+    tools, market_data_quotes = _krx_after_quote_setup(monkeypatch)
+
+    async def fake_krx(symbols, db=None):
+        return {symbols[0]: _krx_after_capability()}
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_krx_after_tradability", fake_krx)
+
+    result = await tools["get_quote"]("375500")
+    assert result["krx_after_tradable"] is True
+    assert result["krx_after_tradable_source"] == "krx_after_market_eligibility"
+    assert result["krx_after_tradable_list_source"] == "krx-notice-test"
+    assert result["krx_after_tradable_stale"] is False
+    assert result["krx_after_tradable_reason"] == "krx_after_tradable"
+    assert result["krx_after_tradable_asof"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"security_type": "ETF"}, "etf_etn_excluded"),
+        ({"security_type": "ETN"}, "etf_etn_excluded"),
+        ({"listed": False}, "not_krx_after_listed"),
+        ({"listed": None, "asof": None}, "missing_asof"),
+        ({"security_type": None}, "security_type_unknown"),
+    ],
+)
+async def test_get_quote_krx_after_false_without_positive_evidence(
+    monkeypatch, overrides, reason
+):
+    tools, market_data_quotes = _krx_after_quote_setup(monkeypatch)
+
+    async def fake_krx(symbols, db=None):
+        return {symbols[0]: _krx_after_capability(**overrides)}
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_krx_after_tradability", fake_krx)
+
+    result = await tools["get_quote"]("459580")
+    assert result["krx_after_tradable"] is False
+    assert result["krx_after_tradable_reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_get_quote_krx_after_unknown_symbol_or_lookup_failure_is_false(
+    monkeypatch,
+):
+    tools, market_data_quotes = _krx_after_quote_setup(monkeypatch)
+
+    async def missing(symbols, db=None):
+        return {}
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_krx_after_tradability", missing)
+    result = await tools["get_quote"]("375500")
+    assert result["krx_after_tradable"] is False
+    assert result["krx_after_tradable_reason"] == "not_in_active_universe"
+    assert "error" not in result
+
+    async def schema_fault(symbols, db=None):
+        raise RuntimeError('relation "krx_after_market_eligibility" does not exist')
+
+    monkeypatch.setattr(
+        market_data_quotes, "get_kr_krx_after_tradability", schema_fault
+    )
+    result = await tools["get_quote"]("375500")
+    assert result["krx_after_tradable"] is False
+    assert result["krx_after_tradable_reason"] == "lookup_failed"
+    assert result["krx_after_tradable_stale"] is True
+    assert "error" not in result
 
 
 @pytest.mark.asyncio

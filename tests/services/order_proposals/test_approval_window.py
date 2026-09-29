@@ -50,6 +50,16 @@ from app.services.order_proposals.void_authorization import (
 from tests.services.order_proposals.window_fakes import allow_known_session
 
 
+@pytest.fixture(autouse=True)
+def _no_krx_after_list(monkeypatch):
+    """#925: default to "no KRX after-market list" so this file stays DB-free."""
+
+    async def no_krx_after(symbols):
+        return {}
+
+    monkeypatch.setattr(policy, "get_kr_krx_after_tradability", no_krx_after)
+
+
 def _group(
     *,
     market: str = "equity_us",

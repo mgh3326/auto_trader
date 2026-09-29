@@ -175,7 +175,9 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             "semantics": spec.semantics,
             "of": spec.of,
             "one_share_exception": (
-                spec.one_share_exception.model_dump()
+                # exclude_none keeps each band's projection to its own
+                # currency's ceiling key (§664 added the KRW field).
+                spec.one_share_exception.model_dump(exclude_none=True)
                 if spec.one_share_exception is not None
                 else None
             ),
@@ -246,6 +248,9 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
         # as crash_day above.
         "cash_yields": doc.cash_yields.model_dump(),
         "transfer_costs": doc.transfer_costs.model_dump(),
+        # #876 — KR session-window reference table (NXT premarket/after-hours,
+        # KRX after-market). Advisory; no gate or cap reads it.
+        "kr_trading_sessions": doc.kr_trading_sessions.model_dump(),
     }
 
 

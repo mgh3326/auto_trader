@@ -662,6 +662,10 @@ async def order_proposal_create(
                 same-account shortfall before persistence.
         source_funding_advisory_id: optional provenance-only reference. It is not
                 a classification, sizing, eligibility, or approval input.
+        broker_account_id: for a Toss parking proposal, the proposer supplies
+                the canonical account sequence returned by
+                toss_proposal_accounts. No value is derived from settings or
+                from rationale/source_asof. Missing remains a manual card.
     """
     try:
         market = _normalize_order_proposal_market(market)
@@ -798,6 +802,47 @@ async def order_proposal_create(
         }
     except (ValueError, OrderProposalError) as exc:
         return {"success": False, "error": str(exc)}
+
+
+async def toss_proposal_accounts() -> dict[str, Any]:
+    """Read broker-listed Toss sequences for an explicit proposal choice.
+
+    Returns every account sequence. Neither this read nor proposal creation
+    selects one when the broker has multiple accounts.
+    """
+    from app.core.config import validate_toss_api_config
+    from app.services.brokers.toss.client import TossReadClient
+    from app.services.brokers.toss.dto import TossAccount
+
+    missing = validate_toss_api_config()
+    if missing:
+        return {"success": False, "error": "toss_account_read_unavailable"}
+    try:
+        client = TossReadClient.from_settings()
+        try:
+            accounts = await client.accounts()
+        finally:
+            await client.aclose()
+    except Exception:  # noqa: BLE001 - no broker detail in the tool result
+        return {"success": False, "error": "toss_account_read_unavailable"}
+    if type(accounts) is not list or any(
+        type(account) is not TossAccount
+        or type(account.account_seq) is not int
+        or account.account_seq <= 0
+        for account in accounts
+    ):
+        return {"success": False, "error": "toss_account_read_unavailable"}
+    return {
+        "success": True,
+        "account_mode": "toss_live",
+        "accounts": [
+            {
+                "broker_account_id": str(account.account_seq),
+                "account_type": account.account_type,
+            }
+            for account in accounts
+        ],
+    }
 
 
 async def order_proposal_get(proposal_id: str) -> dict[str, Any]:
@@ -1241,6 +1286,19 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
     )(order_proposal_redispatch)
 
 
+def register_toss_proposal_accounts(mcp: FastMCP) -> None:
+    """Register the Toss account read only in live-capable proposal profiles."""
+    _ = mcp.tool(
+        name="toss_proposal_accounts",
+        description=(
+            "Read Toss broker-listed account sequences for an explicit "
+            "toss_live parking proposal choice. Returns all accounts; never "
+            "selects one or creates a proposal. Pass one returned "
+            "broker_account_id explicitly to order_proposal_create."
+        ),
+    )(toss_proposal_accounts)
+
+
 __all__ = [
     "ORDER_PROPOSAL_TOOL_NAMES",
     "order_proposal_create",
@@ -1251,6 +1309,8 @@ __all__ = [
     "order_proposal_redispatch",
     "order_proposal_void",
     "register_order_proposal_tools",
+    "register_toss_proposal_accounts",
     "run_order_proposal_expire_sweep",
     "support_reserve_net_consume",
+    "toss_proposal_accounts",
 ]

@@ -513,7 +513,14 @@ def test_proposal_revalidate_profile_registration_follows_list_capability(
     }
 
     assert list_profiles
-    assert revalidate_profiles == list_profiles
+    # #891 — the live-* profiles carry order_proposal_list but deliberately
+    # exclude proposal_revalidate (a PROPOSAL_LIFECYCLE mutation outside the
+    # operator draft). The list==revalidate invariant holds on every other
+    # profile; assert it after subtracting the manifest-bounded live surfaces.
+    live_profiles = {"live-kr", "live-us", "live-crypto"}
+    assert live_profiles <= list_profiles
+    assert revalidate_profiles.isdisjoint(live_profiles)
+    assert revalidate_profiles == list_profiles - live_profiles
     assert len(revalidate_profiles) == 9
     assert void_profiles <= list_profiles
     assert revalidate_profiles <= quote_profiles

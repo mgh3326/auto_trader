@@ -34,21 +34,37 @@ def run(
     bindir.mkdir()
     log = tmp_path / "log"
     log.touch()
-    (bindir / "docker").write_text(f"""#!/usr/bin/env bash
-echo "docker $*" >> {log}
-if [[ "$1" == kill && "$*" == *"-s HUP at-haproxy"* ]]; then touch "$HAPROXY_RELOAD_MARKER"; fi
-if [[ "$1" == run && "$*" == *"--name ${{FAIL_ONCE_CONTAINER:-none}}"* && ! -e "$FAIL_ONCE_MARKER" ]]; then touch "$FAIL_ONCE_MARKER"; exit 1; fi
+    (bindir / "docker").write_text("""#!/usr/bin/env bash
+printf 'docker %s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+state="$FAKE_DOCKER_STATE"
 case "$1" in
  inspect)
-   [[ "$2" == --format ]] && {{
-     [[ "$3" == *Config.Image* ]] && echo "${{CONFIGURED_IMAGE}}" ||
-       {{ [[ "$3" == *RepoDigests* ]] && echo {OLD} || echo id; }}
-   }}
+   name="${!#}"; if [[ ! -f "$state/$name" ]]; then printf 'Error: No such object: %s\n' "$name" >&2; exit 1; fi
+   if [[ "$3" == *State.Running* ]]; then echo true
+   elif [[ "$3" == *Config.Image* ]]; then cat "$state/$name"
+   elif [[ "$3" == *RepoDigests* ]]; then echo "$FAKE_OLD_DIGEST"
+   else echo "id-$name"; fi
    ;;
- image) echo {NEW} ;;
+ image) echo "$FAKE_NEW_DIGEST" ;;
+ ps) for container in "$state"/*; do [[ -f "$container" ]] && basename "$container"; done; true ;;
+ run)
+   name=""; image=""; previous=""
+   for arg in "$@"; do
+     [[ "$previous" == --name ]] && name="$arg"
+     [[ "$arg" == ghcr.io/mgh3326/auto_trader@sha256:* ]] && image="$arg"
+     previous="$arg"
+   done
+   [[ -n "$image" ]] || image=haproxy:3.1-alpine
+   if [[ "$name" == "$FAIL_ONCE_CONTAINER" && ! -e "$FAIL_ONCE_MARKER" ]]; then touch "$FAIL_ONCE_MARKER"; exit 1; fi
+   printf '%s\\n' "$image" > "$state/$name"
+   ;;
+ rm)
+   shift; for name in "$@"; do [[ "$name" == -f ]] || rm -f "$state/$name"; done
+   ;;
+ rename) mv "$state/$2" "$state/$3" ;;
+ kill) [[ "$*" == *"-s HUP at-haproxy"* ]] && touch "$HAPROXY_RELOAD_MARKER" ;;
  logs)
-   [[ "$*" == *"${{FAIL_WS_CONTAINER:-never}}"* ]] && echo disconnected ||
-     echo 'Listening started connected=True'
+   [[ "$*" == *"${FAIL_WS_CONTAINER:-never}"* ]] && echo disconnected || echo 'Listening started connected=True'
    ;;
  *) : ;;
 esac
@@ -70,6 +86,25 @@ esac
         path.chmod(0o755)
     run_dir = tmp_path / "at-run"
     run_dir.mkdir()
+    state = tmp_path / "docker-state"
+    state.mkdir()
+    for name in (
+        "at-worker",
+        "at-scheduler",
+        "at-upbit-ws",
+        "at-kis-ws",
+        "at-mcp-blue",
+        "at-mcp-analysis-readonly",
+        "at-mcp-account-read",
+        "at-mcp-tradingcodex-execution",
+        "at-mcp-paper-001",
+        "at-mcp-kiwoom",
+    ):
+        (state / name).write_text(configured_image + "\n")
+    (state / ("at-api-blue" if api_color else "at-api")).write_text(
+        configured_image + "\n"
+    )
+    (state / "at-haproxy").write_text("haproxy:3.1-alpine\n")
     (run_dir / ".env.runtime").write_text("x=y\n")
     (run_dir / ".env.secrets").write_text(
         "\n".join(
@@ -81,6 +116,9 @@ esac
                 "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN=x",
                 "MCP_PAPER_001_AUTH_TOKEN=x",
                 "MCP_KIWOOM_AUTH_TOKEN=x",
+                "MCP_LIVE_KR_AUTH_TOKEN=x",
+                "MCP_LIVE_US_AUTH_TOKEN=x",
+                "MCP_LIVE_CRYPTO_AUTH_TOKEN=x",
             ]
             if not missing_token or not token.startswith(f"{missing_token}=")
         )
@@ -115,6 +153,10 @@ esac
             "HAPROXY_READY_COUNT": str(tmp_path / "haproxy-ready-count"),
             "HAPROXY_RELOAD_MARKER": str(tmp_path / "haproxy-reloaded"),
             "CONFIGURED_IMAGE": configured_image,
+            "FAKE_DOCKER_LOG": str(log),
+            "FAKE_DOCKER_STATE": str(state),
+            "FAKE_OLD_DIGEST": OLD,
+            "FAKE_NEW_DIGEST": NEW,
             "MCP_HEALTH_ATTEMPTS": "1",
             "MCP_HEALTH_SLEEP_SECONDS": "0",
             "HAPROXY_READY_ATTEMPTS": "20",
@@ -149,9 +191,10 @@ def test_second_deploy_starts_inactive_green_and_drains_only_after_hup(
     assert log.index("--name at-api-green") < log.index("kill -s HUP at-haproxy")
     # The drain child is detached. Its actual removal is intentionally not a
     # timing assertion; this foreground ID capture is the scheduling event.
-    assert log.index("kill -s HUP at-haproxy") < log.index(
+    assert log.index("kill -s HUP at-haproxy") < log.rindex(
         "inspect --format {{.Id}} at-api-blue"
     )
+    assert "scheduled drain: at-api-blue" in p.stderr
     assert run_dir.joinpath("api-active-color").read_text() == "green\n"
 
 
@@ -213,16 +256,22 @@ def test_scheduler_failure_restores_its_previous_image(tmp_path: Path) -> None:
     assert any(OLD in line for line in scheduler_runs)
 
 
-def test_ws_failure_restores_every_singleton_previous_image(tmp_path: Path) -> None:
+def test_ws_failure_restores_replaced_singletons_without_touching_later_ws(
+    tmp_path: Path,
+) -> None:
     p, log, _ = run(tmp_path, api_color="blue", fail_once_container="at-upbit-ws")
     assert p.returncode != 0
-    for name in ("at-scheduler", "at-upbit-ws", "at-kis-ws"):
+    for name in ("at-scheduler", "at-upbit-ws"):
         runs = [
             line
             for line in log.splitlines()
             if line.startswith("docker run") and f"--name {name}" in line
         ]
         assert any(OLD in line for line in runs), name
+    assert not any(
+        line.startswith("docker run") and "--name at-kis-ws" in line
+        for line in log.splitlines()
+    )
     assert any(
         NEW in line
         for line in log.splitlines()
@@ -371,6 +420,7 @@ def test_mcp_drain_is_scheduled_only_after_its_haproxy_switch(tmp_path: Path) ->
     assert log.rindex("kill -s HUP at-haproxy") < log.rindex(
         "inspect --format {{.Id}} at-mcp-blue"
     )
+    assert "scheduled drain: at-mcp-blue" in p.stderr
 
 
 def test_missing_mcp_token_fails_closed_before_image_pull(tmp_path: Path) -> None:

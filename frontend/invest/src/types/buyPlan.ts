@@ -14,7 +14,7 @@ export type ApprovalLaneReason =
   | "above_per_order_auto_approve_cap"
   | "notional_unavailable";
 export type PlacementForm = "resting_order" | "watch";
-export type GateConditionState = "met" | "not_met" | "unavailable";
+export type GateConditionState = "met" | "not_met" | "unavailable" | "stale";
 export type GateState = "open" | "closed" | "indeterminate";
 export type FundingVerdict = "sufficient" | "shortfall" | "unknown";
 export type SourceState = "ok" | "degraded" | "unavailable";
@@ -172,6 +172,15 @@ export interface DiscoveryGateRow {
   of: number;
   met_count: number;
   unavailable_count: number;
+  stale_count?: number;
+  coefficient?: {
+    state: "resolved" | "hold";
+    value: string | null;
+    basis_met_count: number | null;
+    applies_to: string;
+    on_missing_or_stale_input: string;
+    fixed_at: string;
+  } | null;
   semantics: string | null;
   conditions: DiscoveryGateCondition[];
   notes: string[];

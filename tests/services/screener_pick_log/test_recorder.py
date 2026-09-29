@@ -145,12 +145,14 @@ async def test_fail_open_swallows_writer_errors() -> None:
 @pytest.mark.asyncio
 async def test_fanout_return_is_unchanged() -> None:
     original = _fanout_result(price="100.10")
+    original["sources"][0]["metadata"]["request"]["nested"] = {"depth": "before"}
     snapshot = copy.deepcopy(original)
     writes: list[int] = []
 
     async def writer(rows: list[ScreenerPickRow]) -> None:
         writes.append(len(rows))
         rows[0].source_params["mutated"] = True  # type: ignore[index]
+        rows[0].source_params["request"]["nested"]["depth"] = "after"
 
     await maybe_record_fanout_picks(
         original,

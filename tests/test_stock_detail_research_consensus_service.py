@@ -575,3 +575,74 @@ def test_normalize_opinion_passes_alt_date_keys():
     )
     assert _normalize_opinion({"rating": "매수"})["date"] is None
     assert _normalize_opinion("not-a-dict")["date"] is None
+
+
+@pytest.mark.unit
+def test_normalize_opinion_passes_rating_bucket_through():
+    """#930: an explicit provider bucket (e.g. "unrated" after a research
+    detail fetch failure) must survive normalization — dropping it let
+    build_consensus re-derive a fabricated Hold vote."""
+    from app.services.invest_view_model.stock_detail_research_consensus_service import (
+        _normalize_opinion,
+    )
+
+    assert (
+        _normalize_opinion({"rating": None, "rating_bucket": "unrated"})[
+            "rating_bucket"
+        ]
+        == "unrated"
+    )
+    assert _normalize_opinion({"rating": "매수"})["rating_bucket"] is None
+    # a non-dict row is not an opinion either — unrated, never a Hold vote
+    assert _normalize_opinion("not-a-dict")["rating_bucket"] == "unrated"
+
+
+@pytest.mark.unit
+def test_build_consensus_model_keeps_detail_failures_unrated_and_warns():
+    """#930: partial research-detail failures keep rows unrated (counted in
+    total, in no bucket) and surface the provider warnings on the panel —
+    the same numbers the MCP tool reports."""
+    from app.services.invest_view_model.stock_detail_research_consensus_service import (
+        _build_consensus_model,
+    )
+
+    today = datetime.now(UTC).date()
+    payload = {
+        "source": "naver",
+        "consensus": {"current_price": 15_380},
+        "warnings": [
+            "research detail fetch failed for researchId 96344: timeout",
+            "research detail fetch failed for researchId 96345: boom",
+        ],
+        "opinions": [
+            {
+                "rating": "Strong Buy",
+                "rating_bucket": "buy",
+                "target_price": 17_000,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+            {
+                "rating": None,
+                "rating_bucket": "unrated",
+                "target_price": None,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+            {
+                "rating": None,
+                "rating_bucket": "unrated",
+                "target_price": None,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+        ],
+    }
+
+    warnings: list[str] = []
+    model = _build_consensus_model(payload, warnings)
+
+    assert model is not None
+    assert model.totalCount == 3
+    assert model.buyCount == 1
+    assert model.holdCount == 0  # unrated rows are not fabricated Holds
+    assert model.sellCount == 0
+    assert model.strongBuyCount == 1
+    assert warnings == payload["warnings"]

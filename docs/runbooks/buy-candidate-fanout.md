@@ -1,6 +1,12 @@
 # Bounded buy-candidate fan-out
 
-`discover_buy_candidates_fanout` is a KR-only, read-only discovery tool. It
+`discover_buy_candidates_fanout` is a read-only discovery tool. `market="kr"`
+(the default) runs the five KR source families below; `market="us"` (#922,
+strategy-lab retro U-3) runs the filtered `get_top_stocks` losers source as
+the `us_top_stocks` family — the market-cap/turnover floors and the
+leveraged/inverse ETF exclusion live inside `get_top_stocks` (settings
+`us_top_stocks_min_market_cap` / `us_top_stocks_min_turnover`, raw USD),
+not in this fan-out. It
 widens the screened population; it does not create a proposal, calculate an
 executable order, contact a broker or account, or register a schedule. The
 fan-out module itself performs no writes.
@@ -18,6 +24,8 @@ Every source is sliced to `TOP_N_PER_SOURCE = 10` before it can enter the
 deduped population. The bound is deliberately the same as the fresh batch
 revalidator's `TOP_N_REVALIDATION = 10` contract.
 
+KR plan (`market="kr"`, the default):
+
 | Family | Source | Ordering / preset | Bound |
 | --- | --- | --- | --- |
 | RSI ordering | `screen_stocks` | `sort_by="rsi"`, ascending; `max_rsi` is omitted | 10 |
@@ -25,6 +33,12 @@ revalidator's `TOP_N_REVALIDATION = 10` contract.
 | Turnover | `screen_stocks` | `sort_by="trade_amount"`, descending | 10 |
 | Snapshot support/flow | persisted snapshots | `support_proximity`, `investor_flow_momentum`, `double_buy`, `stable_growth`, `undervalued_growth` | 10 per preset |
 | Snapshot value/catalyst | persisted snapshots | `cheap_value`, `high_yield_value`, `undervalued_breakout`, `profitable_company`, `growth_expectation_toss` | 10 per preset |
+
+US plan (`market="us"`, #922 / retro U-3):
+
+| Family | Source | Ordering | Bound |
+| --- | --- | --- | --- |
+| US top stocks | `get_top_stocks` | `ranking_type="losers"`; the US quality bar (default min market cap / min turnover USD floors, missing-data fail-closed, leveraged/inverse ETF exclusion) is applied inside `get_top_stocks` | 10 |
 
 Each snapshot source group contains exactly five presets, and the implementation
 rejects a group with more than five. Snapshot rows are read through the existing
@@ -34,12 +48,39 @@ perform the public snapshot tool's held-position lookup.
 ## Revalidation and funnel
 
 Rows are deduped with the database-standard symbol form (`BRK-B` / `BRK/B` →
-`BRK.B`) while keeping every `matched_sources` entry. Only the first ten deduped
-symbols receive full fresh-analysis revalidation of current price, support,
-consensus, RSI, trade-restriction state, and the analysis result's top-level
-`data_state`. The full response is used deliberately: the shared compact KR
-regular-session response can omit that aggregate freshness key. The fan-out
-does not change the shared compact contract.
+`BRK.B`) while keeping every `matched_sources` entry. Admission to the bounded
+full-analysis pool is **per-source-family round-robin**, not first-come:
+families rotate in declared order (KR: RSI, pullback, turnover, snapshot
+support/flow, snapshot value/catalyst; US: `us_top_stocks`) and take one *new*
+symbol per round —
+a family whose next row is a duplicate keeps scanning until it offers a fresh
+symbol, and an empty family yields so leftover slots redistribute to the
+remaining families. With all five KR families live the shape is 5 × 2 = 10
+slots; a dominant family can never consume the pool while another family has
+candidates. The `candidates` list keeps dedupe order; `selection` on each
+candidate and `collection.selected_symbol_order` record the pick order. Only
+selected symbols receive full fresh-analysis revalidation of current price,
+support, consensus, RSI, trade-restriction state, and the analysis result's
+top-level `data_state`. The full response is used deliberately: the shared
+compact KR regular-session response can omit that aggregate freshness key.
+The fan-out does not change the shared compact contract.
+
+## Candidate record (A-record)
+
+Every source row that entered a source's bounded top-N slice — kept or
+stale-dropped, admitted or not — is emitted once in `candidate_records` with
+its source, family, ordinal rank, `admission`
+(`admitted` / `not_admitted` / `dropped_preselection`), `admission_reason`,
+`selection_seq` for round-robin picks, `source_status`, `data_asof`,
+`source_price`, the untouched `raw_row`, and `gate_features` for revalidated
+candidates (freshness, funnel stage statuses, RSI/upside flags). Rows without
+a canonicalizable symbol can never become a log row and are counted in
+`dropped_reasons` instead. The outer pick-log observer writes one
+`review.screener_pick_log` row per record under `collection_version`
+`funnel-a1`; older rows keep `collection_version` NULL and are not backfilled.
+A failed source read degrades to `source_status="error"` on its payload —
+the call still records the other sources, and `collection.source_statuses`
+keeps every planned source run's disposition.
 
 Snapshot price, support, and consensus evidence may be at most one session
 stale and is input-only; it cannot establish a gate pass until that fresh

@@ -323,6 +323,22 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
 
     dummy_kis = DummyKIS()
 
+    class _UnprotectedPolicyLease:
+        active = False
+
+        async def release(self) -> None:
+            return None
+
+    # This legacy strategy-flow fixture has no policy store. Dedicated #728
+    # tests cover G5; retain this test's pre-existing broker exception flow.
+    import app.services.kis_trading_service as legacy_trading
+
+    monkeypatch.setattr(
+        legacy_trading,
+        "prepare_live_sell_lease",
+        AsyncMock(return_value=_UnprotectedPolicyLease()),
+    )
+
     # 실제 분석 결과 mock
     analysis = StockAnalysisResult(
         decision="hold",

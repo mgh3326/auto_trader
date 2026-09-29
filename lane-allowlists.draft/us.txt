@@ -27,6 +27,7 @@ get_news	prompt
 get_ohlcv	prompt
 get_operating_briefing	prompt
 get_orderbook	prompt
+get_parking_exclusion	spec:883-cash-sweep
 get_quote	prompt
 get_support_resistance	prompt
 get_top_stocks	prompt
@@ -65,5 +66,6 @@ toss_get_orderable_cash	prompt
 toss_get_positions	prompt
 toss_place_order	prompt
 toss_preview_order	prompt
+toss_proposal_accounts	spec:883-cash-sweep
 toss_reconcile_orders	prompt
 trade_retrospective_pending	prompt

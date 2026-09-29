@@ -29,7 +29,10 @@ from app.services.kis_mock_holdings_reconciler import (
     ReconcilerThresholds,
     classify_orders,
 )
-from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+from app.services.kis_mock_lifecycle_service import (
+    ExpiredLifecycleConflict,
+    KISMockLifecycleService,
+)
 from app.services.kis_mock_reconcile_scope import resolve_kis_mock_reconcile_scope
 
 
@@ -291,13 +294,33 @@ async def run_kis_mock_reconciliation(
                 else None
             ),
         }
-        outcome = await lifecycle_svc.apply_lifecycle_transition(
-            ledger_id=proposal.ledger_id,
-            next_state=proposal.next_state,
-            reason_code=proposal.reason_code,
-            detail=detail,
-            dry_run=dry_run,
-        )
+        try:
+            outcome = await lifecycle_svc.apply_lifecycle_transition(
+                ledger_id=proposal.ledger_id,
+                next_state=proposal.next_state,
+                reason_code=proposal.reason_code,
+                detail=detail,
+                dry_run=dry_run,
+            )
+        except ExpiredLifecycleConflict:
+            # Expiry may have committed while the holdings inquiry was in
+            # flight. Release the row lock, keep its operator audit intact,
+            # and do not emit a lifecycle event for a transition that did not
+            # happen. Earlier per-row commits remain authoritative.
+            await db.rollback()
+            transition_logs.append(
+                {
+                    "ledger_id": proposal.ledger_id,
+                    "prior_state": "expired",
+                    "next_state": "expired",
+                    "proposed_state": proposal.next_state,
+                    "reason_code": "expired_during_reconciliation",
+                    "applied": False,
+                    "skipped": True,
+                    "dry_run": dry_run,
+                }
+            )
+            continue
         if outcome.get("applied"):
             applied_count += 1
         transition_logs.append(outcome)
