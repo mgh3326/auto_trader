@@ -11,8 +11,13 @@ replacement for ad hoc declaration scripts.  They call
 owner actor, and the fresh broker observation provider that ``save`` invokes
 only after its per-key lock.  Every write requires an exact ``--confirm-symbol``
 and is a dry-run preview unless ``--commit`` is given.  The broker read needs
-the application's broker credentials; the database is still only the explicit
-``--database-url``.
+the application's broker credentials; the database is still only the one the
+operator names explicitly.
+
+The database is named either by ``--database-url URL`` (manual use) or by
+``--database-url-env NAME`` (scheduled use: the value is read from that one
+environment variable, so a password never appears in the process arguments).
+The URL value is never printed; errors about it carry only the variable name.
 """
 
 from __future__ import annotations
@@ -20,6 +25,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import re
 import sys
 from collections.abc import Sequence
 from decimal import Decimal
@@ -37,6 +44,7 @@ from app.services.protected_quantity_service import (
 )
 
 WRITE_COMMANDS = ("declare", "increase", "decrease", "release")
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 LEVER_COMMAND = "auto-reconcile"
 
 
@@ -47,10 +55,21 @@ def _parser() -> argparse.ArgumentParser:
             "desk-only dry-run-by-default writes"
         )
     )
-    parser.add_argument(
+    database = parser.add_mutually_exclusive_group(required=True)
+    database.add_argument(
         "--database-url",
-        required=True,
-        help="Explicit PostgreSQL database URL; no environment fallback is used",
+        help=(
+            "Explicit PostgreSQL database URL for manual use; it is visible in "
+            "the process arguments, so a timer must use --database-url-env"
+        ),
+    )
+    database.add_argument(
+        "--database-url-env",
+        metavar="NAME",
+        help=(
+            "Name of the one environment variable that holds the PostgreSQL URL; "
+            "there is no other environment fallback and the value is never printed"
+        ),
     )
     parser.add_argument(
         "--format",
@@ -128,6 +147,29 @@ def _validate_database_url(raw: str) -> str:
     return url.render_as_string(hide_password=False)
 
 
+def _database_url(args: argparse.Namespace) -> str:
+    """Resolve the explicitly named database without ever exposing the value."""
+
+    env_name = getattr(args, "database_url_env", None)
+    if env_name is None:
+        return _validate_database_url(args.database_url)
+    if not isinstance(env_name, str) or not _ENV_NAME.fullmatch(env_name):
+        raise ValueError(
+            "--database-url-env must be an environment variable name "
+            "(letters, digits, underscore; not starting with a digit)"
+        )
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        raise ValueError(f"environment variable {env_name} is not set or empty")
+    try:
+        return _validate_database_url(raw.strip())
+    except Exception:
+        # Parser messages can quote the URL; never chain or repeat them.
+        raise ValueError(
+            f"environment variable {env_name} does not hold a complete PostgreSQL URL"
+        ) from None
+
+
 def _head_payload(head: Any) -> dict[str, Any]:
     return {
         "account_scope": head.key.account_scope,
@@ -148,7 +190,7 @@ def _head_payload(head: Any) -> dict[str, Any]:
 async def read_command(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     """Read the selected durable rows without calling a broker API."""
 
-    engine = create_async_engine(_validate_database_url(args.database_url))
+    engine = create_async_engine(_database_url(args))
     session_factory = async_sessionmaker(
         bind=engine,
         class_=AsyncSession,
@@ -323,7 +365,7 @@ async def write_command(
     factory = provider_factory or _default_provider_factory
     idempotency_key = args.idempotency_key or f"operator_cli:{uuid4()}"
 
-    engine = create_async_engine(_validate_database_url(args.database_url))
+    engine = create_async_engine(_database_url(args))
     session_factory = async_sessionmaker(
         bind=engine,
         class_=AsyncSession,
@@ -407,7 +449,7 @@ async def lever_command(
         reconcile_declared_positions,
     )
 
-    engine = create_async_engine(_validate_database_url(args.database_url))
+    engine = create_async_engine(_database_url(args))
     session_factory = async_sessionmaker(
         bind=engine,
         class_=AsyncSession,

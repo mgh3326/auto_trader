@@ -139,17 +139,52 @@ Where the rule runs:
    It covers only Toss orders placed through auto_trader.
 3. The manual lever, which lowers every active declared P that exceeds the fresh
    holding and never raises. Either the CLI
-   protected_positions.py --database-url URL auto-reconcile [--scope SCOPE]
+   protected_positions.py (--database-url URL | --database-url-env NAME) auto-reconcile [--scope SCOPE]
    [--commit] (a preview unless --commit; exit 2 while the kill switch is off,
    1 if any key failed) or the TaskIQ task protected_positions.auto_follow_reconcile,
    which has no schedule and commits when called. The code registers no
    schedule. Desk runs the one-shot CLI (auto-reconcile --commit) every 30 minutes during KR and US regular hours from an NCP systemd timer, per operator decision Q-75 on task 944 (option A).
+   See "Lever timer unit" below; the timer must use --database-url-env.
 
 Known gap, Toss app sales: a sale made in the Toss app never reaches the
 execution ledger (there is no account-wide Toss fill reconciler), so no hook
 sees it. P for a toss_live name stays above the holding until the lever runs.
 While P is above the holding, the protection state for that name reads
 shortfall. The ROB-866 Toss manual-activity sweep is not wired to this rule.
+
+### Lever timer unit
+
+Desk owns the NCP systemd service and timer; this repository ships no unit
+and registers no schedule. Constraints the unit must follow:
+
+- Name the database with --database-url-env NAME, never --database-url. A URL
+  given with --database-url is in the process arguments, which any user on the
+  host can read with ps every time the timer fires. With --database-url-env the
+  CLI reads the URL from that one environment variable, supplied by the unit's
+  EnvironmentFile (the variable may be DATABASE_URL itself). The CLI never
+  prints the value; an error about it names only the variable (not set or
+  empty, not a complete PostgreSQL URL, or an invalid variable name).
+- The same environment must carry the application's broker credentials and
+  settings, including PROTECTED_POSITION_AUTO_FOLLOW_ENABLED, because the lever
+  reads fresh broker holdings and honours the kill switch.
+- Command shape:
+  protected_positions.py --database-url-env NAME auto-reconcile --commit
+  with the working directory at the application root. Run it as a oneshot
+  service; the timer limits it to KR and US regular hours.
+- Output is one JSON line on stdout (per-key outcomes: lowered, unchanged,
+  skipped, error). Only P decreases are written, one notification per decrease.
+
+Exit codes (unchanged by the timer; alert on them in the unit's logs):
+
+- 0: every declared key was reconciled or needed no change.
+- 1: partial broker-read failure. At least one key's outcome is error (for
+  example its broker read failed); the other keys were still processed. It
+  also covers a database or unexpected failure before any key was read, which
+  prints only {"error": "protected_positions_unavailable"}.
+- 2: refused. The kill switch is off (error auto_follow_disabled, nothing was
+  read or written; the unit reports failed until desk turns the switch on), or
+  the request was invalid, for example a missing or malformed database variable
+  (error invalid_request).
 
 ## Desk write CLI
 
@@ -170,7 +205,8 @@ and the fresh broker observation provider that runs after the per-key lock.
 the result: declare only for a new key, increase above current P, decrease to
 a positive quantity below current P, release to zero. --idempotency-key makes
 a retry of the same request safe; otherwise one is generated and printed. The
-database is only the explicit --database-url; the broker read uses the
+database is only the one named explicitly, by --database-url URL or
+--database-url-env NAME (the value is never printed); the broker read uses the
 application's broker credentials. Exit codes: 0 ok, 1 broker or database
 unavailable, 2 invalid or refused request, 3 stale revision or conflict.
 

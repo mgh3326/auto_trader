@@ -423,3 +423,174 @@ async def test_cli_lever_previews_by_default_and_commits_only_with_flag(
     assert head is not None and head.protected_quantity == 1
     assert revisions[-1].reason == "auto:reconcile"
     assert sum(symbol in message for message in messages) == 1
+
+
+# --- #943 round 3: --database-url-env (timer form keeps the URL out of argv) ---
+
+_SECRET = "Sup3rSecretT943"
+
+
+def _url() -> str:
+    return engine.url.render_as_string(hide_password=False)
+
+
+def _assert_no_leak(text: str) -> None:
+    assert _url() not in text
+    assert _SECRET not in text
+    password = engine.url.password
+    if password:
+        assert str(password) not in text
+
+
+@pytest.mark.unit
+def test_cli_database_selection_is_exactly_one_of_url_or_env_name() -> None:
+    parser = protected_positions._parser()
+    env_args = parser.parse_args(["--database-url-env", "PP_DB", "list"])
+    assert (env_args.database_url_env, env_args.database_url) == ("PP_DB", None)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["list"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "--database-url",
+                "postgresql://u:p@h/db",
+                "--database-url-env",
+                "X",
+                "list",
+            ]
+        )
+
+
+@pytest.mark.integration
+def test_cli_env_form_reads_the_named_variable_and_never_prints_it(
+    db_session, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    validate_run_owned_database_url(engine.url)
+    monkeypatch.setenv("T943_PP_DB_URL", _url())
+
+    listed = protected_positions.main(
+        ["--database-url-env", "T943_PP_DB_URL", "list", "--scope", "kis_live"]
+    )
+    list_out = capsys.readouterr()
+    missing = protected_positions.main(
+        ["--database-url-env", "T943_PP_DB_URL", "show", "kis_live", "kr", "TNONE943"]
+    )
+    show_out = capsys.readouterr()
+    # The lever resolves the database the same way; the kill switch is off in
+    # tests, so it reports disabled without any broker read.
+    lever = protected_positions.main(
+        ["--database-url-env", "T943_PP_DB_URL", "auto-reconcile", "--commit"]
+    )
+    lever_out = capsys.readouterr()
+
+    assert listed == 0 and "positions" in json.loads(list_out.out)
+    assert missing == 2 and json.loads(show_out.out)["error"] == "not_found"
+    assert lever == 2 and json.loads(lever_out.out)["error"] == "auto_follow_disabled"
+    for captured in (list_out, show_out, lever_out):
+        _assert_no_leak(captured.out + captured.err)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (None, "environment variable T943_PP_DB_URL is not set or empty"),
+        ("   ", "environment variable T943_PP_DB_URL is not set or empty"),
+        (
+            f"postgresql+asyncpg://user:{_SECRET}@localhost/",
+            "environment variable T943_PP_DB_URL does not hold a complete "
+            "PostgreSQL URL",
+        ),
+        (
+            f"::: not a url {_SECRET} :::",
+            "environment variable T943_PP_DB_URL does not hold a complete "
+            "PostgreSQL URL",
+        ),
+        (
+            f"mysql://user:{_SECRET}@localhost/db",
+            "environment variable T943_PP_DB_URL does not hold a complete "
+            "PostgreSQL URL",
+        ),
+    ],
+)
+def test_cli_env_form_errors_name_only_the_variable(
+    value: str | None,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    if value is None:
+        monkeypatch.delenv("T943_PP_DB_URL", raising=False)
+    else:
+        monkeypatch.setenv("T943_PP_DB_URL", value)
+
+    for argv in (
+        ["list"],
+        ["auto-reconcile", "--commit"],
+        [
+            "declare",
+            "kis_live",
+            "kr",
+            "005930",
+            "--quantity",
+            "1",
+            "--reason",
+            "r",
+            "--confirm-symbol",
+            "005930",
+            "--commit",
+        ],
+    ):
+        code = protected_positions.main(["--database-url-env", "T943_PP_DB_URL", *argv])
+        captured = capsys.readouterr()
+        assert code == 2
+        assert json.loads(captured.out) == {
+            "error": "invalid_request",
+            "message": message,
+        }
+        _assert_no_leak(captured.out + captured.err)
+
+
+@pytest.mark.unit
+def test_cli_env_form_rejects_a_malformed_variable_name(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = protected_positions.main(["--database-url-env", "BAD-NAME;x", "list"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "environment variable name" in json.loads(captured.out)["message"]
+
+
+@pytest.mark.integration
+def test_cli_subprocess_env_form_keeps_url_out_of_argv_and_output(db_session) -> None:
+    validate_run_owned_database_url(engine.url)
+    project_root = Path(__file__).resolve().parents[2]
+    argv = [
+        sys.executable,
+        str(project_root / "scripts" / "protected_positions.py"),
+        "--database-url-env",
+        "T943_PP_DB_URL",
+        "show",
+        "kis_live",
+        "kr",
+        f"TNONE{uuid4().hex[:8].upper()}",
+    ]
+    result = subprocess.run(
+        argv,
+        cwd=project_root,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "ENV_FILE": "/dev/null",
+            "DEV_ENV_FILE": "/dev/null",
+            "T943_PP_DB_URL": _url(),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)["error"] == "not_found"
+    assert not any(_url() in part for part in argv)
+    _assert_no_leak(result.stdout + result.stderr)
