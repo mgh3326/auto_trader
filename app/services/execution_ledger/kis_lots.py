@@ -8,7 +8,18 @@ Two questions, both answered fail-closed:
 
 * **Lots.** FIFO remaining lots over *authoritative* ``execution_ledger`` rows
   (``reconciler`` / ``manual_import``) for one KIS live KR symbol. Provisional
-  ``websocket`` rows are never counted; they are listed separately. The cost is
+  ``websocket`` rows are never counted; they are listed separately. When a
+  symbol carries an opening seed (a ``manual_import`` ``SEED-*`` row written by
+  ``scripts/seed_execution_ledger_opening_lots.py``), the latest seed governs:
+  every other authoritative row stamped strictly before that seed's
+  ``filled_at`` instant is already inside the seed quantity and is superseded
+  (``diagnostics["pre_seed_rows_superseded"]``) instead of counted twice —
+  including any older seed generation left behind by a re-seed. The cutover
+  comparison is the seed's own: ``filled_at`` (timestamptz, compared as a
+  UTC-aware instant); the seeder carved out ``filled_at >= cutover``
+  (``ExecutionLedgerRepository.net_quantity_by_match_key_since``), so a row
+  stamped exactly at the cutover instant was never inside the seed and still
+  counts. The cost is
   a ledger FIFO projection, NOT the broker's moving-average ``avg_buy_price``
   (pre-ledger holdings appear as one ``opening_seed`` lot at the broker average
   as of the seed). The projection is trusted only when the ledger is fresh
@@ -60,6 +71,11 @@ FRESH_MAX_MINUTES = 90
 TERMINAL_ORDER_STATUSES = frozenset({"filled", "cancelled", "expired", "rejected"})
 AUTHORITATIVE_SOURCES = frozenset({"reconciler", "manual_import"})
 _PROVISIONAL_SOURCE = "websocket"
+# Opening seeds written by scripts/seed_execution_ledger_opening_lots.py carry
+# this broker_order_id prefix (opening_lots._seed_order_id). The prefix gate
+# keeps a hypothetical non-seed manual_import row from silently becoming a
+# cutover it never computed.
+_SEED_ORDER_ID_PREFIX = "SEED-"
 # How far back non-terminal buy rows are still reported (as presumed-dead
 # prior-day day orders). They never block: a KRX/NXT day order cannot rest past
 # its trading day.
@@ -165,6 +181,11 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _aware_utc(when: datetime) -> datetime:
+    """Aware comparison instant; a naive stamp reads as UTC (timestamptz)."""
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
 def _from_today_kst(when: datetime, now: datetime) -> bool:
     """True for the current KST day and for anything dated later than today.
 
@@ -172,8 +193,7 @@ def _from_today_kst(when: datetime, now: datetime) -> bool:
     as "today" keeps the evidence fail-closed instead of presuming it dead.
     """
     start, _ = kst_day_window(now)
-    aware = when if when.tzinfo else when.replace(tzinfo=UTC)
-    return aware >= start
+    return _aware_utc(when) >= start
 
 
 def _split_provisional(
@@ -198,6 +218,44 @@ def _split_provisional(
         else:
             provisional.append(fill)
     return authoritative, provisional, superseded
+
+
+def _apply_seed_cutover(
+    authoritative: Sequence[LedgerFill],
+) -> tuple[list[LedgerFill], list[LedgerFill], datetime | None]:
+    """Drop authoritative rows the latest opening seed already covers.
+
+    The seed CLI writes one ``manual_import`` row per match key whose
+    ``broker_order_id`` is ``SEED-<yyyymmdd>-...`` and whose ``filled_at`` is
+    exactly the ``--cutover`` instant (UTC-midnight-aware;
+    ``scripts/seed_execution_ledger_opening_lots.parse_cutover`` and
+    ``opening_lots.py`` ``filled_at=cutover``). Its quantity is
+    ``current_qty - net(filled_at >= cutover)`` over non-seed rows
+    (``ExecutionLedgerRepository.net_quantity_by_match_key_since``), so the
+    seed already represents every row strictly before that instant: counting
+    them again double-counts the position the seed absorbed. The mirror
+    complement is exact: a row stamped exactly at the cutover instant was
+    carved out of the seed and still counts.
+
+    A re-seed at a newer cutover inserts a second ``SEED-*`` row (the order id
+    embeds the cutover date, so the unique key differs — the old row is not
+    updated). The latest seed governs: its ``filled_at`` is the cutover, the
+    seed rows at that instant count, and every other authoritative row with
+    ``filled_at < cutover`` is superseded. Symbols with no seed row are
+    returned unchanged.
+    """
+    cutovers = [
+        _aware_utc(f.filled_at)
+        for f in authoritative
+        if f.source == "manual_import"
+        and f.broker_order_id.startswith(_SEED_ORDER_ID_PREFIX)
+    ]
+    if not cutovers:
+        return list(authoritative), [], None
+    cutover = max(cutovers)
+    counted = [f for f in authoritative if _aware_utc(f.filled_at) >= cutover]
+    superseded = [f for f in authoritative if _aware_utc(f.filled_at) < cutover]
+    return counted, superseded, cutover
 
 
 def _fifo_lots(
@@ -384,10 +442,14 @@ def build_symbol_block(
 ) -> dict[str, Any]:
     """Pure projection of one symbol. Deterministic given its inputs."""
     authoritative, provisional, superseded = _split_provisional(fills)
+    # Rows an opening seed already absorbed never reach lots/net; they are
+    # listed under diagnostics.pre_seed_rows_superseded instead. Seedless
+    # symbols pass through unchanged.
+    counted, pre_seed_superseded, seed_cutover = _apply_seed_cutover(authoritative)
     # Only authoritative rows reach lots/net. provisional_net below is a
     # diagnostic sum of un-superseded websocket rows: it can add a reason code
     # and fill diagnostics, but it never enters lots, net or the known decision.
-    lots, net, oversold = _fifo_lots(authoritative)
+    lots, net, oversold = _fifo_lots(counted)
     provisional_net = _signed_net(provisional)
 
     reasons: list[str] = []
@@ -468,11 +530,14 @@ def build_symbol_block(
         "quantity_reconciles": reconciles,
         "diagnostics": {
             "authoritative_row_count": len(authoritative),
+            "counted_row_count": len(counted),
             "ledger_net_quantity": _fmt(net),
             "oversold_quantity": _fmt(oversold),
             "provisional_row_count": len(provisional),
             "provisional_net_quantity": _fmt(provisional_net),
             "superseded_websocket_duplicates": superseded,
+            "seed_cutover": _iso(seed_cutover),
+            "pre_seed_rows_superseded": [_fill_view(f) for f in pre_seed_superseded],
         },
         "provisional_rows_excluded": [_fill_view(f) for f in provisional],
         "open_buy_evidence": _open_buy_evidence(

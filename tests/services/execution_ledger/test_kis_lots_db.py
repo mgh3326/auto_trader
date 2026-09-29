@@ -89,7 +89,17 @@ def _run(*, finished_minutes_ago: int | None, dry_run: bool = False):
     )
 
 
-ALL_SYMBOLS = [SYM, OTHER_SYM, "T96303", "T96304", "T96305", "T96306"]
+ALL_SYMBOLS = [
+    SYM,
+    OTHER_SYM,
+    "T96303",
+    "T96304",
+    "T96305",
+    "T96306",
+    "T97301",
+    "T97302",
+    "T97303",
+]
 
 
 async def _cleanup(db_session, run_ids: list[uuid.UUID], order_nos: list[str]) -> None:
@@ -470,6 +480,108 @@ async def test_same_day_sell_fill_and_future_dated_order_row_block(db_session) -
     skewed = blocks[skew_sym]["open_buy_evidence"]
     assert skewed["blocking"] is True  # future-dated non-terminal row fails closed
     assert skewed["presumed_dead_prior_day_buys"] == []
+
+
+async def test_973_pre_seed_reconciler_rows_are_superseded(db_session) -> None:
+    """#973 desk scenario end-to-end: pre-seed reconciler history is inside the
+    seed; only rows at-or-after the seed's cutover instant count toward lots.
+
+    The re-seeded symbol carries TWO manual_import generations (the seed CLI's
+    order id embeds the cutover date, so a re-seed inserts a new row rather
+    than updating); the latest seed governs and the older seed is superseded
+    together with all pre-cutover history. The seedless symbol is untouched.
+    """
+    seeded, reseeded, seedless = "T97301", "T97302", "T97303"
+    cutover = datetime(2099, 5, 10, tzinfo=UTC)  # seed filled_at == cutover
+    recutover = datetime(2099, 6, 1, tzinfo=UTC)
+    run = _run(finished_minutes_ago=10)
+    run_ids = [run.run_id]
+
+    def seed(symbol: str, qty: str, when: datetime) -> ExecutionLedger:
+        return _fill(
+            symbol=symbol,
+            raw_symbol=symbol,
+            filled_qty=Decimal(qty),
+            filled_price=Decimal("2000"),
+            source="manual_import",
+            broker_order_id=f"SEED-{when:%Y%m%d}-kis-krx-{symbol}",
+            filled_at=when,
+        )
+
+    def rec(symbol: str, side: str, qty: str, when: datetime, tag: str):
+        return _fill(
+            symbol=symbol,
+            raw_symbol=symbol,
+            side=side,
+            filled_qty=Decimal(qty),
+            broker_order_id=f"{ORDER_PREFIX}-{symbol}-{tag}",
+            filled_at=when,
+        )
+
+    db_session.add_all(
+        [
+            run,
+            # seeded: seed 12 + pre-seed history (net 12, inside the seed) +
+            # post-cutover net -1 -> broker 11
+            seed(seeded, "12", cutover),
+            rec(seeded, "buy", "12", cutover - timedelta(days=60), "p1"),
+            rec(seeded, "sell", "2", cutover + timedelta(days=2), "q1"),
+            rec(seeded, "buy", "1", cutover + timedelta(days=20), "q2"),
+            # re-seeded: first generation seed 4 @05-10 plus its history, then
+            # a second generation seed 6 @06-01 -> only the latest seed counts
+            seed(reseeded, "4", cutover),
+            rec(reseeded, "buy", "5", cutover - timedelta(days=70), "p1"),
+            rec(reseeded, "buy", "1", cutover + timedelta(days=8), "q1"),
+            seed(reseeded, "6", recutover),
+            # seedless: no seed, nothing may be filtered
+            rec(seedless, "buy", "3", cutover - timedelta(days=50), "p1"),
+            rec(seedless, "buy", "2", cutover - timedelta(days=10), "p2"),
+        ]
+    )
+    await db_session.commit()
+    try:
+        blocks = await load_kis_live_kr_lot_blocks(
+            db_session,
+            [
+                PositionRef(seeded, Decimal("11"), Decimal("1900")),
+                PositionRef(reseeded, Decimal("6"), Decimal("1900")),
+                PositionRef(seedless, Decimal("5"), Decimal("1900")),
+            ],
+            now=NOW,
+        )
+    finally:
+        await _cleanup(db_session, run_ids, [])
+
+    seeded_block = blocks[seeded]
+    assert seeded_block["ledger_state"] == "known", seeded_block["unknown_reasons"]
+    assert seeded_block["net_quantity"] == "11"
+    diag = seeded_block["diagnostics"]
+    assert diag["seed_cutover"] == cutover.isoformat()
+    assert diag["authoritative_row_count"] == 4
+    assert diag["counted_row_count"] == 3
+    assert [r["broker_order_id"] for r in diag["pre_seed_rows_superseded"]] == [
+        f"{ORDER_PREFIX}-{seeded}-p1"
+    ]
+
+    reseeded_block = blocks[reseeded]
+    assert reseeded_block["ledger_state"] == "known", reseeded_block["unknown_reasons"]
+    assert reseeded_block["net_quantity"] == "6"
+    rdiag = reseeded_block["diagnostics"]
+    assert rdiag["seed_cutover"] == recutover.isoformat()
+    # the older seed row is superseded along with all pre-cutover history
+    superseded_ids = {r["broker_order_id"] for r in rdiag["pre_seed_rows_superseded"]}
+    assert superseded_ids == {
+        f"SEED-{cutover:%Y%m%d}-kis-krx-{reseeded}",
+        f"{ORDER_PREFIX}-{reseeded}-p1",
+        f"{ORDER_PREFIX}-{reseeded}-q1",
+    }
+    assert rdiag["counted_row_count"] == 1
+
+    seedless_block = blocks[seedless]
+    assert seedless_block["ledger_state"] == "known", seedless_block["unknown_reasons"]
+    assert seedless_block["net_quantity"] == "5"
+    assert seedless_block["diagnostics"]["seed_cutover"] is None
+    assert seedless_block["diagnostics"]["pre_seed_rows_superseded"] == []
 
 
 async def test_zz_this_file_leaves_no_rows_behind(db_session) -> None:
