@@ -7,6 +7,8 @@ Rules under test:
   Any unresolved row gives partial (some resolved) or uncertain (none
   resolved), with success false. The dry run predicts the same words.
 - DETAIL: an incomplete all-scope listing is never success=true.
+- REVIEW: an anomaly or manual-review row is never resolved. With no row
+  unresolved it gives needs_review, success false, and names the row.
 
 Expected values come from the fake NH setup and an independent ledger read,
 never from the code under test. Each rule has an assertion-RED mutant compiled
@@ -48,6 +50,17 @@ RECONCILE_RULE = (
     '        return "partial" if resolved else "uncertain"\n',
     '        return "reconciled"\n',
 )
+# The needs-review branch removed: an anomaly row reads as reconciled again.
+REVIEW_RULE = (
+    '    if needs_review:\n        return "needs_review"\n',
+    "",
+)
+# Review rows counted as resolved: an anomaly beside an unresolved row reads
+# as partial progress instead of none.
+REVIEW_RESOLVED_RULE = (
+    "        targeted - set(unresolved_ids) - set(unverified) - set(needs_review)\n",
+    "        targeted - set(unresolved_ids) - set(unverified)\n",
+)
 DETAIL_RULE = (
     '        "success": listing.complete\n'
     '        and (broker["broker_view"] == "listed" or bool(rows)),\n',
@@ -73,6 +86,24 @@ def reconcile_mutant() -> Iterator[types.ModuleType]:
     name = "nh_mock_operations_mutant_reconcile_rule"
     try:
         yield _compile_mutant(name, *RECONCILE_RULE)
+    finally:
+        sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def review_mutant() -> Iterator[types.ModuleType]:
+    name = "nh_mock_operations_mutant_review_rule"
+    try:
+        yield _compile_mutant(name, *REVIEW_RULE)
+    finally:
+        sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def review_resolved_mutant() -> Iterator[types.ModuleType]:
+    name = "nh_mock_operations_mutant_review_resolved_rule"
+    try:
+        yield _compile_mutant(name, *REVIEW_RESOLVED_RULE)
     finally:
         sys.modules.pop(name, None)
 
@@ -374,3 +405,153 @@ async def test_detail_rule_mutant_is_assertion_red(
     with pytest.raises(AssertionError):
         _assert_detail_invariant(detail)
     assert detail["success"] is True  # the #849 answer
+
+
+# ---------------------------------------------------------------------------
+# Needs review: anomaly and manual-review rows are never resolved
+# ---------------------------------------------------------------------------
+
+
+async def _anomaly_scenario(
+    module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    engine: AsyncEngine,
+    suffix: str,
+    *,
+    second: str | None,
+) -> FakeNH:
+    """Row 0 (005930) gets 1000841, which the broker lists under 000660.
+
+    second: None (no other row), "listed" (000660 row whose 1000842 is listed
+    with matching attributes), or "unlisted" (000660 row, 1000842 absent).
+    """
+
+    fake = install(
+        monkeypatch,
+        engine,
+        suffix,
+        module=module,
+        order_numbers=["1000841", "1000842"],
+    )
+    await _place(module, suffix, 1, "005930")
+    fake.rows[1000841] = order_row(1000841, symbol="000660")
+    if second is not None:
+        await _place(module, suffix, 2, "000660")
+        if second == "listed":
+            fake.rows[1000842] = order_row(1000842, symbol="000660")
+    return fake
+
+
+def _assert_review_invariant(
+    result: dict[str, Any], after: list[dict[str, Any]]
+) -> None:
+    review = [
+        r["id"] for r in after if r["state"] == "anomaly" or r["requires_manual_review"]
+    ]
+    assert review, "scenario must leave a needs-review row"
+    assert result["success"] is False
+    assert result["status"] != "reconciled"
+    assert result["needs_review_row_ids"] == review
+    assert not set(review) & set(result["resolved_row_ids"])
+
+
+# name: (second row, dry would_be_status, confirmed status)
+REVIEW_SCENARIOS: dict[str, tuple[str | None, str, str]] = {
+    "anomaly_alone": (None, "needs_review", "needs_review"),
+    "anomaly_and_resolved": ("listed", "needs_review", "needs_review"),
+    "anomaly_and_unresolved": ("unlisted", "uncertain", "uncertain"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", sorted(REVIEW_SCENARIOS))
+async def test_anomaly_row_is_never_resolved(
+    ops_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    second, would_be, expected = REVIEW_SCENARIOS[name]
+    suffix = "nr" + name.replace("_", "")[:12]
+    fake = await _anomaly_scenario(
+        operations, monkeypatch, ops_engine, suffix, second=second
+    )
+    before = await ledger_rows(ops_engine, fake.account_no)
+    first_id = before[0]["id"]
+    second_id = before[1]["id"] if second is not None else None
+
+    plan = await _dry(operations)
+    assert plan["would_be_status"] == would_be
+    assert plan["would_be_needs_review_row_ids"] == [first_id]
+    assert plan["would_be_unresolved_row_ids"] == (
+        [second_id] if second == "unlisted" else []
+    )
+    assert plan["verification_pending_row_ids"] == (
+        [second_id] if second == "listed" else []
+    )
+    assert await ledger_rows(ops_engine, fake.account_no) == before
+
+    result = await _confirmed(operations)
+    after = await ledger_rows(ops_engine, fake.account_no)
+    # Independent read: T9b recorded the attribute mismatch as anomaly.
+    assert (after[0]["state"], after[0]["requires_manual_review"]) == ("anomaly", True)
+    assert after[0]["manual_review_reason"] == "own_number_attribute_mismatch"
+    _assert_review_invariant(result, after)
+    assert result["status"] == expected
+    assert result["resolved_row_ids"] == ([second_id] if second == "listed" else [])
+    assert result["unresolved_row_ids"] == ([second_id] if second == "unlisted" else [])
+    assert len(fake.orders) == len(before)
+
+    # The anomaly is terminal: a later reconcile still says it needs review.
+    again = await _confirmed(operations)
+    assert again["status"] == expected
+    assert again["needs_review_row_ids"] == [first_id]
+    assert (await _dry(operations))["would_be_status"] == expected
+
+
+async def _review_run(
+    module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    engine: AsyncEngine,
+    suffix: str,
+    second: str | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    fake = await _anomaly_scenario(module, monkeypatch, engine, suffix, second=second)
+    result = await _confirmed(module)
+    return result, await ledger_rows(engine, fake.account_no)
+
+
+@pytest.mark.asyncio
+async def test_review_rule_mutant_is_assertion_red(
+    ops_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    review_mutant: types.ModuleType,
+) -> None:
+    result, after = await _review_run(
+        operations, monkeypatch, ops_engine, "rvctlalone", None
+    )
+    _assert_review_invariant(result, after)
+    result, after = await _review_run(
+        review_mutant, monkeypatch, ops_engine, "rvmutalone", None
+    )
+    with pytest.raises(AssertionError):
+        _assert_review_invariant(result, after)
+    # The mutant is the round-1 answer: reconciled over an anomaly row.
+    assert (result["status"], result["success"]) == ("reconciled", True)
+
+
+@pytest.mark.asyncio
+async def test_review_resolved_mutant_is_assertion_red(
+    ops_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    review_resolved_mutant: types.ModuleType,
+) -> None:
+    result, after = await _review_run(
+        operations, monkeypatch, ops_engine, "rvctlunres", "unlisted"
+    )
+    _assert_review_invariant(result, after)
+    assert result["status"] == "uncertain"
+    result, after = await _review_run(
+        review_resolved_mutant, monkeypatch, ops_engine, "rvmutunres", "unlisted"
+    )
+    with pytest.raises(AssertionError):
+        _assert_review_invariant(result, after)
+    # The mutant counts the anomaly row as progress.
+    assert result["status"] == "partial"

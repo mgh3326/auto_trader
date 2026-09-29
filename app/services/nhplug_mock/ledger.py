@@ -95,6 +95,22 @@ def _intent_from_row(row: dict[str, Any]) -> OrderIntent:
     )
 
 
+def own_number_attributes_match(row: dict[str, Any], target: OrderRow) -> bool:
+    """T9b: the listed row carries this ledger row's intent attributes."""
+
+    intent = _intent_from_row(row)
+    original = (
+        None if intent.original_order_id is None else int(intent.original_order_id)
+    )
+    return (
+        target.symbol == intent.symbol
+        and target.side == intent.side
+        and (intent.quantity is None or target.order_qty == intent.quantity)
+        and (intent.price is None or target.order_price == Decimal(intent.price))
+        and target.original_order_no == original
+    )
+
+
 def _row_dict(row: Any) -> dict[str, Any]:
     result = dict(row)
     for name in ("client_request_id", "account_ref", "claim_token"):
@@ -565,24 +581,10 @@ class NHPlugMockLedger:
             ):
                 return False
             _assert_listing_scope(listing, current)
-            intent = _intent_from_row(_row_dict(current))
             target = listing.find(int(current["ack_evidence_order_id"]))
             if target is None:
                 return False
-            original = (
-                None
-                if intent.original_order_id is None
-                else int(intent.original_order_id)
-            )
-            attributes_match = (
-                target.symbol == intent.symbol
-                and target.side == intent.side
-                and (intent.quantity is None or target.order_qty == intent.quantity)
-                and (
-                    intent.price is None or target.order_price == Decimal(intent.price)
-                )
-                and target.original_order_no == original
-            )
+            attributes_match = own_number_attributes_match(_row_dict(current), target)
             evidence = {
                 "listing_order_id": current["ack_evidence_order_id"],
                 "listing_complete": True,
