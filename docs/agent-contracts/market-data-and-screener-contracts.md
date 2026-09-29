@@ -290,7 +290,7 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   #1029 이전에는 백만원 원값을 KRW 로 읽어 모든 행이 1억 미만으로 탈락하고 `status=degraded` 를 반환했다.
 - 🔴 이 소스는 **가집계(잠정)** 다: 증권사 직원 입력 누계, 외국인 입력 시각 약 09:30/11:20/13:20/14:30 KST(±10분).
   확정값으로 대체되지 않으며 ~14:30 입력이 이 소스의 최종 상태다. 그래서 KR 외국인 랭킹 응답(행 반환·
-  유동성 degraded·장외 fake-0 억제 전부)은 `source_state="provisional"`,
+  유동성 degraded·호출자 품질 하한 degraded·장외 fake-0 억제 전부)은 `source_state="provisional"`,
   `source_state_reason="kis_foreign_institution_total_provisional_tally"`, `source_state_note`,
   `foreign_net_amount_unit="KRW"` 를 싣는다. 확정 일별 수급은 장 마감 후 확정 투자자 수급
   시리즈(`investor_flow_snapshots` 18:10 KST job, `get_intraday_investor_flow` confirmed 블록)에서 읽는다.

@@ -2112,6 +2112,33 @@ class TestForeignersLiquidity:
         assert suppressed["rankings"] == []
         assert suppressed["source_state"] == "provisional"
 
+    async def test_1029_quality_floor_degraded_carries_source_state(self, monkeypatch):
+        """A caller quality floor that empties a foreign page is also provisional."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+        rows = self._kis_rows_20260929()
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return rows
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        # The foreign ranking omits acml_vol/acml_tr_pbmn, so a turnover floor
+        # fails closed on every row.
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy", min_turnover=1.0
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert result["turnover_filter"]["excluded_count"] == 5
+        assert result["source_state"] == "provisional"
+        assert result["foreign_net_amount_unit"] == "KRW"
+
     async def test_1029_non_foreign_kr_ranking_has_no_source_state(self, monkeypatch):
         tools = build_tools()
 

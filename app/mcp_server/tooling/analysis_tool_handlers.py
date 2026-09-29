@@ -462,6 +462,11 @@ async def get_top_stocks_impl(
             "timestamp": datetime.datetime.now(kst_tz).isoformat(),
             "source": source,
             **({"data_state": data_state} if data_state is not None else {}),
+            **(
+                foreigners_liquidity.foreign_ranking_source_state()
+                if market == "kr" and resolved_ranking_type in _FOREIGN_RANKING_TYPES
+                else {}
+            ),
             "status": "degraded",
             "degraded_reason": degraded_reason,
             **(
