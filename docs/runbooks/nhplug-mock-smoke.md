@@ -1,6 +1,6 @@
-# NHPLUG 모의 read-only smoke
+# NHPLUG 모의 smoke (1단계 read-only · 2단계 MCP 주문 왕복)
 
-이 문서는 NHPLUG 모의투자 통합의 **read-only 1단계** 런북이다. 계좌목록·국내주식 잔고·국내주식 현재가만 조회한다. 주문, 정정, 취소, MCP 주문 도구, 레저, reconcile, 스케줄러는 이 단계에 존재하지 않는다.
+이 문서의 앞부분은 NHPLUG 모의투자 통합의 **read-only 1단계** 런북이다. 계좌목록·국내주식 잔고·국내주식 현재가만 조회한다. 2단계(#711 송신 경로 + #849 `nh_mock_*` MCP 도구)의 주문 왕복 절차는 맨 아래 [2단계](#2단계--nh_mock_-mcp-주문-왕복-849) 절에 있다. 스케줄러는 어느 단계에도 없다.
 
 ## 안전 경계
 
@@ -70,3 +70,52 @@ NHPLUG_MOCK_ENABLED=true uv run python -m scripts.nhplug_mock_smoke \
 ## 현재 정지점
 
 2026-08-24 구현·단위 테스트에서는 합성 `httpx.MockTransport`만 사용했다. `NHPLUG_MOCK_ACCOUNT_NO` 전용 파일이 운영자에 의해 배치되기 전에는 실제 smoke를 실행하지 않는다. 배치 확인 후 별도 지시가 있을 때에만 위 `account`와 `quote` 명령을 실행한다.
+
+## 2단계 — nh_mock_* MCP 주문 왕복 (#849)
+
+2026-09-28 운영자 승인(모의계좌 한정 주문·정정·취소·레저·reconcile, 실계좌 제외)의 완료 기준인 **장중 지정가 매수 → 조회 → 정정 → 취소 → reconcile 왕복**과 **"빈 배열 ≠ 미체결 없음"** 실증 절차다. 🔴 **머지·배포 뒤 desk 또는 strategy-lab 이 운영자 입회 하에서만** 실행한다. 구현자·tester 는 실행하지 않는다(테스트는 가짜 NH 와 테스트 DB 만 썼다).
+
+### 도구
+
+MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 개가 등록된다. live 프로필·레인 allowlist 에는 없다.
+
+| 도구 | 성격 | 네트워크 |
+|---|---|---|
+| `nh_mock_preview_order` | 지정가 문법 검사만 | 0 |
+| `nh_mock_place_order` / `nh_mock_modify_order` / `nh_mock_cancel_order` | 주문 변경. 기본 `dry_run=True`, 전송은 `dry_run=False` + `confirm=True` + `idempotency_key` | acctinfo 1 (+정정·취소는 전체 조회) + 주문 1 |
+| `nh_mock_get_order_history` / `nh_mock_get_order_detail` | 일자별 전체·미체결 조회 + 레저 행 | acctinfo 1 + 조회 |
+| `nh_mock_get_positions` / `nh_mock_get_orderable_cash` | 잔고 조회(`Output_1` 보유, `Output_0.orr_pbl_amt`) | acctinfo 1 + 잔고 1 |
+| `nh_mock_reconcile_orders` | 수동 reconcile. 기본 `dry_run=True`(조회만), 쓰기는 `dry_run=False` + `confirm=True`. **주문은 보내지 않는다** | acctinfo 1 + 조회 3 |
+
+모든 호출은 매번 새 클라이언트로 `/n2/acctinfo` 를 읽어 `NHPLUG_MOCK_ACCOUNT_NO` 가 `acct_type=03` 으로 나올 때만 진행한다. `order_type` 은 정확히 `"limit"` 만 받는다(시장가·대소문자 변형·호가코드·`None` 은 네트워크 전에 `limit_order_only`). 정정·취소는 **이 레저가 보내 번호가 결속된(reconcile 로 `accepted` 이후가 된) 당일 주문**만 받는다.
+
+### 사전 조건 (운영자)
+
+1. #711 마이그레이션(`20260926_task711_nhplug_dispatch`) 적용, 키 버전 표 v1 을 운영자 역할로 등록(설계 §8 D-KEY), 해당 `NHPLUG_STAGE2_ROOT_SECRET_V1` 을 MCP 서버 런타임에 배치.
+2. 설계 §8 차단 조건(B-DB·B-HOST·B-VENDOR)을 확인한 뒤에만 `NHPLUG_STAGE2_{KEY,TIME,DB,HOST,VENDOR}_CONFIRMED=true`, `NHPLUG_MOCK_ENABLED=true`, `NH_MOCK_MCP_ENABLED=true` 를 켠다. 자격증명 `NHPLUG_APP_KEY`·`NHPLUG_APP_SECRET`·`NHPLUG_MOCK_ACCOUNT_NO` 는 운영자가 런타임 env 에 둔다(도구는 누락 시 키 **이름만** 보고).
+3. KRX 정규장 중. 테스트 종목·가격을 정해 둔다: 예) `005930` 1주, 가격은 `get_quote` 현재가 대비 약 −20% 이면서 **하한가 이내**, 호가 단위에 맞춘 값(체결되지 않을 만큼 멀리).
+4. 멱등키 세 개를 미리 정해 기록한다(16–64자 `[A-Za-z0-9_-]`, 예: `ltref849-place-20261001a`). **재시도는 반드시 같은 키로**. 새 키로 다시 보내면 중복 주문 위험이 있으며, 대부분은 진행 중 예약(`in_flight_order_exists`)이 막는다.
+
+### 절차
+
+모든 단계에서 기대와 다른 `status`·`error` 가 나오면 **즉시 멈추고** 새 주문을 내지 않는다. `uncertain` 은 실패가 아니라 "reconcile 전 미확정" 이다 — 벤더가 성공 코드를 문서화하지 않아 성공 증명 표가 비어 있으므로 모든 송신은 먼저 `uncertain` 이 된다(설계 §4.3).
+
+0. **계좌·현금 확인**: `nh_mock_get_orderable_cash()` → `status=ok`, `cash` 정수. `nh_mock_get_positions()` → `positions_state` 기록. `mock_account_rejected`/`mock_account_unverified` 면 중단.
+1. **미리보기**: `nh_mock_preview_order(symbol, side="buy", quantity=1, price=P1)` → `status=preview`, `network_calls=0`.
+2. **지정가 매수**: `nh_mock_place_order(..., price=P1, idempotency_key=K1, dry_run=False, confirm=True)` → 기대 `status=uncertain`, `reconcile_required=true`, `retry_allowed=false`, `ack_evidence_order_id=N`. `N` 기록. 응답을 못 받았으면 **같은 K1** 으로 다시 호출한다(행을 돌려줄 뿐 다시 보내지 않는다).
+3. **reconcile 로 결속**: `nh_mock_reconcile_orders()`(dry run) → 해당 행 `planned_action=verify_own_number`. 이어서 `nh_mock_reconcile_orders(dry_run=False, confirm=True)` → 행 `state=open`, `broker_order_id=N`. 여전히 `uncertain` 이면 잠시 뒤 한 번 더 reconcile. 계속 미해결이면 중단하고 운영자 절차로 넘긴다(아래).
+4. **조회**: `nh_mock_get_order_detail(order_id=N)` → `broker_view=listed`, `owned_by_ledger=true`, `derived_status=open`. `nh_mock_get_order_history()` → `orders_state=complete`, `open_orders_state=present`, `open_orders` 에 `N`.
+5. **정정**: `nh_mock_modify_order(order_id=N, new_price=P2, new_quantity=1, idempotency_key=K2, dry_run=False, confirm=True)` (P2 도 체결되지 않을 가격) → `status=uncertain`, `ack_evidence_order_id=M`. reconcile(확정 실행) → 원주문 행 `modified`(`successor_order_id=M`), 정정 행 `confirmed`.
+6. **취소**: `nh_mock_cancel_order(order_id=M, idempotency_key=K3, dry_run=False, confirm=True)` → `status=uncertain`, `ack_evidence_order_id=C`. reconcile(확정 실행) → 취소 행 `confirmed`, `unresolved_row_ids=[]`.
+7. **"빈 배열 ≠ 미체결 없음" 실증**: 마지막으로 `nh_mock_get_order_history()` → 미체결 목록이 비었을 때 `open_orders_state` 는 **`unknown`** 이어야 하며(`"none"` 같은 값은 존재하지 않는다) 사유에 `empty_open_listing_is_not_evidence_of_no_open_orders` 가 있어야 한다. 운영자가 HTS/앱에서 미체결이 실제로 없음을 눈으로 확인하고 기록한다.
+
+### 결과 기록
+
+단계별 도구 응답의 `status`, `state`, `ledger_row_id`, 주문번호 `N`/`M`/`C`, reconcile 의 `rows[].state` 를 기록한다. 계좌번호·토큰·키 값은 응답에 없고 기록하지 않는다.
+
+### 중단·미해결 처리
+
+- `uncertain` 행은 같은 계좌·종목·방향의 새 주문을 **날짜와 무관하게** 막는다(설계 §5.2). reconcile 로 풀리지 않으면 T9h(후보 확인)·T14(위험 인수 종결)는 운영자 역할의 1회용 승인 행이 필요한 운영자 전용 절차이며 MCP 로는 할 수 없다(설계 §4.5–4.6). 이 절차의 운영자 CLI 는 아직 없으므로 행을 그대로 두고 보고한다.
+- 정정·취소가 `order_not_bound_reconcile_first` 면 3단계 reconcile 을 먼저 한다. `order_not_owned` 는 이 레저가 보낸 주문이 아니라는 뜻이다 — HTS 에서 직접 낸 주문은 이 도구로 정정·취소하지 않는다.
+- reconcile 은 전체·미체결·체결 세 조회가 모두 완전하고 결속 행이 전부 재검증된 경우에만 `status=reconciled` 다. 하나라도 불완전하면 `status=unknown`, `success=false` 이며 `incomplete_scopes`·`unverified_row_ids` 에 이름이 남는다. 이것을 정상 완료로 기록하지 않는다.
+- `listing_incomplete`/`order_not_listed` 는 브로커 조회가 그 주문을 미체결로 보여주지 못한 것이다. 없다는 증거가 아니므로 다시 보내지 말고 조회를 반복하거나 중단한다.

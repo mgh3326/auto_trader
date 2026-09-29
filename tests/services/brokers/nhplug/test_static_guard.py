@@ -781,3 +781,200 @@ def test_dry_run_confirm_contract_is_typed_but_has_no_dispatch_consumer() -> Non
     with pytest.raises(ValueError):
         DryRunConfirmContract(dry_run=False, confirm=False).assert_dispatch_allowed()
     DryRunConfirmContract(dry_run=False, confirm=True).assert_dispatch_allowed()
+
+
+# ---------------------------------------------------------------------------
+# #849: the nh_mock_* MCP tools and their operations layer
+# ---------------------------------------------------------------------------
+
+NH_OPERATIONS_MODULE = STAGE2_RUNTIME_DIR / "operations.py"
+NH_MCP_MODULE = (
+    REPO_ROOT / "app" / "mcp_server" / "tooling" / "orders_nh_mock_variants.py"
+)
+_NH_MUTATING_FLOWS = ("place_order", "modify_order", "cancel_order")
+_NH_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "httpx",
+        "httpcore",
+        "app.services.nhplug_mock.transport.GatedTransport",
+        "app.services.nhplug_mock.intent.build_body",
+    }
+)
+_NH_DISPATCHER_ONLY_LEDGER_CALLS = frozenset(
+    {"claim", "fence", "record_final", "withdraw"}
+)
+
+
+def _functions(tree: ast.AST) -> dict[str, ast.AST]:
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _call_names(node: ast.AST) -> list[tuple[int, str]]:
+    calls: list[tuple[int, str]] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        if isinstance(child.func, ast.Name):
+            calls.append((child.lineno, child.func.id))
+        elif isinstance(child.func, ast.Attribute):
+            calls.append((child.lineno, child.func.attr))
+    return calls
+
+
+def _imported_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
+
+
+def _assert_nh_tool_source_has_no_second_send_path(source: str, filename: str) -> None:
+    """The new modules may reach NH only through the #711 client methods."""
+
+    _assert_stage_one_source_safe(source, filename=filename)
+    tree = ast.parse(source, filename=filename)
+    assert not (_imported_names(tree) & _NH_FORBIDDEN_IMPORTS), (
+        f"{filename} imports a transport or body builder: a second send path"
+    )
+    assert not _httpx_client_constructions(tree), f"{filename} builds an HTTP client"
+    calls = {name for _, name in _call_names(tree)}
+    assert "send" not in calls, f"{filename} calls send directly"
+    assert not (calls & _NH_DISPATCHER_ONLY_LEDGER_CALLS), (
+        f"{filename} drives claim/fence/record itself instead of the dispatcher"
+    )
+    dispatches = [
+        name
+        for name, function in _functions(tree).items()
+        for _, call in _call_names(function)
+        if call == "dispatch_claimed_order"
+    ]
+    assert dispatches in ([], ["_dispatch_new_intent"]), (
+        f"{filename} has a dispatch call site outside _dispatch_new_intent: {dispatches}"
+    )
+
+
+def _assert_nh_flows_verify_account_before_dispatch(source: str) -> None:
+    """Every mutating flow verifies the mock account before the only send site."""
+
+    functions = _functions(ast.parse(source))
+    guard_callers = [
+        name
+        for name, function in functions.items()
+        for _, call in _call_names(function)
+        if call == "_require_verified_mock_account"
+    ]
+    assert guard_callers == ["_verified_session"], (
+        f"account guard call sites changed: {guard_callers}"
+    )
+    verify_callers = [
+        name
+        for name, function in functions.items()
+        for _, call in _call_names(function)
+        if call == "verify_and_bind_mock_account"
+    ]
+    assert verify_callers == ["_require_verified_mock_account"]
+    for flow in _NH_MUTATING_FLOWS:
+        calls = _call_names(functions[flow])
+        session = [line for line, name in calls if name == "_verified_session"]
+        dispatch = [line for line, name in calls if name == "_dispatch_new_intent"]
+        assert session and dispatch, f"{flow} must verify and then dispatch"
+        assert max(session) < min(dispatch), (
+            f"{flow} can reach dispatch before the account guard"
+        )
+
+
+def test_nh_mock_tools_have_no_second_send_path() -> None:
+    operations_source = NH_OPERATIONS_MODULE.read_text(encoding="utf-8")
+    _assert_nh_tool_source_has_no_second_send_path(
+        operations_source, NH_OPERATIONS_MODULE.name
+    )
+    _assert_nh_tool_source_has_no_second_send_path(
+        NH_MCP_MODULE.read_text(encoding="utf-8"), NH_MCP_MODULE.name
+    )
+    _assert_nh_flows_verify_account_before_dispatch(operations_source)
+    dispatches = [
+        name
+        for name, function in _functions(ast.parse(operations_source)).items()
+        for _, call in _call_names(function)
+        if call == "dispatch_claimed_order"
+    ]
+    assert dispatches == ["_dispatch_new_intent"]
+
+
+@pytest.mark.parametrize(
+    ("label", "source", "match"),
+    (
+        (
+            "direct httpx send",
+            "import httpx\nasync def f(r):\n    await httpx.AsyncClient(follow_redirects=False).send(r)\n",
+            "second send path|HTTP client|send directly",
+        ),
+        (
+            "gated transport import",
+            "from app.services.nhplug_mock.transport import GatedTransport\n",
+            "second send path",
+        ),
+        (
+            "body builder import",
+            "from app.services.nhplug_mock.intent import build_body\n",
+            "second send path",
+        ),
+        (
+            "own claim and fence",
+            "async def f(ledger, c):\n    await ledger.claim(c)\n    await ledger.fence(c)\n",
+            "claim/fence/record",
+        ),
+        (
+            "second dispatch site",
+            "async def other(c):\n    await c.dispatch_claimed_order()\n",
+            "outside _dispatch_new_intent",
+        ),
+        (
+            "order endpoint literal",
+            'PATH = "/krstock/order/v1/cashBuy"\n',
+            "order endpoint",
+        ),
+    ),
+)
+def test_nh_tool_send_path_guard_mutants_are_assertion_red(
+    label: str, source: str, match: str
+) -> None:
+    with pytest.raises(AssertionError, match=match):
+        _assert_nh_tool_source_has_no_second_send_path(
+            source, "orders_nh_mock_variants.py"
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "old", "new", "match"),
+    (
+        (
+            "guard moved after dispatch",
+            "        session = await _verified_session(stage2=True)\n"
+            "        account_ref = await _account_ref(session, create=True)\n",
+            "        account_ref = None\n",
+            "must verify",
+        ),
+        (
+            "guard call removed from session",
+            "    await _require_verified_mock_account(client, credentials.account_no)\n",
+            "    pass\n",
+            "account guard call sites changed",
+        ),
+    ),
+)
+def test_nh_account_order_guard_mutants_are_assertion_red(
+    label: str, old: str, new: str, match: str
+) -> None:
+    source = NH_OPERATIONS_MODULE.read_text(encoding="utf-8")
+    assert source.count(old) == 1, label
+    with pytest.raises(AssertionError, match=match):
+        _assert_nh_flows_verify_account_before_dispatch(source.replace(old, new))
