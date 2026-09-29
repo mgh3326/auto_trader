@@ -143,9 +143,17 @@ profiles:
         - name: session_context_get_recent
           calls_30d: 119
           purpose: "Read recent session context entries."
-        - name: get_news
-          calls_30d: 98
-          purpose: "Recent market/security news."
+        # Q-65 (task #918): get_news dropped from this lane's extension to
+        # admit the two cash-sweep reads below (sweep playbook #879/#899);
+        # get_news is restorable by an operator-approved PR.
+        - name: get_parking_exclusion
+          calls_30d: 0
+          purpose: "Cash-sweep parking-exclusion read; kr/us lane allowlists #883."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: toss_proposal_accounts
+          calls_30d: 0
+          purpose: "Toss account list read for the sweep proposal path; lane allowlists #883."
+          gate: ORDER_PROPOSALS_ENABLED
       # emergency/recovery exceptions — existing tools only, own group.
       # No direct place tool: loss_cut is disabled on all of them (ROB-864);
       # the loss_cut path is order_proposal_create (core).
@@ -249,9 +257,17 @@ profiles:
         - name: session_context_get_recent
           calls_30d: 119
           purpose: "Read recent session context entries."
-        - name: get_news
-          calls_30d: 98
-          purpose: "Recent market/security news."
+        # Q-65 (task #918): get_news dropped from this lane's extension to
+        # admit the two cash-sweep reads below (sweep playbook #879/#899);
+        # get_news is restorable by an operator-approved PR.
+        - name: get_parking_exclusion
+          calls_30d: 0
+          purpose: "Cash-sweep parking-exclusion read; kr/us lane allowlists #883."
+          gate: ORDER_PROPOSALS_ENABLED
+        - name: toss_proposal_accounts
+          calls_30d: 0
+          purpose: "Toss account list read for the sweep proposal path; lane allowlists #883."
+          gate: ORDER_PROPOSALS_ENABLED
       emergency:
         - name: cancel_order
           purpose: "Cancel an open order (generic account_mode route)."

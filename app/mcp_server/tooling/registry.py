@@ -494,10 +494,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # the existing proposal dispatch path.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(mcp)
-        if profile is McpProfile.DEFAULT:
+        if profile is McpProfile.DEFAULT or profile in LIVE_PROFILES:
             register_toss_proposal_accounts(mcp)
-            # #883 — the cash sweep's typed parking_exclusion read; default
-            # profile only (the kr/us lane manifests expose it from there).
+            # #883 — the cash sweep's typed parking_exclusion read; Q-65
+            # (#918) also admits it on the live-kr/live-us manifests, and the
+            # live profile filter drops it where the manifest does not list
+            # it (live-crypto).
             register_parking_exclusion_tool(mcp)
         register_proposal_revalidate()
 
