@@ -19,7 +19,9 @@ Profile → tool surface mapping
   legacy ambiguous order tools (place_order / cancel_order / modify_order /
   get_order_history with account_mode switching) +
   typed kis_live_* and kis_mock_* variants (additive). Typed kiwoom_mock_* is
-  additive only when the existing ROB-601 feature gate is enabled. Alpaca paper
+  additive only when the existing ROB-601 feature gate is enabled. Typed
+  nh_mock_* (#849, NHPLUG Stage 2 mock only) is additive only when
+  ``nh_mock_mcp_enabled`` is on (default off). Alpaca paper
   read/preview/confirm-gated order/ledger tools are additive only when the
   ROB-908 ``alpaca_paper_default_tools_enabled`` gate is on — and even then the
   ROB-842 automated-submit tool is excluded (US_PAPER-only). DB paper tools are
@@ -534,6 +536,14 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             )
 
             register_kiwoom_us(mcp)
+        # #849: NH Namuh mock (NHPLUG Stage 2) — same flag-gated DEFAULT-only
+        # pattern. No live profile or lane allowlist lists these names.
+        if settings.nh_mock_mcp_enabled:
+            from app.mcp_server.tooling.orders_nh_mock_variants import (
+                register as register_nh_mock,
+            )
+
+            register_nh_mock(mcp)
         if settings.binance_demo_scalping_enabled:
             # ROB-1147: the mutation-path scalping submit-decision tool was
             # removed with the rest of the demo-scalping auto-order

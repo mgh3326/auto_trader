@@ -34,6 +34,7 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_READ_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
+from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -258,6 +259,9 @@ DIRECT_BROKER_MUTATION_TOOLS: frozenset[str] = frozenset(
         "kiwoom_mock_us_modify_order",
         "kiwoom_mock_us_place_order",
         "modify_order",
+        "nh_mock_cancel_order",
+        "nh_mock_modify_order",
+        "nh_mock_place_order",
         "paper_cancel_pending_order",
         "paper_place_limit_order",
         "place_order",
@@ -300,6 +304,7 @@ PREVIEW_REVALIDATION_TOOLS: frozenset[str] = frozenset(
         "buy_ladder_fill_preview",
         "kiwoom_mock_preview_order",
         "kiwoom_mock_us_preview_order",
+        "nh_mock_preview_order",
         "sell_ladder_fill_preview",
         "toss_preview_order",
     }
@@ -311,6 +316,7 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
         "kis_live_reconcile_orders",
         "kis_mock_reconciliation_run",
         "live_reconcile_orders",
+        "nh_mock_reconcile_orders",
         "paper_reconcile_orders",
         "toss_reconcile_orders",
     }
@@ -329,6 +335,11 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "kiwoom_mock_get_order_detail",
         "kiwoom_mock_get_orderable_cash",
         "kiwoom_mock_get_positions",
+        # #849: NH mock reads, bucketed with the NH_MOCK_TOOL_NAMES union.
+        "nh_mock_get_order_detail",
+        "nh_mock_get_order_history",
+        "nh_mock_get_orderable_cash",
+        "nh_mock_get_positions",
         "toss_get_order_history",
         "toss_get_orderable_cash",
         "toss_get_positions",
@@ -393,6 +404,8 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
+    # #849: NH mock family, flag-gated in DEFAULT (nh_mock_mcp_enabled).
+    | NH_MOCK_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
     # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
     # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES
