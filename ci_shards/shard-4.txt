@@ -110,6 +110,8 @@ tests/services/brokers/binance/futures_demo/test_execution_client_get_order.py
 tests/services/brokers/binance/futures_demo/test_sizing.py
 tests/services/brokers/binance/futures_demo/test_spot_demo_env_does_not_activate_futures.py
 tests/services/brokers/binance/futures_demo/test_testnet_env_does_not_activate_demo.py
+tests/services/brokers/binance/h5/test_state_exposure.py
+tests/services/brokers/binance/h5/test_strategy.py
 tests/services/brokers/binance/spot_demo/test_audit_no_live_host.py
 tests/services/brokers/binance/spot_demo/test_d2_remediation_single.py
 tests/services/brokers/binance/spot_demo/test_mock_auto_limit.py
