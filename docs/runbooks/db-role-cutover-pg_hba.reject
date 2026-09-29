@@ -1,0 +1,8 @@
+#789 BEGIN at_migration_owner reject
+local all at_migration_owner reject
+local replication at_migration_owner reject
+host all at_migration_owner 0.0.0.0/0 reject
+host all at_migration_owner ::/0 reject
+host replication at_migration_owner 0.0.0.0/0 reject
+host replication at_migration_owner ::/0 reject
+#789 END at_migration_owner reject

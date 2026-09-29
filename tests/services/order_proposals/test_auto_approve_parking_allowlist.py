@@ -6,7 +6,7 @@ adds a second cumulative boundary behind it. These tests hold both in place:
 the per-order check still runs at the raised value (and at USD 1,500 for
 everything else), the allowlist is closed and unwidenable at runtime,
 membership is exact-element (never substring or case-folded), the cumulative
-USD 10,000 cap is enforced from broker-origin plus durable exposure, every way
+USD 20,000 cap is enforced from broker-origin plus durable exposure, every way
 of failing to read that exposure rejects, and everything §163차 did NOT
 authorize is proven unchanged. §173 additionally proves that Toss US uses
 the same read-only holdings surface with an independent
@@ -168,7 +168,7 @@ def test_allowlist_constants_are_exactly_the_authorized_scope():
     }
     # Cap pairs are selected only through the same immutable scope record.
     assert PARKING_PER_ORDER_CAP_USD == Decimal("10000")
-    assert PARKING_CUMULATIVE_CAP_USD == Decimal("10000")
+    assert PARKING_CUMULATIVE_CAP_USD == Decimal("20000")
     assert PARKING_PER_ORDER_CAP_KRW == Decimal("10000000")
     assert PARKING_CUMULATIVE_CAP_KRW == Decimal("15000000")
     assert PARKING_DAILY_CAP_EXEMPT_US is True
@@ -447,7 +447,7 @@ def test_cap_currency_is_bound_to_the_same_scope_tuple():
     assert (us.currency, us.per_order_cap, us.cumulative_cap) == (
         "USD",
         Decimal("10000"),
-        Decimal("10000"),
+        Decimal("20000"),
     )
     for kr in kr_scopes:
         assert kr is not None
@@ -515,7 +515,7 @@ def test_allowlisted_marketable_buy_over_the_ordinary_cap_is_eligible():
     assert decision.details["per_order_cap"] == "10000"
     assert decision.details["parking_exposure_before"] == "0"
     assert decision.details["parking_exposure_after"] == "2000"
-    assert decision.details["parking_cap"] == "10000"
+    assert decision.details["parking_cap"] == "20000"
 
 
 @pytest.mark.parametrize("symbol", ("459580", "357870"))
@@ -581,8 +581,11 @@ def test_single_parking_order_exactly_at_the_raised_cap_is_eligible():
     assert decision.details["notional"] == "10000"
 
 
-def test_parking_sell_over_the_raised_cap_is_also_rejected():
+def test_parking_sell_over_the_raised_cap_is_also_rejected(monkeypatch):
     """The raise applies to both sides; so does the check."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "kis_account_no", "acct-1")
     decision = _decide(
         rung=_rung(
             side="sell", limit_price=Decimal("100.0001"), quantity=Decimal("100")
@@ -591,6 +594,7 @@ def test_parking_sell_over_the_raised_cap_is_also_rejected():
             "success": True,
             "current_price": "100.0001",
             "avg_buy_price": "99",
+            "parking_sell_exempt": True,
         },
         exposure=_flat(),
     )
@@ -640,24 +644,24 @@ def test_non_allowlisted_buy_over_the_per_order_cap_is_still_rejected():
 
 
 def test_parking_buy_over_the_cumulative_cap_is_rejected():
-    decision = _decide(exposure=ParkingExposure.observed(Decimal("9000")))
+    decision = _decide(exposure=ParkingExposure.observed(Decimal("19000")))
 
     assert decision.eligible is False
     assert decision.reason == "parking_cap_exceeded"
-    assert decision.details["parking_exposure_before"] == "9000"
-    assert decision.details["parking_exposure_after"] == "11000"
-    assert decision.details["parking_cap"] == "10000"
+    assert decision.details["parking_exposure_before"] == "19000"
+    assert decision.details["parking_exposure_after"] == "21000"
+    assert decision.details["parking_cap"] == "20000"
 
 
 def test_parking_buy_exactly_at_the_cumulative_cap_is_eligible():
-    decision = _decide(exposure=ParkingExposure.observed(Decimal("8000")))
+    decision = _decide(exposure=ParkingExposure.observed(Decimal("18000")))
 
     assert decision.eligible is True
-    assert decision.details["parking_exposure_after"] == "10000"
+    assert decision.details["parking_exposure_after"] == "20000"
 
 
 def test_parking_buy_one_cent_over_the_cumulative_cap_is_rejected():
-    decision = _decide(exposure=ParkingExposure.observed(Decimal("8000.01")))
+    decision = _decide(exposure=ParkingExposure.observed(Decimal("18000.01")))
 
     assert decision.eligible is False
     assert decision.reason == "parking_cap_exceeded"
@@ -668,14 +672,14 @@ def test_parking_cap_meters_the_executable_price_not_the_discounted_limit():
     decision = _decide(
         rung=_rung(limit_price=Decimal("90")),
         preview={"success": True, "current_price": "100"},
-        exposure=ParkingExposure.observed(Decimal("8100")),
+        exposure=ParkingExposure.observed(Decimal("18100")),
     )
 
-    # limit x qty would be 1,800 (8,100 + 1,800 = 9,900, under the cap);
-    # current x qty is 2,000, which takes it to 10,100 and rejects.
+    # limit x qty would be 1,800 (18,100 + 1,800 = 19,900, under the cap);
+    # current x qty is 2,000, which takes it to 20,100 and rejects.
     assert decision.eligible is False
     assert decision.reason == "parking_cap_exceeded"
-    assert decision.details["parking_exposure_after"] == "10100"
+    assert decision.details["parking_exposure_after"] == "20100"
 
 
 def test_parking_cap_accumulates_across_the_rungs_of_one_proposal():
@@ -688,7 +692,7 @@ def test_parking_cap_accumulates_across_the_rungs_of_one_proposal():
     """
     exposure = _flat()
     reasons = []
-    for _ in range(6):  # 6 x USD 2,000 = USD 12,000, past the USD 10,000 cap
+    for _ in range(11):  # 11 x USD 2,000 = USD 22,000, past the USD 20,000 cap
         decision = _decide(exposure=exposure)
         reasons.append(decision.reason)
         if not decision.eligible:
@@ -696,9 +700,9 @@ def test_parking_cap_accumulates_across_the_rungs_of_one_proposal():
         projected = decision.details["parking_exposure_after"]
         exposure = ParkingExposure.observed(Decimal(projected))
 
-    # Five rungs reach exactly USD 10,000; the sixth is refused.
-    assert reasons == ["eligible"] * 5 + ["parking_cap_exceeded"]
-    assert exposure.exposure == Decimal("10000")
+    # Ten rungs reach exactly USD 20,000; the eleventh is refused.
+    assert reasons == ["eligible"] * 10 + ["parking_cap_exceeded"]
+    assert exposure.exposure == Decimal("20000")
 
 
 # --------------------------------------------------------------------------
@@ -765,11 +769,15 @@ def test_malformed_available_exposure_still_rejects(exposure):
 
 
 @pytest.mark.parametrize("side", ("buy", "sell"))
-def test_enabled_parking_order_does_not_trip_or_consume_daily_cap(side):
+def test_enabled_parking_order_does_not_trip_or_consume_daily_cap(side, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "kis_account_no", "acct-1")
     rung = _rung(side=side)
     preview = {"success": True, "current_price": "100"}
     if side == "sell":
         preview["avg_buy_price"] = "1"
+        preview["parking_sell_exempt"] = True
     decision = _decide(
         rung=rung,
         preview=preview,
@@ -865,9 +873,7 @@ def test_failed_preview_still_blocks_a_parking_rung():
     assert decision.reason == "preview_guard_failed"
 
 
-def test_parking_sell_still_needs_the_fee_netted_profit_proof():
-    """§163차 releases marketability and RAISES the per-order cap; the profit
-    proof is untouched, and the per-order check itself still runs."""
+def test_parking_sell_without_explicit_matching_account_stays_manual():
     decision = _decide(
         rung=_rung(side="sell"),
         preview={
@@ -879,23 +885,27 @@ def test_parking_sell_still_needs_the_fee_netted_profit_proof():
     )
 
     assert decision.eligible is False
-    assert decision.reason == "breakeven_band"
+    assert decision.reason == "parking_sell_account_identity_unavailable"
 
 
-def test_parking_sell_that_proves_profit_uses_the_raised_per_order_cap():
+def test_parking_sell_uses_the_raised_per_order_cap(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "kis_account_no", "acct-1")
     decision = _decide(
         rung=_rung(side="sell"),
         preview={
             "success": True,
             "current_price": "100",
             "avg_buy_price": "99",  # outside the band, net of round-trip cost
+            "parking_sell_exempt": True,
         },
         exposure=_flat(),
     )
 
     assert decision.eligible is True
     assert decision.details["per_order_cap_basis"] == "parking_raised"
-    assert decision.details["loss_guard"] == "net_profit_proven"
+    assert decision.details["loss_guard"] == "parking_sell_exempt"
     # USD 2,000 is over the ordinary USD 1,500 cap and under the raised one.
     assert decision.details["notional"] == "2000"
     assert decision.details["per_order_cap"] == "10000"
@@ -935,6 +945,53 @@ def test_exposure_sums_only_allowlisted_rows():
 
     assert exposure.available is True
     assert exposure.exposure == Decimal("2000.50")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("account_mode", ("kis_live", "toss_live"))
+async def test_sgov_and_bil_share_one_us_meter_at_the_new_boundary(
+    monkeypatch, account_mode
+):
+    """An SGOV holding consumes the same account face's BIL buy allowance."""
+    from app.core.config import settings
+    from app.services.brokers.toss.dto import TossHoldings
+
+    async def _kis_holdings():
+        return [{"ovrs_pdno": "SGOV", "ovrs_stck_evlu_amt": "18000"}]
+
+    async def _toss_holdings():
+        return TossHoldings(items=[_toss_us_holding(symbol="SGOV", amount="18000")])
+
+    if account_mode == "toss_live":
+        monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True)
+
+    exposure = await load_parking_exposure(
+        account_mode=account_mode,
+        market="equity_us",
+        symbol="BIL",
+        broker_account_id="731" if account_mode == "toss_live" else "acct-1",
+        fetch_us_holdings=_kis_holdings if account_mode == "kis_live" else None,
+        fetch_toss_holdings=_toss_holdings if account_mode == "toss_live" else None,
+        fetch_toss_accounts=_listed_toss_accounts
+        if account_mode == "toss_live"
+        else None,
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.exposure == Decimal("18000")
+
+    group = _group(
+        symbol="BIL",
+        account_mode=account_mode,
+        broker_account_id="731" if account_mode == "toss_live" else "acct-1",
+    )
+    exact = _decide(group=group, exposure=exposure)
+    over = _decide(group=group, exposure=ParkingExposure.observed(Decimal("18000.01")))
+    assert exact.eligible is True
+    assert exact.details["parking_exposure_after"] == "20000"
+    assert over.eligible is False
+    assert over.reason == "parking_cap_exceeded"
+    assert over.details["parking_exposure_after"] == "20000.01"
 
 
 def test_exposure_matching_is_lenient_so_it_cannot_understate():
@@ -1028,6 +1085,32 @@ async def test_load_exposure_makes_no_broker_call_for_a_non_parking_group():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("account_mode", "market", "symbol"),
+    [
+        ("toss_live", "equity_us", "AAPL"),
+        ("toss_live", "equity_kr", "005930"),
+        ("kis_live", "equity_us", "AAPL"),
+        ("upbit", "crypto", "KRW-BTC"),
+    ],
+)
+async def test_nonparking_never_looks_up_account(account_mode, market, symbol):
+    async def _must_not_read():
+        raise AssertionError("nonparking must not make an account or holdings read")
+
+    exposure = await load_parking_exposure(
+        account_mode=account_mode,
+        market=market,
+        symbol=symbol,
+        broker_account_id="unrelated",
+        fetch_toss_accounts=_must_not_read,
+        fetch_toss_holdings=_must_not_read,
+        durable_notional_fn=_must_not_read,
+    )
+    assert exposure.unavailable_reason == "not_requested"
+
+
+@pytest.mark.asyncio
 async def test_load_exposure_fails_closed_when_the_broker_read_raises():
     async def _fetch():
         raise TimeoutError("broker timeout")
@@ -1110,6 +1193,12 @@ def _toss_us_holding(*, symbol: str, amount: str):
     return _toss_kr_holding(symbol=symbol, amount=amount, currency="USD", market="US")
 
 
+async def _listed_toss_accounts():
+    from app.services.brokers.toss.dto import TossAccount
+
+    return [TossAccount(account_no="fake", account_seq=731, account_type="STOCK")]
+
+
 @pytest.mark.asyncio
 async def test_toss_kr_exposure_uses_toss_holdings_and_never_kis(monkeypatch):
     """The provider binding prevents a KR market name from selecting KIS."""
@@ -1140,6 +1229,7 @@ async def test_toss_kr_exposure_uses_toss_holdings_and_never_kis(monkeypatch):
         fetch_us_holdings=_must_not_read_kis,
         fetch_kr_holdings=_must_not_read_kis,
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_pending,
     )
 
@@ -1178,11 +1268,137 @@ async def test_toss_us_exposure_uses_native_usd_holdings_and_never_kis(monkeypat
         fetch_us_holdings=_must_not_read_kis,
         fetch_kr_holdings=_must_not_read_kis,
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
     assert exposure.available is True
     assert exposure.exposure == Decimal("2772.66")
+
+
+@pytest.mark.asyncio
+async def test_toss_account_lookup_failure_never_reads_holdings(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    read_holdings = False
+
+    async def _accounts():
+        raise TimeoutError("fake account endpoint timeout")
+
+    async def _holdings():
+        nonlocal read_holdings
+        read_holdings = True
+        return None
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_toss_accounts=_accounts,
+        fetch_toss_holdings=_holdings,
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.unavailable_reason == "account_lookup_failed"
+    assert read_holdings is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_toss_account_never_reads_holdings(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss.dto import TossAccount
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+
+    async def _accounts():
+        return [TossAccount("fake-other", 732, "STOCK")]
+
+    async def _holdings():
+        raise AssertionError("unknown account must not reach holdings")
+
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        fetch_toss_accounts=_accounts,
+        fetch_toss_holdings=_holdings,
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.unavailable_reason == "account_identity_unknown"
+
+
+@pytest.mark.asyncio
+async def test_toss_account_and_holdings_use_same_selected_client(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss import client as client_module
+    from app.services.brokers.toss.dto import TossHoldings
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    calls = []
+
+    class FakeClient:
+        selected_account_seq = 731
+
+        async def accounts(self):
+            calls.append("accounts")
+            return await _listed_toss_accounts()
+
+        async def holdings(self):
+            calls.append("holdings")
+            return TossHoldings(items=[_toss_us_holding(symbol="SGOV", amount="10")])
+
+        async def aclose(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        client_module.TossReadClient, "from_settings", lambda: FakeClient()
+    )
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.available is True
+    assert exposure.exposure == Decimal("10")
+    assert calls == ["accounts", "holdings", "close"]
+
+
+@pytest.mark.asyncio
+async def test_changed_client_selection_blocks_before_account_read(monkeypatch):
+    from app.core.config import settings
+    from app.services.brokers.toss import client as client_module
+
+    monkeypatch.setattr(settings, "toss_api_account_seq", 731)
+    calls = []
+
+    class FakeClient:
+        selected_account_seq = 732
+
+        async def accounts(self):
+            raise AssertionError("mismatched selection must stop before read")
+
+        async def holdings(self):
+            raise AssertionError("mismatched selection must stop before holdings")
+
+        async def aclose(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        client_module.TossReadClient, "from_settings", lambda: FakeClient()
+    )
+    exposure = await load_parking_exposure(
+        account_mode="toss_live",
+        market="equity_us",
+        symbol="SGOV",
+        broker_account_id="731",
+        durable_notional_fn=_no_pending,
+    )
+    assert exposure.unavailable_reason == "account_identity_mismatch"
+    assert calls == ["close"]
 
 
 @pytest.mark.asyncio
@@ -1206,6 +1422,7 @@ async def test_toss_us_filter_excludes_kr_market_rows_from_the_us_face(monkeypat
         symbol="SGOV",
         broker_account_id="731",
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
@@ -1238,6 +1455,7 @@ async def test_toss_us_account_identity_rejects_wrong_account_before_any_balance
         # before either the KIS or Toss reader can run.
         fetch_us_holdings=_must_not_read,
         fetch_toss_holdings=_must_not_read,
+        fetch_toss_accounts=_must_not_read,
         durable_notional_fn=_no_pending,
     )
 
@@ -1274,6 +1492,7 @@ async def test_toss_us_holdings_must_be_native_usd_and_us_market(
         symbol="SGOV",
         broker_account_id="731",
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
@@ -1290,12 +1509,11 @@ def test_toss_us_provider_binding_cannot_reuse_toss_kr_key():
             replace(scope, balance_provider="toss_kr_holdings"),
             fetch_us_holdings=None,
             fetch_kr_holdings=None,
-            fetch_toss_holdings=None,
         )
 
 
-def test_kis_and_toss_us_faces_each_have_an_independent_10k_cap(monkeypatch):
-    """The accepted aggregate is USD 20,000 across two independent faces."""
+def test_kis_and_toss_us_faces_each_have_an_independent_20k_cap(monkeypatch):
+    """The accepted aggregate is USD 40,000 across two independent faces."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True)
@@ -1303,7 +1521,7 @@ def test_kis_and_toss_us_faces_each_have_an_independent_10k_cap(monkeypatch):
     kis = _decide(
         group=_group(symbol="SGOV", account_mode="kis_live"),
         rung=rung,
-        exposure=ParkingExposure.observed(Decimal("0")),
+        exposure=ParkingExposure.observed(Decimal("10000")),
     )
     toss = _decide(
         group=_group(
@@ -1312,16 +1530,16 @@ def test_kis_and_toss_us_faces_each_have_an_independent_10k_cap(monkeypatch):
             broker_account_id="731",
         ),
         rung=rung,
-        exposure=ParkingExposure.observed(Decimal("0")),
+        exposure=ParkingExposure.observed(Decimal("10000")),
     )
 
     assert kis.eligible is True
     assert toss.eligible is True
-    assert Decimal(kis.details["parking_exposure_after"]) == Decimal("10000")
-    assert Decimal(toss.details["parking_exposure_after"]) == Decimal("10000")
+    assert Decimal(kis.details["parking_exposure_after"]) == Decimal("20000")
+    assert Decimal(toss.details["parking_exposure_after"]) == Decimal("20000")
     assert Decimal(kis.details["parking_exposure_after"]) + Decimal(
         toss.details["parking_exposure_after"]
-    ) == Decimal("20000")
+    ) == Decimal("40000")
 
 
 def test_provider_binding_mutant_is_an_assertion_error():
@@ -1334,7 +1552,6 @@ def test_provider_binding_mutant_is_an_assertion_error():
             replace(scope, balance_provider="kis_kr_holdings"),
             fetch_us_holdings=None,
             fetch_kr_holdings=None,
-            fetch_toss_holdings=None,
         )
 
 
@@ -1359,6 +1576,7 @@ async def test_toss_kr_account_identity_is_fail_closed_before_holdings_read(
         symbol="459580",
         broker_account_id=broker_account_id,
         fetch_toss_holdings=_must_not_read,
+        fetch_toss_accounts=_must_not_read,
         durable_notional_fn=_no_pending,
     )
 
@@ -1395,6 +1613,7 @@ async def test_toss_kr_holdings_must_be_native_krw_and_kr_market(
         symbol="459580",
         broker_account_id="731",
         fetch_toss_holdings=_toss_holdings,
+        fetch_toss_accounts=_listed_toss_accounts,
         durable_notional_fn=_no_pending,
     )
 
@@ -1402,8 +1621,19 @@ async def test_toss_kr_holdings_must_be_native_krw_and_kr_market(
     assert exposure.unavailable_reason == reason
 
 
-def test_toss_parking_reader_calls_only_the_read_only_holdings_method():
-    source = inspect.getsource(_select_balance_fetcher)
+def test_toss_parking_has_no_unverified_holdings_reader():
+    scope = parking_scope(symbol="SGOV", account_mode="toss_live", market="equity_us")
+    assert scope is not None
+    with pytest.raises(AssertionError, match="verified account path"):
+        _select_balance_fetcher(
+            scope,
+            fetch_us_holdings=None,
+            fetch_kr_holdings=None,
+        )
+    source = inspect.getsource(load_parking_exposure)
+    assert source.index("await client.accounts()") < source.index(
+        "await client.holdings()"
+    )
     assert "await client.holdings()" in source
     assert "client.place_order" not in source
     assert "client.modify_order" not in source
@@ -1517,14 +1747,14 @@ async def test_pending_approved_buys_are_added_to_held_exposure():
 
 
 @pytest.mark.asyncio
-async def test_unfilled_second_proposal_is_refused_by_the_durable_half():
+async def test_unfilled_third_proposal_is_refused_by_the_durable_half():
     """🔴 The verifier's reproduction, as a standing regression.
 
-    Two separate single-rung USD 10,000 SGOV proposals on the same account.
+    Three separate single-rung USD 10,000 SGOV proposals on the same account.
     The first is auto-approved and submitted but has not filled, so it leaves
-    NO balance row. Measured from the balance alone the second one sees zero
-    exposure and clears — USD 20,000 of automation against a USD 10,000 cap.
-    With the durable half it is refused.
+    NO balance row. Measured from the balance alone all three see zero
+    exposure and clear — USD 30,000 of automation against a USD 20,000 cap.
+    With the durable half the third proposal is refused.
     """
 
     async def _flat_balance():
@@ -1563,10 +1793,29 @@ async def test_unfilled_second_proposal_is_refused_by_the_durable_half():
     )
 
     assert second.exposure == Decimal("10000")
-    assert second_decision.eligible is False
-    assert second_decision.reason == "parking_cap_exceeded"
+    assert second_decision.eligible is True
+    assert second_decision.reason == "eligible"
     assert second_decision.details["parking_exposure_before"] == "10000"
     assert second_decision.details["parking_exposure_after"] == "20000"
+
+    async def _pending_20k():
+        return Decimal("20000")
+
+    third = await load_parking_exposure(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="SGOV",
+        fetch_us_holdings=_flat_balance,
+        durable_notional_fn=_pending_20k,
+    )
+    third_decision = _decide(
+        rung=_rung(limit_price=Decimal("100"), quantity=Decimal("100")),
+        exposure=third,
+    )
+    assert third.exposure == Decimal("20000")
+    assert third_decision.eligible is False
+    assert third_decision.reason == "parking_cap_exceeded"
+    assert third_decision.details["parking_exposure_after"] == "30000"
 
 
 @pytest.mark.asyncio

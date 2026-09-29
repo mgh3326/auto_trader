@@ -25,7 +25,9 @@ from app.services.kis_trading_contracts import (
 )
 from app.services.protected_quantity_service import (
     ProtectionStateUnavailable,
+    attach_live_sell_lease_cleanup_warning,
     prepare_live_sell_lease,
+    release_live_sell_lease_preserving_outcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -263,8 +265,13 @@ async def _place_legacy_guarded_sell_fragment(
                 }
                 if decision.block is not None:
                     payload.update(decision.block.payload())
+                await release_live_sell_lease_preserving_outcome(
+                    lease,
+                    operation="kis_legacy_sell_fragment",
+                    broker_response_observed=False,
+                )
                 return payload
-        return await ops.place_order(
+        result = await ops.place_order(
             kis_client,
             symbol,
             "sell",
@@ -272,8 +279,24 @@ async def _place_legacy_guarded_sell_fragment(
             price,
             exchange_code=exchange_code,
         )
-    finally:
-        await lease.release()
+    except BaseException:
+        await release_live_sell_lease_preserving_outcome(
+            lease,
+            operation="kis_legacy_sell_fragment",
+            broker_response_observed=False,
+        )
+        raise
+    release_warning = await release_live_sell_lease_preserving_outcome(
+        lease,
+        operation="kis_legacy_sell_fragment",
+    )
+    if isinstance(result, dict):
+        return attach_live_sell_lease_cleanup_warning(
+            result,
+            release_warning,
+            accepted=bool(result.get("odno")),
+        )
+    return result
 
 
 # =============================================================================

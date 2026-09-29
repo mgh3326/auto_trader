@@ -3,8 +3,10 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
+import httpx
 import pytest
 
+import app.services.toss_symbol_master_service as service_mod
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 from app.models.us_symbol_universe import USSymbolUniverse
@@ -66,6 +68,124 @@ class FakeTossClient:
             for symbol in symbols
             if symbol != "MISSING"
         ]
+
+
+class FlakyTossClient(FakeTossClient):
+    """Fake Toss client that raises on the first N ``stocks`` calls."""
+
+    def __init__(self, failures: int, exc_factory) -> None:
+        super().__init__()
+        self._failures = failures
+        self._exc_factory = exc_factory
+        self.stock_calls = 0
+
+    async def stocks(self, symbols: list[str] | tuple[str, ...]) -> list[TossStockInfo]:
+        self.stock_calls += 1
+        if self.stock_calls <= self._failures:
+            raise self._exc_factory()
+        return await super().stocks(symbols)
+
+
+@pytest.fixture(autouse=True)
+def _zero_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service_mod, "_TRANSIENT_RETRY_BACKOFF_S", (0.0,) * 8)
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_symbol_master_retries_transient_transport_error(
+    db_session,
+) -> None:
+    """A transient httpx transport error must not sink the whole market pass."""
+    import sqlalchemy as sa
+
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "005930")
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="005930", name="삼성전자", exchange="KOSPI", is_active=True
+        )
+    )
+    await db_session.commit()
+
+    client = FlakyTossClient(
+        failures=2,
+        exc_factory=lambda: httpx.ConnectTimeout("timed out"),
+    )
+    result = await sync_toss_symbol_master(
+        db_session,
+        client=client,
+        request=TossSymbolMasterSyncRequest(
+            market="kr", symbols=("005930",), commit=False
+        ),
+    )
+
+    assert client.stock_calls == 3
+    assert result.stocks_matched == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_symbol_master_exhausts_transient_retries(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retries are bounded: after attempts+1 calls the error propagates."""
+    import sqlalchemy as sa
+
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "005930")
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="005930", name="삼성전자", exchange="KOSPI", is_active=True
+        )
+    )
+    await db_session.commit()
+    monkeypatch.setattr(service_mod, "_TRANSIENT_RETRY_ATTEMPTS", 2)
+
+    client = FlakyTossClient(
+        failures=99,
+        exc_factory=lambda: httpx.ConnectError("connection refused"),
+    )
+    with pytest.raises(httpx.ConnectError):
+        await sync_toss_symbol_master(
+            db_session,
+            client=client,
+            request=TossSymbolMasterSyncRequest(
+                market="kr", symbols=("005930",), commit=False
+            ),
+        )
+
+    assert client.stock_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_sync_toss_symbol_master_does_not_retry_non_transient_error(
+    db_session,
+) -> None:
+    """Code/data defects propagate on the first attempt — no retry masking."""
+    import sqlalchemy as sa
+
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "005930")
+    )
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="005930", name="삼성전자", exchange="KOSPI", is_active=True
+        )
+    )
+    await db_session.commit()
+
+    client = FlakyTossClient(failures=99, exc_factory=lambda: ValueError("bad payload"))
+    with pytest.raises(ValueError, match="bad payload"):
+        await sync_toss_symbol_master(
+            db_session,
+            client=client,
+            request=TossSymbolMasterSyncRequest(
+                market="kr", symbols=("005930",), commit=False
+            ),
+        )
+
+    assert client.stock_calls == 1
 
 
 @pytest.mark.asyncio

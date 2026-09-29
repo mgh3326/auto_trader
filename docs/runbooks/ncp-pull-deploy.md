@@ -7,7 +7,8 @@ HAProxy owns stable `127.0.0.1:8000` and `100.122.100.56:8000`. It health-checks
 the inactive color before an in-place HAProxy HUP, records the active color only
 after that switch, and drains the previous API for `API_DRAIN_SECONDS` (120 by
 default). The same promotion also advances the private MCP fleet:
-an inactive blue/green default MCP color, five fixed profiles, and its
+an inactive blue/green default MCP color, eight fixed profiles (including the
+three live-* units of task 975, see live-mcp-servers.md), and its
 loopback/tailnet-only HAProxy front end.
 
 ## Tag policy
@@ -44,13 +45,14 @@ Install the versioned operator script with restricted permissions:
 install -m 0750 scripts/deploy-ncp-pull.sh /root/at-run/deploy-ncp-pull.sh
 ```
 
-The script requires existing `at-api` and `at-scheduler` containers before it
-will replace any unit. This intentional preflight ensures a failed readiness
-check has a concrete previous image to restore. The first promotion may lack
-`at-worker` or `at-kis-ws`; their rollback references bootstrap from the API
-image. A hand-started `at-upbit-ws` using a local/non-digest tag (for example
-`auto_trader:ncp-main`) also bootstraps from the API image instead of retaining
-that mutable tag.
+Before pulling, the script requires an existing active API and checks every
+present app container is running and has its own resolvable immutable GHCR
+repository digest. It reads the container's configured digest, then image
+metadata for a mutable tag. If neither identifies that unit's own digest, it
+exits before replacing anything. A local-only tagged container must be
+replaced by the operator with an image that has a GHCR repository digest
+before this deployment can proceed. Absent optional units remain absent on
+rollback if the run created them before failing.
 
 ## Promote an image
 
@@ -77,33 +79,124 @@ digest with profile-scoped environment policy (including the required
 approval-hash modes for TradingCodex execution). HAProxy must remain bound only
 to loopback and the configured tailnet address; it is never a public listener.
 
-The script prints the GHCR repo digest after pulling it. It retries the inactive
+The script resolves the GHCR repo digest after pulling it. It retries the inactive
 API color's loopback `/healthz` for up to 60 seconds by default. If the new API
 does not return HTTP 200, the worker is not running and does not emit its
 TaskIQ startup line, or either WebSocket is not running and does not emit a
 `Unified WebSocket health ... connected=True` (or equivalent `connected=True`)
-startup line before the bounded wait expires, it recreates all five units with
-pinned rollback references and verifies the restored API, worker, and both
-WebSockets. A failed MCP promotion restores the MCP fleet's captured image
-state and active color before the same core rollback. A tag is used only to pull and
-resolve the image; `docker run` always receives `repo@sha256:...`, so the next
+startup line before the bounded wait expires, it restores every unit this run
+already replaced, in reverse replacement order, using each unit's prior
+digest. Untouched units stay untouched. A later MCP failure uses the same
+rollback path, then restores the prior HAProxy config and active colors. The
+final table compares the expected digest with each container's running digest;
+any mismatch leaves the command nonzero. A tag is used only to pull and resolve
+the image; `docker run` always receives `repo@sha256:...`, so the next
 deployment's `.Config.Image` is stable even after a later `:main` pull.
+If container inspection fails during the preflight snapshot, the script checks
+the container list and stops before mutation unless absence is confirmed.
 
 The script maintains these operator-owned, mode-0600 digest files:
 
-- `/root/at-run/deployed-digest` is the currently healthy deployment.
+- `/root/at-run/deployed-digest` is the last successful promotion target.
+  A skipped KIS WebSocket can retain a different digest, as the table shows.
 - `/root/at-run/deployed-digest.previous` is the prior healthy deployment;
-  each successful deployment atomically rotates the former current value here.
+  each successful deployment records the former current value here.
 
-For an automatic readiness rollback, a container's existing digest reference
-takes precedence. A legacy floating-tag API/scheduler container instead uses
-`deployed-digest` for this first transition. A missing worker/KIS WebSocket or
-local-tagged Upbit WebSocket uses the API image as its bootstrap reference;
-that API reference is still validated as a repo digest (or resolved through
-`deployed-digest`). If neither route provides a valid repo digest, the script
-fails explicitly before replacing containers; it never silently restarts a
-floating tag. A successful automatic rollback restores `deployed-digest` to
-the recovered digest.
+Automatic rollback uses the per-container preflight snapshot. A floating tag
+is resolved through that container's image metadata; the API digest is never
+substituted for another unit. If resolution fails, no replacement begins.
+Automatic rollback does not rotate either digest file. A successful promotion
+rotates the prior target into `deployed-digest.previous`.
+
+## Old image prune after a successful deploy
+
+After a fully successful promotion (the digest table matched, the digest
+files were rotated and the drains were armed) the script removes old
+`ghcr.io/mgh3326/auto_trader` images so repeated pulls cannot fill the disk
+(task 934: on 2026-09-29 a pull failed at 100% disk with 66 unused images).
+It keeps:
+
+- the digest just deployed (it must equal `deployed-digest`);
+- the digest in `deployed-digest.previous` (the `--rollback` target), so a
+  rollback works from the local image without the registry;
+- every image used by any container in `docker ps -a`, running or stopped,
+  including an `at-kis-ws` left alone by `--skip-kis-ws`, units in
+  `MCP_UNITS_SKIP` and the previous API/MCP colors that are still draining.
+
+Only images whose every tag and repo digest belongs exactly to
+`ghcr.io/mgh3326/auto_trader` are candidates; postgres, redis, haproxy and any
+image that also carries another repository's reference are never touched.
+Removal is `docker image rm <references>` without `-f`; the script never runs
+`docker system prune`, `docker image prune`, or removes volumes, networks or
+containers. Build cache is not touched.
+
+The deploy output lists each removed image ID with its references, then a
+line `image prune: removed N image(s), reclaimed B bytes by image size`.
+The byte figure sums image sizes; layers shared with a kept image are not
+freed, so the actual disk gain can be smaller.
+
+The prune never runs on a failed deploy, on `--rollback`, or with `--dry-run`.
+A deploy dry-run instead prints `image prune: would remove ...` lines from
+the current state; the real run re-evaluates after promotion. A rollback
+dry-run prints `image prune: not run on rollback`.
+
+Any prune problem is a warning on stderr only (`WARNING: image prune ...`)
+and never changes the exit code or the digest table: an image that could not
+be removed is named in the warning, and if `deployed-digest.previous` is
+absent or invalid (it must be exactly one digest and a newline, as the
+script writes it), `deployed-digest` does not record the promoted digest, or
+docker's image or container listing cannot be read, the whole prune is
+skipped and every image is kept.
+
+To disable it for one run, set `AT_IMAGE_PRUNE_ENABLED=0`:
+
+    AT_IMAGE_PRUNE_ENABLED=0 /root/at-run/deploy-ncp-pull.sh sha-abcdef0
+
+When the variable is unset the prune runs. Any other value, including an
+empty one, skips the prune with a warning. To free
+space by hand while the prune is disabled, remove only unused
+`ghcr.io/mgh3326/auto_trader` images that are neither of the two recorded
+digests; the invariants are in `docs/contracts/task-934-image-prune.md`.
+
+## KIS WebSocket skip flag and dry-run plan
+
+Both flags combine with a tag or with --rollback, in any order:
+
+    /root/at-run/deploy-ncp-pull.sh sha-abcdef0 --skip-kis-ws
+    /root/at-run/deploy-ncp-pull.sh --dry-run sha-abcdef0
+    /root/at-run/deploy-ncp-pull.sh --rollback --skip-kis-ws
+    /root/at-run/deploy-ncp-pull.sh --dry-run --skip-kis-ws
+
+--dry-run prints a read-only plan and exits. It reports the intended digest
+resolved from the locally inspectable image, the planned action for every
+unit, and, when --skip-kis-ws is set, the skip reason and retained KIS
+digest. When no local repo digest is inspectable it prints the literal word
+unresolved instead of claiming a digest; a real run pulls first and resolves
+there. Dry-run performs no docker pull, run, rm, stop, rename, or kill and
+writes no HAProxy route or color files. A rollback dry-run instead reads
+deployed-digest.previous and reports it (or unresolved) as the target.
+
+--skip-kis-ws is an explicit operator decision. The script performs no
+automatic host-local holder detection; reliable detection is not established
+in this repository, so the flag is the only authority. It wins regardless of
+any optional holder evidence. Pass it whenever fillwire holds the KIS fill
+stream (the fillwire #180 observation window) and the existing at-kis-ws
+must remain undisturbed. A skipped at-kis-ws is never stopped, removed,
+renamed, or recreated — including during rollback after a later phase
+failure.
+
+The retained KIS digest can legitimately differ from the promoted digest.
+After the run the operator must inspect the final per-container digest
+table: every replaced unit must report the intended digest as running, while
+at-kis-ws reports its own retained digest.
+
+If --skip-kis-ws was supplied and at-kis-ws was already stopped, its digest
+table row reports SKIPPED_STOPPED: expected is its last known immutable digest
+when available (otherwise UNKNOWN), and running is STOPPED. This is an
+intentional skip, not a digest mismatch; the container is left untouched.
+Without the flag, a stopped at-kis-ws still fails capture. Any other unit
+stopped at capture also fails before mutation; if it stops after promotion,
+digest verification fails and triggers the usual rollback.
 
 ## Operator rollback
 

@@ -1,19 +1,17 @@
 # JOBS KNOWLEDGE BASE
 
 ## OVERVIEW
-`app/jobs/` contains async orchestration units used by routers and scheduled tasks for analysis and trading workflows.
+`app/jobs/` contains async orchestration units used by routers and scheduled tasks for snapshot, sync, scanning, and trading workflows.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Crypto/stock analysis orchestration | `app/jobs/analyze.py` | Analyzer-driven buy/sell and analysis entrypoints |
 | KIS trading orchestration | `app/jobs/kis_trading.py` | Domestic/overseas KIS analysis and order flows |
 | Scheduled scanner implementation | `app/jobs/daily_scan.py` | Strategy and crash-detection scanner runtime |
 | KOSPI200 sync/update jobs | `app/jobs/kospi200.py` | Index constituent update and sync routines |
 | Screener job module | `app/jobs/screener.py` | Specialized screening path |
 | Scheduled task declarations | `app/tasks/daily_scan_tasks.py` | Only `@broker.task(...)` schedule definitions |
 | Worker/scheduler wiring | `app/core/taskiq_broker.py`, `app/core/scheduler.py` | TaskIQ broker and scheduler entrypoints |
-| Router callsites | `app/routers/upbit_trading.py`, `app/routers/kis_*trading.py`, `app/routers/stock_latest.py` | Direct async job invocation paths |
 
 ## CONVENTIONS
 - Keep job modules as orchestration layers over analyzers/services.

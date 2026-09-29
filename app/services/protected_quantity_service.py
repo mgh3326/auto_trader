@@ -76,6 +76,10 @@ _CURRENCY_BY_SCOPE_MARKET = {
 _TRY_ADVISORY_LOCK = text("SELECT pg_try_advisory_lock(CAST(:key AS bigint))")
 _RELEASE_ADVISORY_LOCK = text("SELECT pg_advisory_unlock(CAST(:key AS bigint))")
 _XACT_ADVISORY_LOCK = text("SELECT pg_advisory_xact_lock(CAST(:key AS bigint))")
+_LEASE_CLEANUP_WARNING = (
+    "Protection lease cleanup failed after broker response; broker result was "
+    "preserved and downstream recording continued."
+)
 
 
 class ProtectedQuantityValidationError(ValueError):
@@ -95,6 +99,46 @@ class ProtectionStateUnavailable(RuntimeError):
     """The head could not be read or a protection lock could not be acquired."""
 
     error_code = "protection_state_unavailable"
+
+
+class VerifiedLiveSellLeaseCleanupError(RuntimeError):
+    """An advisory cleanup error after the dedicated backend was discarded.
+
+    This is deliberately narrower than an arbitrary lease release error.
+    A caller may preserve a broker response only after invalidation returned
+    successfully, which is SQLAlchemy's proof that the dedicated backend can
+    no longer return to the pool with a session advisory lock.  A subsequent
+    wrapper-close error is recorded explicitly: the backend remains discarded,
+    but the wrapper did not confirm a clean close.
+    """
+
+    def __init__(
+        self,
+        cleanup_error: Exception,
+        *,
+        close_completed: bool,
+        close_error: Exception | None = None,
+    ) -> None:
+        self.cleanup_error = cleanup_error
+        self.close_completed = close_completed
+        self.close_error = close_error
+        close_state = "completed" if close_completed else "failed after invalidation"
+        super().__init__(
+            "live sell advisory cleanup failed after the dedicated backend was "
+            f"discarded; connection close {close_state}"
+        )
+
+    @property
+    def operator_warning(self) -> str:
+        """Describe the verified-discarded cleanup result to an operator."""
+
+        if self.close_completed:
+            return _LEASE_CLEANUP_WARNING
+        return (
+            "Protection lease cleanup failed after broker response; the dedicated "
+            "backend was invalidated but connection wrapper close also failed. "
+            "Broker result was preserved and downstream recording continued."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1003,13 +1047,160 @@ class LiveSellProtectionLease:
         try:
             await connection.execute(_RELEASE_ADVISORY_LOCK, {"key": self._lock_key})
             await connection.commit()
-        except BaseException:
-            # Closing the dedicated connection is safer than returning a backend
-            # with an unproven session-level lock to the pool.
-            await connection.invalidate()
+        except BaseException as cleanup_exc:
+            # Session advisory locks survive transactions.  A successful
+            # invalidation is the only proof that this dedicated backend cannot
+            # return to the pool with an unproven lock.  Do not replace an
+            # invalidate failure with a best-effort warning.
+            try:
+                await connection.invalidate()
+            except BaseException as invalidate_exc:
+                logger.error(
+                    "protected sell lease invalidation failed after advisory "
+                    "cleanup error: cleanup_error_type=%s invalidation_error_type=%s",
+                    type(cleanup_exc).__name__,
+                    type(invalidate_exc).__name__,
+                )
+                try:
+                    await connection.close()
+                except BaseException as close_exc:
+                    logger.error(
+                        "protected sell lease close also failed after invalidation "
+                        "failure: close_error_type=%s",
+                        type(close_exc).__name__,
+                    )
+                if not isinstance(cleanup_exc, Exception):
+                    raise cleanup_exc from invalidate_exc
+                raise
+            try:
+                await connection.close()
+            except BaseException as close_exc:
+                # SQLAlchemy has already discarded the backend after a
+                # successful invalidate.  A normal close error is therefore a
+                # verified-discarded cleanup result, whereas cancellation and
+                # other BaseException control flow must still propagate.
+                if not isinstance(cleanup_exc, Exception):
+                    raise cleanup_exc from close_exc
+                if isinstance(close_exc, Exception):
+                    logger.warning(
+                        "protected sell lease wrapper close failed after verified "
+                        "invalidation: cleanup_error_type=%s close_error_type=%s",
+                        type(cleanup_exc).__name__,
+                        type(close_exc).__name__,
+                    )
+                    raise VerifiedLiveSellLeaseCleanupError(
+                        cleanup_exc,
+                        close_completed=False,
+                        close_error=close_exc,
+                    ) from cleanup_exc
+                raise
+            if isinstance(cleanup_exc, Exception):
+                raise VerifiedLiveSellLeaseCleanupError(
+                    cleanup_exc,
+                    close_completed=True,
+                ) from cleanup_exc
             raise
-        finally:
-            await connection.close()
+        else:
+            try:
+                await connection.close()
+            except BaseException as close_exc:
+                # Unlock and commit succeeded, but a close failure still leaves
+                # the dedicated backend's disposal unproven. Invalidate it
+                # before preserving any broker result; an invalidation failure
+                # remains an error rather than a warning.
+                try:
+                    await connection.invalidate()
+                except BaseException as invalidate_exc:
+                    logger.error(
+                        "protected sell lease invalidation failed after close-only "
+                        "cleanup error: close_error_type=%s invalidation_error_type=%s",
+                        type(close_exc).__name__,
+                        type(invalidate_exc).__name__,
+                    )
+                    if not isinstance(close_exc, Exception):
+                        raise close_exc from invalidate_exc
+                    raise
+                if isinstance(close_exc, Exception):
+                    logger.warning(
+                        "protected sell lease close failed after successful advisory "
+                        "cleanup but backend was invalidated: close_error_type=%s",
+                        type(close_exc).__name__,
+                    )
+                    raise VerifiedLiveSellLeaseCleanupError(
+                        close_exc,
+                        close_completed=False,
+                        close_error=close_exc,
+                    ) from close_exc
+                raise
+
+
+async def release_live_sell_lease_preserving_outcome(
+    lease: Any | None,
+    *,
+    operation: str,
+    broker_response_observed: bool = True,
+) -> str | None:
+    """Release a post-send lease without replacing an established broker result.
+
+    Only the verified cleanup error is safe to turn into an operator
+    warning: it proves that the dedicated backend was invalidated and discarded.
+    Invalidation failures, close failures without that proof, cancellation, and
+    arbitrary lease errors propagate unchanged.
+    """
+
+    if lease is None:
+        return None
+    try:
+        await lease.release()
+    except VerifiedLiveSellLeaseCleanupError as exc:
+        if broker_response_observed:
+            logger.warning(
+                "protected sell lease cleanup verified after broker response: "
+                "operation=%s cleanup_error_type=%s close_completed=%s",
+                operation,
+                type(exc.cleanup_error).__name__,
+                exc.close_completed,
+            )
+            return exc.operator_warning
+        logger.warning(
+            "protected sell lease cleanup verified before a broker response: "
+            "operation=%s cleanup_error_type=%s close_completed=%s",
+            operation,
+            type(exc.cleanup_error).__name__,
+            exc.close_completed,
+        )
+    return None
+
+
+def attach_live_sell_lease_cleanup_warning(
+    result: dict[str, Any],
+    warning: str | None,
+    *,
+    accepted: bool | None = None,
+) -> dict[str, Any]:
+    """Add an explicit cleanup warning only to a successful broker outcome."""
+
+    if accepted is None:
+        broker_status = result.get("broker_status")
+        accepted = (
+            broker_status == "accepted"
+            if broker_status is not None
+            else result.get("success") is True
+        )
+    if warning is None or not accepted:
+        return result
+    updated = dict(result)
+    raw_warnings = updated.get("warnings")
+    if raw_warnings is None:
+        warnings: list[Any] = []
+    elif isinstance(raw_warnings, list):
+        warnings = list(raw_warnings)
+    else:
+        warnings = [raw_warnings]
+    if warning not in warnings:
+        warnings.append(warning)
+    updated["warnings"] = warnings
+    return updated
 
 
 async def _invalidate_and_close(connection: AsyncConnection) -> None:
@@ -1600,8 +1791,10 @@ __all__ = [
     "ProtectionDecision",
     "ProtectionKey",
     "ProtectionStateUnavailable",
+    "VerifiedLiveSellLeaseCleanupError",
     "apply_holdings_protection",
     "apply_position_protection",
+    "attach_live_sell_lease_cleanup_warning",
     "coerce_broker_quantity",
     "headroom_for_observation",
     "live_sell_lease",
@@ -1609,4 +1802,5 @@ __all__ = [
     "parse_operator_quantity",
     "prepare_live_sell_lease",
     "protection_mode_for_scope",
+    "release_live_sell_lease_preserving_outcome",
 ]

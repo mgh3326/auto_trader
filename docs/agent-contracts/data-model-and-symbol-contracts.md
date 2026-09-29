@@ -122,8 +122,6 @@ DB Tables:
 - Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
 
-## 웹 대시보드
-
 ### Trading Policy YAML 단일 소스 (ROB-646)
 
 `config/trading_policy.yaml` = 매매 판단 임계값/decision rule 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
@@ -148,6 +146,15 @@ DB Tables:
 - **자동 추정·잔고 prefill 금지**: 행은 운영자가 마지막으로 저장한 breakdown 에서만 채운다.
 - **reader 경화**: 저장된 `amount` 가 0~`MANUAL_CASH_MAX_KRW` 정수가 아니면(NaN/Infinity/음수/소수/상한 초과/판독불가) `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화. 어떤 경로로 들어온 행이든 파킹 항은 상한을 넘지 못한다.
 - MCP `set_user_setting("manual_cash", …)` 경로는 남아 있으나 같은 금액 규칙(0~100억 정수, 정수 float 는 int 로 정규화, `accounts` 는 합계 일치)으로 검증되고, 호출자가 넣은 출처 키(`source`/`origin`/`confirmed_*`)는 버린 뒤 `source="mcp_set_user_setting"` 로 찍는다 — 이 경로는 `operator_confirmed` 를 사칭할 수 없다. 단 50% 확인·`expected_updated_at` 가드는 화면 경로 전용이다. 다른 키는 영향 없음.
+
+### parking_exclusion 설정 (#883)
+
+`user_settings.parking_exclusion`(`MCP_USER_ID` 행)은 캐시 스윕 플레이북(#879)이 세션 종료 파킹 전에 읽는 통화별 제외 금액이다 — 스윕은 이 금액만큼 현금을 파킹하지 않고 남긴다.
+
+- **저장 형태**: `{"KRW": <금액>, "USD": <금액>}` — 키는 `PARKING_EXCLUSION_CURRENCIES`(`KRW`·`USD`)의 부분집합만 허용, 값은 0 이상 유한 JSON 숫자 또는 10진 문자열. JSONB 라 마이그레이션 0.
+- **서비스**: `app/services/parking_exclusion_settings.py` — 파서·쓰기 검증 단일 정의. 🔴 **어떤 요소라도 malformed 면 값 전체가 None 이다** (부분 유효한 객체도 적용하지 않는다): 비-객체·미지 통화 키·bool·중첩 객체/리스트·음수·비유한(NaN/Infinity)·파싱 불가 문자열 전부 거부.
+- **읽기 경로**: MCP `get_parking_exclusion()` (인자 없음 — 이 키 하나만 읽는 typed read, 다른 user_settings 키는 절대 읽을 수 없다). `default` 프로파일에서 `ORDER_PROPOSALS_ENABLED` 게이트 뒤에만 등록되고, 레인 manifest 상으로는 kr/us 실행 레인만 노출된다. 응답은 닫힌 `status` 어휘: `"ok"`(행 없음 또는 well-formed — 없는 통화는 `"0"` 기본값, 금액은 정확한 10진 문자열) / `"unknown"`(malformed·읽기 실패 — `exclusions=null`). 🔴 **unknown 은 결코 0이 아니다** — 스윕 소비자는 `status=="ok"` 일 때만 파킹하고, `unknown` 이면 아무것도 파킹하지 않는다.
+- **쓰기 경로(운영자 전용)**: `set_user_setting("parking_exclusion", …)` — default 프로파일의 기존 범용 writer 경로. 레인 세션에는 노출되지 않는다. 같은 닫힌 형태로 검증해 오타 저장이 나중에 `"unknown"` 으로 조용히 표면화되지 않게 하고, 금액은 10진 문자열로 정규화해 저장한다. 다른 키에는 영향 없음.
 
 ## 유지 규약
 

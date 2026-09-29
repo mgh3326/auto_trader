@@ -324,18 +324,29 @@ def portfolio_snapshot_to_mcp_positions(
                 "broker_sellable_quantity": holding.brokerSellableQuantity,
                 "sellable_observed": holding.sellableObserved,
                 "protected_quantity": holding.protectedQuantity,
+                # New snapshots carry the exact display projection. Preserve
+                # the established C7 fallback for cache payloads serialized
+                # before that field existed, so a shadow row retains tactical
+                # headroom instead of reporting an invented unknown value.
                 "tactical_sellable_quantity": (
-                    holding.sellableQuantity
-                    if holding.protectedQuantity <= 0
+                    holding.tacticalSellableQuantity
+                    if holding.tacticalSellableQuantity is not None
                     else (
-                        max(
-                            0.0,
-                            holding.brokerSellableQuantity - holding.protectedQuantity,
-                        )
-                        if holding.brokerSellableQuantity is not None
-                        and holding.protectionState == "covered"
+                        holding.sellableQuantity
+                        if holding.protectedQuantity <= 0
                         else (
-                            0.0 if holding.brokerSellableQuantity is not None else None
+                            max(
+                                0.0,
+                                holding.brokerSellableQuantity
+                                - holding.protectedQuantity,
+                            )
+                            if holding.brokerSellableQuantity is not None
+                            and holding.protectionState == "covered"
+                            else (
+                                0.0
+                                if holding.brokerSellableQuantity is not None
+                                else None
+                            )
                         )
                     )
                 ),

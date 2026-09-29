@@ -153,6 +153,59 @@ async def test_altseason_ratio_and_breadth(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_breadth_date_uses_oldest_contributing_ticker(monkeypatch):
+    async def get_json(url, params=None):
+        if url == upbit_index.MARKET_ALL_URL:
+            return [
+                {"market": "KRW-BTC"},
+                {"market": "KRW-ETH"},
+                {"market": "KRW-XRP"},
+            ]
+        return [
+            {
+                "market": "KRW-BTC",
+                "signed_change_rate": 0.01,
+                "trade_timestamp": 1_762_734_000_000,
+            },
+            {
+                "market": "KRW-ETH",
+                "signed_change_rate": 0.02,
+                "trade_timestamp": 1_762_737_600_000,
+            },
+            {
+                "market": "KRW-XRP",
+                "signed_change_rate": 0.00,
+                "trade_timestamp": 1_762_737_600_000,
+            },
+        ]
+
+    monkeypatch.setattr(upbit_index, "_get_json", get_json)
+    breadth = await upbit_index._fetch_krw_breadth_24h()
+    assert breadth is not None
+    assert breadth["latest_trade_at"] == "2025-11-10T00:20:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_breadth_is_undated_if_contributing_ticker_is_undated(monkeypatch):
+    async def get_json(url, params=None):
+        if url == upbit_index.MARKET_ALL_URL:
+            return [{"market": "KRW-BTC"}, {"market": "KRW-ETH"}]
+        return [
+            {"market": "KRW-BTC", "signed_change_rate": 0.01},
+            {
+                "market": "KRW-ETH",
+                "signed_change_rate": 0.02,
+                "trade_timestamp": 1_762_737_600_000,
+            },
+        ]
+
+    monkeypatch.setattr(upbit_index, "_get_json", get_json)
+    breadth = await upbit_index._fetch_krw_breadth_24h()
+    assert breadth is not None
+    assert breadth["latest_trade_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_altseason_constituents_list_btc_outperformers(monkeypatch):
     upbit_index._clear_caches()
     mapping = {

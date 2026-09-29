@@ -34,9 +34,12 @@ tests/mcp_server/test_analyze_halted_suspect.py
 tests/mcp_server/test_analyze_stock_batch_us_quote_session.py
 tests/mcp_server/test_earnings_context.py
 tests/mcp_server/test_execution_ledger_fill_events_tool.py
+tests/mcp_server/test_get_holdings_ledger_lots.py
+tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
+tests/mcp_server/test_kis_mock_terminal_registration.py
 tests/mcp_server/test_operating_briefing_negative_class.py
 tests/mcp_server/test_operating_briefing_tools.py
 tests/mcp_server/test_portfolio_helpers.py
@@ -99,6 +102,7 @@ tests/scripts/test_kis_live_auto_reconcile_cli.py
 tests/scripts/test_lane_event_kickoff.py
 tests/scripts/test_native_retirement.py
 tests/scripts/test_probe_us_earnings_coverage_cli.py
+tests/scripts/test_protected_positions.py
 tests/scripts/test_reconcile_execution_ledger_cli.py
 tests/scripts/test_run_research_run_refresh_script.py
 tests/scripts/test_seed_execution_ledger_opening_lots_cli.py
@@ -124,6 +128,8 @@ tests/services/brokers/binance/futures_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/futures_demo/test_execution_client_position.py
 tests/services/brokers/binance/futures_demo/test_execution_client_submit_cancel.py
 tests/services/brokers/binance/futures_demo/test_preflight.py
+tests/services/brokers/binance/h5/test_forecast_cli.py
+tests/services/brokers/binance/h5/test_history_executor.py
 tests/services/brokers/binance/spot_demo/test_close_sizing.py
 tests/services/brokers/binance/spot_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/spot_demo/test_execution_client_submit_cancel.py
@@ -147,6 +153,9 @@ tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/buy_gate_ab_shadow/test_v2_caller_wiring.py
 tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
+tests/services/execution_ledger/test_kis_lots.py
+tests/services/execution_ledger/test_kis_lots_db.py
+tests/services/execution_ledger/test_kis_lots_seed_cutover.py
 tests/services/execution_ledger/test_repository.py
 tests/services/execution_outcomes/test_static_boundaries.py
 tests/services/fill_watch_context/test_consumption.py
@@ -233,7 +242,10 @@ tests/services/test_alpaca_paper_retrospective_pending.py
 tests/services/test_alpaca_paper_source_allocation.py
 tests/services/test_decision_history.py
 tests/services/test_fill_event_handoff.py
+tests/services/test_fill_event_handoff_kick_filter.py
+tests/services/test_fill_event_handoff_watch_kick.py
 tests/services/test_fill_handoff_lookback.py
+tests/services/test_kis_mock_terminal_expiry.py
 tests/services/test_legacy_stock_analysis_adapter.py
 tests/services/test_live_correlation.py
 tests/services/test_live_place_provenance.py
@@ -245,6 +257,7 @@ tests/services/test_market_events_normalizers.py
 tests/services/test_market_events_wisefn_ingestion.py
 tests/services/test_mock_auto_read_model.py
 tests/services/test_news_text.py
+tests/services/test_nxt_preflight_krx_after.py
 tests/services/test_order_preview_session_service.py
 tests/services/test_order_send_intent_service.py
 tests/services/test_paper_approval_packet_rob842.py
@@ -264,6 +277,7 @@ tests/services/test_symbol_news_service.py
 tests/services/test_trade_journal_aggregates_load.py
 tests/services/test_trade_journal_aggregates_tag.py
 tests/services/test_trade_retrospective_mirror_correlation.py
+tests/services/test_trader_page_service.py
 tests/services/test_trading_policy_service.py
 tests/services/test_tradingview_helpers.py
 tests/services/test_tradingview_normalizer.py
@@ -342,6 +356,7 @@ tests/test_investment_snapshots_feature_flag.py
 tests/test_investor_flow_snapshot_fields.py
 tests/test_kis_domestic_balance_snapshot.py
 tests/test_kis_holdings_service.py
+tests/test_kis_mock_expired_migration.py
 tests/test_kis_mock_holdings_delta_smoke_cleanup.py
 tests/test_kis_mock_order_ledger.py
 tests/test_kis_mock_overseas_holdings_delta_smoke_cleanup.py

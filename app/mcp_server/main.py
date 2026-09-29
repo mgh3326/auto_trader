@@ -69,7 +69,15 @@ def _validate_profile_auth_token(
         )
     if mcp_type not in {"streamable-http", "sse"} or (token or "").strip():
         return
-    if profile in {McpProfile.KIWOOM, McpProfile.KIWOOM_KR}:
+    # Task 975: the live-* profiles serve live-trading sessions over the
+    # tailnet from dedicated units; a network listener never runs tokenless.
+    if profile in {
+        McpProfile.KIWOOM,
+        McpProfile.KIWOOM_KR,
+        McpProfile.LIVE_KR,
+        McpProfile.LIVE_US,
+        McpProfile.LIVE_CRYPTO,
+    }:
         raise RuntimeError(
             f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN "
             "for network transports"

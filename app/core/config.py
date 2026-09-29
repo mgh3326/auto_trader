@@ -258,6 +258,7 @@ class Settings(BaseSettings):
     kis_mock_account_no: str | None = None
     kis_mock_access_token: str | None = None
     kis_mock_scalping_enabled: bool = False
+    kis_mock_terminal_min_sessions: int = Field(default=2, ge=2, le=20)
 
     # ROB-671: gate the aggressive "unsettled regular-session buy → 15:30 death"
     # expiry downgrade. Default off — a regular-session BUY keeps expected_expiry
@@ -280,6 +281,12 @@ class Settings(BaseSettings):
     kiwoom_mock_base_url: str = "https://mockapi.kiwoom.com"
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
+
+    # #849 NHPLUG Stage 2: registers the nh_mock_* MCP tools in the DEFAULT
+    # profile only. Registration is all this flag does; every call still needs
+    # NHPLUG_MOCK_ENABLED, the five NHPLUG_STAGE2_*_CONFIRMED gates, a retained
+    # key registry, and a fresh acct_type=03 verification before any order.
+    nh_mock_mcp_enabled: bool = False
 
     # Kiwoom LIVE read-only market data (charts only). Disabled by default.
     # 🔴 Minimal surface on purpose: app key, app secret, and base URL ONLY.
@@ -1072,6 +1079,11 @@ class Settings(BaseSettings):
 
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
+    # Task 889 — /trader read-only operator page. The open-orders snapshot TTL
+    # is deliberately short (AC: 30-60 s); a committed fill also busts it
+    # immediately through the execution-ledger post-upsert downstream hook.
+    trader_open_orders_cache_ttl_seconds: Annotated[int, Field(ge=30, le=60)] = 45
+
     public_base_url: str = "https://mgh3326.duckdns.org"
     # Explicit public host for approval deep links.  Unlike the historic
     # public_base_url, this has no default: an absent value omits the button
@@ -1284,6 +1296,15 @@ class Settings(BaseSettings):
     # Default-off observation of discover_buy_candidates_fanout returns.
     # Fail-open. No scheduler. Operator enables after alembic upgrade head.
     SCREENER_PICK_LOG_ENABLED: bool = False
+
+    # get_top_stocks(market="us") quality floors (#922 / strategy-lab retro U-3).
+    # Raw USD. Unlike the opt-in KR floors these are defaults because the
+    # unfiltered US movers lists are dominated by sub-floor small caps and
+    # leveraged/inverse ETFs. Rows missing market_cap/turnover evidence fail
+    # closed (excluded and counted); include_illiquid=true bypasses the whole
+    # default bar, and explicit tool args override these defaults.
+    us_top_stocks_min_market_cap: float = 2_000_000_000
+    us_top_stocks_min_turnover: float = 1_000_000
 
     # Naver Remote-Debug Audit (ROB-323)
     remote_debug_audit_enabled: bool = False

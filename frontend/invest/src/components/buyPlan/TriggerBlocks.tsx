@@ -587,14 +587,24 @@ export function DiscoveryGateBlock({
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <Pill
               tone={
-                gate.state === "open"
-                  ? "gain"
-                  : gate.state === "closed"
-                    ? "loss"
-                    : "warn"
+                gate.coefficient
+                  ? gate.coefficient.state === "hold"
+                    ? "warn"
+                    : Number(gate.coefficient.value) > 0
+                      ? "gain"
+                      : "loss"
+                  : gate.state === "open"
+                    ? "gain"
+                    : gate.state === "closed"
+                      ? "loss"
+                      : "warn"
               }
             >
-              {GATE_STATE_LABEL[gate.state]}
+              {gate.coefficient
+                ? gate.coefficient.state === "hold"
+                  ? "신규 진입 계수 보류"
+                  : `신규 진입 계수 m=${gate.coefficient.value}`
+                : GATE_STATE_LABEL[gate.state]}
             </Pill>
             <span style={{ fontSize: 12, color: "var(--fg-2)" }}>
               {gate.met_count}/{gate.of} 충족 (필요 {gate.min_conditions_met})

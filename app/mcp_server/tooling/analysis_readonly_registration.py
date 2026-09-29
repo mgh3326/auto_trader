@@ -114,6 +114,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "get_fx_rate",
     "suggest_order_account",
     "get_holdings",
+    "get_protected_positions",
     "toss_get_positions",
     "get_intraday_investor_flow",
     "analysis_artifact_save",

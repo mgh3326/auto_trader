@@ -13,6 +13,7 @@
 - Negative-class(기각 코호트) 기록 — decision_bucket (ROB-1283)
 - 정지 종목 오염 차단 — halted_suspect (ROB-1236)
 - analyze quick fast projection (ROB-1311)
+- KRX 애프터마켓 세션×거래소 적격 (#925)
 
 ## 기준 원문 계약
 
@@ -70,10 +71,23 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 
 `discover_buy_candidates_fanout` itself still performs no writes. When
 `SCREENER_PICK_LOG_ENABLED=true` (default false), an outer observer in
-`buy_candidate_fanout_registration` records returned per-source picks to
-`review.screener_pick_log`. Fail-open. Prices are exact decimal text, never
+`buy_candidate_fanout_registration` records to `review.screener_pick_log`.
+Fail-open. Prices are exact decimal text, never
 float. Additive migration only — operator runs `alembic upgrade head`.
 No scheduler. Not a policy/weight input.
+
+Since task #884 (`collection_version="funnel-a1"`) the log is a full A-record:
+one row per (call, source, symbol) for every source top-10 row that entered
+the bounded slice — admitted or not — carrying `family`, `rank` (ordinal in
+the source emission), `admission` ∈ `admitted | not_admitted |
+dropped_preselection`, `admission_reason`, `selection_seq`, `source_status`,
+`data_asof`, `fetched_at`, `raw_row`, `gate_features` (conditional funnel
+features for revalidated candidates), and `call_context` (policy stamp,
+selection method, per-source call statuses). Pre-884 rows keep NULL
+`collection_version`; they are never backfilled. Full-analysis admission is
+per-source-family round-robin (declared family order, one new symbol per
+family per round, empty families yield) so a dominant family cannot take the
+whole 10-slot pool.
 
 ### screen_stocks_snapshot / screen_stocks_enrich MCP 도구 분리 (ROB-1309)
 
@@ -221,6 +235,45 @@ earnings는 전부 quick allowlist에서 제거됐다. 라이브 가격/세션 p
 null이며 `halt_suspect` 근거를 보존한다. DB 장애는 해당 행을 `missing`으로 남기며
 외부 provider로 우회하지 않는다.
 
+
+### KRX 애프터마켓 세션×거래소 적격 (#925)
+
+KRX 애프터마켓(2026-09-14 개장, 16:00-20:00 KST, 약 2,000 종목, ETF/ETN 등은 향후 도입)
+이후 야간 적격은 `nxt_tradable` 단일 기준이 아니라 **세션×거래소**다. 근거:
+hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-27 기사 +
+375500 실측).
+
+- **적격 소스**: `krx_after_market_eligibility` — 운영자가 KRX 공시 목록을
+  `scripts/import_krx_after_market_eligibility.py`(dry-run 기본, `--source` 인용 필수,
+  전체 스냅샷 교체)로 적재. 유일한 writer 는
+  `kr_symbol_universe_service.replace_krx_after_market_list`. 스케줄러 없음.
+  런북: `docs/runbooks/krx-after-market-eligibility.md`
+- **판정**: `app/services/krx_after_market.KrxAfterTradability` — 목록 등재 AND
+  KOSPI/KOSDAQ AND `security_type == "STOCK"` AND `krx_trading_suspended is False` AND
+  목록 as-of 7일 이내일 때만 true. 🔴 ETF/ETN·분류 미상·목록 없음/stale·조회 실패는 전부
+  **false**(null 아님, true 기본값 금지). "주식이면 가능" 같은 규칙으로 목록을 대신하지 말 것
+- **`get_quote`**: KR 응답에 `krx_after_tradable` + `_source/_list_source/_asof/_stale/_reason`.
+  조회 실패는 시세를 깨지 않고 false + `lookup_failed`
+- **승인 창** (`approval_window._resolve_kr_session`): 08:00-08:50 은 NXT 전용
+  (`nxt_tradable` 만). 애프터는 NXT 증명 종목이면 기존 통합 창 그대로, 아니면 KRX 목록 증명
+  종목에 한해 `krx_after_window`(Toss 통합 afterMarket ∩ 16:00-20:00)만 허용,
+  `allowed_sessions=("regular","krx_after")`. NXT 미상 + KRX 증명은 KRX 창 안에서만 허용하고
+  그 밖(15:30-16:00, 프리)은 기존대로 `CALENDAR_UNKNOWN`
+- **만료** (`live_order_expiry`): `nxt_tradable=False` 를 넘긴 호출자만 `krx_after` 세션
+  (20:00, `krx_after_close_20_00`)과 정규장 15:30 사멸(`krx_regular_close_15_30`, #876 과
+  정합 — 야간은 새 주문)을 받는다. 미지정(None)은 ROB-671 동작 불변
+- **Toss 주문 도구 preflight** (#969, `nxt_preflight.evaluate_nxt_preflight` +
+  `nxt_preflight_krx_after.evaluate_nxt_preflight_with_krx_after`): 승인 창과 **같은 규칙**.
+  `nxt_after` 세션의 비-NXT 종목은 `kr_krx_after_session_for`(위 창) 안이고 승인 창의
+  `resolve_krx_after_capability` 가 허용할 때만 통과(`reason=krx_after_tradable`,
+  `session=krx_after`). 🔴 목록 없음/조회 실패/유니버스 부재는 `krx_after_capability_unknown`,
+  7일 초과는 `krx_after_capability_stale` 로 **차단**(fail-closed) — `not_nxt_eligible` 와
+  구분. 목록은 읽혔으나 부적격이면 기존 NXT 사유 유지 + `krx_after_detail`. 08:00-08:50·
+  15:30-16:00 과 NXT 종목 판정은 불변(NXT 종목은 KRX 조회 자체를 하지 않음). Toss
+  preview/place/modify 와 `suggest_order_account` 는 같은 함수를 호출한다. 모드 의미 불변:
+  `required` 만 place/modify 를 막고 `warn`/`optional` 은 로그 후 진행, preview 는 표시만,
+  `off` 는 생략
+- **미변경**: 운영 프롬프트 문언은 이 범위 밖
 
 ## 유지 규약
 

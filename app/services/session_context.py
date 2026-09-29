@@ -78,6 +78,24 @@ class SessionContextService:
             row.body += suffix
             await self._session.flush()
 
+    async def append_fill_handoff_kick_capped(self, *, entry_id: int) -> None:
+        """Mark a kick-eligible fill that stayed queued past the daily cap.
+
+        Same narrow, append-only shape as ``append_fill_handoff_kick_result``:
+        the open_question records that the fill passed the kick filter but the
+        per-market daily cap deferred it to the next regular rep.
+        """
+        row = await self._session.get(OperatorSessionContext, entry_id)
+        if row is None or row.created_by != "fill-event-handoff":
+            raise ValueError("fill handoff context row unavailable")
+        suffix = (
+            "\nPrefect kickoff deferred: daily cap reached "
+            "(queued for the next regular rep)"
+        )
+        if suffix not in row.body:
+            row.body += suffix
+            await self._session.flush()
+
     async def get_recent(
         self,
         *,

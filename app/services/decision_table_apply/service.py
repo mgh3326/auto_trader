@@ -442,6 +442,25 @@ def _proposal_kwargs(
         ),
         "action": proposal_action,
     }
+    # A decision table is proposer input, not account authority. Carry its
+    # explicit Toss parking sequence through unchanged; the parking meter
+    # independently checks the broker list and selected holdings scope.
+    from app.services.order_proposals.parking_allowlist import parking_scope
+
+    if (
+        account_mode == "toss_live"
+        and parking_scope(
+            symbol=symbol,
+            account_mode=account_mode,
+            market=_MARKET_TO_ORDER_MARKET[market],
+        )
+        is not None
+    ):
+        broker_account_id = action.get("broker_account_id")
+        if broker_account_id is not None:
+            if type(broker_account_id) is not str:
+                raise ValueError("invalid_broker_account_id")
+            kwargs["broker_account_id"] = broker_account_id
     for source, target in (
         ("valid_until", "valid_until"),
         ("supersedes_proposal_id", "supersedes_proposal_id"),

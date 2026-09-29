@@ -72,6 +72,10 @@ from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
 )
+from app.services.order_proposals.parking_sell_exemption import (
+    ParkingSellContext,
+    bind_parking_sell_context,
+)
 from app.services.order_proposals.service import (
     OrderProposalsService,
     proposal_approval_block_reason,
@@ -617,6 +621,31 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     proposal_client_order_id = kwargs.pop("proposal_client_order_id", None)
     cash_funding_target = kwargs.pop("cash_funding_target", None)
     cash_funding_shortfall = kwargs.pop("cash_funding_shortfall", None)
+    parking_sell_ctx: ParkingSellContext | None = kwargs.pop("parking_sell_ctx", None)
+    if parking_sell_ctx is not None and not parking_sell_ctx.matches(
+        symbol=kwargs.get("symbol"),
+        market=kwargs.get("market"),
+        account_mode=account_mode,
+        side=kwargs.get("side"),
+        order_type=kwargs.get("order_type"),
+        quantity=kwargs.get("quantity"),
+        price=kwargs.get("price"),
+    ):
+        return {
+            "success": False,
+            "mutation_sent": False,
+            "error_code": "parking_sell_binding_invalid",
+        }
+    if parking_sell_ctx is not None:
+        original_hook = kwargs.get("pre_send_hook")
+
+        async def parking_pre_send_hook() -> None:
+            if original_hook is not None:
+                await original_hook()
+            if not parking_sell_ctx.send_ready():
+                raise PreSendFreshnessError(("parking_sell_boundary",))
+
+        kwargs["pre_send_hook"] = parking_pre_send_hook
     if account_mode == "toss_live":
         from app.mcp_server.tooling.orders_toss_variants import (
             _bind_order_proposal_context,
@@ -647,6 +676,7 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
                 rung=kwargs.get("rung"),
                 cash_funding_target=cash_funding_target,
                 cash_funding_shortfall=cash_funding_shortfall,
+                parking_sell_ctx=parking_sell_ctx,
             ):
                 preview = await toss_preview_order(**toss_kwargs)
             return _adapt_toss_preview_response(preview)
@@ -669,6 +699,7 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
                 rung=kwargs.get("rung"),
                 cash_funding_target=cash_funding_target,
                 cash_funding_shortfall=cash_funding_shortfall,
+                parking_sell_ctx=parking_sell_ctx,
             ),
             _bind_toss_pre_send_hook(kwargs.get("pre_send_hook")),
         ):
@@ -701,6 +732,8 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     if cash_funding_shortfall is not None:
         # Keep this classifier input Decimal across the MCP float boundary.
         kwargs["cash_funding_shortfall"] = cash_funding_shortfall
+    if parking_sell_ctx is not None:
+        kwargs["parking_sell_ctx"] = parking_sell_ctx
     if proposal_client_order_id is not None:
         kwargs["client_order_id"] = str(proposal_client_order_id)
 
@@ -915,6 +948,7 @@ async def revalidate_and_submit(
     window_evaluator: WindowEvaluator | None = None,
     expected_policy_stamp: str | None = None,
     now_fn: Clock | None = None,
+    parking_sell_auto_enabled: bool = False,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -1024,6 +1058,7 @@ async def revalidate_and_submit(
                 window_evaluator=evaluate_window,
                 expected_policy_stamp=active_policy_stamp,
                 now_fn=clock,
+                parking_sell_auto_enabled=parking_sell_auto_enabled,
             )
         outcomes.append(outcome)
     return outcomes
@@ -1118,6 +1153,7 @@ async def _revalidate_place_rung(
     window_evaluator: WindowEvaluator,
     expected_policy_stamp: str,
     now_fn: Clock,
+    parking_sell_auto_enabled: bool,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -1127,6 +1163,9 @@ async def _revalidate_place_rung(
         else _proposal_client_order_id(proposal_id, rung_index)
         if group.account_mode == "upbit"
         else None
+    )
+    parking_sell_ctx = (
+        bind_parking_sell_context(group, rung) if parking_sell_auto_enabled else None
     )
 
     window_outcome = await _pre_mutation_window_gate(
@@ -1162,6 +1201,11 @@ async def _revalidate_place_rung(
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
                 **_cash_funding_revalidation_kwargs(group),
+                **(
+                    {"parking_sell_ctx": parking_sell_ctx}
+                    if parking_sell_ctx is not None
+                    else {}
+                ),
                 **(
                     {"proposal_client_order_id": proposal_client_order_id}
                     if proposal_client_order_id is not None
@@ -1401,6 +1445,11 @@ async def _revalidate_place_rung(
                 correlation_id=corr,
                 pre_send_hook=transport_gate,
                 **_cash_funding_revalidation_kwargs(group),
+                **(
+                    {"parking_sell_ctx": parking_sell_ctx}
+                    if parking_sell_ctx is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
