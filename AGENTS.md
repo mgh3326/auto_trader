@@ -89,6 +89,9 @@
     성공·무주문 증명 코드 표는 기본 비어 있고, 번호만 있는 응답으로 accepted/rejected 하지 않는다.
     uncertain 해소와 T14 운영자 위험 인수는 docs/design/711-nhplug-dispatch-state-machine.md의 양성 증거와
     승인 행 조건을 따른다. 주문 스모크는 머지 후 지정 운영자만 수행한다.
+    MCP 표면(#849)은 DEFAULT 프로필의 `nh_mock_*` 뿐이고 `NH_MOCK_MCP_ENABLED` 기본 false다.
+    operations 계층은 #711 dispatcher 호출 한 곳으로만 보내며, `order_type` 은 정확히 "limit" 외 전부
+    네트워크 전에 거부하고, 정정·취소는 이 레저가 보내 번호가 결속된 주문만 허용한다. live 프로필·레인 등록 금지.
 15. **Kiwoom ACCEPTANCE authority cessation (ROB-1340)**: confirmed BUY·cancel·reconcile은
     하나의 PostgreSQL coordination scope에서만 수행한다. cancel 직전 ownership 상실 시
     취소를 보내지 말고 cycle JSON live-order-risk를 먼저 append한 뒤 기존 Telegram

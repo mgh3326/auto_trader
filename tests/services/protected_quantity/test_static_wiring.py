@@ -218,6 +218,16 @@ _CALLER_CLASSIFICATION = {
         "mock_only",
         1,
     ),
+    # #849: NHPLUG Stage 2 tools delegate to the operations layer, which sends
+    # only through the #711 mock dispatcher after an acct_type=03 check.
+    "app/mcp_server/tooling/orders_nh_mock_variants.py:register.nh_mock_place_order:place_order": (
+        "mock_only",
+        1,
+    ),
+    "app/mcp_server/tooling/orders_nh_mock_variants.py:register.nh_mock_modify_order:modify_order": (
+        "mock_only",
+        1,
+    ),
     "app/routers/screener.py:screener_order:place_order": ("g1", 1),
     "app/services/trade_journal/mirror_counterfactual.py:execute_mirror_order_plans:place_order": (
         "g1",

@@ -24,6 +24,7 @@ tests/mcp_server/test_investment_report_tool_descriptions.py
 tests/mcp_server/test_kis_live_expired_docs.py
 tests/mcp_server/test_kis_live_reconcile_expiry.py
 tests/mcp_server/test_market_normalization.py
+tests/mcp_server/test_nh_mock_tools.py
 tests/mcp_server/test_niche_tools.py
 tests/mcp_server/test_operating_briefing_policy_version.py
 tests/mcp_server/test_profile_tool_snapshot.py
@@ -165,6 +166,8 @@ tests/services/nhplug_mock/test_adversarial_dispatch.py
 tests/services/nhplug_mock/test_adversarial_identity_account.py
 tests/services/nhplug_mock/test_dispatch_state_machine.py
 tests/services/nhplug_mock/test_lease_host.py
+tests/services/nhplug_mock/test_nh_mock_mutants.py
+tests/services/nhplug_mock/test_nh_mock_operations.py
 tests/services/nhplug_mock/test_outcome.py
 tests/services/nhplug_mock/test_readiness.py
 tests/services/nhplug_mock/test_section7_dispatch_contract.py

@@ -131,6 +131,73 @@ class NHPlugMockLedger:
             )
             return _row_dict(row) if row else None
 
+    async def find_owned_order(
+        self, account_ref: UUID, broker_order_id: str
+    ) -> dict[str, Any] | None:
+        """Read-only: the place/modify row whose bound broker number is this one."""
+
+        async with self.engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM review.nhplug_mock_order_ledger "
+                            "WHERE account_ref=:acct AND broker_order_id=:number "
+                            "AND operation_kind IN ('place','modify') "
+                            "ORDER BY id DESC LIMIT 1"
+                        ),
+                        {"acct": account_ref, "number": broker_order_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            return _row_dict(row) if row else None
+
+    async def rows_referencing(
+        self, account_ref: UUID, order_no: str
+    ) -> list[dict[str, Any]]:
+        """Read-only: every row that binds, witnessed, or targets this number."""
+
+        async with self.engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM review.nhplug_mock_order_ledger WHERE account_ref=:acct "
+                            "AND (broker_order_id=:number OR ack_evidence_order_id=:number "
+                            "OR original_order_id=:number OR successor_order_id=:number) "
+                            "ORDER BY id"
+                        ),
+                        {"acct": account_ref, "number": order_no},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [_row_dict(row) for row in rows]
+
+    async def rows_for_day(
+        self, account_ref: UUID, order_date: date
+    ) -> list[dict[str, Any]]:
+        """Read-only: one account's rows for one trading day, oldest first."""
+
+        async with self.engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM review.nhplug_mock_order_ledger "
+                            "WHERE account_ref=:acct AND order_date=:day ORDER BY id"
+                        ),
+                        {"acct": account_ref, "day": order_date},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [_row_dict(row) for row in rows]
+
     async def proof_codes(self, path: str) -> tuple[frozenset[str], frozenset[str]]:
         async with self.engine.connect() as conn:
             success = (

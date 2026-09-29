@@ -131,6 +131,11 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
     # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
     # generic broad profiles.
     expected["default"].add("get_parking_exclusion")
+    # #849: the NHPLUG Stage 2 mock tools register on the default profile only,
+    # behind nh_mock_mcp_enabled (default off); no live profile lists them.
+    from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
+
+    expected["default"].update(NH_MOCK_TOOL_NAMES)
     # #891 / Q-53 — the live-* surfaces postdate the 2026-09-03 audit; their
     # expected surface is the operator manifest config/mcp_profiles/live.yaml
     # (all three groups).
