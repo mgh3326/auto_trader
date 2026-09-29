@@ -63,7 +63,10 @@ def _read_text(path: Path) -> str:
 def _parse_asof(value: str | None) -> dt.datetime:
     if value is None:
         return dt.datetime.now(_KST)
-    parsed = dt.datetime.fromisoformat(value)
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid --asof: {value!r}") from exc
     if parsed.tzinfo is None:
         raise argparse.ArgumentTypeError("--asof must carry a UTC offset")
     return parsed
@@ -81,6 +84,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--asof",
+        type=_parse_asof,
         default=None,
         help="ISO timestamp with offset the list is current as of (default: now).",
     )
@@ -99,7 +103,7 @@ async def run(args: argparse.Namespace) -> int:
     )
 
     codes = parse_krx_after_list_text(_read_text(args.file))
-    asof = _parse_asof(args.asof)
+    asof = args.asof if args.asof is not None else _parse_asof(None)
     async with AsyncSessionLocal() as session:
         result = await replace_krx_after_market_list(
             session, symbols=codes, list_asof=asof, list_source=args.source

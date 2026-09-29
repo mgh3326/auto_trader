@@ -104,6 +104,19 @@ def test_list_code_normalization_rejects_whole_list_on_bad_code():
         normalize_krx_after_list_symbols(["005930", "12345678"])
     with pytest.raises(ValueError):
         normalize_krx_after_list_symbols(["005930", "00-593"])
+    with pytest.raises(ValueError):  # fullwidth digits are not KRX codes
+        normalize_krx_after_list_symbols(["００５９３０"])
+
+
+def test_cli_asof_requires_a_valid_offset():
+    from scripts.import_krx_after_market_eligibility import parse_args
+
+    base = ["--file", "x.csv", "--source", "s"]
+    assert parse_args([*base, "--asof", "2026-09-29T16:00:00+09:00"]).asof.tzinfo
+    for bad in ("2026-09-29T16:00:00", "not-a-date"):
+        with pytest.raises(SystemExit):
+            parse_args([*base, "--asof", bad])
+    assert parse_args(base).asof is None
 
 
 def test_list_file_parser_header_and_plain_forms():
@@ -203,6 +216,14 @@ async def test_store_reads_list_membership_and_universe_facts(db_session):
                 "list_asof": dt.datetime(2026, 9, 29, 16),
             },
             "timezone-aware",
+        ),
+        (
+            {
+                "symbols": ["005930"],
+                "list_source": "s",
+                "list_asof": dt.datetime.now(_KST) + dt.timedelta(days=1),
+            },
+            "future",
         ),
     ],
 )

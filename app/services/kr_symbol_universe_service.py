@@ -5,7 +5,7 @@ import logging
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import httpx
@@ -535,6 +535,9 @@ async def get_kr_krx_after_tradability(
         await session.close()
 
 
+_KRX_AFTER_ASOF_FUTURE_TOLERANCE = timedelta(minutes=5)
+
+
 @dataclass(frozen=True)
 class KrxAfterListReplaceResult:
     listed: int
@@ -552,7 +555,7 @@ def normalize_krx_after_list_symbols(raw_symbols: Iterable[str]) -> list[str]:
         text = str(raw or "").strip().upper()
         if len(text) == 7 and text.startswith("A"):
             text = text[1:]
-        symbol = _normalize_symbol_or_none(text)
+        symbol = _normalize_symbol_or_none(text) if text.isascii() else None
         if symbol is None:
             raise ValueError(f"invalid KRX after-market list code: {raw!r}")
         normalized.add(symbol)
@@ -573,6 +576,10 @@ async def replace_krx_after_market_list(
     """
     if list_asof.tzinfo is None or list_asof.utcoffset() is None:
         raise ValueError("list_asof must be timezone-aware")
+    if list_asof > datetime.now(UTC) + _KRX_AFTER_ASOF_FUTURE_TOLERANCE:
+        # A future as-of would stretch the staleness window past what the
+        # operator actually attested.
+        raise ValueError("list_asof must not be in the future")
     source = (list_source or "").strip()
     if not source:
         raise ValueError("list_source is required (cite the KRX list)")
