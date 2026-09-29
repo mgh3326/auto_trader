@@ -1523,3 +1523,445 @@ async def test_reconcile_dry_run_does_not_touch_proposal_rung(db_session):
 
     assert out["action"] == "would_book"
     assert await _read_rung_state(pid) == "resting"
+
+
+# ---------------------------------------------------------------------------
+# ROB-719 — gap A (probe-independent part) + gap D regression pins.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_reconcile_pending_not_found_is_flagged_for_review(dry_run):
+    """ROB-719 gap A: an order absent from the broker evidence window is not a
+    silent pending — it must be flagged for manual review end to end.
+
+    Absence is still not expiry evidence: the ledger row must stay open and
+    the only difference vs a genuinely live pending order is the flag.
+    """
+    from decimal import Decimal
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    row = SimpleNamespace(
+        id=719,
+        order_no="US-NOT-FOUND",
+        broker="kis",
+        market="us",
+        symbol="AAPL",
+    )
+    not_found = FillEvidence(
+        FillVerdict.PENDING,
+        Decimal("0"),
+        None,
+        None,
+        "not_found",
+        "order US-NOT-FOUND not in anchored overseas order history",
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=not_found)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_update_live_ledger_outcome", new=AsyncMock()) as update,
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=dry_run)
+
+    assert out["verdict"] == "pending"
+    assert out["action"] == "noop_pending"
+    assert out.get("reason_code") == "not_found"
+    assert out.get("requires_manual_review") is True
+    assert (
+        out.get("reason") == "order US-NOT-FOUND not in anchored overseas order history"
+    )
+    update.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_scan_ages_kis_rows_beyond_history_window(db_session):
+    """ROB-719 gap D: US rows older than the ~90-day history window must not
+    starve the scan — they fill only slots left over after reachable rows.
+
+    Two stale ``kis`` rows (100 days old, beyond the anchored TTTS3035R
+    depth) plus one fresh row, ``limit=1``: under the old ``created_at ASC``
+    order the oldest row would take the only slot on every pass.
+    """
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.models.review import LiveOrderLedger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    now = datetime.now(UTC)
+    stale_ids = []
+    async with ll._order_session_factory()() as db:
+        for _ in range(2):
+            row = LiveOrderLedger(
+                trade_date=now - timedelta(days=100),
+                broker="kis",
+                account_scope="kis_live",
+                market="us",
+                symbol="AAPL",
+                side="buy",
+                order_kind="limit",
+                order_no=f"STALE-{uuid4().hex[:12]}",
+                status="accepted",
+                lifecycle_state="accepted",
+                created_at=now - timedelta(days=100),
+            )
+            db.add(row)
+            await db.flush()
+            stale_ids.append(row.id)
+        fresh = LiveOrderLedger(
+            trade_date=now,
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            symbol="AAPL",
+            side="buy",
+            order_kind="limit",
+            order_no=f"FRESH-{uuid4().hex[:12]}",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now,
+        )
+        db.add(fresh)
+        await db.flush()
+        fresh_id = fresh.id
+        await db.commit()
+    assert stale_ids[0] < fresh_id
+
+    pending = FillEvidence(
+        FillVerdict.PENDING, Decimal("0"), None, None, "not_found", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=pending)
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        out = await ll.live_reconcile_orders_impl(broker="kis", dry_run=True, limit=1)
+
+    assert out["success"] is True
+    scanned_ids = {entry["ledger_id"] for entry in out["reconciled"]}
+    assert scanned_ids == {fresh_id}
+    coverage = out["candidate_scan"]
+    assert coverage["scanned"] == 1
+    assert coverage["open_total"] == 3
+    assert coverage["probeable_open"] == 1
+    assert coverage["unreached_beyond_reach"] == 2
+    assert coverage["unreached_probeable"] == 0
+    # The not-found flag is visible end to end, on the scanned row itself.
+    entry = out["reconciled"][0]
+    assert entry["action"] == "noop_pending"
+    assert entry.get("reason_code") == "not_found"
+    assert entry.get("requires_manual_review") is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_beyond_reach_kis_rows_are_deprioritized_not_dropped(db_session):
+    """ROB-719 gap D: aged KIS US rows fill leftover slots, never dropped.
+
+    Ordering deprioritizes beyond-reach rows; it must not filter them out.
+    A 100-day-old kis row plus a fresh row with ``limit=2``: both must be
+    scanned even though the stale row ranks behind the reachable one.
+    """
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.models.review import LiveOrderLedger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    now = datetime.now(UTC)
+    async with ll._order_session_factory()() as db:
+        stale = LiveOrderLedger(
+            trade_date=now - timedelta(days=100),
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            symbol="AAPL",
+            side="buy",
+            order_kind="limit",
+            order_no=f"STALE-{uuid4().hex[:12]}",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now - timedelta(days=100),
+        )
+        fresh = LiveOrderLedger(
+            trade_date=now,
+            broker="kis",
+            account_scope="kis_live",
+            market="us",
+            symbol="AAPL",
+            side="buy",
+            order_kind="limit",
+            order_no=f"FRESH-{uuid4().hex[:12]}",
+            status="accepted",
+            lifecycle_state="accepted",
+            created_at=now,
+        )
+        db.add_all([stale, fresh])
+        await db.flush()
+        stale_id, fresh_id = stale.id, fresh.id
+        await db.commit()
+    assert stale_id < fresh_id
+
+    pending = FillEvidence(
+        FillVerdict.PENDING, Decimal("0"), None, None, "not_found", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=pending)
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        out = await ll.live_reconcile_orders_impl(broker="kis", dry_run=True, limit=2)
+
+    scanned_ids = {entry["ledger_id"] for entry in out["reconciled"]}
+    assert scanned_ids == {stale_id, fresh_id}
+    coverage = out["candidate_scan"]
+    assert coverage["scanned"] == 2
+    assert coverage["open_total"] == 2
+    assert coverage["probeable_open"] == 1
+    assert coverage["beyond_evidence_reach"] == 1
+    assert coverage["unscanned"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_anchored_window_resolves_aged_kis_us_cohort(db_session):
+    """ROB-719 gap A — shaped like the Step3 probe measurements.
+
+    Sixteen stuck GOOGL-shaped rows (11 expired buys + 5 filled sells) dated
+    1..70 days ago plus 2 rows beyond the ~90-day depth.  With the window
+    anchored on each row's order date the 16 resolve in ONE pass — expired
+    rows mark_expired, sell fills book — while the beyond-reach pair stays
+    ``noop_pending`` + ``requires_manual_review``.  A second pass is a
+    no-op for the resolved rows (terminal rows drop out of the open scan).
+    """
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.models.review import LiveOrderLedger
+
+    now = datetime.now(UTC)
+    suffix = uuid4().hex[:10]
+    symbol = f"R7{suffix[:6].upper()}"
+    expired_ages = [70, 60, 50, 40, 30, 21, 14, 10, 9, 8, 7]
+    sell_ages = [6, 5, 4, 3, 1]
+    ancient_ages = [100, 95]
+
+    def _broker_row(order_no: str, *, filled: bool, age_days: int) -> dict:
+        ord_dt = (now - timedelta(days=age_days)).strftime("%Y%m%d")
+        if filled:
+            return {
+                "odno": order_no,
+                "pdno": symbol,
+                "sll_buy_dvsn_cd": "01",
+                "ft_ord_qty": "1",
+                "ft_ccld_qty": "1",
+                "ft_ccld_unpr3": "170.0",
+                "ord_dt": ord_dt,
+            }
+        return {
+            "odno": order_no,
+            "pdno": symbol,
+            "sll_buy_dvsn_cd": "02",
+            "ft_ord_qty": "1",
+            "ft_ccld_qty": "0",
+            "nccs_qty": "0",
+            "ord_dt": ord_dt,
+        }
+
+    broker_rows: list[dict] = []
+    ids: dict[str, int] = {}
+    async with ll._order_session_factory()() as db:
+        for i, age in enumerate(expired_ages):
+            ono = f"ROB719-EXP-{suffix}-{i}"
+            broker_rows.append(_broker_row(ono, filled=False, age_days=age))
+            row = LiveOrderLedger(
+                trade_date=now - timedelta(days=age),
+                broker="kis",
+                account_scope="kis_live",
+                market="us",
+                symbol=symbol,
+                side="buy",
+                order_kind="limit",
+                order_no=ono,
+                status="accepted",
+                lifecycle_state="accepted",
+                created_at=now - timedelta(days=age),
+            )
+            db.add(row)
+            await db.flush()
+            ids[ono] = row.id
+        for i, age in enumerate(sell_ages):
+            ono = f"ROB719-SELL-{suffix}-{i}"
+            broker_rows.append(_broker_row(ono, filled=True, age_days=age))
+            row = LiveOrderLedger(
+                trade_date=now - timedelta(days=age),
+                broker="kis",
+                account_scope="kis_live",
+                market="us",
+                symbol=symbol,
+                side="sell",
+                order_kind="limit",
+                order_no=ono,
+                status="accepted",
+                lifecycle_state="accepted",
+                created_at=now - timedelta(days=age),
+            )
+            db.add(row)
+            await db.flush()
+            ids[ono] = row.id
+        for i, age in enumerate(ancient_ages):
+            ono = f"ROB719-OLD-{suffix}-{i}"
+            row = LiveOrderLedger(
+                trade_date=now - timedelta(days=age),
+                broker="kis",
+                account_scope="kis_live",
+                market="us",
+                symbol=symbol,
+                side="buy",
+                order_kind="limit",
+                order_no=ono,
+                status="accepted",
+                lifecycle_state="accepted",
+                created_at=now - timedelta(days=age),
+            )
+            db.add(row)
+            await db.flush()
+            ids[ono] = row.id
+        await db.commit()
+
+    captured: list[dict] = []
+
+    async def _fake_history(**kwargs):
+        captured.append(kwargs)
+        return list(broker_rows)
+
+    fake_kis = SimpleNamespace(
+        inquire_daily_order_overseas=AsyncMock(side_effect=_fake_history)
+    )
+    save_fill = AsyncMock(return_value=777)
+    close_sell = AsyncMock(
+        return_value={
+            "journals_closed": 0,
+            "closed_ids": [],
+            "total_pnl_pct": None,
+        }
+    )
+
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=fake_kis),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+        patch.object(ll, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)),
+        patch.object(ll, "_save_order_fill", new=save_fill),
+        patch.object(ll, "_close_journals_on_sell", new=close_sell),
+    ):
+        out = await ll.live_reconcile_orders_impl(
+            market="us", broker="kis", symbol=symbol, dry_run=False, limit=20
+        )
+
+    assert out["success"] is True
+    by_id = {entry["order_id"]: entry for entry in out["reconciled"]}
+    expired_ids = {f"ROB719-EXP-{suffix}-{i}" for i in range(len(expired_ages))}
+    sell_ids = {f"ROB719-SELL-{suffix}-{i}" for i in range(len(sell_ages))}
+    ancient_ids = {f"ROB719-OLD-{suffix}-{i}" for i in range(len(ancient_ages))}
+
+    assert {o for o, e in by_id.items() if e["action"] == "marked_expired"} == (
+        expired_ids
+    )
+    assert {o for o, e in by_id.items() if e["action"] == "booked"} == sell_ids
+    for ono in ancient_ids:
+        entry = by_id[ono]
+        assert entry["action"] == "noop_pending"
+        assert entry["reason_code"] == "not_found"
+        assert entry["requires_manual_review"] is True
+
+    # SELL booking: the delta went through _save_order_fill(side="sell") and
+    # the journal close once per sell row, each with the full broker qty.
+    assert save_fill.await_count == 5
+    assert {c.kwargs["side"] for c in save_fill.await_args_list} == {"sell"}
+    assert close_sell.await_count == 5
+    assert {c.kwargs["sell_quantity"] for c in close_sell.await_args_list} == {1.0}
+
+    # Window anchoring: first scanned row is the oldest reachable (70d), its
+    # probe starts at order_date-1; the ancient rows are probed last with the
+    # depth-clamped start.  One history call per row (single exchange).
+    assert len(captured) == 18
+    oldest_start = ((now - timedelta(days=70)).date() - timedelta(days=1)).strftime(
+        "%Y%m%d"
+    )
+    assert captured[0]["start_date"] == oldest_start
+    assert captured[0]["end_date"] == datetime.now().strftime("%Y%m%d")
+    depth_start = (datetime.now() - timedelta(days=89)).strftime("%Y%m%d")
+    assert {c["start_date"] for c in captured[-2:]} == {depth_start}
+
+    # Ledger statuses persisted; a second pass is a no-op for the resolved
+    # rows — only the beyond-reach pair remains in the open scan.
+    async with ll._order_session_factory()() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(LiveOrderLedger).where(
+                        LiveOrderLedger.order_no.in_(list(by_id))
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    status_by_order = {r.order_no: r.status for r in rows}
+    for ono in expired_ids:
+        assert status_by_order[ono] == "expired"
+    for ono in sell_ids:
+        assert status_by_order[ono] == "filled"
+
+    captured.clear()
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=fake_kis),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+        patch.object(ll, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)),
+        patch.object(ll, "_save_order_fill", new=save_fill),
+        patch.object(ll, "_close_journals_on_sell", new=close_sell),
+    ):
+        out2 = await ll.live_reconcile_orders_impl(
+            market="us", broker="kis", symbol=symbol, dry_run=False, limit=20
+        )
+    assert {e["order_id"] for e in out2["reconciled"]} == ancient_ids
+    assert save_fill.await_count == 5  # unchanged — no double booking
+    assert close_sell.await_count == 5

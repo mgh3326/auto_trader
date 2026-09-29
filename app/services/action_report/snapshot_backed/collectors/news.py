@@ -30,8 +30,12 @@ from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
 )
+from app.services.investment_snapshots.freshness import FreshnessStatus
 from app.services.research_reports.query_service import ResearchReportsQueryService
-from app.services.symbol_news_service import SymbolNewsFetchResult
+from app.services.symbol_news_service import (
+    SymbolNewsFetchResult,
+    news_fetch_is_stale,
+)
 
 # ROB-423 — per-symbol on-demand news fetch (symbol, market, limit) →
 # SymbolNewsFetchResult. Wired in registry.py over symbol_news_service so this
@@ -193,6 +197,17 @@ class NewsSnapshotCollector:
                     "returned_count": result.returned_count,
                     "status": result.status,
                     "error_code": result.error_code,
+                    # status="ok" can still mean a degraded fetch serving
+                    # cached rows — carry the provider health + staleness so
+                    # the snapshot never reads as freshly fetched (#904).
+                    "degraded": result.degraded,
+                    "fetch_error": result.fetch_error,
+                    "fetched_at": (
+                        result.fetched_at.isoformat()
+                        if result.fetched_at is not None
+                        else None
+                    ),
+                    "stale": news_fetch_is_stale(result.fetched_at),
                 }
             )
             for a in result.articles:
@@ -221,6 +236,16 @@ class NewsSnapshotCollector:
             "source": "symbol_news_service",
             "market": request.market,
         }
+        # Articles served from a stale degraded fallback make the snapshot
+        # stale, not fresh (#904).
+        served_stale = any(
+            record["stale"] and record["returned_count"] > 0 for record in fetch_records
+        )
+        freshness_status: FreshnessStatus = (
+            "soft_stale"
+            if served_stale
+            else ("fresh" if articles_payload else "partial")
+        )
         return [
             build_result(
                 snapshot_kind=self.snapshot_kind,
@@ -229,7 +254,7 @@ class NewsSnapshotCollector:
                 payload=payload,
                 origin="news",
                 as_of=now,
-                freshness_status="fresh" if articles_payload else "partial",
+                freshness_status=freshness_status,
                 coverage={"article_count": len(articles_payload)},
             )
         ]

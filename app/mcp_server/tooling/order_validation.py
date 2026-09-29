@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Final
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.market_data as market_data_service
 from app.core.config import settings
+from app.core.symbol import to_upbit_symbol
 from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
 from app.mcp_server.tooling.kis_mock_ledger import _get_kis_mock_shadow_exposure
 from app.mcp_server.tooling.market_data_quotes import (
@@ -36,6 +38,8 @@ from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
 from app.services.order_proposals.cash_funding_exemption import CashFundingVerdict
+from app.services.order_proposals.parking_sell_exemption import ParkingSellContext
+from app.services.protected_quantity_service import apply_holdings_protection
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -130,6 +134,7 @@ def evaluate_sell_price_guards(
     allow_loss_sell: bool = False,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ) -> str | None:
     """Single source of truth for limit-sell price guards.
 
@@ -150,7 +155,10 @@ def evaluate_sell_price_guards(
                     NOT enforced here — that's the caller's contract in
                     _place_order_impl.
     """
-    if loss_cut_ctx is not None and cash_funding_ctx is not None:
+    if (
+        sum(x is not None for x in (loss_cut_ctx, cash_funding_ctx, parking_sell_ctx))
+        > 1
+    ):
         # Both tokens are safety exceptions with incompatible evidence models;
         # accepting both would make precedence a permission surface.
         raise ValueError("loss_cut_ctx and cash_funding_ctx are mutually exclusive")
@@ -162,6 +170,13 @@ def evaluate_sell_price_guards(
     # _validate_sell_side. Operator-requested: mock must let 손절/스톱로스 be practiced.
     if allow_loss_sell:
         return None
+    if parking_sell_ctx is not None and (
+        not math.isfinite(current_price)
+        or not math.isfinite(price)
+        or current_price <= 0
+        or price > current_price
+    ):
+        return "Parking sell limit price must be marketable at the fresh current price"
     if loss_cut_ctx is not None:
         # ROB-800 — sanctioned loss_cut: floor exempt, current-price guard
         # relaxed to a downward slip band. Fat-finger deep discounts stay blocked.
@@ -178,6 +193,7 @@ def evaluate_sell_price_guards(
         price < min_sell_price
         and defensive_trim_ctx is None
         and cash_funding_ctx is None
+        and parking_sell_ctx is None
     ):
         return (
             f"Sell price {price} below minimum "
@@ -790,19 +806,36 @@ async def _lookup_symbol_sector_label(
 async def _get_holdings_for_order(
     symbol: str, market_type: str, is_mock: bool = False
 ) -> dict[str, Any] | None:
+    async def _with_protection(
+        holdings: dict[str, Any], *, account_scope: str, market: str
+    ) -> dict[str, Any]:
+        # C1 deliberately decorates only the live read.  The mock baseline
+        # remains byte-for-byte on its existing quantity semantics.
+        return await apply_holdings_protection(
+            holdings,
+            account_scope=account_scope,
+            market=market,
+            symbol=symbol,
+            is_mock=is_mock,
+        )
+
     if market_type == "crypto":
         coins = await upbit_service.fetch_my_coins()
-        currency = symbol.replace("KRW-", "")
+        currency = to_upbit_symbol(symbol).partition("-")[2]
         for coin in coins:
             if coin.get("currency") == currency:
                 parsed = _parse_upbit_account_row(coin)
-                return {
-                    "quantity": parsed["orderable_quantity"],
-                    "total_quantity": parsed["total_quantity"],
-                    "locked": parsed["locked"],
-                    "avg_price": parsed["avg_buy_price"],
-                    "sellable_observed": True,
-                }
+                return await _with_protection(
+                    {
+                        "quantity": parsed["orderable_quantity"],
+                        "total_quantity": parsed["total_quantity"],
+                        "locked": parsed["locked"],
+                        "avg_price": parsed["avg_buy_price"],
+                        "sellable_observed": True,
+                    },
+                    account_scope="upbit_live",
+                    market="crypto",
+                )
         return None
 
     kis = _create_kis_client(is_mock=is_mock)
@@ -819,13 +852,20 @@ async def _get_holdings_for_order(
                 if orderable_raw in {None, ""}
                 else _to_float(orderable_raw, default=0.0)
             )
-            return {
-                "quantity": orderable_quantity,
-                "total_quantity": total_quantity,
-                "locked": max(total_quantity - orderable_quantity, 0.0),
-                "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
-                "sellable_observed": orderable_raw not in {None, ""},
-            }
+            return await _with_protection(
+                {
+                    "quantity": orderable_quantity,
+                    "broker_sellable_quantity": (
+                        None if orderable_raw in {None, ""} else orderable_quantity
+                    ),
+                    "total_quantity": total_quantity,
+                    "locked": max(total_quantity - orderable_quantity, 0.0),
+                    "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
+                    "sellable_observed": orderable_raw not in {None, ""},
+                },
+                account_scope="kis_live",
+                market="kr",
+            )
         return None
 
     us_stocks = await _call_kis(kis.fetch_my_us_stocks, is_mock=is_mock)
@@ -842,13 +882,20 @@ async def _get_holdings_for_order(
             if orderable_raw in {None, ""}
             else _to_float(orderable_raw, default=0.0)
         )
-        return {
-            "quantity": orderable_quantity,
-            "total_quantity": total_quantity,
-            "locked": max(total_quantity - orderable_quantity, 0.0),
-            "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
-            "sellable_observed": orderable_raw not in {None, ""},
-        }
+        return await _with_protection(
+            {
+                "quantity": orderable_quantity,
+                "broker_sellable_quantity": (
+                    None if orderable_raw in {None, ""} else orderable_quantity
+                ),
+                "total_quantity": total_quantity,
+                "locked": max(total_quantity - orderable_quantity, 0.0),
+                "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
+                "sellable_observed": orderable_raw not in {None, ""},
+            },
+            account_scope="kis_live",
+            market="us",
+        )
     return None
 
 
@@ -1104,6 +1151,7 @@ async def _preview_sell(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -1181,6 +1229,7 @@ async def _preview_sell(
             allow_loss_sell=allow_loss_sell,
             loss_cut_ctx=loss_cut_ctx,
             cash_funding_ctx=cash_funding_ctx,
+            parking_sell_ctx=parking_sell_ctx,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -1244,6 +1293,8 @@ async def _preview_sell(
         result["exit_intent"] = "cash_funding"
         result["cash_funding_currency"] = cash_funding_ctx.scope_currency
         result["cash_funding_max_quantity"] = cash_funding_ctx.max_quantity
+    if parking_sell_ctx is not None:
+        result["parking_sell_exempt"] = True
 
     estimated_value = execution_price * order_quantity
     realized_pnl = (execution_price - avg_price) * order_quantity
@@ -1269,6 +1320,7 @@ async def _preview_order(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
@@ -1297,6 +1349,7 @@ async def _preview_order(
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
         cash_funding_ctx=cash_funding_ctx,
+        parking_sell_ctx=parking_sell_ctx,
     )
 
 
@@ -1365,6 +1418,7 @@ async def _validate_sell_side(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -1406,12 +1460,16 @@ async def _validate_sell_side(
             locked_quantity += reserved_qty
 
     if quantity is not None and quantity > available_quantity:
+        protected_quantity = _to_float(holdings.get("protected_quantity"), default=0.0)
+        protection_context = (
+            f" protected={protected_quantity}." if protected_quantity > 0 else "."
+        )
         return (
             0.0,
             0.0,
             order_error_fn(
                 f"Requested sell quantity {quantity} exceeds orderable balance {available_quantity}. "
-                f"locked={locked_quantity} (in open orders, not sellable)."
+                f"locked={locked_quantity} (in open orders, not sellable){protection_context}"
             ),
         )
 
@@ -1455,6 +1513,7 @@ async def _validate_sell_side(
             allow_loss_sell=allow_loss_sell,
             loss_cut_ctx=loss_cut_ctx,
             cash_funding_ctx=cash_funding_ctx,
+            parking_sell_ctx=parking_sell_ctx,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)

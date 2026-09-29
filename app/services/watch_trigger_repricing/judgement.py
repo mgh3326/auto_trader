@@ -111,6 +111,7 @@ class ProposalDraft:
     thesis: str
     strategy: str = "watch-trigger-repricing"
     valid_until: str | None = None
+    broker_account_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in (

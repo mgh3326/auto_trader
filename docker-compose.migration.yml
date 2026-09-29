@@ -6,7 +6,7 @@ services:
     image: ghcr.io/${GITHUB_REPOSITORY}:latest
     container_name: auto_trader_migration
     env_file:
-      - .env.prod
+      - ${AT_MIGRATION_ENV_FILE:-.env.prod}
     network_mode: host
     volumes:
       - ./tmp:/app/tmp
@@ -14,7 +14,7 @@ services:
     command: >
       sh -c "
         echo '🔍 Checking database connection...' &&
-        python -c 'import asyncio; import asyncpg; import os; asyncio.run(asyncpg.connect(os.environ[\"DATABASE_URL\"]).connect())' &&
+        python -c 'import asyncio; import asyncpg; import os; dsn = os.environ[\"DATABASE_URL\"].replace(\"postgresql+asyncpg\", \"postgresql\"); asyncio.run(asyncpg.connect(dsn))' &&
         echo '✅ Database connection successful' &&
         echo '📊 Current migration status:' &&
         alembic current &&
@@ -24,5 +24,3 @@ services:
       "
     profiles:
       - migration  # 기본 실행에서 제외
-
-

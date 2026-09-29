@@ -5,10 +5,15 @@ import datetime as dt
 import pytest
 
 from app.services.brokers.toss.market_calendar import (
+    KRX_AFTER_SESSION,
+    TossKrMarketDay,
+    TossSessionWindow,
     clear_toss_market_calendar_cache,
     get_toss_market_day,
+    kr_krx_after_session_for,
     kr_nxt_session_for,
     kr_toss_session_for,
+    krx_after_window,
     parse_kr_market_calendar,
     parse_us_market_calendar,
     us_toss_session_for,
@@ -192,3 +197,100 @@ async def test_get_toss_market_day_uses_one_kst_day_cache(monkeypatch) -> None:
 
     assert first is second
     assert calls == ["2026-03-25"]
+
+
+def _kr_day_with_after(start: str, end: str) -> dict[str, object]:
+    return {
+        "today": {
+            "date": "2026-09-29",
+            "integrated": {
+                "preMarket": _session(
+                    "2026-09-29T08:00:00+09:00", "2026-09-29T09:00:00+09:00"
+                ),
+                "regularMarket": _session(
+                    "2026-09-29T09:00:00+09:00", "2026-09-29T15:30:00+09:00"
+                ),
+                "afterMarket": _session(start, end),
+            },
+        },
+    }
+
+
+def test_krx_after_window_clips_the_integrated_nxt_window_to_16_20() -> None:
+    calendar = parse_kr_market_calendar(
+        _kr_day_with_after("2026-09-29T15:30:00+09:00", "2026-09-29T20:00:00+09:00")
+    )
+    day = calendar.day_for(dt.date(2026, 9, 29))
+    assert isinstance(day, TossKrMarketDay)
+    window = krx_after_window(day)
+    assert window == TossSessionWindow(
+        start=dt.datetime(2026, 9, 29, 16, 0, tzinfo=KST),
+        end=dt.datetime(2026, 9, 29, 20, 0, tzinfo=KST),
+    )
+
+
+@pytest.mark.parametrize(
+    ("moment", "expected"),
+    [
+        (dt.datetime(2026, 9, 29, 15, 59, 59, 999999, tzinfo=KST), None),
+        (dt.datetime(2026, 9, 29, 16, 0, tzinfo=KST), KRX_AFTER_SESSION),
+        (dt.datetime(2026, 9, 29, 19, 59, 59, 999999, tzinfo=KST), KRX_AFTER_SESSION),
+        (dt.datetime(2026, 9, 29, 20, 0, tzinfo=KST), None),
+        (dt.datetime(2026, 9, 29, 8, 0, tzinfo=KST), None),
+        (dt.datetime(2026, 9, 29, 8, 50, tzinfo=KST), None),
+        (dt.datetime(2026, 9, 29, 8, 0, tzinfo=dt.UTC), KRX_AFTER_SESSION),
+        (dt.datetime(2026, 9, 29, 11, 0, tzinfo=dt.UTC), None),
+    ],
+)
+def test_kr_krx_after_session_boundaries(moment, expected) -> None:
+    calendar = parse_kr_market_calendar(
+        _kr_day_with_after("2026-09-29T15:30:00+09:00", "2026-09-29T20:00:00+09:00")
+    )
+    assert kr_krx_after_session_for(moment, calendar=calendar) == expected
+    # The integrated session vocabulary is unchanged (#925 adds, never renames).
+    if expected is not None:
+        assert kr_toss_session_for(moment, calendar=calendar) == "nxt_after"
+
+
+def test_krx_after_window_needs_an_integrated_after_session() -> None:
+    raw = _kr_day_with_after("2026-09-29T15:30:00+09:00", "2026-09-29T20:00:00+09:00")
+    raw["today"]["integrated"]["afterMarket"] = None  # type: ignore[index]
+    calendar = parse_kr_market_calendar(raw)
+    day = calendar.day_for(dt.date(2026, 9, 29))
+    assert isinstance(day, TossKrMarketDay)
+    assert krx_after_window(day) is None
+    assert (
+        kr_krx_after_session_for(
+            dt.datetime(2026, 9, 29, 17, 0, tzinfo=KST), calendar=calendar
+        )
+        is None
+    )
+
+
+def test_krx_after_window_respects_a_shortened_after_session() -> None:
+    calendar = parse_kr_market_calendar(
+        _kr_day_with_after("2026-09-29T15:30:00+09:00", "2026-09-29T18:00:00+09:00")
+    )
+    day = calendar.day_for(dt.date(2026, 9, 29))
+    assert isinstance(day, TossKrMarketDay)
+    window = krx_after_window(day)
+    assert window is not None
+    assert window.end == dt.datetime(2026, 9, 29, 18, 0, tzinfo=KST)
+
+    early = parse_kr_market_calendar(
+        _kr_day_with_after("2026-09-29T15:30:00+09:00", "2026-09-29T16:00:00+09:00")
+    ).day_for(dt.date(2026, 9, 29))
+    assert isinstance(early, TossKrMarketDay)
+    assert krx_after_window(early) is None
+
+
+def test_kr_krx_after_session_unknown_day_is_none() -> None:
+    calendar = parse_kr_market_calendar(
+        _kr_day_with_after("2026-09-29T15:30:00+09:00", "2026-09-29T20:00:00+09:00")
+    )
+    assert (
+        kr_krx_after_session_for(
+            dt.datetime(2026, 9, 30, 17, 0, tzinfo=KST), calendar=calendar
+        )
+        is None
+    )

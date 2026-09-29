@@ -78,9 +78,26 @@ SEAM_TARGETS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
             "app.services.naver_finance",
             "app.services.naver_finance.company",
             "app.services.naver_finance.investor",
-            "app.services.naver_finance.news",
             "app.services.naver_finance.parser",
             "app.services.naver_finance.valuation",
+        ),
+    ),
+    # m.stock.naver.com JSON news API (#904): the retired HTML table client is
+    # gone; news.py owns a new httpx call root that must be seamed so an
+    # unmocked test fails the same way a blocked connect does.
+    (
+        "_fetch_json",
+        ("app.services.naver_finance.news",),
+    ),
+    # m.stock.naver.com JSON research list/detail API (#930): the retired
+    # company_list/company_read HTML client is gone; investor.py owns the
+    # request root that every research call (standalone and shared-client)
+    # funnels through. The package __init__ re-export binds the same function.
+    (
+        "_fetch_research_json_with_client",
+        (
+            "app.services.naver_finance",
+            "app.services.naver_finance.investor",
         ),
     ),
     (

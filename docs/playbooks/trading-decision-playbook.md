@@ -63,8 +63,10 @@ All tool names below are registered in the **DEFAULT** MCP profile.
   withdrawn, so it is spent down inside KIS (single-conviction concentration,
   avoid scattering scraps). Sells execute from the holding account.
 - **Hard constraints:** loss guard (sell price ≥ average × `sell.loss_guard_min_multiple`),
-  KRX tick rounding, DAY order expiry at `order.day_expiry_kst` → re-place next
-  day, and no two-sided (buy+sell) resting orders on the same Toss symbol.
+  KRX tick rounding, DAY order expiry per broker under `order.day_expiry_kst`
+  (toss_live regular-session dies at 15:30 KST — after-hours exposure is a new
+  order; kis_live is to_confirm) → unfilled re-place next day, and no two-sided
+  (buy+sell) resting orders on the same Toss symbol.
 - **Portfolio policy:** add-not-cut (average down instead of stop-loss),
   projected sector concentration at `portfolio.sector_cluster_cap_pct`
   (financials, shipbuilding/defense, bio, semis-memory) is an advisory that
@@ -242,7 +244,7 @@ lanes:
       - recovery_gate     # deploy reserve only when >= recovery_gate.min_conditions_met
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple (sell-side)
       - tick_rule         # KRX tick rounding
-      - day_expiry        # DAY order expires at order.day_expiry_kst -> re-place next day
+      - day_expiry        # DAY order expires per broker under order.day_expiry_kst (toss_live 15:30 KST regular close; kis_live to_confirm) -> re-place next day
       - toss_two_sided    # no buy+sell resting orders on same Toss symbol
 ```
 
@@ -617,9 +619,12 @@ policy_keys:
 
   order.day_expiry_kst:
     lanes: [buy, sell]
-    captured: "20:00"
+    captured: {toss_live: "15:30", kis_live: "to_confirm"}
     unit: kst_time
-    semantics: DAY order expiry; unfilled -> re-place next day
+    semantics: >-
+      broker-split DAY order expiry (#876); toss_live regular-session orders
+      die at 15:30 KST and after-hours exposure is a new order; kis_live is
+      to_confirm; unfilled -> re-place next day
 
   buy.deep_limit_pct_range:
     lanes: [buy]

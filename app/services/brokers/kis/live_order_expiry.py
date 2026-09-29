@@ -51,10 +51,14 @@ _REGULAR_OPEN = datetime.time(hour=9, minute=0)
 _REGULAR_CLOSE = datetime.time(hour=15, minute=30)
 _NXT_AFTER_OPEN = datetime.time(hour=16, minute=0)
 # _NXT_AFTER_CLOSE == NXT_CLOSE_KST (20:00)
+# #925: KRX after-market (opened 2026-09-14), 16:00-20:00 KST, KRX venue only.
+KRX_AFTER_OPEN_KST = datetime.time(hour=16, minute=0)
+KRX_AFTER_CLOSE_KST = datetime.time(hour=20, minute=0)
 
 SESSION_PREMARKET = "premarket"
 SESSION_REGULAR = "regular"
 SESSION_NXT_AFTER = "nxt_after"
+SESSION_KRX_AFTER = "krx_after"
 SESSION_OFF = "off"
 
 # Categorical expiry_reason vocabulary (never a fabricated timestamp/fill).
@@ -64,6 +68,11 @@ REASON_NXT_CARRY = (
 REASON_REGULAR_BUY_CONSERVATIVE = "regular_buy_conservative_20_00"
 REASON_REGULAR_BUY_UNSETTLED_1530 = "regular_buy_unsettled_15_30"  # gated downgrade
 REASON_UNKNOWN_SESSION = "unknown_session"  # off-window accept → conservative 20:00
+# #925 / #876: a KRX-venue-only (not NXT-tradable) order has no NXT carry. A
+# regular-session order dies at the 15:30 regular close; a KRX after-market
+# order is a new order for that session and dies at its 20:00 close.
+REASON_KRX_REGULAR_CLOSE = "krx_regular_close_15_30"
+REASON_KRX_AFTER_CLOSE = "krx_after_close_20_00"
 
 
 _ORDER_NO_KEYS = ("odno", "ord_no")
@@ -91,20 +100,30 @@ def nxt_session_closed(*, order_date: datetime.date, now: datetime.datetime) -> 
     return now.astimezone(_KST) >= close
 
 
-def classify_kr_accept_session(accepted_at: datetime.datetime) -> str:
+def classify_kr_accept_session(
+    accepted_at: datetime.datetime, *, nxt_tradable: bool | None = None
+) -> str:
     """Classify a KST accept timestamp into a KR trading window (stdlib-only).
 
     Windows (KST, close exclusive): premarket 08:00–08:50, regular 09:00–15:30,
     nxt_after 16:00–20:00; anything else (incl. the 15:30–16:00 gap) → ``off``.
     Naive timestamps are assumed KST (app/core/timezone convention).
+
+    #925 session × venue: ``nxt_tradable=False`` means the order can only sit
+    on the KRX venue — 16:00–20:00 is then ``krx_after`` and 08:00–08:50 (an
+    NXT-only window) is ``off``. ``None`` (unknown) keeps the legacy NXT
+    labels; it never promotes a window.
     """
     if accepted_at.tzinfo is None:
         accepted_at = accepted_at.replace(tzinfo=_KST)
     t = accepted_at.astimezone(_KST).time()
+    krx_only = nxt_tradable is False
     if _PREMARKET_OPEN <= t < _PREMARKET_CLOSE:
-        return SESSION_PREMARKET
+        return SESSION_OFF if krx_only else SESSION_PREMARKET
     if _REGULAR_OPEN <= t < _REGULAR_CLOSE:
         return SESSION_REGULAR
+    if krx_only and KRX_AFTER_OPEN_KST <= t < KRX_AFTER_CLOSE_KST:
+        return SESSION_KRX_AFTER
     if _NXT_AFTER_OPEN <= t < NXT_CLOSE_KST:
         return SESSION_NXT_AFTER
     return SESSION_OFF
@@ -116,6 +135,7 @@ def kr_day_order_expiry(
     side: str,
     accept_session: str | None = None,
     unsettled_regular_buy_downgrade: bool = False,
+    nxt_tradable: bool | None = None,
 ) -> tuple[str | None, str]:
     """Return ``(expiry_iso, expiry_reason)`` for a KR day order by session × side.
 
@@ -127,18 +147,30 @@ def kr_day_order_expiry(
     measurement confirms the cause. Regular-session SELLs, premarket, and
     nxt_after all carry to the NXT close (20:00). Returns ``(None, reason)`` only
     if the timestamp cannot be localized.
+
+    #925: ``krx_after`` → 20:00 KRX after-market close. ``nxt_tradable=False``
+    (KRX venue only, no NXT carry) → a regular-session order of either side
+    dies at the 15:30 close, consistent with #876 (evening exposure is a new
+    order, never a carry). ``None`` keeps the ROB-671 behavior.
     """
     if accepted_at.tzinfo is None:
         local = accepted_at.replace(tzinfo=_KST)
     else:
         local = accepted_at.astimezone(_KST)
-    session = accept_session or classify_kr_accept_session(local)
+    session = accept_session or classify_kr_accept_session(
+        local, nxt_tradable=nxt_tradable
+    )
     normalized_side = (side or "").strip().lower()
 
     def _iso(t: datetime.time) -> str:
         return local.replace(
             hour=t.hour, minute=t.minute, second=0, microsecond=0
         ).isoformat()
+
+    if session == SESSION_KRX_AFTER:
+        return _iso(KRX_AFTER_CLOSE_KST), REASON_KRX_AFTER_CLOSE
+    if session == SESSION_REGULAR and nxt_tradable is False:
+        return _iso(_REGULAR_CLOSE), REASON_KRX_REGULAR_CLOSE
 
     if session == SESSION_REGULAR and normalized_side == "buy":
         if unsettled_regular_buy_downgrade:

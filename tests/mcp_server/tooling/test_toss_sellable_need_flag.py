@@ -176,6 +176,9 @@ async def test_get_holdings_impl_forwards_fresh_sellable(monkeypatch):
 
     await portfolio_holdings._get_holdings_impl()
     assert seen["fresh_sellable"] is False
+    # C7 is the order-planning read surface, so it asks the cache-aware Toss
+    # collector for raw sellable evidence before the L1 projection.
+    assert seen["need_sellable"] is True
 
     await portfolio_holdings._get_holdings_impl(fresh_sellable=True)
     assert seen["fresh_sellable"] is True

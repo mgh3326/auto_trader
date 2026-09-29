@@ -68,12 +68,23 @@ from app.services.nxt_preflight import (
     ROUTE_VIA_KIS,
     NxtPreflightVerdict,
     NxtTradability,
-    evaluate_nxt_preflight,
+)
+from app.services.nxt_preflight_krx_after import (
+    UNKNOWN_NXT_TRADABILITY,
+    evaluate_nxt_preflight_with_krx_after,
 )
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_EXIT_INTENT,
     parse_funding_target,
     resolve_cash_funding_exemption,
+)
+from app.services.order_proposals.parking_sell_exemption import ParkingSellContext
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    attach_live_sell_lease_cleanup_warning,
+    prepare_live_sell_lease,
+    protection_mode_for_scope,
+    release_live_sell_lease_preserving_outcome,
 )
 from app.services.toss_sellable_cache import get_shared_sellable_cache
 
@@ -134,6 +145,7 @@ class _OrderProposalContext:
     rung: str | int | None
     cash_funding_target: dict[str, Any] | None = None
     cash_funding_shortfall: Decimal | None = None
+    parking_sell_ctx: ParkingSellContext | None = None
 
 
 _order_proposal_context: ContextVar[_OrderProposalContext | None] = ContextVar(
@@ -149,6 +161,7 @@ def _bind_order_proposal_context(
     rung: str | int | None,
     cash_funding_target: dict[str, Any] | None = None,
     cash_funding_shortfall: Decimal | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ):
     """Bind trusted proposal identity without exposing it in the MCP schema."""
     token = _order_proposal_context.set(
@@ -158,6 +171,7 @@ def _bind_order_proposal_context(
             rung,
             cash_funding_target,
             cash_funding_shortfall,
+            parking_sell_ctx,
         )
     )
     try:
@@ -205,6 +219,33 @@ def _resolve_toss_cash_funding_context(
     if not verdict.exempt:
         return None, f"cash_funding_{verdict.reason}"
     return CashFundingContext.from_verdict(verdict), None
+
+
+def _resolve_toss_parking_sell_context(
+    *,
+    proposal_context: _OrderProposalContext | None,
+    symbol: str,
+    market: Literal["kr", "us"],
+    side: str,
+    order_type: str,
+    quantity: Decimal | None,
+    price: Decimal | None,
+    exit_intent: str | None,
+) -> tuple[ParkingSellContext | None, str | None]:
+    ctx = proposal_context.parking_sell_ctx if proposal_context is not None else None
+    if ctx is None:
+        return None, None
+    if exit_intent is not None or not ctx.matches(
+        symbol=symbol,
+        market="equity_kr" if market == "kr" else "equity_us",
+        account_mode=ACCOUNT_MODE_TOSS_LIVE,
+        side=side,
+        order_type=order_type,
+        quantity=quantity,
+        price=price,
+    ):
+        return None, "parking_sell_binding_invalid"
+    return ctx, None
 
 
 def _config_error() -> dict[str, Any] | None:
@@ -669,6 +710,7 @@ async def _sell_loss_guard(
     *,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     current_price: Decimal | None = None,
     evidence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
@@ -701,7 +743,11 @@ async def _sell_loss_guard(
     if evidence_context is not None:
         evidence_context["avg_buy_price"] = _stringify_decimal(avg)
 
-    if loss_cut_ctx is not None or cash_funding_ctx is not None:
+    if (
+        loss_cut_ctx is not None
+        or cash_funding_ctx is not None
+        or parking_sell_ctx is not None
+    ):
         if price is None:
             return {
                 "success": False,
@@ -709,6 +755,8 @@ async def _sell_loss_guard(
                 "error": (
                     "loss_cut requires a limit sell price."
                     if loss_cut_ctx is not None
+                    else "proposal parking sell requires a limit sell price."
+                    if parking_sell_ctx is not None
                     else "cash_funding requires a limit sell price."
                 ),
             }
@@ -733,6 +781,7 @@ async def _sell_loss_guard(
             scalping_exit_ctx=None,
             loss_cut_ctx=loss_cut_ctx,
             cash_funding_ctx=cash_funding_ctx,
+            parking_sell_ctx=parking_sell_ctx,
         )
         if error is not None:
             return {"success": False, **base, "error": error}
@@ -871,6 +920,98 @@ async def _fresh_sellable_preflight(
         "fresh_sellable_quantity": _stringify_decimal(sellable),
         "sellable_quantity_source": "toss_broker_preflight",
     }, None
+
+
+async def _prepare_toss_sell_protection(
+    client: TossReadClient,
+    *,
+    market: Literal["kr", "us"],
+    symbol: str,
+    quantity: Decimal | None,
+    fresh_sellable_evidence: dict[str, Any],
+    order_amount_present: bool,
+    kind: Literal["new", "amend_uncapped"],
+    base: dict[str, Any],
+) -> tuple[Any | None, dict[str, Any] | None]:
+    """G2/G3 protection gate after Toss's broker-native sellability read.
+
+    The policy table is consulted for every live sell (Q15).  The additional
+    holdings call is deliberately delayed until the declaration is known to be
+    active, preserving the no-extra-broker-read rule for unprotected symbols.
+    The returned lease remains held by the caller through the mutation response.
+    """
+
+    try:
+        lease = await prepare_live_sell_lease(
+            account_scope="toss_live",
+            market=market,
+            symbol=symbol,
+        )
+    except ProtectionStateUnavailable:
+        return None, {
+            "success": False,
+            **base,
+            "error": "Protected position state is unavailable; sell not sent.",
+            "error_code": "protection_state_unavailable",
+        }
+
+    if not lease.active:
+        return lease, None
+
+    # The first preflight remains the existing structural Toss gate. Once a
+    # protected key obtains its session lease, read S again while that lease is
+    # held. Otherwise two concurrent callers can both retain the pre-lock S
+    # and each pass q <= S - P. The second evidence becomes the response's
+    # published broker authority as well as the policy input.
+    try:
+        refreshed_evidence, refreshed_error = await _fresh_sellable_preflight(
+            client,
+            symbol=symbol,
+            requested_quantity=quantity,
+            base=base,
+        )
+    except BaseException:
+        await lease.release()
+        raise
+    if refreshed_error is not None:
+        await lease.release()
+        return None, refreshed_error
+    fresh_sellable_evidence.clear()
+    fresh_sellable_evidence.update(refreshed_evidence or {})
+    fresh_sellable = fresh_sellable_evidence.get("fresh_sellable_quantity")
+    holding = None
+    if not order_amount_present:
+        try:
+            holding = await _find_holding(client, symbol)
+        except Exception:  # noqa: BLE001 - missing fresh H is fail-closed
+            holding = None
+
+    try:
+        decision = await lease.evaluate(
+            # A protected orderAmount SELL lets the broker choose q. Do not
+            # infer it from price or cache data; unresolved is fail-closed in
+            # enforce and a would-block observation in shadow.
+            quantity=None if order_amount_present else quantity,
+            kind=kind,
+            fresh_broker_sellable=fresh_sellable,
+            fresh_broker_held=None if holding is None else holding.quantity,
+            sellable_observed=True,
+        )
+    except BaseException:
+        await lease.release()
+        raise
+    if decision.allowed:
+        return lease, None
+
+    await lease.release()
+    error = {
+        "success": False,
+        **base,
+        "error": "Protected quantity floor blocks this sell order.",
+    }
+    if decision.block is not None:
+        error.update(decision.block.payload())
+    return None, error
 
 
 async def _opposite_pending_error(
@@ -1014,7 +1155,7 @@ async def _nxt_preflight_context(
         session = await get_kr_toss_session_from_toss(moment)
         tradability = (await get_kr_nxt_tradability([symbol])).get(
             symbol
-        ) or NxtTradability(nxt_eligible=False, nxt_trading_suspended=None, asof=None)
+        ) or UNKNOWN_NXT_TRADABILITY
     except Exception as exc:  # noqa: BLE001 - advisory preflight must never block an order
         logger.warning(
             "NXT preflight context unavailable for %s, skipping (fail-open): %s",
@@ -1022,7 +1163,11 @@ async def _nxt_preflight_context(
             exc,
         )
         return None
-    verdict = evaluate_nxt_preflight(session, tradability)
+    # #969: same verdict as suggest_order_account; the KRX after-market step
+    # swallows its own lookup errors, so an unknown list blocks, never skips.
+    verdict = await evaluate_nxt_preflight_with_krx_after(
+        symbol, session, tradability, now=moment
+    )
     return verdict, tradability
 
 
@@ -1111,6 +1256,19 @@ async def toss_preview_order(
                     "adjusted_price": _stringify_decimal(price_dec),
                 }
             )
+
+    parking_sell_ctx, parking_sell_error = _resolve_toss_parking_sell_context(
+        proposal_context=proposal_context,
+        symbol=symbol,
+        market=mkt,
+        side=side,
+        order_type=order_type,
+        quantity=quantity_dec,
+        price=price_dec,
+        exit_intent=exit_intent,
+    )
+    if parking_sell_error is not None:
+        return {"success": False, "preview": True, "error": parking_sell_error}
 
     quantity_str = _stringify_decimal(quantity_dec)
     price_str = _stringify_decimal(price_dec)
@@ -1231,6 +1389,7 @@ async def toss_preview_order(
                 base,
                 loss_cut_ctx=loss_cut_ctx,
                 cash_funding_ctx=cash_funding_ctx,
+                parking_sell_ctx=parking_sell_ctx,
                 current_price=current_price_dec,
                 evidence_context=sell_evidence,
             )
@@ -1325,6 +1484,9 @@ async def toss_preview_order(
         response["exit_intent"] = CASH_FUNDING_EXIT_INTENT
         response["cash_funding_currency"] = cash_funding_ctx.scope_currency
         response["cash_funding_max_quantity"] = cash_funding_ctx.max_quantity
+        response.update(sell_evidence)
+    elif parking_sell_ctx is not None:
+        response["parking_sell_exempt"] = True
         response.update(sell_evidence)
     elif side == "sell":
         response.update(sell_evidence)
@@ -1442,6 +1604,23 @@ async def _toss_place_order_impl(
                     "adjusted_price": _stringify_decimal(price_dec),
                 }
             )
+
+    parking_sell_ctx, parking_sell_error = _resolve_toss_parking_sell_context(
+        proposal_context=proposal_context,
+        symbol=symbol,
+        market=mkt,
+        side=side,
+        order_type=order_type,
+        quantity=quantity_dec,
+        price=price_dec,
+        exit_intent=exit_intent,
+    )
+    if parking_sell_error is not None:
+        return {
+            "success": False,
+            "mutation_sent": False,
+            "error": parking_sell_error,
+        }
 
     quantity_str = _stringify_decimal(quantity_dec)
     price_str = _stringify_decimal(price_dec)
@@ -1612,13 +1791,31 @@ async def _toss_place_order_impl(
     # run before *any* Decimal arithmetic on the quantity, including the
     # high-value KRW notional comparison below -- ``Decimal("NaN") >= ...``
     # raises ``decimal.InvalidOperation`` instead of failing closed with the
-    # structured contract. Toss's orderAmount-only SELL shape has no
-    # broker-authoritative quantity contract; do not synthesize one from
-    # holdings, snapshots, or sellable caches.
-    if side == "sell" and (
-        quantity_dec is None
-        or not quantity_dec.is_finite()
-        or quantity_dec <= Decimal("0")
+    # structured contract. There is one narrow #728 observation exception:
+    # when the Toss protection mode is shadow/enforce, an orderAmount-only
+    # SELL reaches G2 after the fresh broker preflight so an active protected
+    # declaration can reject it as unresolved. It still never reaches POST
+    # when no declaration blocks it; the legacy explicit-quantity rule stays
+    # intact in off mode and after a shadow observation.
+    order_amount_protection_probe = False
+    if side == "sell" and quantity_dec is None and order_amount_dec is not None:
+        try:
+            order_amount_protection_probe = (
+                protection_mode_for_scope("toss_live") != "off"
+            )
+        except ProtectionStateUnavailable:
+            # The normal structural error below is fail-closed, and avoids
+            # inventing an authority path if process configuration is invalid.
+            order_amount_protection_probe = False
+
+    if (
+        side == "sell"
+        and (
+            quantity_dec is None
+            or not quantity_dec.is_finite()
+            or quantity_dec <= Decimal("0")
+        )
+        and not order_amount_protection_probe
     ):
         return {
             "success": False,
@@ -1649,6 +1846,7 @@ async def _toss_place_order_impl(
 
     async def execute_order(client: TossReadClient):
         sellable_evidence: dict[str, Any] = {}
+        protection_lease: Any | None = None
         # Guard: Warnings check
         guard_res = await check_warnings_guard(client, symbol, market=mkt, side=side)
         guard_warnings = _warning_payload(guard_res.warnings)
@@ -1672,7 +1870,9 @@ async def _toss_place_order_impl(
         if side == "sell":
             cash_funding_ctx: CashFundingContext | None = None
             cash_funding_current_price: Decimal | None = None
-            if exit_intent == CASH_FUNDING_EXIT_INTENT and order_type == "limit":
+            if (
+                exit_intent == CASH_FUNDING_EXIT_INTENT or parking_sell_ctx is not None
+            ) and order_type == "limit":
                 try:
                     cash_funding_current_price = await _latest_price(client, symbol)
                 except Exception:
@@ -1704,6 +1904,7 @@ async def _toss_place_order_impl(
                     base_response,
                     loss_cut_ctx=loss_cut_ctx,
                     cash_funding_ctx=cash_funding_ctx,
+                    parking_sell_ctx=parking_sell_ctx,
                     current_price=cash_funding_current_price,
                 )
             ) is not None:
@@ -1752,10 +1953,37 @@ async def _toss_place_order_impl(
             if sellable_error is not None:
                 return sellable_error
             sellable_evidence = sellable_evidence or {}
+            protection_lease, protection_error = await _prepare_toss_sell_protection(
+                client,
+                market=mkt,
+                symbol=symbol,
+                quantity=quantity_dec,
+                fresh_sellable_evidence=sellable_evidence,
+                order_amount_present=order_amount_dec is not None,
+                kind="new",
+                base=base_response,
+            )
+            if protection_error is not None:
+                return protection_error
+
+            if order_amount_protection_probe:
+                # A shadow decision records its would-block event but does not
+                # authorize this independently unresolved payload. Release the
+                # protected-key lease before returning the unchanged structural
+                # contract, well before the pre-send hook or POST.
+                await protection_lease.release()
+                protection_lease = None
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "SELL orders require an explicit quantity.",
+                    "error_code": "sell_quantity_required",
+                }
 
         pre_send_hook = _toss_pre_send_hook.get()
 
         res = None
+        response: dict[str, Any] | None = None
         try:
             if pre_send_hook is None:
                 res = await client.place_order(payload)
@@ -1812,7 +2040,7 @@ async def _toss_place_order_impl(
                 ),
                 rung=(proposal_context.rung if proposal_context is not None else rung),
             )
-            return {
+            response = {
                 "success": True,
                 **base_response,
                 "mutation_sent": True,
@@ -1828,6 +2056,7 @@ async def _toss_place_order_impl(
                     "run toss_reconcile_orders to book confirmed fills."
                 ),
             }
+            return response
         except PreSendFreshnessError:
             raise
         except Exception as exc:
@@ -1839,7 +2068,22 @@ async def _toss_place_order_impl(
                 err["order_id"] = res.order_id
                 if res.client_order_id is not None:
                     err["client_order_id"] = res.client_order_id
-            return err
+            response = err
+            return response
+        finally:
+            if protection_lease is not None:
+                release_warning = await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="toss_place_order",
+                    broker_response_observed=res is not None,
+                )
+                if response is not None:
+                    response.update(
+                        attach_live_sell_lease_cleanup_warning(
+                            response,
+                            release_warning,
+                        )
+                    )
 
     async with _client_context() as client:
         return await execute_order(client)
@@ -2039,6 +2283,7 @@ async def toss_modify_order(
                 return sell_guard
 
         sellable_evidence: dict[str, Any] = {}
+        protection_lease: Any | None = None
 
         if (
             high_value_guard := _high_value_error(
@@ -2110,6 +2355,23 @@ async def toss_modify_order(
                 if sellable_error is not None:
                     return sellable_error
                 sellable_evidence = sellable_evidence or {}
+                (
+                    protection_lease,
+                    protection_error,
+                ) = await _prepare_toss_sell_protection(
+                    client,
+                    market=mkt,
+                    symbol=symbol,
+                    quantity=preflight_quantity,
+                    fresh_sellable_evidence=sellable_evidence,
+                    order_amount_present=False,
+                    # Q19 is open: both KR and US Toss amendments follow the
+                    # conservative new-order bound, including price-only US.
+                    kind="amend_uncapped",
+                    base=base_response,
+                )
+                if protection_error is not None:
+                    return protection_error
 
         if dry_run:
             return {
@@ -2121,6 +2383,7 @@ async def toss_modify_order(
             }
 
         res = None
+        response: dict[str, Any] | None = None
         try:
             res = await client.modify_order(order_id, payload)
             if side == "sell":
@@ -2145,7 +2408,7 @@ async def toss_modify_order(
                     "payload": _json_safe(payload),
                 },
             )
-            return {
+            response = {
                 "success": True,
                 **base_response,
                 **tick_meta,
@@ -2156,6 +2419,7 @@ async def toss_modify_order(
                 **sellable_evidence,
                 **ledger,
             }
+            return response
         except Exception as exc:
             err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
             # ROB-545 Major — keep the order ids on the error path so the live
@@ -2164,7 +2428,22 @@ async def toss_modify_order(
             if res is not None:
                 err["replacement_order_id"] = res.order_id
                 err.setdefault("order_id", res.order_id)
-            return err
+            response = err
+            return response
+        finally:
+            if protection_lease is not None:
+                release_warning = await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="toss_modify_order",
+                    broker_response_observed=res is not None,
+                )
+                if response is not None:
+                    response.update(
+                        attach_live_sell_lease_cleanup_warning(
+                            response,
+                            release_warning,
+                        )
+                    )
 
     async with _client_context() as client:
         return await execute_modify(client)
@@ -2550,8 +2829,12 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "from confirmed execution evidence and is delta-idempotent. "
             "It also projects partial/fill/cancel evidence onto matching order-"
             "proposal rungs and repairs terminal-ledger projection drift on later "
-            "non-dry runs. Toss loss-cut support requires either an enabled fill "
-            "poller cadence or a targeted non-dry reconcile after execution. "
+            "non-dry runs. Broker-confirmed DAY expiry (REJECTED+canceledAt) "
+            "classifies the row 'expired' with the broker timestamp; orders "
+            "absent from broker history are never guessed expired and park as "
+            "manual-review anomalies instead. Toss loss-cut support requires "
+            "either an enabled fill poller cadence or a targeted non-dry "
+            "reconcile after execution. "
             "ROB-568: Surfaces US FX PnL split (security_pnl_krw, fx_pnl_krw) "
             "for overseas equity fills with fx_rate_source/fx_pnl_accuracy labels. "
             "dry_run=True by default."

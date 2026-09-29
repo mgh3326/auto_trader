@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+import httpx
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +21,54 @@ from app.services.market_valuation_snapshots.repository import (
 
 TOSS_VALUATION_SOURCE = "toss_openapi"
 _BATCH_SIZE = 200
+# Bounded retry for transient Toss API transport failures. Kept deliberately
+# small so the worst case stays far inside callers' outer runtime budgets
+# (900s Prefect subprocess timeout, 900s at-job module timeout): a daily sync
+# is ~100 batch calls, and one blip must not sink the whole market pass.
+_TRANSIENT_RETRY_ATTEMPTS = 3
+_TRANSIENT_RETRY_BACKOFF_S = (5.0, 15.0, 30.0)
+
+logger = logging.getLogger(__name__)
+
+
+async def _call_with_transient_retries[T](
+    call: Callable[[], Awaitable[list[T]]],
+    *,
+    label: str,
+    attempts: int | None = None,
+    backoff: tuple[float, ...] | None = None,
+) -> list[T]:
+    """Call a Toss API batch endpoint with bounded retry on transport errors.
+
+    Only ``httpx.RequestError`` (connect/read/write/pool timeouts, connection
+    errors, protocol errors) is retried — those are transient network events.
+    ``TossApiResponseError`` and other non-transport failures propagate on the
+    first attempt so code/data defects are never masked.
+    """
+    if attempts is None:
+        attempts = _TRANSIENT_RETRY_ATTEMPTS
+    if backoff is None:
+        backoff = _TRANSIENT_RETRY_BACKOFF_S
+    last_exc: httpx.RequestError | None = None
+    for attempt in range(attempts + 1):
+        try:
+            return await call()
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            delay = backoff[min(attempt, len(backoff) - 1)]
+            logger.warning(
+                "toss %s batch transient error on attempt %d/%d: %s; retrying in %.1fs",
+                label,
+                attempt + 1,
+                attempts + 1,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 class TossSymbolMasterClient(Protocol):
@@ -226,9 +278,19 @@ async def sync_toss_symbol_master(
 
     batches = _chunks(symbols)
     for batch in batches:
-        stock_rows = {row.symbol: row for row in await client.stocks(batch)}
+        stock_rows = {
+            row.symbol: row
+            for row in await _call_with_transient_retries(
+                lambda batch=batch: client.stocks(batch), label="stocks"
+            )
+        }
         price_rows = (
-            {row.symbol: row for row in await client.prices(batch)}
+            {
+                row.symbol: row
+                for row in await _call_with_transient_retries(
+                    lambda batch=batch: client.prices(batch), label="prices"
+                )
+            }
             if request.include_market_cap
             else {}
         )

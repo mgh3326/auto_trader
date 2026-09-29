@@ -9,6 +9,9 @@ import pytest
 from app.services.execution_ledger.opening_lots import (
     OpeningLotCandidate,
     build_opening_lot_plan,
+    filter_opening_lot_candidates,
+    normalize_opening_lot_symbol,
+    split_requested_symbols,
 )
 
 
@@ -130,3 +133,94 @@ async def test_upbit_candidates_only_cover_krw_markets(monkeypatch) -> None:
     assert sol.venue == "upbit_krw"
     assert sol.currency == "KRW"
     assert sol.raw_symbol == "KRW-SOL"
+
+
+def test_normalize_opening_lot_symbol_uppercases_and_db_forms() -> None:
+    assert normalize_opening_lot_symbol("005930") == "005930"
+    assert normalize_opening_lot_symbol(" 005930 ") == "005930"
+    assert normalize_opening_lot_symbol("brk.b") == "BRK.B"
+    assert normalize_opening_lot_symbol("BRK-B") == "BRK.B"
+    assert normalize_opening_lot_symbol("BRK/B") == "BRK.B"
+    assert normalize_opening_lot_symbol("krw-btc") == "KRW.BTC"
+    assert normalize_opening_lot_symbol("") == ""
+    assert normalize_opening_lot_symbol(" ") == ""
+
+
+def test_split_requested_symbols_flattens_comma_lists_and_dedupes() -> None:
+    assert split_requested_symbols(["005930,196170", "005930", " , 196170 "]) == [
+        "005930",
+        "196170",
+    ]
+    assert split_requested_symbols([]) == []
+    assert split_requested_symbols([",,"]) == []
+
+
+def test_filter_opening_lot_candidates_exact_equality_only() -> None:
+    candidates = [
+        _candidate(symbol="005930", raw_symbol="005930"),
+        _candidate(symbol="000660", raw_symbol="000660"),
+    ]
+    result = filter_opening_lot_candidates(candidates, ["005930"])
+
+    assert [c.symbol for c in result.candidates] == ["005930"]
+    assert result.requested == ["005930"]
+    assert result.matched == ["005930"]
+    assert result.unmatched == []
+
+
+def test_filter_opening_lot_candidates_rejects_prefix_and_substring() -> None:
+    result = filter_opening_lot_candidates(
+        [_candidate(symbol="005930", raw_symbol="005930")],
+        ["00593", "05930", "0059300", "5930"],
+    )
+
+    assert result.candidates == []
+    assert result.matched == []
+    assert result.unmatched == ["00593", "05930", "0059300", "5930"]
+
+
+def test_filter_opening_lot_candidates_reports_unmatched_in_request_order() -> None:
+    result = filter_opening_lot_candidates(
+        [_candidate(symbol="005930", raw_symbol="005930")],
+        ["999999", "005930", "888888"],
+    )
+
+    assert [c.symbol for c in result.candidates] == ["005930"]
+    assert result.matched == ["005930"]
+    assert result.unmatched == ["999999", "888888"]
+
+
+def test_filter_opening_lot_candidates_matches_us_and_crypto_forms() -> None:
+    us = _candidate(
+        symbol="BRK/B",
+        raw_symbol="BRK/B",
+        venue="NASD",
+        instrument_type="equity_us",
+        currency="USD",
+    )
+    crypto = _candidate(
+        broker="upbit",
+        venue="upbit_krw",
+        instrument_type="crypto",
+        symbol="BTC",
+        raw_symbol="KRW-BTC",
+    )
+    result = filter_opening_lot_candidates([us, crypto], ["brk.b", "KRW-BTC"])
+
+    assert [c.symbol for c in result.candidates] == ["BRK/B", "BTC"]
+    assert result.matched == ["BRK.B", "KRW.BTC"]
+    assert result.unmatched == []
+
+
+def test_filter_opening_lot_candidates_crypto_currency_code() -> None:
+    crypto = _candidate(
+        broker="upbit",
+        venue="upbit_krw",
+        instrument_type="crypto",
+        symbol="BTC",
+        raw_symbol="KRW-BTC",
+    )
+    result = filter_opening_lot_candidates([crypto], ["btc"])
+
+    assert [c.symbol for c in result.candidates] == ["BTC"]
+    assert result.matched == ["BTC"]

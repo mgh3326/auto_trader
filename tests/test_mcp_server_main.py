@@ -67,6 +67,7 @@ def _load_main_module(
     kiwoom_kr: bool = False,
     unrelated_profile: bool = False,
     kiwoom_mock_us_enabled: bool = False,
+    live_profile: str | None = None,
 ) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
@@ -152,7 +153,16 @@ def _load_main_module(
     kiwoom_profile = _FakeProfileMember("kiwoom")
     kiwoom_kr_profile = _FakeProfileMember("kiwoom_kr")
     unrelated_profile_member = _FakeProfileMember("crypto")
-    if paper_execution:
+    live_kr_profile = _FakeProfileMember("live-kr")
+    live_us_profile = _FakeProfileMember("live-us")
+    live_crypto_profile = _FakeProfileMember("live-crypto")
+    live_profiles = {
+        member.value: member
+        for member in (live_kr_profile, live_us_profile, live_crypto_profile)
+    }
+    if live_profile is not None:
+        resolved_profile = live_profiles[live_profile]
+    elif paper_execution:
         resolved_profile = paper_execution_profile
     elif tradingcodex_execution:
         resolved_profile = tradingcodex_execution_profile
@@ -175,6 +185,9 @@ def _load_main_module(
         DEFAULT=default_profile,
         KIWOOM=kiwoom_profile,
         KIWOOM_KR=kiwoom_kr_profile,
+        LIVE_KR=live_kr_profile,
+        LIVE_US=live_us_profile,
+        LIVE_CRYPTO=live_crypto_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -566,6 +579,48 @@ class TestMcpServerMain:
             match="MCP_PROFILE=kiwoom_kr requires Kiwoom mock host",
         ):
             _load_main_module(monkeypatch, auth_token="kiwoom-kr-token", kiwoom_kr=True)
+
+    @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
+    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+    def test_live_network_profile_requires_auth_at_import(
+        self, monkeypatch: pytest.MonkeyPatch, transport: str, profile: str
+    ) -> None:
+        # Task 975: the dedicated live-* units listen on the tailnet through
+        # HAProxy; a tokenless network boot must fail before FastMCP exists.
+        monkeypatch.setenv("MCP_TYPE", transport)
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match=f"MCP_PROFILE={profile} requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, live_profile=profile)
+
+        assert _FakeFastMCP.init_count == 0
+
+    @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
+    def test_live_network_profile_accepts_auth_token_and_registers_itself(
+        self, monkeypatch: pytest.MonkeyPatch, profile: str
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        module, _, _, _, _ = _load_main_module(
+            monkeypatch, auth_token="live-token", live_profile=profile
+        )
+        assert module._mcp_profile.value == profile
+        register_all_tools = sys.modules["app.mcp_server.tooling"].register_all_tools
+        register_all_tools.assert_called_once()
+        assert register_all_tools.call_args.kwargs["profile"].value == profile
+
+        module.main()
+
+    @pytest.mark.parametrize("profile", ["live-kr", "live-us", "live-crypto"])
+    def test_live_stdio_local_path_may_run_without_auth(
+        self, monkeypatch: pytest.MonkeyPatch, profile: str
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "stdio")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        module, _, _, _, _ = _load_main_module(monkeypatch, live_profile=profile)
+        assert module._mcp_profile.value == profile
 
     def test_default_gate_off_and_unrelated_network_profiles_remain_unchanged(
         self, monkeypatch: pytest.MonkeyPatch

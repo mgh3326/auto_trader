@@ -41,6 +41,9 @@ from app.services.execution_ledger.repository import (
 from app.services.fill_enrichment import fetch_fill_enrichment
 from app.services.fill_notification import FillOrder, is_fill_notifiable
 from app.services.order_proposals import OrderProposalsService
+from app.services.trader_page.open_orders_cache import (
+    invalidate_open_orders_cache,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +223,18 @@ async def send_fill_notification(
         return False
 
 
+async def on_fill_committed() -> None:
+    """Default post-commit hook: drop the /trader open-orders snapshot.
+
+    A newly committed fill can close or shrink a broker open order, so the
+    operator page's snapshot must be re-read rather than served stale. The
+    implementation is best-effort (in-process clear + Redis generation bump)
+    and any failure is contained by the caller's fail-open wrapper — it can
+    never roll back or delay the committed fill.
+    """
+    await invalidate_open_orders_cache()
+
+
 @dataclass(frozen=True)
 class DownstreamHooks:
     """Callables the post-upsert orchestration drives.
@@ -233,6 +248,7 @@ class DownstreamHooks:
         None
     )
     send_fill_notification: Callable[..., Awaitable[Any]] | None = None
+    on_fill_committed: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True)
@@ -260,8 +276,27 @@ async def run_post_upsert_downstream(
     hooks = hooks or DownstreamHooks()
     project = hooks.project_upbit_proposal_fill or project_upbit_proposal_fill
     notify = hooks.send_fill_notification or send_fill_notification
+    committed_hook = hooks.on_fill_committed or on_fill_committed
 
     duplicate = upsert_status in DUPLICATE_STATUSES
+    # Invalidation is narrower than notification suppression: only an exact
+    # "unchanged" replay is safe to skip. A committed "updated" row means the
+    # ledger evidence changed, and a no-row event still announces broker
+    # activity — both can move open orders, so both bust the snapshot.
+    if upsert_status != "unchanged":
+        # A non-replay fill event can close broker open orders — drop the
+        # /trader snapshot before any other downstream work so even an early
+        # return never serves it stale.
+        try:
+            await committed_hook()
+        except Exception:  # noqa: BLE001 - cache invalidation never breaks fills
+            logger.warning(
+                "post-commit open-orders cache invalidation failed: broker=%s "
+                "correlation_id=%s",
+                broker,
+                correlation_id,
+                exc_info=True,
+            )
     proposal_rung_fill = False
     if broker == "upbit" and upsert_status is not None and raw_event is not None:
         proposal_rung_fill = await project(raw_event)

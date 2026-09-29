@@ -216,6 +216,7 @@ async def create_proposal_for_fire(
             rungs=[rung.as_tool_argument() for rung in draft.rungs],
             thesis=draft.thesis,
             strategy=draft.strategy,
+            broker_account_id=draft.broker_account_id,
             valid_until=draft.valid_until,
             rationale={
                 "source": "watch_trigger_repricing",

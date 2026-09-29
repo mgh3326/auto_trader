@@ -11,9 +11,22 @@ from app.schemas.research_pipeline import (
     StageOutput,
     StageVerdict,
 )
-from app.services.symbol_news_service import SymbolNewsArticle, fetch_symbol_news
+from app.services.symbol_news_service import (
+    SymbolNewsArticle,
+    fetch_symbol_news,
+    news_fetch_is_stale,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _served_cache_is_stale(fetched_at: datetime | None) -> bool:
+    """True when the served payload derives from cache older than the window.
+
+    Shares the get_news freshness policy via
+    ``symbol_news_service.news_fetch_is_stale`` (#904).
+    """
+    return news_fetch_is_stale(fetched_at)
 
 
 def _market_from_instrument(instrument_type: str) -> str:
@@ -62,6 +75,10 @@ async def _fetch_recent_headlines(
     result = await fetch_symbol_news(symbol, market, limit=20)
     signals = _compute_signals_from_articles(_to_signal_articles(result.articles))
     signals["status"] = result.status
+    # Provider-error fallback returns status="ok" when stale rows exist, so the
+    # fetch health must travel separately for analyze() to gate on it (#904).
+    signals["degraded"] = result.degraded
+    signals["fetched_at"] = result.fetched_at
     return signals
 
 
@@ -185,6 +202,15 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
             logger.info(
                 "news_stage: provider status=%s for %s -> UNAVAILABLE",
                 raw.get("status"),
+                ctx.symbol,
+            )
+            return self._unavailable()
+
+        if raw.get("degraded") and _served_cache_is_stale(raw.get("fetched_at")):
+            logger.info(
+                "news_stage: provider failed and served cache is stale "
+                "(fetched_at=%s) for %s -> UNAVAILABLE",
+                raw.get("fetched_at"),
                 ctx.symbol,
             )
             return self._unavailable()
