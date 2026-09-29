@@ -511,6 +511,36 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.WATCH_REPRICING: set(),
     # FILL_WATCH_CONTEXT is a closed-world, context-only consumer profile.
     McpProfile.FILL_WATCH_CONTEXT: set(),
+    # #891 / Q-53 — closed-world live surfaces. The manifest's core order-
+    # history reads plus the named emergency cancel/modify/reconcile set may
+    # appear. No direct place tool lands anywhere: ROB-864 disables loss_cut
+    # on all of them, so they are not loss_cut paths and would only grant
+    # unrestricted direct placement (operator Q-62 ruled them out
+    # entirely); the harness-denied kis_live_get_order_history never lands
+    # either.
+    McpProfile.LIVE_KR: {
+        "toss_get_order_history",
+        "cancel_order",
+        "modify_order",
+        "kis_live_cancel_order",
+        "kis_live_modify_order",
+        "kis_live_reconcile_orders",
+        "toss_cancel_order",
+        "toss_modify_order",
+        "toss_reconcile_orders",
+    },
+    McpProfile.LIVE_US: {
+        "get_order_history",
+        "cancel_order",
+        "modify_order",
+        "live_reconcile_orders",
+    },
+    McpProfile.LIVE_CRYPTO: {
+        "get_order_history",
+        "cancel_order",
+        "modify_order",
+        "live_reconcile_orders",
+    },
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -566,6 +596,12 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.WATCH_REPRICING,
         # FILL_WATCH_CONTEXT is its own two-tool, context-only closed world.
         McpProfile.FILL_WATCH_CONTEXT,
+        # #891 / Q-52 — live profiles are manifest-bounded closed worlds; they
+        # run the shared registrars through an allowlist proxy, so they carry
+        # only the manifest's research names, not the whole surface.
+        McpProfile.LIVE_KR,
+        McpProfile.LIVE_US,
+        McpProfile.LIVE_CRYPTO,
     )
 ]
 
@@ -1079,6 +1115,11 @@ class TestResolveMcpProfile:
 
     def test_account_read(self) -> None:
         assert resolve_mcp_profile("account_read") is McpProfile.ACCOUNT_READ
+
+    def test_resolves_live_profiles(self) -> None:
+        assert resolve_mcp_profile("live-kr") is McpProfile.LIVE_KR
+        assert resolve_mcp_profile("live-us") is McpProfile.LIVE_US
+        assert resolve_mcp_profile("live-crypto") is McpProfile.LIVE_CRYPTO
 
     def test_tradingcodex_execution(self) -> None:
         assert (

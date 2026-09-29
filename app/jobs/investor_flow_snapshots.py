@@ -11,14 +11,20 @@ from decimal import Decimal
 import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.services.investor_flow_snapshots.builder import build_investor_flow_snapshots
 from app.services.investor_flow_snapshots.repository import (
     InvestorFlowSnapshotsRepository,
     InvestorFlowSnapshotUpsert,
 )
+from app.services.market_events.session_calendar import trading_session_status
 
 logger = logging.getLogger(__name__)
+
+
+class InvestorFlowEmptyCommitError(RuntimeError):
+    """A commit-enabled build produced zero rows on a day expected to have data."""
 
 
 @dataclass(frozen=True)
@@ -210,6 +216,50 @@ def _merge_date_distribution(
     aggregate.update(p.snapshot_date.isoformat() for p in payloads)
 
 
+def _enforce_zero_commit_floor(
+    *,
+    commit: bool,
+    run_date: dt.date,
+    symbols_resolved: int,
+) -> None:
+    """Fail a commit run that produced zero rows on an expected-data day.
+
+    #895: the upstream Naver page stopped returning investor-flow rows while the
+    scheduled run kept reporting Completed with committed=0, leaving the
+    investor_flow_momentum / double_buy snapshots silently stale. A commit run
+    that builds zero rows is only legitimate on a confirmed non-trading day.
+
+    ``run_date`` is the KST business date the run is responsible for. The XKRX
+    session calendar is the authority: ``closed`` (weekend/holiday) stays OK;
+    ``open`` fails; ``unknown`` also fails — a calendar that cannot classify the
+    date cannot excuse an empty commit (fail-closed, matching
+    ``session_calendar``'s contract).
+    """
+    if not commit:
+        return
+    status = trading_session_status("kr", run_date)
+    if status == "closed":
+        logger.info(
+            "investor-flow build committed 0 rows for %d symbols on %s: "
+            "XKRX session closed, treated as non-trading day",
+            symbols_resolved,
+            run_date,
+        )
+        return
+    if status == "unknown":
+        raise InvestorFlowEmptyCommitError(
+            f"investor-flow snapshot build committed 0 rows for "
+            f"{symbols_resolved} symbols on {run_date}: XKRX calendar could not "
+            f"classify the run date, so an empty commit cannot be excused as a "
+            f"non-trading day — failing loudly"
+        )
+    raise InvestorFlowEmptyCommitError(
+        f"investor-flow snapshot build committed 0 rows on KRX trading day "
+        f"{run_date} ({symbols_resolved} symbols resolved, upstream returned no "
+        f"rows for any symbol) — failing loudly instead of reporting success"
+    )
+
+
 async def run_investor_flow_snapshot_build(
     request: InvestorFlowSnapshotBuildRequest,
 ) -> InvestorFlowSnapshotBuildResult:
@@ -223,6 +273,10 @@ async def run_investor_flow_snapshot_build(
         raise ValueError("days must be >= 1")
     started_at = dt.datetime.now(dt.UTC)
     today = request.today or started_at.date()
+    # The zero-commit floor is keyed to the KST business date, not the UTC date
+    # embedded in started_at (an early-morning KST run is still the previous UTC
+    # day, which would misclassify a trading day as a weekend).
+    run_date_kst = request.today or now_kst().date()
     warnings: list[str] = []
 
     if request.all_symbols:
@@ -240,6 +294,9 @@ async def run_investor_flow_snapshot_build(
     )
 
     if not symbols:
+        _enforce_zero_commit_floor(
+            commit=request.commit, run_date=run_date_kst, symbols_resolved=0
+        )
         finished_at = dt.datetime.now(dt.UTC)
         return InvestorFlowSnapshotBuildResult(
             market="kr",
@@ -286,6 +343,13 @@ async def run_investor_flow_snapshot_build(
             samples.extend(_sample(p) for p in payloads[:remaining_sample_slots])
         if request.commit and payloads:
             await _commit_payloads(payloads)
+
+    if total_built == 0:
+        _enforce_zero_commit_floor(
+            commit=request.commit,
+            run_date=run_date_kst,
+            symbols_resolved=len(symbols),
+        )
 
     finished_at = dt.datetime.now(dt.UTC)
     return InvestorFlowSnapshotBuildResult(

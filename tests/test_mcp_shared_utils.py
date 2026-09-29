@@ -472,9 +472,9 @@ class TestSymbolNormalizationIntegration:
         }
 
         async def mock_fetch_news(code, limit):
-            return mock_news["news"]
+            return naver_finance.NaverNewsFetchResult(items=mock_news["news"])
 
-        monkeypatch.setattr(naver_finance, "fetch_news", mock_fetch_news)
+        monkeypatch.setattr(naver_finance, "fetch_stock_news", mock_fetch_news)
 
         # Test with integer input
         result = await tools["get_news"](12450, market="kr", limit=10)

@@ -40,6 +40,7 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
     DIRECT_BROKER_MUTATION_TOOLS,
+    HARNESS_DENIED_MARKET_RELIEF,
     HARNESS_DENIED_TOOLS,
     LANE_SEQUENCES,
     MUTATION_TOOLS,
@@ -52,6 +53,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     RECONCILE_TOOLS,
     RESERVE_NET_CONSUMER_TOOLS,
     STATUS_HELPER_TOOLS,
+    VALID_MARKETS,
     ordered_lane_tool_names,
 )
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -216,6 +218,10 @@ def test_every_proposal_enabled_default_tool_is_classified(
     assert PROPOSAL_REVALIDATE_TOOL_NAMES <= default
     assert "toss_proposal_accounts" in default
     assert "toss_proposal_accounts" in READ_ONLY_ADVISORY_TOOLS
+    # #883: the sweep's typed parking_exclusion read rides the same gate.
+    assert "get_parking_exclusion" in default
+    assert "get_parking_exclusion" in READ_ONLY_ADVISORY_TOOLS
+    assert "get_parking_exclusion" not in MUTATION_TOOLS
     assert default <= ALL_KNOWN_TOOLS
     assert ORDER_PROPOSAL_TOOL_NAMES | PROPOSAL_REVALIDATE_TOOL_NAMES == (
         ORDER_PROPOSAL_READ_TOOLS
@@ -249,6 +255,10 @@ def test_read_only_bucket_has_no_phantom_tools():
         *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
         "toss_proposal_accounts",
+        # #883: cash-sweep parking_exclusion read, gated by
+        # settings.ORDER_PROPOSALS_ENABLED (default off) like the proposal
+        # surface it supports.
+        "get_parking_exclusion",
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (
@@ -274,6 +284,18 @@ def test_harness_denied_tools_partition_is_exact_and_registered():
     assert HARNESS_DENIED_TOOLS <= MUTATION_TOOLS
     assert HARNESS_DENIED_TOOLS.isdisjoint(READ_ONLY_ADVISORY_TOOLS)
     assert HARNESS_DENIED_TOOLS <= _default_tools()
+
+
+def test_harness_denied_market_relief_is_exact_and_crypto_only():
+    # Q-58 / task #911: only get_upbit_altseason is re-admitted, and only on the
+    # crypto live harness. The relieved name must stay a subset of the denied
+    # bucket (it keeps its MUTATION_TOOLS partition seat) and a valid market.
+    assert HARNESS_DENIED_MARKET_RELIEF == {
+        "crypto": frozenset({"get_upbit_altseason"})
+    }
+    relieved = frozenset().union(*HARNESS_DENIED_MARKET_RELIEF.values())
+    assert relieved <= HARNESS_DENIED_TOOLS
+    assert set(HARNESS_DENIED_MARKET_RELIEF) <= VALID_MARKETS
 
 
 def test_lane_sequences_match_playbook_in_exact_order():

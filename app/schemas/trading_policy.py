@@ -30,7 +30,7 @@ PostureStateName = Literal[
     "EXPIRED_REARMABLE",
 ]
 
-ThresholdValue = int | float | str | list[int | float]
+ThresholdValue = int | float | str | list[int | float] | dict[str, str]
 RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
 PolicyComparison = Literal["gt", "gte", "lt", "lte", "eq"]
 KrBroker = Literal["kis", "toss"]
@@ -710,6 +710,16 @@ class PolicyDecisionRule(BaseModel):
                 f"{UNDERWATER_SUPPORT_NET_TIER_ID} size cap must be 50% of the "
                 "existing position notional"
             )
+        # #877 — the approved one-share exception is a declared, bounded
+        # sizing rule, not an omission: removing it or claiming a different
+        # rounding must fail the build rather than silently revert behaviour.
+        if conditions.get("one_share_exception_for_adds") is not True:
+            raise ValueError(
+                f"{UNDERWATER_SUPPORT_NET_TIER_ID} must declare "
+                "one_share_exception_for_adds: true — a below-one-share 50% "
+                "computation rounds to exactly one share, bounded by the "
+                "existing caps and orderable cash"
+            )
         if conditions.get("max_placements_per_symbol_per_day") != 1:
             raise ValueError(
                 f"{UNDERWATER_SUPPORT_NET_TIER_ID} allows one placement per "
@@ -789,6 +799,10 @@ class PolicyDecisionRule(BaseModel):
             "d20_prior_forecasts": "unchanged",
             "d20_scorer_implemented": False,
             "d20_automation": "measurement_only_no_schedule_batch_stop_or_cancel",
+            # #877 — the cohort tag a one-share-rounded add carries into the
+            # underwater-d20-v1 record. Declaring the field name is the whole
+            # contract; the window and thresholds above are unchanged.
+            "d20_sizing_flag_field": "rounded_up_to_one_share",
         }
         for key, expected in d20_contract.items():
             actual = conditions.get(key)
@@ -1571,7 +1585,50 @@ class PolicyRecoveryCondition(BaseModel):
     operator: PolicyComparison | None
     threshold: int | float | None
     unit: str
+    # Optional freshness envelope (task-792 C1): the reader must date its
+    # observation, and a reading older than this many seconds is ``stale``
+    # rather than trusted — under the gate's missing/stale rule that resolves
+    # to hold, never an inferred miss.
+    stale_after_seconds: int | None = Field(default=None, gt=0)
     semantics: str
+
+
+# task-792 C1 — the live sizing-coefficient vocabulary. Experimental mock
+# coefficients cannot be declared on the live policy.
+_LIVE_MARKET_STATE_COEFFICIENTS = frozenset({0.0, 0.5, 1.0})
+
+
+class PolicyMarketStateCoefficient(BaseModel):
+    """task-792 C1 — the crypto recovery gate's single sizing coefficient.
+
+    ``by_met_count`` maps the number of met gate conditions to the multiplier
+    applied to crypto new-entry notional. The value vocabulary is exactly
+    {0.0, 0.5, 1.0} — enforced by the validator, since ``Literal`` does not
+    admit float members.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    applies_to: str
+    by_met_count: dict[int, float]
+    on_missing_or_stale_input: Literal["hold"]
+    fixed_at: Literal["episode_first_order"]
+
+    @model_validator(mode="after")
+    def _coefficients_stay_in_the_live_vocabulary(
+        self,
+    ) -> PolicyMarketStateCoefficient:
+        invalid = [
+            value
+            for value in self.by_met_count.values()
+            if value not in _LIVE_MARKET_STATE_COEFFICIENTS
+        ]
+        if invalid:
+            raise ValueError(
+                "size_coefficient.by_met_count values must come from the live "
+                f"vocabulary {{0.0, 0.5, 1.0}}; got {invalid}"
+            )
+        return self
 
 
 class PolicyRecoveryGate(BaseModel):
@@ -1583,8 +1640,36 @@ class PolicyRecoveryGate(BaseModel):
     min_conditions_met: int
     of: int
     missing_or_null_threshold: str
+    size_coefficient: PolicyMarketStateCoefficient
     conditions: list[PolicyRecoveryCondition]
     advisory_context: list[PolicyRecoveryCondition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _size_coefficient_covers_every_met_count(self) -> PolicyRecoveryGate:
+        expected = set(range(self.of + 1))
+        if set(self.size_coefficient.by_met_count) != expected:
+            raise ValueError(
+                "size_coefficient.by_met_count must name every met count "
+                f"0..{self.of}; got {sorted(self.size_coefficient.by_met_count)}"
+            )
+        ordered = [
+            self.size_coefficient.by_met_count[count] for count in sorted(expected)
+        ]
+        if any(
+            later < earlier
+            for earlier, later in zip(ordered, ordered[1:], strict=False)
+        ):
+            raise ValueError(
+                "size_coefficient.by_met_count must be non-decreasing in the "
+                "met count — a weaker market state may not carry a larger "
+                "coefficient"
+            )
+        if self.size_coefficient.by_met_count != {0: 0.0, 1: 0.5, 2: 1.0}:
+            raise ValueError(
+                "size_coefficient.by_met_count must be exactly "
+                "{0: 0.0, 1: 0.5, 2: 1.0} for C1"
+            )
+        return self
 
 
 class PolicySupportResistanceRule(BaseModel):
@@ -2045,6 +2130,60 @@ class TransferCostsPolicy(BaseModel):
     routes: dict[str, TransferCostRoute]
 
 
+class KrTradingSessionWindow(BaseModel):
+    """#876 — one KR session window. ``matching``/``price_band``/
+    ``instruments``/``exclusions`` are optional descriptive fields only
+    asserted for the KRX after-market row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    open_kst: Annotated[str, Field(pattern=r"^\d{2}:\d{2}$")]
+    close_kst: Annotated[str, Field(pattern=r"^\d{2}:\d{2}$")]
+    matching: str | None = None
+    price_band: str | None = None
+    instruments: str | None = None
+    exclusions: str | None = None
+
+
+class KrTradingSessionsPolicy(BaseModel):
+    """#876 — advisory KR session-window reference table. No gate, cap, or
+    order path reads it; it exists so sessions stop re-deriving the
+    post-2026-09-14 after-market boundaries from memory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    semantics: str
+    sessions: dict[str, KrTradingSessionWindow]
+
+    @model_validator(mode="after")
+    def validate_required_session_windows(self) -> KrTradingSessionsPolicy:
+        required = {
+            "nxt_premarket": ("08:00", "08:50"),
+            "nxt_after": ("15:30", "20:00"),
+            "krx_after_market": ("16:00", "20:00"),
+        }
+        for name, (open_kst, close_kst) in required.items():
+            window = self.sessions.get(name)
+            if window is None:
+                raise ValueError(f"kr_trading_sessions must declare session {name!r}")
+            if window.open_kst != open_kst or window.close_kst != close_kst:
+                raise ValueError(
+                    f"kr_trading_sessions.{name} must be {open_kst}-{close_kst} KST"
+                )
+        krx = self.sessions["krx_after_market"]
+        if krx.matching != "continuous":
+            raise ValueError(
+                "kr_trading_sessions.krx_after_market must declare matching: continuous"
+            )
+        if krx.price_band != "±30% of the same-day base price":
+            raise ValueError(
+                "kr_trading_sessions.krx_after_market must declare the ±30% "
+                "same-day-base price band"
+            )
+        return self
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2071,6 +2210,47 @@ class TradingPolicyDocument(BaseModel):
     user_stances: list[UserStance]
     cash_yields: CashYieldsPolicy
     transfer_costs: TransferCostsPolicy
+    kr_trading_sessions: KrTradingSessionsPolicy
+
+    @model_validator(mode="after")
+    def validate_broker_split_threshold_maps(self) -> TradingPolicyDocument:
+        """#876 — dict values are reserved for the broker-split
+        ``order.day_expiry_kst`` threshold. No other threshold key and no
+        market override may carry an arbitrary map; the split itself must
+        declare exactly the two live broker modes (a missing ``kis_live``
+        ``to_confirm`` marker would silently read as a real expiry)."""
+
+        allowed_modes = {"toss_live", "kis_live"}
+        for key, threshold in self.thresholds.items():
+            if not isinstance(threshold.value, dict):
+                continue
+            if key != "order.day_expiry_kst":
+                raise ValueError(
+                    f"thresholds.{key} must not hold a broker-map value; "
+                    "dict values are reserved for order.day_expiry_kst"
+                )
+            if set(threshold.value) != allowed_modes:
+                raise ValueError(
+                    "order.day_expiry_kst must declare exactly "
+                    f"{sorted(allowed_modes)}; got {sorted(threshold.value)}"
+                )
+        for market, overrides in self.market_overrides.items():
+            for key, value in overrides.items():
+                if not isinstance(value, dict):
+                    continue
+                if key != "order.day_expiry_kst":
+                    raise ValueError(
+                        f"market_overrides.{market}.{key} must not hold a "
+                        "broker-map value; dict values are reserved for "
+                        "order.day_expiry_kst"
+                    )
+                if set(value) != allowed_modes:
+                    raise ValueError(
+                        f"market_overrides.{market}.order.day_expiry_kst must "
+                        f"declare exactly {sorted(allowed_modes)}; got "
+                        f"{sorted(value)}"
+                    )
+        return self
 
     @model_validator(mode="after")
     def validate_s139_rule_keys_bind_their_tier_ids(self) -> TradingPolicyDocument:

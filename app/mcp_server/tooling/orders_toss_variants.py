@@ -68,13 +68,17 @@ from app.services.nxt_preflight import (
     ROUTE_VIA_KIS,
     NxtPreflightVerdict,
     NxtTradability,
-    evaluate_nxt_preflight,
+)
+from app.services.nxt_preflight_krx_after import (
+    UNKNOWN_NXT_TRADABILITY,
+    evaluate_nxt_preflight_with_krx_after,
 )
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_EXIT_INTENT,
     parse_funding_target,
     resolve_cash_funding_exemption,
 )
+from app.services.order_proposals.parking_sell_exemption import ParkingSellContext
 from app.services.protected_quantity_service import (
     ProtectionStateUnavailable,
     attach_live_sell_lease_cleanup_warning,
@@ -141,6 +145,7 @@ class _OrderProposalContext:
     rung: str | int | None
     cash_funding_target: dict[str, Any] | None = None
     cash_funding_shortfall: Decimal | None = None
+    parking_sell_ctx: ParkingSellContext | None = None
 
 
 _order_proposal_context: ContextVar[_OrderProposalContext | None] = ContextVar(
@@ -156,6 +161,7 @@ def _bind_order_proposal_context(
     rung: str | int | None,
     cash_funding_target: dict[str, Any] | None = None,
     cash_funding_shortfall: Decimal | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
 ):
     """Bind trusted proposal identity without exposing it in the MCP schema."""
     token = _order_proposal_context.set(
@@ -165,6 +171,7 @@ def _bind_order_proposal_context(
             rung,
             cash_funding_target,
             cash_funding_shortfall,
+            parking_sell_ctx,
         )
     )
     try:
@@ -212,6 +219,33 @@ def _resolve_toss_cash_funding_context(
     if not verdict.exempt:
         return None, f"cash_funding_{verdict.reason}"
     return CashFundingContext.from_verdict(verdict), None
+
+
+def _resolve_toss_parking_sell_context(
+    *,
+    proposal_context: _OrderProposalContext | None,
+    symbol: str,
+    market: Literal["kr", "us"],
+    side: str,
+    order_type: str,
+    quantity: Decimal | None,
+    price: Decimal | None,
+    exit_intent: str | None,
+) -> tuple[ParkingSellContext | None, str | None]:
+    ctx = proposal_context.parking_sell_ctx if proposal_context is not None else None
+    if ctx is None:
+        return None, None
+    if exit_intent is not None or not ctx.matches(
+        symbol=symbol,
+        market="equity_kr" if market == "kr" else "equity_us",
+        account_mode=ACCOUNT_MODE_TOSS_LIVE,
+        side=side,
+        order_type=order_type,
+        quantity=quantity,
+        price=price,
+    ):
+        return None, "parking_sell_binding_invalid"
+    return ctx, None
 
 
 def _config_error() -> dict[str, Any] | None:
@@ -676,6 +710,7 @@ async def _sell_loss_guard(
     *,
     loss_cut_ctx: LossCutContext | None = None,
     cash_funding_ctx: CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     current_price: Decimal | None = None,
     evidence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
@@ -708,7 +743,11 @@ async def _sell_loss_guard(
     if evidence_context is not None:
         evidence_context["avg_buy_price"] = _stringify_decimal(avg)
 
-    if loss_cut_ctx is not None or cash_funding_ctx is not None:
+    if (
+        loss_cut_ctx is not None
+        or cash_funding_ctx is not None
+        or parking_sell_ctx is not None
+    ):
         if price is None:
             return {
                 "success": False,
@@ -716,6 +755,8 @@ async def _sell_loss_guard(
                 "error": (
                     "loss_cut requires a limit sell price."
                     if loss_cut_ctx is not None
+                    else "proposal parking sell requires a limit sell price."
+                    if parking_sell_ctx is not None
                     else "cash_funding requires a limit sell price."
                 ),
             }
@@ -740,6 +781,7 @@ async def _sell_loss_guard(
             scalping_exit_ctx=None,
             loss_cut_ctx=loss_cut_ctx,
             cash_funding_ctx=cash_funding_ctx,
+            parking_sell_ctx=parking_sell_ctx,
         )
         if error is not None:
             return {"success": False, **base, "error": error}
@@ -1113,7 +1155,7 @@ async def _nxt_preflight_context(
         session = await get_kr_toss_session_from_toss(moment)
         tradability = (await get_kr_nxt_tradability([symbol])).get(
             symbol
-        ) or NxtTradability(nxt_eligible=False, nxt_trading_suspended=None, asof=None)
+        ) or UNKNOWN_NXT_TRADABILITY
     except Exception as exc:  # noqa: BLE001 - advisory preflight must never block an order
         logger.warning(
             "NXT preflight context unavailable for %s, skipping (fail-open): %s",
@@ -1121,7 +1163,11 @@ async def _nxt_preflight_context(
             exc,
         )
         return None
-    verdict = evaluate_nxt_preflight(session, tradability)
+    # #969: same verdict as suggest_order_account; the KRX after-market step
+    # swallows its own lookup errors, so an unknown list blocks, never skips.
+    verdict = await evaluate_nxt_preflight_with_krx_after(
+        symbol, session, tradability, now=moment
+    )
     return verdict, tradability
 
 
@@ -1210,6 +1256,19 @@ async def toss_preview_order(
                     "adjusted_price": _stringify_decimal(price_dec),
                 }
             )
+
+    parking_sell_ctx, parking_sell_error = _resolve_toss_parking_sell_context(
+        proposal_context=proposal_context,
+        symbol=symbol,
+        market=mkt,
+        side=side,
+        order_type=order_type,
+        quantity=quantity_dec,
+        price=price_dec,
+        exit_intent=exit_intent,
+    )
+    if parking_sell_error is not None:
+        return {"success": False, "preview": True, "error": parking_sell_error}
 
     quantity_str = _stringify_decimal(quantity_dec)
     price_str = _stringify_decimal(price_dec)
@@ -1330,6 +1389,7 @@ async def toss_preview_order(
                 base,
                 loss_cut_ctx=loss_cut_ctx,
                 cash_funding_ctx=cash_funding_ctx,
+                parking_sell_ctx=parking_sell_ctx,
                 current_price=current_price_dec,
                 evidence_context=sell_evidence,
             )
@@ -1424,6 +1484,9 @@ async def toss_preview_order(
         response["exit_intent"] = CASH_FUNDING_EXIT_INTENT
         response["cash_funding_currency"] = cash_funding_ctx.scope_currency
         response["cash_funding_max_quantity"] = cash_funding_ctx.max_quantity
+        response.update(sell_evidence)
+    elif parking_sell_ctx is not None:
+        response["parking_sell_exempt"] = True
         response.update(sell_evidence)
     elif side == "sell":
         response.update(sell_evidence)
@@ -1541,6 +1604,23 @@ async def _toss_place_order_impl(
                     "adjusted_price": _stringify_decimal(price_dec),
                 }
             )
+
+    parking_sell_ctx, parking_sell_error = _resolve_toss_parking_sell_context(
+        proposal_context=proposal_context,
+        symbol=symbol,
+        market=mkt,
+        side=side,
+        order_type=order_type,
+        quantity=quantity_dec,
+        price=price_dec,
+        exit_intent=exit_intent,
+    )
+    if parking_sell_error is not None:
+        return {
+            "success": False,
+            "mutation_sent": False,
+            "error": parking_sell_error,
+        }
 
     quantity_str = _stringify_decimal(quantity_dec)
     price_str = _stringify_decimal(price_dec)
@@ -1790,7 +1870,9 @@ async def _toss_place_order_impl(
         if side == "sell":
             cash_funding_ctx: CashFundingContext | None = None
             cash_funding_current_price: Decimal | None = None
-            if exit_intent == CASH_FUNDING_EXIT_INTENT and order_type == "limit":
+            if (
+                exit_intent == CASH_FUNDING_EXIT_INTENT or parking_sell_ctx is not None
+            ) and order_type == "limit":
                 try:
                     cash_funding_current_price = await _latest_price(client, symbol)
                 except Exception:
@@ -1822,6 +1904,7 @@ async def _toss_place_order_impl(
                     base_response,
                     loss_cut_ctx=loss_cut_ctx,
                     cash_funding_ctx=cash_funding_ctx,
+                    parking_sell_ctx=parking_sell_ctx,
                     current_price=cash_funding_current_price,
                 )
             ) is not None:

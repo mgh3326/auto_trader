@@ -176,7 +176,7 @@ def test_route_semantic_contract_matrix(
     assert steps == [
         tool
         for tool in L.ordered_lane_tool_names(expected_lane)
-        if tool not in L.HARNESS_DENIED_TOOLS
+        if tool not in _denied_for_market(market)
     ]
     assert len(steps) == len(set(steps))
     assert set(plan["allowed_tools"]).isdisjoint(plan["blocked_actions"])
@@ -223,7 +223,11 @@ def test_route_semantic_contract_matrix(
         assert contract["reconcile_requirement"] == "not_applicable"
         assert contract["required_tools"] == []
         assert contract["missing_required_tools"] == []
-        assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _ALL)
+        # Market relief (Q-58) un-blocks the re-admitted tool on crypto.
+        relieved = L.HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
+        assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _ALL) - (
+            relieved & set(plan["allowed_tools"])
+        )
 
 
 @pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
@@ -341,6 +345,19 @@ def test_hard_constraints_reference_policy_and_proposal_contract():
         assert "toss_cancel_order" not in joined
 
 
+def test_day_expiry_constraint_is_broker_split_not_generic_2000():
+    """#876 — both lanes must carry the measured Toss 15:30 expiry and the
+    honest KIS to_confirm, never the retired generic 20:00."""
+
+    for lane in ("buy", "sell"):
+        joined = " ".join(L.HARD_CONSTRAINTS[lane])
+        assert "order.day_expiry_kst" in joined
+        assert "toss_live" in joined
+        assert "15:30" in joined
+        assert "to_confirm" in joined
+        assert "20:00" not in joined
+
+
 def test_buy_discovery_have_negative_class_constraint():
     for lane in ("buy", "discovery"):
         joined = " ".join(L.HARD_CONSTRAINTS[lane]).lower()
@@ -433,10 +450,19 @@ _DENIED_PREVIOUSLY_ADVERTISED = {
 }
 
 
+def _denied_for_market(market: str) -> frozenset[str]:
+    return L.HARNESS_DENIED_TOOLS - L.HARNESS_DENIED_MARKET_RELIEF.get(
+        market, frozenset()
+    )
+
+
 @pytest.mark.parametrize("tool", sorted(_DENIED_PREVIOUSLY_ADVERTISED))
 def test_harness_denied_tool_blocked_where_previously_advertised(tool: str):
+    # Q-58 / task #911: get_upbit_altseason is re-admitted on the crypto live
+    # harness only; every other (tool, market) pair stays denied.
+    markets = ("kr", "us") if tool == "get_upbit_altseason" else ("kr", "us", "crypto")
     for intent in _DENIED_PREVIOUSLY_ADVERTISED[tool]:
-        for market in ("kr", "us", "crypto"):
+        for market in markets:
             plan = _plan(intent, market)
             assert tool not in plan["allowed_tools"], (tool, intent, market)
             assert tool in plan["blocked_actions"], (tool, intent, market)
@@ -445,6 +471,30 @@ def test_harness_denied_tool_blocked_where_previously_advertised(tool: str):
                 plan["harness_denied_tools"].get(tool) == L.HARNESS_DENIED_TOOL_BASIS
             ), (tool, intent, market)
             assert plan["blocked_actions_basis"] == "live_registered_surface"
+
+
+def test_crypto_market_readmits_get_upbit_altseason():
+    # Q-58 / task #911: the live crypto session harness carries the tool again
+    # (robin-prefect kr_live_sessions.py LIVE_ALLOWED_TOOLS), so crypto routes
+    # advertise it while kr/us stay denied.
+    for intent in _DENIED_PREVIOUSLY_ADVERTISED["get_upbit_altseason"]:
+        plan = _plan(intent, "crypto")
+        assert "get_upbit_altseason" in plan["allowed_tools"], intent
+        assert "get_upbit_altseason" not in plan["blocked_actions"], intent
+        assert "get_upbit_altseason" not in plan["harness_denied_tools"], intent
+        assert plan["blocked_actions_basis"] == "live_registered_surface"
+
+
+def test_crypto_readmission_does_not_leak_to_unregistered_or_other_markets():
+    # Relief is market-scoped and still intersected with the live registry:
+    # unregistered stays unadvertised, kr/us stay denied.
+    registered = _ALL - {"get_upbit_altseason"}
+    plan = _plan("market_brief", "crypto", registered=registered)
+    assert "get_upbit_altseason" not in plan["allowed_tools"]
+    for market in ("kr", "us"):
+        plan = _plan("market_brief", market)
+        assert "get_upbit_altseason" not in plan["allowed_tools"]
+        assert "get_upbit_altseason" in plan["blocked_actions"]
 
 
 @pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
@@ -472,7 +522,7 @@ def test_kis_order_history_stays_blocked_in_lanes_that_never_had_it(intent, mark
 @pytest.mark.parametrize("market", ["kr", "us", "crypto"])
 def test_denied_tools_blocked_on_proposal_led_lanes(intent, market):
     plan = _plan(intent, market)
-    denied_in_lane = L.HARNESS_DENIED_TOOLS & _ALL
+    denied_in_lane = _denied_for_market(market) & _ALL
 
     assert denied_in_lane.isdisjoint(plan["allowed_tools"])
     assert denied_in_lane <= set(plan["blocked_actions"])
@@ -491,13 +541,17 @@ def test_buy_sequence_drops_denied_foreign_flow_gate_step():
 def test_denied_tools_blocked_on_account_cleanup_route():
     for market in sorted(L.ACCOUNT_CLEANUP_MARKETS):
         plan = _plan("profit_taking", market, purpose=L.ACCOUNT_CLEANUP_PURPOSE)
-        for tool in L.HARNESS_DENIED_TOOLS:
+        for tool in _denied_for_market(market):
             assert tool not in plan["allowed_tools"], (tool, market)
             assert tool in plan["blocked_actions"], (tool, market)
             assert tool not in _step_tools(plan), (tool, market)
             assert (
                 plan["harness_denied_tools"].get(tool) == L.HARNESS_DENIED_TOOL_BASIS
             ), (tool, market)
+        if market == "crypto":
+            # Q-58 relief reaches the cleanup route too.
+            assert "get_upbit_altseason" in plan["allowed_tools"]
+            assert "get_upbit_altseason" not in plan["harness_denied_tools"]
 
 
 @pytest.mark.parametrize("intent", sorted(L.INTENT_TO_LANE))
@@ -506,7 +560,7 @@ def test_no_other_tool_lost_its_advertisement(intent, market):
     plan = _plan(intent, market)
     allowed = set(plan["allowed_tools"])
 
-    assert allowed.isdisjoint(L.HARNESS_DENIED_TOOLS)
+    assert allowed.isdisjoint(_denied_for_market(market))
     # Every surviving read-only advisory tool is still advertised: the delta is
     # exactly the four denied tools, nothing else.
     assert (L.READ_ONLY_ADVISORY_TOOLS & _ALL) <= allowed

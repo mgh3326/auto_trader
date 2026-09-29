@@ -95,6 +95,22 @@ def _intent_from_row(row: dict[str, Any]) -> OrderIntent:
     )
 
 
+def own_number_attributes_match(row: dict[str, Any], target: OrderRow) -> bool:
+    """T9b: the listed row carries this ledger row's intent attributes."""
+
+    intent = _intent_from_row(row)
+    original = (
+        None if intent.original_order_id is None else int(intent.original_order_id)
+    )
+    return (
+        target.symbol == intent.symbol
+        and target.side == intent.side
+        and (intent.quantity is None or target.order_qty == intent.quantity)
+        and (intent.price is None or target.order_price == Decimal(intent.price))
+        and target.original_order_no == original
+    )
+
+
 def _row_dict(row: Any) -> dict[str, Any]:
     result = dict(row)
     for name in ("client_request_id", "account_ref", "claim_token"):
@@ -130,6 +146,73 @@ class NHPlugMockLedger:
                 .first()
             )
             return _row_dict(row) if row else None
+
+    async def find_owned_order(
+        self, account_ref: UUID, broker_order_id: str
+    ) -> dict[str, Any] | None:
+        """Read-only: the place/modify row whose bound broker number is this one."""
+
+        async with self.engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM review.nhplug_mock_order_ledger "
+                            "WHERE account_ref=:acct AND broker_order_id=:number "
+                            "AND operation_kind IN ('place','modify') "
+                            "ORDER BY id DESC LIMIT 1"
+                        ),
+                        {"acct": account_ref, "number": broker_order_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            return _row_dict(row) if row else None
+
+    async def rows_referencing(
+        self, account_ref: UUID, order_no: str
+    ) -> list[dict[str, Any]]:
+        """Read-only: every row that binds, witnessed, or targets this number."""
+
+        async with self.engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM review.nhplug_mock_order_ledger WHERE account_ref=:acct "
+                            "AND (broker_order_id=:number OR ack_evidence_order_id=:number "
+                            "OR original_order_id=:number OR successor_order_id=:number) "
+                            "ORDER BY id"
+                        ),
+                        {"acct": account_ref, "number": order_no},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [_row_dict(row) for row in rows]
+
+    async def rows_for_day(
+        self, account_ref: UUID, order_date: date
+    ) -> list[dict[str, Any]]:
+        """Read-only: one account's rows for one trading day, oldest first."""
+
+        async with self.engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM review.nhplug_mock_order_ledger "
+                            "WHERE account_ref=:acct AND order_date=:day ORDER BY id"
+                        ),
+                        {"acct": account_ref, "day": order_date},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [_row_dict(row) for row in rows]
 
     async def proof_codes(self, path: str) -> tuple[frozenset[str], frozenset[str]]:
         async with self.engine.connect() as conn:
@@ -498,24 +581,10 @@ class NHPlugMockLedger:
             ):
                 return False
             _assert_listing_scope(listing, current)
-            intent = _intent_from_row(_row_dict(current))
             target = listing.find(int(current["ack_evidence_order_id"]))
             if target is None:
                 return False
-            original = (
-                None
-                if intent.original_order_id is None
-                else int(intent.original_order_id)
-            )
-            attributes_match = (
-                target.symbol == intent.symbol
-                and target.side == intent.side
-                and (intent.quantity is None or target.order_qty == intent.quantity)
-                and (
-                    intent.price is None or target.order_price == Decimal(intent.price)
-                )
-                and target.original_order_no == original
-            )
+            attributes_match = own_number_attributes_match(_row_dict(current), target)
             evidence = {
                 "listing_order_id": current["ack_evidence_order_id"],
                 "listing_complete": True,

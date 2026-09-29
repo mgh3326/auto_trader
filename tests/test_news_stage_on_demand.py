@@ -118,3 +118,70 @@ class TestNewsStageOnDemandFirst:
             _ctx(symbol="005930", instrument_type="equity_kr")
         )
         assert fetch.await_args.args[1] == "kr"
+
+    @pytest.mark.asyncio
+    async def test_degraded_stale_cache_is_unavailable_not_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#904: provider error + stale DB fallback must not mint a verdict.
+
+        fetch_symbol_news returns status="ok" when stale rows are served, so
+        the stage must gate on degraded+fetched_at rather than status alone.
+        """
+        from dataclasses import replace as _replace
+        from datetime import timedelta
+
+        stale_fetch = datetime.now(tz=UTC) - timedelta(days=11)
+        result = _replace(
+            _result(
+                "ok",
+                [
+                    _article(
+                        title="Amazon earnings beat soaring growth",
+                        published_at=stale_fetch,
+                    )
+                ],
+            ),
+            degraded=True,
+            fetch_error="HTTPStatusError:410",
+            fetched_at=stale_fetch,
+        )
+        monkeypatch.setattr(
+            news_stage, "fetch_symbol_news", AsyncMock(return_value=result)
+        )
+
+        out = await NewsStageAnalyzer().analyze(_ctx())
+
+        assert out.verdict == StageVerdict.UNAVAILABLE
+        assert out.confidence == 0
+
+    @pytest.mark.asyncio
+    async def test_degraded_fresh_cache_still_produces_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In-window cache on a provider error remains usable (#904)."""
+        from dataclasses import replace as _replace
+
+        fresh_fetch = datetime.now(tz=UTC)
+        result = _replace(
+            _result(
+                "ok",
+                [
+                    _article(
+                        title="Amazon earnings beat soaring growth",
+                        published_at=fresh_fetch,
+                    )
+                ],
+            ),
+            degraded=True,
+            fetch_error="TimeoutError",
+            fetched_at=fresh_fetch,
+        )
+        monkeypatch.setattr(
+            news_stage, "fetch_symbol_news", AsyncMock(return_value=result)
+        )
+
+        out = await NewsStageAnalyzer().analyze(_ctx())
+
+        assert out.verdict == StageVerdict.BULL
+        assert out.signals.headline_count == 1

@@ -34,6 +34,7 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_READ_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
+from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -142,10 +143,10 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
 # Per-lane hard-constraint summaries. Reference policy KEYS, never values.
 HARD_CONSTRAINTS: dict[str, list[str]] = {
     "buy": [
-        "recovery gate: deploy reserve only when >= recovery_gate.min_conditions_met of 4 conditions",
+        "crypto new-entry sizing: recovery_gate.size_coefficient m is 1.0 at 2/2, 0.5 at 1/2, 0 at 0/2; missing or stale input holds the decision; breadth counts once",
         "loss guard (sell-side): sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
-        "DAY order expiry at order.day_expiry_kst -> re-place next day",
+        "DAY order expiry per broker under order.day_expiry_kst — toss_live regular-session dies 15:30 KST (after-hours is a new order); kis_live to_confirm; unfilled -> re-place next day",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "sector concentration advisory: surface and record portfolio.sector_cluster_cap_pct; never use it as a buy admission block",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
@@ -163,7 +164,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple (cash_proxy cash_funding 매도는 예외 — config/trading_policy.yaml cash_proxy) (limit 매도·order_proposal_create 제안 경유에 한함)",
         "KRX tick rounding",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
-        "DAY order expiry at order.day_expiry_kst -> re-place next day",
+        "DAY order expiry per broker under order.day_expiry_kst — toss_live regular-session dies 15:30 KST (after-hours is a new order); kis_live to_confirm; unfilled -> re-place next day",
         "preserve core lot; portfolio.sector_cluster_cap_pct is an advisory concentration signal, not a sell block",
         "order intent: order_proposal_create only; Telegram human approval required",
         "sell from the holding account selected in the proposal",
@@ -183,7 +184,7 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
     ],
     "bootstrap": [
         "context-load only; no order mutation in this lane",
-        "recovery gate frame: recovery_gate.min_conditions_met of 4",
+        "crypto recovery market state: use recovery_gate.size_coefficient for new-entry sizing; missing or stale input holds the decision",
         "account routing: buys prefer Toss (fee-free); KIS deposit spent down in-account",
     ],
 }
@@ -258,6 +259,9 @@ DIRECT_BROKER_MUTATION_TOOLS: frozenset[str] = frozenset(
         "kiwoom_mock_us_modify_order",
         "kiwoom_mock_us_place_order",
         "modify_order",
+        "nh_mock_cancel_order",
+        "nh_mock_modify_order",
+        "nh_mock_place_order",
         "paper_cancel_pending_order",
         "paper_place_limit_order",
         "place_order",
@@ -300,6 +304,7 @@ PREVIEW_REVALIDATION_TOOLS: frozenset[str] = frozenset(
         "buy_ladder_fill_preview",
         "kiwoom_mock_preview_order",
         "kiwoom_mock_us_preview_order",
+        "nh_mock_preview_order",
         "sell_ladder_fill_preview",
         "toss_preview_order",
     }
@@ -311,6 +316,7 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
         "kis_live_reconcile_orders",
         "kis_mock_reconciliation_run",
         "live_reconcile_orders",
+        "nh_mock_reconcile_orders",
         "paper_reconcile_orders",
         "toss_reconcile_orders",
     }
@@ -329,6 +335,11 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "kiwoom_mock_get_order_detail",
         "kiwoom_mock_get_orderable_cash",
         "kiwoom_mock_get_positions",
+        # #849: NH mock reads, bucketed with the NH_MOCK_TOOL_NAMES union.
+        "nh_mock_get_order_detail",
+        "nh_mock_get_order_history",
+        "nh_mock_get_orderable_cash",
+        "nh_mock_get_positions",
         "toss_get_order_history",
         "toss_get_orderable_cash",
         "toss_get_positions",
@@ -364,6 +375,26 @@ HARNESS_DENIED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# Q-58 / task #911: the operator re-admitted get_upbit_altseason on the live
+# crypto session — the desk added it to LIVE_ALLOWED_TOOLS in robin-prefect
+# kr_live_sessions.py (that argv is shared by every live rep, so the
+# crypto-only scope is enforced here, route-side).  For market="crypto" the
+# route contract advertises it again: it re-enters the allowed candidates
+# (the same supplementary-allowance shape as LANE_EXTRA_ALLOWED — bucketed in
+# MUTATION_TOOLS via HARNESS_DENIED_TOOLS for the registry partition, yet
+# allowed) and drops out of blocked_actions and harness_denied_tools.  kr/us
+# routes still deny it, and the other three #678 tools stay denied on every
+# market.
+HARNESS_DENIED_MARKET_RELIEF: dict[str, frozenset[str]] = {
+    "crypto": frozenset({"get_upbit_altseason"}),
+}
+
+
+def _harness_denied_tools(market: str) -> frozenset[str]:
+    """The #678 denied set as the market's live harness enforces it."""
+    return HARNESS_DENIED_TOOLS - HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
+
+
 _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     ORDER_TOOL_NAMES
     | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
@@ -373,6 +404,8 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
+    # #849: NH mock family, flag-gated in DEFAULT (nh_mock_mcp_enabled).
+    | NH_MOCK_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
     # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
     # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES
@@ -586,6 +619,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_ohlcv",
         "get_operating_briefing",
         "get_orderbook",
+        # #883: typed parking_exclusion read for the cash sweep; the closed
+        # "unknown" status on malformed values is never a zero exclusion.
+        "get_parking_exclusion",
         "get_portfolio_allocation",
         "get_position",
         "get_quote",
@@ -819,9 +855,14 @@ def build_route_plan(
             {"step": i, "tool": step["tool"], "purpose": step["purpose"]}
             for i, step in enumerate(sequence, start=1)
         ]
+        denied = _harness_denied_tools(market)
         allowed = (
-            (set(READ_ONLY_ADVISORY_TOOLS) | set(ACCOUNT_CLEANUP_REQUIRED_TOOLS))
-            - HARNESS_DENIED_TOOLS
+            (
+                set(READ_ONLY_ADVISORY_TOOLS)
+                | set(ACCOUNT_CLEANUP_REQUIRED_TOOLS)
+                | HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
+            )
+            - denied
         ) & registered_tools
         if not success:
             allowed.discard(ACCOUNT_CLEANUP_DIRECT_TOOL)
@@ -838,7 +879,7 @@ def build_route_plan(
             "blocked_actions": sorted(blocked),
             "blocked_actions_basis": "live_registered_surface",
             "harness_denied_tools": dict.fromkeys(
-                sorted(HARNESS_DENIED_TOOLS & registered_tools),
+                sorted(denied & registered_tools),
                 HARNESS_DENIED_TOOL_BASIS,
             ),
             "route_contract": route_contract,
@@ -865,12 +906,14 @@ def build_route_plan(
 
     # Harness-denied tools are suppressed from the emitted sequence in every
     # lane: a sequenced-but-denied step would still send the rep into a
-    # guaranteed harness denial (hk #678).
+    # guaranteed harness denial (hk #678).  Market relief (Q-58) applies here
+    # too — a re-admitted tool may be sequenced again.
+    denied = _harness_denied_tools(market)
     seq_steps = [
         step
         for step in LANE_SEQUENCES[lane]
         if step["tool"] in registered_tools
-        and step["tool"] not in HARNESS_DENIED_TOOLS
+        and step["tool"] not in denied
         and (not proposal_led or step["tool"] not in DIRECT_BROKER_MUTATION_TOOLS)
     ]
     if lane_place_tools and not (lane_place_tools & registered_tools):
@@ -899,9 +942,10 @@ def build_route_plan(
         | lane_reconcile
         | lane_lifecycle
         | lane_reserve_net
+        | HARNESS_DENIED_MARKET_RELIEF.get(market, frozenset())
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
-    allowed = (allowed_candidates - HARNESS_DENIED_TOOLS) & registered_tools
+    allowed = (allowed_candidates - denied) & registered_tools
     blocked = (MUTATION_TOOLS & registered_tools) - allowed
     route_contract = _route_contract(
         lane,
@@ -922,7 +966,7 @@ def build_route_plan(
         "blocked_actions": sorted(blocked),
         "blocked_actions_basis": "live_registered_surface",
         "harness_denied_tools": dict.fromkeys(
-            sorted(HARNESS_DENIED_TOOLS & registered_tools),
+            sorted(denied & registered_tools),
             HARNESS_DENIED_TOOL_BASIS,
         ),
         "route_contract": route_contract,
@@ -967,6 +1011,7 @@ __all__ = [
     "LANE_RECONCILE_ALLOWED",
     "HARNESS_DENIED_TOOL_BASIS",
     "HARNESS_DENIED_TOOLS",
+    "HARNESS_DENIED_MARKET_RELIEF",
     "MUTATION_TOOLS",
     "READ_ONLY_ADVISORY_TOOLS",
     "ALL_KNOWN_TOOLS",

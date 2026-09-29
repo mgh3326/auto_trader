@@ -27,7 +27,7 @@ def _replay() -> PostureGeneratorInput:
     )
 
 
-def test_shipped_policy_is_default_off_and_projection_shape_is_unchanged():
+def test_shipped_policy_is_default_off_and_view_includes_kr_sessions():
     policy = load_trading_policy()
     assert policy.posture.enabled is False
     assert policy.posture.mode == "shadow"
@@ -45,6 +45,7 @@ def test_shipped_policy_is_default_off_and_projection_shape_is_unchanged():
         "user_stances",
         "cash_yields",
         "transfer_costs",
+        "kr_trading_sessions",
     }
     assert "posture" not in existing_view
 

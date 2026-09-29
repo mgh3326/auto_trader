@@ -54,6 +54,7 @@ from app.mcp_server.tooling.portfolio_helpers import (
 from app.mcp_server.tooling.portfolio_helpers import (
     value_for_minimum_filter as _value_for_minimum_filter,
 )
+from app.mcp_server.tooling.portfolio_ledger_lots import attach_ledger_lots
 from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES as _DEFAULT_MINIMUM_VALUES,
 )
@@ -1886,6 +1887,12 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "sellable_observed. The deprecated fresh_sellable flag is retained "
             "for compatibility. Live order tools still perform their own fresh "
             "broker preflight. "
+            "include_ledger_lots=True (default False, output unchanged) adds a "
+            "read-only ledger_lots block to KIS live KR positions: FIFO lots from "
+            "authoritative execution_ledger rows (not the broker avg cost), "
+            "freshness, a quantity cross-check against the broker quantity, and "
+            "own-open-buy evidence; ledger_state='unknown' whenever it cannot be "
+            "trusted. No broker call; external (KIS app) orders stay unverifiable. "
         ),
     )
     async def get_holdings(
@@ -1897,6 +1904,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
         fresh_sellable: bool = False,
+        include_ledger_lots: bool = False,
     ) -> dict[str, Any]:
         routing = normalize_account_mode(
             account_mode=account_mode,
@@ -1924,6 +1932,12 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             ),
             routing,
         )
+        if include_ledger_lots:
+            # #963 — opt-in, DB-only, never fails the response (see module).
+            await attach_ledger_lots(
+                response,
+                kis_live_routing=not (routing.is_kis_mock or routing.is_db_simulated),
+            )
         # ROB-357 — a crypto/Upbit-scoped read carries no meaningful KIS routing
         # selector. When the caller did not explicitly choose a KIS/paper mode,
         # surface the Upbit-live provenance at the top level instead of echoing

@@ -896,7 +896,9 @@ def test_the_strategy_loop_cli_is_the_only_run_tick_entry_point_and_wires_null_s
     still passed, because nothing here had ever looked outside the named file.
     So the entry-point set is enumerated over ``app/``, ``scripts/`` and
     ``research/`` — anything that imports the strategy-loop package or calls
-    ``run_tick`` — and asserted equal to the single file the contract names.
+    ``run_tick`` — and asserted equal to the closed set the contracts name:
+    the canonical CLI plus, since Task 847, the YAML-registered H5 manual
+    runner and the H5 modules that reuse the loop's types by import only.
     """
     entry_points: dict[str, list[ast.Call]] = {}
     for path in _first_party_source_files(
@@ -907,14 +909,44 @@ def test_the_strategy_loop_cli_is_the_only_run_tick_entry_point_and_wires_null_s
         if run_tick_calls or _imports_package(tree, _STRATEGY_LOOP_PACKAGE):
             entry_points[path.relative_to(REPO_ROOT).as_posix()] = run_tick_calls
 
-    assert set(entry_points) == {"scripts/binance_demo_strategy_loop.py"}
+    # Task 847 — the H5-LS-ENV-v1 successor lane is a sanctioned second
+    # surface, not a hidden one: operator_contract.yaml registers
+    # scripts/binance_h5_demo.py as the lane's sole manual runner, and the
+    # lane modules below only *import* the loop package for its Signal/bar
+    # types. The enumeration stays closed — anything outside this set is a
+    # genuine unregistered second entry point.
+    h5_type_consumers = {
+        "app/services/brokers/binance/h5/history.py",
+        "app/services/brokers/binance/h5/state.py",
+        "app/services/brokers/binance/h5/strategy.py",
+    }
+    assert set(entry_points) == {
+        "scripts/binance_demo_strategy_loop.py",
+        "scripts/binance_h5_demo.py",
+        *h5_type_consumers,
+    }
 
-    # ...and the one entry point wires the always-``None`` plugin. Asserted at
-    # the call site, so a second ``run_tick`` call inside the same file with a
-    # different plugin is caught too.
-    (calls,) = entry_points.values()
+    # ...and the canonical entry point still wires the always-``None``
+    # plugin. Asserted at the call site, so a second ``run_tick`` call
+    # inside the same file with a different plugin is caught too.
+    calls = entry_points["scripts/binance_demo_strategy_loop.py"]
     assert len(calls) == 1
     assert _keyword_values(calls[0])["strategy"] == "NullStrategy()"
+
+    # The lane's app/ modules may only *import* the loop package — a
+    # run_tick call inside any of them is a hidden second driver.
+    for consumer in h5_type_consumers:
+        assert entry_points[consumer] == [], consumer
+
+    # The registered manual runner's sole tick call goes to the H5
+    # executor object built in the same file — never the loop package's
+    # run_tick — and carries the per-call confirm=True gate.
+    (runner_call,) = entry_points["scripts/binance_h5_demo.py"]
+    assert isinstance(runner_call.func, ast.Attribute)
+    assert runner_call.func.attr == "run_tick"
+    assert isinstance(runner_call.func.value, ast.Name)
+    assert runner_call.func.value.id == "executor"
+    assert _keyword_values(runner_call)["confirm"] == "True"
 
 
 def test_no_scheduler_entrypoint_reaches_the_demo_strategy_loop() -> None:

@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services import symbol_news_service
+from app.services.naver_finance import NaverNewsFetchResult
+
+
+def _naver_feed(items: list, skipped: dict | None = None) -> NaverNewsFetchResult:
+    return NaverNewsFetchResult(items=list(items), skipped=skipped or {})
 
 
 def _stored(article_id: int, url: str, title: str, status: str = "pending"):
@@ -92,7 +97,9 @@ async def test_kr_returns_normalized_articles_with_external_id(
         }
     ]
     monkeypatch.setattr(
-        symbol_news_service.naver_finance, "fetch_news", AsyncMock(return_value=raw)
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed(raw)),
     )
     _patch_store(
         monkeypatch,
@@ -123,7 +130,9 @@ async def test_kr_persists_then_serves_db_state(monkeypatch) -> None:
         }
     ]
     monkeypatch.setattr(
-        symbol_news_service.naver_finance, "fetch_news", AsyncMock(return_value=raw)
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed(raw)),
     )
     upsert, _ = _patch_store(
         monkeypatch,
@@ -173,13 +182,15 @@ async def test_kr_fetched_at_is_stamped_only_after_provider_success(
 
     async def provider_fetch(symbol: str, *, limit: int):
         events.append("provider_returned")
-        return raw
+        return _naver_feed(raw)
 
     def clock() -> datetime:
         events.append("timestamp_created")
         return acquired_at
 
-    monkeypatch.setattr(symbol_news_service.naver_finance, "fetch_news", provider_fetch)
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance, "fetch_stock_news", provider_fetch
+    )
     monkeypatch.setattr(symbol_news_service, "_utcnow", clock)
     _patch_store(
         monkeypatch,
@@ -199,7 +210,9 @@ async def test_kr_db_row_outside_window_gets_reconstructed_source_item(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        symbol_news_service.naver_finance, "fetch_news", AsyncMock(return_value=[])
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed([])),
     )
     _patch_store(
         monkeypatch, stored=[_stored(7, "https://x/old-article", "지난주 네이버 기사")]
@@ -218,7 +231,7 @@ async def test_kr_db_row_outside_window_gets_reconstructed_source_item(
 async def test_kr_fetch_failure_serves_db_cache_degraded(monkeypatch) -> None:
     monkeypatch.setattr(
         symbol_news_service.naver_finance,
-        "fetch_news",
+        "fetch_stock_news",
         AsyncMock(side_effect=RuntimeError("naver down")),
     )
     monkeypatch.setattr(
@@ -260,7 +273,9 @@ async def test_kr_db_failure_degrades_to_on_demand_pending(monkeypatch) -> None:
         }
     ]
     monkeypatch.setattr(
-        symbol_news_service.naver_finance, "fetch_news", AsyncMock(return_value=raw)
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed(raw)),
     )
     monkeypatch.setattr(
         symbol_news_service,
@@ -280,7 +295,7 @@ async def test_kr_db_failure_degrades_to_on_demand_pending(monkeypatch) -> None:
 async def test_kr_both_fetch_and_db_down_is_error(monkeypatch) -> None:
     monkeypatch.setattr(
         symbol_news_service.naver_finance,
-        "fetch_news",
+        "fetch_stock_news",
         AsyncMock(side_effect=RuntimeError("naver down")),
     )
     monkeypatch.setattr(
@@ -290,6 +305,112 @@ async def test_kr_both_fetch_and_db_down_is_error(monkeypatch) -> None:
     )
     result = await symbol_news_service.fetch_symbol_news("035420", "kr")
     assert result.status == "error"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_http_status_error_surfaces_terminal_code(monkeypatch) -> None:
+    """#904: 'HTTPStatusError' alone hid that the dead endpoint answers 410."""
+    import httpx
+
+    err = httpx.HTTPStatusError(
+        "Gone",
+        request=httpx.Request("GET", "https://finance.naver.com/item/x"),
+        response=httpx.Response(410),
+    )
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(side_effect=err),
+    )
+    _patch_store(monkeypatch, stored=[_stored(1, "https://x/cached", "캐시 기사")])
+
+    result = await symbol_news_service.fetch_symbol_news("005930", "kr")
+
+    assert result.degraded is True
+    assert result.fetch_error == "HTTPStatusError:410"
+    assert result.provider_provenance[0]["status"] == "error"
+    assert result.provider_provenance[0]["error_code"] == "HTTPStatusError:410"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_parser_skips_propagate_to_result(monkeypatch) -> None:
+    raw = [
+        {
+            "title": "네이버 정상 기사",
+            "url": "https://n.news.naver.com/mnews/article/001/0001234",
+            "source": "연합뉴스",
+            "datetime": "2026-09-28T15:30:00+09:00",
+            "id": "0010001234",
+            "officeId": "001",
+            "articleId": "0001234",
+        }
+    ]
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed(raw, {"missing_url": 2, "invalid_item": 1})),
+    )
+    _patch_store(
+        monkeypatch,
+        stored=[_stored(1, raw[0]["url"], raw[0]["title"])],
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("005930", "kr", limit=10)
+
+    assert result.status == "ok"
+    assert result.parser_skips == {"missing_url": 2, "invalid_item": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_external_id_prefers_structured_ids(monkeypatch) -> None:
+    raw = [
+        {
+            "title": "네이버 신형 API 기사",
+            "url": "https://n.news.naver.com/mnews/article/015/0009876",
+            "source": "한국경제",
+            "datetime": "2026-09-28T10:00:00+09:00",
+            "id": "0150009876",
+            "officeId": "015",
+            "articleId": "0009876",
+        }
+    ]
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed(raw)),
+    )
+    _patch_store(monkeypatch, stored=[_stored(9, raw[0]["url"], raw[0]["title"])])
+
+    result = await symbol_news_service.fetch_symbol_news("005930", "kr", limit=10)
+
+    assert result.articles[0].external_article_id == "015:0009876"
+    assert result.articles[0].provider_metadata["source_item"]["id"] == "0150009876"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_external_id_falls_back_to_url_path(monkeypatch) -> None:
+    raw = [
+        {
+            "title": "구조화 id 없는 기사",
+            "url": "https://n.news.naver.com/mnews/article/009/0005555",
+            "source": "매일경제",
+            "datetime": "2026-09-28T09:00:00+09:00",
+        }
+    ]
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed(raw)),
+    )
+    _patch_store(monkeypatch, stored=[_stored(9, raw[0]["url"], raw[0]["title"])])
+
+    result = await symbol_news_service.fetch_symbol_news("005930", "kr", limit=10)
+
+    assert result.articles[0].external_article_id == "009:0005555"
 
 
 @pytest.mark.unit
@@ -342,7 +463,9 @@ async def test_empty_provider_result_is_status_empty(
 ) -> None:
     # KR case with empty fetch and empty DB
     monkeypatch.setattr(
-        symbol_news_service.naver_finance, "fetch_news", AsyncMock(return_value=[])
+        symbol_news_service.naver_finance,
+        "fetch_stock_news",
+        AsyncMock(return_value=_naver_feed([])),
     )
     _patch_store(monkeypatch, stored=[])
     result = await symbol_news_service.fetch_symbol_news("005930", "kr")
@@ -359,7 +482,7 @@ async def test_provider_error_is_fail_soft(
     # If fetch fails but DB is empty, it's an error status
     monkeypatch.setattr(
         symbol_news_service.naver_finance,
-        "fetch_news",
+        "fetch_stock_news",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     _patch_store(monkeypatch, stored=[])
@@ -388,9 +511,11 @@ async def test_unsupported_market_is_unavailable() -> None:
 
 def _patch_naver(monkeypatch, items):
     async def fake_fetch(symbol, limit=20):
-        return items
+        return _naver_feed(items)
 
-    monkeypatch.setattr(symbol_news_service.naver_finance, "fetch_news", fake_fetch)
+    monkeypatch.setattr(
+        symbol_news_service.naver_finance, "fetch_stock_news", fake_fetch
+    )
 
 
 _RAW_ITEM = {

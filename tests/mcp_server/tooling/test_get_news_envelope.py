@@ -99,6 +99,7 @@ async def test_get_news_kr_envelope_adds_freshness_contract(
     assert set(out) == {
         *expected_payload,
         "data_state",
+        "stale",
         "derived_as_of",
         "fetched_at",
         "data_age_seconds",
@@ -107,6 +108,7 @@ async def test_get_news_kr_envelope_adds_freshness_contract(
         "provider_provenance",
     }
     assert out["data_state"] == "stale"
+    assert out["stale"] is True
     assert out["derived_as_of"] == out["fetched_at"] == art.fetched_at.isoformat()
     assert out["data_age_seconds"] > _news.NEWS_FRESHNESS_MAX_AGE_SECONDS
     assert out["cache_hit"] is False
@@ -190,6 +192,7 @@ async def test_get_news_kr_degraded_meta_surfaced(
     assert out["degraded"] is True
     assert out["fetch_error"] == "RuntimeError"
     assert out["data_state"] == "degraded"
+    assert out["stale"] is False  # in-window fallback is degraded, not stale
     assert out["cache_hit"] is True
     assert out["fallback_source"] == "news_articles"
     assert out["provider_provenance"] == [
@@ -230,6 +233,7 @@ async def test_get_news_expired_fallback_is_stale(
     out = await _news.handle_get_news("005930", market="kr", limit=10)
 
     assert out["data_state"] == "stale"
+    assert out["stale"] is True
     assert out["cache_hit"] is True
     assert out["fallback_source"] == "news_articles"
     assert out["provider_provenance"][0]["status"] == "error"
@@ -288,6 +292,7 @@ async def test_get_news_error_status_returns_error_payload(
     assert out.get("error") or out.get("source") == "finnhub"
     assert "news" not in out or out.get("count", 0) == 0
     assert out["data_state"] == "missing"
+    assert out["stale"] is False
     assert out["derived_as_of"] is None
     assert out["fetched_at"] is None
     assert out["data_age_seconds"] is None
@@ -324,6 +329,7 @@ async def test_get_news_authoritative_empty_is_fresh(
     assert out["count"] == 0
     assert out["news"] == []
     assert out["data_state"] == "fresh"
+    assert out["stale"] is False
     assert out["derived_as_of"] == fetched_at.isoformat()
     assert out["provider_provenance"][0]["status"] == "empty"
 
@@ -379,3 +385,50 @@ async def test_get_news_us_surfaces_relevance_and_degraded(monkeypatch) -> None:
     assert payload["fetch_error"] == "TimeoutError"
     assert payload["excluded_count"] == 3
     assert payload["news"][0]["relevance"]["status"] == "pending"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_surfaces_parser_skips(monkeypatch) -> None:
+    """Malformed-item drops counted by the provider parse ride the envelope."""
+    art = _naver_article()
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "005930",
+                "kr",
+                "naver",
+                "ok",
+                10,
+                1,
+                [art],
+                excluded_count=0,
+                parser_skips={"missing_url": 1, "invalid_datetime": 2},
+            )
+        ),
+    )
+
+    out = await _news.handle_get_news("005930", market="kr", limit=10)
+
+    assert out["parser_skips"] == {"missing_url": 1, "invalid_datetime": 2}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_no_parser_skips_key_when_clean(monkeypatch) -> None:
+    art = _naver_article()
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "005930", "kr", "naver", "ok", 10, 1, [art]
+            )
+        ),
+    )
+
+    out = await _news.handle_get_news("005930", market="kr", limit=10)
+
+    assert "parser_skips" not in out

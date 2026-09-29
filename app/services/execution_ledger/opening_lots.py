@@ -1,11 +1,13 @@
 # app/services/execution_ledger/opening_lots.py
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
+from app.core.symbol import to_db_symbol
 from app.schemas.execution_ledger import (
     AccountMode,
     Broker,
@@ -48,6 +50,82 @@ class OpeningLotSkip:
 class OpeningLotPlan:
     upserts: list[ExecutionLedgerUpsert] = field(default_factory=list)
     skipped: list[OpeningLotSkip] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolFilterResult:
+    """Outcome of restricting candidates to an explicit --symbol set."""
+
+    candidates: list[OpeningLotCandidate]
+    requested: list[str]
+    matched: list[str]
+    unmatched: list[str]
+
+
+def normalize_opening_lot_symbol(value: str) -> str:
+    """Normalize a ``--symbol`` token to the canonical equality form.
+
+    Candidate loaders already emit ``strip().upper()`` symbols; additionally
+    applying ``to_db_symbol`` makes the operator's separator spelling
+    irrelevant — ``BRK-B``/``BRK/B``/``brk.b`` all compare as ``BRK.B`` —
+    while KR 6-digit codes pass through untouched.
+    """
+    return to_db_symbol(str(value).strip().upper())
+
+
+def split_requested_symbols(values: Iterable[str]) -> list[str]:
+    """Flatten repeatable ``--symbol`` values and comma lists.
+
+    Returns normalized tokens deduplicated in input order; empty tokens are
+    dropped.
+    """
+    requested: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for token in str(value).split(","):
+            normalized = normalize_opening_lot_symbol(token)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                requested.append(normalized)
+    return requested
+
+
+def opening_lot_candidate_keys(candidate: OpeningLotCandidate) -> frozenset[str]:
+    """Normalized identities a candidate answers to (symbol + raw_symbol)."""
+    return frozenset(
+        {
+            normalize_opening_lot_symbol(candidate.symbol),
+            normalize_opening_lot_symbol(candidate.raw_symbol),
+        }
+    )
+
+
+def filter_opening_lot_candidates(
+    candidates: list[OpeningLotCandidate], symbols: Iterable[str]
+) -> SymbolFilterResult:
+    """Keep only candidates whose identity equals a requested symbol.
+
+    Matching is exact equality on the normalized form — never prefix or
+    substring. Requested symbols with no candidate identity are returned in
+    ``unmatched`` so the caller can report them instead of dropping them.
+    """
+    requested = split_requested_symbols(symbols)
+    wanted = set(requested)
+    keys_by_candidate = [opening_lot_candidate_keys(c) for c in candidates]
+    known: set[str] = set()
+    for keys in keys_by_candidate:
+        known |= keys
+    kept = [
+        candidate
+        for candidate, keys in zip(candidates, keys_by_candidate, strict=True)
+        if keys & wanted
+    ]
+    return SymbolFilterResult(
+        candidates=kept,
+        requested=requested,
+        matched=[symbol for symbol in requested if symbol in known],
+        unmatched=[symbol for symbol in requested if symbol not in known],
+    )
 
 
 def _match_key(candidate: OpeningLotCandidate) -> MatchKey:

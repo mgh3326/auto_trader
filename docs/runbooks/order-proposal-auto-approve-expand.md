@@ -29,7 +29,7 @@ only one:
 | | boundary | scope |
 | --- | --- | --- |
 | 1st | per-order **USD 10,000** (raised) | every parking rung, both sides |
-| 2nd | cumulative parking exposure **USD 10,000** | parking **buys**, across orders |
+| 2nd | cumulative parking exposure **USD 20,000** | parking **buys**, across orders |
 
 The second is measured from the broker balance **plus the same-day durable
 record of already-auto-approved parking buys**, and fails closed. Both halves
@@ -342,11 +342,11 @@ and only costs a Telegram tap on money that is being parked, not invested.
 | dimension | value |
 | --- | --- |
 | symbols | `SGOV`, `BIL` — closed `frozenset`, hardcoded in `app/services/order_proposals/parking_allowlist.py` |
-| account mode × market | `kis_live` × `equity_us` **only** |
+| account mode × market | `kis_live` × `equity_us` and `toss_live` × `equity_us` only; separate account meters (see §8.10) |
 | mode | `expanded` only. `off` never reaches the branch. |
 | marketability | released on the **buy** side only |
 | per-order cap | 🔴 **raised** USD 1,500 → **USD 10,000**, and still enforced — this is a value change, not a removal |
-| 2nd boundary | cumulative parking exposure ≤ **USD 10,000**, buy side, where exposure = broker balance **+** same-day auto-approved parking buys (see §8.3) |
+| 2nd boundary | cumulative parking exposure ≤ **USD 20,000**, buy side, where exposure = broker balance **+** same-day auto-approved parking buys (see §8.3) |
 | shared daily cap (§S170) | 🔴 **excluded on both buy and sell** for this explicitly enabled scope in `expanded` mode: it neither blocks the parking rung nor consumes budget for a later ordinary order |
 
 Neither constant is a settings key, an environment variable, or a
@@ -370,19 +370,19 @@ spellings is a losing game. What it buys is that re-introducing configurability
 *the obvious way* turns red in CI. The real boundary is that this file is
 operator-PR-only, like the policy document.
 
-### 8.2 Why only exact `kis_live` market tuples
+### 8.2 Exact account and market tuples (§163 historical KIS scope)
 
 The cumulative cap is only meaningful if parking exposure can be read back at
 all. `kis_live` has the existing read surface for each authorized market:
 `equity_us` uses `KISClient.fetch_my_us_stocks` → `ovrs_stck_evlu_amt` (USD),
 while `equity_kr` uses `KISClient.fetch_my_stocks` → `evlu_amt` (KRW).
-`toss_live` is veto-capable in principle behind
+At the time of §163, `toss_live` was veto-capable in principle behind
 `ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED` for both `equity_us` and `equity_kr`,
-but its exposure lives on a different broker surface. Metering a KIS balance to
+but its exposure lived on a different broker surface. Metering a KIS balance to
 authorize a Toss order would be a wrong-account cap, which is worse than no
-parking treatment at all. No `toss_live` tuple is authorized, so Toss parking
-orders keep the ordinary gates. A proposal outside an exact KIS
-symbol×account×market tuple gets nothing.
+parking treatment at all. That historical exclusion was superseded by the
+account-bound Toss KR (§S174) and US (§173) scopes below. A proposal outside an
+exact authorized symbol×account×market tuple gets no parking treatment.
 
 🔴 **This is an account *label*, not a proven account identity — do not read
 more into it than the code does.** Both halves of the measurement are scoped
@@ -411,9 +411,9 @@ A row that *declares* a currency other than USD fails closed.
 **🔴 Half 2 — same-day auto-approved parking buys.**
 `KISAccount._filter_nonzero_holdings` keeps only rows with
 `ovrs_cblc_qty > 0`, so an order that was auto-approved and **sent but has not
-filled** has no balance row at all. Measured from the balance alone, two
-separate USD 10,000 SGOV proposals both see zero exposure and both clear —
-USD 20,000 against a USD 10,000 cap. `OrderProposalsService
+filled** has no balance row at all. Measured from the balance alone, three
+separate USD 10,000 SGOV proposals could each see zero exposure and clear —
+USD 30,000 against the current USD 20,000 cap. `OrderProposalsService
 .auto_approved_parking_notional` closes that window, reusing the KST-day
 window, advisory lock and row filter of the already-vetted
 `auto_approved_daily_notional`. It counts parking **buys** only (a sell reduces
@@ -459,7 +459,7 @@ Every one of these rejects the auto-approval and produces a human card:
 | no durable reader was supplied (balance-only is the broken measure) | `… / durable_reader_missing` |
 | the durable read raised or timed out | `… / durable_read_failed` |
 | the durable read returned a missing/unparseable/negative value | `… / durable_notional_invalid` |
-| projected exposure > USD 10,000 | `parking_cap_exceeded` |
+| projected exposure > USD 20,000 | `parking_cap_exceeded` |
 
 `parking_exposure` defaults to `None` on the classifier, and `None` is the
 fail-closed value — a caller that forgets to supply it cannot clear the
@@ -712,13 +712,14 @@ correcting ETF ticks affects all KRX ETF orders and requires a separate review.
 ### 8.10 Toss US extension (§173) — a separate USD account meter
 
 The two US parking symbols are additionally authorized on a separate Toss
-surface. This is a new exception with the same immutable USD controls already
-used by the KIS US face; no cap value or policy key is changed:
+surface. At §173, this used the same immutable USD controls as the KIS US face
+and changed no cap value or policy key. Both faces now use the USD 20,000
+cumulative cap authorized for task #880:
 
 | symbol | account mode × market | currency | per-order cap | cumulative buy cap | daily cap |
 | --- | --- | --- | --- | --- | --- |
-| `SGOV` | `toss_live` × `equity_us` | USD | 10,000 | 10,000 | exempt |
-| `BIL` | `toss_live` × `equity_us` | USD | 10,000 | 10,000 | exempt |
+| `SGOV` | `toss_live` × `equity_us` | USD | 10,000 | 20,000 | exempt |
+| `BIL` | `toss_live` × `equity_us` | USD | 10,000 | 20,000 | exempt |
 
 Each closed scope binds `balance_provider=toss_us_holdings`,
 `balance_symbol_field=symbol`, `balance_evaluation_field=market_value.amount`,
@@ -750,9 +751,9 @@ must pass one sequence explicitly. The historical ae231402 SGOV proposal
 has a NULL sequence and remains `account_identity_unavailable`.
 
 The Toss US face and the KIS US face are deliberately independent meters. Each
-can consume its own USD 10,000 cumulative-buy cap, so the accepted US aggregate
-upper bound is **USD 20,000** (KIS USD 10,000 + Toss USD 10,000), not one shared
-USD 10,000 pool. This is the same per-face structure accepted for the two KR
+can consume its own USD 20,000 cumulative-buy cap, so the accepted US aggregate
+upper bound is **USD 40,000** (KIS USD 20,000 + Toss USD 20,000), not one shared
+USD 20,000 pool. This is the same per-face structure accepted for the two KR
 faces in §S174. The existing daily-cap exclusion applies through the exact
 expanded parking marker; no scheduler or automatic trigger is added.
 
@@ -776,7 +777,8 @@ market-exposure-changing auto approvals.
 
 For a parking **sell**, this removes the only aggregate limit: no daily total
 or cumulative-parking cap remains. The immutable per-order cap, available held
-quantity, and existing `take_profit` proof remain required.
+quantity remain required. Task 817 adds the separate proposal-bound sell
+exception in §10; the older `take_profit` requirement remains for other sells.
 
 The mechanism of the known cumulative-cap limits is unchanged, but their
 effective binding amount is not symmetric by market:
@@ -789,8 +791,9 @@ effective binding amount is not symmetric by market:
   KST midnight therefore occurs together; the daily cap was never a backstop
   for the US intra-session reset.
 
-For **US**, the prior USD 20,000 daily cap was already looser than the
-USD 10,000 cumulative parking-buy cap. For the pre-existing **KIS KR face**,
+For **US**, when §S170 shipped, the prior USD 20,000 daily cap was looser than
+the then-current USD 10,000 cumulative parking-buy cap; the current cumulative
+cap is USD 20,000. For the pre-existing **KIS KR face**,
 the prior KRW 5,000,000 daily cap was the binding gate below its KRW 15,000,000
 cumulative parking-buy cap. §S170 moves that one face from **KRW 5,000,000 to
 KRW 15,000,000**; the **3×** BL-37/BL-39 statement applies only to that
@@ -899,3 +902,67 @@ hit the existing market-loss block.
 3. `measured_shortfall` is measured at proposal creation and is not atomic
    with submit. Auto approval additionally refreshes it at dispatch, but no
    distributed reservation turns either reading into an atomic funding claim.
+
+## 10. Proposal-bound parking SELL without a planned buy (task 817)
+
+Parking means cash held in SGOV, BIL, 459580, or 357870 without making a
+deposit or FX trade. An operator may sell it for a cash shortage or by explicit
+instruction. The ordinary parking SELL has no `funding_target` or planned-buy
+requirement. This is distinct from §9 `cash_funding`, whose target and measured
+shortfall evidence contract remains unchanged. A distribution ex-date price
+drop can make a parking ETF appear below average cost and is not, by itself,
+a reason to block conversion back to cash. The operator checks the parking
+balance weekly.
+
+In `expanded` auto-approval mode only, a persisted `place` proposal with an
+explicit account and a live **limit SELL** may use this exception on the exact
+`parking_allowlist` symbol/account-mode/market tuples. The broker-selected
+account must equal the proposal's exact account ID; an absent, noncanonical,
+or mismatched ID produces a human approval card. A loss sell on that card
+still faces the ordinary average-cost guard when tapped; correct the failed
+account or meter condition and create a new proposal before selling. The account-scoped
+parking meter must also be available. For Toss this includes the same-client
+broker account-list check from task 765; a failed list or durable meter read
+demotes to the card. No account is filled from settings into the proposal.
+Task 765 must merge before task 817.
+
+The bound exception is constructed from the persisted proposal and rung after
+the existing idempotency and target-evidence checks. Fresh preview and submit
+must agree on the proposal, tuple, account, side, order type, quantity, and
+price. The broker send hook checks account and KR regular-session status again
+immediately before mutation. A direct MCP order call has no such binding and
+retains its ordinary average-cost guard. Existing env and `confirm=True`
+broker mutation gates remain default-disabled and unchanged.
+
+For KR parking sells, the XKRX calendar sets the regular window, with a
+conservative 10:00 KST lower bound on the published 2026-11-19 exam date.
+The exchange's 2026 special-session notice must be checked before that date;
+until then, the auto path cannot treat 09:00-10:00 as a regular session.
+The [2025 KRX ETF notice](https://kind.krx.co.kr/external/2025/10/30/000102/20251030000137/99303.htm)
+states that exam-day trading began at 10:00. The
+[Ministry of Education schedule](https://www.moe.go.kr/boardCnts/viewRenew.do?boardID=294&boardSeq=100526&lev=0&m=020402)
+sets the 2026 exam date; it does not establish the 2026 exchange hours.
+
+The exception bypasses the average-cost limit-sell floor, break-even band,
+fee-net profit proof, and the advisory `de_minimis_trim_watch` constraint.
+The latter has no runtime consumer. It permits a marketable **limit** sell,
+including an average-cost loss, so execution can precede the veto card.
+The retained `SELL_MARKETABLE_MAX_DISCOUNT` band blocks a limit more than 2%
+below the current fresh price in preview and submit. This lane also rejects a
+limit above the current fresh price, which would rest instead of selling
+parked cash. The auto classifier checks both ends independently. Market orders, unsupported actions, and other
+exit intents do not inherit this exception.
+
+The exact tuple's immutable per-order cap is **raised, not removed**: USD
+10,000 for US tuples and KRW 10,000,000 for KR tuples. Executable notional is
+`max(limit_price, current_price) × quantity`, so discounting the limit cannot
+understate the cap. The all-field `policy_deviation` tag scan, veto-capable
+account/market allowlist, fresh preview, held-quantity and ordinary broker
+submission checks, and a renderable veto thesis remain mandatory. A failed
+guard demotes to the human card or blocks submit before mutation. The parking
+buy cumulative cap and existing `cash_funding` cumulative proof do not change.
+
+KR parking sells require the XKRX **regular** session at dispatch and at the
+pre-send boundary. Pre-open, NXT, after-hours, holidays, and the close of a
+shortened session are outside it. No scheduler, migration, automatic trigger,
+or new direct-order permission is added. No live smoke is part of task 817.

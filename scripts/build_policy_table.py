@@ -150,12 +150,47 @@ def _render_summary_md(payload: dict[str, Any]) -> str:
             + ", ".join(payload["universe"]["symbols_with_insufficient_history"])
         )
     lines.append("")
+    # task-792 C1 — alt_breadth is the BTC-relative share (the gate input),
+    # not the absolute-positive sweep; that sweep moved to
+    # top_traded_sign_stats under an honest label.
     breadth = payload["market_context"]["alt_breadth"]
+    if breadth.get("available"):
+        lines.append(
+            f"alt_breadth: {breadth['alts_beating_btc']}/{breadth['alts_total']} "
+            "alts beating KRW-BTC over 24h "
+            f"({(breadth['alts_beating_btc_pct'] * 100) if breadth['alts_beating_btc_pct'] is not None else 'n/a'}% | "
+            f"BTC 24h {breadth['btc_change_24h']})"
+        )
+    else:
+        lines.append(
+            "alt_breadth: unavailable (hold — missing input, never inferred 0/2)"
+        )
+    sign_stats = payload["market_context"]["top_traded_sign_stats"]
     lines.append(
-        f"alt_breadth: {breadth['positive_24h_count']}/{breadth['swept_market_count']} "
+        f"top_traded_sign_stats: {sign_stats['positive_24h_count']}/{sign_stats['swept_market_count']} "
         f"positive 24h "
-        f"({(breadth['positive_pct'] * 100) if breadth['positive_pct'] is not None else 'n/a'}%)"
+        f"({(sign_stats['positive_pct'] * 100) if sign_stats['positive_pct'] is not None else 'n/a'}%)"
     )
+    market_state = payload["market_context"].get("market_state") or {}
+    if market_state.get("available"):
+        lines.append(
+            "market_state: "
+            f"decision={market_state['decision']} "
+            f"m={market_state['coefficient']} "
+            f"({market_state['met_count']}/{market_state['of']} met, "
+            f"unavailable={market_state['unavailable_count']}, "
+            f"stale={market_state['stale_count']})"
+        )
+        for leg in market_state.get("legs", []):
+            lines.append(
+                f"  - {leg['id']}: {leg['state']} "
+                f"(value={leg['value']}, threshold={leg['threshold']})"
+            )
+    else:
+        lines.append(
+            "market_state: hold — "
+            + str(market_state.get("reason", "spec unavailable"))
+        )
     lines.append("")
 
     # Simple blend rank per §2 of the design doc: RSI oversold + nearest

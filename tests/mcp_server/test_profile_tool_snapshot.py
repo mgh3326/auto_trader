@@ -125,6 +125,30 @@ def test_remaining_surface_matches_audit_and_reviewed_exceptions(monkeypatch):
         "watch_repricing",
     ):
         expected[profile].add("toss_proposal_accounts")
+    # Task 881 adds one audited operator expiry tool after the dated audit.
+    expected["hermes-paper-kis"].add("kis_mock_ledger_expire_day_orders")
+    # #883: the cash sweep's typed parking_exclusion read is registered on the
+    # default profile only (behind ORDER_PROPOSALS_ENABLED), never on the
+    # generic broad profiles.
+    expected["default"].add("get_parking_exclusion")
+    # #849: the NHPLUG Stage 2 mock tools register on the default profile only,
+    # behind nh_mock_mcp_enabled (default off); no live profile lists them.
+    from app.mcp_server.tooling.orders_nh_mock_variants import NH_MOCK_TOOL_NAMES
+
+    expected["default"].update(NH_MOCK_TOOL_NAMES)
+    # #891 / Q-53 — the live-* surfaces postdate the 2026-09-03 audit; their
+    # expected surface is the operator manifest config/mcp_profiles/live.yaml
+    # (all three groups).
+    from app.mcp_server.tooling.live_profile_registration import (
+        live_profile_tool_names,
+    )
+
+    for live_profile in (
+        McpProfile.LIVE_KR,
+        McpProfile.LIVE_US,
+        McpProfile.LIVE_CRYPTO,
+    ):
+        expected[live_profile.value] = set(live_profile_tool_names(live_profile))
     actual = collect_profile_tools(monkeypatch, gates_enabled=True)
     assert {profile: set(names) for profile, names in actual.items()} == expected, (
         "surface must preserve A/B/C/U and only the reviewed D exceptions"
