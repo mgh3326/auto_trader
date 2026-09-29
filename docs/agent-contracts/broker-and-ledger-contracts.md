@@ -9,6 +9,7 @@
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
+- KIS live KR ledger lots — get_holdings opt-in (#963)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
 - KIS Live Order Fill-Evidence Gate (ROB-395)
@@ -183,6 +184,27 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (`127.0.0.1`/`localhost`/`::1`) + **정확한** ingest path + userinfo/query/fragment 금지를
   **생성 시와 전송 직전 두 번** 검증하고 `follow_redirects=False` 를 명시 고정한다. 거부된
   URL 은 **소켓을 열기 전에** DB 로 fail-open 하며 로그에 토큰·URL 을 남기지 않는다.
+
+### KIS live KR ledger lots — get_holdings opt-in (#963)
+
+`get_holdings(include_ledger_lots=True)` (default `False`, default output byte-identical — golden test) attaches a read-only `ledger_lots`
+block to KIS live KR positions so a live session can use KIS lots and KIS own-open-buy evidence **without** a KIS broker order read.
+The #678 harness denial of `kis_live_get_order_history` is unchanged and is asserted by test; no live.yaml, lane allowlist or robin
+allowlist change exists because `get_holdings` is already live-kr core.
+
+- **서비스**: `app/services/execution_ledger/kis_lots.py` — 순수 투영(`build_symbol_block`) + DB 로더(`load_kis_live_kr_lot_blocks`). MCP 레이어는
+  `app/mcp_server/tooling/portfolio_ledger_lots.py` 얇은 attach 뿐이다. 브로커 client import·쓰기 없음(AST/소스 가드 테스트).
+- **lots**: authoritative 행(`reconciler`/`manual_import`)만의 FIFO 잔여 lot, `cost_method="fifo_remaining_lots_from_ledger"` — **브로커 이동평균 평균단가가 아니다.**
+  `websocket` 행은 provisional 이라 lot 에 절대 세지 않고 `provisional_rows_excluded` 로만 나열한다.
+- **freshness / unknown**: 마지막 성공 non-dry-run KIS reconcile `finished_at` 이 90분 이내여야 `fresh`. `ledger_state` 는 fresh AND authoritative 행 존재 AND 역매도 없음
+  AND 원장 순수량 == 같은 응답의 브로커 수량일 때만 `known`. 그 외는 `unknown` + `unknown_reasons`, `lots=null` — **빈 리스트로 표현하지 않는다.**
+- **open_buy_evidence (S2/S3)**: 당일(KST) `review.kis_live_order_ledger` 비터미널 buy 행(S2), 당일 buy 체결 중 주문 완료가 원장으로 증명되지 않은 것(S3)이 있거나 증거가
+  unknown(stale·읽기 실패)이면 `blocking=true`. 전일 이전 비터미널 행은 `presumed_dead_prior_day_buys` 로 보고만 한다(KRX/NXT day order 는 거래일을 넘기지 못한다는 가정).
+- 🔴 **`external_orders_verifiable` 는 항상 `false`**: KIS 앱/HTS 등 auto_trader 밖에서 낸 **미체결** 주문은 어떤 DB 읽기로도 보이지 않는다. 이 블록의 통과는
+  "부재 증명"이 아니라 "auto_trader 가 아는 범위에 미체결 없음"이다. 운영자 승인 Q-81(#964)=A: 그 잔여는 caveat `kis_external_open_orders_unverified` 로 기록한다.
+- **실패 격리**: 블록의 어떤 실패도 `get_holdings` 를 실패시키지 않는다 — 포지션마다 `ledger_state="unknown"`, `unknown_reasons=["ledger_read_failed"]`.
+- **테스트**: `tests/services/execution_ledger/test_kis_lots.py`(순수), `test_kis_lots_db.py`(테스트 DB), `tests/mcp_server/test_get_holdings_ledger_lots.py`(golden·opt-in·격리),
+  `test_get_holdings_ledger_lots_permissions.py`(권한 무변경·#678).
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 

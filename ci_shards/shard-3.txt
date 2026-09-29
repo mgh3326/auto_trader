@@ -34,6 +34,8 @@ tests/mcp_server/test_analyze_halted_suspect.py
 tests/mcp_server/test_analyze_stock_batch_us_quote_session.py
 tests/mcp_server/test_earnings_context.py
 tests/mcp_server/test_execution_ledger_fill_events_tool.py
+tests/mcp_server/test_get_holdings_ledger_lots.py
+tests/mcp_server/test_get_holdings_ledger_lots_permissions.py
 tests/mcp_server/test_investment_report_create_handler.py
 tests/mcp_server/test_investment_snapshots_tools.py
 tests/mcp_server/test_kis_mock_reconciliation_tool.py
@@ -151,6 +153,8 @@ tests/services/buy_gate_ab_shadow/test_forecast_tag.py
 tests/services/buy_gate_ab_shadow/test_v2_caller_wiring.py
 tests/services/buy_gate_ab_shadow/test_v2_server_guards.py
 tests/services/daily_candles/test_audit_no_other_consumer.py
+tests/services/execution_ledger/test_kis_lots.py
+tests/services/execution_ledger/test_kis_lots_db.py
 tests/services/execution_ledger/test_repository.py
 tests/services/execution_outcomes/test_static_boundaries.py
 tests/services/fill_watch_context/test_consumption.py

@@ -160,7 +160,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US quote response includes `session` (`premarket`, `regular`, `afterhours`, `closed`), `data_state` (`fresh` during the extended-hours envelope, `stale` when closed), `price_source` (`kis_overseas_last` or `yahoo_fast_info_close`), `delayed: true`, and optional `quote_asof` when KIS supplies parseable quote date/time fields.
   - KIS-backed US quote response includes `venue` with the DB-resolved KIS exchange code (`NASD`, `NYSE`, `AMEX`) used for the upstream request.
   - US quote failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts.
-- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
+- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None, include_ledger_lots=False)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None, account_mode=None)`
 - `get_financials(symbol, statement="income", freq="annual", market=None)`
@@ -2061,6 +2061,7 @@ Parameters:
 - `market`: optional market filter (`kr`, `us`, `crypto`)
 - `include_current_price`: if `True`, tries to fetch latest prices and calculate PnL fields
 - `minimum_value`: optional numeric threshold. When `None` (default), per-currency thresholds apply: KRW=5000, USD=10. Explicit number uses uniform threshold. Positions below threshold are excluded only when `include_current_price=True`
+- `include_ledger_lots`: opt-in (default `False`; the default response is byte-identical to before). When `True` and the routing is KIS live, every KIS live KR position gains a read-only `ledger_lots` block and the response gains a top-level `ledger_lots` summary (task #963). See "Ledger lots block" below.
 
 Filtering rules:
 - With `account_mode="kis_mock"`, holdings collection is KIS-only. Upbit,
@@ -2107,6 +2108,14 @@ Response contract additions:
 - When Toss API holdings succeed, duplicate Toss `manual_holdings` rows for the same market/symbol are hidden from normal output. KIS and Toss holdings for the same symbol are not deduplicated because they are separate broker subaccounts.
 - When Toss API holdings fail, existing Toss `manual_holdings` rows remain visible as fallback and the response includes a partial `source="toss_api"` error.
 - `summary` fields when `include_current_price=True`: `total_buy_amount` sums `avg_buy_price * quantity` over all positions with a finite cost basis; `total_evaluation` sums finite `evaluation_amount` values; `total_profit_loss` is derived as evaluation minus cost over the computable subset — positions without a usable `evaluation_amount` (missing or non-finite, e.g. `NaN`/`Infinity`) are unpriced and disclosed via `unpriced_position_count`/`unpriced_buy_amount`, and positions with a valuation but no usable cost basis (`avg_buy_price * quantity` non-finite or `<= 0`, e.g. Upbit external deposits) are disclosed via `unknown_cost_position_count`/`unknown_cost_evaluation_amount`. `total_profit_rate` is `total_profit_loss / priced_buy_amount` (`priced_buy_amount` is exposed as the P&L cost basis). The identity `total_profit_loss = total_evaluation - unknown_cost_evaluation_amount - priced_buy_amount` reconciles whenever at least one position is computable; when no position is computable (or the portfolio is empty) the P&L fields are `null`. Summary P&L is gross (evaluation minus cost), so it can differ from the per-row broker-reported `profit_loss` (which may be net of estimated fees) — the summary is self-consistent rather than a sum of rows. When `include_current_price=False`, evaluation/P&L fields are `null` and all positions count as unpriced. In both branches, a position whose `avg_buy_price`, `quantity` or their product is non-finite (`NaN`/`Infinity`, including `Infinity * 0`) is excluded from `total_buy_amount`, `unpriced_buy_amount` and `priced_buy_amount` and counted in the additive `non_finite_cost_position_count` (it still counts in `position_count` and in `unpriced_position_count` or `unknown_cost_position_count`), so a non-finite cost input never reaches the buy totals (a sum of finite amounts overflowing past the float range is not guarded).
+
+Ledger lots block (`include_ledger_lots=True`, task #963):
+- DB-only and read-only: no broker call (the broker quantity/price already in the response are the reference values) and no write. Contract text: `docs/agent-contracts/broker-and-ledger-contracts.md` "KIS live KR ledger lots".
+- Attached only to KIS live KR positions (`broker="kis"`, `source="kis_api"`, `market="kr"`, `account_mode="kis_live"`); Toss, manual, US, Upbit and `kis_mock`/`db_simulated` routing get none (the summary then reports `applied=false`).
+- `ledger_lots.ledger_state` is `known` or `unknown`. `unknown` carries `unknown_reasons` and `lots=null` (never an empty list). `known` requires a KIS reconcile finished within 90 minutes, authoritative rows only (`reconciler`/`manual_import`; provisional `websocket` rows are listed in `provisional_rows_excluded` and never counted) and a ledger net quantity equal to the broker quantity.
+- `lots[]` are FIFO remaining lots (`cost_method="fifo_remaining_lots_from_ledger"`), not the broker moving-average `avg_buy_price`; pre-ledger holdings are one `origin="opening_seed"` lot at the broker average as of the seed.
+- `open_buy_evidence` (`state`, `blocking`, `blocking_reasons`): same-KST-day non-terminal buy rows in `review.kis_live_order_ledger` and same-day buy fills whose order the order ledger has not proven complete. `unknown` evidence is `blocking`. `external_orders_verifiable` is always `false`: an unfilled order placed outside auto_trader (KIS app/HTS) is invisible.
+- The block can never fail `get_holdings`: any read failure returns `ledger_state="unknown"` with `unknown_reasons=["ledger_read_failed"]`.
 
 Market routing:
 - `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`
