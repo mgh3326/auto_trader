@@ -96,3 +96,37 @@ backend bk_mcp_kiwoom
     http-check expect status 200
     default-server inter 5s fall 2 rise 1
     server mcp_kiwoom 127.0.0.1:8772 check
+
+# Task 975 (operator Q-87 A): dedicated live-session MCP units, one per market,
+# each serving its closed-world MCP_PROFILE from config/mcp_profiles/live.yaml.
+# Tailnet only, like the fixed units above: no loopback or public frontend.
+
+frontend ft_mcp_live_kr_tailnet
+    bind 100.122.100.56:8773
+    default_backend bk_mcp_live_kr
+
+backend bk_mcp_live_kr
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_live_kr 127.0.0.1:8773 check
+
+frontend ft_mcp_live_us_tailnet
+    bind 100.122.100.56:8774
+    default_backend bk_mcp_live_us
+
+backend bk_mcp_live_us
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_live_us 127.0.0.1:8774 check
+
+frontend ft_mcp_live_crypto_tailnet
+    bind 100.122.100.56:8775
+    default_backend bk_mcp_live_crypto
+
+backend bk_mcp_live_crypto
+    option httpchk GET /health
+    http-check expect status 200
+    default-server inter 5s fall 2 rise 1
+    server mcp_live_crypto 127.0.0.1:8775 check

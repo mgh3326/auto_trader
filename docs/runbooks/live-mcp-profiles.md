@@ -99,6 +99,12 @@ same manifest line is refused on live-kr / live-us.
 
 ## Switching the NCP live sessions to a live-* profile
 
+Superseded for the NCP live sessions by task 975: each profile now runs in
+its own deployed unit (at-mcp-live-kr / -us / -crypto) and sessions move to
+it through the robin-prefect-automations `KR_LIVE_MCP_MODE` switch. Follow
+`live-mcp-servers.md`. The steps below describe the older in-place profile
+change of an existing MCP process and are kept for reference.
+
 Desk-owned; do this **only after the #180 freeze** (about
 2026-09-29 18:00 KST).
 

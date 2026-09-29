@@ -116,6 +116,9 @@ esac
                 "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN=x",
                 "MCP_PAPER_001_AUTH_TOKEN=x",
                 "MCP_KIWOOM_AUTH_TOKEN=x",
+                "MCP_LIVE_KR_AUTH_TOKEN=x",
+                "MCP_LIVE_US_AUTH_TOKEN=x",
+                "MCP_LIVE_CRYPTO_AUTH_TOKEN=x",
             ]
             if not missing_token or not token.startswith(f"{missing_token}=")
         )

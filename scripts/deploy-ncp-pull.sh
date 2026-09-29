@@ -51,13 +51,18 @@ readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previou
 readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED-1}"
 
 declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_ENV_FILE")
-declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom)
-declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom)
-declare -a MCP_PORTS=(8768 8769 8770 8771 8772)
-declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN)
+# Fixed-profile units. The live-* trio (task 975, operator Q-87 A) serves the
+# closed-world config/mcp_profiles/live.yaml surfaces, one market each, on
+# ports 8773-8775 with their own token names.
+declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom live-kr live-us live-crypto)
+declare -a MCP_PROFILES=(analysis_readonly account_read tradingcodex_execution hermes-paper-kis kiwoom live-kr live-us live-crypto)
+declare -a MCP_PORTS=(8768 8769 8770 8771 8772 8773 8774 8775)
+declare -a MCP_TOKENS=(MCP_ANALYSIS_READONLY_AUTH_TOKEN MCP_ACCOUNT_READ_AUTH_TOKEN MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN MCP_PAPER_001_AUTH_TOKEN MCP_KIWOOM_AUTH_TOKEN MCP_LIVE_KR_AUTH_TOKEN MCP_LIVE_US_AUTH_TOKEN MCP_LIVE_CRYPTO_AUTH_TOKEN)
+# Units whose HAProxy tailnet route is also probed after the MCP promotion.
+declare -a MCP_LIVE_ROUTE_NAMES=(live-kr live-us live-crypto)
 API_DRAIN_PENDING_COLOR=""
 MCP_DRAIN_PENDING_COLOR=""
-declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom)
+declare -a APP_CONTAINERS=(at-api at-api-blue at-api-green at-worker at-worker-new at-scheduler at-upbit-ws at-kis-ws at-mcp-blue at-mcp-green at-mcp-analysis-readonly at-mcp-account-read at-mcp-tradingcodex-execution at-mcp-paper-001 at-mcp-kiwoom at-mcp-live-kr at-mcp-live-us at-mcp-live-crypto)
 declare -a REPLACED_CONTAINERS=()
 declare -A ORIGINAL_IMAGES=() EXPECTED_IMAGES=()
 ORIGINAL_API_COLOR=""
@@ -285,6 +290,9 @@ wait_health() { local port="$1" attempt status; for ((attempt=1; attempt<=HEALTH
 wait_worker() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do docker logs --tail 100 "$name" 2>&1 | grep -Eq 'Listening started|Starting 1 worker processes.' && return 0; sleep "$HEALTHZ_SLEEP_SECONDS"; done; printf 'worker did not report Listening started\n' >&2; return 1; }
 wait_ws() { local name="$1" attempt; for ((attempt=1; attempt<=HEALTHZ_ATTEMPTS; attempt++)); do docker logs --tail 100 "$name" 2>&1 | grep -Eq 'Unified WebSocket health:.*connected=True|connected=True' && return 0; sleep "$HEALTHZ_SLEEP_SECONDS"; done; return 1; }
 
+# Every bind line names exactly one loopback or tailnet address and a port:
+# a wildcard, an IPv6 any-address, a bare port or an extra address fails.
+haproxy_binds_are_private() { awk '/^[[:space:]]*bind([[:space:]]|$)/ && $0 !~ /^[[:space:]]*bind[[:space:]]+(127\.0\.0\.1|100\.122\.100\.56):[0-9]+[[:space:]]*$/ { bad = 1 } END { exit bad }' "$1"; }
 # Keep 0644 and preserve the existing inode: deploy umask 077 otherwise makes
 # the bind-mounted config unreadable, and mv leaves a file bind mount stale.
 render_haproxy() {
@@ -292,7 +300,7 @@ render_haproxy() {
   api="$(api_port "$1")"; mcp="$(mcp_port "$2")"; tmp="${HAPROXY_CONFIG}.tmp"
   [[ -f "$HAPROXY_TEMPLATE" ]] || return 78; mkdir -p "$RUN_DIRECTORY"
   sed -e "s/__API_ACTIVE_PORT__/${api}/g" -e "s/__MCP_ACTIVE_PORT__/${mcp}/g" "$HAPROXY_TEMPLATE" >"$tmp"
-  if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only\n' >&2; return 78; fi
+  if grep -q '0.0.0.0' "$tmp" || ! grep -q 'bind 127.0.0.1:8000' "$tmp" || ! grep -q 'bind 100.122.100.56:8000' "$tmp" || ! haproxy_binds_are_private "$tmp"; then rm -f "$tmp"; printf 'HAProxy binds must be loopback and tailnet only\n' >&2; return 78; fi
   chmod 0644 "$tmp"
   if [[ -e "$HAPROXY_CONFIG" ]]; then cp "$HAPROXY_CONFIG" "$HAPROXY_CONFIG_PREVIOUS"; cat "$tmp" >"$HAPROXY_CONFIG" && rm -f "$tmp"; else mv -f "$tmp" "$HAPROXY_CONFIG"; fi
 }
@@ -307,6 +315,25 @@ wait_haproxy_ready() {
   done
   printf 'haproxy routes not ready after reload\n' >&2
   return 1
+}
+
+# Task 975: the live-* units are reachable only through their tailnet
+# frontends, so after the MCP switch each non-skipped one must answer its
+# /health through HAProxy, polled like wait_haproxy_ready (#2046).
+wait_live_mcp_routes() {
+  local name i port attempt ready
+  for name in "${MCP_LIVE_ROUTE_NAMES[@]}"; do
+    mcp_unit_is_skipped "$name" && continue
+    port=""
+    for i in "${!MCP_NAMES[@]}"; do [[ "${MCP_NAMES[$i]}" == "$name" ]] && port="${MCP_PORTS[$i]}"; done
+    [[ -n "$port" ]] || { printf 'unknown live MCP route: %s\n' "$name" >&2; return 1; }
+    ready=false
+    for ((attempt=1; attempt<=HAPROXY_READY_ATTEMPTS; attempt++)); do
+      if curl --fail --silent --max-time 3 "http://100.122.100.56:${port}/health" >/dev/null; then ready=true; break; fi
+      sleep "$HAPROXY_READY_INTERVAL"
+    done
+    [[ "$ready" == true ]] || { printf 'haproxy live MCP route not ready after reload: at-mcp-%s\n' "$name" >&2; return 1; }
+  done
 }
 
 reload_haproxy() {
@@ -357,7 +384,7 @@ deploy_mcp() {
   record_replacement "at-mcp-${new}"
   docker rm -f "at-mcp-${new}" >/dev/null 2>&1 || true; run_mcp "$new" "$(mcp_port "$new")" default MCP_AUTH_TOKEN "$new" "$image" >/dev/null || return 1; wait_mcp "$(mcp_port "$new")" || return 1
   for i in "${!MCP_NAMES[@]}"; do mcp_unit_is_skipped "${MCP_NAMES[$i]}" && continue; record_replacement "at-mcp-${MCP_NAMES[$i]}"; docker rm -f "at-mcp-${MCP_NAMES[$i]}" >/dev/null 2>&1 || true; run_mcp "${MCP_NAMES[$i]}" "${MCP_PORTS[$i]}" "${MCP_PROFILES[$i]}" "${MCP_TOKENS[$i]}" '' "$image" >/dev/null || return 1; wait_mcp "${MCP_PORTS[$i]}" || return 1; done
-  render_haproxy "$(read_color api "$API_ACTIVE_COLOR_FILE")" "$new" && reload_haproxy && write_color "$new" "$MCP_ACTIVE_COLOR_FILE" || return 1
+  render_haproxy "$(read_color api "$API_ACTIVE_COLOR_FILE")" "$new" && reload_haproxy && wait_live_mcp_routes && write_color "$new" "$MCP_ACTIVE_COLOR_FILE" || return 1
   MCP_DRAIN_PENDING_COLOR="$old"
 }
 

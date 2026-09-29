@@ -21,6 +21,9 @@ MCP_PROFILES = (
     "at-mcp-tradingcodex-execution",
     "at-mcp-paper-001",
     "at-mcp-kiwoom",
+    "at-mcp-live-kr",
+    "at-mcp-live-us",
+    "at-mcp-live-crypto",
 )
 INITIAL = (
     "at-api-blue",
@@ -53,6 +56,10 @@ def _run(
     fail_drain_record: bool = False,
     fail_drain_arm: bool = False,
     fail_digest_record: bool = False,
+    absent_names: tuple[str, ...] = (),
+    omit_tokens: tuple[str, ...] = (),
+    fail_route_url: str = "",
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], dict[str, str], Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -64,6 +71,8 @@ def _run(
     initial = {name: KIS_OLD if name == "at-kis-ws" else OLD for name in INITIAL}
     if absent_name:
         del initial[absent_name]
+    for name in absent_names:
+        del initial[name]
     if unresolved_name:
         initial[unresolved_name] = "ghcr.io/mgh3326/auto_trader:mutable"
     if not absent_haproxy:
@@ -156,6 +165,9 @@ def _run(
         'url="${!#}"\n'
         'if [[ "$FAKE_FAIL_HEALTH_NAME" == at-api-green && "$url" == *":8002/healthz" ]]; then echo 500; exit 0; fi\n'
         'if [[ "$FAKE_FAIL_HEALTH_NAME" == at-mcp-green && "$url" == *":8767/health" ]]; then echo 500; exit 0; fi\n'
+        'if [[ -n "$FAKE_FAIL_HEALTH_PORT" && "$url" == "http://127.0.0.1:${FAKE_FAIL_HEALTH_PORT}/health" ]]; then echo 500; exit 0; fi\n'
+        'if [[ -n "$FAKE_FAIL_ROUTE_URL" && "$url" == "$FAKE_FAIL_ROUTE_URL" ]]; then exit 22; fi\n'
+        'printf "%s\\n" "$url" >> "$FAKE_CURL_LOG"\n'
         'if [[ "$*" == *--write-out* ]]; then echo 200; fi\n'
     )
     (bindir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -171,7 +183,7 @@ def _run(
     (run_dir / ".env.runtime").write_text("x=y\n")
     (run_dir / ".env.secrets").write_text(
         "\n".join(
-            f"{name}=x"
+            f"{name}=tok-{name}"
             for name in (
                 "MCP_AUTH_TOKEN",
                 "MCP_ANALYSIS_READONLY_AUTH_TOKEN",
@@ -179,7 +191,11 @@ def _run(
                 "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
                 "MCP_PAPER_001_AUTH_TOKEN",
                 "MCP_KIWOOM_AUTH_TOKEN",
+                "MCP_LIVE_KR_AUTH_TOKEN",
+                "MCP_LIVE_US_AUTH_TOKEN",
+                "MCP_LIVE_CRYPTO_AUTH_TOKEN",
             )
+            if name not in omit_tokens
         )
         + "\n"
     )
@@ -224,6 +240,10 @@ def _run(
             "MCP_HEALTH_SLEEP_SECONDS": "0",
             "HAPROXY_READY_ATTEMPTS": "1",
             "HAPROXY_READY_INTERVAL": "0",
+            "FAKE_FAIL_ROUTE_URL": fail_route_url,
+            "FAKE_FAIL_HEALTH_PORT": "",
+            "FAKE_CURL_LOG": str(tmp_path / "curl-urls.log"),
+            **(extra_env or {}),
         },
     )
     calls = [json.loads(line) for line in log_path.read_text().splitlines()]
