@@ -247,10 +247,7 @@ def to_float(value: Any, default: float = 0.0) -> float:
     try:
         if value in (None, ""):
             return default
-        number = float(value)
-        if math.isnan(number):
-            return default
-        return number
+        return float(value)
     except Exception:
         return default
 
@@ -288,12 +285,7 @@ def to_optional_float(value: Any) -> float | None:
     try:
         if value in (None, ""):
             return None
-        number = float(value)
-        # NaN is missing evidence, not a value — a bare float(nan) would
-        # silently pass every `< floor` comparison as False (fail-open).
-        if math.isnan(number):
-            return None
-        return number
+        return float(value)
     except Exception:
         return None
 

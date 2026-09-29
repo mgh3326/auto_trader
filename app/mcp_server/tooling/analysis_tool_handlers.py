@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import math
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -280,12 +281,15 @@ async def get_top_stocks_impl(
                     continue
                 if min_market_cap is not None:
                     mc = mapped.get("market_cap")
-                    if mc is None:
-                        # Fail closed: unknown cap cannot establish the floor.
+                    # Fail closed: missing OR non-numeric/NaN cap can never
+                    # establish the floor (to_optional_float deliberately
+                    # propagates pandas NaN — downstream finiteness guards
+                    # rely on it — so the check lives here, not in shared.py).
+                    if not isinstance(mc, (int, float)) or math.isnan(mc):
                         excluded_by_market_cap += 1
                         excluded_by_missing_market_cap += 1
                         continue
-                    if mc < min_market_cap:
+                    if math.isinf(mc) or mc < min_market_cap:
                         excluded_by_market_cap += 1
                         continue
                 if min_turnover is not None:
@@ -294,9 +298,17 @@ async def get_top_stocks_impl(
                         price = mapped.get("price")
                         volume = mapped.get("volume")
                         if price is not None and volume is not None:
-                            turnover = price * volume
-                            mapped["trade_amount"] = turnover
-                    if turnover is None or turnover < min_turnover:
+                            computed = price * volume
+                            if isinstance(computed, (int, float)) and math.isfinite(
+                                computed
+                            ):
+                                turnover = computed
+                                mapped["trade_amount"] = turnover
+                    if (
+                        not isinstance(turnover, (int, float))
+                        or not math.isfinite(turnover)
+                        or turnover < min_turnover
+                    ):
                         excluded_by_turnover += 1
                         continue
                 rankings.append(mapped)
