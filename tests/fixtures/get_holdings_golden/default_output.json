@@ -1,0 +1,127 @@
+{
+  "account_mode": "kis_live",
+  "accounts": [
+    {
+      "account": "kis",
+      "account_mode": "kis_live",
+      "account_name": "기본 계좌",
+      "broker": "kis",
+      "order_routable": true,
+      "positions": [
+        {
+          "account_mode": "kis_live",
+          "avg_buy_price": 100000.0,
+          "broker_sellable_quantity": 12.0,
+          "current_price": 90000.0,
+          "dust": false,
+          "evaluation_amount": 1080000.0,
+          "market": "kr",
+          "name": "name-196170",
+          "order_routable": true,
+          "profit_loss": -120000.0,
+          "profit_rate": -10.0,
+          "protected_quantity": 0.0,
+          "protection_state": "unprotected",
+          "quantity": 12.0,
+          "sellable_observed": true,
+          "sellable_quantity": 12.0,
+          "source": "kis_api",
+          "symbol": "196170",
+          "tactical_sellable_quantity": 12.0
+        },
+        {
+          "account_mode": "kis_live",
+          "avg_buy_price": 25000.0,
+          "broker_sellable_quantity": 40.0,
+          "current_price": 22500.0,
+          "dust": false,
+          "evaluation_amount": 900000.0,
+          "market": "kr",
+          "name": "name-171090",
+          "order_routable": true,
+          "profit_loss": -100000.0,
+          "profit_rate": -10.0,
+          "protected_quantity": 0.0,
+          "protection_state": "unprotected",
+          "quantity": 40.0,
+          "sellable_observed": true,
+          "sellable_quantity": 40.0,
+          "source": "kis_api",
+          "symbol": "171090",
+          "tactical_sellable_quantity": 40.0
+        },
+        {
+          "account_mode": "kis_live",
+          "avg_buy_price": 150.0,
+          "current_price": 160.0,
+          "dust": false,
+          "evaluation_amount": 480.0,
+          "market": "us",
+          "name": "AAPL",
+          "order_routable": true,
+          "profit_loss": 30.0,
+          "profit_rate": 6.67,
+          "quantity": 3.0,
+          "source": "kis_api",
+          "symbol": "AAPL"
+        }
+      ]
+    },
+    {
+      "account": "toss",
+      "account_mode": "toss_api",
+      "account_name": "Toss",
+      "broker": "toss",
+      "order_routable": false,
+      "positions": [
+        {
+          "account_mode": "toss_api",
+          "avg_buy_price": 26000.0,
+          "broker_sellable_quantity": null,
+          "current_price": 26520.0,
+          "dust": false,
+          "evaluation_amount": 132600.0,
+          "market": "kr",
+          "name": "name-171090",
+          "order_routable": false,
+          "profit_loss": 2600.0,
+          "profit_rate": 2.0,
+          "protected_quantity": 0.0,
+          "protection_state": "unprotected",
+          "quantity": 5.0,
+          "sellable_observed": false,
+          "sellable_quantity": null,
+          "source": "toss_api",
+          "symbol": "171090",
+          "tactical_sellable_quantity": null
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "filter_reason": "minimum_value filter skipped (include_current_price=False)",
+  "filtered_count": 0,
+  "filters": {
+    "account": null,
+    "account_name": null,
+    "include_current_price": false,
+    "market": null,
+    "minimum_value": 0
+  },
+  "summary": {
+    "non_finite_cost_position_count": 0,
+    "position_count": 4,
+    "priced_buy_amount": 0,
+    "total_buy_amount": 2330450.0,
+    "total_evaluation": null,
+    "total_profit_loss": null,
+    "total_profit_rate": null,
+    "unknown_cost_evaluation_amount": null,
+    "unknown_cost_position_count": 0,
+    "unpriced_buy_amount": 2330450.0,
+    "unpriced_position_count": 4,
+    "weights": null
+  },
+  "total_accounts": 2,
+  "total_positions": 4
+}

@@ -195,6 +195,8 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # and already in Base.metadata; drop them so the upgrade chain
             # creates them instead of colliding.
             for table in (
+                "protected_position_revisions",
+                "protected_positions",
                 "kiwoom_authority_cessation_receipts",
                 "kiwoom_authority_attempts",
                 "telegram_callback_recovery_cursor",
@@ -226,6 +228,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     "ALTER TABLE review.order_proposal_rungs "
                     "DROP COLUMN void_reason_group"
                 )
+            )
+            # ROB-691 expired_at is later than this reconstructed boundary.
+            # Current metadata already contains the nullable column, so drop
+            # it and let the migration add it back (the widened status CHECK
+            # is recreated by the migration itself).
+            await connection.execute(
+                text("ALTER TABLE review.toss_live_order_ledger DROP COLUMN expired_at")
             )
             # B1 loss-cut approval is later than this reconstructed boundary.
             # Remove its current-head tables and additive columns so the head
@@ -271,6 +280,24 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "fill_watch_context_outcomes",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
+            # Task 847 H5 durable state is later than this reconstructed
+            # boundary and already in Base.metadata; drop it so the head
+            # migration is exercised instead of colliding with create_all.
+            # binance_h5_intents references binance_h5_signals, so the intent
+            # table must drop first.
+            for table in (
+                "binance_h5_intents",
+                "binance_h5_signals",
+                "binance_h5_lane_state",
+                "binance_h5_opportunities",
+                "binance_h5_nav_samples",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
+            # #925 KRX after-market eligibility (public schema) is later than
+            # this reconstructed boundary as well.
+            await connection.execute(
+                text("DROP TABLE public.krx_after_market_eligibility")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

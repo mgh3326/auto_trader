@@ -4,6 +4,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
+class _UnprotectedLease:
+    active = False
+
+    async def release(self) -> None:
+        return None
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_live_kr_routes_to_ledger_not_record_fill():
@@ -14,6 +21,11 @@ async def test_live_kr_routes_to_ledger_not_record_fill():
             oe,
             "_execute_order",
             new=AsyncMock(return_value={"rt_cd": "0", "odno": "X1"}),
+        ),
+        patch.object(
+            oe,
+            "prepare_live_sell_lease",
+            new=AsyncMock(return_value=_UnprotectedLease()),
         ),
         patch.object(oe, "_record_order_history", new=AsyncMock(return_value=None)),
         patch(

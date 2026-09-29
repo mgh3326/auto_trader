@@ -7,6 +7,7 @@ const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/my", label: "MY" },
   { to: "/watches", label: "감시" },
   { to: "/buy-plan", label: "매수 계획" },
+  { to: "/settings/manual-cash", label: "파킹 현금" },
   { to: "/feed/news", label: "뉴스" },
   { to: "/discover", label: "발견" },
   { to: "/calendar", label: "캘린더" },

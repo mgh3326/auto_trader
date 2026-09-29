@@ -166,13 +166,23 @@ staleness 비교가 영원히 거짓이라 복구 스캔에서 보이지 않는�
     성숙의 AND다. caller wiring은 epoch marker serving 뒤 별도 PR에서만 한다.
 13. **screener pick log**: `buy_candidate_fanout` 안에서 쓰지 마라 (no-write
     계약). 관측 레코더는 바깥, `SCREENER_PICK_LOG_ENABLED` 기본 false,
-    fail-open, 스케줄러 금지. 가격은 exact decimal 문자열.
-14. **NHPLUG 모의 read-only (Stage 1)**: 데이터는 `moapi.nhplug.com:8443`만,
-    `/n2/acctinfo`의 `acct_type=03` allowlist만 사용하며, build 후 scheme·host·port와
-    `act_no`를 send 직전에 재검증한다. 동일 계좌번호의 상충 type 응답은 거부한다. 운영 OAuth 호스트는 `nhplug/auth.py`의
-    token/revoke 2 path 예외뿐이다. `NHPLUG_MOCK_ENABLED` default false 유지,
-    vendor SDK·`NHPLUG_BASE_URL`/`NHPLUG_AUTH_URL`·주문 endpoint/TR 추가 금지.
-    주문 메서드/MCP/레저/reconcile/스케줄러는 Stage 1 범위 밖이다.
+    fail-open, 스케줄러 금지. 가격은 exact decimal 문자열. #884부터
+    `collection_version="funnel-a1"` 아래 A-record는 채택 여부와 무관하게
+    고려된 소스 후보 전수를 기록하고(admission+reason 포함) 과거 행은
+    소급 채우지 않는다.
+14. **NHPLUG 모의 Stage 2 (#711)**: 데이터·주문은 moapi.nhplug.com:8443의 고정 경로만,
+    계좌는 /n2/acctinfo의 acct_type=03 검증을 거친 같은 클라이언트의 모의 계좌만 사용한다.
+    build 후 scheme·host·port·path·act_no·본문을 send 직전에 재검증하고 redirect·자동 재시도는 금지한다.
+    운영 OAuth 호스트는 nhplug/auth.py의 token/revoke 2 path 예외뿐이다. NHPLUG_MOCK_ENABLED와
+    Stage 2의 KEY/TIME/DB/HOST/VENDOR 확인 플래그는 모두 기본 false이며 하나라도 빠지면 주문 의도와 송신을 막는다.
+    지정가·KRX·비SOR 모의 주문만 허용하고 시장가·실계좌·vendor SDK·호스트 override·스케줄러 추가는 금지한다.
+    같은 키는 기존 행만 반환하며, claim·fence 뒤 결과가 불명확하면 uncertain으로 남겨 날짜와 무관한 예약을 유지한다.
+    성공·무주문 증명 코드 표는 기본 비어 있고, 번호만 있는 응답으로 accepted/rejected 하지 않는다.
+    uncertain 해소와 T14 운영자 위험 인수는 docs/design/711-nhplug-dispatch-state-machine.md의 양성 증거와
+    승인 행 조건을 따른다. 주문 스모크는 머지 후 지정 운영자만 수행한다.
+    MCP 표면(#849)은 DEFAULT 프로필의 `nh_mock_*` 뿐이고 `NH_MOCK_MCP_ENABLED` 기본 false다.
+    operations 계층은 #711 dispatcher 호출 한 곳으로만 보내며, `order_type` 은 정확히 "limit" 외 전부
+    네트워크 전에 거부하고, 정정·취소는 이 레저가 보내 번호가 결속된 주문만 허용한다. live 프로필·레인 등록 금지.
 15. **Kiwoom ACCEPTANCE authority cessation (ROB-1340)**: confirmed BUY·cancel·reconcile은
     하나의 PostgreSQL coordination scope에서만 수행한다. cancel 직전 ownership 상실 시
     취소를 보내지 말고 cycle JSON live-order-risk를 먼저 append한 뒤 기존 Telegram
@@ -318,3 +328,11 @@ uv run alembic downgrade -1
 ```
 
 **중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
+
+**#789 DB 역할 전환 후 프로덕션 마이그레이션 계약:** Stage 4가 승인되어
+마이그레이션 DSN이 분리된 배포에서는 전용 runner가
+`AT_MIGRATION_SET_ROLE=at_migration_owner`로 시작해야 한다. 새 객체의 소유자는
+`at_migration_owner`이며, 기본 권한은 새 테이블·시퀀스·함수의 앱 권한을 주지 않는다.
+앱이 새 객체를 사용하기 전에 해당 migration에 객체별 `at_app` GRANT를 검토해 넣어라.
+개발·CI DB에 `at_app`이 없을 수 있으므로 role 존재 여부를 확인한 조건부 GRANT를
+사용한다. Stage 4 승인 전에는 기존 migration 입력과 실행 경로를 유지한다.

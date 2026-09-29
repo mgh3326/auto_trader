@@ -17,6 +17,26 @@ from app.mcp_server.tooling.orders_toss_variants import (
 from tests.test_mcp_toss_order_variants import MockTossClient
 
 
+class _UnprotectedPolicyLease:
+    """Keep ROB-561 behavior tests independent of the #728 policy store."""
+
+    active = False
+
+    async def release(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _use_unprotected_policy_lease_for_rob561_tests(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    monkeypatch.setattr(
+        otv,
+        "prepare_live_sell_lease",
+        AsyncMock(return_value=_UnprotectedPolicyLease()),
+    )
+
+
 @pytest.mark.asyncio
 async def test_toss_preview_order_snaps_price_kr(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv

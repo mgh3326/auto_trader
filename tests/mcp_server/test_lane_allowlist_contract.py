@@ -40,12 +40,12 @@ LANE_COUNTS = {
     "crypto": 67,
     "fable-workbench": 42,
     "fill-handoff": 56,
-    "kr": 66,
+    "kr": 69,
     "krb1-cycle": 35,
-    "orch-live": 54,
+    "orch-live": 55,
     "orch-mock": 10,
     "shadow-crypto": 1,
-    "us": 68,
+    "us": 70,
     "watch-alert-relay": 54,
 }
 LANE_SHA256 = {
@@ -53,12 +53,12 @@ LANE_SHA256 = {
     "crypto": "50adf2dd9f9660e18e3db3b361d1018ef81aa1e1cd4d65f07e8056d236c673ed",
     "fable-workbench": "198e3483250c7f72c98d90d9c32a7c7bd71a94edf8a35919350d276cc4dedcce",
     "fill-handoff": "bd1dbe0d34836f9b0e74890a10c27e21589b14f2dc3beea46b5dee9dfcffdc52",
-    "kr": "094fead23286d6feeba1496bb7147b4d44d99245195feb984a266d6bfadc0837",
+    "kr": "793aa091b8811f4fe97af565110e7350727ea56a85390821ace5baf6f8108cc5",
     "krb1-cycle": "6b5d6fdbc6076e1f88ddf6203893a10601b9698d3b98d3ac13fac960db4fc73c",
-    "orch-live": "fea6739a48bc10e9707eff60d7aa1df987949f8ab0e041169bbeaf8a2202833e",
+    "orch-live": "de00e7848570616f70c90641a2bb70299d1a8befdeade65719e9647d7e0e2895",
     "orch-mock": "e942cf3f43f184fb6c5893e53582ad027d2e9abd50a19126d6e52c1fd905cd36",
     "shadow-crypto": "ca565c27d6d8bfb34386f1fa0bc3457afa194961c9a1797d1d1c94e59195500a",
-    "us": "9d0f81725169f8943a35609d23052bc365a4fe2539e833d61e32b3a05ca72a4a",
+    "us": "8f5c5e732dee9129af112853710c66ad16fb0fe7a823c3ee1ed685e5a6d1b74b",
     "watch-alert-relay": "fea6739a48bc10e9707eff60d7aa1df987949f8ab0e041169bbeaf8a2202833e",
 }
 
@@ -135,6 +135,13 @@ _MUTATION_BUCKET_READS = frozenset(
         "toss_get_order_history",
         "toss_get_orderable_cash",
         "toss_get_positions",
+        # hk #678/#828: read-only tools now classified in HARNESS_DENIED_TOOLS
+        # (inside MUTATION_TOOLS) because the live-session harness argv denies
+        # them. They write nothing; the audited lane manifests may still expose
+        # them for non-route consumers.
+        "decision_table_validate",
+        "get_intraday_investor_flow",
+        "get_upbit_altseason",
     }
 )
 

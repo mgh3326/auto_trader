@@ -101,9 +101,16 @@ from app.services.order_proposals.cash_funding_exemption import (
     resolve_cash_funding_exemption,
 )
 from app.services.order_proposals.parking_allowlist import parking_scope
+from app.services.order_proposals.parking_sell_exemption import ParkingSellContext
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
+)
+from app.services.protected_quantity_service import (
+    ProtectionStateUnavailable,
+    attach_live_sell_lease_cleanup_warning,
+    prepare_live_sell_lease,
+    release_live_sell_lease_preserving_outcome,
 )
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
@@ -581,6 +588,7 @@ async def _build_preview(
     scalping_exit_ctx: ScalpingExitContext | None = None,
     loss_cut_ctx: ov.LossCutContext | None = None,
     cash_funding_ctx: ov.CashFundingContext | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     allow_marketable_parking_buy: bool = False,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
@@ -597,6 +605,7 @@ async def _build_preview(
         scalping_exit_ctx=scalping_exit_ctx,
         loss_cut_ctx=loss_cut_ctx,
         cash_funding_ctx=cash_funding_ctx,
+        parking_sell_ctx=parking_sell_ctx,
         allow_marketable_parking_buy=allow_marketable_parking_buy,
     )
     if not isinstance(dry_run_result, dict):
@@ -961,6 +970,7 @@ async def _execute_and_record(
         else "upbit_live"
     )
     broker_ms: float | None = None
+    protection_lease_cleanup_warning: str | None = None
     # Pre-submit attribution gate (kis_mock). Deliberately the FIRST thing in
     # this function: an unattributed mock order must not reach the broker at
     # all, not even the baseline holdings read below. Resolution is pure, and
@@ -1050,6 +1060,65 @@ async def _execute_and_record(
             normalized_symbol=normalized_symbol, market_type=market_type
         )
 
+    # G1 (#728): this is deliberately after the kis_mock attribution gate and
+    # immediately before ROB-653 intent reservation.  A rejected protected
+    # sell must neither reach a broker nor consume an idempotency reservation.
+    # The lease does the all-live DB lookup required by Q15; only an active
+    # protected key obtains a dedicated advisory-lock session and triggers the
+    # extra fresh broker holding read.
+    protection_lease: Any | None = None
+    if side == "sell" and not is_mock:
+        try:
+            protection_lease = await prepare_live_sell_lease(
+                account_scope=account_scope,
+                market=_normalize_market_type_to_external(market_type),
+                symbol=normalized_symbol,
+            )
+        except ProtectionStateUnavailable:
+            err = order_error_fn(
+                "Protected position state is unavailable; sell not sent."
+            )
+            err["error_code"] = "protection_state_unavailable"
+            return err
+
+        if protection_lease.active:
+            try:
+                fresh_holdings = await _get_holdings_for_order(
+                    normalized_symbol,
+                    market_type,
+                    is_mock=False,
+                )
+            except Exception:  # noqa: BLE001 - malformed/missing fresh evidence blocks
+                fresh_holdings = None
+            try:
+                decision = await protection_lease.evaluate(
+                    quantity=order_quantity,
+                    kind="new",
+                    fresh_broker_sellable=(
+                        None
+                        if fresh_holdings is None
+                        else fresh_holdings.get("broker_sellable_quantity")
+                    ),
+                    fresh_broker_held=(
+                        None
+                        if fresh_holdings is None
+                        else fresh_holdings.get("total_quantity")
+                    ),
+                    sellable_observed=(
+                        fresh_holdings is not None
+                        and fresh_holdings.get("sellable_observed") is True
+                    ),
+                )
+            except BaseException:
+                await protection_lease.release()
+                raise
+            if not decision.allowed:
+                await protection_lease.release()
+                err = order_error_fn("Protected quantity floor blocks this sell order.")
+                if decision.block is not None:
+                    err.update(decision.block.payload())
+                return err
+
     # ROB-653 P6-B — KIS has no broker idempotency key; reserve a local intent
     # row before the send. A same-key send the same trading day fails closed.
     # Crypto/Upbit is excluded (it uses the broker-side content identifier).
@@ -1077,31 +1146,38 @@ async def _execute_and_record(
         intent_key = correlation_id
 
     intent_row_id: int | None = None
-    if intent_account_scope is not None and intent_key is not None:
-        async with _order_session_factory()() as intent_db:
-            try:
-                # ROB-1263 r2 / B-5: keep the row id. Releasing by
-                # (scope, key) alone deletes *whatever* row currently carries
-                # that key, so a stale failure path can remove a replacement
-                # reservation made by a later attempt or a reconciler.
-                intent_row_id = await OrderSendIntentService(intent_db).reserve(
-                    account_scope=intent_account_scope,
-                    idempotency_key=intent_key,
-                    symbol=normalized_symbol,
-                    side=side,
-                )
-                intent_reserved = True
-            except DuplicateOrderIntent:
-                logger.warning(
-                    "KIS duplicate order intent blocked: scope=%s symbol=%s side=%s key=%s",
-                    intent_account_scope,
-                    normalized_symbol,
-                    side,
-                    intent_key,
-                )
-                return order_error_fn(
-                    _duplicate_order_intent_message(intent_account_scope)
-                )
+    try:
+        if intent_account_scope is not None and intent_key is not None:
+            async with _order_session_factory()() as intent_db:
+                try:
+                    # ROB-1263 r2 / B-5: keep the row id. Releasing by
+                    # (scope, key) alone deletes *whatever* row currently carries
+                    # that key, so a stale failure path can remove a replacement
+                    # reservation made by a later attempt or a reconciler.
+                    intent_row_id = await OrderSendIntentService(intent_db).reserve(
+                        account_scope=intent_account_scope,
+                        idempotency_key=intent_key,
+                        symbol=normalized_symbol,
+                        side=side,
+                    )
+                    intent_reserved = True
+                except DuplicateOrderIntent:
+                    logger.warning(
+                        "KIS duplicate order intent blocked: scope=%s symbol=%s side=%s key=%s",
+                        intent_account_scope,
+                        normalized_symbol,
+                        side,
+                        intent_key,
+                    )
+                    if protection_lease is not None:
+                        await protection_lease.release()
+                    return order_error_fn(
+                        _duplicate_order_intent_message(intent_account_scope)
+                    )
+    except BaseException:
+        if protection_lease is not None:
+            await protection_lease.release()
+        raise
 
     async def _release_reserved_intent_after_send_failure(
         exc: BaseException,
@@ -1180,10 +1256,10 @@ async def _execute_and_record(
         # fired immediately before each real mutation HTTP attempt (including
         # eligible token/rate-limit re-sends). Callers without a hook retain
         # the existing execution behavior.
-        nonlocal broker_ms
+        nonlocal broker_ms, protection_lease_cleanup_warning
         broker_started_at = time.perf_counter()
         try:
-            return await _execute_order(
+            broker_result = await _execute_order(
                 symbol=normalized_symbol,
                 side=side,
                 order_type=order_type,
@@ -1196,6 +1272,22 @@ async def _execute_and_record(
                 send_outcome=send_outcome,
                 idempotency_key=idempotency_key,
             )
+        except BaseException:
+            if protection_lease is not None:
+                await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="g1_order_send",
+                    broker_response_observed=False,
+                )
+            raise
+        else:
+            protection_lease_cleanup_warning = (
+                await release_live_sell_lease_preserving_outcome(
+                    protection_lease,
+                    operation="g1_order_send",
+                )
+            )
+            return broker_result
         finally:
             broker_ms = (time.perf_counter() - broker_started_at) * 1000
 
@@ -1415,7 +1507,7 @@ async def _execute_and_record(
     if not is_mock and market_type == "equity_kr":
         from app.mcp_server.tooling.kis_live_ledger import _record_kis_live_order
 
-        return await _record_kis_live_order(
+        result = await _record_kis_live_order(
             normalized_symbol=normalized_symbol,
             market_type=market_type,
             side=side,
@@ -1436,6 +1528,10 @@ async def _execute_and_record(
             approval_hash=approval_hash_digest,
             idempotency_key=idempotency_key,
         )
+        return attach_live_sell_lease_cleanup_warning(
+            result,
+            protection_lease_cleanup_warning,
+        )
 
     # ROB-407: US/해외 live 주문도 accepted-only 기록; fill/journal/pnl은
     # live_reconcile_orders가 broker 체결 증거(해외 일별주문)로만 반영.
@@ -1445,7 +1541,7 @@ async def _execute_and_record(
         exchange = execution_result.get("ovrs_excg_cd") or (
             execution_result.get("output") or {}
         ).get("OVRS_EXCG_CD")
-        return await _record_live_order(
+        result = await _record_live_order(
             broker="kis",
             account_scope="kis_live",
             market="us",
@@ -1483,6 +1579,10 @@ async def _execute_and_record(
             approval_hash=approval_hash_digest,
             idempotency_key=idempotency_key,
         )
+        return attach_live_sell_lease_cleanup_warning(
+            result,
+            protection_lease_cleanup_warning,
+        )
 
     # ROB-407: crypto live 주문. 지정가 pending은 accepted-only(reconcile 위임),
     # 시장가는 전송 직후 inline evidence 확인으로 체결 반영.
@@ -1506,7 +1606,7 @@ async def _execute_and_record(
 
         is_market = (order_type or "").lower() == "market" or price is None
         market_symbol = execution_result.get("market") or dry_run_result.get("market")
-        return await _record_live_order(
+        result = await _record_live_order(
             broker="upbit",
             account_scope="upbit_live",
             market="crypto",
@@ -1544,6 +1644,10 @@ async def _execute_and_record(
             approval_hash=approval_hash_digest,
             idempotency_key=idempotency_key,
         )
+        return attach_live_sell_lease_cleanup_warning(
+            result,
+            protection_lease_cleanup_warning,
+        )
 
     # Record phase: fills + journals
     record_result = await _record_fill_and_journals(
@@ -1567,16 +1671,19 @@ async def _execute_and_record(
         defensive_trim_ctx=defensive_trim_ctx,
     )
 
-    return {
-        "success": True,
-        "dry_run": False,
-        "preview": dry_run_result,
-        "execution": execution_result,
-        **record_result,
-        "message": "Order placed and fill recorded successfully"
-        if record_result["fill_recorded"]
-        else "Order placed successfully",
-    }
+    return attach_live_sell_lease_cleanup_warning(
+        {
+            "success": True,
+            "dry_run": False,
+            "preview": dry_run_result,
+            "execution": execution_result,
+            **record_result,
+            "message": "Order placed and fill recorded successfully"
+            if record_result["fill_recorded"]
+            else "Order placed successfully",
+        },
+        protection_lease_cleanup_warning,
+    )
 
 
 def _build_order_error(
@@ -1738,6 +1845,7 @@ async def _place_order_impl(
     client_order_id: str | None = None,
     cash_funding_target: dict[str, Any] | None = None,
     cash_funding_shortfall: Decimal | None = None,
+    parking_sell_ctx: ParkingSellContext | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
@@ -1775,6 +1883,22 @@ async def _place_order_impl(
 
     def _order_error(message: str) -> dict[str, Any]:
         return _build_order_error(message, source, normalized_symbol, market_type)
+
+    if parking_sell_ctx is not None and not (
+        proposal_flow
+        and not is_mock
+        and exit_intent is None
+        and parking_sell_ctx.matches(
+            symbol=normalized_symbol,
+            market=market_type,
+            account_mode=proposal_account_mode,
+            side=side_lower,
+            order_type=order_type_lower,
+            quantity=quantity,
+            price=price,
+        )
+    ):
+        return _order_error("parking_sell_binding_invalid")
 
     if client_order_id is not None and (
         not isinstance(client_order_id, str)
@@ -1882,6 +2006,7 @@ async def _place_order_impl(
             price,
             require_fresh_quote=(
                 allow_marketable_parking_buy
+                or parking_sell_ctx is not None
                 or (
                     exit_intent == CASH_FUNDING_EXIT_INTENT
                     and side_lower == "sell"
@@ -1954,6 +2079,7 @@ async def _place_order_impl(
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
                 cash_funding_ctx=cash_funding_ctx,
+                parking_sell_ctx=parking_sell_ctx,
             )
             if sell_error is not None:
                 return sell_error
@@ -1973,6 +2099,7 @@ async def _place_order_impl(
                 scalping_exit_ctx=scalping_exit_ctx,
                 loss_cut_ctx=loss_cut_ctx,
                 cash_funding_ctx=cash_funding_ctx,
+                parking_sell_ctx=parking_sell_ctx,
                 allow_marketable_parking_buy=allow_marketable_parking_buy,
             )
         except ValueError as preview_exc:

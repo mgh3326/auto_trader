@@ -44,8 +44,17 @@ async def test_get_holdings_resolves_crypto_instruments_once_and_keeps_signals(
         _crypto_position("KRW-BTC", -6.0),
         _crypto_position("KRW-ETH", 10.0),
     ]
+    expected_resolver_positions = [dict(position, dust=False) for position in positions]
     collect = AsyncMock(return_value=(positions, [], "crypto", "upbit"))
-    resolve = AsyncMock(return_value={"KRW-BTC": 101, "KRW-ETH": 202})
+    observed_resolver_positions: list[dict[str, object]] = []
+
+    async def resolve_at_boundary(
+        rows: list[dict[str, object]],
+    ) -> dict[str, int]:
+        observed_resolver_positions.extend(dict(row) for row in rows)
+        return {"KRW-BTC": 101, "KRW-ETH": 202}
+
+    resolve = AsyncMock(side_effect=resolve_at_boundary)
 
     async def compute(position, *, instrument_id):
         assert instrument_id in {101, 202}
@@ -63,7 +72,11 @@ async def test_get_holdings_resolves_crypto_instruments_once_and_keeps_signals(
         account="upbit", market="crypto", minimum_value=0
     )
 
-    resolve.assert_awaited_once_with(positions)
+    # The implementation decorates returned position dicts after the batch
+    # lookup, so snapshot the resolver argument at that boundary rather than
+    # inspecting AsyncMock's later-mutated reference.
+    resolve.assert_awaited_once()
+    assert observed_resolver_positions == expected_resolver_positions
     by_symbol = {row["symbol"]: row for row in result["accounts"][0]["positions"]}
     assert by_symbol["KRW-BTC"]["strategy_signal"] == {
         "action": "sell",

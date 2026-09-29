@@ -10,10 +10,16 @@ import hashlib
 import json
 import math
 import re
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
+from app.services.decision_table_validate.one_share_exception import (
+    normalized_symbol_key,
+    one_share_exception_denial,
+    one_share_exception_for,
+)
 from app.services.trading_policy_service import get_policy_for, policy_version_stamp
 
 CANONICAL_SHAPE_REF = (
@@ -46,6 +52,27 @@ _CORE_DECISION_TABLE_KEYS = frozenset({"no_match_action", "rows", "extensions"})
 _RUNG_REQUIRED_FIELDS = ("rung", "price_min", "price_max", "qty", "tick")
 _RUNG_INTEGER_FIELDS = ("price_min", "price_max", "qty", "tick")
 _PARENT_CORRELATION_ID = re.compile(r"^kr-nxt-prep-\d{4}-\d{2}-\d{2}$")
+
+
+@dataclass
+class _BuyRungLedger:
+    """Table-wide buy-rung count per symbol, for the §664 deep-rung limit.
+
+    A single row cannot see the other rows, so the per-rung check records
+    what it admitted here and ``_validate_one_share_rung_limit`` judges the
+    whole table once every row has been walked.
+    """
+
+    buy_rungs: dict[str, list[int]] = field(default_factory=dict)
+    exception_symbols: dict[str, int] = field(default_factory=dict)
+
+    def record_buy_rung(self, row: dict[str, Any], index: int) -> None:
+        for symbol in _row_symbols(row):
+            self.buy_rungs.setdefault(symbol, []).append(index)
+
+    def record_exception(self, row: dict[str, Any], max_deep_rungs: int) -> None:
+        for symbol in _row_symbols(row):
+            self.exception_symbols[symbol] = max_deep_rungs
 
 
 def decision_table_validate(table: Any, market: Any) -> dict[str, Any]:
@@ -136,6 +163,7 @@ def decision_table_validate(table: Any, market: Any) -> dict[str, Any]:
         rows = []
 
     scenario_rows: dict[str, list[int]] = {}
+    buy_ledger = _BuyRungLedger()
     recomputed_rows: list[dict[str, Any]] = []
     row_sides: dict[tuple[str, str], list[tuple[int, str]]] = {}
     for index, row in enumerate(rows):
@@ -202,11 +230,19 @@ def decision_table_validate(table: Any, market: Any) -> dict[str, Any]:
                     detected_shape,
                     market,
                     violations,
+                    buy_ledger,
                 )
                 recomputed_rows.append(_recomputed_row(scenario_id, None, None))
                 continue
             prices, quantities = _validate_legacy_parallel_rungs(
-                normalized, row, action, index, detected_shape, market, violations
+                normalized,
+                row,
+                action,
+                index,
+                detected_shape,
+                market,
+                violations,
+                buy_ledger,
             )
             recomputed_rows.append(
                 _recomputed_row(
@@ -229,7 +265,7 @@ def decision_table_validate(table: Any, market: Any) -> dict[str, Any]:
             continue
 
         prices, quantities = _validate_v11_rungs(
-            rungs, row, action, index, detected_shape, market, violations
+            rungs, row, action, index, detected_shape, market, violations, buy_ledger
         )
         recomputed_rows.append(
             _recomputed_row(
@@ -239,6 +275,7 @@ def decision_table_validate(table: Any, market: Any) -> dict[str, Any]:
 
     _validate_duplicate_scenarios(scenario_rows, detected_shape, violations)
     _validate_opposite_orders(row_sides, detected_shape, violations)
+    _validate_one_share_rung_limit(buy_ledger, detected_shape, violations)
     return _result(policy, detected_shape, violations, digest, recomputed_rows)
 
 
@@ -431,6 +468,7 @@ def _validate_v11_rungs(
     shape: str,
     market: Any,
     violations: list[dict[str, Any]],
+    buy_ledger: _BuyRungLedger,
 ) -> tuple[list[Any], list[Any]]:
     prices: list[Any] = []
     quantities: list[Any] = []
@@ -505,7 +543,16 @@ def _validate_v11_rungs(
             violations,
         )
         _validate_order_guards(
-            row, action, price_min, qty, market, index, shape, violations
+            row,
+            action,
+            price_min,
+            qty,
+            market,
+            index,
+            shape,
+            violations,
+            buy_ledger,
+            price_max=price_max,
         )
     return prices, quantities
 
@@ -552,6 +599,7 @@ def _validate_legacy_parallel_rungs(
     shape: str,
     market: Any,
     violations: list[dict[str, Any]],
+    buy_ledger: _BuyRungLedger,
 ) -> tuple[list[Any], list[Any]]:
     prices: list[Any] = []
     quantities: list[Any] = []
@@ -604,7 +652,16 @@ def _validate_legacy_parallel_rungs(
             (price,), None, action.get("side"), market, index, shape, violations
         )
         _validate_order_guards(
-            row, action, price, qty, market, index, shape, violations
+            row,
+            action,
+            price,
+            qty,
+            market,
+            index,
+            shape,
+            violations,
+            buy_ledger,
+            price_max=rung["price_max"],
         )
     return prices, quantities
 
@@ -617,12 +674,24 @@ def _validate_scalar_rung_guards(
     shape: str,
     market: Any,
     violations: list[dict[str, Any]],
+    buy_ledger: _BuyRungLedger,
 ) -> None:
     if not isinstance(rungs, dict):
         return
     price = rungs.get("price_min", rungs.get("price"))
     qty = rungs.get("qty", rungs.get("quantity", rungs.get("quantity_min")))
-    _validate_order_guards(row, action, price, qty, market, index, shape, violations)
+    _validate_order_guards(
+        row,
+        action,
+        price,
+        qty,
+        market,
+        index,
+        shape,
+        violations,
+        buy_ledger,
+        price_max=rungs.get("price_max", price),
+    )
 
 
 def _validate_krx_grid(
@@ -673,10 +742,24 @@ def _validate_order_guards(
     index: int,
     shape: str,
     violations: list[dict[str, Any]],
+    buy_ledger: _BuyRungLedger,
+    *,
+    price_max: Any,
 ) -> None:
     _validate_loss_guard(row, price, action.get("side"), index, shape, violations)
     _validate_min_order_amount(action, row, price, qty, index, shape, violations)
-    _validate_buy_policy(action, row, price, qty, market, index, shape, violations)
+    _validate_buy_policy(
+        action,
+        row,
+        price,
+        qty,
+        market,
+        index,
+        shape,
+        violations,
+        buy_ledger,
+        price_max=price_max,
+    )
 
 
 def _validate_loss_guard(
@@ -743,6 +826,9 @@ def _validate_buy_policy(
     index: int,
     shape: str,
     violations: list[dict[str, Any]],
+    buy_ledger: _BuyRungLedger,
+    *,
+    price_max: Any,
 ) -> None:
     if action.get("side") != "buy" or not _is_number(price) or not _is_number(qty):
         return
@@ -754,21 +840,50 @@ def _validate_buy_policy(
         return
     try:
         policy = get_policy_for(market, "buy")
-        low, high = policy["thresholds"][threshold_key]["value"]
+        threshold = policy["thresholds"][threshold_key]
+        low, high = threshold["value"]
     except (KeyError, TypeError, ValueError):
         return
+    buy_ledger.record_buy_rung(row, index)
     notional = _decimal(price) * _decimal(qty)
     if not (_decimal(low) <= notional <= _decimal(high)):
-        violations.append(
-            _violation(
-                index,
-                "sizing_band_violation",
-                f"{threshold_key} in [{low}, {high}]",
-                str(notional),
-                "block",
-                shape,
+        expected = f"{threshold_key} in [{low}, {high}]"
+        exception = one_share_exception_for(market, threshold)
+        denial: str | None = "not_applicable"
+        if exception is not None and notional > _decimal(high):
+            # An unreadable price_max cannot prove the ceiling holds, so it
+            # is judged at the ceiling's far side rather than skipped.
+            worst_price = (
+                _decimal(price_max)
+                if _is_readable_number(price_max)
+                else exception.ceiling + 1
             )
-        )
+            denial = one_share_exception_denial(
+                row=row,
+                price_min=_decimal(price),
+                price_max=worst_price,
+                qty=_decimal(qty),
+                band_high=_decimal(high),
+                exception=exception,
+            )
+            if denial is None:
+                buy_ledger.record_exception(row, exception.max_deep_rungs)
+            else:
+                expected += (
+                    f" or one_share_exception (1 share > {high}, notional <= "
+                    f"{exception.ceiling}); denied: {denial}"
+                )
+        if denial is not None:
+            violations.append(
+                _violation(
+                    index,
+                    "sizing_band_violation",
+                    expected,
+                    str(notional),
+                    "block",
+                    shape,
+                )
+            )
     reference_price = _first_number(
         action.get("reference_price"), row.get("reference_price")
     )
@@ -845,6 +960,42 @@ def _collect_row_side(
     for symbol in symbols:
         if isinstance(symbol, str):
             row_sides.setdefault((symbol, account_mode), []).append((index, side))
+
+
+def _row_symbols(row: dict[str, Any]) -> list[str]:
+    """Normalized ledger keys, so `000660` and `000660 ` share one budget."""
+
+    symbols = row.get("symbols")
+    if not isinstance(symbols, list):
+        return []
+    keys = (normalized_symbol_key(symbol) for symbol in symbols)
+    return sorted({key for key in keys if key is not None})
+
+
+def _validate_one_share_rung_limit(
+    buy_ledger: _BuyRungLedger, shape: str, violations: list[dict[str, Any]]
+) -> None:
+    """§664 max_deep_rungs: an exception symbol gets that many buy rungs, total.
+
+    Counted across every row and account of the table, because separate rows
+    for the same symbol would otherwise each stay within the per-row count.
+    """
+
+    for symbol, max_deep_rungs in sorted(buy_ledger.exception_symbols.items()):
+        indexes = buy_ledger.buy_rungs.get(symbol, [])
+        if len(indexes) <= max_deep_rungs:
+            continue
+        for index in sorted(set(indexes)):
+            violations.append(
+                _violation(
+                    index,
+                    "one_share_exception_rung_limit",
+                    f"<= {max_deep_rungs} buy rung(s) for a one_share_exception symbol",
+                    {"symbol": symbol, "buy_rungs": len(indexes)},
+                    "block",
+                    shape,
+                )
+            )
 
 
 def _validate_duplicate_scenarios(
@@ -992,6 +1143,20 @@ def _is_number(value: Any) -> bool:
         and not isinstance(value, bool)
         and math.isfinite(float(value))
     )
+
+
+def _is_readable_number(value: Any) -> bool:
+    """``_is_number`` that never raises: an int too large for a float is unreadable.
+
+    The one-share exception reads ``price_max`` on every rung encoding, including
+    scalar rungs whose integer can exceed the float range; the validator must
+    not raise to an MCP caller (tester round 1, SHOULD).
+    """
+
+    try:
+        return _is_number(value)
+    except OverflowError:
+        return False
 
 
 def _decimal(value: Any) -> Decimal:

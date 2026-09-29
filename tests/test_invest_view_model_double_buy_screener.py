@@ -26,6 +26,8 @@ _TEST_SYMBOLS = [
     "913002",
     "913003",
     "914000",
+    "915001",
+    "915002",
 ]
 
 
@@ -523,3 +525,111 @@ async def test_dod_delta_excluded_when_no_prior_flow_partition(db_session):
     # No prior flow partition for this symbol's date → level-only would have
     # included it (net>0); DoD must NOT.
     assert all(r["symbol"] != sym for r in result.rows)
+
+
+@pytest.mark.asyncio
+async def test_null_flow_and_holding_columns_never_crash_or_qualify(db_session):
+    """#900: the trend JSON leaves foreign_holding_* NULL-able and may produce
+    NULL net flows. The screener must (a) not crash on NULL holding columns and
+    (b) fail closed — a NULL net can never satisfy the DoD-increase predicate."""
+    today = dt.date(2099, 12, 31)
+    prior = dt.date(2099, 12, 30)
+
+    # 915001: qualifying DoD increase + NULL holding columns → still qualifies.
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="915001", name="널보유주", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add_all(
+        [
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol="915001",
+                snapshot_date=prior,
+                foreign_net=100,
+                institution_net=100,
+                foreign_holding_shares=None,
+                foreign_holding_rate=None,
+                double_buy=False,
+                double_sell=False,
+                source="naver_finance",
+            ),
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol="915001",
+                snapshot_date=today,
+                foreign_net=200,
+                institution_net=300,
+                foreign_holding_shares=None,
+                foreign_holding_rate=None,
+                double_buy=True,
+                double_sell=False,
+                source="naver_finance",
+            ),
+        ]
+    )
+    # 915002: NULL nets on the latest partition → must NOT qualify (NULL >
+    # anything is NULL → excluded, fail-closed).
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="915002", name="널순매수", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add_all(
+        [
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol="915002",
+                snapshot_date=prior,
+                foreign_net=100,
+                institution_net=100,
+                double_buy=False,
+                double_sell=False,
+                source="naver_finance",
+            ),
+            InvestorFlowSnapshot(
+                market="kr",
+                symbol="915002",
+                snapshot_date=today,
+                foreign_net=None,
+                institution_net=None,
+                double_buy=False,
+                double_sell=False,
+                source="naver_finance",
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="915001",
+                snapshot_date=today,
+                latest_close=decimal.Decimal("11000"),
+                prev_close=decimal.Decimal("10000"),
+                change_rate=decimal.Decimal("10.0"),
+                daily_volume=1,
+                closes_window=[10000, 11000],
+                source="kis",
+            ),
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="915002",
+                snapshot_date=today,
+                latest_close=decimal.Decimal("11000"),
+                prev_close=decimal.Decimal("10000"),
+                change_rate=decimal.Decimal("10.0"),
+                daily_volume=1,
+                closes_window=[10000, 11000],
+                source="kis",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    result = await load_double_buy_from_snapshots(db_session, market="kr", limit=50)
+    assert result is not None
+    got = {r["symbol"] for r in result.rows}
+    assert "915001" in got  # NULL holding columns do not block qualification
+    assert "915002" not in got  # NULL flows fail closed

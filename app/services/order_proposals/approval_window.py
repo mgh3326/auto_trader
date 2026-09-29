@@ -28,14 +28,20 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from app.services.brokers.toss.market_calendar import (
+    KRX_AFTER_SESSION,
     TossKrMarketDay,
     TossSessionWindow,
     TossUsMarketDay,
     get_toss_market_calendar,
+    kr_krx_after_session_for,
     kr_toss_session_for,
+    krx_after_window,
     us_toss_session_for,
 )
-from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
+from app.services.kr_symbol_universe_service import (
+    get_kr_krx_after_tradability,
+    get_kr_nxt_tradability,
+)
 from app.services.market_events.session_calendar import (
     next_trading_session,
     regular_session_bounds,
@@ -244,7 +250,24 @@ def _toss_us_regular_windows(calendar: Any) -> list[TossSessionWindow]:
     )
 
 
-def _toss_kr_windows(calendar: Any, *, allow_nxt: bool) -> list[TossSessionWindow]:
+def _kr_allowed_sessions(*, allow_nxt: bool, allow_krx_after: bool) -> tuple[str, ...]:
+    """Session x venue capability (#925).
+
+    08:00-08:50 is NXT-only, so only a proven NXT name gets ``nxt_premarket``.
+    The after-hours session is open to a proven NXT name (the integrated
+    window, unchanged) or, failing that, to a proven KRX after-market name for
+    the KRX 16:00-20:00 venue window only.
+    """
+    if allow_nxt:
+        return ("nxt_premarket", "regular", "nxt_after")
+    if allow_krx_after:
+        return ("regular", KRX_AFTER_SESSION)
+    return ("regular",)
+
+
+def _toss_kr_windows(
+    calendar: Any, *, allow_nxt: bool, allow_krx_after: bool = False
+) -> list[TossSessionWindow]:
     windows: list[TossSessionWindow] = []
     for day in calendar.days:
         if not isinstance(day, TossKrMarketDay):
@@ -255,7 +278,42 @@ def _toss_kr_windows(calendar: Any, *, allow_nxt: bool) -> list[TossSessionWindo
             windows.append(day.regular_market)
         if allow_nxt and day.after_market is not None:
             windows.append(day.after_market)
+        elif not allow_nxt and allow_krx_after:
+            krx_window = krx_after_window(day)
+            if krx_window is not None:
+                windows.append(krx_window)
     return sorted(windows, key=lambda window: window.start)
+
+
+KRX_AFTER_CAPABILITY_LOOKUP_FAILED = "krx_after_capability_lookup_failed"
+KRX_AFTER_CAPABILITY_UNAVAILABLE = "krx_after_capability_unavailable"
+KRX_AFTER_CAPABILITY_LIST_MISSING = "krx_after_capability_list_missing"
+KRX_AFTER_CAPABILITY_STALE = "krx_after_capability_stale"
+
+
+async def resolve_krx_after_capability(
+    symbol: str, *, now: datetime
+) -> tuple[bool, str]:
+    """(allow, detail) for the KRX after-market; unknown is never allow.
+
+    The single #925 capability rule. The Toss order-tool NXT preflight (#969)
+    calls this same function, so the two gates cannot drift apart. Lookup
+    errors are swallowed into a not-allowed detail here, never raised: a
+    caller's fail-open ``except`` must not turn an unknown list into a send.
+    """
+    try:
+        capability = (await get_kr_krx_after_tradability([symbol])).get(symbol)
+    except Exception:  # noqa: BLE001 - capability uncertainty is data, not allow
+        return False, KRX_AFTER_CAPABILITY_LOOKUP_FAILED
+    if capability is None:
+        return False, KRX_AFTER_CAPABILITY_UNAVAILABLE
+    if capability.asof is None:
+        # No list imported at all (empty table). Not allowed, same as stale;
+        # the separate detail lets the preflight say "list missing".
+        return False, KRX_AFTER_CAPABILITY_LIST_MISSING
+    if capability.is_stale(now=now):
+        return False, KRX_AFTER_CAPABILITY_STALE
+    return capability.krx_after_tradable, capability.reason
 
 
 async def _resolve_toss_us_session(
@@ -380,10 +438,22 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
     except Exception:  # noqa: BLE001 - capability uncertainty is data, not allow
         nxt_detail = "nxt_capability_lookup_failed"
 
+    # #925: the KRX after-market capability only matters when NXT does not
+    # already open the after-hours session for this symbol.
+    krx_after_ok = False
+    krx_after_detail = "krx_after_capability_not_needed"
+    if not (nxt_known and nxt_tradable):
+        krx_after_ok, krx_after_detail = await resolve_krx_after_capability(
+            str(getattr(group, "symbol", "") or ""), now=local
+        )
+
     if in_krx_regular:
         allow_nxt = calendar is not None and nxt_known and nxt_tradable
+        allow_krx_after = calendar is not None and not allow_nxt and krx_after_ok
         windows = (
-            _toss_kr_windows(calendar, allow_nxt=allow_nxt)
+            _toss_kr_windows(
+                calendar, allow_nxt=allow_nxt, allow_krx_after=allow_krx_after
+            )
             if calendar is not None
             else []
         )
@@ -400,15 +470,19 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
             next_open = next_bounds[0] if next_bounds is not None else None
         return SubmissionSessionEvidence(
             known=True,
-            source="exchange_calendars:XKRX+toss_nxt_capability",
+            source=(
+                "exchange_calendars:XKRX+toss_nxt_capability+krx_after_list"
+                if allow_krx_after
+                else "exchange_calendars:XKRX+toss_nxt_capability"
+            ),
             current_session="regular",
-            allowed_sessions=(
-                ("nxt_premarket", "regular", "nxt_after") if allow_nxt else ("regular",)
+            allowed_sessions=_kr_allowed_sessions(
+                allow_nxt=allow_nxt, allow_krx_after=allow_krx_after
             ),
             allowed_now=True,
             allowed_until=krx_bounds[1],
             next_allowed_at=next_open,
-            detail=nxt_detail,
+            detail=krx_after_detail if allow_krx_after else nxt_detail,
         )
 
     if calendar is None:
@@ -431,6 +505,17 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
             detail="regular_calendar_disagreement",
         )
 
+    allow_nxt = nxt_known and nxt_tradable
+    allow_krx_after = not allow_nxt and krx_after_ok
+    source = "toss_market_calendar:kr_integrated+kr_symbol_universe"
+    if allow_krx_after:
+        source = f"{source}+krx_after_list"
+        # Only the KRX 16:00-20:00 venue window re-labels the session; the rest
+        # of an integrated after window (e.g. an NXT 15:30 start) stays
+        # nxt_after and is still gated on NXT capability below.
+        if kr_krx_after_session_for(local, calendar=calendar) is not None:
+            session = KRX_AFTER_SESSION
+
     if session in _NXT_SESSIONS and not nxt_known:
         return SubmissionSessionEvidence(
             known=False,
@@ -441,12 +526,13 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
             detail=nxt_detail,
         )
 
-    allow_nxt = nxt_known and nxt_tradable
-    allowed_sessions = (
-        ("nxt_premarket", "regular", "nxt_after") if allow_nxt else ("regular",)
+    allowed_sessions = _kr_allowed_sessions(
+        allow_nxt=allow_nxt, allow_krx_after=allow_krx_after
     )
     allowed_now = session in allowed_sessions
-    windows = _toss_kr_windows(calendar, allow_nxt=allow_nxt)
+    windows = _toss_kr_windows(
+        calendar, allow_nxt=allow_nxt, allow_krx_after=allow_krx_after
+    )
     current = _containing_window(windows, local) if allowed_now else None
     next_open = _next_window_start(
         windows,
@@ -461,7 +547,7 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
     if not allowed_now and next_open is None:
         return SubmissionSessionEvidence(
             known=False,
-            source="toss_market_calendar:kr_integrated+kr_symbol_universe",
+            source=source,
             current_session=session,
             allowed_sessions=allowed_sessions,
             allowed_now=False,
@@ -469,13 +555,13 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
         )
     return SubmissionSessionEvidence(
         known=True,
-        source="toss_market_calendar:kr_integrated+kr_symbol_universe",
+        source=source,
         current_session=session,
         allowed_sessions=allowed_sessions,
         allowed_now=allowed_now,
         allowed_until=current.end if current is not None else None,
         next_allowed_at=next_open,
-        detail=nxt_detail,
+        detail=krx_after_detail if allow_krx_after else nxt_detail,
     )
 
 
@@ -487,7 +573,10 @@ async def resolve_submission_session(
     Proposal orders have DAY semantics and no persisted extended-hours
     capability bit. US live proposals are therefore regular-session only.
     KR retains KRX regular plus NXT carry only when the existing symbol
-    universe positively proves current NXT tradability. Crypto remains 24/7.
+    universe positively proves current NXT tradability; failing that, the KRX
+    after-market 16:00-20:00 window opens only when the imported KRX list
+    positively proves KRX after-market tradability (#925). 08:00-08:50 stays
+    NXT-only. Crypto remains 24/7.
     """
     market, account_mode, _action, _order_type = _contract_fields(group)
     if market == "crypto" and account_mode == "upbit":

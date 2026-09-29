@@ -224,18 +224,29 @@ def _service(
 
 @pytest.fixture(autouse=True)
 def _stub_gate_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No network in unit tests; each test opts into its own gate readings."""
+    """No network in unit tests; each test opts into its own gate readings.
+
+    Both stub readings carry a fresh ``observed_at`` (stamped at NOW) —
+    task-792 C1 freshness bounds mean an undated but readable input is
+    freshness-unproven and resolves to unavailable/hold, not met.
+    """
 
     gate_inputs._reset_cache_for_tests()
 
     async def _breadth() -> GateMetricReading:
         return GateMetricReading(
-            metric="upbit_alt_breadth_24h", value=Decimal("62"), source="stub"
+            metric="upbit_alt_breadth_24h",
+            value=Decimal("62"),
+            source="stub",
+            observed_at=NOW.timestamp(),
         )
 
     async def _lsr() -> GateMetricReading:
         return GateMetricReading(
-            metric="btc_long_short_ratio", value=Decimal("1.2"), source="stub"
+            metric="btc_long_short_ratio",
+            value=Decimal("1.2"),
+            source="stub",
+            observed_at=NOW.timestamp(),
         )
 
     monkeypatch.setattr(
@@ -761,6 +772,16 @@ async def test_gate_opens_when_both_conditions_pass() -> None:
     assert gate.state == "open"
     assert gate.met_count == 2
     assert gate.unavailable_count == 0
+    assert gate.stale_count == 0
+    # task-792 C1 — 2/2 met resolves the market-state coefficient to 1.0,
+    # fixed-at-entry semantics carried verbatim from the policy.
+    assert gate.coefficient is not None
+    assert gate.coefficient.state == "resolved"
+    assert gate.coefficient.value == Decimal("1.0")
+    assert gate.coefficient.basis_met_count == 2
+    assert gate.coefficient.applies_to == "crypto_new_entry_notional"
+    assert gate.coefficient.on_missing_or_stale_input == "hold"
+    assert gate.coefficient.fixed_at == "episode_first_order"
     # Provenance is the policy's declared upstream list, not a constant the
     # reader could drift away from.
     breadth = next(c for c in gate.conditions if c.metric == "upbit_alt_breadth_24h")
@@ -793,6 +814,12 @@ async def test_unreadable_metric_never_counts_as_met(
     breadth = next(c for c in gate.conditions if c.metric == "upbit_alt_breadth_24h")
     assert breadth.state == "unavailable"
     assert breadth.current_value is None
+    # task-792 C1 — a missing input resolves the coefficient to hold, never
+    # an inferred 0/2.
+    assert gate.coefficient is not None
+    assert gate.coefficient.state == "hold"
+    assert gate.coefficient.value is None
+    assert gate.coefficient.basis_met_count is None
 
 
 @pytest.mark.unit
@@ -800,7 +827,10 @@ async def test_unreadable_metric_never_counts_as_met(
 async def test_failing_condition_closes_the_gate() -> None:
     async def _low() -> GateMetricReading:
         return GateMetricReading(
-            metric="upbit_alt_breadth_24h", value=Decimal("30"), source="stub"
+            metric="upbit_alt_breadth_24h",
+            value=Decimal("30"),
+            source="stub",
+            observed_at=NOW.timestamp(),
         )
 
     service = _service(home=_StubHome(_home(groups=[])))
@@ -816,6 +846,11 @@ async def test_failing_condition_closes_the_gate() -> None:
     gate = plan.discovery_gates[0]
     assert gate.state == "closed"
     assert gate.met_count == 1
+    # task-792 C1 — 1/2 met resolves to the 0.5 market-state arm.
+    assert gate.coefficient is not None
+    assert gate.coefficient.state == "resolved"
+    assert gate.coefficient.value == Decimal("0.5")
+    assert gate.coefficient.basis_met_count == 1
 
 
 @pytest.mark.unit

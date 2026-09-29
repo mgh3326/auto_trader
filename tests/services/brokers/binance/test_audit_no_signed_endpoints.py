@@ -88,6 +88,12 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # doesn't flag them as "unexpected Binance locations". The legacy
         # binance_testnet_order_ledger.py file was deleted in ROB-298.
         "app/models/binance_demo_order_ledger.py",
+        # Task 847 — the H5-LS-ENV-v1 durable-state ORM model lives under
+        # app/models/. Persistence only: review.binance_h5_* tables, no
+        # HTTP/WS, signing, credential, or endpoint behavior; "Binance"
+        # appears only in table/column names and the docstring. Registered
+        # in app/models/__init__.py (already allow-listed above).
+        "app/models/binance_h5.py",
         "app/models/__init__.py",
         # ROB-850 — paper evaluation references "Binance" as a view/source
         # identifier (ViewName.BINANCE_BROKER, ViewSource.BINANCE_DEMO_LEDGER).
@@ -248,6 +254,12 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
       * ``app/services/brokers/binance/testnet/`` (ROB-286 — Spot Testnet, deleted in ROB-298)
       * ``app/services/brokers/binance/spot_demo/`` (ROB-296 — Spot Demo)
       * ``app/services/brokers/binance/futures_demo/`` (ROB-298 PR 2 — Futures Demo)
+      * ``app/services/brokers/binance/h5/`` (Task 847 — the H5-LS-ENV-v1
+        Futures Demo lane's own signed adapter package, same class as
+        futures_demo/. Its ``cancel_order``/``set_leverage``/``order_test``
+        defs are fail-closed overrides that raise on the inherited signed
+        surface; ``submit_order``/``get_order`` carry the lane's real
+        evidence-first signed path).
     Anywhere else under ``app/services/brokers/binance/`` is the
     read-only public adapter and must not gain signed surface.
     """
@@ -256,7 +268,14 @@ def test_no_signed_endpoint_surface_in_binance_public_package() -> None:
     if not pkg.exists():
         # Until Task 4 introduces the package, this is fine.
         return
-    isolated_signed_pkgs = (pkg / "testnet", pkg / "spot_demo", pkg / "futures_demo")
+    isolated_signed_pkgs = (
+        pkg / "testnet",
+        pkg / "spot_demo",
+        pkg / "futures_demo",
+        # Task 847 — H5-LS-ENV-v1 Futures Demo lane: its own signed adapter
+        # package (fail-closed overrides + evidence-first signed path).
+        pkg / "h5",
+    )
     offenders: list[tuple[pathlib.Path, int, str]] = []
     for py_file in pkg.rglob("*.py"):
         # ROB-286 + ROB-296 + ROB-298 PR 2: skip the isolated signed sub-packages

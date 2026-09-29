@@ -1,0 +1,421 @@
+# #789 database role cutover: operator procedure
+
+This procedure is a review artifact. This PR runs no command against production.
+The operator-desk must obtain a separate approval for each numbered stage. An
+approval covers one signed manifest SHA-256, one database, one maintenance window,
+and one rollback journal path. A prior stage approval never authorizes a later
+stage. Do not run a stage whose stop condition is unresolved.
+
+The local reproduction command is:
+
+    wrk heavy -- bash tests/db_roles/reproduce.sh
+
+It starts a disposable timescale/timescaledb:2.26.3-pg17 container, applies the
+repository migrations, builds the production-like ownership fixture, then runs
+all five stages forward, rollback, and forward again. It then runs the full
+Stage 5 to Stage 1 inverse chain, comparing semantic ownership, grants,
+default grants, policy jobs, roles, and loaded pg_hba rules after every step.
+It checks owner socket and TCP denial, policy job runs, migration identity,
+app-role DB paths, and restoration of the original pg_hba file and rules.
+Its synthetic approval records and journals stay in a temporary
+directory; the container and directory are removed on exit.
+
+## Known production facts and open gate
+
+The 2026-09-27 read-only preflight is handoffkeep document
+report/2026-09-27/760-db-roles-preflight, id 5378. It recorded PostgreSQL
+17.9, TimescaleDB 2.26.3, application sessions as postgres superuser, most
+application objects and every listed TimescaleDB job owned by mgh3326, some
+application objects owned by postgres or nhplug_operator, and a TimescaleDB
+background scheduler session as mgh3326. The same catalog identified mgh3326
+as the bootstrap superuser, OID 10, and postgres as a distinct superuser,
+OID 285718. The only installed systemd timer in
+that report is at-pg-backup.timer at 04:10 KST. The same report confirms #711
+and the Kiwoom authority evidence objects are present. Refresh these facts at
+the maintenance window; the preflight is evidence, not a live lock.
+
+Operator-desk subsequently classified postgres as shared infrastructure.
+The root-run backup uses PGUSER=postgres to dump auto_trader and handoffkeep
+and run pg_dumpall --globals-only. Prefect uses postgres for its separate
+prefect database. The application uses postgres through .env.api and
+.env.scheduler; handoffkeep already has its own role. This cutover changes
+only the app inputs .env.api and .env.scheduler. No stage alters, disables,
+or rotates postgres. Prefect role separation is outside #789.
+
+The disposable 2.26.3 fixture demonstrates the reviewed public policy API
+transition and inverse, including the complete five-stage reverse chain.
+Changing a hypertable or continuous aggregate owner alone leaves its policy
+job owned by mgh3326; alter_job has no owner argument in the reviewed
+version. The script removes and recreates each policy transactionally under
+the new owner and journals the exact previous configuration. The earlier
+fixture rejected a transactional remove/add of a retention policy
+under NOLOGIN at_migration_owner: TimescaleDB reported that a hypertable owner
+must have LOGIN to run background tasks. Director-1 chose one common owner
+for migrations, hypertables, aggregates, and jobs: at_migration_owner has
+LOGIN but no password, with ordered pg_hba reject rules for local socket,
+IPv4, and IPv6. It is not an interactive credential. A local unprivileged
+LOGIN-role probe created a policy job successfully and rolled back. The
+version-only 2.26.3 stop is resolved by the disposable proof. Production
+execution still requires a fresh matching policy inventory, staging lock and
+duration evidence, and a separate operator approval for Stage 2. Unknown job
+types, config differences, or a different extension version remain stops.
+No direct write to the TimescaleDB internal job catalog is authorized by this
+runbook. Retain mgh3326 while it owns an extension member, chunk,
+materialization object, or job.
+
+## Common preparation and command inputs
+
+Before Stage 1, freeze unrelated DDL and manual database jobs. Record a
+restorable backup and its restore-test result, plus the separate backup-client
+identity. Record every live API, TaskIQ worker and scheduler, MCP profile,
+monitor, host job, fill handoff, CLI, and database session. The tracked
+deployment template is not proof that a unit is installed. Confirm all
+installed timers again. Do not begin or continue a stage whose lock interval
+could overlap the 04:10 KST backup. The backup can hold ACCESS SHARE locks
+while owner changes need stronger relation locks.
+Immediately before each stage, paste these read-only observations and stop if
+the timer or service is active, a persistent catch-up firing is pending, or
+the next firing could overlap the stage and rollback window:
+
+    systemctl show at-pg-backup.timer -p ActiveState -p LastTriggerUSec -p NextElapseUSecRealtime -p Persistent
+    systemctl show at-pg-backup.service -p ActiveState -p Result -p ExecMainStatus
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c "SELECT pid,usename,application_name,backend_type,state,query_start FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND application_name LIKE 'pg_dump%' ORDER BY pid"
+
+The following commands assume the operator's approved secret mechanism has
+provided DB_ROLES_DSN in the process environment for the DBA script connection,
+and libpq PGHOST, PGPORT, PGUSER, and PGPASSFILE for psql. Both identities must
+target the recorded auto_trader database. They also assume
+CUTOVER_DIR names a mode-0700 directory outside this repository, DB_CONTAINER
+is the reviewed production PostgreSQL container name, and that
+STAGE2_SHA through STAGE5_SHA are the exact hashes in separate signed stage
+approvals. No command here prints a DSN or credential. The operator must paste
+the command, exit code, and full verify output back to director-1 after each
+stage. Keep journals and signed manifests for rollback; never commit them.
+
+The read-only evidence commands for the fresh production ownership and policy
+inventory are:
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f docs/runbooks/db-role-cutover-readonly.sql
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/needs_desk_sql.sql
+
+Paste both outputs before a Stage 2 approval. These queries do not authorize
+the ownership transition or replace the production-shaped lock rehearsal.
+
+Each apply is a separate change. The script's transaction uses a 3 second
+lock timeout and a 30 second statement timeout. Ownership changes are catalog
+DDL, with no intentional heap rewrite, but ALTER OWNER can wait for or block
+application and TimescaleDB work. Hundreds of relations plus chunks may take
+seconds to minutes in an idle staging copy; production duration is unproven.
+Measure the exact manifest in staging and leave a window for rollback. A lock
+timeout, lock-table exhaustion, or catalog drift stops the stage; do not
+raise timeouts or max_locks_per_transaction ad hoc. Paste
+SHOW max_locks_per_transaction with the staging lock measurement before the
+Stage 2 approval. Policy recreation changes job IDs and loses the old
+bgw_job_stat counters; the signed journal preserves schedule and config,
+including next_start, so an already-past next_start may run promptly.
+
+## Stage 1: role creation and owner login rejection
+
+Approval input: the fresh pg_roles and PG17 pg_auth_members output, including
+inherit_option and set_option, and the preservation decision for the existing
+nhplug_operator role. Stage 1 creates the app and NHPLUG groups as NOLOGIN.
+at_migration_owner is LOGIN with a null password because TimescaleDB requires
+LOGIN for the background job owner. Before creating it, the operator must
+install ordered pg_hba reject rules for this exact role for local socket,
+IPv4, and IPv6, reload PostgreSQL, and confirm a login attempt through both
+socket and TCP is rejected. The rule file path and installation mechanism
+must be part of this stage's separate approval and rollback record. Stage 1
+never drops or repurposes nhplug_operator.
+
+The HBA portion must be done first and is part of the Stage 1 approval. The
+fragment is docs/runbooks/db-role-cutover-pg_hba.reject. The first matching
+rules must be its six reject lines; appending them after a permissive rule
+does not work. The exact operator commands, with DB_CONTAINER and CUTOVER_DIR
+resolved from the signed approval, are:
+
+    HBA_FILE="$(psql -X -At -d auto_trader -c 'SHOW hba_file')"
+    docker exec "$DB_CONTAINER" cat "$HBA_FILE" > "$CUTOVER_DIR/pg_hba.before"
+    cat docs/runbooks/db-role-cutover-pg_hba.reject "$CUTOVER_DIR/pg_hba.before" > "$CUTOVER_DIR/pg_hba.candidate"
+    sha256sum "$CUTOVER_DIR/pg_hba.before" "$CUTOVER_DIR/pg_hba.candidate"
+    docker exec -i "$DB_CONTAINER" sh -c 'cat > "$1"' sh "$HBA_FILE" < "$CUTOVER_DIR/pg_hba.candidate"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT pg_reload_conf()'
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c "SELECT rule_number,type,database,user_name,address,auth_method,error FROM pg_hba_file_rules WHERE 'at_migration_owner'=ANY(user_name) ORDER BY rule_number"
+
+Stop if pg_reload_conf is false, any rule has an error, or the six reject
+rules are not first for at_migration_owner. The original file must remain in
+CUTOVER_DIR until every later stage is finished or rolled back. The role
+apply and verify commands follow:
+
+    uv run python scripts/db_roles/stage1_apply.py --database auto_trader --journal "$CUTOVER_DIR/stage1.journal.json"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage1_verify.sql
+
+After apply, the operator must run and paste these denied connection results:
+
+    docker exec "$DB_CONTAINER" psql -X -w -U at_migration_owner -d auto_trader -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -h 127.0.0.1 -U at_migration_owner -d auto_trader -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -h ::1 -U at_migration_owner -d auto_trader -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -U at_migration_owner -d 'dbname=auto_trader replication=true' -c 'SELECT 1'
+    docker exec "$DB_CONTAINER" psql -X -w -h 127.0.0.1 -U at_migration_owner -d 'dbname=auto_trader replication=true' -c 'SELECT 1'
+
+Every command must fail specifically with pg_hba.conf rejects connection.
+If Stage 1 needs rollback, run its inverse first. Only after it succeeds and
+all three newly created roles were removed may the operator restore the
+original HBA file and verify reload with:
+
+    uv run python scripts/db_roles/stage1_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage1.journal.json"
+    docker exec -i "$DB_CONTAINER" sh -c 'cat > "$1"' sh "$HBA_FILE" < "$CUTOVER_DIR/pg_hba.before"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT pg_reload_conf()'
+
+If Stage 1 apply fails before writing a journal, its database transaction
+has rolled back. Paste the Stage 1 verify query showing the three new roles
+absent, then restore the original HBA file with the last two commands above.
+If a journal exists despite an apply error, run the inverse and verify role
+removal before restoring HBA. Do not leave a reject fragment installed after
+abandoning Stage 1.
+
+Paste four role rows. at_migration_owner must be LOGIN with a null password;
+the other three must be NOLOGIN. All four must be NOSUPERUSER, NOCREATEDB,
+NOCREATEROLE, NOREPLICATION, and NOBYPASSRLS. Paste the HBA rule rows and
+rejected socket, IPv4, IPv6 and replication login results. Paste all membership rows; no
+application login may inherit an owner role. Stop if an existing role has
+different attributes or unexpected membership, the HBA rejection fails, or
+the owner role has a password. Do not run the rollback after
+later stages until their dependencies have been rolled back in reverse order.
+
+## Stage 2: named ownership and TimescaleDB graph
+
+Approval input: a complete signed object manifest covering public, review,
+research, and paper schemas; relations,
+sequences, views, functions, types, hypertables, continuous aggregates,
+materialization objects, chunks, and jobs. It must name the current and target
+owner for each object and exclude extension members. The record must include
+the exact TimescaleDB version and the full policy-job schedule, configuration,
+owner, and IDs. Compare the manifest with the fresh
+catalog inventory. An absent #711 object is an explicit stop; do not silently
+skip it or run its historical migration under the new owner. This stage needs
+the exact 2.26.3 job configuration and a production-shaped staging lock
+rehearsal before approval.
+The approved transaction for each user policy job removes the policy and
+recreates it under at_migration_owner with its recorded configuration.
+Job IDs change. The journal must map old and new IDs, and its inverse must
+recreate the policy under mgh3326 from the recorded configuration. A custom
+or unknown policy type stops the stage. No direct Timescale internal catalog
+write or data rewrite is allowed.
+The signed inventory fixes application objects and stable TimescaleDB
+materialization objects. The journal also records which internal relations
+are chunks or chunk indexes. If a new chunk appears after the owner transfer,
+retry and rollback accept it only when the TimescaleDB chunks view identifies
+it, and they verify that every current chunk and index follows the target or
+restored owner. An unrelated catalog addition stops. If chunks change before
+the owner transfer, abandon that prepared journal and obtain a fresh signed
+manifest; no owner change has committed. A dropped chunk is skipped only if
+the journal classified it as a chunk or index at preparation time.
+Stage 2 compares effective ACL grants on retry and rollback. PostgreSQL can
+replace a NULL catalog ACL with an explicit owner-default ACL after Stage 3
+grants and their inverse; those represent the same privileges and must not
+block Stage 2. A surviving grant to another role still stops the inverse.
+
+    uv run python scripts/db_roles/stage2_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage2.approved.json" --sha256 "$STAGE2_SHA" --journal "$CUTOVER_DIR/stage2.journal.json"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage2_verify.sql
+    uv run python scripts/db_roles/stage2_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage2.journal.json"
+
+Paste the complete verify output and a zero-drift comparison against the signed
+manifest. The next stage requires every listed application object at its
+specified owner role, zero unexpected old-owned chunks and materialization
+objects, and all user policy jobs at at_migration_owner. One refresh and one
+retention job must run successfully in the disposable staging proof; production
+verification observes their scheduled executions and job_stats without a
+manual retention run that could drop data. The TimescaleDB background scheduler may still run
+under the extension owner; record that session separately and never treat its
+PID absence as owner-transition proof. Stop on any unresolved job, extension
+member, or version difference.
+
+## Stage 3: object grants and creator default privileges
+
+Approval input: a signed object-level DML and sequence manifest, the exact
+#711 and Kiwoom protected matrix, pre-change ACLs, and creator-role default
+ACLs. The signed database CONNECT keep-role list must cover postgres for the
+backup and Prefect, every currently active non-owner login, the new at_app
+group, at_migration_owner for TimescaleDB policy workers, and the
+pre-provisioned at_migration_runner and at_desk_login. Stage 3 revokes PUBLIC
+CONNECT only after granting that reviewed set; rollback restores its exact
+prior effective privileges. Provision the runner and desk logins before Stage
+3 under this stage's approval; the runner credential stays inactive until
+Stage 4. The desk login uses SET ROLE nhplug_operator for its approved
+workflow and needs direct database CONNECT. The following role and membership
+commands are idempotent; stop on any unexpected existing attributes or
+membership. Set passwords with interactive prompts and keep them in the
+approved secret mechanism, never in the manifest or journal.
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader <<'SQL'
+    DO $roles$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_migration_runner') THEN
+        CREATE ROLE at_migration_runner LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_desk_login') THEN
+        CREATE ROLE at_desk_login LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+    END $roles$;
+    GRANT at_migration_owner TO at_migration_runner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+    GRANT nhplug_operator TO at_desk_login WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+    SQL
+    psql -X -d auto_trader -c '\password at_migration_runner'
+    psql -X -d auto_trader -c '\password at_desk_login'
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c "SELECT member.rolname AS login,parent.rolname AS granted_role,m.admin_option,m.inherit_option,m.set_option FROM pg_auth_members m JOIN pg_roles member ON member.oid=m.member JOIN pg_roles parent ON parent.oid=m.roleid WHERE member.rolname IN ('at_migration_runner','at_desk_login') ORDER BY login,granted_role"
+
+After Stage 4 and Stage 3 inverses and connection drain, the provisioning
+inverse is:
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'REVOKE at_migration_owner FROM at_migration_runner; REVOKE nhplug_operator FROM at_desk_login; DROP ROLE at_migration_runner; DROP ROLE at_desk_login'
+
+The app gets no schema
+CREATE, table TRUNCATE or blanket all-tables
+grant. Its identity sequences get USAGE only. The #711 consume and guard
+functions retain their fixed search_path and give no direct EXECUTE to app,
+operator, or PUBLIC. The app receives EXECUTE on exactly
+review.nhplug_body_digest_v1 and review.nhplug_body_field: the generated
+ledger digest requires the first, and the first calls the second. A
+throwaway app-role intent insert passed only after both grants; neither
+helper mutates state. The nhplug_security_owner also receives EXECUTE on
+these two helpers because its SECURITY DEFINER order guard calls the digest
+for a second-order intent. Future migration objects must be created
+after SET ROLE at_migration_owner; a connection as the runner alone is not
+enough to apply that creator's default ACL.
+The defaults deny PUBLIC function execution and leave table and sequence DML
+ungranted. Each later migration must include a reviewed object-level app grant
+before its new code uses that object; the default ACL is not a blanket app
+grant. The disposable fixture creates a table, identity sequence, and
+function as the runner after SET ROLE and checks these denied defaults.
+
+    uv run python scripts/db_roles/stage3_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage3.approved.json" --sha256 "$STAGE3_SHA" --journal "$CUTOVER_DIR/stage3.journal.json"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage3_verify.sql
+    uv run python scripts/db_roles/stage3_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage3.journal.json"
+
+Paste every protected-table privilege row, sequence row, function row,
+database CONNECT row, and default-ACL row. The owner CONNECT field must be
+true and both function EXECUTE matrix fields must be true on every function.
+Compare normal-domain privileges with the approved manifest;
+the verify SQL is evidence, not an automatic approval. Stop if the app has
+ownership, direct protected-function EXECUTE beyond those two helpers,
+sequence SELECT or UPDATE,
+unexpected DELETE, or any missing normal application DML path.
+
+## Stage 4: distinct credentials and process drain
+
+Approval input: a separately provisioned application login per consumer class,
+the NOINHERIT at_migration_runner pre-provisioned before Stage 3, a desk-only
+NOINHERIT operator login, signed
+secret mapping, and a rollback mapping. App logins must inherit only at_app,
+with inherit_option true and set_option/admin_option false. The migration
+runner must use the separate migration env input and establish current_user
+at_migration_owner before Alembic DDL. The existing migration entrypoints
+keep their pre-cutover .env.prod behavior until this stage is approved. To
+activate the split, the operator provisions .env.migration with the separate
+runner DSN and AT_MIGRATION_SET_ROLE=at_migration_owner, sets
+AT_MIGRATION_ENV_FILE=.env.migration for a Compose migration, or passes
+--db-role-cutover to scripts/migrate.sh. The optional role gate in
+alembic/env.py requires the runner identity and fails closed for an app or
+postgres connection. Application services continue to select their app
+input. Under the split, the three symbol sync scripts run separately with
+the app login immediately after migration. The old entrypoints retain their
+existing sync behavior until activation.
+The host deploy script uses its app secret input and does not invoke Alembic.
+Never copy a migration DSN into an app input or reuse an app DSN for backup.
+
+For the two app inputs established by the operator preflight, run these
+idempotent role and membership commands under the separate Stage 4 approval.
+Any additional deployed DB consumer requires its own named login in the
+signed inventory and the same membership options. Set passwords through
+interactive prompts and store them only in the approved secret mechanism.
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader <<'SQL'
+    DO $roles$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_api_login') THEN
+        CREATE ROLE at_api_login LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='at_scheduler_login') THEN
+        CREATE ROLE at_scheduler_login LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+      END IF;
+    END $roles$;
+    GRANT at_app TO at_api_login WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+    GRANT at_app TO at_scheduler_login WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+    SQL
+    psql -X -d auto_trader -c '\password at_api_login'
+    psql -X -d auto_trader -c '\password at_scheduler_login'
+
+    uv run python scripts/db_roles/stage4_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage4.approved.json" --sha256 "$STAGE4_SHA" --journal "$CUTOVER_DIR/stage4.journal.json"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage4_verify.sql
+    PGUSER=at_migration_runner psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SET ROLE at_migration_owner; SELECT session_user,current_user'
+    PGUSER=at_desk_login psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SET ROLE nhplug_operator; SELECT session_user,current_user'
+    PGUSER=at_api_login psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT session_user,current_user'
+    PGUSER=at_scheduler_login psql -X -qAt -v ON_ERROR_STOP=1 -d auto_trader -c 'SELECT session_user,current_user'
+    uv run python scripts/db_roles/stage4_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage4.journal.json"
+
+After the Stage 4 evidence gate passes, run one of these migration selectors.
+APP_IMAGE is the approved deployed image digest and APP_ENV_FILE is the
+approved .env.api path. Then run all three sync commands under the app login:
+
+    AT_MIGRATION_ENV_FILE=.env.migration docker compose --env-file .env.prod -f docker-compose.prod.yml --profile migration up migration
+    AT_MIGRATION_ENV_FILE=.env.migration docker compose --env-file .env.prod -f docker-compose.migration.yml --profile migration up migration
+    scripts/migrate.sh --db-role-cutover
+    docker run --rm --network host --env-file "$APP_ENV_FILE" "$APP_IMAGE" /app/.venv/bin/python scripts/sync_kr_symbol_universe.py
+    docker run --rm --network host --env-file "$APP_ENV_FILE" "$APP_IMAGE" /app/.venv/bin/python scripts/sync_us_symbol_universe.py
+    docker run --rm --network host --env-file "$APP_ENV_FILE" "$APP_IMAGE" /app/.venv/bin/python scripts/sync_upbit_symbol_universe.py
+
+Record each sync command and exit code. Stop if any sync fails. Keep the
+migration and app credential files distinct.
+
+The apply script is an evidence gate; the operator separately performs each
+approved secret input and process rotation. Paste the role-membership rows,
+session counts, the identity probe rows, and one recorded success under each
+new login. The named probes assume the signed manifest uses at_api_login,
+at_scheduler_login, and at_migration_runner; for different approved names, use those exact names in
+the commands and paste the corresponding manifest rows. Rotate API,
+worker, singleton scheduler, every MCP profile, monitors, host jobs and fill
+handoff. Drain old pools explicitly. The script cannot roll back an external
+secret mapping: if verification fails, restore the recorded prior mapping and
+process image through the separate operator procedure, then re-run the SQL
+verification. Do not revoke old access until new consumers pass.
+After restoring the prior app credential mapping, draining these logins and
+running the Stage 4 inverse, undo this stage's login provisioning with:
+
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -c 'REVOKE at_app FROM at_api_login; REVOKE at_app FROM at_scheduler_login; DROP ROLE at_api_login; DROP ROLE at_scheduler_login'
+
+## Stage 5: remove application use of the superuser
+
+Approval input: the old credential absent from every application input,
+zero old application sessions, successful new-login observations, preserved
+postgres backup authority, TimescaleDB graph and job proof, and timer observations through
+at least one firing of every installed host timer. If only the daily backup
+timer remains, observe a successful 04:10 KST firing without overlapping a
+DDL stage. The production mgh3326 bootstrap role and shared postgres role
+must never be altered by this application cutover. Rotate only .env.api and
+.env.scheduler to the new app identities, drain those application sessions,
+and preserve .env.prefect and .env.pg-backup as infrastructure inputs. Do not
+revoke or rotate the postgres credential here.
+The signed timer proof must give timezone-aware ISO timestamps for rotation,
+the last successful backup service firing, and observation, in that order;
+the success must be within seven days. It must record service_result=success
+and persistent_catchup_clear=true. Paste the systemctl outputs above and the
+backup service log showing success, without printing dump contents or secrets.
+
+    uv run python scripts/db_roles/stage5_apply.py --database auto_trader --manifest "$CUTOVER_DIR/stage5.approved.json" --sha256 "$STAGE5_SHA" --journal "$CUTOVER_DIR/stage5.journal.json"
+    psql -X -v ON_ERROR_STOP=1 -d auto_trader -f scripts/db_roles/stage5_verify.sql
+    uv run python scripts/db_roles/stage5_rollback.py --database auto_trader --journal "$CUTOVER_DIR/stage5.journal.json"
+
+Paste all old-role attributes, session counts by database and application,
+timer firing evidence, and read-only backup identity evidence. postgres must
+remain LOGIN SUPERUSER and retain CONNECT on auto_trader and handoffkeep for
+the existing root-run backup. No dump is run for this check. The stage
+completes only when no application process can reconnect as postgres and no
+old privileged application session remains. Prefect, backup and DBA sessions
+are classified separately; their continued use is expected.
+If rollback is needed, return the prior app secret mapping and process image
+first, while the new app grants still work, and drain every at_app login
+session. Then run Stage 5, Stage 4, Stage 3, Stage 2 and Stage 1 inverses in
+that order. Stage 3 refuses its inverse while an at_app session remains.
+Rollback stops on catalog drift. A data backup is for data recovery and does
+not substitute for ACL or ownership rollback.
+The disposable 2.26.3 reproduction runs this complete inverse sequence and
+verifies the semantic catalog and loaded pg_hba rules after each stage, then
+restores and compares the original pg_hba file and rules.

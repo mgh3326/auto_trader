@@ -44,6 +44,10 @@ class SessionContextRefs(BaseModel):
     filled_notional: str | None = None
     currency: str | None = None
     fill_handoff: Literal["v1"] | None = None
+    kick_filter_class: str | None = None
+    kick_filter_reason: str | None = None
+    position_before: str | None = None
+    position_after: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -367,6 +367,8 @@ async def test_row_surfaces_result_degraded(monkeypatch) -> None:
             [_article(symbol, market, 0)],
             degraded=True,
             fetch_error="TimeoutError",
+            # In-window acquisition: degraded but not stale.
+            fetched_at=datetime.now(tz=UTC),
         )
 
     _patch_fetch(monkeypatch, fake_fetch)
@@ -377,6 +379,47 @@ async def test_row_surfaces_result_degraded(monkeypatch) -> None:
     assert row["status"] == "ok"
     assert row["degraded_reason"] == "TimeoutError"
     assert row["news"]  # cached articles still surfaced
+    # Machine-readable freshness on a degraded row (#904): in-window cache is
+    # degraded but not stale.
+    assert row["stale"] is False
+    assert row["data_state"] == "degraded"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_degraded_row_with_stale_cache_is_flagged(monkeypatch) -> None:
+    """#904: provider error + stale rows must not read as fresh in the sweep."""
+    stale_fetch = datetime.now(tz=UTC) - timedelta(days=11)
+
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        return SymbolNewsFetchResult(
+            symbol,
+            market,
+            "naver",
+            "ok",
+            5,
+            1,
+            [_article(symbol, market, 0)],
+            degraded=True,
+            fetch_error="HTTPStatusError:410",
+            cache_hit=True,
+            fallback_source="news_articles",
+            fetched_at=stale_fetch,
+        )
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    out = await _news._get_holdings_news_impl(symbols=["005930"], limit_per_symbol=5)
+
+    row = out["results"][0]
+    assert row["status"] == "ok"  # service status for served cache
+    assert row["degraded_reason"] == "HTTPStatusError:410"
+    assert row["data_state"] == "stale"
+    assert row["stale"] is True
+    assert row["fetched_at"] == stale_fetch.isoformat()
+    assert row["data_age_seconds"] > _news.NEWS_FRESHNESS_MAX_AGE_SECONDS
 
 
 @pytest.mark.unit

@@ -1136,7 +1136,12 @@ _KIS_LIVE_CANCEL_TERMINAL = frozenset({"cancelled", "expired"})
 _GENERIC_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
 _GENERIC_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
 _TOSS_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
-_TOSS_CANCEL_TERMINAL = frozenset({"cancelled", "cancel_rejected", "replace_rejected"})
+# ROB-691: Toss reconcile writes a real status='expired' for broker-confirmed
+# DAY sweeps (REJECTED+canceledAt).  Same cancel-family treatment as KIS —
+# hidden by default, visible with include_cancelled=True.
+_TOSS_CANCEL_TERMINAL = frozenset(
+    {"cancelled", "cancel_rejected", "replace_rejected", "expired"}
+)
 # ROB-730: kis_mock terminality lives in `lifecycle_state` (not `status`, which is
 # constrained to accepted/rejected/unknown). A holdings-delta fill lands as
 # `fill`/`reconciled`; a send reject as `failed`; ambiguity as `anomaly`.

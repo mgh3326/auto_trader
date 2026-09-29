@@ -10,6 +10,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import kst_day_window
 from app.models.execution_ledger import ExecutionLedger
 from app.schemas.execution_ledger import (
     DataState,
@@ -370,6 +371,34 @@ class ExecutionLedgerQueryService:
         # For a symbol query, be specific about why it's empty
         if not items and empty_reason == "no fills in the requested window":
             empty_reason = f"no fills for {symbol} in the last {days} days"
+        return ExecutionLedgerListResponse(
+            count=len(items),
+            items=items,
+            data_state=data_state,
+            source_breakdown=_compute_source_breakdown(items),
+            empty_reason=empty_reason,
+        )
+
+    async def list_fills_today(
+        self, *, now: datetime | None = None
+    ) -> ExecutionLedgerListResponse:
+        """Fills inside the current KST calendar day (the /trader panel scope)."""
+        start_kst, end_kst = kst_day_window(now or datetime.now(UTC))
+        stmt = (
+            select(ExecutionLedger)
+            .where(ExecutionLedger.filled_at >= start_kst)
+            .where(ExecutionLedger.filled_at < end_kst)
+            .order_by(ExecutionLedger.filled_at.desc())
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        items = [ExecutionLedgerRead.model_validate(row) for row in rows]
+        items = _supersede_provisional_fills(items)
+        items = await self._attach_symbol_names(items)
+
+        freshness = await self.freshness()
+        data_state, empty_reason = _state_from_items_and_freshness(
+            items, freshness, None
+        )
         return ExecutionLedgerListResponse(
             count=len(items),
             items=items,

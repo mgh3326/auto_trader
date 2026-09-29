@@ -214,6 +214,66 @@ EXECUTION_LEDGER_COMMIT_ENABLED=true uv run python -m scripts.seed_execution_led
   --commit
 ```
 
+## Filtered Re-Seed (--symbol)
+
+When a fresh cutover proposes inserts for every current holding (ledger net
+since the new cutover is zero) but the operator approved re-seeding only
+specific symbols, restrict the plan with `--symbol`. The flag is repeatable
+and also accepts comma-separated lists; the filter applies identically to
+dry-run and commit.
+
+Matching is **exact equality after normalization** — never prefix or
+substring. Normalization is uppercase + `app/core/symbol.to_db_symbol`:
+
+- KR 6-digit codes pass through unchanged: `005930`
+- US tickers accept any separator spelling: `BRK.B`, `BRK-B`, `BRK/B`,
+  `brk.b` all compare as `BRK.B`
+- Upbit crypto accepts the currency code (`BTC`) or the raw market key
+  (`KRW-BTC`)
+
+Every requested symbol that is not an opening-lot candidate is reported in
+the JSON under `symbol_filter.unmatched` and in `skipped` with reason
+`no_matching_candidate` — it is never silently ignored. If **none** of the
+requested symbols matches a candidate the command prints a stderr message
+and exits 1.
+
+Dry-run first — verify `would_seed`, the `sample_seed_rows` symbols, and
+that `symbol_filter.unmatched`/`skipped` list every rejected request:
+
+```bash
+uv run python -m scripts.seed_execution_ledger_opening_lots \
+  --cutover 2026-05-10 \
+  --broker kis \
+  --symbol 005930 \
+  --symbol 196170 \
+  --dry-run
+```
+
+Equivalent comma-list form:
+
+```bash
+uv run python -m scripts.seed_execution_ledger_opening_lots \
+  --cutover 2026-05-10 \
+  --broker kis \
+  --symbol 005930,196170 \
+  --dry-run
+```
+
+Commit only the identical filtered plan after reviewer approval — the
+`EXECUTION_LEDGER_COMMIT_ENABLED` gate is unchanged:
+
+```bash
+EXECUTION_LEDGER_COMMIT_ENABLED=true uv run python -m scripts.seed_execution_ledger_opening_lots \
+  --cutover 2026-05-10 \
+  --broker kis \
+  --symbol 005930,196170 \
+  --commit
+```
+
+Post-commit verification: `committed`/`committed_insert` must equal the
+number of approved symbols, and re-run the Phase 3 opening-lot SQL (query 4)
+to confirm only the requested symbols gained `manual_import` rows.
+
 ## Phase 7: UI Verification
 
 Open `/invest/my?tab=sellHistory` and confirm matched rows show 판매수익/수익률 and currency summary cards render.

@@ -91,8 +91,14 @@ async def build_confirmed_block(
             "date": row.get("date"),
             "foreign_net": row.get("foreign_net"),
             "institutional_net": row.get("institutional_net"),
-            "individual_net": derive_individual_net(
-                row.get("institutional_net"), row.get("foreign_net")
+            # The trend JSON carries individualPureBuyQuant directly; derive only
+            # as a fallback for sources that lack it.
+            "individual_net": (
+                row.get("individual_net")
+                if row.get("individual_net") is not None
+                else derive_individual_net(
+                    row.get("institutional_net"), row.get("foreign_net")
+                )
             ),
             "close": row.get("close"),
         }

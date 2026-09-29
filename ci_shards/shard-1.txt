@@ -16,6 +16,7 @@ tests/integration/services/test_forecast_read_window_candles.py
 tests/integration/test_paper_positions_market_filter.py
 tests/integration/test_rob279_stale_gate_blocked.py
 tests/integration/test_strategy_event_db_roundtrip.py
+tests/jobs/test_kis_mock_expiry_race.py
 tests/mcp_server/test_alpaca_paper_manual_boundary.py
 tests/mcp_server/test_analyze_stock_batch_decision_history.py
 tests/mcp_server/test_analyze_stock_batch_earnings.py
@@ -24,13 +25,18 @@ tests/mcp_server/test_investment_hermes_tools.py
 tests/mcp_server/test_investment_report_context_get_description.py
 tests/mcp_server/test_kis_live_place_order_routing_surface.py
 tests/mcp_server/test_lane_allowlist_contract.py
+tests/mcp_server/test_live_profiles.py
+tests/mcp_server/test_live_prompt_profile_contract.py
 tests/mcp_server/test_mirror_counterfactual_tool.py
+tests/mcp_server/test_parking_exclusion.py
+tests/mcp_server/test_protected_positions_tool.py
 tests/mcp_server/test_rob1311_r2_blockers.py
 tests/mcp_server/test_sector_concentration.py
 tests/mcp_server/test_session_bootstrap_pack.py
 tests/mcp_server/test_shared_converters.py
 tests/mcp_server/test_trading_policy_tool.py
 tests/mcp_server/tooling/test_buy_gate_ab_shadow.py
+tests/mcp_server/tooling/test_decision_table_one_share_exception.py
 tests/mcp_server/tooling/test_decision_table_validate.py
 tests/mcp_server/tooling/test_fx_pnl.py
 tests/mcp_server/tooling/test_kis_live_reconcile_tool.py
@@ -55,6 +61,7 @@ tests/routers/test_execution_ledger_ingest_downstream.py
 tests/routers/test_invest_artifacts_router.py
 tests/routers/test_invest_forecasts_router.py
 tests/routers/test_invest_loss_cut_approvals.py
+tests/routers/test_invest_manual_cash.py
 tests/routers/test_invest_open_orders_router.py
 tests/routers/test_market_calendar_router.py
 tests/routers/test_mock_auto_read_model.py
@@ -64,6 +71,7 @@ tests/routers/test_order_previews.py
 tests/routers/test_research_pipeline_router.py
 tests/routers/test_strategy_events_router.py
 tests/routers/test_telegram_callback_route.py
+tests/routers/test_trader_page_router.py
 tests/schemas/test_pagination.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_coordination_wiring.py
 tests/scripts/b0x/kr/kiwoom/test_kiwoom_ordering_support.py
@@ -74,6 +82,8 @@ tests/scripts/test_at_job_runner.py
 tests/scripts/test_binance_futures_demo_sizing.py
 tests/scripts/test_binance_futures_demo_smoke.py
 tests/scripts/test_deploy_ncp_pull_digest_pin.py
+tests/scripts/test_deploy_ncp_pull_image_prune.py
+tests/scripts/test_deploy_ncp_pull_rollback.py
 tests/scripts/test_dockerfile_api_ships_websocket_monitor.py
 tests/scripts/test_forecast_legacy_rule_migration.py
 tests/scripts/test_list_recent_fill_events_cli.py
@@ -110,6 +120,8 @@ tests/services/brokers/binance/demo_strategy_loop/test_correlation.py
 tests/services/brokers/binance/futures_demo/test_cross_environment_leakage.py
 tests/services/brokers/binance/futures_demo/test_host_allowlist.py
 tests/services/brokers/binance/futures_demo/test_transport.py
+tests/services/brokers/binance/h5/test_sizing_holding.py
+tests/services/brokers/binance/h5/test_state.py
 tests/services/brokers/binance/paper/test_binance_adapter.py
 tests/services/brokers/binance/spot_demo/test_canonical_credentials.py
 tests/services/brokers/binance/spot_demo/test_d2_r8_authority_registration.py
@@ -185,6 +197,7 @@ tests/services/order_proposals/test_broker_gateway.py
 tests/services/order_proposals/test_cash_funding_service.py
 tests/services/order_proposals/test_loss_cut_approval.py
 tests/services/order_proposals/test_models_smoke.py
+tests/services/order_proposals/test_parking_sell_exemption.py
 tests/services/order_proposals/test_projection_evidence_resolution.py
 tests/services/order_proposals/test_rob1281_approval_card_payload.py
 tests/services/order_proposals/test_void_authorization.py
@@ -197,6 +210,7 @@ tests/services/paper_cohort/test_runner_shadow.py
 tests/services/paper_cohort/test_signals.py
 tests/services/paper_evaluation/test_gate.py
 tests/services/paper_validation/test_contracts.py
+tests/services/protected_quantity/test_db.py
 tests/services/research/test_honest_trial_evidence.py
 tests/services/research/test_research_campaign_bridge_trials.py
 tests/services/research/test_rob1025_funding_and_observability.py
@@ -204,6 +218,7 @@ tests/services/research/test_rob944_campaign_controller.py
 tests/services/research/test_rob984_cp8_actual_integration.py
 tests/services/research/test_rob984_fix_r1.py
 tests/services/research/test_strategy_learning_event_migration.py
+tests/services/screener_pick_log/test_a_record.py
 tests/services/screener_pick_log/test_recorder.py
 tests/services/shadow_replay/test_scoring.py
 tests/services/social_sentiment_probe/test_models.py
@@ -238,6 +253,7 @@ tests/services/test_paper_approval_packet.py
 tests/services/test_portfolio_action_service.py
 tests/services/test_portfolio_allocation_service.py
 tests/services/test_portfolio_indicator_cards.py
+tests/services/test_protected_position_display_projection.py
 tests/services/test_research_run_service_news_brief_safety.py
 tests/services/test_research_run_service_unit.py
 tests/services/test_rob1314_market_events_values_bulk_load.py

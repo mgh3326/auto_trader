@@ -6,6 +6,7 @@
 
 - Telegram 승인 콜백 durable inbox (W5)
 - 매수 게이트 A/B shadow (ROB-1301)
+- 주차자산 proposal-bound 자동 매도 (task 817)
 
 ## 기준 원문 계약
 
@@ -162,6 +163,23 @@ KR/US 매수 스크리닝의 **variant B(moderate+ 지지)** 는 계좌 불사�
   🔴 caller wiring은 marker의 merge·배포·migration·독립 리뷰 뒤 별도 PR에서만 한다.
   ROB-1331 PR 자체에는 caller/scheduler/실행 배선이 없다.
 
+
+### 주차자산 proposal-bound 자동 매도 (task 817)
+
+`expanded` 자동 승인에서는 저장된 proposal의 명시적 계좌가 브로커 선택 계좌와
+일치하고 계좌별 주차 계측이 유효할 때만, 닫힌 SGOV/BIL/459580/357870
+symbol·account-mode·market 튜플의 live 지정가 SELL을 평균단가·손익 증명 없이
+허용한다. 일반 주차 매도에는 `funding_target`이 필요하지 않다. 현금 부족 또는
+운영자 지시가 운영상 이유이며, 제안에는 이를 설명하는 veto thesis가 있어야 한다.
+task 765의 Toss 명시 계좌·브로커 계좌 목록 검증이 선행되어야 한다.
+
+`policy_deviation` 전체 필드 스캔, veto 가능한 계좌·시장, USD 10,000/KRW
+10,000,000 단건 상한, 신선한 preview, 현재가 대비 2% 지정가 하한, 보유 수량,
+브로커 이중 게이트, 재검증, veto 카드가 유지된다. KR은 XKRX 정규장 안에서만
+dispatch와 send가 가능하다. 계좌 누락·불일치 또는 계측 실패는 자동 승인 없이
+사람 승인 카드로 간다. 직접 주문 API, 기존 `cash_funding` 증거 계약,
+default-disabled 게이트, 스케줄러는 바뀌지 않는다. 자세한 운영 경계는
+`docs/runbooks/order-proposal-auto-approve-expand.md` §10을 따른다.
 
 ## 유지 규약
 

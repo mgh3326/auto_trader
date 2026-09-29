@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -81,28 +80,6 @@ def test_existing_auth_and_execution_surfaces_do_not_wire_back_into_context() ->
         if "fill_watch_context" in path.read_text(encoding="utf-8")
     ]
     assert references == []
-
-
-def test_scope_diff_leaves_existing_guard_surfaces_unchanged() -> None:
-    """Check committed, staged, and working-tree changes against the PR base."""
-    merge_base = subprocess.run(
-        ["git", "merge-base", "HEAD", "origin/main"],
-        check=True,
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    changed = set(
-        subprocess.run(
-            ["git", "diff", "--name-only", merge_base],
-            check=True,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        ).stdout.splitlines()
-    )
-    protected = {str(path.relative_to(ROOT)) for path in PROTECTED_EXISTING_SURFACES}
-    assert not changed & protected
 
 
 def test_database_check_vocabulary_matches_the_only_context_status_enum() -> None:

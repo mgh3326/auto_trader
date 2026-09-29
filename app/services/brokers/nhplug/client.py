@@ -1,15 +1,21 @@
-"""Pinned NHPLUG mock data client: account, balance, and quote reads only.
+"""Pinned NHPLUG mock data client and single Stage 2 order dispatch owner.
 
 This module never imports the OAuth implementation and never contains the
 production hostname.  It has an exact mock host-and-port allowlist, a short
-read-only path allowlist checked before token resolution, and no mutation API.
+read-only path allowlist checked before token resolution, plus one guarded
+Stage 2 mock order dispatch method.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from datetime import datetime
 from typing import Any, Final
+from uuid import UUID
 
 import httpx
 
@@ -23,6 +29,32 @@ from app.services.brokers.nhplug.errors import (
     NHPlugMockResponseError,
 )
 from app.services.brokers.nhplug.gating import _assert_mock_enabled
+from app.services.brokers.nhplug.order_evidence import (
+    OrderListing,
+    assemble_listing,
+    classify_listing_page,
+)
+from app.services.nhplug_mock.account_identity import KeyMaterial, resolve_account_ref
+from app.services.nhplug_mock.intent import ORDER_PATHS, body_digest, build_body
+from app.services.nhplug_mock.lease_host import current_lease_identity
+from app.services.nhplug_mock.ledger import (
+    Claim,
+    DispatchOutcome,
+    LedgerConflict,
+    NHPlugMockLedger,
+)
+from app.services.nhplug_mock.outcome import (
+    ResponseMeta,
+    classify,
+    extract_order_no,
+    parse_order_response,
+)
+from app.services.nhplug_mock.readiness import Stage2Readiness
+from app.services.nhplug_mock.transport import (
+    GatedTransport,
+    Stage2Timing,
+    clock_boottime,
+)
 
 MOCK_BASE_URL: Final[str] = "https://moapi.nhplug.com:8443"
 MOCK_HOST: Final[str] = "moapi.nhplug.com"
@@ -31,6 +63,7 @@ MOCK_PORT: Final[int] = 8443
 ACCOUNT_INFO_PATH: Final[str] = "/n2/acctinfo"
 BALANCE_PATH: Final[str] = "/krstock/inquiry/v1/balance"
 QUOTE_PATH: Final[str] = "/krstock/quote/v1/currentPrice"
+DAILY_ORDER_EXECUTION_PATH: Final[str] = "/krstock/inquiry/v1/dailyOrderExecution"
 ALLOWED_READONLY_PATHS: Final[frozenset[str]] = frozenset(
     {ACCOUNT_INFO_PATH, BALANCE_PATH, QUOTE_PATH}
 )
@@ -41,6 +74,7 @@ _SUCCESS_RESPONSE_CODES: Final[frozenset[str]] = frozenset(
 _KR_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(r"^\d{6}$")
 _ALLOWED_MARKETS: Final[frozenset[str]] = frozenset({"KRX"})
 TokenProvider = Callable[[], Awaitable[str]]
+_record_tasks: set[asyncio.Task[bool]] = set()
 
 
 def _assert_mock_base_url(base_url: str) -> str:
@@ -65,7 +99,9 @@ def _assert_readonly_path(path: str) -> None:
         raise NHPlugMockReadOnlyEndpointError("NHPLUG data path is not allowlisted")
 
 
-def _assert_resolved_mock_request(request: httpx.Request) -> None:
+def _assert_resolved_mock_request(
+    request: httpx.Request, *, stage2_listing: bool = False
+) -> None:
     """Revalidate resolved host, port, and path immediately before dispatch."""
 
     if (
@@ -76,11 +112,12 @@ def _assert_resolved_mock_request(request: httpx.Request) -> None:
         raise NHPlugMockEndpointError(
             "NHPLUG data request resolved outside the pinned mock HTTPS endpoint"
         )
-    _assert_readonly_path(request.url.path)
+    if not (stage2_listing and request.url.path == DAILY_ORDER_EXECUTION_PATH):
+        _assert_readonly_path(request.url.path)
 
 
 class NHPlugMockClient:
-    """Read-only data client with no generic arbitrary-endpoint dispatch."""
+    """Pinned mock client with no generic arbitrary-endpoint dispatch."""
 
     def __init__(
         self,
@@ -103,6 +140,17 @@ class NHPlugMockClient:
         self._transport = transport
         self._timeout = timeout
         self._account_allowlist: MockAccountAllowlist | None = None
+        self._order_allowlist_verified = False
+
+    async def verify_and_bind_mock_account(self, configured_account_no: str) -> None:
+        """Stage 2 authority must come from this client's fresh account response."""
+
+        payload = await self.list_accounts()
+        allowlist = MockAccountAllowlist.from_acctinfo_response(
+            payload=payload, configured_account_no=configured_account_no
+        )
+        self.bind_account_allowlist(allowlist)
+        self._order_allowlist_verified = True
 
     def bind_account_allowlist(self, account_allowlist: MockAccountAllowlist) -> None:
         """Bind the broker-derived mock account boundary to this dispatcher.
@@ -112,6 +160,10 @@ class NHPlugMockClient:
         caller-selected argument to a generic dispatch helper.
         """
 
+        if self._order_allowlist_verified:
+            raise NHPlugMockConfigurationError(
+                "verified mock account binding cannot be replaced"
+            )
         if not isinstance(account_allowlist, MockAccountAllowlist):
             raise NHPlugMockConfigurationError(
                 "a broker-verified mock account allowlist is required"
@@ -167,6 +219,335 @@ class NHPlugMockClient:
             path=QUOTE_PATH,
             input_0={"iem_cd": symbol, "market_cd": market},
         )
+
+    async def fetch_order_listing(
+        self,
+        *,
+        ledger: NHPlugMockLedger,
+        keys: dict[int, KeyMaterial],
+        order_date: str,
+        scope: str,
+        max_pages: int = 100,
+    ) -> OrderListing:
+        """Fetch every page of one mock account order scope for manual reconciliation."""
+
+        _assert_mock_enabled()
+        Stage2Readiness.from_env().assert_ready()
+        if type(order_date) is not str or re.fullmatch(r"[0-9]{8}", order_date) is None:
+            raise NHPlugMockConfigurationError("order_date must be YYYYMMDD")
+        try:
+            trading_day = datetime.strptime(order_date, "%Y%m%d").date()
+        except ValueError as exc:
+            raise NHPlugMockConfigurationError("order_date is invalid") from exc
+        scope_code = {"all": "0", "filled": "1", "open": "2"}.get(scope)
+        if (
+            scope_code is None
+            or type(max_pages) is not int
+            or max_pages < 1
+            or max_pages > 100
+        ):
+            raise NHPlugMockConfigurationError("invalid listing scope or page limit")
+        allowlist = self._require_account_allowlist()
+        if not self._order_allowlist_verified:
+            raise NHPlugMockConfigurationError(
+                "fresh mock account verification required"
+            )
+        act_no = allowlist.configured_account_no
+        allowlist.assert_allowed(act_no)
+        account_ref = await resolve_account_ref(ledger.engine, act_no, keys)
+        pages = []
+        continuation: str | None = None
+        seen: set[str] = set()
+        for _ in range(max_pages):
+            token = await self._token_provider()
+            if type(token) is not str or not token.strip():
+                raise NHPlugMockResponseError(
+                    "NHPLUG OAuth provider returned no access token"
+                )
+            headers = {
+                "x-client-id": self._app_key,
+                "x-client-secret": self._app_secret,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=UTF-8",
+            }
+            if continuation is not None:
+                headers["cts"] = continuation
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                transport=self._transport,
+                timeout=self._timeout,
+                follow_redirects=False,
+            ) as http:
+                request = http.build_request(
+                    "POST",
+                    DAILY_ORDER_EXECUTION_PATH,
+                    headers=headers,
+                    json={
+                        "Input_0": {
+                            "orr_dt": order_date,
+                            "act_no": act_no,
+                            "orr_mkt_cd": "00",
+                            "ost_cns_dit": scope_code,
+                        }
+                    },
+                )
+                _assert_resolved_mock_request(request, stage2_listing=True)
+                if json.loads(request.content) != {
+                    "Input_0": {
+                        "orr_dt": order_date,
+                        "act_no": act_no,
+                        "orr_mkt_cd": "00",
+                        "ost_cns_dit": scope_code,
+                    }
+                }:
+                    raise NHPlugMockConfigurationError(
+                        "listing request changed after build"
+                    )
+                allowlist.assert_allowed(act_no)
+                response = await http.send(request)
+            try:
+                payload = response.json() if response.status_code == 200 else None
+            except ValueError:
+                payload = None
+            page = classify_listing_page(
+                payload,
+                header_continuation_key=response.headers.get("cts"),
+                header_continuation_flag=response.headers.get("cts_flag"),
+            )
+            pages.append(page)
+            if not page.usable or not page.has_next:
+                break
+            continuation = page.continuation_key
+            if continuation is None or continuation in seen:
+                break
+            seen.add(continuation)
+        return replace(
+            assemble_listing(
+                scope, pages, truncated=bool(pages and pages[-1].has_next)
+            ),
+            account_ref=account_ref,
+            order_date=trading_day,
+        )
+
+    async def dispatch_claimed_order(
+        self,
+        ledger: NHPlugMockLedger,
+        row_id: int,
+        request_id: UUID,
+        intent_digest: str,
+        account_ref: UUID,
+        *,
+        keys: dict[int, KeyMaterial],
+        readiness: Stage2Readiness,
+        timing: Stage2Timing,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> DispatchOutcome:
+        """The only order HTTP send site; accepts no mutable body fields."""
+
+        _assert_mock_enabled()
+        if type(self) is not NHPlugMockClient or type(ledger) is not NHPlugMockLedger:
+            raise LedgerConflict("dispatcher_or_ledger_invalid")
+        if type(readiness) is not Stage2Readiness:
+            raise LedgerConflict("readiness_invalid")
+        readiness.assert_ready()
+        Stage2Readiness.from_env().assert_ready()
+        if type(timing) is not Stage2Timing:
+            raise LedgerConflict("timing_invalid")
+        timing.validate()
+        if (
+            type(dry_run) is not bool
+            or type(confirm) is not bool
+            or dry_run is not False
+            or confirm is not True
+        ):
+            raise LedgerConflict("confirmation_required")
+        if not self._order_allowlist_verified:
+            raise LedgerConflict("broker_account_verification_required")
+        allowlist = self._require_account_allowlist()
+        verified_act_no = allowlist.configured_account_no
+        allowlist.assert_allowed(verified_act_no)
+        resolved = await resolve_account_ref(
+            ledger.engine, verified_act_no, keys, create=True
+        )
+        if resolved != account_ref:
+            raise LedgerConflict("account_ref_mismatch")
+        # T3 must record this send process, not an identity supplied by a caller.
+        # The T14 death witness uses these immutable fields to release a reservation.
+        identity = current_lease_identity()
+        claim = await ledger.claim(
+            row_id,
+            request_id,
+            intent_digest,
+            account_ref,
+            identity,
+            claim_window_seconds=timing.claim_window_seconds,
+        )
+        try:
+            path, input_0 = build_body(claim.intent, verified_act_no)
+            if body_digest(claim.intent) != claim.digest:
+                raise LedgerConflict("digest_mismatch")
+            token = await self._token_provider()
+            if type(token) is not str or not token.strip():
+                raise LedgerConflict("oauth_token_unavailable")
+            request = httpx.Request(
+                "POST",
+                self._base_url + path,
+                headers={
+                    "x-client-id": self._app_key,
+                    "x-client-secret": self._app_secret,
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+                json={"Input_0": input_0},
+            )
+            self._assert_order_request(request, path, claim, verified_act_no)
+            # A second account-registry read catches rotation before the fence.
+            if (
+                await resolve_account_ref(
+                    ledger.engine, input_0["act_no"], keys, create=True
+                )
+                != claim.account_ref
+            ):
+                raise LedgerConflict("account_ref_mismatch")
+            success_codes, no_order_codes = await ledger.proof_codes(path)
+            transport = GatedTransport()
+            t0 = clock_boottime()
+            transport.arm(t0 + timing.first_write_seconds)
+        except BaseException:
+            await ledger.withdraw(claim, "pre_send_refusal")
+            raise
+        # The fence transaction begins only after t0. An ambiguous commit never sends.
+        fenced = await ledger.fence(
+            claim,
+            lease_seconds=timing.lease_seconds,
+            lock_timeout_ms=timing.lock_timeout_ms,
+        )
+        if not fenced:
+            raise LedgerConflict("fence_rejected")
+        evidence_no: str | None = None
+        meta: ResponseMeta | None = None
+        parsed = None
+        failure: BaseException | None = None
+        try:
+            try:
+                remaining = max(0.0, t0 + timing.send_seconds - clock_boottime())
+                async with asyncio.timeout(remaining):
+                    async with httpx.AsyncClient(
+                        transport=transport, follow_redirects=False
+                    ) as http:
+                        self._assert_order_request(
+                            request, path, claim, verified_act_no
+                        )
+                        response = await http.send(request)
+                        raw = await response.aread()
+                        evidence_no = extract_order_no(raw)
+                        meta = ResponseMeta.of(response)
+                        parsed = parse_order_response(raw)
+            finally:
+                await transport.hard_close(timing.close_seconds)
+        except BaseException as exc:
+            failure = exc
+        try:
+            outcome = classify(
+                path,
+                meta,
+                parsed,
+                evidence_no,
+                failure,
+                success_codes=success_codes,
+                no_order_codes=no_order_codes,
+            )
+        except BaseException:
+            outcome = DispatchOutcome("uncertain", "classify_failed", evidence_no)
+        record = asyncio.create_task(ledger.record_final(claim, outcome))
+        _record_tasks.add(record)
+        record.add_done_callback(_record_tasks.discard)
+        cancelled_during_record = False
+        while not record.done():
+            try:
+                await asyncio.shield(record)
+            except asyncio.CancelledError:
+                cancelled_during_record = True
+        # Propagate a recording failure: the row remains sending until manual
+        # recovery, and this dispatcher must never send a second request.
+        await record
+        if cancelled_during_record:
+            raise asyncio.CancelledError
+        if isinstance(failure, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            raise failure
+        return outcome
+
+    @staticmethod
+    def _assert_order_request(
+        request: httpx.Request, path: str, claim: Claim, verified_act_no: str
+    ) -> None:
+        if (
+            type(path) is not str
+            or path not in ORDER_PATHS
+            or (
+                request.url.scheme != "https"
+                or request.url.host != MOCK_HOST
+                or request.url.port != MOCK_PORT
+                or request.url.path != path
+                or request.method != "POST"
+                or request.url.query
+            )
+        ):
+            raise NHPlugMockEndpointError(
+                "order request escaped the mock order allowlist"
+            )
+        try:
+            body = json.loads(request.content)
+        except (ValueError, TypeError):
+            raise LedgerConflict("order_body_invalid") from None
+        intent = claim.intent
+        if intent.operation_kind == "place":
+            expected_path = (
+                "/krstock/order/v1/cashBuy"
+                if intent.side == "buy"
+                else "/krstock/order/v1/cashSell"
+            )
+            expected = {
+                "act_no": verified_act_no,
+                "iem_cd": intent.symbol,
+                "orr_qty": intent.quantity,
+                "orr_pr": intent.price,
+                "nmn_pr_tp_cd": "01",
+                "orr_cnd_dit_cd": "00",
+                "ssl_nmn_pr_dit_cd": "00",
+                "rmt_mkt_cd": "KRX",
+                "sor_mkt_sli_yn": "N",
+            }
+        elif intent.operation_kind == "modify":
+            expected_path = "/krstock/order/v1/modify"
+            expected = {
+                "act_no": verified_act_no,
+                "org_mkt_orr_no": intent.original_order_id,
+                "all_pat_dit_cd": "1" if intent.amend_scope == "full" else "2",
+                "iem_cd": intent.symbol,
+                "cor_qty": intent.quantity,
+                "cor_pr": intent.price,
+                "sop_cnd_pr": 0,
+                "rmt_mkt_cd": "KRX",
+                "sor_mkt_sli_yn": "N",
+            }
+        else:
+            expected_path = "/krstock/order/v1/cancel"
+            expected = {
+                "act_no": verified_act_no,
+                "org_mkt_orr_no": intent.original_order_id,
+                "all_pat_dit_cd": "1" if intent.amend_scope == "full" else "2",
+                "iem_cd": intent.symbol,
+            }
+            if intent.quantity is not None:
+                expected["cor_qty"] = intent.quantity
+        if (
+            path != expected_path
+            or type(body) is not dict
+            or body != {"Input_0": expected}
+        ):
+            raise LedgerConflict("order_body_differs_from_claim")
 
     async def _post_readonly(
         self,
