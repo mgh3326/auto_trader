@@ -131,9 +131,15 @@ profiles:
         - name: trade_retrospective_pending
           calls_30d: 173
           purpose: "Trades awaiting retrospective review."
-        - name: execution_ledger_fill_events_list_recent
-          calls_30d: 99
-          purpose: "Recent fill events from the execution ledger (fill-event read)."
+        # Q-930 swap (task #930, operator ruling 2026-09-29 "as recommended"):
+        # execution_ledger_fill_events_list_recent dropped from this lane's
+        # extension — lowest calls_30d=99 among non-protected entries — to
+        # admit get_investment_opinions, the read-only analyst-opinion feed
+        # behind §7-D thesis evidence. Dropped tool is restorable by an
+        # operator-approved PR.
+        - name: get_investment_opinions
+          calls_30d: 0
+          purpose: "Analyst opinions + consensus read; kr lane allowlist #930."
         - name: get_market_index
           calls_30d: 113
           purpose: "Market index levels."
@@ -245,9 +251,15 @@ profiles:
         - name: trade_retrospective_pending
           calls_30d: 173
           purpose: "Trades awaiting retrospective review."
-        - name: execution_ledger_fill_events_list_recent
-          calls_30d: 99
-          purpose: "Recent fill events from the execution ledger (fill-event read)."
+        # Q-930 swap (task #930, operator ruling 2026-09-29 "as recommended"):
+        # execution_ledger_fill_events_list_recent dropped from this lane's
+        # extension — lowest calls_30d=99 among non-protected entries — to
+        # admit get_investment_opinions, the read-only analyst-opinion feed
+        # behind §7-D thesis evidence. Dropped tool is restorable by an
+        # operator-approved PR.
+        - name: get_investment_opinions
+          calls_30d: 0
+          purpose: "Analyst opinions + consensus read; us lane allowlist #930."
         - name: get_market_index
           calls_30d: 113
           purpose: "Market index levels."

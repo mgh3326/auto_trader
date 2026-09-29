@@ -373,126 +373,171 @@ _OPINION_LIST_DATE_RECENT_2 = date.today() - timedelta(days=45)
 _OPINION_LIST_DATE_STALE = date.today() - timedelta(days=400)
 
 
-def _naver_list_date(d: date) -> str:
-    """Naver 리스트 페이지의 2자리 연도 형식 (예: '26.01.15')."""
-    return d.strftime("%y.%m.%d")
+def _research_write_date(d: date) -> str:
+    """writeDate arrives as ISO 'YYYY-MM-DD' on the mobile JSON API (#930)."""
+    return d.isoformat()
 
 
-SAMPLE_INVESTMENT_OPINIONS_HTML = f"""
-<html>
-<body>
-<table class="type_1">
-    <tbody>
-        <tr>
-            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
-            <td><a href="company_read.naver?nid=12345&page=1">반도체 업황 개선 전망</a></td>
-            <td>삼성증권</td>
-            <td><a href="https://example.com/report1.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
-            <td>1234</td>
-        </tr>
-        <tr>
-            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
-            <td><a href="company_read.naver?nid=12346&page=1">실적 호조 지속</a></td>
-            <td>미래에셋</td>
-            <td><a href="https://example.com/report2.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_2)}</td>
-            <td>5678</td>
-        </tr>
-    </tbody>
-</table>
-</body>
-</html>
-"""
+# #930: the retired finance.naver.com company_list/company_read HTML samples are
+# gone. The m.stock.naver.com JSON payloads below mirror the desk-captured
+# fixtures in tests/fixtures/naver_research/ (list_005930.json /
+# detail_96343.json).
+_RESEARCH_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "naver_research"
 
-SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = f"""
-<html>
-<body>
-<table class="type_1">
-    <tbody>
-        <tr>
-            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
-            <td><a href="company_read.naver?nid=12345&page=1">반도체 업황 개선 전망</a></td>
-            <td>삼성증권</td>
-            <td><a href="https://example.com/report1.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
-            <td>1234</td>
-        </tr>
-        <tr>
-            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
-            <td><a href="company_read.naver?nid=12345&page=9">반도체 업황 개선 전망</a></td>
-            <td>삼성증권</td>
-            <td><a href="https://example.com/report1.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
-            <td>9999</td>
-        </tr>
-        <tr>
-            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
-            <td><a href="company_read.naver?nid=12346&page=1">실적 호조 지속</a></td>
-            <td>미래에셋</td>
-            <td><a href="https://example.com/report2.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_2)}</td>
-            <td>5678</td>
-        </tr>
-    </tbody>
-</table>
-</body>
-</html>
-"""
 
-SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1 = """
-<html>
-<body>
-<table class="type_1" summary="종목분석 리포트 본문내용">
-    <tr>
-        <th class="view_sbj">
-            <span><em>삼성전자</em></span>
-            반도체 업황 개선 전망
-            <p class="source">삼성증권 | 2026.01.15</p>
-        </th>
-    </tr>
-    <tr>
-        <td colspan="2">
-            <div class="view_info">
-                <div class="view_info_1">
-                    목표가 <em class="money"><strong>85,000</strong></em>
-                    <span class="division">|</span>
-                    투자의견 <em class="coment">매수</em>
-                </div>
-            </div>
-        </td>
-    </tr>
-</table>
-</body>
-</html>
-"""
+def _load_research_fixture(name: str) -> Any:
+    import json
 
-SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2 = """
-<html>
-<body>
-<table class="type_1" summary="종목분석 리포트 본문내용">
-    <tr>
-        <th class="view_sbj">
-            <span><em>삼성전자</em></span>
-            실적 호조 지속
-            <p class="source">미래에셋 | 2026.01.14</p>
-        </th>
-    </tr>
-    <tr>
-        <td colspan="2">
-            <div class="view_info">
-                <div class="view_info_1">
-                    목표가 <em class="money"><strong>90,000</strong></em>
-                    <span class="division">|</span>
-                    투자의견 <em class="coment">Strong Buy</em>
-                </div>
-            </div>
-        </td>
-    </tr>
-</table>
-</body>
-</html>
-"""
+    return json.loads((_RESEARCH_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
+def _research_list_item(
+    research_id: int,
+    *,
+    item_code: str = "005930",
+    item_name: str = "삼성전자",
+    title: str = "리포트",
+    broker: str = "삼성증권",
+    write_date: date | None = None,
+) -> dict[str, Any]:
+    return {
+        "researchCategory": "종목분석",
+        "category": "종목분석",
+        "itemCode": item_code,
+        "itemName": item_name,
+        "researchId": research_id,
+        "title": title,
+        "brokerName": broker,
+        "writeDate": _research_write_date(write_date or _OPINION_LIST_DATE_RECENT_1),
+        "readCount": "123",
+        "previewContent": "",
+    }
+
+
+def _research_detail_payload(
+    research_id: int,
+    *,
+    item_code: str = "005930",
+    opinion: Any = "Buy",
+    goal_price: Any = "85000",
+) -> dict[str, Any]:
+    return {
+        "researchContent": {
+            "itemCode": item_code,
+            "itemName": "삼성전자",
+            "researchId": research_id,
+            "title": "리포트",
+            "brokerName": "삼성증권",
+            "writeDate": _research_write_date(_OPINION_LIST_DATE_RECENT_1),
+            "readCount": "1",
+            "attachUrl": "https://example.com/r.pdf",
+            "content": "",
+            "opinion": opinion,
+            "goalPrice": goal_price,
+            "prevGoalPrice": None,
+            "priceAtWriteDate": "75000",
+        },
+        "researchSummaries": [],
+    }
+
+
+SAMPLE_RESEARCH_LIST_005930 = [
+    _research_list_item(
+        12345,
+        title="반도체 업황 개선 전망",
+        broker="삼성증권",
+        write_date=_OPINION_LIST_DATE_RECENT_1,
+    ),
+    _research_list_item(
+        12346,
+        title="실적 호조 지속",
+        broker="미래에셋",
+        write_date=_OPINION_LIST_DATE_RECENT_2,
+    ),
+]
+
+SAMPLE_RESEARCH_DETAILS_005930 = {
+    12345: _research_detail_payload(12345, opinion="Buy", goal_price="85000"),
+    12346: _research_detail_payload(12346, opinion="StrongBuy", goal_price="90000"),
+}
+
+SAMPLE_RESEARCH_LIST_DUPLICATE = [
+    SAMPLE_RESEARCH_LIST_005930[0],
+    {**SAMPLE_RESEARCH_LIST_005930[0], "readCount": "9999"},
+    SAMPLE_RESEARCH_LIST_005930[1],
+]
+
+SAMPLE_RESEARCH_LIST_005880_MIXED_STALE = [
+    _research_list_item(
+        22345,
+        item_code="005880",
+        item_name="대한해운",
+        title="실적 전망",
+        broker="신한투자증권",
+        write_date=_OPINION_LIST_DATE_RECENT_1,
+    ),
+    _research_list_item(
+        22346,
+        item_code="005880",
+        item_name="대한해운",
+        title="구 리포트",
+        broker="하나증권",
+        write_date=_OPINION_LIST_DATE_STALE,
+    ),
+]
+
+
+def _detail_005880(research_id: int, goal_price: Any) -> dict[str, Any]:
+    return _research_detail_payload(
+        research_id,
+        item_code="005880",
+        opinion="Buy",
+        goal_price=goal_price,
+    )
+
+
+def _research_json_stub(
+    *,
+    list_payload: Any,
+    details: dict[int, Any] | None = None,
+    detail_errors: dict[int, BaseException] | None = None,
+) -> Any:
+    """A ``_fetch_research_json_with_client`` stand-in routing on the URL path.
+
+    ``.calls`` records every requested URL so tests can prove the detail path
+    is built from researchId and never from the stock code (#930 trap).
+    """
+
+    calls: list[str] = []
+
+    async def _stub(client: Any, url: str, params: dict[str, Any] | None = None) -> Any:
+        _ = client, params
+        calls.append(url)
+        if "/api/research/stock/" in url:
+            return list_payload
+        if "/api/research/company/" in url:
+            research_id = int(url.rsplit("/", 1)[-1])
+            if detail_errors and research_id in detail_errors:
+                raise detail_errors[research_id]
+            payload = (details or {}).get(research_id)
+            if payload is None:
+                payload = _research_detail_payload(research_id)
+            return payload
+        raise AssertionError(f"unexpected research url {url}")
+
+    _stub.calls = calls
+    return _stub
+
+
+def _stub_current_price(monkeypatch: pytest.MonkeyPatch, soup_html: str) -> None:
+    async def mock_fetch_html(
+        url: str, params: dict[str, Any] | None = None
+    ) -> BeautifulSoup:
+        _ = url, params
+        return BeautifulSoup(soup_html, "lxml")
+
+    monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
 
 SAMPLE_CURRENT_PRICE_HTML = """
 <html>
@@ -506,66 +551,6 @@ SAMPLE_CURRENT_PRICE_HTML = """
 </p>
 </body>
 </html>
-"""
-
-# ROB-486: 12개월 윈도우 테스트용 — 최근 1행 + 400일 전 1행 (005880 모양).
-SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML = f"""
-<html>
-<body>
-<table class="type_1">
-    <tbody>
-        <tr>
-            <td><a href="/item/main.naver?code=005880">대한해운</a></td>
-            <td><a href="company_read.naver?nid=22345&page=1">실적 전망</a></td>
-            <td>신한투자증권</td>
-            <td><a href="https://example.com/r1.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_RECENT_1)}</td>
-            <td>1234</td>
-        </tr>
-        <tr>
-            <td><a href="/item/main.naver?code=005880">대한해운</a></td>
-            <td><a href="company_read.naver?nid=22346&page=1">구 리포트</a></td>
-            <td>하나증권</td>
-            <td><a href="https://example.com/r2.pdf"></a></td>
-            <td class="date">{_naver_list_date(_OPINION_LIST_DATE_STALE)}</td>
-            <td>5678</td>
-        </tr>
-    </tbody>
-</table>
-</body>
-</html>
-"""
-
-SAMPLE_DETAIL_HTML_TARGET_3000 = """
-<html><body>
-<div class="view_info_1">
-    목표가 <em class="money"><strong>3,000</strong></em>
-    <span class="division">|</span>
-    투자의견 <em class="coment">매수</em>
-</div>
-</body></html>
-"""
-
-SAMPLE_DETAIL_HTML_TARGET_23000 = """
-<html><body>
-<div class="view_info_1">
-    목표가 <em class="money"><strong>23,000</strong></em>
-    <span class="division">|</span>
-    투자의견 <em class="coment">매수</em>
-</div>
-</body></html>
-"""
-
-# ROB-486+488: 현재가 1,914 기준 outlier 밴드(-75%/+300% → 478.5~7,656) 안의
-# 비-outlier 목표가 — window_months 스레딩 검증용 (outlier 가드 간섭 없음).
-SAMPLE_DETAIL_HTML_TARGET_5000 = """
-<html><body>
-<div class="view_info_1">
-    목표가 <em class="money"><strong>5,000</strong></em>
-    <span class="division">|</span>
-    투자의견 <em class="coment">매수</em>
-</div>
-</body></html>
 """
 
 SAMPLE_CURRENT_PRICE_HTML_005880 = """
@@ -1136,33 +1121,21 @@ class TestFetchInvestmentOpinions:
     """Tests for fetch_investment_opinions function."""
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            # Return different HTML based on URL
-            if "company_list.naver" in url:
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
-            elif "company_read.naver" in url:
-                nid = (params or {}).get("nid", "")
-                if nid == "12345":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
-                    )
-                elif nid == "12346":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
-                    )
-            elif "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930,
+            details=SAMPLE_RESEARCH_DETAILS_005930,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
         assert result["symbol"] == "005930"
         assert result["count"] == 2
         assert len(result["opinions"]) == 2
+        assert "warnings" not in result
 
         # First opinion
         op1 = result["opinions"][0]
@@ -1173,8 +1146,9 @@ class TestFetchInvestmentOpinions:
         assert op1["rating_bucket"] == "buy"
         assert op1["target_price"] == 85000
         assert op1["date"] == _OPINION_LIST_DATE_RECENT_1.isoformat()
+        assert op1["url"] == "https://m.stock.naver.com/research/company/12345"
 
-        # Second opinion
+        # Second opinion — the compact "StrongBuy" label normalizes to Strong Buy
         op2 = result["opinions"][1]
         assert op2["rating"] == "Strong Buy"
         assert op2["rating_bucket"] == "buy"
@@ -1193,112 +1167,356 @@ class TestFetchInvestmentOpinions:
         assert consensus["upside_pct"] == pytest.approx(16.67, abs=0.01)
         assert consensus["current_price"] == 75000
 
-    async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            if "company_list.naver" in url:
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
-            elif "company_read.naver" in url:
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml")
-            elif "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
+    async def test_detail_urls_use_research_id_never_stock_code(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#930 trap: /api/research/company/{stock_code} reads researchId 5930
+        of a DIFFERENT stock. Every detail URL must carry a researchId that
+        came out of the list payload — never the requested stock code."""
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930,
+            details=SAMPLE_RESEARCH_DETAILS_005930,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+        assert stub.calls[0] == ("https://m.stock.naver.com/api/research/stock/005930")
+        detail_calls = [u for u in stub.calls if "/api/research/company/" in u]
+        assert detail_calls == [
+            "https://m.stock.naver.com/api/research/company/12345",
+            "https://m.stock.naver.com/api/research/company/12346",
+        ]
+        assert not any(u.endswith("/005930") for u in detail_calls)
+
+    async def test_desk_fixture_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real desk-captured payloads (list_005930 + detail_96343) drive
+        the full pipeline: 10 rows, ISO writeDate parsing, and the compact
+        'StrongBuy' label -> 'Strong Buy'/'buy' bucket. window_months=60 keeps
+        the fixed 2026 fixture dates inside the recency window regardless of
+        the day the suite runs."""
+        list_payload = _load_research_fixture("list_005930.json")
+        detail_96343 = _load_research_fixture("detail_96343.json")
+        stub = _research_json_stub(
+            list_payload=list_payload, details={96343: detail_96343}
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        result = await naver_finance.fetch_investment_opinions(
+            "005930", limit=10, window_months=60
+        )
+
+        assert result["count"] == 10
+        first = result["opinions"][0]
+        assert first["firm"] == "유진투자증권"
+        assert first["date"] == "2026-09-29"
+        assert first["title"] == "긴 호흡으로"
+        assert first["rating"] == "Strong Buy"
+        assert first["rating_bucket"] == "buy"
+        assert first["target_price"] == 560000
+        assert first["url"] == ("https://m.stock.naver.com/research/company/96343")
+        assert result["consensus"]["total_count"] == 10
+        assert result["consensus"]["buy_count"] == 10
+        assert result["consensus"]["strong_buy_count"] == 1
+        assert result["consensus"]["window_months"] == 60
+        assert result["consensus"]["newest_opinion_date"] == "2026-09-29"
+
+    async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930,
+            details=SAMPLE_RESEARCH_DETAILS_005930,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=1)
 
         assert result["count"] == 1
 
-    async def test_empty_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test with no opinions found."""
+    async def test_empty_list_raises_not_silent_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#930 regression lock: an empty research list — the exact signature
+        of the retired redirecting endpoint — raises instead of producing a
+        valid-looking zero-opinion result."""
+        stub = _research_json_stub(list_payload=[], details={})
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            return BeautifulSoup("<html><table class='type_1'></table></html>", "lxml")
+        with pytest.raises(naver_finance.NaverResearchContractError, match="0 reports"):
+            await naver_finance.fetch_investment_opinions("005930", limit=10)
 
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+    async def test_non_list_payload_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = _research_json_stub(list_payload={"result": "not-a-list"}, details={})
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        with pytest.raises(
+            naver_finance.NaverResearchContractError, match="expected a JSON list"
+        ):
+            await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+    async def test_all_malformed_rows_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = _research_json_stub(
+            list_payload=[{"junk": True}, "not-a-dict"],
+            details={},
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        with pytest.raises(
+            naver_finance.NaverResearchContractError,
+            match="every row was malformed",
+        ):
+            await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+    async def test_malformed_row_warned_and_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        list_payload = [
+            SAMPLE_RESEARCH_LIST_005930[0],
+            # A row for a different symbol — the filter-drift signature.
+            _research_list_item(99999, item_code="000660"),
+            {"researchId": None},
+            SAMPLE_RESEARCH_LIST_005930[1],
+        ]
+        stub = _research_json_stub(
+            list_payload=list_payload,
+            details=SAMPLE_RESEARCH_DETAILS_005930,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
-        assert result["count"] == 0
-        assert result["opinions"] == []
-        assert result["consensus"] is not None
-        assert result["consensus"]["avg_target_price"] is None
-        assert result["consensus"]["min_target_price"] is None
+        assert result["count"] == 2
+        assert any("itemCode mismatch" in w for w in result["warnings"])
+        assert any("researchId" in w for w in result["warnings"])
+        assert all(o["rating_bucket"] == "buy" for o in result["opinions"])
 
     async def test_missing_target_price(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test when some reports don't have target price."""
-        detail_without_target = """
-        <html><body>
-        <div class="view_info_1">
-            목표가 <em class="money"><strong></strong></em>
-            투자의견 <em class="coment">없음</em>
-        </div>
-        </body></html>
-        """
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            if "company_list.naver" in url:
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
-            elif "company_read.naver" in url:
-                nid = (params or {}).get("nid", "")
-                if nid == "12345":
-                    return BeautifulSoup(detail_without_target, "lxml")
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml")
-            elif "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        """A real report without a target price stays a valid row — target_price
+        is None and the row still counts."""
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930,
+            details={
+                12345: _research_detail_payload(12345, opinion="Hold", goal_price=None),
+                12346: SAMPLE_RESEARCH_DETAILS_005930[12346],
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
         # First opinion has no target price, second has 90000
         assert result["opinions"][0]["target_price"] is None
+        assert result["opinions"][0]["rating"] == "Hold"
         assert result["opinions"][1]["target_price"] == 90000
 
         # Stats should only use the one with target price
-        assert "consensus" in result
         consensus = result["consensus"]
         assert consensus["avg_target_price"] == 90000
         assert consensus["max_target_price"] == 90000
         assert consensus["min_target_price"] == 90000
 
-    async def test_deduplicates_duplicate_nids_before_detail_fetch(
+    async def test_partial_detail_failure_keeps_row_unrated_and_warns(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        detail_calls: list[str] = []
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            if "company_list.naver" in url:
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML, "lxml")
-            if "company_read.naver" in url:
-                nid = str((params or {}).get("nid", ""))
-                detail_calls.append(nid)
-                if nid == "12345":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
-                    )
-                if nid == "12346":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
-                    )
-            if "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        """A single detail outage must NOT fabricate a Hold vote: the row is
+        reported with rating=None / rating_bucket='unrated' — counted in
+        total_count but in none of buy/hold/sell — plus a warnings entry."""
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930,
+            details=SAMPLE_RESEARCH_DETAILS_005930,
+            detail_errors={12345: RuntimeError("detail boom")},
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
-        assert detail_calls == ["12345", "12346"]
+        assert result["count"] == 2
+        failed = result["opinions"][0]
+        assert failed["rating"] is None
+        assert failed["rating_bucket"] == "unrated"
+        assert failed["target_price"] is None
+        assert failed["title"] == "반도체 업황 개선 전망"
+        assert any(
+            "researchId 12345" in w and "detail boom" in w for w in result["warnings"]
+        )
+        consensus = result["consensus"]
+        assert consensus["total_count"] == 2
+        assert consensus["rows_used"] == 2
+        assert consensus["buy_count"] == 1
+        assert consensus["hold_count"] == 0
+        assert consensus["sell_count"] == 0
+        assert consensus["avg_target_price"] == 90000
+
+    async def test_all_detail_failures_raise_not_silent_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every detail failing must raise — an all-unrated result would cache
+        and serve as a valid-looking zero-signal consensus (#930)."""
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930,
+            details={},
+            detail_errors={
+                12345: RuntimeError("boom1"),
+                12346: RuntimeError("boom2"),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        with pytest.raises(
+            naver_finance.NaverResearchContractError,
+            match="detail fetch failed for all",
+        ):
+            await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+    async def test_detail_item_code_mismatch_fails_loud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A detail payload for a different stock is contract corruption —
+        the #930 stock-code trap must surface, not silently attach."""
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930[:1],
+            details={
+                12345: _research_detail_payload(12345, item_code="000660"),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        with pytest.raises(
+            naver_finance.NaverResearchContractError,
+            match="detail fetch failed for all",
+        ):
+            await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+    async def test_detail_research_id_mismatch_fails_loud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """researchContent.researchId is re-verified against the requested id —
+        a detail served for researchId 5930 (the stock-code trap shape) is
+        rejected rather than mapped."""
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005930[:1],
+            details={
+                12345: _research_detail_payload(5930),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        with pytest.raises(
+            naver_finance.NaverResearchContractError,
+            match="detail fetch failed for all",
+        ):
+            await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+    async def test_opinion_label_mapping_to_buckets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#930 AC1: map Naver opinion labels to buy/hold/sell. Compact
+        English labels (StrongBuy/TradingBuy) and Korean labels both resolve;
+        an absent opinion maps to Hold, never fabricated as Buy."""
+        list_payload = [
+            _research_list_item(1),
+            _research_list_item(2),
+            _research_list_item(3),
+            _research_list_item(4),
+            _research_list_item(5),
+            _research_list_item(6),
+        ]
+        stub = _research_json_stub(
+            list_payload=list_payload,
+            details={
+                1: _research_detail_payload(1, opinion="StrongBuy"),
+                2: _research_detail_payload(2, opinion="TradingBuy"),
+                3: _research_detail_payload(3, opinion="Hold"),
+                4: _research_detail_payload(4, opinion="Sell"),
+                5: _research_detail_payload(5, opinion="매수"),
+                6: _research_detail_payload(6, opinion=None),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        result = await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+        buckets = [o["rating_bucket"] for o in result["opinions"]]
+        assert buckets == ["buy", "buy", "hold", "sell", "buy", "hold"]
+        labels = [o["rating"] for o in result["opinions"]]
+        assert labels == [
+            "Strong Buy",
+            "Buy",
+            "Hold",
+            "Sell",
+            "Buy",
+            "Hold",
+        ]
+        consensus = result["consensus"]
+        assert consensus["strong_buy_count"] == 1
+        assert consensus["buy_count"] == 3
+        assert consensus["hold_count"] == 2
+        assert consensus["sell_count"] == 1
+        assert consensus["total_count"] == 6
+
+    async def test_deduplicates_duplicate_research_ids_before_detail_fetch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_DUPLICATE,
+            details=SAMPLE_RESEARCH_DETAILS_005930,
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
+
+        result = await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+        detail_calls = [u for u in stub.calls if "/api/research/company/" in u]
+        assert detail_calls == [
+            "https://m.stock.naver.com/api/research/company/12345",
+            "https://m.stock.naver.com/api/research/company/12346",
+        ]
         assert result["count"] == 2
         assert [opinion["target_price"] for opinion in result["opinions"]] == [
             85000,
@@ -1306,30 +1524,23 @@ class TestFetchInvestmentOpinions:
         ]
         assert result["consensus"]["avg_target_price"] == 87500
         assert result["consensus"]["current_price"] == 75000
+        assert any("duplicate researchId" in w for w in result.get("warnings", []))
 
     async def test_recency_window_excludes_stale_targets(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """ROB-486 (005880 모양): 12개월 밖 목표가는 집계 제외 + 메타데이터 보고."""
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            if "company_list.naver" in url:
-                return BeautifulSoup(
-                    SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML, "lxml"
-                )
-            elif "company_read.naver" in url:
-                nid = (params or {}).get("nid", "")
-                if nid == "22345":
-                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_3000, "lxml")
-                if nid == "22346":
-                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_23000, "lxml")
-            elif "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML_005880, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005880_MIXED_STALE,
+            details={
+                22345: _detail_005880(22345, "3000"),
+                22346: _detail_005880(22346, "23000"),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML_005880)
 
         result = await naver_finance.fetch_investment_opinions("005880", limit=10)
 
@@ -1359,25 +1570,17 @@ class TestFetchInvestmentOpinions:
         400일 전 행의 목표가는 비-outlier(5,000 — 현재가 1,914 기준 +161%)로
         두어 recency 윈도우 효과만 분리 검증한다 (outlier 가드는 sibling 테스트).
         """
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            if "company_list.naver" in url:
-                return BeautifulSoup(
-                    SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML, "lxml"
-                )
-            elif "company_read.naver" in url:
-                nid = (params or {}).get("nid", "")
-                if nid == "22345":
-                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_3000, "lxml")
-                if nid == "22346":
-                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_5000, "lxml")
-            elif "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML_005880, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005880_MIXED_STALE,
+            details={
+                22345: _detail_005880(22345, "3000"),
+                22346: _detail_005880(22346, "5000"),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML_005880)
 
         result = await naver_finance.fetch_investment_opinions(
             "005880", limit=10, window_months=24
@@ -1397,25 +1600,17 @@ class TestFetchInvestmentOpinions:
         """ROB-486+488 레이어링: recency 윈도우 생존 행이라도 outlier 목표가
         (23,000 — 현재가 1,914 기준 +1,101% > +300%)는 집계에서 제외된다.
         카운트(rows_used)는 크레딧, 목표가 통계만 필터."""
-
-        async def mock_fetch_html(
-            url: str, params: dict[str, Any] | None = None
-        ) -> BeautifulSoup:
-            if "company_list.naver" in url:
-                return BeautifulSoup(
-                    SAMPLE_INVESTMENT_OPINIONS_MIXED_STALE_HTML, "lxml"
-                )
-            elif "company_read.naver" in url:
-                nid = (params or {}).get("nid", "")
-                if nid == "22345":
-                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_3000, "lxml")
-                if nid == "22346":
-                    return BeautifulSoup(SAMPLE_DETAIL_HTML_TARGET_23000, "lxml")
-            elif "main.naver" in url:
-                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML_005880, "lxml")
-            return BeautifulSoup("<html></html>", "lxml")
-
-        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+        stub = _research_json_stub(
+            list_payload=SAMPLE_RESEARCH_LIST_005880_MIXED_STALE,
+            details={
+                22345: _detail_005880(22345, "3000"),
+                22346: _detail_005880(22346, "23000"),
+            },
+        )
+        monkeypatch.setattr(
+            naver_finance.investor, "_fetch_research_json_with_client", stub
+        )
+        _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML_005880)
 
         result = await naver_finance.fetch_investment_opinions(
             "005880", limit=10, window_months=24
@@ -1433,47 +1628,110 @@ class TestFetchInvestmentOpinions:
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-class TestFetchKrSnapshot:
-    async def test_snapshot_reuses_single_main_page_for_consensus(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        request_counts = {
-            "main": 0,
-            "sise": 0,
-            "news": 0,
-            "company_list": 0,
-            "detail": 0,
-        }
+class TestResearchContractEdges:
+    """#930: payload-contract edge cases — the fail-loud shapes that must
+    never masquerade as a valid zero-consensus result."""
 
+    async def test_non_json_body_is_a_contract_error(self) -> None:
+        """An HTML/redirect body at the JSON endpoint is a contract error with
+        status+content-type context, not an unlabeled decode failure."""
+        import json as _json
+
+        response = AsyncMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/html; charset=utf-8"}
+        response.raise_for_status = lambda: None
+        response.json = lambda: (_ for _ in ()).throw(
+            _json.JSONDecodeError("expecting value", "<html>...", 0)
+        )
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=response)
+
+        with pytest.raises(naver_finance.NaverResearchContractError, match="non-JSON"):
+            await naver_finance.investor._fetch_research_json_with_client(
+                client,
+                "https://m.stock.naver.com/api/research/stock/005930",
+            )
+
+    async def test_http_error_propagates(self) -> None:
+        import httpx
+
+        response = AsyncMock()
+        response.status_code = 500
+        response.raise_for_status = lambda: (_ for _ in ()).throw(
+            httpx.HTTPStatusError("500", request=AsyncMock(), response=response)
+        )
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=response)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await naver_finance.investor._fetch_research_json_with_client(
+                client,
+                "https://m.stock.naver.com/api/research/stock/005930",
+            )
+
+    async def test_detail_payload_missing_research_content_raises(self) -> None:
+        with pytest.raises(
+            naver_finance.NaverResearchContractError,
+            match="missing researchContent",
+        ):
+            naver_finance._parse_research_detail_payload("005930", 96343, {})
+
+    async def test_detail_payload_parses_desk_fixture(self) -> None:
+        detail = _load_research_fixture("detail_96343.json")
+        parsed = naver_finance._parse_research_detail_payload("005930", 96343, detail)
+        assert parsed == {"target_price": 560000, "rating": "StrongBuy"}
+
+    async def test_list_payload_parses_desk_fixture(self) -> None:
+        list_payload = _load_research_fixture("list_005930.json")
+        items, skipped = naver_finance._parse_research_list_payload(
+            "005930", list_payload
+        )
+        assert skipped == {}
+        assert len(items) == 10
+        assert items[0]["research_id"] == 96343
+        assert items[0]["date"] == "2026-09-29"
+        assert items[0]["firm"] == "유진투자증권"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchKrSnapshot:
+    def _install_snapshot_stubs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        request_counts: dict[str, int],
+        *,
+        research_stub: Any,
+        sise_fails: bool = False,
+    ) -> None:
         async def mock_fetch_html_with_client(
-            client, url: str, params: dict[str, Any] | None = None
+            client: Any, url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
-            _ = client
+            _ = client, params
             if "main.naver" in url:
                 request_counts["main"] += 1
                 return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
             if "sise.naver" in url:
                 request_counts["sise"] += 1
+                if sise_fails:
+                    raise RuntimeError("sise unavailable")
                 return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
-            if "company_list.naver" in url:
-                request_counts["company_list"] += 1
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
-            if "company_read.naver" in url:
-                request_counts["detail"] += 1
-                nid = str((params or {}).get("nid", ""))
-                if nid == "12345":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
-                    )
-                if nid == "12346":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
-                    )
             return BeautifulSoup("<html></html>", "lxml")
 
         async def mock_fetch_stock_news(code: str, limit: int = 20):
+            _ = code, limit
             request_counts["news"] += 1
             return naver_finance.NaverNewsFetchResult(items=[_normalized_news_item()])
+
+        async def routed_research(
+            client: Any, url: str, params: dict[str, Any] | None = None
+        ) -> Any:
+            if "/api/research/stock/" in url:
+                request_counts["list"] += 1
+            else:
+                request_counts["detail"] += 1
+            return await research_stub(client, url, params=params)
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -1491,6 +1749,30 @@ class TestFetchKrSnapshot:
         monkeypatch.setattr(
             naver_finance.investor, "fetch_stock_news", mock_fetch_stock_news
         )
+        monkeypatch.setattr(
+            naver_finance.investor,
+            "_fetch_research_json_with_client",
+            routed_research,
+        )
+
+    async def test_snapshot_uses_research_json_and_reuses_main_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        request_counts = {
+            "main": 0,
+            "sise": 0,
+            "news": 0,
+            "list": 0,
+            "detail": 0,
+        }
+        self._install_snapshot_stubs(
+            monkeypatch,
+            request_counts,
+            research_stub=_research_json_stub(
+                list_payload=SAMPLE_RESEARCH_LIST_005930,
+                details=SAMPLE_RESEARCH_DETAILS_005930,
+            ),
+        )
 
         snapshot = await naver_finance._fetch_kr_snapshot(
             "005930", news_limit=5, opinion_limit=10
@@ -1500,7 +1782,7 @@ class TestFetchKrSnapshot:
             "main": 1,
             "sise": 1,
             "news": 1,
-            "company_list": 1,
+            "list": 1,
             "detail": 2,
         }
         assert snapshot["valuation"]["current_price"] == 75000
@@ -1515,48 +1797,15 @@ class TestFetchKrSnapshot:
     async def test_snapshot_keeps_other_sections_when_one_page_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def mock_fetch_html_with_client(
-            client: Any,
-            url: str,
-            params: dict[str, Any] | None = None,
-        ) -> BeautifulSoup:
-            _ = client, params
-            if "main.naver" in url:
-                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
-            if "sise.naver" in url:
-                raise RuntimeError("sise unavailable")
-            if "company_list.naver" in url:
-                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
-            if "company_read.naver" in url:
-                nid = str((params or {}).get("nid", ""))
-                if nid == "12345":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
-                    )
-                if nid == "12346":
-                    return BeautifulSoup(
-                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
-                    )
-            return BeautifulSoup("<html></html>", "lxml")
-
-        async def mock_fetch_stock_news(code: str, limit: int = 20):
-            return naver_finance.NaverNewsFetchResult(items=[_normalized_news_item()])
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: mock_client)
-        monkeypatch.setattr(
-            naver_finance.investor,
-            "_fetch_html_with_client",
-            mock_fetch_html_with_client,
-            raising=False,
-        )
-        monkeypatch.setattr(
-            naver_finance.investor, "fetch_stock_news", mock_fetch_stock_news
+        request_counts = {"main": 0, "sise": 0, "news": 0, "list": 0, "detail": 0}
+        self._install_snapshot_stubs(
+            monkeypatch,
+            request_counts,
+            sise_fails=True,
+            research_stub=_research_json_stub(
+                list_payload=SAMPLE_RESEARCH_LIST_005930,
+                details=SAMPLE_RESEARCH_DETAILS_005930,
+            ),
         )
 
         snapshot = await naver_finance._fetch_kr_snapshot(
@@ -1567,6 +1816,56 @@ class TestFetchKrSnapshot:
         assert snapshot["news"][0]["title"] == "삼성전자, 신제품 발표"
         assert snapshot["opinions"]["count"] == 2
         assert snapshot["opinions"]["consensus"]["current_price"] == 75000
+
+    async def test_snapshot_opinions_fail_loud_on_research_outage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#930: a research-list failure must leave an explicit error block in
+        the bundle — never a silently-missing or zeroed opinions section — while
+        the other sections still succeed."""
+        request_counts = {"main": 0, "sise": 0, "news": 0, "list": 0, "detail": 0}
+
+        async def failing_research(
+            client: Any, url: str, params: dict[str, Any] | None = None
+        ) -> Any:
+            _ = client, url, params
+            raise RuntimeError("research api down")
+
+        self._install_snapshot_stubs(
+            monkeypatch, request_counts, research_stub=failing_research
+        )
+
+        snapshot = await naver_finance._fetch_kr_snapshot(
+            "005930", news_limit=5, opinion_limit=10
+        )
+
+        assert snapshot["valuation"]["current_price"] == 75000
+        assert snapshot["news"][0]["title"] == "삼성전자, 신제품 발표"
+        opinions = snapshot["opinions"]
+        assert opinions["count"] == 0
+        assert opinions["opinions"] == []
+        assert opinions["consensus"] is None
+        assert "research api down" in opinions["error"]
+
+    async def test_snapshot_opinions_fail_loud_on_empty_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#930: the empty-list silent-zero signature becomes an error block,
+        not an all-zero consensus."""
+        request_counts = {"main": 0, "sise": 0, "news": 0, "list": 0, "detail": 0}
+        self._install_snapshot_stubs(
+            monkeypatch,
+            request_counts,
+            research_stub=_research_json_stub(list_payload=[], details={}),
+        )
+
+        snapshot = await naver_finance._fetch_kr_snapshot(
+            "005930", news_limit=5, opinion_limit=10
+        )
+
+        assert "error" in snapshot["opinions"]
+        assert "0 reports" in snapshot["opinions"]["error"]
+        assert snapshot["opinions"]["consensus"] is None
 
 
 @pytest.mark.asyncio

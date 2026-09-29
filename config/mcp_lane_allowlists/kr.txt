@@ -15,6 +15,7 @@ get_fx_rate	prompt
 get_holdings	prompt
 get_holdings_news	prompt
 get_indicators	prompt
+get_investment_opinions	prompt
 get_latest_market_brief	prompt
 get_market_index	prompt
 get_market_issues	prompt

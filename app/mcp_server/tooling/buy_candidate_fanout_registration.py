@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.mcp_server.tooling.buy_candidate_fanout import (
     discover_buy_candidates_fanout_impl,
@@ -20,18 +20,24 @@ BUY_CANDIDATE_FANOUT_TOOL_NAMES: set[str] = {"discover_buy_candidates_fanout"}
 
 
 def register_buy_candidate_fanout_tools(mcp: FastMCP) -> None:
-    """Register the KR-only, read-only discovery fan-out surface."""
+    """Register the read-only discovery fan-out surface (KR + US plans)."""
 
     @mcp.tool(
         name="discover_buy_candidates_fanout",
         description=(
-            "Read-only KR buy-candidate discovery across five bounded source families: "
-            "RSI ordering (no max_rsi prefilter), pullback change_rate, trade_amount, "
-            "snapshot support/flow, and snapshot value/catalyst. Each source is capped "
-            "at 10 rows; snapshot groups contain at most 5 presets; admission to the "
-            "10-slot full-analysis pool is per-family round-robin in declared family "
-            "order (one new symbol per family per round, empty families yield), so no "
-            "single family can monopolize the pool. Selected symbols receive "
+            "Read-only buy-candidate discovery across bounded source families. "
+            "market='kr' (default): RSI ordering (no max_rsi prefilter), pullback "
+            "change_rate, trade_amount, snapshot support/flow, and snapshot "
+            "value/catalyst families. market='us': the filtered get_top_stocks "
+            "losers source (us_top_stocks family) — the US quality bar "
+            "(settings us_top_stocks_min_market_cap / us_top_stocks_min_turnover, "
+            "raw USD, plus a leveraged/inverse ETF exclusion) is applied inside "
+            "get_top_stocks; pass include_illiquid there to bypass it. Each source "
+            "is capped at 10 rows; snapshot groups contain at most 5 presets; "
+            "admission to the 10-slot full-analysis pool is per-family round-robin "
+            "in declared family order (one new symbol per family per round, empty "
+            "families yield), so no single family can monopolize the pool. "
+            "Selected symbols receive "
             "full-analysis price/support/consensus/restriction checks plus top-level "
             "data_state freshness proof. A missing freshness key "
             "is recorded as undetermined observation only, never as eligibility. "
@@ -46,8 +52,10 @@ def register_buy_candidate_fanout_tools(mcp: FastMCP) -> None:
             "records pre-arming v2 plumbing witnesses only, never experiment samples."
         ),
     )
-    async def discover_buy_candidates_fanout() -> dict[str, Any]:
-        result = await discover_buy_candidates_fanout_impl()
+    async def discover_buy_candidates_fanout(
+        market: Literal["kr", "us"] = "kr",
+    ) -> dict[str, Any]:
+        result = await discover_buy_candidates_fanout_impl(market=market)
         await maybe_record_fanout_picks(result)
         await maybe_record_buy_gate_ab_shadow(result)
         return result
