@@ -79,6 +79,8 @@ UNKNOWN_ORDER_LEDGER_READ_FAILED = "order_ledger_read_failed"
 BLOCK_OWN_OPEN_BUY = "own_nonterminal_buy_order_today"
 BLOCK_SAME_DAY_FILL = "same_day_buy_fill_order_not_proven_complete"
 BLOCK_EVIDENCE_UNKNOWN = "open_buy_evidence_unknown"
+BLOCK_SAME_DAY_SELL_FILL = "same_day_sell_fill_in_ledger"
+BLOCK_SELL_EVIDENCE_UNKNOWN = "same_day_sell_evidence_unknown"
 
 FreshnessState = Literal["fresh", "stale", "missing"]
 
@@ -163,10 +165,15 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _same_kst_day(when: datetime, now: datetime) -> bool:
-    start, end = kst_day_window(now)
+def _from_today_kst(when: datetime, now: datetime) -> bool:
+    """True for the current KST day and for anything dated later than today.
+
+    A later-dated row can only come from clock skew between writers; treating it
+    as "today" keeps the evidence fail-closed instead of presuming it dead.
+    """
+    start, _ = kst_day_window(now)
     aware = when if when.tzinfo else when.replace(tzinfo=UTC)
-    return start <= aware < end
+    return aware >= start
 
 
 def _split_provisional(
@@ -286,7 +293,7 @@ def _open_buy_evidence(
     resolved_order_ids: set[str] = set()
     for order in orders or ():
         terminal = order.status in TERMINAL_ORDER_STATUSES
-        if _same_kst_day(order.trade_date, now):
+        if _from_today_kst(order.trade_date, now):
             if not terminal:
                 open_buys.append(order)
             elif order.order_no:
@@ -303,7 +310,7 @@ def _open_buy_evidence(
         for f in (*authoritative, *provisional)
         if f.source != "manual_import"
         and f.side == "buy"
-        and _same_kst_day(f.filled_at, now)
+        and _from_today_kst(f.filled_at, now)
         and _norm_order_id(f.broker_order_id) not in resolved_order_ids
     ]
 
@@ -324,6 +331,44 @@ def _open_buy_evidence(
         "presumed_dead_prior_day_buys": [_order_view(o) for o in prior_day_dead],
         "scope": "orders_known_to_auto_trader_only",
         "external_orders_verifiable": False,
+    }
+
+
+def _same_day_sell_evidence(
+    *, fills: Sequence[LedgerFill], freshness: Freshness, now: datetime
+) -> dict[str, Any]:
+    """Same-KST-day sell fills for the symbol (opposite-side visibility).
+
+    Read-only evidence for the same-day chain / wash check: any same-day sell
+    fill in the ledger (authoritative, or a provisional websocket row no
+    authoritative row covers) blocks, and an unverifiable ledger blocks too.
+    Sells placed outside auto_trader are visible here only once they fill.
+    """
+    unknown: list[str] = []
+    if freshness.state == "missing":
+        unknown.append(UNKNOWN_NO_RECONCILE_RUN)
+    elif freshness.state == "stale":
+        unknown.append(UNKNOWN_LEDGER_STALE)
+    authoritative, provisional, _ = _split_provisional(fills)
+    sells = [
+        f
+        for f in (*authoritative, *provisional)
+        if f.source != "manual_import"
+        and f.side == "sell"
+        and _from_today_kst(f.filled_at, now)
+    ]
+    reasons: list[str] = []
+    if unknown:
+        reasons.append(BLOCK_SELL_EVIDENCE_UNKNOWN)
+    if sells:
+        reasons.append(BLOCK_SAME_DAY_SELL_FILL)
+    return {
+        "state": "unknown" if unknown else "known",
+        "unknown_reasons": unknown,
+        "blocking": bool(reasons),
+        "blocking_reasons": reasons,
+        "fills": [_fill_view(f) for f in sells],
+        "scope": "orders_known_to_auto_trader_only",
     }
 
 
@@ -433,6 +478,9 @@ def build_symbol_block(
         "open_buy_evidence": _open_buy_evidence(
             fills=fills, orders=orders, freshness=freshness, now=now
         ),
+        "same_day_sell_evidence": _same_day_sell_evidence(
+            fills=fills, freshness=freshness, now=now
+        ),
     }
 
 
@@ -470,6 +518,14 @@ def unknown_block(symbol: str, reason: str) -> dict[str, Any]:
             "presumed_dead_prior_day_buys": [],
             "scope": "orders_known_to_auto_trader_only",
             "external_orders_verifiable": False,
+        },
+        "same_day_sell_evidence": {
+            "state": "unknown",
+            "unknown_reasons": [reason],
+            "blocking": True,
+            "blocking_reasons": [BLOCK_SELL_EVIDENCE_UNKNOWN],
+            "fills": [],
+            "scope": "orders_known_to_auto_trader_only",
         },
     }
 

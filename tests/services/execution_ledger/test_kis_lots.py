@@ -12,6 +12,8 @@ from app.services.execution_ledger.kis_lots import (
     BLOCK_EVIDENCE_UNKNOWN,
     BLOCK_OWN_OPEN_BUY,
     BLOCK_SAME_DAY_FILL,
+    BLOCK_SAME_DAY_SELL_FILL,
+    BLOCK_SELL_EVIDENCE_UNKNOWN,
     FRESH_MAX_MINUTES,
     UNKNOWN_HISTORY_GAP,
     UNKNOWN_LEDGER_STALE,
@@ -592,3 +594,144 @@ def test_935_unmatched_websocket_row_next_to_a_reconciled_fill_does_not_inflate(
     # The broker quantity does not include a phantom second 12, so counting the
     # websocket row would have made the cross-check fail: it is not counted.
     assert out["quantity_reconciles"] is True
+
+
+# ---------------------------------------------------------------------------
+# F5 (round 1): rows dated later than today are clock skew => fail closed
+# ---------------------------------------------------------------------------
+def test_future_dated_nonterminal_own_buy_row_blocks() -> None:
+    tomorrow = NOW + timedelta(hours=12)  # 02:30 KST on the next day
+    out = block(
+        [fill(1, "buy", "12", "100000", EARLIER)],
+        orders=[order(1, "accepted", tomorrow)],
+    )
+    evidence = out["open_buy_evidence"]
+    assert evidence["blocking"] is True
+    assert evidence["blocking_reasons"] == [BLOCK_OWN_OPEN_BUY]
+    assert evidence["presumed_dead_prior_day_buys"] == []
+
+
+def test_future_dated_buy_fill_blocks() -> None:
+    tomorrow = NOW + timedelta(hours=12)
+    out = block(
+        [
+            fill(1, "buy", "10", "100000", EARLIER),
+            fill(2, "buy", "2", "99000", tomorrow, order="4242"),
+        ],
+        reference="12",
+    )
+    assert out["open_buy_evidence"]["blocking"] is True
+    assert out["open_buy_evidence"]["blocking_reasons"] == [BLOCK_SAME_DAY_FILL]
+
+
+# ---------------------------------------------------------------------------
+# strategy-lab 796/798: same-day sell visibility for the chain / wash check
+# ---------------------------------------------------------------------------
+def sell_ev(out):
+    return out["same_day_sell_evidence"]
+
+
+def test_same_day_reconciled_sell_fill_blocks_and_is_listed() -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", "100000", EARLIER),
+            fill(2, "sell", "2", "101000", TODAY_MORNING, order="0000321"),
+        ],
+        reference="10",
+    )
+    assert out["ledger_state"] == "known", out["unknown_reasons"]
+    assert out["net_quantity"] == "10"
+    evidence = sell_ev(out)
+    assert evidence["state"] == "known"
+    assert evidence["blocking"] is True
+    assert evidence["blocking_reasons"] == [BLOCK_SAME_DAY_SELL_FILL]
+    (hit,) = evidence["fills"]
+    assert (hit["broker_order_id"], hit["side"], hit["provisional"]) == (
+        "0000321",
+        "sell",
+        False,
+    )
+    # the buy side stays clean: a sell is not an open buy
+    assert out["open_buy_evidence"]["blocking"] is False
+
+
+def test_same_day_provisional_sell_fill_blocks_and_is_flagged() -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", "100000", EARLIER),
+            fill(2, "sell", "2", "101000", TODAY_MORNING, source="websocket"),
+        ],
+        reference="10",  # the broker already reflects the websocket-only sell
+    )
+    evidence = sell_ev(out)
+    assert evidence["blocking"] is True
+    assert [f["provisional"] for f in evidence["fills"]] == [True]
+    # websocket rows never touch lots or net: the lots are unknown, not 10 shares
+    assert out["ledger_state"] == "unknown"
+    assert UNKNOWN_QTY_MISMATCH in out["unknown_reasons"]
+    assert out["lots"] is None
+    assert out["diagnostics"]["ledger_net_quantity"] == "12"
+
+
+def test_websocket_twin_of_a_reconciled_sell_is_listed_once() -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", "100000", EARLIER),
+            fill(2, "sell", "2", "101000", TODAY_MORNING, order="0000500"),
+            fill(
+                3, "sell", "2", "101000", TODAY_MORNING, source="websocket", order="500"
+            ),
+        ],
+        reference="10",
+    )
+    assert len(sell_ev(out)["fills"]) == 1
+    assert sell_ev(out)["fills"][0]["source"] == "reconciler"
+
+
+def test_prior_day_sell_and_same_day_buys_do_not_block_the_sell_evidence() -> None:
+    out = block(
+        [
+            fill(1, "buy", "12", "100000", EARLIER),
+            fill(2, "sell", "1", "101000", YESTERDAY),
+            fill(3, "buy", "1", "99000", TODAY_MORNING, order="0000600"),
+        ],
+        reference="12",
+        orders=[order(1, "filled", TODAY_MORNING, order_no="600")],
+    )
+    evidence = sell_ev(out)
+    assert evidence["state"] == "known"
+    assert evidence["blocking"] is False
+    assert evidence["fills"] == []
+
+
+def test_sell_evidence_is_unknown_and_blocking_when_the_ledger_is_not_fresh() -> None:
+    for freshness, reason in (
+        (compute_freshness(NOW - timedelta(minutes=91), NOW), UNKNOWN_LEDGER_STALE),
+        (Freshness("missing", None, None), UNKNOWN_NO_RECONCILE_RUN),
+    ):
+        evidence = sell_ev(
+            block([fill(1, "buy", "12", "100000", EARLIER)], freshness=freshness)
+        )
+        assert evidence["state"] == "unknown"
+        assert evidence["unknown_reasons"] == [reason]
+        assert evidence["blocking"] is True
+        assert evidence["blocking_reasons"] == [BLOCK_SELL_EVIDENCE_UNKNOWN]
+
+
+def test_future_dated_sell_fill_blocks() -> None:
+    tomorrow = NOW + timedelta(hours=12)
+    out = block(
+        [
+            fill(1, "buy", "12", "100000", EARLIER),
+            fill(2, "sell", "2", "101000", tomorrow, order="777"),
+        ],
+        reference="10",
+    )
+    assert sell_ev(out)["blocking"] is True
+
+
+def test_unknown_block_carries_blocking_sell_evidence() -> None:
+    evidence = sell_ev(unknown_block("196170", kis_lots.UNKNOWN_LOAD_FAILED))
+    assert evidence["state"] == "unknown"
+    assert evidence["blocking"] is True
+    assert evidence["fills"] == []

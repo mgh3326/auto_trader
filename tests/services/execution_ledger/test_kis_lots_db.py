@@ -89,10 +89,14 @@ def _run(*, finished_minutes_ago: int | None, dry_run: bool = False):
     )
 
 
+ALL_SYMBOLS = [SYM, OTHER_SYM, "T96303", "T96304", "T96305", "T96306"]
+
+
 async def _cleanup(db_session, run_ids: list[uuid.UUID], order_nos: list[str]) -> None:
+    """Delete every row this file can create. One rollback first, then deletes, then commit."""
     await db_session.rollback()
     await db_session.execute(
-        delete(ExecutionLedger).where(ExecutionLedger.symbol.in_([SYM, OTHER_SYM]))
+        delete(ExecutionLedger).where(ExecutionLedger.symbol.in_(ALL_SYMBOLS))
     )
     await db_session.execute(
         delete(ExecutionLedger).where(
@@ -379,12 +383,6 @@ async def test_935_part_b_duplicate_and_websocket_only_fills_in_the_real_ledger(
             now=NOW,
         )
     finally:
-        await db_session.rollback()
-        await db_session.execute(
-            delete(ExecutionLedger).where(
-                ExecutionLedger.symbol.in_([dup, ws_only, ws_no_seed])
-            )
-        )
         await _cleanup(db_session, run_ids, [])
 
     dup_block = blocks[dup]
@@ -404,3 +402,94 @@ async def test_935_part_b_duplicate_and_websocket_only_fills_in_the_real_ledger(
     assert "quantity_mismatch_with_reference" in no_seed_block["unknown_reasons"]
     assert "only_provisional_rows" in no_seed_block["unknown_reasons"]
     assert no_seed_block["lots"] is None
+
+
+async def test_same_day_sell_fill_and_future_dated_order_row_block(db_session) -> None:
+    sell_sym, skew_sym = "T96306", "T96303"
+    run = _run(finished_minutes_ago=10)
+    run_ids = [run.run_id]
+    order_nos = [f"{ORDER_PREFIX}9"]
+    db_session.add_all(
+        [
+            run,
+            _fill(
+                symbol=sell_sym,
+                raw_symbol=sell_sym,
+                filled_qty=Decimal("12"),
+                filled_price=Decimal("2000"),
+                source="manual_import",
+                broker_order_id=f"{ORDER_PREFIX}-SEED-{sell_sym}",
+                filled_at=NOW - timedelta(days=20),
+            ),
+            _fill(
+                symbol=sell_sym,
+                raw_symbol=sell_sym,
+                side="sell",
+                filled_qty=Decimal("2"),
+                filled_price=Decimal("2100"),
+                broker_order_id="963777",
+                filled_at=NOW - timedelta(hours=3),
+            ),
+            _fill(
+                symbol=skew_sym,
+                raw_symbol=skew_sym,
+                filled_qty=Decimal("5"),
+                source="manual_import",
+                broker_order_id=f"{ORDER_PREFIX}-SEED-{skew_sym}",
+                filled_at=NOW - timedelta(days=20),
+            ),
+            # writer clock skew: the order row is stamped on the NEXT KST day
+            _order(
+                order_nos[0],
+                symbol=skew_sym,
+                status="accepted",
+                trade_date=NOW + timedelta(hours=12),
+            ),
+        ]
+    )
+    await db_session.commit()
+    try:
+        blocks = await load_kis_live_kr_lot_blocks(
+            db_session,
+            [PositionRef(sell_sym, Decimal("10")), PositionRef(skew_sym, Decimal("5"))],
+            now=NOW,
+        )
+    finally:
+        await _cleanup(db_session, run_ids, order_nos)
+
+    sold = blocks[sell_sym]
+    assert sold["ledger_state"] == "known", sold["unknown_reasons"]
+    assert sold["net_quantity"] == "10"  # the sell is folded into the FIFO lots
+    sell_evidence = sold["same_day_sell_evidence"]
+    assert sell_evidence["state"] == "known"
+    assert sell_evidence["blocking"] is True
+    assert sell_evidence["blocking_reasons"] == ["same_day_sell_fill_in_ledger"]
+    assert [f["broker_order_id"] for f in sell_evidence["fills"]] == ["963777"]
+    assert sold["open_buy_evidence"]["blocking"] is False  # buy side is clean
+
+    skewed = blocks[skew_sym]["open_buy_evidence"]
+    assert skewed["blocking"] is True  # future-dated non-terminal row fails closed
+    assert skewed["presumed_dead_prior_day_buys"] == []
+
+
+async def test_zz_this_file_leaves_no_rows_behind(db_session) -> None:
+    """Regression for the round-1 finding: shared test DB rows must not leak."""
+    from sqlalchemy import func, select
+
+    await db_session.rollback()
+    leaked = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(ExecutionLedger)
+            .where(ExecutionLedger.symbol.in_(ALL_SYMBOLS))
+        )
+    ).scalar_one()
+    assert leaked == 0
+    orders = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(KISLiveOrderLedger)
+            .where(KISLiveOrderLedger.order_no.like(f"{ORDER_PREFIX}%"))
+        )
+    ).scalar_one()
+    assert orders == 0
