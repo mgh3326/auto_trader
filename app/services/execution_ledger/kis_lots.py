@@ -339,6 +339,9 @@ def build_symbol_block(
 ) -> dict[str, Any]:
     """Pure projection of one symbol. Deterministic given its inputs."""
     authoritative, provisional, superseded = _split_provisional(fills)
+    # Only authoritative rows reach lots/net. provisional_net below is a
+    # diagnostic sum of un-superseded websocket rows: it can add a reason code
+    # and fill diagnostics, but it never enters lots, net or the known decision.
     lots, net, oversold = _fifo_lots(authoritative)
     provisional_net = _signed_net(provisional)
 
@@ -360,11 +363,13 @@ def build_symbol_block(
         reconciles = None
     else:
         reconciles = net == reference_quantity
-        if not reconciles and authoritative and oversold == 0:
+        if not reconciles:
+            # The broker-quantity cross-check is applied to every symbol, so a
+            # fill that exists only as a websocket row (net < broker quantity)
+            # ends unknown here, never as a lower lot count.
+            reasons.append(UNKNOWN_QTY_MISMATCH)
             if provisional and net + provisional_net == reference_quantity:
                 reasons.append(UNKNOWN_PROVISIONAL_PENDING)
-            else:
-                reasons.append(UNKNOWN_QTY_MISMATCH)
 
     known = not reasons
     weighted_cost: Decimal | None = None

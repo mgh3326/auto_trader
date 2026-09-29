@@ -198,6 +198,9 @@ allowlist change exists because `get_holdings` is already live-kr core.
   `websocket` 행은 provisional 이라 lot 에 절대 세지 않고 `provisional_rows_excluded` 로만 나열한다.
 - **freshness / unknown**: 마지막 성공 non-dry-run KIS reconcile `finished_at` 이 90분 이내여야 `fresh`. `ledger_state` 는 fresh AND authoritative 행 존재 AND 역매도 없음
   AND 원장 순수량 == 같은 응답의 브로커 수량일 때만 `known`. 그 외는 `unknown` + `unknown_reasons`, `lots=null` — **빈 리스트로 표현하지 않는다.**
+  브로커 수량 교차검증은 **모든 심볼에** 적용된다 — 같은 fill 이 reconciler 행과 websocket 행(다른 `fill_seq`, #935 Part B)으로 함께 있으면 websocket 행은 주문 단위로 supersede 되어
+  이중 계상되지 않고, websocket 행으로**만** 존재하는 fill 은 lot 수를 줄이는 대신 `quantity_mismatch_with_reference`(+ 진단용 `provisional_rows_pending_reconcile`) 로 `unknown` 이 된다.
+  websocket 행은 어떤 lot/net 합에도 들어가지 않는다(합산은 진단 `provisional_net_quantity` 뿐). 재현 fixture: `test_kis_lots.py`·`test_kis_lots_db.py` 의 `test_935_*`.
 - **open_buy_evidence (S2/S3)**: 당일(KST) `review.kis_live_order_ledger` 비터미널 buy 행(S2), 당일 buy 체결 중 주문 완료가 원장으로 증명되지 않은 것(S3)이 있거나 증거가
   unknown(stale·읽기 실패)이면 `blocking=true`. 전일 이전 비터미널 행은 `presumed_dead_prior_day_buys` 로 보고만 한다(KRX/NXT day order 는 거래일을 넘기지 못한다는 가정).
 - 🔴 **`external_orders_verifiable` 는 항상 `false`**: KIS 앱/HTS 등 auto_trader 밖에서 낸 **미체결** 주문은 어떤 DB 읽기로도 보이지 않는다. 이 블록의 통과는

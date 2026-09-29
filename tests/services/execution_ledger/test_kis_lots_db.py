@@ -292,3 +292,115 @@ async def test_no_refs_reads_nothing() -> None:
             raise AssertionError("no query expected")
 
     assert await load_kis_live_kr_lot_blocks(Boom(), [], now=NOW) == {}  # type: ignore[arg-type]
+
+
+async def test_935_part_b_duplicate_and_websocket_only_fills_in_the_real_ledger(
+    db_session,
+) -> None:
+    """The same fill as a reconciler row and a websocket row with different fill_seq.
+
+    Both rows insert (the unique key includes fill_seq), exactly like the
+    06-10..09-14 production rows. Expected: no double count for the duplicate
+    symbol; the websocket-only symbol is unknown via quantity_mismatch_with_reference.
+    """
+    dup, ws_only, ws_no_seed = "T96303", "T96304", "T96305"
+    run = _run(finished_minutes_ago=10)
+    run_ids = [run.run_id]
+
+    def seed(symbol: str) -> ExecutionLedger:
+        return _fill(
+            symbol=symbol,
+            raw_symbol=symbol,
+            filled_qty=Decimal("10"),
+            filled_price=Decimal("2000"),
+            source="manual_import",
+            broker_order_id=f"{ORDER_PREFIX}-SEED-{symbol}",
+            filled_at=NOW - timedelta(days=20),
+        )
+
+    rows = [
+        run,
+        seed(dup),
+        seed(ws_only),
+        # duplicate symbol: reconciler and websocket twin, different fill_seq
+        _fill(
+            symbol=dup,
+            raw_symbol=dup,
+            broker_order_id="0000963555",
+            fill_seq=0,
+            filled_qty=Decimal("2"),
+            filled_price=Decimal("1900"),
+            source="reconciler",
+            filled_at=NOW - timedelta(days=3),
+        ),
+        _fill(
+            symbol=dup,
+            raw_symbol=dup,
+            broker_order_id="963555",
+            fill_seq=41,
+            filled_qty=Decimal("2"),
+            filled_price=Decimal("1900"),
+            source="websocket",
+            filled_at=NOW - timedelta(days=3),
+        ),
+        # websocket-only fill on a seeded symbol
+        _fill(
+            symbol=ws_only,
+            raw_symbol=ws_only,
+            broker_order_id="963900",
+            fill_seq=7,
+            filled_qty=Decimal("2"),
+            filled_price=Decimal("1900"),
+            source="websocket",
+            filled_at=NOW - timedelta(days=3),
+        ),
+        # websocket-only symbol with no seed at all
+        _fill(
+            symbol=ws_no_seed,
+            raw_symbol=ws_no_seed,
+            broker_order_id="963901",
+            fill_seq=9,
+            filled_qty=Decimal("12"),
+            filled_price=Decimal("1900"),
+            source="websocket",
+            filled_at=NOW - timedelta(days=3),
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        blocks = await load_kis_live_kr_lot_blocks(
+            db_session,
+            [
+                PositionRef(dup, Decimal("12")),
+                PositionRef(ws_only, Decimal("12")),
+                PositionRef(ws_no_seed, Decimal("12")),
+            ],
+            now=NOW,
+        )
+    finally:
+        await db_session.rollback()
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.symbol.in_([dup, ws_only, ws_no_seed])
+            )
+        )
+        await _cleanup(db_session, run_ids, [])
+
+    dup_block = blocks[dup]
+    assert dup_block["ledger_state"] == "known", dup_block["unknown_reasons"]
+    assert sum(Decimal(lot["quantity"]) for lot in dup_block["lots"]) == Decimal("12")
+    assert dup_block["diagnostics"]["superseded_websocket_duplicates"] == 1
+    assert dup_block["provisional_rows_excluded"] == []
+
+    only_block = blocks[ws_only]
+    assert only_block["ledger_state"] == "unknown"
+    assert "quantity_mismatch_with_reference" in only_block["unknown_reasons"]
+    assert only_block["lots"] is None
+    assert only_block["diagnostics"]["ledger_net_quantity"] == "10"
+
+    no_seed_block = blocks[ws_no_seed]
+    assert no_seed_block["ledger_state"] == "unknown"
+    assert "quantity_mismatch_with_reference" in no_seed_block["unknown_reasons"]
+    assert "only_provisional_rows" in no_seed_block["unknown_reasons"]
+    assert no_seed_block["lots"] is None

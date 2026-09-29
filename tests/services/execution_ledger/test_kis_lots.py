@@ -214,6 +214,8 @@ def test_websocket_only_rows_are_never_lots() -> None:
     out = block(fills, reference="12")
     assert out["ledger_state"] == "unknown"
     assert UNKNOWN_ONLY_PROVISIONAL_ROWS in out["unknown_reasons"]
+    # The broker-quantity cross-check also fires (ledger net 0 != broker 12).
+    assert UNKNOWN_QTY_MISMATCH in out["unknown_reasons"]
     assert out["lots"] is None
     (excluded,) = out["provisional_rows_excluded"]
     assert excluded["provisional"] is True
@@ -227,7 +229,10 @@ def test_provisional_rows_pending_reconcile_stay_unknown_with_reason() -> None:
     ]
     out = block(fills, reference="12")
     assert out["ledger_state"] == "unknown"
-    assert out["unknown_reasons"] == [UNKNOWN_PROVISIONAL_PENDING]
+    assert out["unknown_reasons"] == [
+        UNKNOWN_QTY_MISMATCH,
+        UNKNOWN_PROVISIONAL_PENDING,
+    ]
     assert out["lots"] is None  # authoritative 10 != broker 12; provisional not truth
     assert out["diagnostics"]["provisional_net_quantity"] == "2"
     assert len(out["provisional_rows_excluded"]) == 1
@@ -496,3 +501,94 @@ def test_blocks_are_json_serializable() -> None:
     json.dumps(block(fills, reference="10", current_price="81000"))
     json.dumps(block([], reference=None, orders=None))
     json.dumps(unknown_block("196170", kis_lots.UNKNOWN_LOAD_FAILED))
+
+
+# ---------------------------------------------------------------------------
+# #935 Part B: 06-10..09-14 the same fill exists as a reconciler row AND a
+# websocket row (different fill_seq). Never double count; a fill that exists
+# only as a websocket row must end unknown through the broker-quantity
+# cross-check, never as a lower lot count.
+# ---------------------------------------------------------------------------
+def test_935_same_fill_as_reconciler_and_websocket_is_not_double_counted() -> None:
+    fills = [
+        fill(1, "buy", "10", "100000", SEED_AT, source="manual_import", order="SEED-1"),
+        fill(2, "buy", "2", "99000", EARLIER, order="0000777"),
+        # websocket twin of order 777: different row id (and, in the ledger,
+        # a different fill_seq), same fill, zero-padding drift on the order id.
+        fill(3, "buy", "2", "99000", EARLIER, source="websocket", order="777"),
+    ]
+    out = block(fills, reference="12")
+    assert out["ledger_state"] == "known", out["unknown_reasons"]
+    assert sum(D(lot["quantity"]) for lot in out["lots"]) == D("12")
+    assert out["net_quantity"] == "12"
+    assert out["diagnostics"]["superseded_websocket_duplicates"] == 1
+    assert out["diagnostics"]["provisional_row_count"] == 0
+    assert out["diagnostics"]["provisional_net_quantity"] == "0"
+    assert out["provisional_rows_excluded"] == []
+
+
+def test_935_split_websocket_partials_of_a_reconciled_order_are_all_superseded() -> (
+    None
+):
+    fills = [
+        fill(1, "buy", "10", "100000", SEED_AT, source="manual_import", order="SEED-1"),
+        fill(2, "buy", "5", "99000", EARLIER, order="0000800"),
+        fill(3, "buy", "2", "99000", EARLIER, source="websocket", order="800"),
+        fill(4, "buy", "3", "99000", EARLIER, source="websocket", order="0000800"),
+    ]
+    out = block(fills, reference="15")
+    assert out["ledger_state"] == "known", out["unknown_reasons"]
+    assert out["net_quantity"] == "15"
+    assert out["diagnostics"]["superseded_websocket_duplicates"] == 2
+
+
+def test_935_websocket_only_fill_is_unknown_never_a_lower_lot_count() -> None:
+    fills = [
+        fill(1, "buy", "10", "100000", SEED_AT, source="manual_import", order="SEED-1"),
+        fill(2, "buy", "2", "99000", EARLIER, source="websocket", order="0000900"),
+    ]
+    out = block(fills, reference="12")  # broker holds seed 10 + the websocket-only 2
+    assert out["ledger_state"] == "unknown"
+    assert UNKNOWN_QTY_MISMATCH in out["unknown_reasons"]
+    assert out["quantity_reconciles"] is False
+    # No lot list at all — in particular not a 10-share list under a 12-share holding.
+    assert out["lots"] is None
+    assert out["net_quantity"] is None
+    assert out["weighted_avg_cost"] is None
+    assert out["diagnostics"]["ledger_net_quantity"] == "10"
+    assert out["diagnostics"]["provisional_net_quantity"] == "2"
+    (excluded,) = out["provisional_rows_excluded"]
+    assert excluded["provisional"] is True
+
+
+def test_935_symbol_with_only_websocket_rows_is_unknown_via_the_cross_check() -> None:
+    fills = [
+        fill(1, "buy", "7", "50000", EARLIER, source="websocket", order="1"),
+        fill(2, "buy", "5", "51000", YESTERDAY, source="websocket", order="2"),
+    ]
+    out = block(fills, reference="12")
+    assert out["ledger_state"] == "unknown"
+    assert UNKNOWN_QTY_MISMATCH in out["unknown_reasons"]
+    assert UNKNOWN_ONLY_PROVISIONAL_ROWS in out["unknown_reasons"]
+    assert out["lots"] is None
+    assert out["net_quantity"] is None
+
+
+def test_935_unmatched_websocket_row_next_to_a_reconciled_fill_does_not_inflate() -> (
+    None
+):
+    fills = [
+        fill(1, "buy", "12", "100000", EARLIER, order="0001"),
+        # Same shares under an order id no authoritative row carries: it stays
+        # provisional (listed), and must not add to lots or net.
+        fill(2, "buy", "12", "100000", EARLIER, source="websocket", order="9999"),
+    ]
+    out = block(fills, reference="12")
+    assert out["ledger_state"] == "known", out["unknown_reasons"]
+    assert sum(D(lot["quantity"]) for lot in out["lots"]) == D("12")
+    assert out["net_quantity"] == "12"
+    assert len(out["provisional_rows_excluded"]) == 1
+    assert out["diagnostics"]["provisional_net_quantity"] == "12"
+    # The broker quantity does not include a phantom second 12, so counting the
+    # websocket row would have made the cross-check fail: it is not counted.
+    assert out["quantity_reconciles"] is True
