@@ -111,7 +111,12 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v50 (#925): krx_after_market_eligibility (operator-imported KRX after-market
 # list) via create_all; the production additive migration is
 # 20260929_925_krx_after_market.
-SCHEMA_BOOTSTRAP_VERSION = 50
+# v51 (Task 847): review.binance_h5_signals/binance_h5_intents/
+# binance_h5_lane_state/binance_h5_opportunities/binance_h5_nav_samples ORM
+# tables via create_all (no trigger DDL); the production additive migration is
+# 20260928_task847_h5_state. The bump forces one re-bootstrap of persistent
+# local test DBs.
+SCHEMA_BOOTSTRAP_VERSION = 51
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

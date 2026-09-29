@@ -126,6 +126,8 @@ tests/services/brokers/binance/futures_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/futures_demo/test_execution_client_position.py
 tests/services/brokers/binance/futures_demo/test_execution_client_submit_cancel.py
 tests/services/brokers/binance/futures_demo/test_preflight.py
+tests/services/brokers/binance/h5/test_forecast_cli.py
+tests/services/brokers/binance/h5/test_history_executor.py
 tests/services/brokers/binance/spot_demo/test_close_sizing.py
 tests/services/brokers/binance/spot_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/spot_demo/test_execution_client_submit_cancel.py

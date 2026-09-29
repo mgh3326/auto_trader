@@ -7,6 +7,7 @@
 - Alpaca Paper 실행 레저 (ROB-84)
 - Binance Demo Order Ledger (ROB-298)
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
+- H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
@@ -100,6 +101,39 @@
 - **런북**: `docs/runbooks/binance-demo-strategy-loop.md` (§5 — 공유 Demo 계정 간섭 주의: 프로덕션
   demo-scalping 봇과 동일 자격증명 공유 시 계정단 상태 충돌 가능)
 - **스케줄러 등록 없음** — CLI 수동 가동만, `--loop`도 operator 소유 foreground 프로세스
+
+### H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
+
+H5는 ROB-993의 StrategyPlugin 인터페이스, complete-only 1m→4h collector,
+기존 signed Futures Demo transport와 Demo ledger 서비스를 재사용하는 별도 어댑터다.
+ROB-993의 leg notional [6,10], cap 1, kill switch와 ROB-298의 BTC 제외는
+그 경로에 그대로 남는다. H5의 독립 상수와 상태 서비스는 H5 identity에서만 쓰인다.
+
+- **표면**: app/services/brokers/binance/h5, scripts/binance_h5_demo.py,
+  scripts/binance_h5_weekly_score.py. 수동 CLI만 있으며 scheduler 등록은 없다.
+- **호스트/게이트**: exact https://demo-fapi.binance.com 및 H5DemoClient identity를
+  HTTP/DB 전에 검사한다. BINANCE_H5_DEMO_ENABLED와
+  BINANCE_FUTURES_DEMO_ENABLED는 기본 false이고, 각 runner tick과 모든 주문은
+  명시 confirm=True가 필요하다. live 자격증명과 endpoint는 사용하지 않는다.
+- **노출/전송**: review.binance_h5_signals와 review.binance_h5_intents는 H5 전용
+  서비스가 advisory transaction lock으로 예약한다. 최대 전역 2개, 심볼별 1개,
+  외부 포지션과 미체결 주문 시 entry 차단. client order ID를 commit한 뒤
+  sending fence를 commit하고 단 한 번 보낸다. 응답 불명은 uncertain으로 보존하고
+  broker order ID/client ID와 전계정 position 증거로만 해소한다. 예약된 pre-send
+  intent는 재시작 시 자동 전송하지 않는다.
+- **수량/청산**: 최신 NAV × 0.01 / 0.05의 notional을 executable quote와
+  MARKET_LOT_SIZE로 내림하고 MIN_NOTIONAL 미달 시 차단한다. isolated 1x와 one-way
+  모드는 broker readback으로 요구하며 설정 mutation은 없다. 청산은 hard stop,
+  completed-bar close stop, time exit, TP 순서이고 모든 청산은 reduceOnly이며
+  broker 증명 잔량까지만 보낸다. hard stop은 4h 마감 사이에도 1m 극값으로 검사한다.
+- **레저/학습**: 모든 binance_demo_order_ledger 쓰기는
+  BinanceDemoLedgerService만 사용한다. H5 correlation과 signal_key는 DFC identity와
+  독립이며 forecast는 실제 entry fill 후 저장하고 실제 held close 후 해소한다.
+  predeclared 4h opportunity grid의 random control은 오프라인 계산만 수행한다.
+- **권한**: 이 코드의 존재는 order permission이 아니다. 별도 operator contract의
+  strategy_order_exception 승인과 운영자 확인 전에는 runner를 시작할 수 없다.
+  마이그레이션도 별도 운영 절차로 적용한다. 상세는
+  docs/runbooks/binance-h5-demo.md를 따른다.
 
 ### Execution Ledger HTTP Ingest (fillwire P0)
 
