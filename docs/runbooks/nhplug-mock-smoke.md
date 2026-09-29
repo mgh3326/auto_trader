@@ -120,6 +120,7 @@ reconcile 응답 상태 표(확정 실행 `status`, dry run 은 같은 단어를
 | `error` (`error=internal_error`, `sent=false`) | 도구가 예외를 삼킨 정제된 실패. 알려진 경우: 결속된 `open`/`partially_filled` 행의 번호가 완전한 전체·미체결 목록에서 사라지면 #711 트리거가 레저의 `reconcile_state=unknown` 기록을 거부한다(기존 결함, 별도 후속). 레저 쓰기·송신 없음 | **멈추고 보고**. 정상 완료로 기록하지 않는다 |
 
 dry run 예측은 같은 조회·레저 상태에서 확정 실행보다 **좋게** 나오지 않는다(`partial`/`uncertain` 예측은 확정 실행에서 같은 값이거나 `unknown`, 위 `error` 경우 포함).
+
 7. **"빈 배열 ≠ 미체결 없음" 실증**: 마지막으로 `nh_mock_get_order_history()` → 미체결 목록이 비었을 때 `open_orders_state` 는 **`unknown`** 이어야 하며(`"none"` 같은 값은 존재하지 않는다) 사유에 `empty_open_listing_is_not_evidence_of_no_open_orders` 가 있어야 한다. 운영자가 HTS/앱에서 미체결이 실제로 없음을 눈으로 확인하고 기록한다.
 
 ### 결과 기록
