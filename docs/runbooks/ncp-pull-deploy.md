@@ -107,6 +107,54 @@ substituted for another unit. If resolution fails, no replacement begins.
 Automatic rollback does not rotate either digest file. A successful promotion
 rotates the prior target into `deployed-digest.previous`.
 
+## Old image prune after a successful deploy
+
+After a fully successful promotion (the digest table matched, the digest
+files were rotated and the drains were armed) the script removes old
+`ghcr.io/mgh3326/auto_trader` images so repeated pulls cannot fill the disk
+(task 934: on 2026-09-29 a pull failed at 100% disk with 66 unused images).
+It keeps:
+
+- the digest just deployed (it must equal `deployed-digest`);
+- the digest in `deployed-digest.previous` (the `--rollback` target), so a
+  rollback works from the local image without the registry;
+- every image used by any container in `docker ps -a`, running or stopped,
+  including an `at-kis-ws` left alone by `--skip-kis-ws`, units in
+  `MCP_UNITS_SKIP` and the previous API/MCP colors that are still draining.
+
+Only images whose every tag and repo digest belongs exactly to
+`ghcr.io/mgh3326/auto_trader` are candidates; postgres, redis, haproxy and any
+image that also carries another repository's reference are never touched.
+Removal is `docker image rm <references>` without `-f`; the script never runs
+`docker system prune`, `docker image prune`, or removes volumes, networks or
+containers. Build cache is not touched.
+
+The deploy output lists each removed image ID with its references, then a
+line `image prune: removed N image(s), reclaimed B bytes by image size`.
+The byte figure sums image sizes; layers shared with a kept image are not
+freed, so the actual disk gain can be smaller.
+
+The prune never runs on a failed deploy, on `--rollback`, or with `--dry-run`.
+A deploy dry-run instead prints `image prune: would remove ...` lines from
+the current state; the real run re-evaluates after promotion. A rollback
+dry-run prints `image prune: not run on rollback`.
+
+Any prune problem is a warning on stderr only (`WARNING: image prune ...`)
+and never changes the exit code or the digest table: an image that could not
+be removed is named in the warning, and if `deployed-digest.previous` is
+absent or invalid, `deployed-digest` does not record the promoted digest, or
+docker's image or container listing cannot be read, the whole prune is
+skipped and every image is kept.
+
+To disable it for one run, set `AT_IMAGE_PRUNE_ENABLED=0`:
+
+    AT_IMAGE_PRUNE_ENABLED=0 /root/at-run/deploy-ncp-pull.sh sha-abcdef0
+
+The default is `1`. Any other value skips the prune with a warning. To free
+space by hand while the prune is disabled, remove only unused
+`ghcr.io/mgh3326/auto_trader` images that are neither of the two recorded
+digests; the invariants are in `docs/contracts/task-934-image-prune.md`.
+
 ## KIS WebSocket skip flag and dry-run plan
 
 Both flags combine with a tag or with --rollback, in any order:

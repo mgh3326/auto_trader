@@ -47,6 +47,7 @@ readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.runtime}
 readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${RUN_DIRECTORY}/.env.secrets}"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
+readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED:-1}"
 
 declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_ENV_FILE")
 declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom)
@@ -439,7 +440,140 @@ promote_digest() {
   printf 'deployment completed: %s\n' "$digest"
 }
 prepare() { require_command docker; require_command curl; require_command awk; require_file "$RUNTIME_ENV_FILE"; require_file "$SECRETS_ENV_FILE"; validate_mcp_tokens; }
-main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; }
+
+# Image prune (task 934; contract docs/contracts/task-934-image-prune.md).
+# Only the successful deploy path runs it; rollback, failure and dry-run never
+# remove anything. Every comparison is exact string equality against recorded
+# digests and docker's own inspect output. Any unreadable input skips the prune
+# and keeps every image.
+is_image_id() { [[ "$1" =~ ^sha256:[[:xdigit:]]{64}$ ]]; }
+# Repository part of an image reference: drop a digest after '@', then a tag
+# after the last ':' only when that suffix contains no '/' (a registry port).
+ref_repository() {
+  local ref="${1%%@*}"
+  if [[ "$ref" == *:* && "${ref##*:}" != */* ]]; then ref="${ref%:*}"; fi
+  printf '%s\n' "$ref"
+}
+image_refs() { docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}' "$1"; }
+
+# Fills PRUNE_IDS (removal candidates, in listing order), PRUNE_REFS (id ->
+# space-separated references) and PRUNE_KEPT (id -> reason) for images of
+# IMAGE_REPOSITORY. Returns nonzero, having decided nothing, when any docker
+# query fails or returns an unexpected shape.
+declare -a PRUNE_IDS=()
+declare -A PRUNE_REFS=() PRUNE_KEPT=()
+plan_image_prune() {
+  local current="$1" previous="$2" ref keep_ref id cid image_id listed refs owned foreign keep
+  local -a keep_refs=()
+  local -A keep_ids=() seen=()
+  PRUNE_IDS=() PRUNE_REFS=() PRUNE_KEPT=()
+  [[ -n "$current" ]] && keep_refs+=("$current") # KEEP-1 current
+  keep_refs+=("$previous") # KEEP-2 previous
+  for ref in "${keep_refs[@]}"; do
+    is_digest "$ref" || return 1
+    # A recorded digest that is not present locally has nothing to protect;
+    # candidates are also matched against it by RepoDigests below.
+    if id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)"; then
+      is_image_id "$id" || return 1
+      keep_ids["$id"]="recorded digest"
+    fi
+  done
+  listed="$(docker ps -a --no-trunc --format '{{.ID}}')" || return 1
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    image_id="$(docker inspect --format '{{.Image}}' "$cid")" || return 1
+    is_image_id "$image_id" || return 1
+    keep_ids["$image_id"]="used by a container" # KEEP-3 in-use
+  done <<<"$listed"
+  listed="$(docker image ls --no-trunc --format '{{.ID}}')" || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    is_image_id "$id" || return 1
+    [[ -z "${seen[$id]:-}" ]] || continue
+    seen["$id"]=1
+    refs="$(image_refs "$id")" || return 1
+    owned=false foreign=false keep=false
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      if [[ "$(ref_repository "$ref")" == "$IMAGE_REPOSITORY" ]]; then owned=true; else foreign=true; fi
+      for keep_ref in "${keep_refs[@]}"; do [[ "$ref" == "$keep_ref" ]] && keep=true; done
+    done <<<"$refs"
+    [[ "$owned" == true && "$foreign" == false ]] || continue # KEEP-4 repository
+    if [[ -n "${keep_ids[$id]:-}" ]]; then PRUNE_KEPT["$id"]="${keep_ids[$id]}"; continue; fi
+    if [[ "$keep" == true ]]; then PRUNE_KEPT["$id"]="recorded digest"; continue; fi
+    PRUNE_IDS+=("$id")
+    PRUNE_REFS["$id"]="${refs//$'\n'/ }"
+  done <<<"$listed"
+}
+
+prune_enabled() {
+  case "$IMAGE_PRUNE_ENABLED" in
+    1) return 0 ;;
+    0) printf 'image prune: disabled by AT_IMAGE_PRUNE_ENABLED=0\n'; return 1 ;;
+    *) printf 'WARNING: image prune skipped: AT_IMAGE_PRUNE_ENABLED must be 0 or 1\n' >&2; return 1 ;;
+  esac
+}
+
+prune_old_images() {
+  local deployed="$1" current previous id out listed removed=0 bytes=0 unsized=0
+  local -a refs=() failed=()
+  local -A sizes=() errors=() remaining=()
+  prune_enabled || return 0
+  previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'WARNING: image prune skipped: %s is absent or invalid; every image kept\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE" >&2; return 1; }
+  current="$(read_digest "$DEPLOYED_DIGEST_FILE")" && [[ "$current" == "$deployed" ]] || { printf 'WARNING: image prune skipped: %s does not record %s; every image kept\n' "$DEPLOYED_DIGEST_FILE" "$deployed" >&2; return 1; }
+  plan_image_prune "$deployed" "$previous" || { printf 'WARNING: image prune skipped: docker image or container state is unreadable; every image kept\n' >&2; return 1; }
+  printf 'image prune: keeping %s and %s plus every image used by a container\n' "$deployed" "$previous"
+  for id in "${!PRUNE_KEPT[@]}"; do printf 'image prune: kept %s (%s)\n' "$id" "${PRUNE_KEPT[$id]}"; done
+  for id in "${PRUNE_IDS[@]}"; do
+    read -r -a refs <<<"${PRUNE_REFS[$id]}"
+    sizes["$id"]="$(docker image inspect --format '{{.Size}}' "$id" 2>/dev/null || true)"
+    # Removing the last tag of a repository also drops its digest references,
+    # so a later reference in the same call can fail although the image is
+    # gone. The outcome is judged by the listing below, not by this status.
+    out="$(docker image rm "${refs[@]}" 2>&1)" || errors["$id"]="${out//$'\n'/ }"
+  done
+  if ((${#PRUNE_IDS[@]})); then
+    listed="$(docker image ls --no-trunc --format '{{.ID}}')" || { printf 'WARNING: image prune could not confirm removals; attempted: %s\n' "${PRUNE_IDS[*]}" >&2; return 1; }
+    while IFS= read -r id; do [[ -n "$id" ]] && remaining["$id"]=1; done <<<"$listed"
+  fi
+  for id in "${PRUNE_IDS[@]}"; do
+    if [[ -n "${remaining[$id]:-}" ]]; then
+      failed+=("$id (${PRUNE_REFS[$id]% })")
+      printf 'WARNING: image prune could not remove %s (%s): %s\n' "$id" "${PRUNE_REFS[$id]% }" "${errors[$id]:-still present}" >&2
+      continue
+    fi
+    removed=$((removed + 1))
+    if [[ "${sizes[$id]}" =~ ^[0-9]+$ ]]; then bytes=$((bytes + sizes[$id])); else unsized=$((unsized + 1)); fi
+    printf 'image prune: removed %s (%s)\n' "$id" "${PRUNE_REFS[$id]% }"
+  done
+  printf 'image prune: removed %s image(s), reclaimed %s bytes by image size' "$removed" "$bytes"
+  ((unsized == 0)) || printf ' (size unavailable for %s image(s))' "$unsized"
+  printf '; layers shared with kept images are not freed\n'
+  if ((${#failed[@]})); then
+    printf 'WARNING: image prune incomplete; not removed: %s\n' "${failed[*]}" >&2
+    return 1
+  fi
+}
+# The subshell contains every prune failure (including errexit, nounset or an
+# exit) so it can only add a warning; it never changes the deploy result.
+run_image_prune() { (prune_old_images "$1") || printf 'WARNING: image prune did not complete; the deployment result is unchanged\n' >&2; }
+
+# Dry-run counterpart: predicts the post-deploy digest records (write_digest
+# rotates a valid deployed-digest into deployed-digest.previous) and lists what
+# the real run would remove. It never removes anything.
+dry_run_image_prune() {
+  local target="$1" previous id
+  prune_enabled || return 0
+  previous="$(read_digest "$DEPLOYED_DIGEST_FILE")" || previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'image prune: would be skipped (no valid digest record for the rollback target)\n'; return 0; }
+  plan_image_prune "$target" "$previous" || { printf 'image prune: would be skipped (docker image or container state is unreadable)\n'; return 0; }
+  printf 'image prune plan (the real run re-evaluates after promotion): keep %s and %s plus every image used by a container\n' "${target:-the pulled digest}" "$previous"
+  for id in "${PRUNE_IDS[@]}"; do printf 'image prune: would remove %s (%s)\n' "$id" "${PRUNE_REFS[$id]% }"; done
+  printf 'image prune: would remove %s image(s)\n' "${#PRUNE_IDS[@]}"
+}
+
+# promote_digest returns nonzero on any failure, which ends main under errexit,
+# so the prune below is reached only after a fully successful deploy.
+main() { local digest; prepare || exit $?; current_api_rollback_digest >/dev/null || exit 78; capture_initial_state || exit 78; docker pull "$IMAGE"; digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"; is_digest "$digest" || { printf 'could not resolve repo digest\n' >&2; exit 1; }; promote_digest "$digest"; run_image_prune "$digest"; }
 manual_rollback() { local previous; prepare || return $?; previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'manual rollback digest is unavailable\n' >&2; return 1; }; current_api_rollback_digest >/dev/null || return 78; capture_initial_state || return 78; docker pull "$previous"; promote_digest "$previous"; }
 
 # Read-only plan. Inspect calls only: no pull/run/rm/stop/rename/kill and no
@@ -502,6 +636,11 @@ dry_run() {
     fi
   done
   printf '  at-haproxy: render config and reload via SIGHUP (start if absent); deferred in dry-run\n'
+  if [[ "$DEPLOY_MODE" == rollback ]]; then
+    printf 'image prune: not run on rollback\n'
+  else
+    (dry_run_image_prune "$target") || printf 'image prune: plan unavailable\n'
+  fi
   printf 'end of plan; a real run prints a per-container digest table for operator comparison\n'
 }
 
