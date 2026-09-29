@@ -15,7 +15,13 @@ and the 375500 evidence (`nxt_tradable=false`, yet it traded on Toss
 - `get_quote.krx_after_tradable` for KR quotes;
 - the order-proposal approval window, which allows 16:00-20:00 for a
   non-NXT name only when that name is proven eligible for the KRX
-  after-market.
+  after-market;
+- the Toss order-tool `nxt_preflight` (#969: preview, place, modify, and
+  `suggest_order_account`), which applies the same rule. Inside 16:00-20:00
+  a non-NXT name passes with `reason: krx_after_tradable`. An empty,
+  unreadable or stale list blocks with `krx_after_capability_unknown` or
+  `krx_after_capability_stale`, not `not_nxt_eligible`, so a missing import
+  is visible as such.
 
 An empty table means no list has been imported, so every symbol reads
 `false`. That is the state right after the migration.
@@ -64,10 +70,12 @@ WHERE u.symbol IN ('375500', '459580', '357870');
 
 ## 5. Limits
 
-- This PR changes the approval window only. The Toss order tool's
-  `nxt_preflight` advisory still warns in `nxt_after` for non-NXT names, and
-  the operator prompts still say "check nxt_tradable before evening". Both are
-  follow-ups.
+- #925 changed the approval window; #969 aligned the Toss order-tool
+  `nxt_preflight` with it. The operator prompts still say "check
+  nxt_tradable before evening"; that is a follow-up.
+- Until a list is imported, every non-NXT name in 16:00-20:00 reads
+  `krx_after_capability_unknown` in the preflight (blocked in `required`
+  mode, warned otherwise).
 - Whether each broker's API actually accepts a KRX after-market order for a
   non-NXT name is broker evidence (the desk Toss preview at 16:05), not
   something this repo asserts.

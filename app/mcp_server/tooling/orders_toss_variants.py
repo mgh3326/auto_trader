@@ -68,7 +68,10 @@ from app.services.nxt_preflight import (
     ROUTE_VIA_KIS,
     NxtPreflightVerdict,
     NxtTradability,
-    evaluate_nxt_preflight,
+)
+from app.services.nxt_preflight_krx_after import (
+    UNKNOWN_NXT_TRADABILITY,
+    evaluate_nxt_preflight_with_krx_after,
 )
 from app.services.order_proposals.cash_funding_exemption import (
     CASH_FUNDING_EXIT_INTENT,
@@ -1152,7 +1155,7 @@ async def _nxt_preflight_context(
         session = await get_kr_toss_session_from_toss(moment)
         tradability = (await get_kr_nxt_tradability([symbol])).get(
             symbol
-        ) or NxtTradability(nxt_eligible=False, nxt_trading_suspended=None, asof=None)
+        ) or UNKNOWN_NXT_TRADABILITY
     except Exception as exc:  # noqa: BLE001 - advisory preflight must never block an order
         logger.warning(
             "NXT preflight context unavailable for %s, skipping (fail-open): %s",
@@ -1160,7 +1163,11 @@ async def _nxt_preflight_context(
             exc,
         )
         return None
-    verdict = evaluate_nxt_preflight(session, tradability)
+    # #969: same verdict as suggest_order_account; the KRX after-market step
+    # swallows its own lookup errors, so an unknown list blocks, never skips.
+    verdict = await evaluate_nxt_preflight_with_krx_after(
+        symbol, session, tradability, now=moment
+    )
     return verdict, tradability
 
 
