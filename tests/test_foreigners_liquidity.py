@@ -150,6 +150,64 @@ class TestFilterIlliquidForeigners:
         kept, _ = fl.filter_illiquid_foreigners(rows)
         assert [r["symbol"] for r in kept] == ["005930"]
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_amount_is_excluded(self, bad):
+        # #1029: NaN compares False against the floor, so without an explicit
+        # finiteness check it would silently pass the liquidity bar.
+        rows = [{"symbol": "005930", "foreign_net_amount": bad, "market_cap": None}]
+        kept, excluded = fl.filter_illiquid_foreigners(rows)
+        assert kept == []
+        assert excluded == 1
+
+
+class TestKisMillionKrwUnit:
+    """#1029: KIS FHPTJ04400000 documents frgn_ntby_tr_pbmn as 백만원."""
+
+    def test_unit_constant_is_one_million_krw(self):
+        assert fl.KIS_FOREIGN_TOTAL_AMOUNT_UNIT_KRW == 1_000_000
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("92500", 92_500_000_000.0),  # 925억 (한미반도체, 2026-09-29 Toss)
+            ("-92500", -92_500_000_000.0),  # net sell keeps its sign
+            ("100", 100_000_000.0),  # exactly 1억
+            ("0", 0.0),
+            (92500, 92_500_000_000.0),
+        ],
+    )
+    def test_converts_million_krw_to_krw(self, raw, expected):
+        assert fl.kis_million_krw_to_krw(raw) == expected
+
+    @pytest.mark.parametrize("raw", [None, "", "abc", "nan", "inf", "-inf"])
+    def test_blank_unparseable_or_non_finite_is_none(self, raw):
+        assert fl.kis_million_krw_to_krw(raw) is None
+
+    def test_threshold_boundary_in_documented_unit(self):
+        # 1억 KRW == 100 백만원: 100 passes the default floor, 99 does not.
+        rows = [
+            {"symbol": "AT", "foreign_net_amount": fl.kis_million_krw_to_krw("100")},
+            {"symbol": "BELOW", "foreign_net_amount": fl.kis_million_krw_to_krw("99")},
+        ]
+        kept, excluded = fl.filter_illiquid_foreigners(
+            rows, min_foreign_net_amount_krw=100_000_000.0, min_market_cap_krw=None
+        )
+        assert [r["symbol"] for r in kept] == ["AT"]
+        assert excluded == 1
+
+    def test_source_state_block_is_explicitly_provisional(self):
+        block = fl.foreign_ranking_source_state()
+        assert block["source_state"] == "provisional"
+        assert (
+            block["source_state_reason"]
+            == "kis_foreign_institution_total_provisional_tally"
+        )
+        assert block["foreign_net_amount_unit"] == "KRW"
+        note = block["source_state_note"]
+        assert "14:30" in note
+        assert "백만원" in note
+        assert "18:10" in note
+
 
 # --------------------------------------------------------------------------
 # Batched repository reader (mocked session)

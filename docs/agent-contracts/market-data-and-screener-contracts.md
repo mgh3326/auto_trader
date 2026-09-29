@@ -13,6 +13,7 @@
 - Negative-class(기각 코호트) 기록 — decision_bucket (ROB-1283)
 - 정지 종목 오염 차단 — halted_suspect (ROB-1236)
 - analyze quick fast projection (ROB-1311)
+- KR foreign net-flow ranking unit + provisional source (#1029)
 - KRX 애프터마켓 세션×거래소 적격 (#925)
 
 ## 기준 원문 계약
@@ -274,6 +275,26 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
   `required` 만 place/modify 를 막고 `warn`/`optional` 은 로그 후 진행, preview 는 표시만,
   `off` 는 생략
 - **미변경**: 운영 프롬프트 문언은 이 범위 밖
+
+### KR foreign net-flow ranking unit + provisional source (#1029)
+
+`get_top_stocks(market="kr", ranking_type=foreign_net_buy|foreign_net_sell|foreigners)`
+는 KIS `FHPTJ04400000` (`/uapi/domestic-stock/v1/quotations/foreign-institution-total`,
+국내기관_외국인 매매종목가집계) 를 읽는다. KIS 스펙은 `frgn_ntby_tr_pbmn ~ etc_corp_ntby_tr_pbmn`
+을 **단위 백만원, 수량*현재가** 로 문서화한다.
+
+- 🔴 `foreign_net_amount` 는 **KRW** 다. 백만원→KRW 변환(x1,000,000)은
+  `analysis_screening._map_kr_foreign_row` 에서 `foreigners_liquidity.kis_million_krw_to_krw`
+  로 **정확히 한 번**만 한다. 비유한값(NaN/Inf)·파싱 불가는 None 이고 유동성 필터에서 제외된다.
+- 유동성 하한 `FOREIGNERS_MIN_NET_AMOUNT_KRW`(기본 1억 KRW = 100 백만원)는 변환된 KRW 값에 적용된다.
+  #1029 이전에는 백만원 원값을 KRW 로 읽어 모든 행이 1억 미만으로 탈락하고 `status=degraded` 를 반환했다.
+- 🔴 이 소스는 **가집계(잠정)** 다: 증권사 직원 입력 누계, 외국인 입력 시각 약 09:30/11:20/13:20/14:30 KST(±10분).
+  확정값으로 대체되지 않으며 ~14:30 입력이 이 소스의 최종 상태다. 그래서 KR 외국인 랭킹 응답(행 반환·
+  유동성 degraded·장외 fake-0 억제 전부)은 `source_state="provisional"`,
+  `source_state_reason="kis_foreign_institution_total_provisional_tally"`, `source_state_note`,
+  `foreign_net_amount_unit="KRW"` 를 싣는다. 확정 일별 수급은 장 마감 후 확정 투자자 수급
+  시리즈(`investor_flow_snapshots` 18:10 KST job, `get_intraday_investor_flow` confirmed 블록)에서 읽는다.
+- 순위 정렬은 `FID_DIV_CLS_CODE="0"`(수량정렬)이다 — 금액 기준 순위(Toss 등)와 순서가 다를 수 있다.
 
 ## 유지 규약
 

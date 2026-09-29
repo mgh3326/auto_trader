@@ -264,7 +264,7 @@ class TestMCPTopStocks:
                         "stck_prpr": "35000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "20000000",
-                        "frgn_ntby_tr_pbmn": "700000000000",
+                        "frgn_ntby_tr_pbmn": "700000",  # 백만원
                     }
                 ]
 
@@ -373,7 +373,7 @@ class TestMCPTopStocks:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "10000000",
-                        "frgn_ntby_tr_pbmn": "800000000000",
+                        "frgn_ntby_tr_pbmn": "800000",  # 백만원
                     }
                 ]
 
@@ -960,7 +960,7 @@ class TestMCPTopStocks:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "frgn_ntby_tr_pbmn": "400000000000",
+                        "frgn_ntby_tr_pbmn": "400000",  # 백만원
                     },
                     {
                         "stck_shrn_iscd": "005380",
@@ -968,7 +968,7 @@ class TestMCPTopStocks:
                         "stck_prpr": "120000",
                         "prdy_ctrt": "1.5",
                         "frgn_ntby_qty": "3000000",
-                        "frgn_ntby_tr_pbmn": "360000000000",
+                        "frgn_ntby_tr_pbmn": "360000",  # 백만원
                     },
                 ]
 
@@ -1020,7 +1020,7 @@ class TestMCPTopStocks:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "frgn_ntby_tr_pbmn": "400000000000",
+                        "frgn_ntby_tr_pbmn": "400000",  # 백만원
                     }
                 ]
 
@@ -1752,7 +1752,7 @@ class TestForeignersLiquidity:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "frgn_ntby_tr_pbmn": "400000000000",
+                        "frgn_ntby_tr_pbmn": "400000",  # 백만원
                     }
                 ]
 
@@ -1776,14 +1776,14 @@ class TestForeignersLiquidity:
                         "hts_kor_isnm": "삼성전자",
                         "stck_prpr": "80000",
                         "frgn_ntby_qty": "5000000",
-                        "frgn_ntby_tr_pbmn": "400000000000",
+                        "frgn_ntby_tr_pbmn": "400000",  # 백만원
                     },
                     {
                         "stck_shrn_iscd": "900111",
                         "hts_kor_isnm": "잡주",
                         "stck_prpr": "300",
                         "frgn_ntby_qty": "1000",
-                        "frgn_ntby_tr_pbmn": "300000",  # 30만 KRW — junk
+                        "frgn_ntby_tr_pbmn": "30",  # 30 백만원 = 3천만 KRW, junk
                     },
                 ]
 
@@ -1804,7 +1804,7 @@ class TestForeignersLiquidity:
                         "stck_shrn_iscd": "900111",
                         "hts_kor_isnm": "잡주",
                         "stck_prpr": "300",
-                        "frgn_ntby_tr_pbmn": "300000",
+                        "frgn_ntby_tr_pbmn": "30",
                     }
                 ]
 
@@ -1827,7 +1827,7 @@ class TestForeignersLiquidity:
                         "stck_shrn_iscd": "900111",
                         "hts_kor_isnm": "잡주",
                         "stck_prpr": "300",
-                        "frgn_ntby_tr_pbmn": "300000",  # below threshold
+                        "frgn_ntby_tr_pbmn": "30",  # 3천만 KRW, below threshold
                     }
                 ]
 
@@ -1900,7 +1900,7 @@ class TestForeignersLiquidity:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "frgn_ntby_tr_pbmn": "400000000000",
+                        "frgn_ntby_tr_pbmn": "400000",  # 백만원
                     }
                 ]
 
@@ -1919,6 +1919,218 @@ class TestForeignersLiquidity:
         assert result["rankings"][0]["symbol"] == "005930"
         assert result["rankings"][0]["foreign_net_amount"] == pytest.approx(4e11)
         assert "note" not in result
+
+    # #1029: 2026-09-29 20:56 KST post-close observation. Toss Discover showed
+    # these foreign net buys; KIS FHPTJ04400000 reports frgn_ntby_tr_pbmn in
+    # 백만원, so 925억 arrives as "92500". Reading it as raw KRW dropped every
+    # row below the 1억 floor and returned status=degraded.
+    _POST_CLOSE_ROWS_20260929 = (
+        # (code, name, price, amount in 백만원)
+        ("042700", "한미반도체", "125000", "92500"),
+        ("001820", "삼화콘덴서", "52000", "43000"),
+        ("036930", "주성엔지니어링", "41000", "36200"),
+        ("403870", "HPSP", "38500", "30100"),
+        ("222800", "심텍", "33000", "25400"),
+    )
+
+    def _kis_rows_20260929(self, *, sign: str = "") -> list[dict[str, str]]:
+        return [
+            {
+                "mksc_shrn_iscd": code,
+                "hts_kor_isnm": name,
+                "stck_prpr": price,
+                "prdy_ctrt": "2.10",
+                # qty x current price == amount (the documented derivation).
+                "frgn_ntby_qty": f"{sign}{int(amount) * 1_000_000 // int(price)}",
+                "frgn_ntby_tr_pbmn": f"{sign}{amount}",
+            }
+            for code, name, price, amount in self._POST_CLOSE_ROWS_20260929
+        ]
+
+    async def test_1029_post_close_documented_unit_rows_survive(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+        rows = self._kis_rows_20260929()
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return rows
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "market_closed",
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy", limit=8
+        )
+
+        assert "status" not in result
+        assert "degraded_reason" not in result
+        assert result["data_state"] == "market_closed"
+        assert result["liquidity_filter"]["excluded_count"] == 0
+        assert [r["symbol"] for r in result["rankings"]] == [
+            "042700",
+            "001820",
+            "036930",
+            "403870",
+            "222800",
+        ]
+        assert [r["foreign_net_amount"] for r in result["rankings"]] == [
+            92_500_000_000.0,
+            43_000_000_000.0,
+            36_200_000_000.0,
+            30_100_000_000.0,
+            25_400_000_000.0,
+        ]
+        # qty x price reproduces the KRW amount — the unit is consistent.
+        first = result["rankings"][0]
+        assert first["foreign_net_qty"] * first["price"] == pytest.approx(
+            first["foreign_net_amount"], rel=1e-5
+        )
+        # The source is a 가집계 tally: say so explicitly, not generic degraded.
+        assert result["source_state"] == "provisional"
+        assert (
+            result["source_state_reason"]
+            == "kis_foreign_institution_total_provisional_tally"
+        )
+        assert "14:30" in result["source_state_note"]
+        assert result["foreign_net_amount_unit"] == "KRW"
+
+    async def test_1029_net_sell_documented_unit_rows_survive(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+        rows = self._kis_rows_20260929(sign="-")
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                assert rank_sort == "1"
+                return rows
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_sell"
+        )
+
+        assert "status" not in result
+        assert len(result["rankings"]) == 5
+        assert result["rankings"][0]["foreign_net_amount"] == -92_500_000_000.0
+        assert result["source_state"] == "provisional"
+
+    async def test_1029_threshold_boundary_uses_documented_unit(self, monkeypatch):
+        """1억 KRW == "100" 백만원: kept; "99" (9,900만 KRW): excluded."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "mksc_shrn_iscd": "000100",
+                        "hts_kor_isnm": "경계통과",
+                        "stck_prpr": "10000",
+                        "frgn_ntby_qty": "10000",
+                        "frgn_ntby_tr_pbmn": "100",
+                    },
+                    {
+                        "mksc_shrn_iscd": "000099",
+                        "hts_kor_isnm": "경계미달",
+                        "stck_prpr": "10000",
+                        "frgn_ntby_qty": "9900",
+                        "frgn_ntby_tr_pbmn": "99",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        assert [r["symbol"] for r in result["rankings"]] == ["000100"]
+        assert result["rankings"][0]["foreign_net_amount"] == 100_000_000.0
+        assert result["liquidity_filter"]["excluded_count"] == 1
+        assert result["liquidity_filter"]["min_foreign_net_amount_krw"] == 1e8
+
+    async def test_1029_degraded_and_suppressed_shapes_carry_source_state(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+        payload: list[dict[str, str]] = []
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return payload
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        # Liquidity-emptied (genuinely tiny flow) -> degraded, still provisional.
+        payload[:] = [
+            {
+                "mksc_shrn_iscd": "900111",
+                "hts_kor_isnm": "잡주",
+                "stck_prpr": "300",
+                "frgn_ntby_tr_pbmn": "30",
+            }
+        ]
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+        degraded = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+        assert degraded["status"] == "degraded"
+        assert degraded["source_state"] == "provisional"
+        assert degraded["foreign_net_amount_unit"] == "KRW"
+
+        # Off-session fake-0 suppression, also provisional.
+        payload[:] = [
+            {
+                "mksc_shrn_iscd": "005930",
+                "hts_kor_isnm": "삼성전자",
+                "stck_prpr": "80000",
+                "frgn_ntby_qty": "0",
+                "frgn_ntby_tr_pbmn": "0",
+            }
+        ]
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "market_closed",
+        )
+        suppressed = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_buy"
+        )
+        assert suppressed["rankings"] == []
+        assert suppressed["source_state"] == "provisional"
+
+    async def test_1029_non_foreign_kr_ranking_has_no_source_state(self, monkeypatch):
+        tools = build_tools()
+
+        class MockKISClient:
+            async def volume_rank(self, market, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "acml_vol": "1000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="volume")
+        assert len(result["rankings"]) == 1
+        assert "source_state" not in result
 
 
 # ---------------------------------------------------------------------------

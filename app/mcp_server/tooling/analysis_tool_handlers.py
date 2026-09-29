@@ -376,6 +376,7 @@ async def get_top_stocks_impl(
                     "timestamp": datetime.datetime.now(kst_tz).isoformat(),
                     "source": source,
                     "data_state": data_state,
+                    **foreigners_liquidity.foreign_ranking_source_state(),
                     "note": (
                         "KRX is not in regular session; the foreign net-trade "
                         "ranking comes back with no real net flow (가집계 fake-0). "
@@ -410,6 +411,7 @@ async def get_top_stocks_impl(
                 "timestamp": datetime.datetime.now(kst_tz).isoformat(),
                 "source": source,
                 **({"data_state": data_state} if data_state is not None else {}),
+                **foreigners_liquidity.foreign_ranking_source_state(),
                 "status": "degraded",
                 "degraded_reason": (
                     f"all {excluded} foreign-flow row(s) fell below the liquidity "
@@ -528,6 +530,8 @@ async def get_top_stocks_impl(
         response["data_state"] = data_state
     if liquidity_filter_meta is not None:
         response["liquidity_filter"] = liquidity_filter_meta
+    if market == "kr" and resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+        response.update(foreigners_liquidity.foreign_ranking_source_state())
     if min_market_cap is not None:
         response["market_cap_filter"] = {
             "min_market_cap": min_market_cap,

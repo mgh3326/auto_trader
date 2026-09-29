@@ -214,7 +214,7 @@ class TestKISRankingAPIParams:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "frgn_ntby_tr_pbmn": "400000000000",
+                        "frgn_ntby_tr_pbmn": "400000",  # 백만원 (5,000,000 x 80,000)
                     }
                 ],
             }
