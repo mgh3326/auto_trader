@@ -75,6 +75,7 @@ PROPOSAL_ONLY_TOOLS: frozenset[str] = frozenset(
         "get_market_index",
         "get_news",
         "get_holdings",
+        "toss_proposal_accounts",
         "get_fx_rate",
         "session_bootstrap_pack",
         # -- policy / routing advisory -----------------------------------

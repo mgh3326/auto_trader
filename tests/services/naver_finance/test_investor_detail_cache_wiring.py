@@ -1,14 +1,14 @@
-"""ROB-811 cache wiring in the opinion assembly."""
+"""ROB-811 cache wiring in the opinion assembly (re-keyed for #930)."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
-from bs4 import BeautifulSoup
 
 from app.mcp_server.tooling import fundamentals_sources_naver
 from app.services.naver_finance import investor
+from app.services.naver_finance.investor import NaverResearchContractError
 
 
 class FakeCache:
@@ -26,28 +26,32 @@ class FakeCache:
         self.store.update(entries)
 
 
-def _list_soup() -> BeautifulSoup:
-    html = """
-    <table class="type_1"><tbody>
-      <tr>
-        <td>삼성전자</td>
-        <td><a href="company_read.naver?nid=111">목표가 상향</a></td>
-        <td>미래에셋</td><td>x</td><td>26.07.09</td>
-      </tr>
-      <tr>
-        <td>삼성전자</td>
-        <td><a href="company_read.naver?nid=222">유지</a></td>
-        <td>KB증권</td><td>x</td><td>26.07.08</td>
-      </tr>
-    </tbody></table>
-    """
-    return BeautifulSoup(html, "lxml")
+def _list_items() -> list[dict[str, Any]]:
+    """Normalized research-list rows (#930): research_id keys the cache."""
+    return [
+        {
+            "research_id": 111,
+            "stock_name": "삼성전자",
+            "title": "목표가 상향",
+            "firm": "미래에셋",
+            "date": "2026-07-09",
+            "url": "https://m.stock.naver.com/research/company/111",
+        },
+        {
+            "research_id": 222,
+            "stock_name": "삼성전자",
+            "title": "유지",
+            "firm": "KB증권",
+            "date": "2026-07-08",
+            "url": "https://m.stock.naver.com/research/company/222",
+        },
+    ]
 
 
 async def _build(detail_fetcher, detail_cache):
-    return await investor._build_investment_opinions_from_company_list_soup(
+    return await investor._build_investment_opinions_from_research_items(
         "005930",
-        _list_soup(),
+        _list_items(),
         limit=10,
         current_price=100000,
         detail_fetcher=detail_fetcher,
@@ -58,16 +62,18 @@ async def _build(detail_fetcher, detail_cache):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_all_hits_makes_zero_fetches() -> None:
-    calls: list[str] = []
+    calls: list[int] = []
 
-    async def fetcher(nid: str) -> dict[str, Any]:
-        calls.append(nid)
+    async def fetcher(research_id: int) -> dict[str, Any]:
+        calls.append(research_id)
         return {"target_price": 1, "rating": "x"}
 
     cache = FakeCache(
         {
-            "111": {"target_price": 160000, "rating": "매수"},
-            "222": {"target_price": None, "rating": None},
+            # #930: research-api rows are namespaced so they can never collide
+            # with a legacy company_read nid key.
+            "api:111": {"target_price": 160000, "rating": "매수"},
+            "api:222": {"target_price": None, "rating": None},
         }
     )
     result = await _build(fetcher, cache)
@@ -80,16 +86,19 @@ async def test_all_hits_makes_zero_fetches() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_miss_fetches_and_writes() -> None:
-    async def fetcher(nid: str) -> dict[str, Any]:
-        return {"target_price": 170000 if nid == "111" else None, "rating": "매수"}
+    async def fetcher(research_id: int) -> dict[str, Any]:
+        return {
+            "target_price": 170000 if research_id == 111 else None,
+            "rating": "매수",
+        }
 
     cache = FakeCache()
     await _build(fetcher, cache)
-    assert cache.get_calls == [["111", "222"]]
+    assert cache.get_calls == [["api:111", "api:222"]]
     assert cache.put_calls == [
         {
-            "111": {"target_price": 170000, "rating": "매수"},
-            "222": {"target_price": None, "rating": "매수"},
+            "api:111": {"target_price": 170000, "rating": "매수"},
+            "api:222": {"target_price": None, "rating": "매수"},
         }
     ]
 
@@ -97,20 +106,23 @@ async def test_miss_fetches_and_writes() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fetch_failure_not_written() -> None:
-    async def fetcher(nid: str) -> dict[str, Any] | None:
-        return None if nid == "111" else {"target_price": 180000, "rating": "매수"}
+    async def fetcher(research_id: int) -> dict[str, Any]:
+        if research_id == 111:
+            raise RuntimeError("detail boom")
+        return {"target_price": 180000, "rating": "매수"}
 
     cache = FakeCache()
     result = await _build(fetcher, cache)
-    assert list(cache.put_calls[0].keys()) == ["222"]  # 111 (None) not written
+    assert list(cache.put_calls[0].keys()) == ["api:222"]  # 111 failure not written
     tp = {o["title"]: o["target_price"] for o in result["opinions"]}
     assert tp["목표가 상향"] is None
+    assert result["opinions"][0]["rating_bucket"] == "unrated"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_none_cache_matches_legacy_behavior() -> None:
-    async def fetcher(nid: str) -> dict[str, Any]:
+    async def fetcher(research_id: int) -> dict[str, Any]:
         return {"target_price": 190000, "rating": "매수"}
 
     result = await _build(fetcher, None)  # detail_cache=None → legacy path
@@ -140,38 +152,35 @@ async def test_wrapper_passes_cache_to_fetch_investment_opinions(
 
 
 # ---------------------------------------------------------------------------
-# ROB-814 — anchor-missing pages must NOT be cache-worthy
+# ROB-814 — anomalous detail payloads must NOT be cache-worthy
 # ---------------------------------------------------------------------------
 
 
-def test_parse_detail_anchor_missing_returns_none() -> None:
-    """ROB-814: a 200 page WITHOUT div.view_info_1 (anti-bot interstitial,
-    deleted-post notice, selector rot) is a page-shape anomaly, not a report
-    with a legitimately-absent target. The parser must return None so the
-    assembly treats it exactly like a fetch failure — shown as no-detail and
+def test_detail_payload_contract_break_raises_not_cached() -> None:
+    """ROB-814, #930 re-cut: a payload WITHOUT researchContent (contract break —
+    anti-bot page shape served as JSON, payload drift) is an anomaly, not a
+    report with a legitimately-absent target. The parser must raise so the
+    assembly treats it like a fetch failure — surfaced as unrated + warning and
     NEVER written to the insert-once cache (which would freeze the anomaly
     permanently, surviving even a parser fix)."""
-    from bs4 import BeautifulSoup
-
-    from app.services.naver_finance.investor import _parse_report_detail_soup
-
-    soup = BeautifulSoup(
-        "<html><body><p>일시적으로 이용할 수 없습니다</p></body></html>",
-        "html.parser",
-    )
-    assert _parse_report_detail_soup(soup) is None
+    with pytest.raises(NaverResearchContractError, match="researchContent"):
+        investor._parse_research_detail_payload("005930", 111, {"junk": []})
 
 
-def test_parse_detail_anchor_present_without_fields_stays_cacheworthy() -> None:
-    """ROB-814 regression lock: anchor present but money/coment absent is a
-    REAL report without a target — the all-None dict stays cache-worthy
-    (ROB-811 'success-with-no-target' rule preserved)."""
-    from bs4 import BeautifulSoup
-
-    from app.services.naver_finance.investor import _parse_report_detail_soup
-
-    soup = BeautifulSoup(
-        '<html><body><div class="view_info_1">의견 없음</div></body></html>',
-        "html.parser",
-    )
-    assert _parse_report_detail_soup(soup) == {"target_price": None, "rating": None}
+def test_detail_payload_without_fields_stays_cacheworthy() -> None:
+    """ROB-814 regression lock (#930 shape): a VALID researchContent whose
+    opinion/goalPrice fields are simply absent is a real report without a
+    target — the all-None dict stays cache-worthy (the ROB-811
+    'success-with-no-target' rule preserved)."""
+    payload = {
+        "researchContent": {
+            "itemCode": "005930",
+            "researchId": 111,
+            "opinion": None,
+            "goalPrice": None,
+        }
+    }
+    assert investor._parse_research_detail_payload("005930", 111, payload) == {
+        "target_price": None,
+        "rating": None,
+    }

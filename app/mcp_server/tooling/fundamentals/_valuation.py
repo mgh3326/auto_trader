@@ -157,11 +157,16 @@ async def handle_get_investor_trends(
             instrument_type="equity_kr",
         )
 
-    # Add individual_net (derived: negative of institutional + foreign)
+    # Fill individual_net only when the source row lacks it (the trend JSON
+    # carries individualPureBuyQuant directly). Derive from inst+foreign; keep
+    # NULL as NULL — never coerce to 0.
     for row in result.get("data", []):
-        inst = row.get("institutional_net") or 0
-        frgn = row.get("foreign_net") or 0
-        row["individual_net"] = -(inst + frgn)
+        if row.get("individual_net") is None:
+            inst = row.get("institutional_net")
+            frgn = row.get("foreign_net")
+            row["individual_net"] = (
+                -(inst + frgn) if inst is not None and frgn is not None else None
+            )
 
     if period != "day":
         result["data"] = _aggregate_investor_data(result["data"], period)
@@ -173,6 +178,14 @@ async def handle_get_investor_trends(
     if period == "day":
         result.update(_ownership_summary(result["data"]))
     return result
+
+
+def _sum_known(rows: list[dict[str, Any]], field: str) -> int | float | None:
+    # NULL-honest aggregation: sum the known values; NULL only when every row
+    # in the bucket lacks the field (never coerce NULL to 0 — an all-missing
+    # bucket must not fabricate a zero flow).
+    known = [r[field] for r in rows if r.get(field) is not None]
+    return sum(known) if known else None
 
 
 def _aggregate_investor_data(
@@ -213,10 +226,10 @@ def _aggregate_investor_data(
             "date_end": rows_sorted[0].get("date", ""),
             "trading_days": len(rows),
             "close": rows_sorted[0].get("close"),
-            "volume": sum(r.get("volume") or 0 for r in rows),
-            "institutional_net": sum(r.get("institutional_net") or 0 for r in rows),
-            "foreign_net": sum(r.get("foreign_net") or 0 for r in rows),
-            "individual_net": sum(r.get("individual_net") or 0 for r in rows),
+            "volume": _sum_known(rows, "volume"),
+            "institutional_net": _sum_known(rows, "institutional_net"),
+            "foreign_net": _sum_known(rows, "foreign_net"),
+            "individual_net": _sum_known(rows, "individual_net"),
             # ROB-448: holding shares/rate are point-in-time levels (not flows) → carry
             # the bucket's most-recent value, like close (NOT a sum).
             "foreign_holding_shares": rows_sorted[0].get("foreign_holding_shares"),

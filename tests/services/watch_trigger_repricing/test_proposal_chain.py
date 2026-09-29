@@ -293,6 +293,41 @@ async def test_a_session_may_not_propose_on_a_different_symbol() -> None:
     assert "000660" in str(exc.value)
 
 
+@pytest.mark.asyncio
+async def test_parking_draft_forwards_only_its_explicit_account(monkeypatch):
+    from dataclasses import replace
+
+    from app.services.watch_trigger_repricing import proposal_chain
+
+    seen = []
+
+    async def fake_create(**kwargs):
+        seen.append(kwargs)
+        return {"success": True, "proposal_id": "proposal-fake"}
+
+    monkeypatch.setattr(proposal_chain, "order_proposal_create", fake_create)
+    draft = replace(
+        _draft(symbol="SGOV"),
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        rungs=(ProposalRung(rung_index=0, side="buy", quantity="1"),),
+        broker_account_id="731",
+    )
+    await create_proposal_for_fire(
+        request=_request(symbol="SGOV"),
+        draft=draft,
+        grant=_grant_for(_spawner(draft)),
+    )
+    assert seen[0]["broker_account_id"] == "731"
+    await create_proposal_for_fire(
+        request=_request(symbol="SGOV"),
+        draft=replace(draft, broker_account_id=None),
+        grant=_grant_for(_spawner(draft)),
+    )
+    assert seen[1]["broker_account_id"] is None
+
+
 # ---------------------------------------------------------------------------
 # ALLOWLIST — closed equality, attested from the provisioning path
 # ---------------------------------------------------------------------------

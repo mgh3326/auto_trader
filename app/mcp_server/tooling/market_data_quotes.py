@@ -56,7 +56,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
-from app.services import kis_ohlcv_cache
+from app.services import kis_ohlcv_cache, krx_after_market
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.toss.market_calendar import get_kr_nxt_session_from_toss
 from app.services.execution_strength.query_service import compute_execution_strength
@@ -65,6 +65,7 @@ from app.services.kr_hourly_candles_read_service import (
     read_kr_intraday_candles,
 )
 from app.services.kr_symbol_universe_service import (
+    get_kr_krx_after_tradability,
     get_kr_nxt_tradability,
     search_kr_symbols,
 )
@@ -1526,6 +1527,29 @@ async def _search_symbol_impl(
         return [_error_payload(source="master", message=str(exc), query=query)]
 
 
+async def _krx_after_quote_fields(symbol: str) -> dict[str, Any]:
+    """#925 — KRX after-market capability for a KR quote; unknown reads False.
+
+    Fail-open for the quote (a missing table or DB hiccup must not break
+    get_quote) but fail-closed for the field: the value is False with a reason,
+    never None and never True without a fresh listed-STOCK row.
+    """
+    try:
+        capability = (await get_kr_krx_after_tradability([symbol])).get(symbol)
+    except Exception as exc:  # noqa: BLE001 - capability read is advisory for quotes
+        logger.warning(
+            "KRX after-market capability unavailable for %s: %s", symbol, exc
+        )
+        return krx_after_market.krx_after_unknown_fields(
+            krx_after_market.REASON_LOOKUP_FAILED
+        )
+    if capability is None:
+        return krx_after_market.krx_after_unknown_fields(
+            krx_after_market.REASON_NOT_IN_UNIVERSE
+        )
+    return capability.public_fields()
+
+
 async def _get_quote_impl(
     symbol: str | int,
     market: str | None = None,
@@ -1563,6 +1587,7 @@ async def _get_quote_impl(
         tradability = tradability_map.get(symbol)
         if tradability is not None:
             quote.update(tradability.public_fields())
+        quote.update(await _krx_after_quote_fields(symbol))
         if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
             return quote
 

@@ -70,6 +70,40 @@ class ScreenerPickLog(Base):
             "jsonb_typeof(source_params) = 'object'",
             name="source_params_object",
         ),
+        CheckConstraint(
+            "admission IS NULL OR admission IN "
+            "('admitted','not_admitted','dropped_preselection')",
+            name="admission_vocabulary",
+        ),
+        CheckConstraint(
+            "admission_reason IS NULL OR length(btrim(admission_reason)) > 0",
+            name="admission_reason_nonempty",
+        ),
+        CheckConstraint(
+            "selection_seq IS NULL OR selection_seq >= 1",
+            name="selection_seq_positive",
+        ),
+        CheckConstraint(
+            "source_status IS NULL OR source_status IN "
+            "('ok','empty','stale_dropped','error')",
+            name="source_status_vocabulary",
+        ),
+        CheckConstraint(
+            "collection_version IS NULL OR length(btrim(collection_version)) > 0",
+            name="collection_version_nonempty",
+        ),
+        CheckConstraint(
+            "raw_row IS NULL OR jsonb_typeof(raw_row) = 'object'",
+            name="raw_row_object",
+        ),
+        CheckConstraint(
+            "gate_features IS NULL OR jsonb_typeof(gate_features) = 'object'",
+            name="gate_features_object",
+        ),
+        CheckConstraint(
+            "call_context IS NULL OR jsonb_typeof(call_context) = 'object'",
+            name="call_context_object",
+        ),
         Index(
             "ix_screener_pick_log_recorded_at",
             "recorded_at",
@@ -105,3 +139,18 @@ class ScreenerPickLog(Base):
     fanout_version: Mapped[str] = mapped_column(Text, nullable=False)
     fanout_code_sha256: Mapped[str] = mapped_column(Text, nullable=False)
     source_params: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    # A-record columns (task #884): NULL on pre-A-record rows; no backfill.
+    collection_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    admission: Mapped[str | None] = mapped_column(Text, nullable=True)
+    admission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selection_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_asof: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    raw_row: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    gate_features: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    call_context: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)

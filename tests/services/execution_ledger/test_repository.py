@@ -588,3 +588,166 @@ def test_execution_ledger_upsert_accepts_toss_broker() -> None:
 
     assert fill.broker == "toss"
     assert fill.venue == "toss_kr"
+
+
+# --- Task 825: position facts for the fill-handoff kick filter ---
+
+
+def _t825_row(**overrides) -> ExecutionLedger:
+    base: dict[str, Any] = {
+        "broker": "upbit",
+        "account_mode": "live",
+        "venue": "upbit_krw",
+        "instrument_type": InstrumentType.crypto,
+        "symbol": "T825SYM",
+        "raw_symbol": "KRW-T825SYM",
+        "side": "buy",
+        "broker_order_id": "T825-0001",
+        "fill_seq": 0,
+        "filled_qty": Decimal("10.0000000000"),
+        "filled_price": Decimal("700.0000000000"),
+        "filled_notional": Decimal("7000.0000000000"),
+        "fee_amount": Decimal("0.0000000000"),
+        "fee_currency": "KRW",
+        "filled_at": datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
+        "currency": "KRW",
+        "source": "websocket",
+        "raw_payload_json": None,
+    }
+    base.update(overrides)
+    return ExecutionLedger(**base)
+
+
+_T825_KEY = {
+    "broker": "upbit",
+    "account_mode": "live",
+    "venue": "upbit_krw",
+    "instrument_type": "crypto",
+    "symbol": "T825SYM",
+    "currency": "KRW",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_position_before_fill_sums_signed_qty_strictly_before(
+    db_session,
+) -> None:
+    """Net signed qty over prior rows of the same key; the fill itself and
+    any later row are excluded, and a manual_import opening lot counts.
+    """
+    opening_lot = _t825_row(
+        broker_order_id="T825-OPEN",
+        source="manual_import",
+        filled_qty=Decimal("100"),
+        filled_at=datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
+    )
+    partial_sell = _t825_row(
+        broker_order_id="T825-SELL",
+        side="sell",
+        filled_qty=Decimal("30"),
+        filled_at=datetime(2026, 9, 1, 1, 0, tzinfo=UTC),
+    )
+    current = _t825_row(
+        broker_order_id="T825-CUR",
+        side="sell",
+        filled_qty=Decimal("20"),
+        filled_at=datetime(2026, 9, 1, 2, 0, tzinfo=UTC),
+    )
+    later = _t825_row(
+        broker_order_id="T825-LATER",
+        filled_qty=Decimal("999"),
+        filled_at=datetime(2026, 9, 1, 3, 0, tzinfo=UTC),
+    )
+    rows = [opening_lot, partial_sell, current, later]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    try:
+        qty_before, rows_before = await ExecutionLedgerRepository(
+            db_session
+        ).position_before_fill(
+            **_T825_KEY,
+            filled_at=datetime(2026, 9, 1, 2, 0, tzinfo=UTC),
+            ledger_id=current.id,
+        )
+        assert qty_before == Decimal("70")
+        assert rows_before == 2
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("T825-%")
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_position_before_fill_same_timestamp_orders_by_id(
+    db_session,
+) -> None:
+    """Rows at the same filled_at count only when their id precedes the
+    fill's id — the (filled_at, id) boundary is strict in both components.
+    """
+    stamp = datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
+    earlier_same_ts = _t825_row(
+        broker_order_id="T825-SAME-A", filled_qty=Decimal("5"), filled_at=stamp
+    )
+    current = _t825_row(
+        broker_order_id="T825-SAME-B", filled_qty=Decimal("5"), filled_at=stamp
+    )
+    later_same_ts = _t825_row(
+        broker_order_id="T825-SAME-C", filled_qty=Decimal("5"), filled_at=stamp
+    )
+    rows = [earlier_same_ts, current, later_same_ts]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    try:
+        qty_before, rows_before = await ExecutionLedgerRepository(
+            db_session
+        ).position_before_fill(**_T825_KEY, filled_at=stamp, ledger_id=current.id)
+        assert qty_before == Decimal("5")
+        assert rows_before == 1
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("T825-%")
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_position_before_fill_match_key_is_exact_and_unproven(
+    db_session,
+) -> None:
+    """A different broker/account_mode/venue/symbol/currency does not count,
+    and a key with no history returns zero rows — unproven, not flat."""
+    foreign = _t825_row(
+        broker_order_id="T825-FGN",
+        symbol="ETH",
+        filled_qty=Decimal("42"),
+    )
+    db_session.add(foreign)
+    await db_session.commit()
+
+    try:
+        qty_before, rows_before = await ExecutionLedgerRepository(
+            db_session
+        ).position_before_fill(
+            **_T825_KEY,
+            filled_at=datetime(2026, 9, 2, 0, 0, tzinfo=UTC),
+            ledger_id=foreign.id + 1,
+        )
+        assert qty_before == Decimal("0")
+        assert rows_before == 0
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("T825-%")
+            )
+        )
+        await db_session.commit()

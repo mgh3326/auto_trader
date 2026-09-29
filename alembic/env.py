@@ -1,9 +1,10 @@
 # alembic/env.py
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
@@ -54,8 +55,27 @@ async def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    # ✅ 여기가 핵심: async with + await connection.run_sync(...)
+    migration_role = os.environ.get("AT_MIGRATION_SET_ROLE")
+    if migration_role is not None and migration_role != "at_migration_owner":
+        raise RuntimeError("AT_MIGRATION_SET_ROLE must be at_migration_owner")
+
     async with connectable.connect() as connection:
+        if migration_role:
+            # The runner is NOINHERIT. SET ROLE must precede all Alembic DDL so
+            # new objects receive the owner's default ACLs and ownership.
+            await connection.execute(text("SET ROLE at_migration_owner"))
+            identity = await connection.execute(
+                text("SELECT session_user, current_user")
+            )
+            session_user, current_user = identity.one()
+            if session_user != "at_migration_runner" or current_user != migration_role:
+                raise RuntimeError("migration role identity mismatch")
+            await connection.commit()
+        else:
+            identity = await connection.execute(text("SELECT session_user"))
+            if identity.scalar_one() == "at_migration_runner":
+                raise RuntimeError("migration runner requires AT_MIGRATION_SET_ROLE")
+            await connection.commit()
         await connection.run_sync(do_run_migrations)
 
     await connectable.dispose()

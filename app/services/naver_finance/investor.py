@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import json
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -10,171 +12,372 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
-from app.core.number_utils import parse_korean_number as _parse_korean_number
 from app.services.analyst_normalizer import (
     build_consensus,
     normalize_rating_label,
     rating_to_bucket,
 )
 from app.services.naver_finance.detail_cache_port import DetailCachePort
-from app.services.naver_finance.news import _parse_news_soup
+from app.services.naver_finance.news import NaverNewsFetchResult, fetch_stock_news
 from app.services.naver_finance.parser import (
-    NAVER_FINANCE_BASE,
+    DEFAULT_HEADERS,
     NAVER_FINANCE_ITEM,
     _extract_current_price_from_main_soup,
     _fetch_html,
     _fetch_html_with_client,
+    _fetch_json,
     _parse_naver_date,
 )
 from app.services.naver_finance.valuation import _parse_valuation_from_soups
 
+# Naver research list/detail JSON API (task #930). The legacy
+# finance.naver.com/research/company_list.naver page now 302-redirects to the
+# SPA stock.naver.com/research/company and drops the itemCode filter, so the
+# HTML table parse silently produced zero opinions — the same Naver migration
+# family as the #900 investor-flow and #904 news moves. Anonymous JSON
+# replacements (no auth, desk-verified 200):
+#   list   GET m.stock.naver.com/api/research/stock/{code}?page=1&pageSize=N
+#          -> [{researchId, itemCode, itemName, title, brokerName, writeDate,
+#              readCount, previewContent, category}]  (no opinion/target fields)
+#   detail GET m.stock.naver.com/api/research/company/{researchId}
+#          -> {researchContent: {opinion (e.g. "StrongBuy"), goalPrice,
+#              prevGoalPrice, priceAtWriteDate, itemCode, brokerName,
+#              writeDate, attachUrl}, researchSummaries: [...]}
+# TRAP: /api/research/company/{stock_code} is interpreted as a researchId —
+# /api/research/company/005930 returns research 5930 for a DIFFERENT stock.
+# Detail paths are built only from researchId values the list call returned,
+# and each response's researchContent.researchId/itemCode is re-verified so a
+# path mixup fails loud instead of quietly serving another stock's opinion.
+NAVER_RESEARCH_API = "https://m.stock.naver.com/api/research"
+NAVER_RESEARCH_PAGE = "https://m.stock.naver.com/research/company"
+# Detail-cache keys are namespaced so rows written under the retired
+# company_read.naver nid scheme can never be served for a researchId row.
+_DETAIL_CACHE_KEY_PREFIX = "api:"
 
-def _parse_report_detail_soup(soup: BeautifulSoup) -> dict[str, Any] | None:
-    info_div = soup.select_one("div.view_info_1")
-    if not info_div:
-        # ROB-814: the parse anchor itself is missing — a page-shape anomaly
-        # (anti-bot interstitial, deleted-post notice, Naver selector rot),
-        # NOT a report with a legitimately-absent target. Return None so the
-        # assembly treats it like a fetch failure: shown as no-detail but
-        # NEVER written to the insert-once ROB-811 cache, which would freeze
-        # the anomaly permanently (no update path) even after a parser fix.
+
+class NaverResearchContractError(RuntimeError):
+    """The Naver research API returned a payload outside the probed shape."""
+
+
+def _detail_cache_key(research_id: int) -> str:
+    return f"{_DETAIL_CACHE_KEY_PREFIX}{research_id}"
+
+
+def _parse_research_int(value: Any) -> int | None:
+    """Strict non-negative int coercion for research payload numbers.
+
+    goalPrice/readCount arrive as decimal strings ("560000"); researchId is a
+    JSON int. Commas/grouping are NOT accepted — a malformed number is
+    upstream corruption and is rejected rather than silently re-interpreted.
+    """
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value == int(value) else None
+    text = str(value).strip()
+    if not text or not re.fullmatch(r"[0-9]+", text):
+        return None
+    return int(text)
 
-    result: dict[str, Any] = {
-        "target_price": None,
-        "rating": None,
+
+def _normalize_research_list_item(
+    raw: Any, code: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Map one research-list row to a report info dict, or (None, reason).
+
+    itemCode is checked against the requested symbol: a list row carrying a
+    different itemCode means the filter was lost upstream (the exact #930
+    silent-zero signature) and the row must not be counted.
+    """
+    if not isinstance(raw, dict):
+        return None, "row is not a JSON object"
+    research_id = _parse_research_int(raw.get("researchId"))
+    if research_id is None or research_id <= 0:
+        return None, "missing or invalid researchId"
+    item_code = str(raw.get("itemCode") or "").strip()
+    if item_code != code:
+        return None, "itemCode mismatch"
+    title = str(raw.get("title") or "").strip()
+    if not title:
+        return None, "missing title"
+    return (
+        {
+            "research_id": research_id,
+            "stock_name": str(raw.get("itemName") or "").strip(),
+            "title": title,
+            "firm": str(raw.get("brokerName") or "").strip(),
+            "date": _parse_naver_date(str(raw.get("writeDate") or "").strip()),
+            "url": f"{NAVER_RESEARCH_PAGE}/{research_id}",
+        },
+        None,
+    )
+
+
+def _parse_research_list_payload(
+    code: str, payload: Any
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Validate a research-list payload -> (report rows, skip-reason counts).
+
+    Fail-loud (task #930): a non-list body, an empty list, or a list whose
+    every row is malformed raises NaverResearchContractError instead of
+    returning zero opinions. An empty list is the exact signature of the
+    retired endpoint and is indistinguishable from "no coverage", so it must
+    never masquerade as a valid empty result on a covered symbol.
+    """
+    if not isinstance(payload, list):
+        raise NaverResearchContractError(
+            f"research list for {code}: expected a JSON list, "
+            f"got {type(payload).__name__}"
+        )
+    if not payload:
+        raise NaverResearchContractError(
+            f"research list for {code} returned 0 reports — refusing to "
+            "serve a silent zero (either the symbol has no analyst coverage "
+            "or the API regressed; the retired company_list endpoint failed "
+            "this exact way)"
+        )
+    items: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+    seen_ids: set[int] = set()
+    for raw in payload:
+        row, reason = _normalize_research_list_item(raw, code)
+        if row is None:
+            key = reason or "invalid row"
+            skipped[key] = skipped.get(key, 0) + 1
+            continue
+        if row["research_id"] in seen_ids:
+            skipped["duplicate researchId"] = skipped.get("duplicate researchId", 0) + 1
+            continue
+        seen_ids.add(row["research_id"])
+        items.append(row)
+    if not items:
+        raise NaverResearchContractError(
+            f"research list for {code}: every row was malformed: {skipped}"
+        )
+    return items, skipped
+
+
+def _parse_research_detail_payload(
+    code: str, research_id: int, payload: Any
+) -> dict[str, Any]:
+    """Validate a research detail payload -> {target_price, rating}.
+
+    ``rating`` is the raw Naver opinion label (e.g. "StrongBuy") for the
+    caller to normalize; ``target_price`` is goalPrice parsed to int.
+    researchContent.researchId and itemCode are re-verified so a detail
+    request accidentally built from the stock code (the /company/{id} trap)
+    fails instead of serving another stock's report.
+    """
+    if not isinstance(payload, dict):
+        raise NaverResearchContractError(
+            f"research detail {research_id}: expected a JSON object, "
+            f"got {type(payload).__name__}"
+        )
+    content = payload.get("researchContent")
+    if not isinstance(content, dict):
+        raise NaverResearchContractError(
+            f"research detail {research_id}: missing researchContent object"
+        )
+    content_id = _parse_research_int(content.get("researchId"))
+    if content_id != research_id:
+        raise NaverResearchContractError(
+            f"research detail {research_id}: payload researchId is "
+            f"{content.get('researchId')!r}"
+        )
+    item_code = str(content.get("itemCode") or "").strip()
+    if item_code != code:
+        raise NaverResearchContractError(
+            f"research detail {research_id}: payload itemCode {item_code!r} "
+            f"does not match requested symbol {code}"
+        )
+    opinion = content.get("opinion")
+    rating = str(opinion).strip() if opinion is not None else ""
+    return {
+        "target_price": _parse_research_int(content.get("goalPrice")),
+        "rating": rating or None,
     }
 
-    target_elem = info_div.select_one("em.money strong")
-    if target_elem:
-        result["target_price"] = _parse_korean_number(target_elem.get_text(strip=True))
 
-    rating_elem = info_div.select_one("em.coment")
-    if rating_elem:
-        result["rating"] = rating_elem.get_text(strip=True)
-
-    return result
+async def _fetch_research_json(url: str, params: dict[str, Any] | None = None) -> Any:
+    """GET a research JSON endpoint with a fresh client — mirrors _fetch_html."""
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        return await _fetch_research_json_with_client(client, url, params=params)
 
 
-def _collect_opinion_report_infos(
-    company_list_soup: BeautifulSoup,
-    limit: int,
-) -> list[dict[str, Any]]:
-    table = company_list_soup.select_one("table.type_1")
-    if not table:
-        return []
+async def _fetch_research_json_with_client(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    """GET a m.stock.naver.com JSON API; a non-JSON body is a contract error.
 
-    report_infos: list[dict[str, Any]] = []
-    seen_nids: set[str] = set()
-    rows = table.select("tbody tr, tr")
-    for row in rows:
-        cells = row.select("td")
-        if len(cells) < 5:
-            continue
-
-        try:
-            title_elem = cells[1].select_one("a")
-            if not title_elem:
-                continue
-
-            href = title_elem.get("href") or ""
-            href_str = href if isinstance(href, str) else ""
-            nid_match = re.search(r"nid=(\d+)", href_str)
-            if not nid_match:
-                continue
-
-            nid = nid_match.group(1)
-            if nid in seen_nids:
-                continue
-            seen_nids.add(nid)
-
-            report_infos.append(
-                {
-                    "nid": nid,
-                    "stock_name": cells[0].get_text(strip=True),
-                    "title": title_elem.get_text(strip=True),
-                    "firm": cells[2].get_text(strip=True),
-                    "date": _parse_naver_date(cells[4].get_text(strip=True)),
-                    "url": (
-                        href_str
-                        if href_str.startswith("http")
-                        else NAVER_FINANCE_BASE + "/research/" + href_str
-                    ),
-                }
-            )
-            if len(report_infos) >= limit:
-                break
-        except (IndexError, ValueError):
-            continue
-
-    return report_infos
+    The retired HTML endpoints redirect to SPA pages, so a body that is not
+    decodable JSON is surfaced with status/content-type context instead of an
+    unlabeled decode failure.
+    """
+    response = await client.get(url, params=params, headers=DEFAULT_HEADERS)
+    response.raise_for_status()
+    try:
+        return response.json()
+    except json.JSONDecodeError as exc:
+        raise NaverResearchContractError(
+            f"non-JSON response from {url} "
+            f"(status {response.status_code}, "
+            f"content-type {response.headers.get('content-type')!r}); "
+            "the legacy research pages redirect to an HTML SPA"
+        ) from exc
 
 
-async def _build_investment_opinions_from_company_list_soup(
+async def _fetch_research_list(
+    code: str, limit: int
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    url = f"{NAVER_RESEARCH_API}/stock/{code}"
+    payload = await _fetch_research_json(url, params={"page": 1, "pageSize": limit})
+    return _parse_research_list_payload(code, payload)
+
+
+async def _fetch_research_list_with_client(
+    client: httpx.AsyncClient, code: str, limit: int
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    url = f"{NAVER_RESEARCH_API}/stock/{code}"
+    payload = await _fetch_research_json_with_client(
+        client, url, params={"page": 1, "pageSize": limit}
+    )
+    return _parse_research_list_payload(code, payload)
+
+
+async def _fetch_research_detail(code: str, research_id: int) -> dict[str, Any]:
+    url = f"{NAVER_RESEARCH_API}/company/{research_id}"
+    payload = await _fetch_research_json(url)
+    return _parse_research_detail_payload(code, research_id, payload)
+
+
+async def _fetch_research_detail_with_client(
+    client: httpx.AsyncClient, code: str, research_id: int
+) -> dict[str, Any]:
+    url = f"{NAVER_RESEARCH_API}/company/{research_id}"
+    payload = await _fetch_research_json_with_client(client, url)
+    return _parse_research_detail_payload(code, research_id, payload)
+
+
+async def _build_investment_opinions_from_research_items(
     code: str,
-    company_list_soup: BeautifulSoup,
+    items: list[dict[str, Any]],
     limit: int,
     *,
     current_price: int | None,
-    detail_fetcher: Callable[[str], Awaitable[dict[str, Any] | None]],
+    detail_fetcher: Callable[[int], Awaitable[dict[str, Any]]],
     window_months: int = 12,
     detail_cache: DetailCachePort | None = None,
+    skipped: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    opinions: dict[str, Any] = {
+    """Assemble the tool payload from normalized research list rows.
+
+    A per-report detail fetch failure does NOT fabricate a Hold vote: the row
+    keeps its list metadata with rating=None and rating_bucket="unrated", so
+    it is counted in total_count but in none of buy/hold/sell, and the failure
+    is recorded in ``warnings``. If EVERY detail fetch fails the function
+    raises NaverResearchContractError — an all-unknown consensus would cache
+    and serve as a valid-looking zero-signal result (the #930 signature).
+    """
+    result: dict[str, Any] = {
         "symbol": code,
         "count": 0,
         "opinions": [],
         "consensus": None,
     }
-    report_infos = _collect_opinion_report_infos(company_list_soup, limit)
-    if report_infos:
-        nids = [info["nid"] for info in report_infos]
+    warnings: list[str] = []
+    for reason, n in (skipped or {}).items():
+        warnings.append(f"skipped {n} malformed research list row(s): {reason}")
+
+    selected = items[:limit]
+    if selected:
+        research_ids = [item["research_id"] for item in selected]
+        cache_keys = [_detail_cache_key(rid) for rid in research_ids]
         cached: dict[str, Any] = {}
         if detail_cache is not None:
-            cached = await detail_cache.get_many(nids)
+            cached = await detail_cache.get_many(cache_keys)
 
-        miss_indexes = [i for i, nid in enumerate(nids) if nid not in cached]
+        miss_positions = [i for i, key in enumerate(cache_keys) if key not in cached]
         miss_results = await asyncio.gather(
-            *(detail_fetcher(nids[i]) for i in miss_indexes),
+            *(detail_fetcher(research_ids[i]) for i in miss_positions),
             return_exceptions=True,
         )
 
-        details: list[Any] = [cached.get(nid) for nid in nids]
+        details: list[Any] = [cached.get(key) for key in cache_keys]
         to_write: dict[str, Any] = {}
-        for i, result in zip(miss_indexes, miss_results, strict=True):
-            details[i] = result
-            if isinstance(result, dict):
-                to_write[nids[i]] = result
+        for pos, fetched in zip(miss_positions, miss_results, strict=True):
+            details[pos] = fetched
+            if isinstance(fetched, dict):
+                to_write[cache_keys[pos]] = fetched
 
         if detail_cache is not None and to_write:
             await detail_cache.put_many(to_write)
 
-        for info, detail in zip(report_infos, details, strict=True):
-            raw_rating = None
+        detail_failures = 0
+        for item, detail in zip(selected, details, strict=True):
             if isinstance(detail, dict):
-                raw_rating = detail.get("rating")
-
-            rating_label = normalize_rating_label(raw_rating)
-            opinions["opinions"].append(
+                rating_label = normalize_rating_label(detail.get("rating"))
+                rating_bucket: str = rating_to_bucket(rating_label)
+                target_price = detail.get("target_price")
+            else:
+                detail_failures += 1
+                reason = (
+                    str(detail)[:200]
+                    if isinstance(detail, BaseException)
+                    else "no data"
+                )
+                warnings.append(
+                    "research detail fetch failed for researchId "
+                    f"{item['research_id']}: {reason}"
+                )
+                rating_label = None
+                rating_bucket = "unrated"
+                target_price = None
+            result["opinions"].append(
                 {
-                    "stock_name": info["stock_name"],
-                    "title": info["title"],
-                    "firm": info["firm"],
-                    "date": info["date"],
-                    "url": info["url"],
-                    "target_price": detail.get("target_price")
-                    if isinstance(detail, dict)
-                    else None,
+                    "stock_name": item["stock_name"],
+                    "title": item["title"],
+                    "firm": item["firm"],
+                    "date": item["date"],
+                    "url": item["url"],
+                    "target_price": target_price,
                     "rating": rating_label,
-                    "rating_bucket": rating_to_bucket(rating_label),
+                    "rating_bucket": rating_bucket,
                 }
             )
+        if detail_failures == len(selected):
+            raise NaverResearchContractError(
+                f"research detail fetch failed for all {detail_failures} "
+                f"report(s) of {code}; refusing to serve an all-unknown "
+                "consensus that would look like a valid zero-signal result"
+            )
 
-    opinions["count"] = len(opinions["opinions"])
-    opinions["consensus"] = build_consensus(
-        opinions["opinions"], current_price, window_months=window_months
+    result["count"] = len(result["opinions"])
+    result["consensus"] = build_consensus(
+        result["opinions"], current_price, window_months=window_months
     )
-    return opinions
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+def _research_error_payload(code: str, exc: BaseException) -> dict[str, Any]:
+    """Opinions section for the KR snapshot when the research fetch failed.
+
+    The bundle keeps an explicit error block instead of a silently-absent or
+    empty opinions section so downstream consumers can tell outage from
+    no-coverage.
+    """
+    return {
+        "symbol": code,
+        "count": 0,
+        "opinions": [],
+        "consensus": None,
+        "error": f"naver research fetch failed: {exc}",
+    }
 
 
 def _parse_holding_rate(text: str | None) -> float | None:
@@ -194,120 +397,182 @@ def _parse_holding_rate(text: str | None) -> float | None:
         return None
 
 
+# Naver mobile trend JSON endpoint. frgn.naver is a client-rendered SPA since
+# 2026-09; this endpoint carries the same investor-flow table as JSON rows
+# (newest first).
+NAVER_TREND_API = "https://m.stock.naver.com/api/stock"
+
+# investor_flow_snapshots column <- trend JSON field mapping (task #900):
+#   snapshot_date           <- bizdate ("YYYYMMDD" -> KST calendar date, ISO str)
+#   foreign_net             <- foreignerPureBuyQuant   (signed comma qty, shares)
+#   institution_net         <- organPureBuyQuant       (signed comma qty, shares)
+#   individual_net          <- individualPureBuyQuant  (signed comma qty, shares)
+#   close                   <- closePrice              (comma number, KRW)
+#   change_rate             <- derived: emitted as change_pct = (close -
+#                              prev_close) / prev_close (a fraction; the builder
+#                              x100's it into the percent column). prev_close is
+#                              the NEXT item's closePrice (payload is newest
+#                              first). NULL for the oldest row in the window.
+#   volume                  <- accumulatedTradingVolume (comma int, shares)
+#   foreign_holding_rate    <- foreignerHoldRatio ("46.64%" -> 46.64, 0..100)
+#   foreign_holding_shares  <- NULL: the payload has no share count and shares =
+#                              holdRatio x listed shares is NOT derivable (no
+#                              listed-share count in the payload).
+#   institutional net-buy AMOUNT <- NULL: not derivable. The payload's
+#                              organPureBuyQuant is a share QUANTITY, and
+#                              quantity x closePrice is NOT the traded amount
+#                              (net-buy amount requires per-trade execution
+#                              prices). The column stores quantity only.
+#   foreign_net_buy_rank / foreign_net_sell_rank / institution_net_*_rank /
+#   *_consecutive_*_days / double_buy / double_sell <- derived downstream by
+#                              builder._apply_streaks/_apply_ranks and
+#                              repository._with_derived_flags.
+_TREND_REQUIRED_FIELDS = (
+    "bizdate",
+    "foreignerPureBuyQuant",
+    "organPureBuyQuant",
+    "individualPureBuyQuant",
+)
+
+
+def _parse_trend_int(value: Any) -> int | None:
+    """Strict parser for trend quantity fields ('+4,513,767' -> 4513767).
+
+    Rejects '-' / '' / missing keys / decimals / non-numeric text — the caller
+    treats a required-field failure as a skipped row. Commas must be in
+    canonical thousands grouping: '45,13,767' is upstream corruption and is
+    rejected rather than silently re-interpreted.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value == int(value) else None
+    text = str(value).strip()
+    if not text or text in {"-", "+"}:
+        return None
+    if not re.fullmatch(r"[+-]?(\d+|\d{1,3}(,\d{3})+)", text):
+        return None
+    return int(text.replace(",", ""))
+
+
+def _parse_trend_bizdate(value: Any) -> str | None:
+    """'YYYYMMDD' -> 'YYYY-MM-DD' (KST calendar date); None when malformed."""
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{8}", text):
+        return None
+    try:
+        parsed = dt.date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+    except ValueError:
+        return None
+    return parsed.isoformat()
+
+
+def _parse_trend_row(
+    item: Any,
+    *,
+    prev_close: int | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse one trend item -> (row, None) or (None, skip-reason)."""
+    if not isinstance(item, dict):
+        return None, "row is not a JSON object"
+    for field in _TREND_REQUIRED_FIELDS:
+        if field not in item:
+            return None, f"missing {field}"
+    date_str = _parse_trend_bizdate(item.get("bizdate"))
+    if date_str is None:
+        return None, "invalid bizdate"
+    foreign_net = _parse_trend_int(item.get("foreignerPureBuyQuant"))
+    if foreign_net is None:
+        return None, "invalid foreignerPureBuyQuant"
+    institutional_net = _parse_trend_int(item.get("organPureBuyQuant"))
+    if institutional_net is None:
+        return None, "invalid organPureBuyQuant"
+    individual_net = _parse_trend_int(item.get("individualPureBuyQuant"))
+    if individual_net is None:
+        return None, "invalid individualPureBuyQuant"
+    close = _parse_trend_int(item.get("closePrice"))
+    change = None
+    change_pct = None
+    if close is not None and prev_close:
+        change = int(close - prev_close)
+        change_pct = (close - prev_close) / prev_close
+    row = {
+        "date": date_str,
+        "close": close,
+        "change": change,
+        "change_pct": change_pct,
+        "volume": _parse_trend_int(item.get("accumulatedTradingVolume")),
+        "institutional_net": institutional_net,
+        "foreign_net": foreign_net,
+        "individual_net": individual_net,
+        # Not in the payload — stays NULL rather than fabricated.
+        "foreign_holding_shares": None,
+        "foreign_holding_rate": _parse_holding_rate(item.get("foreignerHoldRatio")),
+    }
+    return row, None
+
+
+def _parse_trend_payload(
+    payload: Any, *, days: int
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Convert a trend JSON list into row dicts + skip-reason counts."""
+    if not isinstance(payload, list):
+        # A dict/scalar body is an upstream error or maintenance shape, not a
+        # legitimately empty day — count it so '0 rows' stays diagnosable.
+        return [], {"payload is not a JSON list": 1}
+    items = payload
+    data: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+    for index, item in enumerate(items):
+        if len(data) >= days:
+            break
+        # prev_close = next item's closePrice (newest-first ordering); used to
+        # derive change/change_pct. Falls back to the raw next element even if
+        # that element itself is malformed — the *previous trading day's* close
+        # is still the correct base for this row's change.
+        prev_close: int | None = None
+        if index + 1 < len(items):
+            prev_close = _parse_trend_int(
+                items[index + 1].get("closePrice")
+                if isinstance(items[index + 1], dict)
+                else None
+            )
+        row, reason = _parse_trend_row(item, prev_close=prev_close)
+        if row is None:
+            key = reason or "unknown"
+            skipped[key] = skipped.get(key, 0) + 1
+            continue
+        data.append(row)
+    return data, skipped
+
+
 async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
     """Fetch foreign/institutional investor trading trends.
 
-    URL: finance.naver.com/item/frgn.naver?code={code}
+    URL: m.stock.naver.com/api/stock/{code}/trend?pageSize={days} (JSON list,
+    newest first). The old frgn.naver HTML page is a client-rendered SPA and no
+    longer carries the table (task #900).
 
     Args:
         code: 6-digit Korean stock code
         days: Number of days of data to fetch
 
     Returns:
-        Daily investor flow data (foreign, institutional, individual net trades)
+        {symbol, days, data: [...], skipped: {reason: count}} — the same row
+        contract the HTML parser produced, plus `individual_net` straight from
+        the payload and `skipped` so malformed rows are counted, not silent.
     """
-    url = f"{NAVER_FINANCE_ITEM}/frgn.naver"
-    soup = await _fetch_html(url, params={"code": code})
-
-    trends: dict[str, Any] = {
+    url = f"{NAVER_TREND_API}/{code}/trend"
+    payload = await _fetch_json(url, params={"pageSize": days})
+    data, skipped = _parse_trend_payload(payload, days=days)
+    return {
         "symbol": code,
         "days": days,
-        "data": [],
+        "data": data,
+        "skipped": skipped,
     }
-
-    # There are multiple table.type2 on the page
-    # The one with actual investor data has rows with 7+ cells
-    # Columns: 날짜, 종가, 전일비, 등락률, 거래량, 기관, 외국인
-    tables = soup.select("table.type2")
-    target_table = None
-
-    for table in tables:
-        # Find the table that has data rows with 7 cells
-        rows = table.select("tr")
-        for row in rows:
-            cells = row.select("td")
-            if len(cells) >= 7:
-                # Check if first cell looks like a date
-                first_cell = cells[0].get_text(strip=True)
-                if first_cell and first_cell[0].isdigit():
-                    target_table = table
-                    break
-        if target_table:
-            break
-
-    if not target_table:
-        return trends
-
-    rows = target_table.select("tr")
-    for row in rows:
-        cells = row.select("td")
-        # ROB-448: the 외국인 column is a 2-level header → the data row actually has 9
-        # cells (the old "7 cells" comment was stale). Columns:
-        #   날짜(0), 종가(1), 전일비(2), 등락률(3), 거래량(4), 기관 순매수(5),
-        #   외국인 순매수(6), 외국인 보유주수(7), 외국인 보유율(8)
-        if len(cells) < 7:
-            continue
-
-        try:
-            date_text = cells[0].get_text(strip=True)
-            if not date_text or not date_text[0].isdigit():
-                continue
-
-            # Parse 전일비 which includes direction text (상승/하락)
-            change_text = cells[2].get_text(strip=True)
-
-            data_point = {
-                "date": _parse_naver_date(date_text),
-                "close": _parse_korean_number(cells[1].get_text(strip=True)),
-                "change": _parse_korean_number(change_text),
-                "change_pct": _parse_korean_number(cells[3].get_text(strip=True)),
-                "volume": _parse_korean_number(cells[4].get_text(strip=True)),
-                "institutional_net": _parse_korean_number(
-                    cells[5].get_text(strip=True)
-                ),
-                "foreign_net": _parse_korean_number(cells[6].get_text(strip=True)),
-                # ROB-448: foreign holding shares (count) + rate (%, 0..100). Guarded so
-                # a legacy 7-cell layout degrades to None instead of IndexError.
-                "foreign_holding_shares": (
-                    _parse_korean_number(cells[7].get_text(strip=True))
-                    if len(cells) >= 9
-                    else None
-                ),
-                "foreign_holding_rate": (
-                    _parse_holding_rate(cells[8].get_text(strip=True))
-                    if len(cells) >= 9
-                    else None
-                ),
-            }
-
-            trends["data"].append(data_point)
-
-            if len(trends["data"]) >= days:
-                break
-        except (IndexError, ValueError):
-            continue
-
-    return trends
-
-
-async def _fetch_report_detail(nid: str) -> dict[str, Any] | None:
-    try:
-        url = f"{NAVER_FINANCE_BASE}/research/company_read.naver"
-        soup = await _fetch_html(url, params={"nid": nid})
-        return _parse_report_detail_soup(soup)
-    except Exception:
-        return None
-
-
-async def _fetch_report_detail_with_client(
-    client: httpx.AsyncClient, nid: str
-) -> dict[str, Any] | None:
-    try:
-        url = f"{NAVER_FINANCE_BASE}/research/company_read.naver"
-        soup = await _fetch_html_with_client(client, url, params={"nid": nid})
-        return _parse_report_detail_soup(soup)
-    except Exception:
-        return None
 
 
 async def _fetch_current_price(code: str) -> int | None:
@@ -336,8 +601,12 @@ async def fetch_investment_opinions(
 ) -> dict[str, Any]:
     """Fetch securities firm investment opinions and target prices.
 
-    URL: finance.naver.com/research/company_list.naver
-    Individual reports: finance.naver.com/research/company_read.naver?nid={nid}
+    URLs (task #930, both anonymous JSON on m.stock.naver.com):
+        list   /api/research/stock/{code}?page=1&pageSize={limit}
+        detail /api/research/company/{researchId}  (per list row, by id only)
+    The retired finance.naver.com/research/company_list.naver +
+    company_read.naver HTML pages 302-redirect to an SPA and drop the symbol
+    filter — they produced the silent-zero result this replaced.
 
     Args:
         code: 6-digit Korean stock code
@@ -353,24 +622,34 @@ async def fetch_investment_opinions(
         - symbol: Stock code
         - count: Number of opinions
         - opinions: List of individual opinions with normalized ratings
+          (detail-fetch failures keep their row with rating=None and
+          rating_bucket="unrated" — they do not fabricate a Hold vote)
         - consensus: Windowed aggregated statistics (buy/hold/sell counts,
           target prices, upside_pct + rows_total/rows_used/rows_excluded_stale/
           rows_undated/newest_opinion_date/window_months)
+        - warnings (optional): skipped list rows / partial detail failures
+
+    Raises:
+        NaverResearchContractError: empty/malformed list payload, non-JSON
+            (redirect/HTML) response, or every detail fetch failing — the
+            #930 silent-zero signatures must never look like a valid
+            zero-opinion result.
     """
-    url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
-    company_list_soup = await _fetch_html(
-        url, params={"searchType": "itemCode", "itemCode": code}
-    )
-    current_price = await _fetch_current_price(code)
-    return await _build_investment_opinions_from_company_list_soup(
-        code,
-        company_list_soup,
-        limit,
-        current_price=current_price,
-        detail_fetcher=_fetch_report_detail,
-        window_months=window_months,
-        detail_cache=detail_cache,
-    )
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        items, skipped = await _fetch_research_list_with_client(client, code, limit)
+        current_price = await _fetch_current_price(code)
+        return await _build_investment_opinions_from_research_items(
+            code,
+            items,
+            limit,
+            current_price=current_price,
+            detail_fetcher=lambda research_id: _fetch_research_detail_with_client(
+                client, code, research_id
+            ),
+            window_months=window_months,
+            detail_cache=detail_cache,
+            skipped=skipped,
+        )
 
 
 async def _fetch_kr_snapshot(
@@ -383,21 +662,16 @@ async def _fetch_kr_snapshot(
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         main_url = f"{NAVER_FINANCE_ITEM}/main.naver"
         sise_url = f"{NAVER_FINANCE_ITEM}/sise.naver"
-        news_url = f"{NAVER_FINANCE_ITEM}/news_news.naver"
-        company_list_url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
         page_results = await asyncio.gather(
             _fetch_html_with_client(client, main_url, params={"code": code}),
             _fetch_html_with_client(client, sise_url, params={"code": code}),
-            _fetch_html_with_client(
-                client,
-                news_url,
-                params={"code": code, "page": "", "clusterId": ""},
-            ),
-            _fetch_html_with_client(
-                client,
-                company_list_url,
-                params={"searchType": "itemCode", "itemCode": code},
-            ),
+            # The legacy news_news.naver page 410s; symbol news lives behind the
+            # m.stock.naver.com JSON API now (#904).
+            fetch_stock_news(code, limit=news_limit),
+            # The legacy research/company_list.naver page 302s to an SPA and
+            # dropped the itemCode filter (#930); the m.stock research JSON
+            # API replaces it — (items, skipped) tuple or an exception.
+            _fetch_research_list_with_client(client, code, opinion_limit),
             return_exceptions=True,
         )
         main_soup = (
@@ -406,12 +680,12 @@ async def _fetch_kr_snapshot(
         sise_soup = (
             page_results[1] if isinstance(page_results[1], BeautifulSoup) else None
         )
-        news_soup = (
-            page_results[2] if isinstance(page_results[2], BeautifulSoup) else None
+        news_result = (
+            page_results[2]
+            if isinstance(page_results[2], NaverNewsFetchResult)
+            else None
         )
-        company_list_soup = (
-            page_results[3] if isinstance(page_results[3], BeautifulSoup) else None
-        )
+        research_outcome = page_results[3]
 
         snapshot: dict[str, Any] = {
             "valuation": None,
@@ -424,26 +698,38 @@ async def _fetch_kr_snapshot(
                 code, main_soup, sise_soup
             )
 
-        if news_soup is not None:
-            snapshot["news"] = _parse_news_soup(news_soup, news_limit)
+        if news_result is not None:
+            snapshot["news"] = news_result.items
 
-        if company_list_soup is not None:
+        # Opinions: a failed list fetch or an all-detail-failure surfaces as an
+        # explicit error block in the bundle — never a silently-missing or
+        # zeroed-out section (#930).
+        if isinstance(research_outcome, tuple):
+            research_items, research_skipped = research_outcome
             current_price = (
                 _extract_current_price_from_main_soup(main_soup)
                 if main_soup is not None
                 else None
             )
-            snapshot[
-                "opinions"
-            ] = await _build_investment_opinions_from_company_list_soup(
-                code,
-                company_list_soup,
-                opinion_limit,
-                current_price=current_price,
-                detail_fetcher=lambda nid: _fetch_report_detail_with_client(
-                    client, nid
-                ),
-                detail_cache=detail_cache,
-            )
+            try:
+                snapshot[
+                    "opinions"
+                ] = await _build_investment_opinions_from_research_items(
+                    code,
+                    research_items,
+                    opinion_limit,
+                    current_price=current_price,
+                    detail_fetcher=lambda research_id: (
+                        _fetch_research_detail_with_client(client, code, research_id)
+                    ),
+                    detail_cache=detail_cache,
+                    skipped=research_skipped,
+                )
+            except Exception as exc:  # noqa: BLE001 — bundle isolation: the
+                # opinions section degrades to an explicit error instead of
+                # sinking valuation/news with it.
+                snapshot["opinions"] = _research_error_payload(code, exc)
+        elif isinstance(research_outcome, BaseException):
+            snapshot["opinions"] = _research_error_payload(code, research_outcome)
 
         return snapshot

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,20 +13,26 @@ from app.mcp_server.tooling.toss_live_evidence import classify_toss_order_eviden
 pytestmark = pytest.mark.unit
 
 
-def _order(status: str, execution: dict | None = None):
+def _order(
+    status: str,
+    execution: dict | None = None,
+    *,
+    time_in_force: str = "DAY",
+    canceled_at: str | None = None,
+):
     return SimpleNamespace(
         order_id="ord-1",
         symbol="AAPL",
         side="BUY",
         order_type="LIMIT",
-        time_in_force="DAY",
+        time_in_force=time_in_force,
         status=status,
         price=Decimal("190"),
         quantity=Decimal("2"),
         order_amount=None,
         currency="USD",
         ordered_at="2026-06-12T00:00:00Z",
-        canceled_at=None,
+        canceled_at=canceled_at,
         execution=execution or {},
     )
 
@@ -97,6 +105,99 @@ def test_cancel_rejected_keeps_original_open_semantics():
 
     assert evidence.verdict == "pending"
     assert evidence.local_status == "cancel_rejected"
+
+
+# ---- ROB-691 — Toss DAY-expiry sweep classification ----
+# Toss reports a broker-swept KR DAY order as REJECTED + canceledAt at the
+# session sweep (~15:33 KST regular, ~20:04 KST NXT after-hours).  Expiry is
+# classified only from that broker evidence; anything weaker stays non-expired.
+
+
+def test_day_sweep_regular_session_1533_is_expired():
+    evidence = classify_toss_order_evidence(
+        _order("REJECTED", canceled_at="2026-09-24T15:33:12.123456+09:00")
+    )
+
+    assert evidence.verdict == "expired"
+    assert evidence.local_status == "expired"
+    assert evidence.filled_qty == Decimal("0")
+    assert evidence.expired_at == datetime(
+        2026, 9, 24, 15, 33, 12, 123456, tzinfo=ZoneInfo("Asia/Seoul")
+    )
+
+
+def test_day_sweep_nxt_after_hours_2004_is_expired():
+    evidence = classify_toss_order_evidence(
+        _order("REJECTED", canceled_at="2026-09-24T20:04:31.000000+09:00")
+    )
+
+    assert evidence.verdict == "expired"
+    assert evidence.local_status == "expired"
+    assert evidence.expired_at == datetime(
+        2026, 9, 24, 20, 4, 31, tzinfo=ZoneInfo("Asia/Seoul")
+    )
+
+
+def test_rejected_without_canceled_at_stays_rejected_not_expired():
+    """Submit-time rejection has no sweep timestamp — never expiry."""
+    evidence = classify_toss_order_evidence(_order("REJECTED"))
+
+    assert evidence.verdict == "none"
+    assert evidence.local_status == "rejected"
+    assert evidence.expired_at is None
+
+
+def test_rejected_day_with_unparseable_canceled_at_stays_rejected():
+    """An unreadable broker timestamp is not expiry evidence (fail-closed)."""
+    evidence = classify_toss_order_evidence(
+        _order("REJECTED", canceled_at="not-a-timestamp")
+    )
+
+    assert evidence.local_status == "rejected"
+    assert evidence.expired_at is None
+
+
+def test_non_day_rejected_with_canceled_at_is_not_expired():
+    evidence = classify_toss_order_evidence(
+        _order("REJECTED", time_in_force="GTD", canceled_at="2026-09-24T15:33:12+09:00")
+    )
+
+    assert evidence.local_status == "rejected"
+    assert evidence.expired_at is None
+
+
+def test_canceled_day_with_canceled_at_is_cancelled_not_expired():
+    """An operator/broker CANCELED also carries canceledAt — it is a cancel,
+    not a DAY sweep.  Only REJECTED+canceledAt classifies expiry."""
+    evidence = classify_toss_order_evidence(
+        _order("CANCELED", canceled_at="2026-09-24T15:33:12+09:00")
+    )
+
+    assert evidence.verdict == "none"
+    assert evidence.local_status == "cancelled"
+    assert evidence.expired_at is None
+
+
+def test_partial_fill_then_day_sweep_preserves_fill_and_expires():
+    """Mutant guard: a swept order with fills is partial+expired — the booked
+    quantity must survive.  Classifying it as unfilled expired goes RED."""
+    evidence = classify_toss_order_evidence(
+        _order(
+            "REJECTED",
+            {
+                "filledQuantity": Decimal("0.5"),
+                "averageFilledPrice": Decimal("190.5"),
+            },
+            canceled_at="2026-09-24T15:33:12+09:00",
+        )
+    )
+
+    assert evidence.verdict == "partial"
+    assert evidence.local_status == "expired"
+    assert evidence.filled_qty == Decimal("0.5")
+    assert evidence.expired_at == datetime(
+        2026, 9, 24, 15, 33, 12, tzinfo=ZoneInfo("Asia/Seoul")
+    )
 
 
 @pytest.mark.asyncio

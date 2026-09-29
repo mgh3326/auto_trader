@@ -71,13 +71,41 @@ def test_insufficient_sample_flag_clears_at_10():
 
 @pytest.mark.asyncio
 async def test_scoreboard_fail_open_on_ohlcv_error(db_session, monkeypatch):
+    calls = 0
+
     async def boom(*a, **k):
+        nonlocal calls
+        calls += 1
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(agg, "get_ohlcv", boom)
-    result = await agg.build_trading_scoreboard(db_session, use_cache=False)
-    assert result["count"] == 0
-    assert result["groups"] == []
+    # The shared integration database can contain fills committed by an earlier
+    # test. Supply one closed trade so this test exercises the provider failure
+    # itself and has a deterministic expected result.
+    fills = [
+        agg.Fill(
+            market="kr",
+            symbol="005930",
+            account="scoreboard-test",
+            side=side,
+            qty=1,
+            price=price,
+            fee=0,
+            ts=datetime(2026, 6, day, tzinfo=UTC),
+            item_uuid=None,
+            correlation_id=None,
+            source="kis",
+        )
+        for side, price, day in (("buy", 100, 1), ("sell", 110, 2))
+    ]
+    result = await agg.build_trading_scoreboard(
+        db_session, use_cache=False, fills_override=fills
+    )
+    assert calls == 1
+    assert result["count"] == 1
+    assert result["groups"][0]["n"] == 1
+    assert result["groups"][0]["avg_mae"] is None
+    assert result["groups"][0]["avg_mfe"] is None
 
 
 @pytest.mark.asyncio

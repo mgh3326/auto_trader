@@ -384,3 +384,46 @@ def test_extract_decision_json_bare_object_in_prose():
 @pytest.mark.unit
 def test_extract_decision_json_no_json_returns_none():
     assert sr._extract_decision_json("no json object here at all") is None
+
+
+@pytest.mark.unit
+def test_one_run_passes_json_schema_and_prefers_structured_output(monkeypatch):
+    """`--json-schema` replaces the "Output ONLY a JSON object" prompt; the
+    validated object in the envelope's `structured_output` wins over `result`."""
+    import json
+    import subprocess
+
+    decision = {
+        "side": "buy",
+        "max_action": {"notional": 300000, "limit_price": 129600},
+        "trade_setup": {
+            "stop": 125000,
+            "target": 135000,
+            "headline": {"entry": 129600},
+        },
+        "trigger_checklist": ["rsi"],
+    }
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(
+                {"result": "prose, no json", "structured_output": decision}
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(sr.subprocess, "run", fake_run)
+    assert sr._one_run("u1", "claude-opus-4-8") == decision
+    i = seen["argv"].index("--json-schema")
+    assert json.loads(seen["argv"][i + 1])["required"] == [
+        "side",
+        "max_action",
+        "trade_setup",
+        "trigger_checklist",
+    ]
+    assert "Output ONLY" not in seen["input"]

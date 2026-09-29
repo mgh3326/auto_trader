@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-services-split test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test dev-config dev-up dev-seed dev-verify dev-down sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental frontend-install frontend-dev frontend-build frontend-typecheck
+.PHONY: help install install-dev test test-unit test-integration test-live-prompt-contract test-services-split test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test dev-config dev-up dev-seed dev-verify dev-down sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental frontend-install frontend-dev frontend-build frontend-typecheck
 
 DEV_ENV_FILE ?= .env.dev
 -include $(DEV_ENV_FILE)
@@ -37,6 +37,11 @@ test: ## Run all tests (excludes live)
 
 test-unit: ## Run positively marked unit tests (excludes slow and live)
 	uv run pytest tests/ -q -ra -m "unit and not integration and not slow and not live"
+
+test-live-prompt-contract: ## #1003 live prompt vs live-* profile drift check (needs AUTO_TRADER_OPERATOR_ROOT and ROBIN_PREFECT_AUTOMATIONS_ROOT)
+	@test -n "$$AUTO_TRADER_OPERATOR_ROOT" || { echo "AUTO_TRADER_OPERATOR_ROOT is not set (auto_trader-operator checkout)"; exit 2; }
+	@test -n "$$ROBIN_PREFECT_AUTOMATIONS_ROOT" || { echo "ROBIN_PREFECT_AUTOMATIONS_ROOT is not set (robin-prefect-automations checkout)"; exit 2; }
+	uv run pytest tests/mcp_server/test_live_prompt_profile_contract.py -q -rxXs
 
 test-integration: ## Run integration tests only (excludes live)
 	uv run pytest tests/ -q -ra -m "integration and not live"

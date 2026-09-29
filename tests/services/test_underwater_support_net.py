@@ -13,6 +13,11 @@ from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     evaluate_auto_approve_eligibility,
 )
+from app.services.order_proposals.buying_power import (
+    BuyingPowerCache,
+    BuyingPowerKey,
+    required_cash,
+)
 from app.services.trading_policy_service import load_trading_policy
 from app.services.underwater_support_net import (
     REASON_IMPROVEMENT,
@@ -67,6 +72,9 @@ def test_015760_passes_and_reproduces_the_measured_size_and_improvement():
     assert verdict["required_rebound_pct_before"] == "37.9464"
     assert verdict["required_rebound_pct_after"] == "23.3602"
     assert Decimal(verdict["required_rebound_improvement_pct_points"]) > Decimal("3")
+    # The floor admitted whole shares on its own; the #877 exception did not
+    # fire, so the D+20 cohort tag stays off.
+    assert verdict["rounded_up_to_one_share"] is False
 
 
 def test_196170_and_035420_pass_with_their_measured_sizes():
@@ -94,9 +102,13 @@ def test_196170_and_035420_pass_with_their_measured_sizes():
     assert alteogen["eligible"] is True
     assert alteogen["add_quantity"] == "3"
     assert alteogen["add_notional"] == "823500"
+    assert alteogen["rounded_up_to_one_share"] is False
     assert naver["eligible"] is True
     assert naver["add_quantity"] == "1"
     assert naver["add_notional"] == "202500"
+    # floor(321,000 / 202,500) = 1 — an ordinary floor result, not the #877
+    # exception, so the tag stays off.
+    assert naver["rounded_up_to_one_share"] is False
 
 
 def test_size_cap_is_50_percent_of_the_existing_position_notional():
@@ -219,16 +231,24 @@ def test_improvement_below_three_points_is_rejected():
     assert verdict["eligible"] is False
     assert verdict["reasons"] == [REASON_IMPROVEMENT]
     assert verdict["add_quantity"] == "1"
+    # floor(172,500 / 111,550) is 1 on its own — the #877 exception did not
+    # fire here, so the D+20 tag stays off.
+    assert verdict["rounded_up_to_one_share"] is False
     assert verdict["required_rebound_pct_before"] == "9.7826"
     assert verdict["required_rebound_pct_after"] == "6.8295"
     assert verdict["required_rebound_improvement_pct_points"] == "2.9532"
 
 
-def test_size_cap_admitting_no_whole_share_is_rejected_as_sizing():
-    """267260 HD현대일렉 as measured: 1 share 690,000 > the 367,500 cap.
+def test_one_share_exception_sizes_a_below_one_share_computation_to_exactly_one():
+    """#877 — 267260 HD현대일렉, the measured lot that motivated the exception.
 
-    Reported as a sizing failure rather than an improvement failure, because
-    the reason the add does nothing is that there is no add.
+    50% of the position (367,500) floors to zero shares at the 690,000 rung.
+    Before #877 this was a REASON_SIZING rejection; the approved exception
+    now sizes the add to exactly one share and tags it for the
+    underwater-d20-v1 cohort. Every other clause is evaluated on that share,
+    unchanged: -17.6% underwater, moderate two-family support inside the
+    band, live thesis, and the improvement the single share buys (13.88pp)
+    is far past the 3pp floor.
     """
 
     verdict = evaluate_underwater_support_net(
@@ -242,9 +262,119 @@ def test_size_cap_admitting_no_whole_share_is_rejected_as_sizing():
         )
     )
 
+    assert verdict["add_quantity"] == "1"
+    assert verdict["rounded_up_to_one_share"] is True
+    # The add is allowed to exceed the 50% notional cap — that is the
+    # exception — and the tag is what records that it did.
+    assert Decimal(verdict["add_notional"]) == Decimal("690000")
+    assert Decimal(verdict["add_notional"]) > Decimal(verdict["max_add_notional"])
+    assert verdict["required_rebound_pct_before"] == "22.5741"
+    assert verdict["required_rebound_pct_after"] == "8.6952"
+    assert verdict["required_rebound_improvement_pct_points"] == "13.8789"
+    assert verdict["eligible"] is True
+    assert verdict["reasons"] == []
+
+
+def test_one_share_exception_does_not_rescue_a_lot_failing_other_clauses():
+    """The exception changes SIZING only. A rounded one-share add on a lot
+    whose thesis is dead is still ineligible — the tag records that the
+    exception fired, it does not override the verdict."""
+
+    verdict = evaluate_underwater_support_net(
+        _lot(
+            symbol="267260",
+            quantity=Decimal("1"),
+            average_cost=Decimal("892000"),
+            current_price=Decimal("735000"),
+            support_price=Decimal("690928"),
+            rung_price=Decimal("690000"),
+            thesis_alive=False,
+        )
+    )
+
+    assert verdict["add_quantity"] == "1"
+    assert verdict["rounded_up_to_one_share"] is True
+    assert verdict["eligible"] is False
+    assert verdict["reasons"] == [REASON_THESIS]
+
+
+def test_unpriced_rung_still_fails_as_sizing_despite_the_exception():
+    """Rung price <= 0 means there is nothing to size one share against;
+    the exception cannot conjure a price, so the sizing rejection stands."""
+
+    verdict = evaluate_underwater_support_net(_lot(rung_price=Decimal("0")))
+
     assert verdict["eligible"] is False
     assert verdict["reasons"] == [REASON_SIZING]
     assert verdict["add_quantity"] == "0"
+    assert verdict["rounded_up_to_one_share"] is False
+
+
+def test_one_share_exception_off_in_policy_keeps_the_old_sizing_rejection():
+    """The exception is a declared flag, not a silent default: a policy that
+    carries it as false must reproduce the pre-#877 sizing rejection."""
+
+    document = load_trading_policy()
+    rule = document.decision_rules["buy.underwater_support_net"]
+    tier = rule.tiers[0]
+    disabled_conditions = dict(tier.conditions)
+    disabled_conditions["one_share_exception_for_adds"] = False
+    disabled = rule.model_copy(
+        update={"tiers": [tier.model_copy(update={"conditions": disabled_conditions})]}
+    )
+    drifted = document.model_copy(
+        update={
+            "decision_rules": {
+                **document.decision_rules,
+                "buy.underwater_support_net": disabled,
+            }
+        }
+    )
+
+    verdict = evaluate_underwater_support_net(
+        _lot(
+            symbol="267260",
+            quantity=Decimal("1"),
+            average_cost=Decimal("892000"),
+            current_price=Decimal("735000"),
+            support_price=Decimal("690928"),
+            rung_price=Decimal("690000"),
+        ),
+        policy=drifted,
+    )
+
+    assert verdict["eligible"] is False
+    assert verdict["reasons"] == [REASON_SIZING]
+    assert verdict["add_quantity"] == "0"
+    assert verdict["rounded_up_to_one_share"] is False
+
+
+def test_missing_one_share_exception_key_fails_closed():
+    """Fail-closed, same as every other tier literal: a hand-built policy
+    missing the key must raise rather than silently choose a behavior."""
+
+    document = load_trading_policy()
+    rule = document.decision_rules["buy.underwater_support_net"]
+    tier = rule.tiers[0]
+    trimmed_conditions = {
+        key: value
+        for key, value in tier.conditions.items()
+        if key != "one_share_exception_for_adds"
+    }
+    trimmed = rule.model_copy(
+        update={"tiers": [tier.model_copy(update={"conditions": trimmed_conditions})]}
+    )
+    drifted = document.model_copy(
+        update={
+            "decision_rules": {
+                **document.decision_rules,
+                "buy.underwater_support_net": trimmed,
+            }
+        }
+    )
+
+    with pytest.raises(UnderwaterPolicyError):
+        load_underwater_tier_policy(drifted)
 
 
 def test_every_failing_clause_is_reported_not_just_the_first():
@@ -391,3 +521,140 @@ def test_an_over_cap_underwater_rung_still_falls_back_to_a_human_card():
 
     assert decision.eligible is False
     assert decision.reason == "per_order_cap_exceeded"
+
+
+# --------------------------------------------------------------------------
+# #877 — the one-share exception's hard upper bounds, at exact boundaries.
+# A rounded-up one-share rung is an ordinary rung to the approval surface:
+# the per-order cap, the daily cap, and orderable cash all still bind, at
+# exactly their existing operators (> cap rejects, == cap passes).
+# --------------------------------------------------------------------------
+
+
+class _OneShareKrRung:
+    """The rounded 1-share rung, priced so notional lands on the KR cap."""
+
+    def __init__(self, limit_price: Decimal):
+        self.side = "buy"
+        self.quantity = Decimal("1")
+        self.limit_price = limit_price
+
+
+def test_one_share_rung_at_exactly_the_kr_per_order_cap_is_approvable():
+    """2,000,000 KRW is the cap itself, not over it — the add passes."""
+
+    decision = evaluate_auto_approve_eligibility(
+        group=_Group(),
+        rung=_OneShareKrRung(Decimal("2000000")),
+        preview={"success": True, "current_price": "2100000"},
+        limits=_limits(),
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is True, decision.reason
+
+
+def test_one_share_rung_one_won_over_the_kr_per_order_cap_is_not_automatic():
+    """The exception cannot push an automatic order past 2,000,000 KRW."""
+
+    decision = evaluate_auto_approve_eligibility(
+        group=_Group(),
+        rung=_OneShareKrRung(Decimal("2000001")),
+        preview={"success": True, "current_price": "2100000"},
+        limits=_limits(),
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "per_order_cap_exceeded"
+
+
+class _OneShareUsGroup(_Group):
+    market = "equity_us"
+    symbol = "AVUV"
+
+
+class _OneShareUsRung:
+    def __init__(self, limit_price: Decimal):
+        self.side = "buy"
+        self.quantity = Decimal("1")
+        self.limit_price = limit_price
+
+
+def test_one_share_rung_at_exactly_the_us_per_order_cap_is_approvable():
+    decision = evaluate_auto_approve_eligibility(
+        group=_OneShareUsGroup(),
+        rung=_OneShareUsRung(Decimal("1500")),
+        preview={"success": True, "current_price": "1600"},
+        limits=_limits(per_order_cap=Decimal("1500"), daily_cap=Decimal("20000")),
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is True, decision.reason
+
+
+def test_one_share_rung_over_the_us_per_order_cap_is_not_automatic():
+    decision = evaluate_auto_approve_eligibility(
+        group=_OneShareUsGroup(),
+        rung=_OneShareUsRung(Decimal("1500.01")),
+        preview={"success": True, "current_price": "1600"},
+        limits=_limits(per_order_cap=Decimal("1500"), daily_cap=Decimal("20000")),
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "per_order_cap_exceeded"
+
+
+def test_one_share_rung_landing_exactly_on_the_daily_cap_is_approvable():
+    """daily_notional + notional == daily_cap is still inside the bound."""
+
+    decision = evaluate_auto_approve_eligibility(
+        group=_Group(),
+        rung=_OneShareKrRung(Decimal("30150")),
+        preview={"success": True, "current_price": "31950"},
+        limits=_limits(),
+        daily_notional=Decimal("5000000") - Decimal("30150"),
+    )
+
+    assert decision.eligible is True, decision.reason
+
+
+def test_one_share_rung_one_won_over_the_daily_cap_is_not_automatic():
+    decision = evaluate_auto_approve_eligibility(
+        group=_Group(),
+        rung=_OneShareKrRung(Decimal("30150")),
+        preview={"success": True, "current_price": "31950"},
+        limits=_limits(),
+        daily_notional=Decimal("5000000") - Decimal("30150") + Decimal("1"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "daily_cap_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_one_share_add_is_bounded_by_orderable_cash_at_exact_boundary():
+    """The create-time buying-power claim is `available >= required`:
+    exactly the rounded notional claims successfully, one won short does
+    not — a cash-short one-share add cannot produce an order intent."""
+
+    cache = BuyingPowerCache(ttl_seconds=60.0)
+    key = BuyingPowerKey("toss_live", "acct-1", "KRW")
+    rung_price = Decimal("690000")  # the rounded HD현대일렉 share above
+    required = required_cash(quantity=Decimal("1"), limit_price=rung_price, preview={})
+    assert required == rung_price
+
+    claim = await cache.claim(key, required, loader=lambda: _async_const(required))
+    assert claim.available == required
+    assert claim.token is not None
+
+    short_cache = BuyingPowerCache(ttl_seconds=60.0)
+    short = required - Decimal("1")
+    claim = await short_cache.claim(key, required, loader=lambda: _async_const(short))
+    assert claim.available == short
+    assert claim.token is None
+
+
+async def _async_const(value: Decimal) -> Decimal:
+    return value

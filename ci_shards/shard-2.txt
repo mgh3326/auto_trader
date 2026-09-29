@@ -43,6 +43,7 @@ tests/mcp_server/tooling/test_market_index_current_only.py
 tests/mcp_server/tooling/test_news_handlers.py
 tests/mcp_server/tooling/test_order_execution_live_routing.py
 tests/mcp_server/tooling/test_order_proposal_create_post_commit.py
+tests/mcp_server/tooling/test_protected_quantity_holdings.py
 tests/mcp_server/tooling/test_screen_stocks_snapshot_docs.py
 tests/mcp_server/tooling/test_toss_batch_evidence_source.py
 tests/mcp_server/tooling/test_toss_loss_cut.py
@@ -63,6 +64,7 @@ tests/research/us_stage_b/test_verdict.py
 tests/routers/test_alpaca_paper_ledger_router.py
 tests/routers/test_candidate_discovery.py
 tests/routers/test_invest_buy_plan_router.py
+tests/routers/test_invest_protected_positions.py
 tests/routers/test_invest_session_context_router.py
 tests/routers/test_investment_reports_snapshot_evidence_router.py
 tests/routers/test_investment_snapshots_router.py
@@ -84,7 +86,9 @@ tests/scripts/b0x/test_owner_release_observation.py
 tests/scripts/b0x/us/test_cycle.py
 tests/scripts/b0x/us/test_run_b0x_us_cycle_cli.py
 tests/scripts/test_binance_spot_demo_smoke.py
+tests/scripts/test_deploy_ncp_pull_live_mcp.py
 tests/scripts/test_hermes_roundtrip_smoke_cli.py
+tests/scripts/test_live_mcp_tools_list.py
 tests/scripts/test_record_strategy_learning_event.py
 tests/scripts/test_spot_demo_confirm_lifecycle.py
 tests/services/action_report/common/test_source_kind_mapping.py
@@ -116,6 +120,9 @@ tests/services/brokers/binance/futures_demo/test_execution_client_position_mode.
 tests/services/brokers/binance/futures_demo/test_execution_client_position_side.py
 tests/services/brokers/binance/futures_demo/test_execution_client_reduce_only.py
 tests/services/brokers/binance/futures_demo/test_signing.py
+tests/services/brokers/binance/h5/test_client.py
+tests/services/brokers/binance/h5/test_control_scoring.py
+tests/services/brokers/binance/h5/test_execution_contract.py
 tests/services/brokers/binance/spot_demo/test_config_env.py
 tests/services/brokers/binance/spot_demo/test_cross_environment_leakage.py
 tests/services/brokers/binance/spot_demo/test_execution_client_get_order_status.py
@@ -128,6 +135,7 @@ tests/services/brokers/binance/test_broker_ack_scope_migration.py
 tests/services/brokers/binance/test_rate_limit_telemetry.py
 tests/services/brokers/binance/test_ws_reconnect.py
 tests/services/brokers/kis/test_circuit_breaker.py
+tests/services/brokers/kis/test_live_order_expiry_krx_after.py
 tests/services/brokers/kis/test_live_shadow_witness.py
 tests/services/brokers/kis/test_selector_raw_evidence.py
 tests/services/brokers/nhplug/test_auth.py
@@ -148,6 +156,7 @@ tests/services/invalid_sample_eligibility/test_persistence.py
 tests/services/invest_screener_snapshots/test_alerts.py
 tests/services/invest_screener_snapshots/test_freshness_dispatch.py
 tests/services/invest_screener_snapshots/test_freshness_us_session.py
+tests/services/invest_view_model/buy_plan/test_c1_market_state.py
 tests/services/invest_view_model/buy_plan/test_service.py
 tests/services/invest_view_model/test_consecutive_gainers_public_loader.py
 tests/services/investment_dimensions/test_fundamentals_evidence.py
@@ -187,6 +196,7 @@ tests/services/order_proposals/callback_inbox/test_retry_vocabulary.py
 tests/services/order_proposals/callback_inbox/test_task_result_boundary.py
 tests/services/order_proposals/test_alerts.py
 tests/services/order_proposals/test_approval_window.py
+tests/services/order_proposals/test_approval_window_krx_after.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
 tests/services/order_proposals/test_loss_cut_approval_migration.py
@@ -205,6 +215,7 @@ tests/services/paper_evaluation/test_evidence_reader.py
 tests/services/paper_evaluation/test_integration.py
 tests/services/paper_evaluation/test_migration.py
 tests/services/paper_validation/test_service_concurrency.py
+tests/services/protected_quantity/test_guard_wiring.py
 tests/services/research/test_alpaca_track_seal_registration.py
 tests/services/research/test_research_canonical_hash.py
 tests/services/research/test_research_db_write_guard.py
@@ -232,6 +243,7 @@ tests/services/test_alpaca_paper_reconcile_service.py
 tests/services/test_b0x_lane_event_dispatcher.py
 tests/services/test_decision_history_realized_r.py
 tests/services/test_enrichment_negative_cache.py
+tests/services/test_fill_handoff_bundle_shadow.py
 tests/services/test_fill_handoff_bundle_wiring.py
 tests/services/test_investment_snapshots_roundtrip.py
 tests/services/test_kis_mock_holdings_reconciler.py
@@ -239,7 +251,9 @@ tests/services/test_kis_mock_lifecycle_service.py
 tests/services/test_kr_preopen_news_brief_service.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_krb1_selector_cli_exit_contract.py
+tests/services/test_krx_after_market.py
 tests/services/test_loss_cut_policy_and_settings.py
+tests/services/test_manual_cash_settings.py
 tests/services/test_manual_holdings_leftover.py
 tests/services/test_market_events_models.py
 tests/services/test_market_events_prioritization.py
@@ -256,6 +270,7 @@ tests/services/test_pending_reconciliation_service.py
 tests/services/test_portfolio_action_classifier.py
 tests/services/test_portfolio_overview_currency.py
 tests/services/test_posture_generator.py
+tests/services/test_protected_position_settings.py
 tests/services/test_reconcile_trigger.py
 tests/services/test_research_run_new_candidates.py
 tests/services/test_session_context_market_wide_scope.py
@@ -265,6 +280,7 @@ tests/services/test_toss_live_order_ledger_service.py
 tests/services/test_toss_manual_activity.py
 tests/services/test_trade_journal_aggregates_scoreboard.py
 tests/services/test_trade_journal_read_service.py
+tests/services/test_trader_open_orders_cache.py
 tests/services/us_dual_paper/test_capability_matrix.py
 tests/services/us_dual_paper/test_kis_mock_preview.py
 tests/services/us_dual_paper/test_smoke_cli_preview.py

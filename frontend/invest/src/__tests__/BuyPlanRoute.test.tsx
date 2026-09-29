@@ -209,6 +209,14 @@ const READY: BuyPlanResponse = {
       of: 2,
       met_count: 1,
       unavailable_count: 1,
+      coefficient: {
+        state: "hold",
+        value: null,
+        basis_met_count: null,
+        applies_to: "crypto_new_entry_notional",
+        on_missing_or_stale_input: "hold",
+        fixed_at: "episode_first_order",
+      },
       semantics: "reserve deployment recovery frame",
       conditions: [
         {
@@ -218,7 +226,7 @@ const READY: BuyPlanResponse = {
           threshold: "50",
           unit: "percent",
           current_value: null,
-          state: "unavailable",
+          state: "stale",
           source: "upbit_open_api_ticker_derived",
           note: "조회 실패",
         },
@@ -348,13 +356,40 @@ describe("BuyPlanRoute", () => {
     expect(screen.getByText("이익권")).toBeTruthy();
   });
 
-  it("renders an unreadable gate condition as 판정 불가, never as open", async () => {
+  it("renders an unreadable C1 gate as hold, never as open", async () => {
     vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue(READY);
     render(wrap(<BuyPlanRoute />));
 
-    await waitFor(() => expect(screen.getByText("판정 불가")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("신규 진입 계수 보류")).toBeTruthy());
     expect(screen.getAllByText("확인 불가").length).toBeGreaterThan(0);
+    expect(screen.getByText("오래된 입력")).toBeTruthy();
     expect(screen.queryByText("열림")).toBeNull();
+  });
+
+  it("shows a half sized entry when one of two C1 gates meets", async () => {
+    const gate = READY.discovery_gates[0]!;
+    vi.spyOn(buyPlanApi, "fetchBuyPlan").mockResolvedValue({
+      ...READY,
+      discovery_gates: [
+        {
+          ...gate,
+          state: "closed",
+          unavailable_count: 0,
+          coefficient: {
+            ...gate.coefficient!,
+            state: "resolved",
+            value: "0.5",
+            basis_met_count: 1,
+          },
+        },
+      ],
+    });
+    render(wrap(<BuyPlanRoute />));
+
+    await waitFor(() =>
+      expect(screen.getByText("신규 진입 계수 m=0.5")).toBeTruthy(),
+    );
+    expect(screen.queryByText("닫힘")).toBeNull();
   });
 
   it("always states that the board is an approximation, not a verdict", async () => {

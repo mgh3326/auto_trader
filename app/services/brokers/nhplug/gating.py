@@ -8,9 +8,9 @@ from app.services.brokers.nhplug.errors import NHPlugMockDisabled
 
 
 def _mock_enabled() -> bool:
-    """Return true only for the explicit, case-insensitive ``true`` value."""
+    """Return true only for the exact operator enable value."""
 
-    return os.getenv("NHPLUG_MOCK_ENABLED", "").strip().lower() == "true"
+    return os.getenv("NHPLUG_MOCK_ENABLED") == "true"
 
 
 def _assert_mock_enabled() -> None:

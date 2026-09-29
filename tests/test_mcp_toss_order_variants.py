@@ -105,6 +105,28 @@ def _enable_toss_live_order_mutations_for_existing_tests(monkeypatch):
     monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
 
 
+class _UnprotectedPolicyLease:
+    """Keep legacy Toss behavior tests independent of the #728 policy store."""
+
+    active = False
+
+    async def release(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _use_unprotected_policy_lease_for_legacy_toss_tests(monkeypatch):
+    """#728 has focused fake-broker tests for the fail-closed policy itself."""
+
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    monkeypatch.setattr(
+        otv,
+        "prepare_live_sell_lease",
+        AsyncMock(return_value=_UnprotectedPolicyLease()),
+    )
+
+
 def test_all_eight_toss_tools_register():
     mcp = DummyMCP()
     register_toss_live_order_tools(mcp)

@@ -9,6 +9,7 @@
 - API 서비스 클라이언트
 - 데이터 구조
 - Trading Policy YAML 단일 소스 (ROB-646)
+- manual_cash 설정 화면 (#671)
 
 ## 기준 원문 계약
 
@@ -121,8 +122,6 @@ DB Tables:
 - Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
 
-## 웹 대시보드
-
 ### Trading Policy YAML 단일 소스 (ROB-646)
 
 `config/trading_policy.yaml` = 매매 판단 임계값/decision rule 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
@@ -132,8 +131,30 @@ DB Tables:
 - **MCP 도구**: `get_trading_policy(market, lane)` — market×lane 임계값 + lane-scoped `decision_rules` + `{version, content_hash}` echo; 없는 키는 `success=false, error=unknown_key`
 - **버전 스탬핑 계약**: 판정 기록(evidence_snapshot·trade_retrospectives·forecast)은 `{version, content_hash}` 인용. `get_operating_briefing`가 run-start에 `policy_version` echo.
 - **강제 범위**: 섹터 클러스터 집중도는 매수 프리뷰와 reserve-net consumer에서 계산한다. `order_validation`은 `sector_concentration` 필드로, reserve-net은 `plan.sector_cluster_cap_advisories` 및 생성 proposal의 `source_asof.sector_cluster_cap_advisories`로 **fail-open 경고·기록만** 남긴다. `portfolio.sector_cluster_cap_pct` 초과 자체는 차단 근거가 아니다. 단, 섹터 미상·음수 집중도 데이터·`max_symbols_per_sector_cluster` 등 별도 코드 가드는 그대로 fail-closed다. 나머지 임계값은 advisory.
+- **KR 1주 예외 (§664)**: `buy.per_symbol_notional_krw_range.one_share_exception`(`absolute_ceiling_krw` 10,000,000 · `max_deep_rungs` 1)은 US §139차 미러다. 코드 소비자는 `decision_table_validate` 하나뿐(`app/services/decision_table_validate/one_share_exception.py`) — 매수·1주·`price_max` ≤ 상한·정규 KRX 코드 단일 심볼·파킹 allowlist 심볼(459580/357870) 아님·행의 계좌/심볼에 **정확히 결속된** `position_quantity eq 0` 조건 1개·그 밖에는 **엄격한 무(無)자유텍스트 문법**(ASCII·Cc/Cf 금지, 닫힌 키, scenario_id·condition source 는 정확한 템플릿, invalidation 빈 리스트, thesis 필드 닫힌 enum, sector_concentration 숫자만, 값은 타입이 있는 숫자/bool)·표 전체(정규화 키) 심볼당 매수 rung 1개일 때만 밴드 초과를 허용한다(보유 침묵은 신규 진입이 아니다; 문법 정본은 `docs/runbooks/decision-table-validate.md`). per-order 자동승인 캡(KR 2,000,000)은 불변이며 초과 1주는 카드로 강등된다. 스키마는 밴드 `unit` 과 같은 통화의 상한 키 하나만 허용한다.
 - **관할**: 판단 임계값/decision rule 전용. fail-closed 코드 가드(손실매도/ladder/RSI 스코어링)·`symbol_trade_settings`(라이브 사이징)·`trade_profile`(dead)와 분리. migration 0.
 
+
+### manual_cash 설정 화면 (#671)
+
+`user_settings.manual_cash`(`MCP_USER_ID` 행)는 `get_available_capital_impl` 의 가용자금 합계와 §177차 `buy.deployment_cap` 분모의 **파킹 항**이다. `/invest/settings/manual-cash` 가 운영자 입력 전용 편집 화면이다.
+
+- **서비스**: `app/services/manual_cash_settings.py` — 검증(0 이상 정수 KRW, 계좌당·합계 ≤ `MANUAL_CASH_MAX_KRW`=100억, bool/float/NaN/Infinity/문자열 거부) · stale 규칙 단일 정의(`MANUAL_CASH_STALE_AFTER`=3일, `portfolio_cash._is_stale_manual_cash` 가 위임) · 저장
+- **라우터**: `app/routers/invest_manual_cash.py` — GET(세션 인증) / PUT(`require_admin`, `/invest/api/*` CSRF). 🔴 쓰기 대상은 로그인 사용자 행이 아니라 capital read 가 읽는 `MCP_USER_ID` 행이다.
+- **저장 형태**: `{"amount": <합계 int>, "accounts": [{name, amount}], "source": "operator_confirmed", "origin", "confirmed_by_user_id", "confirmed_at"}` — JSONB 라 마이그레이션 0. 기존 reader 는 `amount` 만 읽는다.
+- 🔴 **서버 강제 가드**: 저장값 대비 50% **초과** 변경(또는 없음/0/판독불가 → 양수)은 `confirm_large_change=true`(StrictBool) 없으면 409 `confirm_required`. `expected_updated_at` 불일치(MCP 등 다른 경로가 먼저 갱신)는 409 `stale_form`. 행이 없던 상태에서의 최초 저장은 `INSERT … ON CONFLICT DO NOTHING` 이라 그 사이 다른 경로가 먼저 넣은 행을 덮어쓰지 않고 `stale_form`. 모두 쓰기 0. 확인 대화상자의 초기 포커스는 '취소'(Enter 오확정 방지).
+- **자동 추정·잔고 prefill 금지**: 행은 운영자가 마지막으로 저장한 breakdown 에서만 채운다.
+- **reader 경화**: 저장된 `amount` 가 0~`MANUAL_CASH_MAX_KRW` 정수가 아니면(NaN/Infinity/음수/소수/상한 초과/판독불가) `invalid_amount=true`, 합계·deployment_cap 파킹 항 제외(`absent_treated_as_zero`) + `errors` 에 표면화. 어떤 경로로 들어온 행이든 파킹 항은 상한을 넘지 못한다.
+- MCP `set_user_setting("manual_cash", …)` 경로는 남아 있으나 같은 금액 규칙(0~100억 정수, 정수 float 는 int 로 정규화, `accounts` 는 합계 일치)으로 검증되고, 호출자가 넣은 출처 키(`source`/`origin`/`confirmed_*`)는 버린 뒤 `source="mcp_set_user_setting"` 로 찍는다 — 이 경로는 `operator_confirmed` 를 사칭할 수 없다. 단 50% 확인·`expected_updated_at` 가드는 화면 경로 전용이다. 다른 키는 영향 없음.
+
+### parking_exclusion 설정 (#883)
+
+`user_settings.parking_exclusion`(`MCP_USER_ID` 행)은 캐시 스윕 플레이북(#879)이 세션 종료 파킹 전에 읽는 통화별 제외 금액이다 — 스윕은 이 금액만큼 현금을 파킹하지 않고 남긴다.
+
+- **저장 형태**: `{"KRW": <금액>, "USD": <금액>}` — 키는 `PARKING_EXCLUSION_CURRENCIES`(`KRW`·`USD`)의 부분집합만 허용, 값은 0 이상 유한 JSON 숫자 또는 10진 문자열. JSONB 라 마이그레이션 0.
+- **서비스**: `app/services/parking_exclusion_settings.py` — 파서·쓰기 검증 단일 정의. 🔴 **어떤 요소라도 malformed 면 값 전체가 None 이다** (부분 유효한 객체도 적용하지 않는다): 비-객체·미지 통화 키·bool·중첩 객체/리스트·음수·비유한(NaN/Infinity)·파싱 불가 문자열 전부 거부.
+- **읽기 경로**: MCP `get_parking_exclusion()` (인자 없음 — 이 키 하나만 읽는 typed read, 다른 user_settings 키는 절대 읽을 수 없다). `default` 프로파일에서 `ORDER_PROPOSALS_ENABLED` 게이트 뒤에만 등록되고, 레인 manifest 상으로는 kr/us 실행 레인만 노출된다. 응답은 닫힌 `status` 어휘: `"ok"`(행 없음 또는 well-formed — 없는 통화는 `"0"` 기본값, 금액은 정확한 10진 문자열) / `"unknown"`(malformed·읽기 실패 — `exclusions=null`). 🔴 **unknown 은 결코 0이 아니다** — 스윕 소비자는 `status=="ok"` 일 때만 파킹하고, `unknown` 이면 아무것도 파킹하지 않는다.
+- **쓰기 경로(운영자 전용)**: `set_user_setting("parking_exclusion", …)` — default 프로파일의 기존 범용 writer 경로. 레인 세션에는 노출되지 않는다. 같은 닫힌 형태로 검증해 오타 저장이 나중에 `"unknown"` 으로 조용히 표면화되지 않게 하고, 금액은 10진 문자열로 정규화해 저장한다. 다른 키에는 영향 없음.
 
 ## 유지 규약
 

@@ -98,7 +98,25 @@ from app.models.rung_reason_vocabulary import RUNG_VOID_REASON_GROUPS, sql_in_li
 # v45 (ROB-1351): append-only ROB-1301 termination, ROB-1351 v2 registration,
 # and intentionally-empty future v2 epoch tables (all ORM tables via
 # create_all), plus their mutation-rejection triggers.
-SCHEMA_BOOTSTRAP_VERSION = 45
+# v46 (ROB-691): review.toss_live_order_ledger expired_at column + 'expired'
+# status CHECK widening, mirrored in _DDL_STATEMENTS; the bump forces one
+# re-bootstrap of persistent local test DBs.
+# v47 (ROB-728): review.protected_positions ORM tables plus the immutable
+# protected_position_revisions trigger used by the test-only PostgreSQL schema.
+# v48 (Task 881): include distinct KIS mock expired lifecycle state.
+# v49 (#884): review.screener_pick_log gains the nullable A-record columns
+# (collection_version/admission/admission_reason/selection_seq/source_status/
+# data_asof/fetched_at/raw_row/gate_features/call_context) via create_all; the
+# production additive migration is 20260928_884_fanout_a_record.
+# v50 (#925): krx_after_market_eligibility (operator-imported KRX after-market
+# list) via create_all; the production additive migration is
+# 20260929_925_krx_after_market.
+# v51 (Task 847): review.binance_h5_signals/binance_h5_intents/
+# binance_h5_lane_state/binance_h5_opportunities/binance_h5_nav_samples ORM
+# tables via create_all (no trigger DDL); the production additive migration is
+# 20260928_task847_h5_state. The bump forces one re-bootstrap of persistent
+# local test DBs.
+SCHEMA_BOOTSTRAP_VERSION = 51
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -875,7 +893,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD CONSTRAINT ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10 "
     "CHECK (lifecycle_state IN ("
     "'planned','previewed','submitted','accepted','pending',"
-    "'fill','reconciled','stale','failed','anomaly','cancelled'"
+    "'fill','reconciled','stale','failed','anomaly','cancelled','expired'"
     "))",
     # ---- investment_watch_alerts (ROB-403) ----
     "ALTER TABLE review.investment_watch_alerts ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)",
@@ -1894,6 +1912,41 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.buy_gate_ab_collection_epoch_v2 "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_buy_gate_ab_lifecycle_mutation()",
+    # ---- ROB-691: Toss DAY-expiry terminal status + broker timestamp ----
+    "ALTER TABLE review.toss_live_order_ledger "
+    "ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ",
+    # create_all renders the ORM CheckConstraint through the ck_ naming
+    # convention; the alembic-era literal name is covered for DBs that were
+    # migrated rather than create_all'd. The re-added constraint uses the
+    # canonical ck_ spelling so migrated and create_all schemas converge.
+    "ALTER TABLE review.toss_live_order_ledger "
+    "DROP CONSTRAINT IF EXISTS toss_live_ledger_status",
+    "ALTER TABLE review.toss_live_order_ledger "
+    "DROP CONSTRAINT IF EXISTS ck_toss_live_order_ledger_toss_live_ledger_status",
+    "ALTER TABLE review.toss_live_order_ledger "
+    "ADD CONSTRAINT ck_toss_live_order_ledger_toss_live_ledger_status CHECK (status IN ("
+    "'accepted','rejected','pending','partial','filled','cancelled',"
+    "'replaced','cancel_rejected','replace_rejected','anomaly','expired'))",
+    # ---- ROB-728: operator quantity-floor revision evidence (table via ORM).
+    """
+    CREATE OR REPLACE FUNCTION review.reject_protected_position_revision_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'review.protected_position_revisions is append-only; % rejected',
+            TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_protected_position_revisions_append_only "
+    "ON review.protected_position_revisions",
+    "CREATE TRIGGER trg_protected_position_revisions_append_only "
+    "BEFORE UPDATE OR DELETE ON review.protected_position_revisions "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_protected_position_revision_mutation()",
+    "DROP TRIGGER IF EXISTS trg_protected_position_revisions_truncate_append_only "
+    "ON review.protected_position_revisions",
+    "CREATE TRIGGER trg_protected_position_revisions_truncate_append_only "
+    "BEFORE TRUNCATE ON review.protected_position_revisions "
+    "FOR EACH STATEMENT EXECUTE FUNCTION review.reject_protected_position_revision_mutation()",
 )
 
 

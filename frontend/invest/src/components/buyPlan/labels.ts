@@ -72,6 +72,7 @@ export const GATE_CONDITION_STATE_LABEL: Record<GateConditionState, string> = {
   met: "충족",
   not_met: "미충족",
   unavailable: "확인 불가",
+  stale: "오래된 입력",
 };
 
 export const FUNDING_VERDICT_LABEL: Record<FundingVerdict, string> = {

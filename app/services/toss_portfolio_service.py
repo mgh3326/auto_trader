@@ -480,10 +480,11 @@ async def fetch_toss_portfolio_snapshot(
 ) -> TossPortfolioSnapshot:
     """Fetch the Toss portfolio read model.
 
-    General reads default to the process-shared Redis snapshot and never call
-    the broker sellable endpoint.  ``need_sellable=True`` is an explicit
-    broker-adjacent opt-in and always bypasses the shared snapshot/cache so a
-    caller cannot accidentally use stale data for an order decision.
+    General reads default to the process-shared Redis snapshot and omit the
+    broker sellable endpoint.  ``need_sellable=True`` is an explicit L1
+    display or broker-adjacent opt-in. It always bypasses the whole-portfolio
+    snapshot, but may use the short-lived per-symbol sellable cache supplied by
+    the caller. It can never authorize an order decision.
     """
     created_client = client is None
     active_client: TossPortfolioClient = client or TossReadClient.from_settings()

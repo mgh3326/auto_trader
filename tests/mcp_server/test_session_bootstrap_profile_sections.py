@@ -28,6 +28,11 @@ from tests.mcp_server._registration_recorder import (
             McpProfile.FILL_WATCH_CONTEXT,
             # SHADOW_REPLAY exposes only its exact seven observation/replay tools.
             McpProfile.SHADOW_REPLAY,
+            # #891 — live profiles are manifest-bounded closed worlds and do
+            # not register session_bootstrap_pack.
+            McpProfile.LIVE_KR,
+            McpProfile.LIVE_US,
+            McpProfile.LIVE_CRYPTO,
         )
     ],
 )

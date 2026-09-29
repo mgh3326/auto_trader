@@ -16,11 +16,18 @@ from typing import Any
 
 from app.services.fill_event_handoff.broker_risk import TradeNotifierRiskPush
 from app.services.fill_event_handoff.bundle import (
+    BUNDLE_SHADOW_STATE_DIR,
+    FILL_HANDOFF_BUNDLE_SHADOW_STATE_ENV,
     BundleConfig,
     FillHandoffBundleRunner,
     NullLaneEventSink,
     PanewireLaneEventSink,
     handoff_enabled,
+    shadow_enabled,
+)
+from app.services.fill_event_handoff.shadow import (
+    ShadowKickConfig,
+    shadow_kick_config_from_env,
 )
 from app.services.lane_events import (
     LANE_PATTERN,
@@ -55,19 +62,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since-fill-id", type=_nonnegative)
     parser.add_argument("--since-watch-id", type=_nonnegative)
-    parser.add_argument(
-        "--state-dir",
-        type=Path,
-        default=Path(
-            os.getenv("FILL_HANDOFF_BUNDLE_STATE_DIR", "/var/lib/fill-handoff-bundle")
-        ),
-    )
+    parser.add_argument("--state-dir", type=Path, default=None)
     return parser.parse_args(argv)
+
+
+def _default_state_dir(*, shadow: bool) -> Path:
+    if shadow:
+        # Shadow keeps its own cursor/state world; production watermarks must
+        # never be advanced by a shadow run.
+        return Path(
+            os.getenv(FILL_HANDOFF_BUNDLE_SHADOW_STATE_ENV, BUNDLE_SHADOW_STATE_DIR)
+        )
+    return Path(
+        os.getenv("FILL_HANDOFF_BUNDLE_STATE_DIR", "/var/lib/fill-handoff-bundle")
+    )
 
 
 def _delivery_runtime(
     enabled: bool,
+    *,
+    shadow: bool = False,
 ) -> tuple[dict[str, str], Any, int, int, float]:
+    if shadow:
+        # Shadow evaluates the same outbound shape (lane map and batch knobs
+        # parse exactly like the enabled path) but the transport is forced to
+        # the Null implementation — nothing leaves the process.
+        lanes = _lanes(os.getenv("FILL_HANDOFF_LANES"))
+        return (
+            lanes,
+            NullLaneEventSink(),
+            int(os.getenv("FILL_HANDOFF_BATCH_LIMIT", "500")),
+            int(os.getenv("FILL_HANDOFF_LOOKBACK_IDS", "256")),
+            float(os.getenv("FILL_HANDOFF_SINK_TIMEOUT_S", "3")),
+        )
     if not enabled:
         # The master gate owns the whole outbound configuration surface. This
         # lets a disabled catch-up run advance durable cursors even if stale
@@ -94,31 +121,51 @@ def _delivery_runtime(
 
 async def main_async(
     *,
-    state_dir: Path,
+    state_dir: Path | None = None,
     since_fill_id: int | None = None,
     since_watch_id: int | None = None,
 ) -> dict[str, Any]:
     from app.core.db import AsyncSessionLocal
 
     enabled = handoff_enabled()
-    lanes, sink, batch_limit, lookback_ids, sink_timeout_s = _delivery_runtime(enabled)
+    shadow = shadow_enabled()
+    lanes, sink, batch_limit, lookback_ids, sink_timeout_s = _delivery_runtime(
+        enabled, shadow=shadow
+    )
     runner = FillHandoffBundleRunner(
         BundleConfig(
-            state_dir=state_dir,
+            state_dir=state_dir or _default_state_dir(shadow=shadow),
             lanes=lanes,
             batch_limit=batch_limit,
             lookback_ids=lookback_ids,
             sink_timeout_s=sink_timeout_s,
             since_fill_id=since_fill_id,
             since_watch_id=since_watch_id,
+            shadow=shadow,
+            # Kick envs are only read under shadow so a malformed kick knob
+            # can never break the production bundle path.
+            shadow_kick=shadow_kick_config_from_env() if shadow else ShadowKickConfig(),
         ),
-        sink=sink,
-        notifier=TradeNotifierRiskPush(),
+        # Under shadow the runner builds its own Null transports; passing
+        # nothing keeps injected transports out of the observation path.
+        sink=None if shadow else sink,
+        # The Telegram-backed notifier is never even constructed under shadow.
+        notifier=None if shadow else TradeNotifierRiskPush(),
     )
     async with AsyncSessionLocal() as db:
         result = await runner.run(db)
-    result["transport"] = "panewire_local_inbox" if lanes else "disabled"
+    result["transport"] = (
+        "shadow" if shadow else ("panewire_local_inbox" if lanes else "disabled")
+    )
     result["configured_markets"] = sorted(lanes)
+    if result.get("shadow") is not None:
+        # The runner also logs this line; stderr is the channel journalctl and
+        # docker logs actually capture for this script.
+        print(
+            "fill_handoff_bundle_shadow "
+            + json.dumps(result["shadow"], ensure_ascii=False, sort_keys=True),
+            file=sys.stderr,
+        )
     return result
 
 
