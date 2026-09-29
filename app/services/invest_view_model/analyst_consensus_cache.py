@@ -2,7 +2,8 @@
 
 Caches the DAILY-STABLE analyst consensus (buy/hold/sell/total counts + target
 prices) per (market, symbol, provider-local-date) so screen_stocks_enrich stops
-re-scraping Naver research pages (company_list/company_read) / re-fetching
+re-fetching the Naver research JSON APIs (m.stock.naver.com/api/research, #930 —
+previously the retired company_list/company_read pages) / re-fetching
 yfinance analyst_price_targets+recommendations+upgrades_downgrades+info on every
 call. The volatile current_price/upside_pct are stripped before caching and
 recomputed on the returned page from a fresh (lightweight) price fetch — see
@@ -178,7 +179,7 @@ async def resolve_consensus(
     stable: dict[str, Any] | None = None
     try:
         # limit=10 preserves the existing filter/page ceiling (see interface note);
-        # do NOT bump this — a higher cap triples cold company_read.naver /
+        # do NOT bump this — a higher cap triples cold research-detail /
         # yfinance ticker fetches.
         payload = await opinion_fetcher(symbol=symbol, market=market_norm, limit=10)
         consensus = (

@@ -251,6 +251,13 @@ def _build_consensus_model(
         or payload.get("current")
         or embedded_current
     )
+    # #930: provider-reported degradation (skipped list rows, partial detail
+    # failures) is surfaced on the panel too — never silently dropped.
+    warnings.extend(
+        w
+        for w in payload.get("warnings") or []
+        if isinstance(w, str) and w not in warnings
+    )
     normalized_opinions = [_normalize_opinion(row) for row in raw_opinions]
     consensus = build_consensus(normalized_opinions, current_price=current_price)
     if consensus_has_stale_window_inputs(consensus):
@@ -273,12 +280,23 @@ def _build_consensus_model(
 
 def _normalize_opinion(row: Any) -> dict[str, Any]:
     if not isinstance(row, dict):
-        return {"rating": None, "target_price": None, "date": None}
+        # #930: a non-dict row is not an opinion — mark it unrated so it can
+        # never be re-derived as a fabricated Hold vote by build_consensus.
+        return {
+            "rating": None,
+            "rating_bucket": "unrated",
+            "target_price": None,
+            "date": None,
+        }
     return {
         "rating": row.get("rating")
         or row.get("opinion")
         or row.get("investment_opinion")
         or row.get("recommendation"),
+        # #930: pass the provider's bucket through — an explicit "unrated"
+        # (e.g. a Naver research detail fetch that failed) must not be
+        # re-derived into a Hold vote; build_consensus honors this key.
+        "rating_bucket": row.get("rating_bucket"),
         "target_price": _to_float(
             row.get("target_price")
             or row.get("targetPrice")

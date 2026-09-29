@@ -514,6 +514,35 @@ class TestQ65SweepToolsBoot:
         assert not {"get_parking_exclusion", "toss_proposal_accounts"} & registered
 
 
+class TestQ930OpinionsBoot:
+    """#930 — the read-only analyst-opinion tool boots on live-kr/live-us in
+    the slot freed by the operator-approved drop of
+    execution_ledger_fill_events_list_recent, and stays off live-crypto."""
+
+    @pytest.mark.parametrize(
+        "profile", [McpProfile.LIVE_KR, McpProfile.LIVE_US], ids=["kr", "us"]
+    )
+    def test_get_investment_opinions_registers_on_equity_lanes(
+        self, monkeypatch: pytest.MonkeyPatch, profile: McpProfile
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        recorder = RegistrationRecorder()
+        # register_all_tools calls assert_complete internally; reaching the
+        # assert means the closed-world manifest surface booted clean.
+        register_all_tools(cast(Any, recorder), profile=profile)
+        registered = set(recorder.tools)
+        assert "get_investment_opinions" in registered
+        assert "execution_ledger_fill_events_list_recent" not in registered
+
+    def test_get_investment_opinions_stays_off_live_crypto(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        recorder = RegistrationRecorder()
+        register_all_tools(cast(Any, recorder), profile=McpProfile.LIVE_CRYPTO)
+        assert "get_investment_opinions" not in set(recorder.tools)
+
+
 class TestStrictSubsetAndEmergencyConfinement:
     @pytest.mark.parametrize("profile", sorted(LIVE_PROFILES, key=str))
     def test_manifest_is_strict_subset_of_default(

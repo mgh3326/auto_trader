@@ -119,6 +119,8 @@ tests/services/brokers/binance/demo_strategy_loop/test_correlation.py
 tests/services/brokers/binance/futures_demo/test_cross_environment_leakage.py
 tests/services/brokers/binance/futures_demo/test_host_allowlist.py
 tests/services/brokers/binance/futures_demo/test_transport.py
+tests/services/brokers/binance/h5/test_sizing_holding.py
+tests/services/brokers/binance/h5/test_state.py
 tests/services/brokers/binance/paper/test_binance_adapter.py
 tests/services/brokers/binance/spot_demo/test_canonical_credentials.py
 tests/services/brokers/binance/spot_demo/test_d2_r8_authority_registration.py
