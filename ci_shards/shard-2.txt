@@ -130,6 +130,7 @@ tests/services/brokers/binance/test_broker_ack_scope_migration.py
 tests/services/brokers/binance/test_rate_limit_telemetry.py
 tests/services/brokers/binance/test_ws_reconnect.py
 tests/services/brokers/kis/test_circuit_breaker.py
+tests/services/brokers/kis/test_live_order_expiry_krx_after.py
 tests/services/brokers/kis/test_live_shadow_witness.py
 tests/services/brokers/kis/test_selector_raw_evidence.py
 tests/services/brokers/nhplug/test_auth.py
@@ -190,6 +191,7 @@ tests/services/order_proposals/callback_inbox/test_retry_vocabulary.py
 tests/services/order_proposals/callback_inbox/test_task_result_boundary.py
 tests/services/order_proposals/test_alerts.py
 tests/services/order_proposals/test_approval_window.py
+tests/services/order_proposals/test_approval_window_krx_after.py
 tests/services/order_proposals/test_auto_approve.py
 tests/services/order_proposals/test_dispatch_security_invariants.py
 tests/services/order_proposals/test_loss_cut_approval_migration.py
@@ -243,6 +245,7 @@ tests/services/test_kis_mock_lifecycle_service.py
 tests/services/test_kr_preopen_news_brief_service.py
 tests/services/test_krb1_p0_liquidity_selector.py
 tests/services/test_krb1_selector_cli_exit_contract.py
+tests/services/test_krx_after_market.py
 tests/services/test_loss_cut_policy_and_settings.py
 tests/services/test_manual_cash_settings.py
 tests/services/test_manual_holdings_leftover.py

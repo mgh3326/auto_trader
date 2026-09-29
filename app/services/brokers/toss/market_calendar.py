@@ -12,9 +12,16 @@ logger = logging.getLogger(__name__)
 Market = Literal["kr", "us"]
 KrNxtSession = Literal["nxt_premarket", "nxt_after", "closed"]
 KrTossSession = Literal["nxt_premarket", "regular", "nxt_after", "closed"]
+# #925: KRX after-market, a venue session inside the integrated after window.
+KrxAfterSession = Literal["krx_after"]
 UsTossSession = Literal["day", "pre", "regular", "post"]
 
 _KST = dt.timezone(dt.timedelta(hours=9))
+# #925: KRX after-market (opened 2026-09-14) runs 16:00-20:00 KST. There is no
+# KRX pre-market; 08:00-08:50 remains NXT-only.
+KRX_AFTER_SESSION: KrxAfterSession = "krx_after"
+KRX_AFTER_OPEN_KST = dt.time(hour=16, minute=0)
+KRX_AFTER_CLOSE_KST = dt.time(hour=20, minute=0)
 _CACHE: dict[tuple[Market, dt.date], tuple[dt.date, TossMarketCalendar]] = {}
 
 
@@ -157,6 +164,39 @@ def kr_toss_session_for(
         return "regular"
     if day.after_market is not None and day.after_market.contains(local):
         return "nxt_after"
+    return None
+
+
+def krx_after_window(day: TossKrMarketDay) -> TossSessionWindow | None:
+    """KRX after-market window for one Toss KR trading day (#925).
+
+    The Toss integrated ``afterMarket`` window is the day's evidence that an
+    after-hours session exists at all; the KRX venue window is that window
+    clipped to 16:00-20:00 KST. No integrated after window (holiday, missing
+    data) or an empty intersection means no KRX after-market that day.
+    """
+    after = day.after_market
+    if after is None:
+        return None
+    venue_open = dt.datetime.combine(day.date, KRX_AFTER_OPEN_KST, tzinfo=_KST)
+    venue_close = dt.datetime.combine(day.date, KRX_AFTER_CLOSE_KST, tzinfo=_KST)
+    start = max(after.start, venue_open)
+    end = min(after.end, venue_close)
+    if start >= end:
+        return None
+    return TossSessionWindow(start=start, end=end)
+
+
+def kr_krx_after_session_for(
+    moment: dt.datetime, *, calendar: TossMarketCalendar
+) -> KrxAfterSession | None:
+    local = _to_kst(moment)
+    day = calendar.day_for(local.date())
+    if not isinstance(day, TossKrMarketDay):
+        return None
+    window = krx_after_window(day)
+    if window is not None and window.contains(local):
+        return KRX_AFTER_SESSION
     return None
 
 

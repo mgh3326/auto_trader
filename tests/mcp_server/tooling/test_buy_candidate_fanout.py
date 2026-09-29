@@ -1598,3 +1598,291 @@ async def test_candidate_records_cover_every_considered_source_row() -> None:
     )
     assert result["collection"]["collection_version"] == "funnel-a1"
     assert result["collection"]["fetched_at"].endswith("+00:00")
+
+
+# ---------------------------------------------------------------------------
+# Task #922 / retro U-3 — the market="us" plan runs the filtered
+# get_top_stocks losers source as the us_top_stocks family. The quality bar
+# lives inside get_top_stocks; the fanout only consumes the filtered output.
+# ---------------------------------------------------------------------------
+
+
+def _top_stocks_reader_with_rows(
+    rows: list[dict[str, Any]],
+    *,
+    calls: list[dict[str, Any]] | None = None,
+) -> Any:
+    async def top_stocks_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        if calls is not None:
+            calls.append(
+                {
+                    "source": source.source,
+                    "family": source.family,
+                    "ranking_type": source.ranking_type,
+                    "market": market,
+                    "top_n": top_n,
+                }
+            )
+        return {
+            "source": source.source,
+            "family": source.family,
+            "kind": "live",
+            "rows": list(rows),
+            "metadata": {"request": {"market": market}},
+        }
+
+    return top_stocks_reader
+
+
+async def _forbidden_reader_async(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("KR readers must never run for the market='us' plan")
+
+
+@pytest.mark.asyncio
+async def test_us_plan_runs_only_the_us_top_stocks_family() -> None:
+    top_stocks_calls: list[dict[str, Any]] = []
+    revalidation_calls: list[tuple[list[str], str]] = []
+
+    async def fresh_revalidator(
+        symbols: list[str], market: str
+    ) -> dict[str, dict[str, Any]]:
+        revalidation_calls.append((list(symbols), market))
+        return {symbol: _fresh_row() for symbol in symbols}
+
+    result = await discover_buy_candidates_fanout_impl(
+        market="us",
+        _live_reader=_forbidden_reader_async,
+        _snapshot_reader=_forbidden_reader_async,
+        _top_stocks_reader=_top_stocks_reader_with_rows(
+            _rows([f"US-{index}" for index in range(3)]),
+            calls=top_stocks_calls,
+        ),
+        _fresh_revalidator=fresh_revalidator,
+    )
+
+    assert result["success"] is True
+    assert result["market"] == "us"
+    # Exactly one planned source run: the filtered get_top_stocks losers read.
+    assert top_stocks_calls == [
+        {
+            "source": "us_top_stocks:losers",
+            "family": "us_top_stocks",
+            "ranking_type": "losers",
+            "market": "us",
+            "top_n": TOP_N_PER_SOURCE,
+        }
+    ]
+    assert result["bounds"]["revalidation_family_order"] == ["us_top_stocks"]
+    assert [item["source"] for item in result["sources"]] == ["us_top_stocks:losers"]
+    assert result["collection"]["source_statuses"] == {"us_top_stocks:losers": "ok"}
+    assert {candidate["market"] for candidate in result["candidates"]} == {"us"}
+    assert revalidation_calls == [([f"US.{index}" for index in range(3)], "us")]
+    assert result["digest_observation"]["actionable_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_us_source_rows_are_bounded_and_fully_recorded() -> None:
+    """The US source is capped at 10 rows; every considered row is an A-record."""
+
+    result = await discover_buy_candidates_fanout_impl(
+        market="us",
+        _live_reader=_forbidden_reader_async,
+        _snapshot_reader=_forbidden_reader_async,
+        _top_stocks_reader=_top_stocks_reader_with_rows(
+            [
+                _source_row(f"US-{index}", rank=index + 1)
+                for index in range(TOP_N_PER_SOURCE + 2)
+            ]
+        ),
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    records = result["candidate_records"]
+    assert len(records) == TOP_N_PER_SOURCE
+    assert {record["source"] for record in records} == {"us_top_stocks:losers"}
+    assert {record["family"] for record in records} == {"us_top_stocks"}
+    assert [record["rank"] for record in records] == list(
+        range(1, TOP_N_PER_SOURCE + 1)
+    )
+    assert {record["admission"] for record in records} == {"admitted"}
+    assert all(record["admission_reason"] for record in records)
+    # The pool bound still applies when one family produces the whole top-N.
+    assert len(result["candidates"]) == TOP_N_PER_SOURCE
+    assert len(result["collection"]["selected_symbol_order"]) == TOP_N_REVALIDATION
+    us_stats = next(
+        stats
+        for stats in result["digest_observation"]["source_stats"]
+        if stats["source"] == "us_top_stocks:losers"
+    )
+    assert us_stats["incoming_count"] == TOP_N_PER_SOURCE + 2
+    assert us_stats["top_n_count"] == TOP_N_PER_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_us_source_error_degrades_to_status_not_a_failed_call() -> None:
+    async def failing_top_stocks_reader(
+        source: Any, market: str, top_n: int
+    ) -> dict[str, Any]:
+        raise RuntimeError("yfinance upstream down")
+
+    result = await discover_buy_candidates_fanout_impl(
+        market="us",
+        _live_reader=_forbidden_reader_async,
+        _snapshot_reader=_forbidden_reader_async,
+        _top_stocks_reader=failing_top_stocks_reader,
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    assert result["success"] is True
+    assert result["collection"]["source_statuses"]["us_top_stocks:losers"] == "error"
+    assert result["candidates"] == []
+    assert result["candidate_records"] == []
+
+
+@pytest.mark.asyncio
+async def test_kr_plan_never_calls_the_top_stocks_reader() -> None:
+    """Mutant check: the US source must not leak into the default KR plan."""
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=_live_reader_with_rows({"rsi": _rows(["KR-1"])}),
+        _snapshot_reader=_snapshot_reader_with_rows({}),
+        _top_stocks_reader=_forbidden_reader_async,
+        _fresh_revalidator=_ok_revalidator,
+    )
+
+    assert result["success"] is True
+    assert result["market"] == "kr"
+    assert result["bounds"]["revalidation_family_order"] == [
+        "rsi",
+        "change_rate",
+        "trade_amount",
+        "snapshot_support_flow",
+        "snapshot_value_catalyst",
+    ]
+    assert all(
+        record["family"] != "us_top_stocks" for record in result["candidate_records"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_unsupported_market_fails_closed_without_reader_calls() -> None:
+    result = await discover_buy_candidates_fanout_impl(
+        market="jp",  # type: ignore[arg-type]
+        _live_reader=_forbidden_reader_async,
+        _snapshot_reader=_forbidden_reader_async,
+        _top_stocks_reader=_forbidden_reader_async,
+        _fresh_revalidator=_forbidden_reader_async,
+    )
+
+    assert result["success"] is False
+    assert result["observation_only"] is True
+    assert "unsupported market" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_read_top_stocks_source_lifts_the_filter_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reader must not pass floors itself and must carry the filter echo."""
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_impl(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {
+            "rankings": [_source_row("AAPL")],
+            "total_count": 1,
+            "market_cap_filter": {"min_market_cap": 2e9, "excluded_count": 3},
+            "turnover_filter": {"min_turnover": 1e6, "excluded_count": 2},
+            "instrument_filter": {"excluded_leveraged_inverse_etf_count": 1},
+        }
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.analysis_tool_handlers.get_top_stocks_impl",
+        fake_impl,
+    )
+
+    payload = await fanout._read_top_stocks_source(
+        fanout._US_TOP_STOCK_SOURCES[0], "us", TOP_N_PER_SOURCE
+    )
+
+    assert calls == [
+        {"market": "us", "ranking_type": "losers", "limit": TOP_N_PER_SOURCE}
+    ]
+    # Floors resolve inside get_top_stocks — the fanout never injects them.
+    assert "min_market_cap" not in calls[0]
+    assert "min_turnover" not in calls[0]
+    assert "include_illiquid" not in calls[0]
+    assert payload["metadata"]["market_cap_filter"]["min_market_cap"] == 2e9
+    assert (
+        payload["metadata"]["instrument_filter"]["excluded_leveraged_inverse_etf_count"]
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_top_stocks_source_error_response_is_error_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_impl(**kwargs: Any) -> dict[str, Any]:
+        return {"error": "upstream timeout", "rankings": []}
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.analysis_tool_handlers.get_top_stocks_impl",
+        fake_impl,
+    )
+
+    payload = await fanout._read_top_stocks_source(
+        fanout._US_TOP_STOCK_SOURCES[0], "us", TOP_N_PER_SOURCE
+    )
+
+    assert payload["rows"] == []
+    assert payload["metadata"]["source_status"] == "error"
+    assert payload["metadata"]["error_type"] == "error_response"
+
+
+@pytest.mark.asyncio
+async def test_us_registered_tool_forwards_the_market_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import buy_candidate_fanout_registration as reg
+    from app.mcp_server.tooling.buy_candidate_fanout_registration import (
+        register_buy_candidate_fanout_tools,
+    )
+
+    seen: list[dict[str, Any]] = []
+    payload = {
+        "success": True,
+        "market": "us",
+        "candidates": [],
+        "candidate_records": [],
+    }
+
+    async def fake_impl(**kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs)
+        return payload
+
+    async def fake_record(result: dict[str, Any], **_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(reg, "discover_buy_candidates_fanout_impl", fake_impl)
+    monkeypatch.setattr(reg, "maybe_record_fanout_picks", fake_record)
+    monkeypatch.setattr(reg, "maybe_record_buy_gate_ab_shadow", fake_record)
+
+    class _FakeMCP:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Any] = {}
+
+        def tool(self, *, name: str, description: str, **_: Any) -> Any:
+            def decorate(function: Any) -> Any:
+                self.handlers[name] = function
+                return function
+
+            return decorate
+
+    mcp = _FakeMCP()
+    register_buy_candidate_fanout_tools(mcp)  # type: ignore[arg-type]
+    returned = await mcp.handlers["discover_buy_candidates_fanout"](market="us")
+    assert returned is payload
+    assert seen == [{"market": "us"}]
+    # The outer observer still fires on the US payload (fail-open contract).

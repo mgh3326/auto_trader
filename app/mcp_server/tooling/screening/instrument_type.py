@@ -11,6 +11,43 @@ _PREFERRED_KR_NAME_RE = re.compile(r"(?:\d우B?|\d우|우B?|우선주)$")
 _PREFERRED_KR_CODE_SUFFIXES = ("5", "7", "9")
 _PREFERRED_US_SYMBOL_RE = re.compile(r"(?:[.-]P[A-Z]?|[.-]PR[.-]?[A-Z]?)$")
 
+# US leveraged/inverse ETF exclusion (ROB task #922, retro U-3).  This is the
+# US mirror of the KR name-token quality rule ``_KR_TOSS_EXCLUDED_NAME_TOKENS``
+# = ("레버리지", "인버스") in
+# app/services/invest_view_model/screener_service.py, and of the
+# buy.index_etf_candidate policy tier's required ``leveraged_etf`` /
+# ``inverse_etf`` exclusions in config/trading_policy.yaml.  US ranking rows
+# carry only a display name, so the check is name-token based like KR.  The
+# word-boundary patterns deliberately exclude only leveraged/inverse products:
+# broad index ETFs and ordinary common stocks pass through, and duration
+# names such as "Short-Term Treasury" are not leveraged/inverse products.
+_US_LEVERAGED_INVERSE_NAME_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b-?\d+(?:\.\d+)?\s*x\b",  # "2x", "3X", "-1x", "1.5 X"
+        r"\bleveraged\b",
+        r"\binverse\b",
+        # ProShares leveraged brands: UltraPro (3x), UltraShort (-2x), and
+        # the "ProShares Ultra <index>" family (2x).  A bare "Ultra" is NOT
+        # excluded — ordinary issuers such as Ultra Clean Holdings are
+        # common stocks, not leveraged products.
+        r"\bultra\s*pro\b",
+        r"\bultrashort\b",
+        r"\bproshares\s+ultra\b",
+        # "Short <index>" products are inverse; duration/bond names are not.
+        r"\bshort\b(?![\s-]*(?:term|duration|maturity|municipal|bond|treasury|government|board|date|month))",
+    )
+)
+
+
+def is_us_leveraged_inverse_name(name: object) -> bool:
+    """True when a US display name marks a leveraged or inverse product."""
+
+    text = str(name or "").strip()
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _US_LEVERAGED_INVERSE_NAME_PATTERNS)
+
 
 def _normalize_compare_key(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "").strip()).casefold()
@@ -102,4 +139,5 @@ __all__ = [
     "_normalize_compare_key",
     "classify_kr_instrument",
     "classify_us_instrument",
+    "is_us_leveraged_inverse_name",
 ]

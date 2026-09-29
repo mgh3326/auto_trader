@@ -43,7 +43,7 @@ async def get_us_rankings_impl(
                 sortAsc=False,
                 session=session,
             )
-        return yf.screen(screener_id, session=session)
+        return yf.screen(screener_id, size=limit, session=session)
 
     with yfinance_tracing_session() as session:
         results = await asyncio.to_thread(fetch_sync, session)
