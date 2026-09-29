@@ -256,6 +256,7 @@ tests/services/test_market_events_normalizers.py
 tests/services/test_market_events_wisefn_ingestion.py
 tests/services/test_mock_auto_read_model.py
 tests/services/test_news_text.py
+tests/services/test_nxt_preflight_krx_after.py
 tests/services/test_order_preview_session_service.py
 tests/services/test_order_send_intent_service.py
 tests/services/test_paper_approval_packet_rob842.py
