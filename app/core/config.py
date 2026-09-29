@@ -336,6 +336,11 @@ class Settings(BaseSettings):
     protected_quantity_mode_kis_live: Literal["off", "shadow", "enforce"] = "off"
     protected_quantity_mode_toss_live: Literal["off", "shadow", "enforce"] = "off"
     protected_quantity_mode_upbit_live: Literal["off", "shadow", "enforce"] = "off"
+    # #943 — kill switch for rule-executed P changes (doc 8274 section 7):
+    # an authoritative buy fill raises an already-declared P to the fresh broker
+    # holding, and a holding below P lowers P to the holding.  Default off: with
+    # it off no head is read, no broker is read, and no revision is written.
+    protected_position_auto_follow_enabled: bool = False
 
     # ROB-866: gate for the scheduleless Toss manual-activity sweep TaskIQ task.
     # Default off — the sweep runs manually (dry_run MCP tool) first; recurrence is

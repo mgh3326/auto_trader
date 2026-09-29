@@ -60,6 +60,10 @@ class ExecutionLedgerReconciler:
     ):
         self.repo = repo
         self.fetcher = fetcher or fetch_filled_orders
+        # Row ids upserted by the last committing run.  The caller owns the
+        # transaction, so consumers (#943 protected-position follow) must read
+        # this only after that caller's commit succeeds.
+        self.committed_fill_ids: list[int] = []
 
     async def run(  # NOSONAR
         self,
@@ -75,6 +79,7 @@ class ExecutionLedgerReconciler:
             raise ExecutionLedgerCommitDisabledError(
                 "EXECUTION_LEDGER_COMMIT_ENABLED is false; commit mode is disabled"
             )
+        self.committed_fill_ids = []
         run_id = uuid.uuid4()
         window_start, window_end = _resolve_run_window(
             window_hours=window_hours,
@@ -106,7 +111,9 @@ class ExecutionLedgerReconciler:
                 else:
                     diff.unchanged += 1
                 if not dry_run and status != "unchanged":
-                    committed_status, _row_id = await self.repo.upsert_fill(fill)
+                    committed_status, row_id = await self.repo.upsert_fill(fill)
+                    if committed_status in {"inserted", "updated"}:
+                        self.committed_fill_ids.append(row_id)
                     if committed_status == "inserted":
                         diff.committed_insert += 1
                     elif committed_status == "updated":

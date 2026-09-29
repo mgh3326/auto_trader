@@ -9,6 +9,7 @@
 - Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
 - H5-LS-ENV-v1 Futures Demo 수동 어댑터 (847)
 - Execution Ledger HTTP Ingest (fillwire P0)
+- 보호 수량 P 규칙 추종 (#943)
 - KIS WebSocket Mock Smoke (ROB-104)
 - kis_mock 귀속 사슬 — pre-submit 강제
 - KIS Live Order Fill-Evidence Gate (ROB-395)
@@ -183,6 +184,18 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
   (`127.0.0.1`/`localhost`/`::1`) + **정확한** ingest path + userinfo/query/fragment 금지를
   **생성 시와 전송 직전 두 번** 검증하고 `follow_redirects=False` 를 명시 고정한다. 거부된
   URL 은 **소켓을 열기 전에** DB 로 fail-open 하며 로그에 토큰·URL 을 남기지 않는다.
+
+### 보호 수량 P 규칙 추종 (#943)
+
+운영자 결정(hk doc 8274 §7): P 는 계산값이며 첫 선언 뒤에는 규칙으로만 바뀌고 알림만 간다. 임시 규칙 = P 는 보유 전량.
+
+- **서비스**: `app/services/protected_position_auto_follow.py` — 모든 P 변경은 `ProtectedQuantityService.save`(origin `operator_cli`, actor 고정 owner `MCP_USER_ID`, 락 안 fresh broker 재조회) 경유
+- **킬스위치**: `PROTECTED_POSITION_AUTO_FOLLOW_ENABLED` 기본 false — off 면 head·broker 조회·쓰기·알림 0
+- **훅 위치**: 원장 커밋 **이후**만 — `ExecutionLedgerReconciler` 커밋(task·script `--commit`), Toss reconcile 부킹 세션 종료 후. dry-run 에서는 호출 안 함. `source=reconciler`·`account_mode=live` 행만(websocket 은 provisional 이라 무시)
+- **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **스케줄 없음**. 스케줄 부여는 별도 운영자 승인
+- 🔴 **금지**: 미선언 키 자동 선언, P=0(해제) 재상향, 보유 초과 P, 읽기 경로·send-time guard 에서의 쓰기(`test_auto_follow_writer_is_unreachable_from_read_and_guard_paths` import allowlist 가 강제)
+- **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다
+- **런북**: `docs/runbooks/longterm-lot-protection.md` §Rule-executed P follow · §Desk write CLI
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 

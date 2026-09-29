@@ -40,6 +40,7 @@ from app.services.fill_notification import (
 )
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
+from app.services.protected_position_auto_follow import follow_committed_fills
 from app.services.toss_execution_ledger import upsert_toss_execution_fill
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
@@ -697,6 +698,10 @@ async def _reconcile_one_toss_row(
         "status": execution_status,
         "id": execution_ledger_id,
     }
+    if execution_status in {"inserted", "updated"}:
+        # #943: the booking session above has committed; follow only this
+        # authoritative row.  Kill-switched and fail-open (never raises).
+        await follow_committed_fills([execution_ledger_id])
     if evidence.expired_at is not None:
         base["expired_at"] = evidence.expired_at.isoformat()
     base["action"] = "booked"
