@@ -43,6 +43,12 @@ RATING_LABEL_MAP: dict[str, str] = {
     "buy": "Buy",
     "strong buy": "Strong Buy",
     "trading buy": "Buy",
+    # Compact camelCase labels from the m.stock.naver.com research detail API
+    # (#930): opinion fields arrive as "StrongBuy"/"TradingBuy"/"StrongSell"
+    # without the space.
+    "strongbuy": "Strong Buy",
+    "tradingbuy": "Buy",
+    "strongsell": "Sell",
     "overweight": "Overweight",
     "outperform": "Buy",
     "sell": "Sell",

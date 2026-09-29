@@ -1,8 +1,11 @@
-"""Naver research detail-page cache (ROB-811).
+"""Naver research detail cache (ROB-811, re-keyed for #930).
 
-Immutable per-report cache for `company_read.naver?nid=X` detail pages. Stores
-only the two fields the detail page yields (target price, rating). All writes go
-through NaverResearchDetailCacheRepository.
+Immutable per-report cache. Rows written before the #930 endpoint migration
+carry the legacy `company_read.naver?nid=X` report id; rows written after use
+`api:{researchId}` keys from the m.stock.naver.com research detail JSON so the
+two identifier namespaces can never collide. Stores only the two fields the
+detail response yields (target price, rating). All writes go through
+NaverResearchDetailCacheRepository.
 """
 
 from __future__ import annotations
