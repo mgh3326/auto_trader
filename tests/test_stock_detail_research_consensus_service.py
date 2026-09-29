@@ -586,9 +586,12 @@ def test_normalize_opinion_passes_rating_bucket_through():
         _normalize_opinion,
     )
 
-    assert _normalize_opinion(
-        {"rating": None, "rating_bucket": "unrated"}
-    )["rating_bucket"] == "unrated"
+    assert (
+        _normalize_opinion({"rating": None, "rating_bucket": "unrated"})[
+            "rating_bucket"
+        ]
+        == "unrated"
+    )
     assert _normalize_opinion({"rating": "매수"})["rating_bucket"] is None
     # a non-dict row is not an opinion either — unrated, never a Hold vote
     assert _normalize_opinion("not-a-dict")["rating_bucket"] == "unrated"

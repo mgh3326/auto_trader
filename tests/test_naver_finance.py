@@ -510,9 +510,7 @@ def _research_json_stub(
 
     calls: list[str] = []
 
-    async def _stub(
-        client: Any, url: str, params: dict[str, Any] | None = None
-    ) -> Any:
+    async def _stub(client: Any, url: str, params: dict[str, Any] | None = None) -> Any:
         _ = client, params
         calls.append(url)
         if "/api/research/stock/" in url:
@@ -531,9 +529,7 @@ def _research_json_stub(
     return _stub
 
 
-def _stub_current_price(
-    monkeypatch: pytest.MonkeyPatch, soup_html: str
-) -> None:
+def _stub_current_price(monkeypatch: pytest.MonkeyPatch, soup_html: str) -> None:
     async def mock_fetch_html(
         url: str, params: dict[str, Any] | None = None
     ) -> BeautifulSoup:
@@ -541,6 +537,7 @@ def _stub_current_price(
         return BeautifulSoup(soup_html, "lxml")
 
     monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
+
 
 SAMPLE_CURRENT_PRICE_HTML = """
 <html>
@@ -1187,9 +1184,7 @@ class TestFetchInvestmentOpinions:
 
         await naver_finance.fetch_investment_opinions("005930", limit=10)
 
-        assert stub.calls[0] == (
-            "https://m.stock.naver.com/api/research/stock/005930"
-        )
+        assert stub.calls[0] == ("https://m.stock.naver.com/api/research/stock/005930")
         detail_calls = [u for u in stub.calls if "/api/research/company/" in u]
         assert detail_calls == [
             "https://m.stock.naver.com/api/research/company/12345",
@@ -1227,9 +1222,7 @@ class TestFetchInvestmentOpinions:
         assert first["rating"] == "Strong Buy"
         assert first["rating_bucket"] == "buy"
         assert first["target_price"] == 560000
-        assert first["url"] == (
-            "https://m.stock.naver.com/research/company/96343"
-        )
+        assert first["url"] == ("https://m.stock.naver.com/research/company/96343")
         assert result["consensus"]["total_count"] == 10
         assert result["consensus"]["buy_count"] == 10
         assert result["consensus"]["strong_buy_count"] == 1
@@ -1262,17 +1255,13 @@ class TestFetchInvestmentOpinions:
         )
         _stub_current_price(monkeypatch, SAMPLE_CURRENT_PRICE_HTML)
 
-        with pytest.raises(
-            naver_finance.NaverResearchContractError, match="0 reports"
-        ):
+        with pytest.raises(naver_finance.NaverResearchContractError, match="0 reports"):
             await naver_finance.fetch_investment_opinions("005930", limit=10)
 
     async def test_non_list_payload_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        stub = _research_json_stub(
-            list_payload={"result": "not-a-list"}, details={}
-        )
+        stub = _research_json_stub(list_payload={"result": "not-a-list"}, details={})
         monkeypatch.setattr(
             naver_finance.investor, "_fetch_research_json_with_client", stub
         )
@@ -1333,9 +1322,7 @@ class TestFetchInvestmentOpinions:
         stub = _research_json_stub(
             list_payload=SAMPLE_RESEARCH_LIST_005930,
             details={
-                12345: _research_detail_payload(
-                    12345, opinion="Hold", goal_price=None
-                ),
+                12345: _research_detail_payload(12345, opinion="Hold", goal_price=None),
                 12346: SAMPLE_RESEARCH_DETAILS_005930[12346],
             },
         )
@@ -1382,8 +1369,7 @@ class TestFetchInvestmentOpinions:
         assert failed["target_price"] is None
         assert failed["title"] == "반도체 업황 개선 전망"
         assert any(
-            "researchId 12345" in w and "detail boom" in w
-            for w in result["warnings"]
+            "researchId 12345" in w and "detail boom" in w for w in result["warnings"]
         )
         consensus = result["consensus"]
         assert consensus["total_count"] == 2
@@ -1538,9 +1524,7 @@ class TestFetchInvestmentOpinions:
         ]
         assert result["consensus"]["avg_target_price"] == 87500
         assert result["consensus"]["current_price"] == 75000
-        assert any(
-            "duplicate researchId" in w for w in result.get("warnings", [])
-        )
+        assert any("duplicate researchId" in w for w in result.get("warnings", []))
 
     async def test_recency_window_excludes_stale_targets(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1663,9 +1647,7 @@ class TestResearchContractEdges:
         client = AsyncMock()
         client.get = AsyncMock(return_value=response)
 
-        with pytest.raises(
-            naver_finance.NaverResearchContractError, match="non-JSON"
-        ):
+        with pytest.raises(naver_finance.NaverResearchContractError, match="non-JSON"):
             await naver_finance.investor._fetch_research_json_with_client(
                 client,
                 "https://m.stock.naver.com/api/research/stock/005930",
@@ -1676,12 +1658,8 @@ class TestResearchContractEdges:
 
         response = AsyncMock()
         response.status_code = 500
-        response.raise_for_status = lambda: (
-            (_ for _ in ()).throw(
-                httpx.HTTPStatusError(
-                    "500", request=AsyncMock(), response=response
-                )
-            )
+        response.raise_for_status = lambda: (_ for _ in ()).throw(
+            httpx.HTTPStatusError("500", request=AsyncMock(), response=response)
         )
         client = AsyncMock()
         client.get = AsyncMock(return_value=response)
@@ -1701,9 +1679,7 @@ class TestResearchContractEdges:
 
     async def test_detail_payload_parses_desk_fixture(self) -> None:
         detail = _load_research_fixture("detail_96343.json")
-        parsed = naver_finance._parse_research_detail_payload(
-            "005930", 96343, detail
-        )
+        parsed = naver_finance._parse_research_detail_payload("005930", 96343, detail)
         assert parsed == {"target_price": 560000, "rating": "StrongBuy"}
 
     async def test_list_payload_parses_desk_fixture(self) -> None:
@@ -1746,9 +1722,7 @@ class TestFetchKrSnapshot:
         async def mock_fetch_stock_news(code: str, limit: int = 20):
             _ = code, limit
             request_counts["news"] += 1
-            return naver_finance.NaverNewsFetchResult(
-                items=[_normalized_news_item()]
-            )
+            return naver_finance.NaverNewsFetchResult(items=[_normalized_news_item()])
 
         async def routed_research(
             client: Any, url: str, params: dict[str, Any] | None = None

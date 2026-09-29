@@ -148,9 +148,7 @@ def _parse_research_list_payload(
             skipped[key] = skipped.get(key, 0) + 1
             continue
         if row["research_id"] in seen_ids:
-            skipped["duplicate researchId"] = (
-                skipped.get("duplicate researchId", 0) + 1
-            )
+            skipped["duplicate researchId"] = skipped.get("duplicate researchId", 0) + 1
             continue
         seen_ids.add(row["research_id"])
         items.append(row)
@@ -202,9 +200,7 @@ def _parse_research_detail_payload(
     }
 
 
-async def _fetch_research_json(
-    url: str, params: dict[str, Any] | None = None
-) -> Any:
+async def _fetch_research_json(url: str, params: dict[str, Any] | None = None) -> Any:
     """GET a research JSON endpoint with a fresh client — mirrors _fetch_html."""
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         return await _fetch_research_json_with_client(client, url, params=params)
@@ -304,9 +300,7 @@ async def _build_investment_opinions_from_research_items(
         if detail_cache is not None:
             cached = await detail_cache.get_many(cache_keys)
 
-        miss_positions = [
-            i for i, key in enumerate(cache_keys) if key not in cached
-        ]
+        miss_positions = [i for i, key in enumerate(cache_keys) if key not in cached]
         miss_results = await asyncio.gather(
             *(detail_fetcher(research_ids[i]) for i in miss_positions),
             return_exceptions=True,
@@ -718,28 +712,24 @@ async def _fetch_kr_snapshot(
                 else None
             )
             try:
-                snapshot["opinions"] = (
-                    await _build_investment_opinions_from_research_items(
-                        code,
-                        research_items,
-                        opinion_limit,
-                        current_price=current_price,
-                        detail_fetcher=lambda research_id: (
-                            _fetch_research_detail_with_client(
-                                client, code, research_id
-                            )
-                        ),
-                        detail_cache=detail_cache,
-                        skipped=research_skipped,
-                    )
+                snapshot[
+                    "opinions"
+                ] = await _build_investment_opinions_from_research_items(
+                    code,
+                    research_items,
+                    opinion_limit,
+                    current_price=current_price,
+                    detail_fetcher=lambda research_id: (
+                        _fetch_research_detail_with_client(client, code, research_id)
+                    ),
+                    detail_cache=detail_cache,
+                    skipped=research_skipped,
                 )
             except Exception as exc:  # noqa: BLE001 — bundle isolation: the
                 # opinions section degrades to an explicit error instead of
                 # sinking valuation/news with it.
                 snapshot["opinions"] = _research_error_payload(code, exc)
         elif isinstance(research_outcome, BaseException):
-            snapshot["opinions"] = _research_error_payload(
-                code, research_outcome
-            )
+            snapshot["opinions"] = _research_error_payload(code, research_outcome)
 
         return snapshot
