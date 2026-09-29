@@ -1,0 +1,582 @@
+# Task #1003 (incident 2026-09-29 22:35, us-2235 on at-mcp-live-us): pinned
+# inventory of the MCP tools the live-session prompts reference, per live
+# lane, for tests/mcp_server/test_live_prompt_profile_contract.py.
+#
+# Source of truth is the operator repo. This file pins what the prompts said
+# at operator_commit so the always-run contract test needs no operator
+# checkout. With AUTO_TRADER_OPERATOR_ROOT set, the drift tests re-read the
+# prompts and fail when a referenced tool is neither served nor classified
+# here, or when a pinned name or ref no longer holds.
+#
+# served lists the referenced tools the profile serves. The other classes
+# cover referenced tools it does NOT serve (required ones may later move in):
+#   required     — unconditional step, or the only named source for a step
+#   conditional  — conditional step, fallback, or one of two alternatives
+#   guarded      — prompt already says: call only if on the surface, else record
+#   not_required — prompt forbids it / says not callable (NEG), mentions it
+#                  descriptively (DESC), or only in another market's section (NA)
+# The contract: served and required must both be in the live profile
+# (required is xfail while the #1003 gap is open); conditional, guarded and
+# not_required are recorded, not enforced. Move entries between classes only
+# with the operator decision (hk:doc incident/2026-09-29/live-profile-gap).
+version: 1
+source:
+  operator_repo: auto_trader-operator
+  operator_commit: 65956585f187e9ce54646938f891f12b6937beca
+  prefect_repo: robin-prefect-automations
+  prefect_commit: 7cd232c0d60a49c018d6f84d8825957cf6484308
+  inventory_doc: "hk:doc incident/2026-09-29/live-profile-gap"
+# Loaded by every live rep: cwd is the operator live/ dir, so Claude Code
+# auto-loads the root CLAUDE.md and live/CLAUDE.md; the two AGENTS.md files
+# are the external-agent entry points and are scanned for completeness.
+common_files:
+  - CLAUDE.md
+  - AGENTS.md
+  - live/CLAUDE.md
+  - live/AGENTS.md
+lanes:
+  kr:
+    profile: live-kr
+    # prefect REP_MCP_PROFILES keys served by this profile (smoke calls no tools)
+    reps: [nxt-prep, nxt-open, '0905', '1130', '1430', nxt-eve]
+    prompt_files:
+      - prompts/kr-nxt-prep.md
+      - prompts/kr-nxt-open.md
+      - prompts/kr-open-trade.md
+      - strategy-lab/docs/2026-09-27-prereg-h6-core-ai-v1.md
+    # Referenced by this lane's prompts AND served by the profile at the pin.
+    # Dropping one from live.yaml fails the always-run contract.
+    served:
+      - analysis_artifact_save
+      - analyze_stock_batch
+      - forecast_resolve
+      - forecast_save
+      - get_available_capital
+      - get_holdings
+      - get_market_index
+      - get_ohlcv
+      - get_operating_briefing
+      - get_parking_exclusion
+      - get_quote
+      - get_support_resistance
+      - investment_watch_create
+      - investment_watch_events_list_recent
+      - investment_watch_void
+      - order_proposal_create
+      - order_proposal_list
+      - route_request
+      - save_trade_retrospective
+      - session_context_append
+      - session_context_get_recent
+      - toss_get_order_history
+      - toss_proposal_accounts
+      - toss_reconcile_orders
+      - trade_retrospective_pending
+    required:
+      analysis_artifact_get:
+        why: "kr-nxt-open 07:55 step 2 loads the prep artifact; prep re-reads for hash check; 09:05 loads source artifact"
+        refs:
+          - live/CLAUDE.md:86
+          - prompts/kr-nxt-prep.md:167
+          - prompts/kr-nxt-open.md:41
+          - prompts/kr-open-trade.md:69
+      get_holdings_news:
+        why: "session-start holdings news sweep (live/CLAUDE.md 7)"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+          - live/CLAUDE.md:159
+      get_news:
+        why: "news check before any buy is confirmed"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_trading_policy:
+        why: "sell rules/tiers read verbatim before sell decisions"
+        refs:
+          - live/CLAUDE.md:183
+          - prompts/kr-nxt-prep.md:83
+          - prompts/kr-open-trade.md:97
+      screen_stocks:
+        why: "discovery step 1, always when orderable >= 200,000"
+        refs:
+          - prompts/kr-nxt-prep.md:69
+          - prompts/kr-open-trade.md:72
+      session_bootstrap_pack:
+        why: "ancillary-read step right after the 5 bootstrap calls"
+        refs:
+          - prompts/kr-open-trade.md:51
+          - prompts/kr-open-trade.md:61
+    conditional:
+      get_fx_rate:
+        why: "sweep FX, alternative summary.exchange_rate_usd_krw; 7-A scenario only"
+        refs:
+          - live/CLAUDE.md:131
+          - live/CLAUDE.md:134
+          - prompts/kr-open-trade.md:277
+      get_market_issues:
+        why: "designated market-context news source"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_market_news:
+        why: "designated market-context news source"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_momentum_candidates:
+        why: "discovery fallback #3"
+        refs:
+          - prompts/kr-nxt-prep.md:69
+          - prompts/kr-open-trade.md:72
+      get_orderbook:
+        why: "NXT quote, alternative analyze_stock_batch nxt_mid"
+        refs:
+          - live/CLAUDE.md:162
+          - prompts/kr-nxt-open.md:55
+      get_toss_ai_signal:
+        why: "only if TOSS_CONSUMER_SIGNALS_ENABLED (default off)"
+        refs:
+          - live/CLAUDE.md:161
+      get_toss_buy_balance:
+        why: "only if TOSS_CONSUMER_SIGNALS_ENABLED (default off)"
+        refs:
+          - live/CLAUDE.md:161
+      order_proposal_void:
+        why: "stale local proposal cleanup (broker absence proof)"
+        refs:
+          - live/CLAUDE.md:70
+      screen_stocks_snapshot:
+        why: "discovery fallback #2"
+        refs:
+          - prompts/kr-nxt-prep.md:69
+          - prompts/kr-open-trade.md:72
+      toss_get_orderable_cash:
+        why: "sweep step 3, Toss buying-power confirmation"
+        refs:
+          - live/CLAUDE.md:280
+          - prompts/kr-open-trade.md:271
+    guarded:
+      sweep_expired_watches:
+        why: "call only if on surface, else record"
+        refs:
+          - live/CLAUDE.md:296
+          - live/CLAUDE.md:311
+          - prompts/kr-open-trade.md:43
+          - prompts/kr-open-trade.md:219
+          - prompts/kr-open-trade.md:230
+      toss_preview_order:
+        why: "if absent use proposal server preview"
+        refs:
+          - live/CLAUDE.md:168
+    not_required:
+      decision_table_apply:
+        kind: NEG
+        why: "prompt: not allowed in live (#678), self-check instead"
+        refs:
+          - prompts/kr-nxt-prep.md:246
+      decision_table_validate:
+        kind: NEG
+        why: "prompt: not in live allowlist, self-check replaces it"
+        refs:
+          - prompts/kr-nxt-prep.md:164
+          - prompts/kr-nxt-prep.md:170
+          - prompts/kr-nxt-prep.md:178
+          - prompts/kr-nxt-prep.md:246
+          - prompts/kr-open-trade.md:105
+      get_protected_positions:
+        kind: NEG
+        why: "prompt: not on kr lane, do not call"
+        refs:
+          - prompts/kr-open-trade.md:208
+          - strategy-lab/docs/2026-09-27-prereg-h6-core-ai-v1.md:48
+      investment_report_create:
+        kind: DESC
+        why: "mentions its warnings field"
+        refs:
+          - live/CLAUDE.md:145
+      investment_watch_expire:
+        kind: NEG
+        why: "prompt: not listed, record deferred_no_action"
+        refs:
+          - prompts/kr-open-trade.md:219
+      kis_live_get_order_history:
+        kind: NEG
+        why: "#678 harness-denied"
+        refs:
+          - live/CLAUDE.md:273
+          - prompts/kr-nxt-prep.md:242
+          - prompts/kr-open-trade.md:169
+      kis_mock_get_order_history:
+        kind: NEG
+        why: "mock mirror section, not a live step"
+        refs:
+          - live/CLAUDE.md:178
+      kis_mock_mirror_execute_report:
+        kind: NEG
+        why: "forbidden"
+        refs:
+          - live/CLAUDE.md:178
+      kis_mock_place_order:
+        kind: NEG
+        why: "forbidden"
+        refs:
+          - live/CLAUDE.md:202
+      kis_mock_reconciliation_run:
+        kind: NEG
+        why: "mock mirror section, not a live step"
+        refs:
+          - live/CLAUDE.md:178
+          - live/CLAUDE.md:203
+      list_active_watches:
+        kind: NEG
+        why: "prompt: use briefing active_watches, do not call"
+        refs:
+          - prompts/kr-open-trade.md:215
+          - prompts/kr-open-trade.md:221
+  us:
+    profile: live-us
+    # prefect REP_MCP_PROFILES keys served by this profile (smoke calls no tools)
+    reps: [us-2235]
+    prompt_files:
+      - prompts/us-open-trade.md
+      - strategy-lab/docs/2026-09-27-prereg-h6-core-ai-v1.md
+    # Referenced by this lane's prompts AND served by the profile at the pin.
+    # Dropping one from live.yaml fails the always-run contract.
+    served:
+      - analysis_artifact_save
+      - analyze_stock_batch
+      - forecast_resolve
+      - forecast_save
+      - get_available_capital
+      - get_holdings
+      - get_market_index
+      - get_ohlcv
+      - get_operating_briefing
+      - get_parking_exclusion
+      - get_quote
+      - investment_watch_create
+      - investment_watch_events_list_recent
+      - investment_watch_void
+      - order_proposal_create
+      - order_proposal_list
+      - route_request
+      - save_trade_retrospective
+      - session_context_append
+      - session_context_get_recent
+      - toss_proposal_accounts
+      - trade_retrospective_pending
+    required:
+      get_earnings_calendar:
+        why: "gap-up scan step 3 catalyst cross-check"
+        refs:
+          - prompts/us-open-trade.md:69
+      get_holdings_news:
+        why: "session-start holdings news sweep (live/CLAUDE.md 7)"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+          - live/CLAUDE.md:159
+      get_news:
+        why: "news rule; gap-up scan step 3 per-symbol chain"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+          - prompts/us-open-trade.md:62
+          - prompts/us-open-trade.md:69
+      get_top_stocks:
+        why: "gap-up scan step 1; discovery fallback"
+        refs:
+          - prompts/us-open-trade.md:63
+          - prompts/us-open-trade.md:67
+      get_trading_policy:
+        why: "step 10 user_stances; sell trim_preplace rules"
+        refs:
+          - live/CLAUDE.md:183
+          - prompts/us-open-trade.md:50
+          - prompts/us-open-trade.md:78
+      screen_stocks_snapshot:
+        why: "discovery first choice"
+        refs:
+          - prompts/us-open-trade.md:63
+      toss_get_order_history:
+        why: "broker-original survival check of Toss resting (rep text first line; live/CLAUDE.md Toss fill has no auto-detect)"
+        refs:
+          - live/CLAUDE.md:166
+          - live/CLAUDE.md:273
+          - live/CLAUDE.md:296
+    conditional:
+      analysis_artifact_get:
+        why: "reuse when briefing flags a fresh artifact"
+        refs:
+          - live/CLAUDE.md:86
+      get_fx_rate:
+        why: "sweep FX, alternative summary.exchange_rate_usd_krw; 7-A scenario only"
+        refs:
+          - live/CLAUDE.md:131
+          - live/CLAUDE.md:134
+          - prompts/us-open-trade.md:166
+      get_market_issues:
+        why: "designated market-context news source"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_market_news:
+        why: "designated market-context news source"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_toss_ai_signal:
+        why: "only if TOSS_CONSUMER_SIGNALS_ENABLED (default off)"
+        refs:
+          - live/CLAUDE.md:161
+      get_toss_buy_balance:
+        why: "only if TOSS_CONSUMER_SIGNALS_ENABLED (default off)"
+        refs:
+          - live/CLAUDE.md:161
+      order_proposal_void:
+        why: "step 1 re-evaluation may void stale proposals (absence proof)"
+        refs:
+          - live/CLAUDE.md:70
+      screen_stocks:
+        why: "discovery fallback"
+        refs:
+          - prompts/us-open-trade.md:63
+      toss_get_orderable_cash:
+        why: "sweep step 3, Toss buying-power confirmation"
+        refs:
+          - live/CLAUDE.md:280
+          - prompts/us-open-trade.md:161
+      toss_reconcile_orders:
+        why: "Toss fill reconcile after execution"
+        refs:
+          - live/CLAUDE.md:69
+    guarded:
+      sweep_expired_watches:
+        why: "call only if on surface, else record"
+        refs:
+          - live/CLAUDE.md:296
+          - live/CLAUDE.md:311
+          - prompts/us-open-trade.md:34
+          - prompts/us-open-trade.md:99
+          - prompts/us-open-trade.md:120
+      toss_preview_order:
+        why: "if absent use proposal server preview"
+        refs:
+          - live/CLAUDE.md:168
+    not_required:
+      get_orderbook:
+        kind: NEG
+        why: "prompt: not supported for US"
+        refs:
+          - live/CLAUDE.md:162
+          - prompts/us-open-trade.md:61
+      get_protected_positions:
+        kind: NEG
+        why: "prompt: not on us lane, do not call"
+        refs:
+          - prompts/us-open-trade.md:105
+          - strategy-lab/docs/2026-09-27-prereg-h6-core-ai-v1.md:48
+      investment_report_create:
+        kind: DESC
+        why: "mentions its warnings field"
+        refs:
+          - live/CLAUDE.md:145
+      investment_watch_expire:
+        kind: NEG
+        why: "prompt: not listed"
+        refs:
+          - prompts/us-open-trade.md:99
+      kis_live_get_order_history:
+        kind: NEG
+        why: "#678 harness-denied"
+        refs:
+          - live/CLAUDE.md:273
+      kis_mock_get_order_history:
+        kind: NEG
+        why: "mock mirror section"
+        refs:
+          - live/CLAUDE.md:178
+      kis_mock_mirror_execute_report:
+        kind: NEG
+        why: "forbidden"
+        refs:
+          - live/CLAUDE.md:178
+      kis_mock_place_order:
+        kind: NEG
+        why: "forbidden"
+        refs:
+          - live/CLAUDE.md:202
+      kis_mock_reconciliation_run:
+        kind: NEG
+        why: "mock mirror section"
+        refs:
+          - live/CLAUDE.md:178
+          - live/CLAUDE.md:203
+      list_active_watches:
+        kind: NEG
+        why: "prompt: not listed"
+        refs:
+          - prompts/us-open-trade.md:99
+  crypto:
+    profile: live-crypto
+    # prefect REP_MCP_PROFILES keys served by this profile (smoke calls no tools)
+    reps: [crypto-0220, crypto-0820, crypto-1420, crypto-2020]
+    prompt_files:
+      - prompts/crypto-session-trade.md
+    # crypto-session-trade.md cites strategy-lab/docs/2026-09-28-prereg-h9-
+    # crypto-underwater-v0.md as a repo copy, but it does not exist at
+    # operator_commit (hk doc only), so it is not scanned.
+    # Referenced by this lane's prompts AND served by the profile at the pin.
+    # Dropping one from live.yaml fails the always-run contract.
+    served:
+      - analysis_artifact_save
+      - forecast_resolve
+      - forecast_save
+      - get_available_capital
+      - get_crypto_fear_greed
+      - get_holdings
+      - get_market_index
+      - get_ohlcv
+      - get_operating_briefing
+      - get_orderbook
+      - get_quote
+      - get_support_resistance
+      - investment_watch_create
+      - investment_watch_events_list_recent
+      - order_proposal_create
+      - order_proposal_get
+      - order_proposal_list
+      - route_request
+      - save_trade_retrospective
+      - session_context_append
+      - trade_retrospective_pending
+    required:
+      analyze_stock_batch:
+        why: "per-symbol analysis step (decision_history injection)"
+        refs:
+          - live/CLAUDE.md:56
+          - live/CLAUDE.md:57
+          - live/CLAUDE.md:58
+          - live/CLAUDE.md:150
+          - live/CLAUDE.md:151
+          - prompts/crypto-session-trade.md:55
+      get_holdings_news:
+        why: "session-start holdings news sweep (live/CLAUDE.md 7)"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+          - live/CLAUDE.md:159
+      get_news:
+        why: "news check before any buy is confirmed"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_trading_policy:
+        why: "crypto decision rules are canonical in policy (ROB-839)"
+        refs:
+          - live/CLAUDE.md:183
+          - prompts/crypto-session-trade.md:53
+      order_proposal_void:
+        why: "step 1: void stale crypto proposals (absence proof)"
+        refs:
+          - live/CLAUDE.md:70
+          - prompts/crypto-session-trade.md:35
+    conditional:
+      analysis_artifact_get:
+        why: "reuse when briefing flags a fresh artifact"
+        refs:
+          - live/CLAUDE.md:86
+          - prompts/crypto-session-trade.md:36
+      get_fx_rate:
+        why: "7-A cash-injection scenario only"
+        refs:
+          - live/CLAUDE.md:131
+          - live/CLAUDE.md:134
+      get_market_issues:
+        why: "designated market-context news source"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+      get_market_news:
+        why: "designated market-context news source"
+        refs:
+          - live/CLAUDE.md:59
+          - live/CLAUDE.md:157
+    guarded:
+      sweep_expired_watches:
+        why: "call only if on surface, else record"
+        refs:
+          - live/CLAUDE.md:296
+          - live/CLAUDE.md:311
+          - prompts/crypto-session-trade.md:29
+          - prompts/crypto-session-trade.md:105
+    not_required:
+      get_toss_ai_signal:
+        kind: NA
+        why: "KR Toss signal rule"
+        refs:
+          - live/CLAUDE.md:161
+      get_toss_buy_balance:
+        kind: NA
+        why: "KR Toss signal rule"
+        refs:
+          - live/CLAUDE.md:161
+      investment_report_create:
+        kind: DESC
+        why: "mentions its warnings field"
+        refs:
+          - live/CLAUDE.md:145
+      kis_live_get_order_history:
+        kind: NEG
+        why: "#678 harness-denied"
+        refs:
+          - live/CLAUDE.md:273
+      kis_mock_get_order_history:
+        kind: NEG
+        why: "mock mirror section"
+        refs:
+          - live/CLAUDE.md:178
+      kis_mock_mirror_execute_report:
+        kind: NEG
+        why: "forbidden"
+        refs:
+          - live/CLAUDE.md:178
+      kis_mock_place_order:
+        kind: NEG
+        why: "forbidden"
+        refs:
+          - live/CLAUDE.md:202
+      kis_mock_reconciliation_run:
+        kind: NEG
+        why: "mock mirror section"
+        refs:
+          - live/CLAUDE.md:178
+          - live/CLAUDE.md:203
+      session_context_get_recent:
+        kind: NA
+        why: "KR 7-D ladder section"
+        refs:
+          - live/CLAUDE.md:305
+      toss_get_order_history:
+        kind: NA
+        why: "KR Toss sections"
+        refs:
+          - live/CLAUDE.md:166
+          - live/CLAUDE.md:273
+          - live/CLAUDE.md:296
+      toss_get_orderable_cash:
+        kind: NA
+        why: "KR 7-D section"
+        refs:
+          - live/CLAUDE.md:280
+      toss_preview_order:
+        kind: NA
+        why: "KR NXT section"
+        refs:
+          - live/CLAUDE.md:168
+      toss_reconcile_orders:
+        kind: NA
+        why: "Toss section, crypto is Upbit"
+        refs:
+          - live/CLAUDE.md:69

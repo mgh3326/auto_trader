@@ -18,6 +18,7 @@
 레인 allowlist 정본: `config/mcp_lane_allowlists/` (`tool<TAB>basis` 보존).
 계약 테스트: `tests/mcp_server/test_lane_allowlist_contract.py` — 레인별 배정 프로필의 실제 등록 합집합 검증.
 등록 스냅샷: `tests/mcp_server/test_profile_tool_snapshot.py`; D 제거·C niche 관측: `docs/runbooks/mcp-surface-cleanup-20260905.md`.
+live 프롬프트↔live-* 프로필 계약(#1003): `tests/mcp_server/test_live_prompt_profile_contract.py` + 핀 `tests/fixtures/live_prompt_tool_requirements.yaml` — 프롬프트가 요구하는 도구가 레인 프로필에 없으면 실패(운영자 결정 전까지 `KNOWN_REQUIRED_GAP` xfail). 절차: `docs/runbooks/live-mcp-profiles.md` §Prompt-to-profile contract.
 
 **live-* 전용 유닛 (task 975, 운영자 Q-87 A)**: `scripts/deploy-ncp-pull.sh` 가 `at-mcp-live-kr/-us/-crypto`
 (`MCP_PROFILE=live-kr/live-us/live-crypto`, 루프백 8773/8774/8775, 토큰 `MCP_LIVE_{KR,US,CRYPTO}_AUTH_TOKEN`)를

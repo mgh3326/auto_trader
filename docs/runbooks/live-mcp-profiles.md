@@ -148,7 +148,8 @@ Desk-owned; do this **only after the #180 freeze** (about
    per-lane counts asserted in
    `tests/mcp_server/test_live_profiles.py::TestGroupCounts`.
 6. CI must pass: `test_live_profiles.py`, `test_profile_tool_snapshot.py`,
-   `test_lane_allowlist_contract.py`, `test_route_request_registry_diff.py`.
+   `test_lane_allowlist_contract.py`, `test_route_request_registry_diff.py`,
+   `test_live_prompt_profile_contract.py`.
 
 ## Removing a tool
 
@@ -172,3 +173,49 @@ failures, refusals, and one-minute corrections).
   `analysis_artifact_get`, `session_bootstrap_pack`,
   `get_protected_positions` — below the documented cutoff or not
   evidenced for live lanes; returnable via an operator-approved PR.
+
+Note (#1003): several of these exclusions are named as steps by the live
+prompts (for example `get_trading_policy`, `analysis_artifact_get`,
+`session_bootstrap_pack`, `screen_stocks`). See the next section.
+
+## Prompt-to-profile contract (#1003)
+
+Incident 2026-09-29 22:35: us-2235 ran on at-mcp-live-us (29 tools). Its
+prompt requires tools `live-us` does not serve, and the session ended with 0
+orders and 0 proposals. Inventory, per-rep impact and operator options A/B/C:
+`hk:doc incident/2026-09-29/live-profile-gap`.
+
+`tests/mcp_server/test_live_prompt_profile_contract.py` enforces that every
+tool a live prompt requires is served by its lane's `live-*` profile.
+
+- Pin: `tests/fixtures/live_prompt_tool_requirements.yaml`, written at an
+  operator and prefect commit. Per lane it records the rep keys, the prompt
+  files, `served` (referenced and in the profile), and the classes of
+  referenced tools the profile does not serve: `required`, `conditional`,
+  `guarded`, `not_required` (NEG/DESC/NA), each with file:line refs.
+- Always run (no checkout needed): `served` must stay in the profile. The
+  required-but-unserved set must equal `KNOWN_REQUIRED_GAP` exactly. The
+  contract test itself is `xfail(strict=True)` for each lane whose known gap
+  is non-empty.
+- With `AUTO_TRADER_OPERATOR_ROOT=<auto_trader-operator checkout>`: the
+  prompts are re-read. Any referenced tool the pin does not record, any pinned
+  tool no longer referenced, or any pinned file:line that no longer names its
+  tool fails. Unset means skip. Set but not an operator checkout means fail.
+- With `ROBIN_PREFECT_AUTOMATIONS_ROOT=<checkout>`: REPS, REP_MCP_PROFILES
+  and the pinned lanes must agree, and every `required` tool must be in
+  prefect `LIVE_ALLOWED_TOOLS`.
+
+Flipping to strict after the operator decision:
+
+- **A (shared mode)**: no change here; the gap stays visible as xfail.
+- **B (widen live.yaml)**: add the tools to live.yaml in the same PR, empty
+  that lane's `KNOWN_REQUIRED_GAP` entry (the xfail mark goes with it), and
+  move the newly served tools from `required` to `served` in the pin.
+- **C (shrink prompts)**: after the operator PR merges, re-pin the fixture
+  at the new operator commit with the drift tests on. Then drop the steps
+  that are gone from `required`, and empty `KNOWN_REQUIRED_GAP` once
+  `required` is served.
+
+If `KNOWN_REQUIRED_GAP` is left stale, the build breaks either way:
+`test_known_gap_is_exact` fails, and a closed gap XPASS-fails the strict
+xfail.
