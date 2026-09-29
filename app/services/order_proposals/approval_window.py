@@ -285,18 +285,34 @@ def _toss_kr_windows(
     return sorted(windows, key=lambda window: window.start)
 
 
-async def _resolve_krx_after_capability(
+KRX_AFTER_CAPABILITY_LOOKUP_FAILED = "krx_after_capability_lookup_failed"
+KRX_AFTER_CAPABILITY_UNAVAILABLE = "krx_after_capability_unavailable"
+KRX_AFTER_CAPABILITY_LIST_MISSING = "krx_after_capability_list_missing"
+KRX_AFTER_CAPABILITY_STALE = "krx_after_capability_stale"
+
+
+async def resolve_krx_after_capability(
     symbol: str, *, now: datetime
 ) -> tuple[bool, str]:
-    """(allow, detail) for the KRX after-market; unknown is never allow."""
+    """(allow, detail) for the KRX after-market; unknown is never allow.
+
+    The single #925 capability rule. The Toss order-tool NXT preflight (#969)
+    calls this same function, so the two gates cannot drift apart. Lookup
+    errors are swallowed into a not-allowed detail here, never raised: a
+    caller's fail-open ``except`` must not turn an unknown list into a send.
+    """
     try:
         capability = (await get_kr_krx_after_tradability([symbol])).get(symbol)
     except Exception:  # noqa: BLE001 - capability uncertainty is data, not allow
-        return False, "krx_after_capability_lookup_failed"
+        return False, KRX_AFTER_CAPABILITY_LOOKUP_FAILED
     if capability is None:
-        return False, "krx_after_capability_unavailable"
+        return False, KRX_AFTER_CAPABILITY_UNAVAILABLE
+    if capability.asof is None:
+        # No list imported at all (empty table). Not allowed, same as stale;
+        # the separate detail lets the preflight say "list missing".
+        return False, KRX_AFTER_CAPABILITY_LIST_MISSING
     if capability.is_stale(now=now):
-        return False, "krx_after_capability_stale"
+        return False, KRX_AFTER_CAPABILITY_STALE
     return capability.krx_after_tradable, capability.reason
 
 
@@ -427,7 +443,7 @@ async def _resolve_kr_session(group: Any, now: datetime) -> SubmissionSessionEvi
     krx_after_ok = False
     krx_after_detail = "krx_after_capability_not_needed"
     if not (nxt_known and nxt_tradable):
-        krx_after_ok, krx_after_detail = await _resolve_krx_after_capability(
+        krx_after_ok, krx_after_detail = await resolve_krx_after_capability(
             str(getattr(group, "symbol", "") or ""), now=local
         )
 

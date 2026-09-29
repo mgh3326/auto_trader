@@ -262,7 +262,18 @@ hk:doc `strategy-lab/2026-09-29/krx-aftermarket-vs-nxt`(8157, 더구루 2026-09-
 - **만료** (`live_order_expiry`): `nxt_tradable=False` 를 넘긴 호출자만 `krx_after` 세션
   (20:00, `krx_after_close_20_00`)과 정규장 15:30 사멸(`krx_regular_close_15_30`, #876 과
   정합 — 야간은 새 주문)을 받는다. 미지정(None)은 ROB-671 동작 불변
-- **미변경**: `nxt_preflight`(Toss 주문 도구 advisory)와 운영 프롬프트 문언은 이 범위 밖
+- **Toss 주문 도구 preflight** (#969, `nxt_preflight.evaluate_nxt_preflight` +
+  `nxt_preflight_krx_after.evaluate_nxt_preflight_with_krx_after`): 승인 창과 **같은 규칙**.
+  `nxt_after` 세션의 비-NXT 종목은 `kr_krx_after_session_for`(위 창) 안이고 승인 창의
+  `resolve_krx_after_capability` 가 허용할 때만 통과(`reason=krx_after_tradable`,
+  `session=krx_after`). 🔴 목록 없음/조회 실패/유니버스 부재는 `krx_after_capability_unknown`,
+  7일 초과는 `krx_after_capability_stale` 로 **차단**(fail-closed) — `not_nxt_eligible` 와
+  구분. 목록은 읽혔으나 부적격이면 기존 NXT 사유 유지 + `krx_after_detail`. 08:00-08:50·
+  15:30-16:00 과 NXT 종목 판정은 불변(NXT 종목은 KRX 조회 자체를 하지 않음). Toss
+  preview/place/modify 와 `suggest_order_account` 는 같은 함수를 호출한다. 모드 의미 불변:
+  `required` 만 place/modify 를 막고 `warn`/`optional` 은 로그 후 진행, preview 는 표시만,
+  `off` 는 생략
+- **미변경**: 운영 프롬프트 문언은 이 범위 밖
 
 ## 유지 규약
 
