@@ -67,6 +67,7 @@ from .kiwoom_authority_cessation import (
 from .kiwoom_coordination_lifecycle import KiwoomCoordinationLifecycle
 from .kr_stock_warnings import KRStockWarning
 from .kr_symbol_universe import KRSymbolUniverse
+from .krx_after_market_eligibility import KrxAfterMarketEligibility
 from .manual_holdings import (
     BrokerAccount,
     BrokerType,
@@ -268,6 +269,7 @@ __all__ = [
     "InvestThemeEventSnapshotStock",
     "KRStockWarning",
     "KRSymbolUniverse",
+    "KrxAfterMarketEligibility",
     "KiwoomCoordinationLifecycle",
     "KiwoomAuthorityAttempt",
     "KiwoomAuthorityCessationReceipt",

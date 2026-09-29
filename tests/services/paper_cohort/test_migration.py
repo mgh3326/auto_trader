@@ -306,6 +306,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "binance_h5_nav_samples",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
+            # #925 KRX after-market eligibility (public schema) is later than
+            # this reconstructed boundary as well.
+            await connection.execute(
+                text("DROP TABLE public.krx_after_market_eligibility")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

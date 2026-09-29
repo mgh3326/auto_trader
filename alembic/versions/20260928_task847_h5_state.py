@@ -1,7 +1,7 @@
 """Add H5-only durable signal, send-intent and lane-risk state.
 
 Revision ID: 20260928_task847_h5_state
-Revises: 20260928_884_fanout_a_record
+Revises: 20260929_925_krx_after_market
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260928_task847_h5_state"
-down_revision: str | Sequence[str] | None = "20260928_884_fanout_a_record"
+down_revision: str | Sequence[str] | None = "20260929_925_krx_after_market"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

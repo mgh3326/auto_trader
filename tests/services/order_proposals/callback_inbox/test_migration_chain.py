@@ -123,6 +123,7 @@ _POST_PARENT_TABLES: tuple[str, ...] = (
     "review.binance_h5_lane_state",
     "review.binance_h5_opportunities",
     "review.binance_h5_nav_samples",
+    "krx_after_market_eligibility",
 )
 
 
