@@ -588,6 +588,19 @@ def test_dry_run_lists_would_be_removals_and_removes_nothing(env: Env) -> None:
     assert "image prune: would remove 4 image(s)" in result.stdout
 
 
+def test_dry_run_with_nul_previous_record_says_prune_would_be_skipped(
+    env: Env,
+) -> None:
+    env.put_new_locally_as_main()
+    (env.run_dir / "deployed-digest").write_text("invalid\n")
+    (env.run_dir / "deployed-digest.previous").write_bytes((PREVX + "\n\x00").encode())
+    result = env.run("--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "image prune: would be skipped" in result.stdout
+    assert "would remove sha256:" not in result.stdout
+    assert _rm_calls(env.calls()) == []
+
+
 def test_rollback_dry_run_states_prune_is_not_run(env: Env) -> None:
     (env.run_dir / "deployed-digest.previous").write_text(PREVX + "\n")
     result = env.run("--rollback", "--dry-run")
@@ -654,6 +667,14 @@ def test_size_unavailable_reports_count(env: Env) -> None:
         # A valid first line does not make the record valid (tester r1).
         PREVX + "\nINVALID-SECOND-LINE\n",
         PREVX + "\n" + STALE + "\n",
+        # Bash drops NUL bytes from read and command substitution (tester r2).
+        PREVX + "\n\x00",
+        PREVX + "\x00\n",
+        "\x00" + PREVX + "\n",
+        PREVX + "\r\n",
+        PREVX,  # write_digest always terminates the record
+        PREVX + "\n\n",
+        " " + PREVX + "\n",
     ),
 )
 def test_invalid_previous_record_skips_prune_entirely(
@@ -666,7 +687,7 @@ def test_invalid_previous_record_skips_prune_entirely(
     if content is None:
         previous.unlink()
     else:
-        previous.write_text(content)
+        previous.write_bytes(content.encode())
     before = env.state()
     result = env.run()
     assert result.returncode == 0, result.stderr
@@ -754,6 +775,10 @@ EXTRA_MUTANTS = {
         r'previous="\$\(read_digest_record "\$DEPLOYED_DIGEST_PREVIOUS_FILE"\)" \|\| \{ printf \'WARNING',
         'previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf \'WARNING',
     ),
+    "record size unchecked": (
+        r'  \[\[ "\$size" == "\$\(\(\$\{#line\} \+ 1\)\)" \]\] \|\| return 1 # record size\n',
+        "",
+    ),
     "empty switch treated as on": (
         r'"\$\{AT_IMAGE_PRUNE_ENABLED-1\}"',
         '"${AT_IMAGE_PRUNE_ENABLED:-1}"',
@@ -839,13 +864,15 @@ def test_extra_mutant_is_red(tmp_path: Path, name: str) -> None:
         return
     if name in {
         "previous record read by first line only",
+        "record size unchecked",
         "empty switch treated as on",
     }:
-        if name.startswith("previous"):
+        if name != "empty switch treated as on":
             (env.run_dir / "deployed-digest").write_text("invalid\n")
-            (env.run_dir / "deployed-digest.previous").write_text(
-                PREVX + "\nINVALID-SECOND-LINE\n"
-            )
+            record = PREVX + "\nINVALID-SECOND-LINE\n"
+            if name == "record size unchecked":
+                record = PREVX + "\n\x00"
+            (env.run_dir / "deployed-digest.previous").write_bytes(record.encode())
             result = env.run(deploy=mutant)
         else:
             result = env.run(env={"AT_IMAGE_PRUNE_ENABLED": ""}, deploy=mutant)

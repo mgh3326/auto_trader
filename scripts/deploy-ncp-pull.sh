@@ -455,16 +455,21 @@ ref_repository() {
   if [[ "$ref" == *:* && "${ref##*:}" != */* ]]; then ref="${ref%:*}"; fi
   printf '%s\n' "$ref"
 }
-# Strict digest record for the prune: the whole file must be one digest line
-# (optionally newline-terminated). read_digest checks only the first line,
-# which is enough to pick a rollback target but not to trust a keep set.
+# Strict digest record for the prune: the file must be byte-for-byte one
+# digest followed by one newline, exactly as write_digest writes it.
+# read_digest checks only the first line, which is enough to pick a rollback
+# target but not to trust a keep set. Bash drops NUL bytes from `read` and
+# command substitution, so the byte count is what rules out hidden content:
+# read succeeds only on a newline, and the size must be the digest plus it.
 read_digest_record() {
-  local file="$1" content line
+  local file="$1" line size
   [[ -f "$file" ]] || return 1
-  content="$(cat "$file" && printf .)" || return 1
-  content="${content%.}"
-  line="${content%$'\n'}"
-  [[ "$line" != *$'\n'* ]] && is_digest "$line" && printf '%s\n' "$line"
+  IFS= read -r line <"$file" || return 1
+  is_digest "$line" || return 1
+  size="$(wc -c <"$file")" || return 1
+  size="${size//[[:space:]]/}"
+  [[ "$size" == "$((${#line} + 1))" ]] || return 1 # record size
+  printf '%s\n' "$line"
 }
 image_refs() { docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}' "$1"; }
 
