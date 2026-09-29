@@ -192,7 +192,7 @@ sink 스위치까지이며 **Go 0줄 · Redis Streams 0줄 · 스케줄러 0건 
 - **서비스**: `app/services/protected_position_auto_follow.py` — 모든 P 변경은 `ProtectedQuantityService.save`(origin `operator_cli`, actor 고정 owner `MCP_USER_ID`, 락 안 fresh broker 재조회) 경유
 - **킬스위치**: `PROTECTED_POSITION_AUTO_FOLLOW_ENABLED` 기본 false — off 면 head·broker 조회·쓰기·알림 0
 - **훅 위치**: 원장 커밋 **이후**만 — `ExecutionLedgerReconciler` 커밋(task·script `--commit`), Toss reconcile 부킹 세션 종료 후. dry-run 에서는 호출 안 함. `source=reconciler`·`account_mode=live` 행만(websocket 은 provisional 이라 무시)
-- **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **스케줄 없음**. 스케줄 부여는 별도 운영자 승인
+- **레버**: `scripts/protected_positions.py auto-reconcile`(기본 preview, `--commit` 필요) + TaskIQ `protected_positions.auto_follow_reconcile` — 🔴 **코드에 스케줄 없음**. desk 가 NCP systemd timer 로 KR/US 정규장 30분 간격 one-shot CLI 실행(운영자 Q-75, #944 option A)
 - 🔴 **금지**: 미선언 키 자동 선언, P=0(해제) 재상향, 보유 초과 P, 읽기 경로·send-time guard 에서의 쓰기(`test_auto_follow_writer_is_unreachable_from_read_and_guard_paths` import allowlist 가 강제)
 - **알려진 공백**: Toss 앱 수동 매도는 원장에 안 들어온다 — 레버 실행 전까지 P 가 보유보다 높게 남는다
 - **런북**: `docs/runbooks/longterm-lot-protection.md` §Rule-executed P follow · §Desk write CLI

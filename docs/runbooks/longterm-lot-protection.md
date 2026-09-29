@@ -142,8 +142,8 @@ Where the rule runs:
    protected_positions.py --database-url URL auto-reconcile [--scope SCOPE]
    [--commit] (a preview unless --commit; exit 2 while the kill switch is off,
    1 if any key failed) or the TaskIQ task protected_positions.auto_follow_reconcile,
-   which has no schedule and commits when called. A recurring schedule for the
-   lever needs a separate operator approval.
+   which has no schedule and commits when called. The code registers no
+   schedule. Desk runs the one-shot CLI (auto-reconcile --commit) every 30 minutes during KR and US regular hours from an NCP systemd timer, per operator decision Q-75 on task 944 (option A).
 
 Known gap, Toss app sales: a sale made in the Toss app never reaches the
 execution ledger (there is no account-wide Toss fill reconciler), so no hook
