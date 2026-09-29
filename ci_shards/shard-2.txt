@@ -241,6 +241,7 @@ tests/services/test_alpaca_paper_reconcile_service.py
 tests/services/test_b0x_lane_event_dispatcher.py
 tests/services/test_decision_history_realized_r.py
 tests/services/test_enrichment_negative_cache.py
+tests/services/test_fill_handoff_bundle_shadow.py
 tests/services/test_fill_handoff_bundle_wiring.py
 tests/services/test_investment_snapshots_roundtrip.py
 tests/services/test_kis_mock_holdings_reconciler.py

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -35,9 +36,19 @@ from .broker_risk import (
     SqlAlchemyEvidenceSource,
 )
 from .service import DEDUP_WINDOW, dedupe_key
+from .shadow import (
+    PositionFactsSource,
+    ShadowKickConfig,
+    WatchKickSource,
+    record_fill_kicks,
+    record_watch_kicks,
+)
 from .state import HandoffState
+from .watch_kick import DbWatchKickSource
 
 FILL_EVENT_HANDOFF_ENABLED = "FILL_EVENT_HANDOFF_ENABLED"
+FILL_EVENT_HANDOFF_SHADOW = "FILL_EVENT_HANDOFF_SHADOW"
+FILL_HANDOFF_BUNDLE_SHADOW_STATE_ENV = "FILL_HANDOFF_BUNDLE_SHADOW_STATE_DIR"
 # Accepted true tokens are intentionally explicit and test-pinned. Everything
 # else (including unset, empty, 0, false, and off) is disabled.
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -51,6 +62,8 @@ DEFAULT_LOOKBACK_IDS = 256
 STALL_NOTICE_AFTER_PASSES = 3  # Three retries distinguish a persistent stall.
 _LEGACY_STATE_DIR = "/var/lib/fill-event-handoff"
 _BUNDLE_STATE_DIR = "/var/lib/fill-handoff-bundle"
+BUNDLE_SHADOW_STATE_DIR = "/var/lib/fill-handoff-bundle-shadow"
+_BUNDLE_EVENT_KINDS = frozenset({"fill-bundle", "watch-bundle"})
 
 
 def handoff_enabled() -> bool:
@@ -58,6 +71,11 @@ def handoff_enabled() -> bool:
     return (
         os.environ.get(FILL_EVENT_HANDOFF_ENABLED, "").strip().lower() in _TRUE_VALUES
     )
+
+
+def shadow_enabled() -> bool:
+    """Read the shadow gate at call time; unset and malformed values are off."""
+    return os.environ.get(FILL_EVENT_HANDOFF_SHADOW, "").strip().lower() in _TRUE_VALUES
 
 
 class LaneEventSink(Protocol):
@@ -203,6 +221,10 @@ class BundleConfig:
     sink_timeout_s: float = 3.0
     since_fill_id: int | None = None
     since_watch_id: int | None = None
+    # Shadow mode evaluates the full path with forced Null transports; kick
+    # dispositions are simulated against shadow state via shadow_kick knobs.
+    shadow: bool = False
+    shadow_kick: ShadowKickConfig = field(default_factory=ShadowKickConfig)
 
 
 def _watch_dict(row: Any) -> dict[str, Any]:
@@ -278,6 +300,64 @@ def _safe_warning(message: str, *args: object) -> None:
         pass
 
 
+def _new_shadow_counts(outcome: dict[str, Any]) -> dict[str, Any]:
+    """Per-run shadow counters; ``errors`` aliases the outcome error list."""
+    return {
+        "bundles_formed": {},
+        "bundles_undeliverable": {},
+        "duplicates_suppressed": 0,
+        "errors": outcome["errors"],
+        "fills_read": 0,
+        "kick": {"by_reason": {}, "capped": 0, "kick": 0, "queue_only": 0},
+        "lane_sends": {},
+        "notices": 0,
+        "risk_deduped": 0,
+        "risk_judgements": 0,
+        "risk_would_push": 0,
+        "watch_kick": {"by_reason": {}, "capped": 0, "kick": 0, "queue_only": 0},
+        "watch_kick_rows": 0,
+        "watches_read": 0,
+    }
+
+
+def _refuse_production_state_dir(state_dir: Path) -> None:
+    """Shadow must never write into a live state directory.
+
+    Refuses the built-in production paths plus whatever the live state-dir
+    environment variables currently resolve to, so a shadow run pointed at a
+    custom production directory still fails closed before the state file is
+    even opened.
+    """
+    resolved = Path(state_dir).expanduser().resolve()
+    refused = {
+        Path(_LEGACY_STATE_DIR).resolve(),
+        Path(_BUNDLE_STATE_DIR).resolve(),
+    }
+    for env_name in ("FILL_HANDOFF_BUNDLE_STATE_DIR", "FILL_HANDOFF_STATE_DIR"):
+        override = os.environ.get(env_name, "").strip()
+        if override:
+            refused.add(Path(override).expanduser().resolve())
+    if resolved in refused:
+        raise RuntimeError(
+            f"shadow refuses the production state_dir {resolved}; use a "
+            f"dedicated directory ({FILL_HANDOFF_BUNDLE_SHADOW_STATE_ENV}, "
+            f"default {BUNDLE_SHADOW_STATE_DIR})"
+        )
+
+
+def _emit_shadow_line(counts: Mapping[str, Any]) -> None:
+    """One structured JSON line per shadow run; logging is fail-open."""
+    try:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "fill_handoff_bundle_shadow %s",
+            json.dumps(dict(counts), ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:  # noqa: BLE001 - even broken handlers are fail-open
+        pass
+
+
 class FillHandoffBundleRunner:
     """Pull durable rows, bundle by market, and best-effort deliver them."""
 
@@ -297,12 +377,33 @@ class FillHandoffBundleRunner:
         if config.sink_timeout_s <= 0:
             raise ValueError("sink_timeout_s must be positive")
         self.config = config
-        self.sink = sink or NullLaneEventSink()
-        self.notifier = notifier or NullRiskPushNotifier()
+        if config.shadow:
+            # Shadow never sends: the transports are forced to the Null
+            # implementations regardless of what the caller injected, and
+            # _send/_push short-circuit before reaching them anyway.
+            if sink is not None or notifier is not None:
+                _safe_warning("fill handoff shadow discards injected sink/notifier")
+            self.sink: LaneEventSink = NullLaneEventSink()
+            self.notifier: RiskPushNotifier = NullRiskPushNotifier()
+        else:
+            self.sink = sink or NullLaneEventSink()
+            self.notifier = notifier or NullRiskPushNotifier()
         self.detector = detector or BrokerRiskDetector()
         self.now = now or (lambda: datetime.now(UTC))
+        self._shadow_counts: dict[str, Any] | None = None
 
     async def _send(self, lane: str, event_id: str, text: str) -> bool:
+        if self.config.shadow:
+            counts = self._shadow_counts
+            if counts is not None:
+                sends = counts["lane_sends"]
+                sends[lane] = sends.get(lane, 0) + 1
+                if event_id.split(":", 1)[0] in _BUNDLE_EVENT_KINDS:
+                    formed = counts["bundles_formed"]
+                    formed[lane] = formed.get(lane, 0) + 1
+                else:
+                    counts["notices"] += 1
+            return True
         try:
             return bool(
                 await asyncio.wait_for(
@@ -317,6 +418,8 @@ class FillHandoffBundleRunner:
     async def _push(self, judgement: BrokerRiskJudgement) -> bool:
         if judgement.category not in RISK_CATEGORIES or not judgement.evidence:
             return False
+        if self.config.shadow:
+            return True
         try:
             return bool(
                 await asyncio.wait_for(
@@ -411,11 +514,23 @@ class FillHandoffBundleRunner:
         fill_source: FillEventSource | None = None,
         watch_source: WatchAlertSource | None = None,
         evidence_source: BrokerRiskEvidenceSource | None = None,
+        position_source: PositionFactsSource | None = None,
+        watch_kick_source: WatchKickSource | None = None,
     ) -> dict[str, Any]:
+        if self.config.shadow:
+            _refuse_production_state_dir(self.config.state_dir)
         fills = fill_source or DbFillEventSource(db)
         watches = watch_source or DbWatchAlertSource(db)
         evidence = evidence_source or SqlAlchemyEvidenceSource(db)
+        positions = (
+            (position_source or ExecutionLedgerRepository(db))
+            if self.config.shadow
+            else None
+        )
         enabled = handoff_enabled()
+        # Shadow evaluates the full path even with the master gate off, and
+        # shadow wins when both gates are set — the transports are Null.
+        evaluate = enabled or self.config.shadow
         outcome: dict[str, Any] = {
             "enabled": enabled,
             "fill_bundles": 0,
@@ -427,6 +542,9 @@ class FillHandoffBundleRunner:
             "stall_notices": 0,
             "errors": [],
         }
+        self._shadow_counts = None
+        if self.config.shadow:
+            self._shadow_counts = outcome["shadow"] = _new_shadow_counts(outcome)
 
         with HandoffState(self.config.state_dir) as locked:
             state = locked.data
@@ -439,6 +557,20 @@ class FillHandoffBundleRunner:
                     "legacy and bundle handoff runners cannot share state_dir; "
                     f"keep legacy {_LEGACY_STATE_DIR} separate from bundle "
                     f"{_BUNDLE_STATE_DIR}"
+                )
+            if self.config.shadow:
+                if not locked.is_new and state.get("shadow") is not True:
+                    raise RuntimeError(
+                        "shadow refuses a state_dir written by a non-shadow run; "
+                        f"use a dedicated directory "
+                        f"({FILL_HANDOFF_BUNDLE_SHADOW_STATE_ENV}, default "
+                        f"{BUNDLE_SHADOW_STATE_DIR})"
+                    )
+                state["shadow"] = True
+            elif not locked.is_new and state.get("shadow") is True:
+                raise RuntimeError(
+                    "this state_dir was written by a shadow run; the production "
+                    "runner refuses to adopt shadow watermarks"
                 )
             state["version"] = _STATE_VERSION
             state.setdefault("fill_watermark", 0)
@@ -461,24 +593,34 @@ class FillHandoffBundleRunner:
                     fill_source=fills,
                     watch_source=watches,
                     new_state=locked.is_new,
-                    enabled=enabled,
+                    enabled=evaluate,
                 )
             )
-            if not enabled:
+            if not evaluate:
                 locked.save()
                 outcome["fill_watermark"] = int(state["fill_watermark"])
                 outcome["watch_watermark"] = int(state["watch_watermark"])
                 return outcome
 
             if state["fill_initialized"] and state["fill_lookback_armed"]:
-                await self._run_fills(state, outcome, fills, evidence)
+                await self._run_fills(state, outcome, fills, evidence, positions)
             elif state["fill_initialized"]:
                 state["fill_lookback_armed"] = True
             if state["watch_initialized"] and state["watch_lookback_armed"]:
                 await self._run_watches(state, outcome, watches)
             elif state["watch_initialized"]:
                 state["watch_lookback_armed"] = True
+            if self.config.shadow:
+                await record_watch_kicks(
+                    state,
+                    outcome["shadow"],
+                    source=watch_kick_source or DbWatchKickSource(db),
+                    now=self.now(),
+                    knobs=self.config.shadow_kick,
+                )
             locked.save()
+            if self.config.shadow:
+                _emit_shadow_line(outcome["shadow"])
             outcome["fill_watermark"] = int(state["fill_watermark"])
             outcome["watch_watermark"] = int(state["watch_watermark"])
             outcome["seen_size"] = _seen_sizes(state["seen"])
@@ -495,7 +637,9 @@ class FillHandoffBundleRunner:
         outcome: dict[str, Any],
         source: FillEventSource,
         evidence: BrokerRiskEvidenceSource,
+        positions: PositionFactsSource | None = None,
     ) -> None:
+        sh = outcome.get("shadow")
         try:
             watermark = int(state["fill_watermark"])
             lookback_rows = (
@@ -512,6 +656,8 @@ class FillHandoffBundleRunner:
             outcome["errors"].append("fill_read_failed")
             _safe_warning("fill handoff fill read failed")
             return
+        if sh is not None:
+            sh["fills_read"] += len(rows)
 
         now_ts = self.now().timestamp()
         risk_seen: dict[str, Any] = state["risk_seen"]
@@ -522,6 +668,8 @@ class FillHandoffBundleRunner:
                 outcome["errors"].append("risk_detection_failed")
                 _safe_warning("BROKER_RISK detection failed")
                 continue
+            if sh is not None:
+                sh["risk_judgements"] += len(judgements)
             for judgement in judgements:
                 if judgement.dedupe_id in risk_seen:
                     _refresh_seen_value(
@@ -530,6 +678,8 @@ class FillHandoffBundleRunner:
                         row_id=int(fill["ledger_id"]),
                         now_ts=now_ts,
                     )
+                    if sh is not None:
+                        sh["risk_deduped"] += 1
                     continue
                 if await self._push(judgement):
                     risk_seen[judgement.dedupe_id] = {
@@ -537,6 +687,8 @@ class FillHandoffBundleRunner:
                         "ts": now_ts,
                     }
                     outcome["risk_pushes"] += 1
+                    if sh is not None:
+                        sh["risk_would_push"] += 1
 
         resolved: set[int] = set()
         grouped: dict[str, dict[str, list[Mapping[str, Any]]]] = defaultdict(
@@ -549,6 +701,8 @@ class FillHandoffBundleRunner:
             if key in seen:
                 _refresh_seen_value(seen, key, row_id=row_id, now_ts=now_ts)
                 resolved.add(row_id)
+                if sh is not None:
+                    sh["duplicates_suppressed"] += 1
             else:
                 grouped[str(fill["market"])][key].append(fill)
 
@@ -556,6 +710,18 @@ class FillHandoffBundleRunner:
             lane = self.config.lanes.get(market)
             if not lane:
                 outcome["errors"].append(f"fill_lane_missing:{market}")
+                if sh is not None:
+                    # A missing lane is a live wedge; shadow records the
+                    # undeliverable bundle and resolves the rows anyway so the
+                    # rest of the observation window keeps evaluating.
+                    undeliverable = sh["bundles_undeliverable"]
+                    undeliverable[market] = undeliverable.get(market, 0) + 1
+                    for key, values in by_key.items():
+                        seen[key] = {
+                            "id": max(int(value["ledger_id"]) for value in values),
+                            "ts": now_ts,
+                        }
+                        resolved.update(int(value["ledger_id"]) for value in values)
                 continue
             representatives = [values[0] for values in by_key.values()]
             keys = list(by_key)
@@ -571,6 +737,17 @@ class FillHandoffBundleRunner:
                         "ts": now_ts,
                     }
                     resolved.update(int(value["ledger_id"]) for value in values)
+
+        if sh is not None:
+            assert positions is not None  # shadow always passes a source
+            await record_fill_kicks(
+                grouped,
+                positions,
+                sh,
+                state=state,
+                now=self.now(),
+                knobs=self.config.shadow_kick,
+            )
 
         current = int(state["fill_watermark"])
         advanced = _advance_watermark(current, rows, resolved, id_key="ledger_id")
@@ -627,6 +804,9 @@ class FillHandoffBundleRunner:
             outcome["errors"].append("watch_read_failed")
             _safe_warning("fill handoff watch read failed")
             return
+        sh = outcome.get("shadow")
+        if sh is not None:
+            sh["watches_read"] += len(rows)
 
         now_ts = self.now().timestamp()
         resolved: set[int] = set()
@@ -640,6 +820,8 @@ class FillHandoffBundleRunner:
             if key in seen:
                 _refresh_seen_value(seen, key, row_id=row_id, now_ts=now_ts)
                 resolved.add(row_id)
+                if sh is not None:
+                    sh["duplicates_suppressed"] += 1
             else:
                 grouped[str(event["market"])][key].append(event)
 
@@ -647,6 +829,15 @@ class FillHandoffBundleRunner:
             lane = self.config.lanes.get(market)
             if not lane:
                 outcome["errors"].append(f"watch_lane_missing:{market}")
+                if sh is not None:
+                    undeliverable = sh["bundles_undeliverable"]
+                    undeliverable[market] = undeliverable.get(market, 0) + 1
+                    for key, values in by_key.items():
+                        seen[key] = {
+                            "id": max(int(value["event_id"]) for value in values),
+                            "ts": now_ts,
+                        }
+                        resolved.update(int(value["event_id"]) for value in values)
                 continue
             representatives = [values[0] for values in by_key.values()]
             keys = list(by_key)
@@ -861,6 +1052,9 @@ def _advance_watch_cursor(
 
 
 __all__ = [
+    "BUNDLE_SHADOW_STATE_DIR",
+    "FILL_EVENT_HANDOFF_SHADOW",
+    "FILL_HANDOFF_BUNDLE_SHADOW_STATE_ENV",
     "BundleConfig",
     "DbFillEventSource",
     "DbWatchAlertSource",
@@ -869,8 +1063,10 @@ __all__ = [
     "FillHandoffBundleRunner",
     "LaneEventSink",
     "NullLaneEventSink",
+    "NullRiskPushNotifier",
     "PanewireLaneEventSink",
     "WatchAlertSource",
     "WatchCursor",
     "handoff_enabled",
+    "shadow_enabled",
 ]
