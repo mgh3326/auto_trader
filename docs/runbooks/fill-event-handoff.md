@@ -8,18 +8,23 @@ early kickoff are best effort only.
 ## Install
 
 After deploying an image containing this revision, on NCP install the versioned
-units, create `/var/lib/fill-event-handoff` mode 0700, then enable the timer:
+units, create `/var/lib/fill-event-handoff` mode 0700 owned by uid/gid 10001,
+then enable the timer:
 
 ```bash
 install -m 0644 ops/ncp/systemd/fill-event-handoff.{service,timer} /etc/systemd/system/
-install -d -m 0700 /var/lib/fill-event-handoff
+install -d -m 0700 -o 10001 -g 10001 /var/lib/fill-event-handoff
 systemctl daemon-reload
 systemctl enable --now fill-event-handoff.timer
 ```
 
 `fill-event-handoff.service` reads the image digest already selected by
 `/root/at-run/deployed-digest`; it runs that image with host networking and
-bind-mounts only the state directory. Deployment remains an operator action.
+bind-mounts only the state directory. The container process runs as `appuser`
+uid 10001 (`Dockerfile.api` line 63), so the state directory must be owned by
+10001:10001 — a root-owned mode-0700 directory raises `PermissionError` on the
+first state write. The numeric IDs are required because `appuser` exists only
+inside the image, not on the NCP host. Deployment remains an operator action.
 
 The unit layers `/root/at-secrets/.env.api` first, then the mode-0600
 `/root/at-secrets/.env.fill-handoff` override. The API file supplies the
@@ -264,7 +269,7 @@ five-minute cadence during KR/US regular hours (crypto rows evaluate whenever
 the run fires; the cadence only decides freshness):
 
 ```bash
-install -d -m 0700 /var/lib/fill-handoff-bundle-shadow
+install -d -m 0700 -o 10001 -g 10001 /var/lib/fill-handoff-bundle-shadow
 image="$(cat /root/at-run/deployed-digest)"
 docker run --rm --network host \
   --env-file /root/at-secrets/.env.api \
@@ -273,6 +278,12 @@ docker run --rm --network host \
   -v /var/lib/fill-handoff-bundle-shadow:/var/lib/fill-handoff-bundle-shadow \
   "$image" /app/.venv/bin/python -m scripts.fill_handoff_bundle
 ```
+
+The state directory is bind-mounted into the container, which runs as
+`appuser` uid 10001 (`Dockerfile.api` line 63), so it must be owned by
+10001:10001 — a root-owned mode-0700 directory raises `PermissionError` on the
+first state write. Use the numeric IDs: `appuser` exists only inside the
+image, not on the NCP host.
 
 A five-minute systemd timer or cron entry wrapping that invocation is the
 cadence lever; this change registers no scheduler.
