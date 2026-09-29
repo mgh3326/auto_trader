@@ -178,7 +178,7 @@ async def resolve_consensus(
     stable: dict[str, Any] | None = None
     try:
         # limit=10 preserves the existing filter/page ceiling (see interface note);
-        # do NOT bump this — a higher cap triples cold company_read.naver /
+        # do NOT bump this — a higher cap triples cold research-detail /
         # yfinance ticker fetches.
         payload = await opinion_fetcher(symbol=symbol, market=market_norm, limit=10)
         consensus = (
