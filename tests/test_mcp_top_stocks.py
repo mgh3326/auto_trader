@@ -61,8 +61,20 @@ class TestMCPTopStocks:
 
         async def fake_get_us_rankings(ranking_type: str, limit: int):
             assert ranking_type == "volume"
-            assert limit == 3
-            return ([{"rank": 1, "symbol": "AAPL", "name": "Apple"}], "shim-us")
+            # The default-ON US quality bar over-fetches (limit * 4, cap 100).
+            assert limit == 12
+            return (
+                [
+                    {
+                        "rank": 1,
+                        "symbol": "AAPL",
+                        "name": "Apple",
+                        "market_cap": 3_000_000_000_000,
+                        "trade_amount": 5_000_000_000,
+                    }
+                ],
+                "shim-us",
+            )
 
         monkeypatch.setattr(
             analysis_screening, "_get_us_rankings", fake_get_us_rankings
@@ -616,7 +628,8 @@ class TestMCPTopStocks:
         assert len(screen_call_params) == 1
         call_kwargs = screen_call_params[0]["kwargs"]
         assert call_kwargs["session"] is not None
-        assert call_kwargs["size"] == 10
+        # The default-ON US quality bar over-fetches: limit 10 -> fetch 40.
+        assert call_kwargs["size"] == 40
         assert call_kwargs["sortField"] == "intradaymarketcap"
         assert call_kwargs["sortAsc"] is False
 
@@ -1641,6 +1654,9 @@ class TestMCPRegressionTests:
                     135.0,
                 ],  # Add previousClose for change_rate calc
                 "regularMarketVolume": [50000000, 40000000, 30000000],
+                # Required by the default-ON US quality bar (missing cap would
+                # fail closed and drop every row).
+                "marketCap": [3_000_000_000_000, 2_500_000_000_000, 2_000_000_000_000],
             }
         )
 
@@ -1903,3 +1919,374 @@ class TestForeignersLiquidity:
         assert result["rankings"][0]["symbol"] == "005930"
         assert result["rankings"][0]["foreign_net_amount"] == pytest.approx(4e11)
         assert "note" not in result
+
+
+# ---------------------------------------------------------------------------
+# #922 / retro U-3 — the default-ON US quality bar for get_top_stocks.
+# ---------------------------------------------------------------------------
+
+
+def _us_mapped_row(
+    symbol: str,
+    name: str,
+    *,
+    market_cap: float | None = 3_000_000_000_000,
+    price: float | None = 200.0,
+    volume: int | None = 10_000_000,
+    trade_amount: float | None = None,
+    change_rate: float = -1.5,
+    rank: int = 1,
+) -> dict[str, Any]:
+    """A mapped US ranking row as produced by analysis_screening._map_us_row."""
+    return {
+        "rank": rank,
+        "symbol": symbol,
+        "name": name,
+        "price": price,
+        "change_rate": change_rate,
+        "volume": volume,
+        "market_cap": market_cap,
+        "trade_amount": trade_amount,
+    }
+
+
+@pytest.mark.asyncio
+class TestUSTopStocksQualityBar:
+    """US rankings get the KR-mirrored fail-closed quality bar by default."""
+
+    async def _run(
+        self,
+        monkeypatch,
+        rows: list[dict[str, Any]],
+        ranking_type: str = "losers",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        tools = build_tools()
+
+        async def fake_get_us_rankings(rt: str, limit: int):
+            assert rt == ranking_type
+            return (list(rows), "yfinance-test")
+
+        monkeypatch.setattr(
+            analysis_screening, "_get_us_rankings", fake_get_us_rankings
+        )
+        return await tools["get_top_stocks"](
+            market="us", ranking_type=ranking_type, **kwargs
+        )
+
+    async def test_us_default_floors_drop_sub_floor_cap_and_dead_turnover(
+        self, monkeypatch
+    ):
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("BIG", "Big Cap Co", market_cap=3e12),
+                _us_mapped_row(
+                    "SMALL", "Small Cap Co", market_cap=1_000_000_000
+                ),  # below the 2e9 default
+                _us_mapped_row(
+                    "DEAD",
+                    "Dead Turnover Co",
+                    market_cap=5_000_000_000,
+                    price=0.05,
+                    volume=1_000,
+                ),  # price*volume = 50 USD, below the 1e6 default
+            ],
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["BIG"]
+        assert result["market_cap_filter"] == {
+            "min_market_cap": 2_000_000_000,
+            "excluded_count": 1,
+            "missing_market_cap_excluded_count": 0,
+        }
+        assert result["turnover_filter"] == {
+            "min_turnover": 1_000_000,
+            "excluded_count": 1,
+        }
+        assert result["instrument_filter"] == {
+            "excluded_leveraged_inverse_etf_count": 0
+        }
+
+    async def test_us_market_cap_floor_boundary_is_inclusive(self, monkeypatch):
+        """cap == floor keeps the row; floor - 1 drops it (fails on a > mutant)."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("EDGE", "Boundary Co", market_cap=2_000_000_000),
+                _us_mapped_row("UNDER", "Under Co", market_cap=1_999_999_999),
+            ],
+            min_market_cap=2_000_000_000,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["EDGE"]
+        assert result["market_cap_filter"]["excluded_count"] == 1
+
+    async def test_us_missing_market_cap_fails_closed_and_counted(self, monkeypatch):
+        """Missing cap can never pass a floor — counted with its own reason."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("NOCAP", "No Cap Co", market_cap=None),
+                _us_mapped_row("BIG", "Big Cap Co", market_cap=3e12),
+            ],
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["BIG"]
+        assert result["market_cap_filter"]["missing_market_cap_excluded_count"] == 1
+        assert result["market_cap_filter"]["excluded_count"] == 1
+
+    async def test_us_turnover_floor_boundary_and_fallback(self, monkeypatch):
+        """trade_amount is authoritative; price*volume backfills it when absent."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("EXACT", "Exact Co", market_cap=5e9, trade_amount=100.0),
+                _us_mapped_row("BELOW", "Below Co", market_cap=5e9, trade_amount=99.0),
+                _us_mapped_row("CALC", "Calc Co", market_cap=5e9, price=2.0, volume=50),
+                _us_mapped_row(
+                    "CALCLO",
+                    "Calc Low Co",
+                    market_cap=5e9,
+                    price=2.0,
+                    volume=49,
+                ),
+                _us_mapped_row("NOVOL", "No Volume Co", market_cap=5e9, volume=None),
+            ],
+            min_turnover=100,
+        )
+
+        kept = {row["symbol"]: row for row in result["rankings"]}
+        assert set(kept) == {"EXACT", "CALC"}
+        # The price*volume fallback backfills the emitted row like KR does.
+        assert kept["CALC"]["trade_amount"] == 100.0
+        assert result["turnover_filter"]["excluded_count"] == 3
+
+    async def test_us_leveraged_inverse_names_excluded(self, monkeypatch):
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("SOXL", "Direxion Daily Semiconductor Bull 3X Shares"),
+                _us_mapped_row("SQQQ", "ProShares UltraPro Short QQQ"),
+                _us_mapped_row("PSQ", "ProShares Short QQQ"),
+                _us_mapped_row("NVDQ", "T-Rex 2X Inverse NVIDIA Daily"),
+                _us_mapped_row("VOO", "Vanguard S&P 500 ETF"),
+                _us_mapped_row("ULTA", "Ulta Beauty Inc."),
+                _us_mapped_row("SGOV", "iShares 0-3 Month Treasury Bond ETF"),
+            ],
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == [
+            "VOO",
+            "ULTA",
+            "SGOV",
+        ]
+        assert result["instrument_filter"]["excluded_leveraged_inverse_etf_count"] == 4
+
+    async def test_us_short_duration_names_not_in_scope(self, monkeypatch):
+        """Duration names are not leveraged/inverse products."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("SHV", "iShares Short Treasury Bond ETF"),
+                _us_mapped_row("VUSB", "Vanguard Ultra-Short Bond ETF"),
+                _us_mapped_row("MINT", "PIMCO Short-Term Active ETF"),
+                _us_mapped_row("LONG", "Long Duration Co", market_cap=5e9),
+            ],
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == [
+            "SHV",
+            "VUSB",
+            "MINT",
+            "LONG",
+        ]
+        assert result["instrument_filter"]["excluded_leveraged_inverse_etf_count"] == 0
+
+    async def test_us_include_illiquid_bypasses_the_default_bar(self, monkeypatch):
+        """The escape hatch returns the raw list — no floors, no ETF exclusion."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("NOCAP", "No Cap Co", market_cap=None),
+                _us_mapped_row("SOXL", "Direxion Daily Semiconductor Bull 3X Shares"),
+            ],
+            include_illiquid=True,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == [
+            "NOCAP",
+            "SOXL",
+        ]
+        assert "market_cap_filter" not in result
+        assert "turnover_filter" not in result
+        assert "instrument_filter" not in result
+
+    async def test_us_explicit_floors_still_apply_under_include_illiquid(
+        self, monkeypatch
+    ):
+        """Like the KR path, an explicit caller floor is never bypassed."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row(
+                    "SOXL",
+                    "Direxion Daily Semiconductor Bull 3X Shares",
+                    market_cap=5e9,
+                ),
+                _us_mapped_row("SMALL", "Small Cap Co", market_cap=1e9),
+            ],
+            include_illiquid=True,
+            min_market_cap=2_000_000_000,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["SOXL"]
+        assert result["market_cap_filter"]["excluded_count"] == 1
+        assert "instrument_filter" not in result
+        assert "turnover_filter" not in result
+
+    async def test_us_explicit_floor_overrides_settings_default(self, monkeypatch):
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("MID", "Mid Cap Co", market_cap=5e9),
+                _us_mapped_row("LOW", "Low Cap Co", market_cap=1e9),
+            ],
+            min_market_cap=4_000_000_000,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["MID"]
+        assert result["market_cap_filter"]["min_market_cap"] == 4_000_000_000
+
+    async def test_us_settings_defaults_are_operator_tunable(self, monkeypatch):
+        monkeypatch.setattr(
+            analysis_tool_handlers.settings,
+            "us_top_stocks_min_market_cap",
+            10_000_000_000.0,
+        )
+
+        result = await self._run(
+            monkeypatch,
+            [_us_mapped_row("MID", "Mid Cap Co", market_cap=5e9)],
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert result["market_cap_filter"]["min_market_cap"] == 10_000_000_000.0
+
+    async def test_us_gainers_apply_the_same_default_bar(self, monkeypatch):
+        """The quality bar is uniform across US ranking types, not losers-only."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("SMALL", "Small Cap Co", market_cap=1e9),
+                _us_mapped_row("BIG", "Big Cap Co", market_cap=3e12),
+            ],
+            ranking_type="gainers",
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["BIG"]
+        assert result["market_cap_filter"]["excluded_count"] == 1
+
+    async def test_us_filter_emptied_list_is_degraded_not_fake(self, monkeypatch):
+        """A filter-emptied list is an honest degraded response, KR-mirrored."""
+        result = await self._run(
+            monkeypatch,
+            [
+                _us_mapped_row("NOCAP", "No Cap Co", market_cap=None),
+                _us_mapped_row("SMALL", "Small Cap Co", market_cap=1e9),
+            ],
+        )
+
+        assert result["status"] == "degraded"
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert "US quality bar" in result["degraded_reason"]
+        assert result["market_cap_filter"]["excluded_count"] == 2
+        assert result["market_cap_filter"]["missing_market_cap_excluded_count"] == 1
+        assert result["instrument_filter"] == {
+            "excluded_leveraged_inverse_etf_count": 0
+        }
+
+    async def test_us_end_to_end_through_yf_screen_and_map(self, monkeypatch):
+        """Raw yfinance quotes map through _map_us_row then the quality bar."""
+        tools = build_tools()
+
+        import pandas as pd
+
+        mock_df = pd.DataFrame(
+            {
+                "symbol": ["SOXL", "AAPL", "NOCAP"],
+                "longName": [
+                    "Direxion Daily Semiconductor Bull 3X Shares",
+                    "Apple Inc.",
+                    "No Cap Co",
+                ],
+                "regularMarketPrice": [10.0, 200.0, 1.0],
+                "previousClose": [12.0, 205.0, 1.1],
+                "regularMarketVolume": [50_000_000, 10_000_000, 100],
+                "marketCap": [5e9, 3e12, None],
+            }
+        )
+
+        def mock_screen(*args, **kwargs):
+            return mock_df
+
+        monkeypatch.setattr(yf, "screen", mock_screen)
+
+        result = await tools["get_top_stocks"](
+            market="us", ranking_type="losers", limit=5
+        )
+
+        # SOXL excluded as leveraged; NOCAP fails the cap floor; AAPL survives.
+        assert [row["symbol"] for row in result["rankings"]] == ["AAPL"]
+        assert result["instrument_filter"]["excluded_leveraged_inverse_etf_count"] == 1
+        assert result["market_cap_filter"]["missing_market_cap_excluded_count"] == 1
+
+
+class TestUSLeveragedInverseNames:
+    """Token-level contract for the KR-mirrored US name exclusion."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Direxion Daily S&P 500 Bull 3X Shares",
+            "Direxion Daily Semiconductor Bear 3X Shares",
+            "ProShares UltraPro QQQ",
+            "ProShares UltraShort S&P500",
+            "ProShares Short QQQ",
+            "ProShares Ultra S&P500",
+            "GraniteShares 2x Long NVDA Daily ETF",
+            "T-Rex 2X Inverse MSTR Daily Target ETF",
+            "Tuttle Capital Short Innovation ETF",
+            "1.5X Long Something Daily Fund",
+        ],
+    )
+    def test_leveraged_inverse_names_excluded(self, name: str) -> None:
+        from app.mcp_server.tooling.screening.instrument_type import (
+            is_us_leveraged_inverse_name,
+        )
+
+        assert is_us_leveraged_inverse_name(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Vanguard S&P 500 ETF",
+            "iShares Core S&P 500 ETF",
+            "Apple Inc.",
+            "Ulta Beauty Inc.",
+            "iShares Short Treasury Bond ETF",
+            "Vanguard Ultra-Short Bond ETF",
+            "PIMCO Short-Term Active ETF",
+            "Long Duration Co",
+            "",
+            None,
+        ],
+    )
+    def test_ordinary_names_not_excluded(self, name) -> None:
+        from app.mcp_server.tooling.screening.instrument_type import (
+            is_us_leveraged_inverse_name,
+        )
+
+        assert is_us_leveraged_inverse_name(name) is False

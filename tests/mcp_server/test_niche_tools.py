@@ -156,8 +156,9 @@ async def test_actual_fanout_preserves_multi_source_result_and_emits_one_warning
     }
     calls = []
 
-    async def discover():
+    async def discover(market: str = "kr"):
         calls.append("discover")
+        assert market == "kr"
         assert sentry_sdk.get_current_scope()._tags.get("mcp.niche") == "true"
         assert sentry_sdk.get_current_span()._tags["mcp.niche"] == "true"
         return result
