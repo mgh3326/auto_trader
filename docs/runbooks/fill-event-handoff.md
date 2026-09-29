@@ -240,3 +240,103 @@ outside this PR and remain operator actions.
 Check a run with `journalctl -u fill-event-handoff.service -n 100`. A pane or
 Prefect failure must not be repaired by deleting context entries; inspect the
 next market briefing instead.
+
+## Bundled runner shadow mode (#931)
+
+`scripts/fill_handoff_bundle.py` is the bundled pull that supersedes the
+per-row handoff above: it reads fill rows and delivered watch rows in one
+pass, groups them into per-market bundles, runs the BROKER_RISK detector, and
+classifies kicks. `FILL_EVENT_HANDOFF_SHADOW=1` runs that entire evaluation
+path while recording what it *would* have done — no lane events, no Telegram
+risk pushes, no herdr messages, no Prefect flow runs, nothing external.
+Operator approval Q-70 (2026-09-29) calls for two weeks of shadow observation
+before the bundled handoff is enabled.
+
+Shadow wins over `FILL_EVENT_HANDOFF_ENABLED`: with both set the transports
+are still forced to the Null implementations and `TradeNotifierRiskPush` is
+never even constructed. `--since-fill-id`/`--since-watch-id` behave as in the
+enabled path.
+
+### Desk command (NCP)
+
+Create the dedicated state directory, then run the same selected image on a
+five-minute cadence during KR/US regular hours (crypto rows evaluate whenever
+the run fires; the cadence only decides freshness):
+
+```bash
+install -d -m 0700 /var/lib/fill-handoff-bundle-shadow
+image="$(cat /root/at-run/deployed-digest)"
+docker run --rm --network host \
+  --env-file /root/at-secrets/.env.api \
+  --env-file /root/at-secrets/.env.fill-handoff \
+  -e FILL_EVENT_HANDOFF_SHADOW=1 \
+  -v /var/lib/fill-handoff-bundle-shadow:/var/lib/fill-handoff-bundle-shadow \
+  "$image" /app/.venv/bin/python -m scripts.fill_handoff_bundle
+```
+
+A five-minute systemd timer or cron entry wrapping that invocation is the
+cadence lever; this change registers no scheduler.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `FILL_EVENT_HANDOFF_SHADOW` | unset (off) | `1`/`true`/`yes`/`on` enables the observation-only shadow. Wins over `FILL_EVENT_HANDOFF_ENABLED`. |
+| `FILL_HANDOFF_BUNDLE_SHADOW_STATE_DIR` | `/var/lib/fill-handoff-bundle-shadow` | Shadow state directory; `--state-dir` overrides. |
+| `FILL_EVENT_HANDOFF_ENABLED` | unset (off) | Live gate; under shadow it only shows up in the outcome JSON as `enabled`. |
+| `FILL_HANDOFF_LANES` | unset (empty map) | Same JSON market-to-lane map; shadow parses it identically but delivers nothing. |
+| `FILL_HANDOFF_KICK_*`, `PREFECT_API_URL` | as documented above | Shadow mirrors the same knobs so `kick`/`queue_only`/`capped` counts answer "what the live gate would have done". These envs are only parsed under shadow, so a malformed kick value can never break a production run. |
+
+Shadow keeps its own `state.json` in the shadow directory — production
+watermarks are never advanced by a shadow run, and three fail-closed guards
+keep the worlds apart before the state file is even opened for writing:
+shadow refuses `/var/lib/fill-handoff-bundle`, `/var/lib/fill-event-handoff`,
+and whatever `FILL_HANDOFF_BUNDLE_STATE_DIR`/`FILL_HANDOFF_STATE_DIR`
+currently resolve to; shadow refuses a directory whose existing state was
+written by a non-shadow run (no `shadow` marker); the production runner
+refuses a directory already marked `shadow`. A mispointed run is a loud
+failure, not a merged cursor.
+
+### Reading the counts
+
+Every shadow run emits exactly one structured line on the
+`app.services.fill_event_handoff.bundle` logger — `journalctl`, docker logs,
+or a redirected stdout all capture it:
+
+```text
+fill_handoff_bundle_shadow {"bundles_formed":{"opa-crypto":1},...}
+```
+
+The same counts appear under `shadow` in the run's JSON output, and
+`transport` reports `shadow`. Under shadow the top-level counters
+(`fill_bundles`, `watch_bundles`, `risk_pushes`, `stall_notices`) are
+would-be counts — the sends never happen.
+
+- `fills_read` / `watches_read` — rows evaluated this run, including the
+  lookback re-read window; this is scanned volume, not new rows.
+- `bundles_formed` — per-lane count of `fill-bundle`/`watch-bundle` payloads
+  that would have been emitted as `lane.event`s.
+- `lane_sends` — per-lane count of every would-be send, bundles plus the
+  notice kinds counted under `notices`.
+- `notices` — stall and seen-pressure lane notices that would have posted.
+- `bundles_undeliverable` — per-market bundles that would have wedged live
+  for a missing lane; shadow resolves those rows anyway so observation
+  continues, and the market appears in `errors` as
+  `fill_lane_missing:<market>`/`watch_lane_missing:<market>`.
+- `duplicates_suppressed` — rows already inside the 24-hour dedupe window.
+- `risk_judgements` — detector outputs evaluated; `risk_would_push` —
+  evidenced judgements that would have pushed to Telegram; `risk_deduped` —
+  repeat judgements suppressed by dedupe state.
+- `kick` / `watch_kick` — `{kick, queue_only, capped, by_reason}` per the
+  #825/#865 classes. A `kick` count is a Prefect flow run that would have
+  been created; `queue_only`/`capped` carry the reason in `by_reason`
+  (`buy_new_position`, `daily_cap`, `rep_window`, `cooldown`,
+  `parking_etf`, `stale_event`, `ladder_grouped`, …). Fill kicks and watch
+  kicks share the same shadow `kick_days`/`cooldowns` as the live gate.
+- `watch_kick_rows` — delivered-watch rows the kick pass evaluated.
+- `errors` — the run's error list (`fill_read_failed`,
+  `watch_kick_seed_failed`, `watch_kick_read_failed`, …).
+
+After two weeks, compare `kick`/`queue_only`/`capped` by reason against the
+queue the desk actually consumed, and `risk_would_push` against the pushes
+the desk would have wanted. Sustained nonzero `bundles_undeliverable` or
+`errors` means enabling as-is would wedge or spam — fix the lane map or the
+source before flipping `FILL_EVENT_HANDOFF_ENABLED`.
