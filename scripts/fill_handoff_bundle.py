@@ -146,7 +146,9 @@ async def main_async(
             # can never break the production bundle path.
             shadow_kick=shadow_kick_config_from_env() if shadow else ShadowKickConfig(),
         ),
-        sink=sink,
+        # Under shadow the runner builds its own Null transports; passing
+        # nothing keeps injected transports out of the observation path.
+        sink=None if shadow else sink,
         # The Telegram-backed notifier is never even constructed under shadow.
         notifier=None if shadow else TradeNotifierRiskPush(),
     )
@@ -156,6 +158,14 @@ async def main_async(
         "shadow" if shadow else ("panewire_local_inbox" if lanes else "disabled")
     )
     result["configured_markets"] = sorted(lanes)
+    if result.get("shadow") is not None:
+        # The runner also logs this line; stderr is the channel journalctl and
+        # docker logs actually capture for this script.
+        print(
+            "fill_handoff_bundle_shadow "
+            + json.dumps(result["shadow"], ensure_ascii=False, sort_keys=True),
+            file=sys.stderr,
+        )
     return result
 
 

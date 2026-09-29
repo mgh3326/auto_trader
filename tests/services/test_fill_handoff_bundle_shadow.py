@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,12 @@ from app.services.fill_event_handoff.bundle import (
     WatchCursor,
     shadow_enabled,
 )
-from app.services.fill_event_handoff.shadow import ShadowKickConfig
+from app.services.fill_event_handoff.kick_filter import KickVerdict
+from app.services.fill_event_handoff.shadow import (
+    ShadowKickConfig,
+    classify_shadow_watch,
+    gate_shadow_kick,
+)
 from app.services.fill_event_handoff.watch_kick import WatchKickCursor
 
 # Outside every crypto rep window (KST 10:00); crypto is always tradable.
@@ -412,7 +417,9 @@ async def test_shadow_wins_over_enabled_and_still_sends_nothing(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_shadow_never_constructs_real_transports_in_script(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _clear_env(monkeypatch)
     monkeypatch.setenv("FILL_EVENT_HANDOFF_SHADOW", "1")
@@ -438,7 +445,11 @@ async def test_shadow_never_constructs_real_transports_in_script(
             captured["notifier"] = kwargs.get("notifier")
 
         async def run(self, _db: object) -> dict[str, Any]:
-            return {"enabled": True, "errors": []}
+            return {
+                "enabled": True,
+                "errors": [],
+                "shadow": {"fills_read": 0},
+            }
 
     class _Session:
         async def __aenter__(self) -> object:
@@ -456,9 +467,16 @@ async def test_shadow_never_constructs_real_transports_in_script(
     config = captured["config"]
     assert config.shadow is True
     assert config.lanes == {"crypto": "opa-crypto"}
-    assert isinstance(captured["sink"], NullLaneEventSink)
+    # The script passes no transports under shadow; the runner builds the Null
+    # implementations itself, so even the discarding warning cannot fire.
+    assert captured["sink"] is None
     assert captured["notifier"] is None
     assert result["transport"] == "shadow"
+    # The structured counts line reaches stderr — the channel journalctl and
+    # docker logs actually capture for this script.
+    err = capsys.readouterr().err
+    assert "fill_handoff_bundle_shadow" in err
+    assert '"fills_read": 0' in err
 
 
 @pytest.mark.unit
@@ -886,3 +904,75 @@ def test_delivery_runtime_shadow_parses_lanes_like_enabled(
     monkeypatch.setenv("FILL_HANDOFF_LANES", "not-json")
     with pytest.raises(ValueError):
         bundle_script._delivery_runtime(False, shadow=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shadow_gate_cooldown_and_deployment_unmapped() -> None:
+    knobs = _kick_knobs(kick_cooldown_seconds=3600)
+    verdict = KickVerdict(True, "buy_new_position")
+
+    cooling = gate_shadow_kick(
+        "crypto",
+        verdict,
+        state={"cooldowns": {"crypto": NOW.timestamp() - 10}},
+        now=NOW,
+        knobs=knobs,
+    )
+    assert (cooling.klass, cooling.reason) == ("queue_only", "cooldown")
+
+    unmapped = gate_shadow_kick(
+        "kr",
+        verdict,
+        state={"cooldowns": {}},
+        now=NOW,
+        knobs=knobs,  # deployments cover crypto only
+    )
+    assert (unmapped.klass, unmapped.reason) == ("queue_only", "deployment_unmapped")
+
+
+@pytest.mark.unit
+def test_shadow_watch_stale_event_is_queue_only() -> None:
+    stale = _kick_watch(5, delivered_at=(NOW - timedelta(hours=24)).isoformat())
+    verdict = classify_shadow_watch(stale, NOW)
+    assert (verdict.eligible, verdict.reason) == (False, "stale_event")
+    fresh = _kick_watch(5, delivered_at=(NOW - timedelta(hours=23)).isoformat())
+    assert classify_shadow_watch(fresh, NOW).eligible
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shadow_watch_already_kicked_mark_is_queue_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_env(monkeypatch)
+    _write_shadow_state(tmp_path, seen={"watchkick:1": NOW.timestamp() - 5})
+    _, result, _ = await _run_shadow(
+        tmp_path, kick_watches=[_kick_watch(1)], knobs=_kick_knobs()
+    )
+    assert result["shadow"]["watch_kick"]["by_reason"] == {"already_kicked": 1}
+    assert result["shadow"]["watch_kick"]["queue_only"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shadow_refuses_pinned_production_dirs_on_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin the refusal by assertion even where /var/lib is writable: repoint
+    the production constants at tmp paths and shadow must still refuse."""
+    _clear_env(monkeypatch)
+    for name in ("_BUNDLE_STATE_DIR", "_LEGACY_STATE_DIR"):
+        prod = tmp_path / name.strip("_").lower()
+        monkeypatch.setattr(bundle_module, name, str(prod))
+        runner = FillHandoffBundleRunner(BundleConfig(state_dir=prod, shadow=True))
+        with pytest.raises(RuntimeError, match="production state_dir"):
+            await runner.run(
+                object(),  # type: ignore[arg-type]
+                fill_source=_Source([], "ledger_id"),
+                watch_source=_WatchSource([]),
+                evidence_source=_Evidence(),
+                position_source=_Positions(),
+                watch_kick_source=_KickSource([]),
+            )
+        assert not prod.exists()

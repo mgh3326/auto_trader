@@ -297,16 +297,17 @@ failure, not a merged cursor.
 
 ### Reading the counts
 
-Every shadow run emits exactly one structured line on the
-`app.services.fill_event_handoff.bundle` logger — `journalctl`, docker logs,
-or a redirected stdout all capture it:
+Every shadow run of the desk command emits exactly one structured counts
+line on **stderr** (the runner also logs it at INFO on the
+`app.services.fill_event_handoff.bundle` logger for embedded callers) —
+`journalctl` and docker logs both capture stderr:
 
 ```text
 fill_handoff_bundle_shadow {"bundles_formed":{"opa-crypto":1},...}
 ```
 
-The same counts appear under `shadow` in the run's JSON output, and
-`transport` reports `shadow`. Under shadow the top-level counters
+The same counts appear under `shadow` in the run's JSON output on stdout,
+and `transport` reports `shadow`. Under shadow the top-level counters
 (`fill_bundles`, `watch_bundles`, `risk_pushes`, `stall_notices`) are
 would-be counts — the sends never happen.
 
