@@ -26,6 +26,12 @@ source:
   prefect_repo: robin-prefect-automations
   prefect_commit: 7cd232c0d60a49c018d6f84d8825957cf6484308
   inventory_doc: "hk:doc incident/2026-09-29/live-profile-gap"
+# Scope: only files a REPS rep loads or runs. Other live-dir prompts that
+# name tools (kr-nxt-preopen-trade.md, the *-open-report.md advisories,
+# *-adjust.md, crypto-fill-triage.md, h1-near-support-pilot.md, prompts/ref/*)
+# are not run by any REPS rep at the pinned prefect commit and are out of
+# this contract; test_rep_lane_mapping_matches_prefect fails if a rep starts
+# pointing at one.
 # Loaded by every live rep: cwd is the operator live/ dir, so Claude Code
 # auto-loads the root CLAUDE.md and live/CLAUDE.md; the two AGENTS.md files
 # are the external-agent entry points and are scanned for completeness.
@@ -72,6 +78,10 @@ lanes:
       - toss_proposal_accounts
       - toss_reconcile_orders
       - trade_retrospective_pending
+    # §8 item 4 (broker order_history read, live/CLAUDE.md:324) maps on KR to
+    # toss_get_order_history plus the 7-D KIS exception (live/CLAUDE.md:329),
+    # both already accounted for above; nothing prose-only to pin.
+    prose_served: {}
     required:
       analysis_artifact_get:
         why: "kr-nxt-open 07:55 step 2 loads the prep artifact; prep re-reads for hash check; 09:05 loads source artifact"
@@ -266,6 +276,15 @@ lanes:
       - session_context_get_recent
       - toss_proposal_accounts
       - trade_retrospective_pending
+    # Steps described in prose without the tool name. §8 item 4 "broker
+    # order_history full read" is get_order_history, which live-us serves
+    # but prefect LIVE_ALLOWED_TOOLS does not list (harness-denied in both
+    # modes; hk:doc incident/2026-09-29/live-profile-gap, other finding 2).
+    prose_served:
+      get_order_history:
+        phrase: order_history
+        refs:
+          - live/CLAUDE.md:324
     required:
       get_earnings_calendar:
         why: "gap-up scan step 3 catalyst cross-check"
@@ -451,6 +470,13 @@ lanes:
       - save_trade_retrospective
       - session_context_append
       - trade_retrospective_pending
+    # Steps described in prose without the tool name (see the us note).
+    prose_served:
+      get_order_history:
+        phrase: order_history
+        refs:
+          - live/CLAUDE.md:324
+          - prompts/crypto-session-trade.md:68
     required:
       analyze_stock_batch:
         why: "per-symbol analysis step (decision_history injection)"

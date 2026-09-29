@@ -193,6 +193,10 @@ tool a live prompt requires is served by its lane's `live-*` profile.
   files, `served` (referenced and in the profile), and the classes of
   referenced tools the profile does not serve: `required`, `conditional`,
   `guarded`, `not_required` (NEG/DESC/NA), each with file:line refs.
+  `prose_served` records served tools that a step describes without naming
+  them (us/crypto: live/CLAUDE.md §8 item 4 "broker `order_history`" =
+  `get_order_history`, which is served but missing from prefect
+  `LIVE_ALLOWED_TOOLS`). Scope is only the files a REPS rep runs.
 - Always run (no checkout needed): `served` must stay in the profile. The
   required-but-unserved set must equal `KNOWN_REQUIRED_GAP` exactly. The
   contract test itself is `xfail(strict=True)` for each lane whose known gap
@@ -204,17 +208,38 @@ tool a live prompt requires is served by its lane's `live-*` profile.
 - With `ROBIN_PREFECT_AUTOMATIONS_ROOT=<checkout>`: REPS, REP_MCP_PROFILES
   and the pinned lanes must agree, and every `required` tool must be in
   prefect `LIVE_ALLOWED_TOOLS`.
+- The always-run half trusts the pin. The operator and prefect repos are
+  private, so CI cannot run the drift half. Whenever live.yaml, the pin or a
+  live prompt changes, run it by hand with both checkouts and paste the
+  result into the PR:
+  `AUTO_TRADER_OPERATOR_ROOT=<op checkout> ROBIN_PREFECT_AUTOMATIONS_ROOT=<prefect checkout> make test-live-prompt-contract`.
+  The target refuses to run (exit 2) if either variable is unset, so the
+  drift tests cannot silently skip.
 
 Flipping to strict after the operator decision:
 
 - **A (shared mode)**: no change here; the gap stays visible as xfail.
 - **B (widen live.yaml)**: add the tools to live.yaml in the same PR, empty
   that lane's `KNOWN_REQUIRED_GAP` entry (the xfail mark goes with it), and
-  move the newly served tools from `required` to `served` in the pin.
+  move the newly served tools from `required` to `served` in the pin. This is
+  not executable under today's rules; the loader rejects it until these
+  prerequisites land:
+  - an operator Q-53 cap change: core is full at 15 and extension at 10, and
+    even the required tools alone take core+extension to kr 31 / us 32 /
+    crypto 30;
+  - for `order_proposal_void` (crypto required), an operator Q-62 revisit
+    plus a `live_profile_registration` code change, because it is
+    loader-forbidden outside emergency and not a named emergency tool;
+  - a prefect `LIVE_ALLOWED_TOOLS` PR for any COND/GUARD tool the operator
+    adds that the harness lacks (`toss_get_orderable_cash`,
+    `sweep_expired_watches`, `toss_preview_order`).
+
+  See the inventory doc's option B section for the counts.
 - **C (shrink prompts)**: after the operator PR merges, re-pin the fixture
-  at the new operator commit with the drift tests on. Then drop the steps
-  that are gone from `required`, and empty `KNOWN_REQUIRED_GAP` once
-  `required` is served.
+  at the new operator commit with the drift tests on. Tools whose steps were
+  removed leave `required` (reclassify or drop them per the new text). Then
+  empty `KNOWN_REQUIRED_GAP` for each lane whose remaining `required` set is
+  fully served.
 
 If `KNOWN_REQUIRED_GAP` is left stale, the build breaks either way:
 `test_known_gap_is_exact` fails, and a closed gap XPASS-fails the strict

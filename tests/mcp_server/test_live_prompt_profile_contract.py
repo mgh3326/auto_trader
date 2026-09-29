@@ -126,9 +126,18 @@ def _served(lane: str) -> set[str]:
     return set(_lane(lane)["served"])
 
 
-def _pinned(lane: str) -> set[str]:
-    """Every tool name the pin records for a lane (served + all classes)."""
+def _prose_served(lane: str) -> dict[str, Any]:
+    """Served tools a prompt step describes in prose without naming them."""
+    return _lane(lane)["prose_served"] or {}
+
+
+def _pinned_tokens(lane: str) -> set[str]:
+    """Tool names the pin records as literally referenced (served + classes)."""
     return _served(lane).union(*(_classified(lane, cls) for cls in CLASSES))
+
+
+def _pinned(lane: str) -> set[str]:
+    return _pinned_tokens(lane) | set(_prose_served(lane))
 
 
 def _profile_tools(lane: str) -> frozenset[str]:
@@ -162,6 +171,14 @@ class TestPinnedRequirementsShape:
             served = _lane(lane)["served"]
             assert served and len(served) == len(set(served)), lane
             seen: dict[str, str] = dict.fromkeys(served, "served")
+            assert "prose_served" in _lane(lane), f"{lane}: missing prose_served"
+            for tool, entry in _prose_served(lane).items():
+                assert tool not in seen, f"{lane}: {tool} is served and prose_served"
+                seen[tool] = "prose_served"
+                assert entry["phrase"].strip(), f"{lane}/{tool}: empty phrase"
+                assert entry["refs"], f"{lane}/{tool}: no refs"
+                for ref in entry["refs"]:
+                    assert _REF_RE.match(ref), f"{lane}/{tool}: bad ref {ref}"
             for cls in CLASSES:
                 assert cls in _lane(lane), f"{lane}: missing class {cls}"
                 for tool, entry in _classified(lane, cls).items():
@@ -208,7 +225,7 @@ class TestPinnedRequirementsShape:
 @pytest.mark.parametrize("lane", LANES)
 def test_served_references_stay_in_profile(lane: str) -> None:
     """A live.yaml edit may not drop a tool the lane prompts reference."""
-    dropped = _served(lane) - _profile_tools(lane)
+    dropped = (_served(lane) | set(_prose_served(lane))) - _profile_tools(lane)
     assert not dropped, (
         f"live-{lane} no longer serves prompt-referenced tools {sorted(dropped)}; "
         f"either restore them or reclassify them in {REQUIREMENTS_PATH.name} "
@@ -351,7 +368,7 @@ def test_pinned_classifications_are_still_referenced(
 ) -> None:
     root = _operator_root()
     extracted = _extract(root, lane, tool_universe)
-    stale = sorted(_pinned(lane) - set(extracted))
+    stale = sorted(_pinned_tokens(lane) - set(extracted))
     assert not stale, (
         f"{lane}: pinned tools no longer referenced by the lane prompts "
         f"(re-pin after the prompt change): {stale}"
@@ -377,6 +394,17 @@ def test_pinned_refs_still_hold(lane: str) -> None:
                 index = int(match["line"]) - 1
                 if index >= len(lines) or not pattern.search(lines[index]):
                     drifted.append(f"{tool} @ {ref}")
+    for tool, entry in _prose_served(lane).items():
+        for ref in entry["refs"]:
+            match = _REF_RE.match(ref)
+            assert match, ref
+            path = root / match["path"]
+            lines = (
+                path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+            )
+            index = int(match["line"]) - 1
+            if index >= len(lines) or entry["phrase"] not in lines[index]:
+                drifted.append(f"{tool} (prose '{entry['phrase']}') @ {ref}")
     assert not drifted, (
         f"{lane}: pinned refs no longer hold at this operator checkout (pinned "
         f"operator_commit={_requirements()['source']['operator_commit']}); "
