@@ -358,13 +358,16 @@ class Env:
         fail_health: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         self.log.write_text("")
+        # The switch is unset unless a test sets it: unset is the default-on
+        # case, and an inherited value must not leak into the fixture.
+        base = {k: v for k, v in os.environ.items() if k != "AT_IMAGE_PRUNE_ENABLED"}
         return subprocess.run(
             [str(deploy or DEPLOY), *args],
             capture_output=True,
             text=True,
             timeout=90,
             env={
-                **os.environ,
+                **base,
                 "PATH": f"{self.bindir}:{os.environ['PATH']}",
                 "AT_RUN_DIRECTORY": str(self.run_dir),
                 "MCP_HAPROXY_TEMPLATE": str(REPO / "ops/ncp/haproxy/haproxy.cfg.tmpl"),
@@ -642,7 +645,16 @@ def test_size_unavailable_reports_count(env: Env) -> None:
 
 
 @pytest.mark.parametrize(
-    "content", ("", "garbage\n", f"{REPOSITORY}:sha-prevx\n", None)
+    "content",
+    (
+        "",
+        "garbage\n",
+        f"{REPOSITORY}:sha-prevx\n",
+        None,
+        # A valid first line does not make the record valid (tester r1).
+        PREVX + "\nINVALID-SECOND-LINE\n",
+        PREVX + "\n" + STALE + "\n",
+    ),
 )
 def test_invalid_previous_record_skips_prune_entirely(
     env: Env, content: str | None
@@ -666,7 +678,7 @@ def test_invalid_previous_record_skips_prune_entirely(
     assert set(env.state()["images"]) == set(before["images"]) | {NEW_ID}
 
 
-@pytest.mark.parametrize("value", ("0", "no", "true"))
+@pytest.mark.parametrize("value", ("0", "no", "true", "", " 1"))
 def test_env_switch_disables_prune(env: Env, value: str) -> None:
     before = env.state()
     result = env.run(env={"AT_IMAGE_PRUNE_ENABLED": value})
@@ -680,10 +692,35 @@ def test_env_switch_disables_prune(env: Env, value: str) -> None:
 
 
 def test_env_switch_default_is_on(env: Env) -> None:
-    result = env.run(env={"AT_IMAGE_PRUNE_ENABLED": ""})
+    result = env.run()  # AT_IMAGE_PRUNE_ENABLED unset
     assert result.returncode == 0, result.stderr
-    # An empty value falls back to the default of 1.
     assert "image prune: removed 5 image(s)" in result.stdout
+
+
+def test_skipped_mcp_unit_with_its_own_digest_is_kept(env: Env) -> None:
+    # Tester r1 SHOULD: a skipped MCP unit on a digest no other unit uses.
+    state = env.state()
+    state["containers"]["at-mcp-kiwoom"] = {
+        "image": STALE_ID,
+        "config": STALE,
+        "running": True,
+    }
+    env.state_path.write_text(json.dumps(state))
+    before = env.state()
+    result = env.run(env={"MCP_UNITS_SKIP": "kiwoom"})
+    after = env.state()
+    assert result.returncode == 0, result.stderr
+    assert f"at-mcp-kiwoom\t{STALE}\t{STALE}\tMATCH" in result.stdout
+    assert after["containers"]["at-mcp-kiwoom"]["image"] == STALE_ID
+    assert (
+        _keep_violations(
+            before,
+            after,
+            env.calls(),
+            _deploy_keep_set(previous=PREVX_ID) | {STALE_ID},
+        )
+        == []
+    )
 
 
 # --- mutants: one assertion-RED mutant per KEEP rule in the contract --------
@@ -712,6 +749,14 @@ EXTRA_MUTANTS = {
     "prune on rollback": (
         r'manual_rollback\(\) \{(.*?)promote_digest "\$previous"; \}',
         r'manual_rollback() {\1promote_digest "$previous"; run_image_prune "$previous"; }',
+    ),
+    "previous record read by first line only": (
+        r'previous="\$\(read_digest_record "\$DEPLOYED_DIGEST_PREVIOUS_FILE"\)" \|\| \{ printf \'WARNING',
+        'previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf \'WARNING',
+    ),
+    "empty switch treated as on": (
+        r'"\$\{AT_IMAGE_PRUNE_ENABLED-1\}"',
+        '"${AT_IMAGE_PRUNE_ENABLED:-1}"',
     ),
     "prune error changes rc": (
         r"run_image_prune\(\) \{ \(prune_old_images \"\$1\"\) \|\| printf '[^']*' >&2; \}",
@@ -791,6 +836,22 @@ def test_extra_mutant_is_red(tmp_path: Path, name: str) -> None:
         result = env.run("--rollback", deploy=mutant)
         assert result.returncode == 0, result.stderr
         assert any(c[:2] == ["image", "ls"] for c in env.calls())
+        return
+    if name in {
+        "previous record read by first line only",
+        "empty switch treated as on",
+    }:
+        if name.startswith("previous"):
+            (env.run_dir / "deployed-digest").write_text("invalid\n")
+            (env.run_dir / "deployed-digest.previous").write_text(
+                PREVX + "\nINVALID-SECOND-LINE\n"
+            )
+            result = env.run(deploy=mutant)
+        else:
+            result = env.run(env={"AT_IMAGE_PRUNE_ENABLED": ""}, deploy=mutant)
+        assert result.returncode == 0, result.stderr
+        # Both inputs are invalid, so any removal attempt is the violation.
+        assert _rm_calls(env.calls()) != []
         return
     if name == "prune error changes rc":
         result = env.run(faults=("rm:" + f"{REPOSITORY}:sha-stale",), deploy=mutant)

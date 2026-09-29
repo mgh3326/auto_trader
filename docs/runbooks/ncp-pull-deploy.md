@@ -142,7 +142,7 @@ dry-run prints `image prune: not run on rollback`.
 Any prune problem is a warning on stderr only (`WARNING: image prune ...`)
 and never changes the exit code or the digest table: an image that could not
 be removed is named in the warning, and if `deployed-digest.previous` is
-absent or invalid, `deployed-digest` does not record the promoted digest, or
+absent or invalid (it must hold exactly one digest line), `deployed-digest` does not record the promoted digest, or
 docker's image or container listing cannot be read, the whole prune is
 skipped and every image is kept.
 
@@ -150,7 +150,8 @@ To disable it for one run, set `AT_IMAGE_PRUNE_ENABLED=0`:
 
     AT_IMAGE_PRUNE_ENABLED=0 /root/at-run/deploy-ncp-pull.sh sha-abcdef0
 
-The default is `1`. Any other value skips the prune with a warning. To free
+When the variable is unset the prune runs. Any other value, including an
+empty one, skips the prune with a warning. To free
 space by hand while the prune is disabled, remove only unused
 `ghcr.io/mgh3326/auto_trader` images that are neither of the two recorded
 digests; the invariants are in `docs/contracts/task-934-image-prune.md`.

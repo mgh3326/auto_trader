@@ -47,7 +47,8 @@ readonly RUNTIME_ENV_FILE="${AT_RUNTIME_ENV_FILE:-${RUN_DIRECTORY}/.env.runtime}
 readonly SECRETS_ENV_FILE="${AT_SECRETS_ENV_FILE:-${RUN_DIRECTORY}/.env.secrets}"
 readonly DEPLOYED_DIGEST_FILE="${RUN_DIRECTORY}/deployed-digest"
 readonly DEPLOYED_DIGEST_PREVIOUS_FILE="${RUN_DIRECTORY}/deployed-digest.previous"
-readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED:-1}"
+# Unset means on; an explicitly empty or any other value is invalid and skips.
+readonly IMAGE_PRUNE_ENABLED="${AT_IMAGE_PRUNE_ENABLED-1}"
 
 declare -a ENV_FILE_ARGS=(--env-file "$RUNTIME_ENV_FILE" --env-file "$SECRETS_ENV_FILE")
 declare -a MCP_NAMES=(analysis-readonly account-read tradingcodex-execution paper-001 kiwoom)
@@ -454,6 +455,17 @@ ref_repository() {
   if [[ "$ref" == *:* && "${ref##*:}" != */* ]]; then ref="${ref%:*}"; fi
   printf '%s\n' "$ref"
 }
+# Strict digest record for the prune: the whole file must be one digest line
+# (optionally newline-terminated). read_digest checks only the first line,
+# which is enough to pick a rollback target but not to trust a keep set.
+read_digest_record() {
+  local file="$1" content line
+  [[ -f "$file" ]] || return 1
+  content="$(cat "$file" && printf .)" || return 1
+  content="${content%.}"
+  line="${content%$'\n'}"
+  [[ "$line" != *$'\n'* ]] && is_digest "$line" && printf '%s\n' "$line"
+}
 image_refs() { docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}' "$1"; }
 
 # Fills PRUNE_IDS (removal candidates, in listing order), PRUNE_REFS (id ->
@@ -519,8 +531,8 @@ prune_old_images() {
   local -a refs=() failed=()
   local -A sizes=() errors=() remaining=()
   prune_enabled || return 0
-  previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'WARNING: image prune skipped: %s is absent or invalid; every image kept\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE" >&2; return 1; }
-  current="$(read_digest "$DEPLOYED_DIGEST_FILE")" && [[ "$current" == "$deployed" ]] || { printf 'WARNING: image prune skipped: %s does not record %s; every image kept\n' "$DEPLOYED_DIGEST_FILE" "$deployed" >&2; return 1; }
+  previous="$(read_digest_record "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'WARNING: image prune skipped: %s is absent or invalid; every image kept\n' "$DEPLOYED_DIGEST_PREVIOUS_FILE" >&2; return 1; }
+  current="$(read_digest_record "$DEPLOYED_DIGEST_FILE")" && [[ "$current" == "$deployed" ]] || { printf 'WARNING: image prune skipped: %s does not record %s; every image kept\n' "$DEPLOYED_DIGEST_FILE" "$deployed" >&2; return 1; }
   plan_image_prune "$deployed" "$previous" || { printf 'WARNING: image prune skipped: docker image or container state is unreadable; every image kept\n' >&2; return 1; }
   printf 'image prune: keeping %s and %s plus every image used by a container\n' "$deployed" "$previous"
   for id in "${!PRUNE_KEPT[@]}"; do printf 'image prune: kept %s (%s)\n' "$id" "${PRUNE_KEPT[$id]}"; done
@@ -564,7 +576,9 @@ run_image_prune() { (prune_old_images "$1") || printf 'WARNING: image prune did 
 dry_run_image_prune() {
   local target="$1" previous id
   prune_enabled || return 0
-  previous="$(read_digest "$DEPLOYED_DIGEST_FILE")" || previous="$(read_digest "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'image prune: would be skipped (no valid digest record for the rollback target)\n'; return 0; }
+  # write_digest rotates with read_digest, so the prediction uses it too; a
+  # previous record left in place must pass the strict check the prune applies.
+  previous="$(read_digest "$DEPLOYED_DIGEST_FILE")" || previous="$(read_digest_record "$DEPLOYED_DIGEST_PREVIOUS_FILE")" || { printf 'image prune: would be skipped (no valid digest record for the rollback target)\n'; return 0; }
   plan_image_prune "$target" "$previous" || { printf 'image prune: would be skipped (docker image or container state is unreadable)\n'; return 0; }
   printf 'image prune plan (the real run re-evaluates after promotion): keep %s and %s plus every image used by a container\n' "${target:-the pulled digest}" "$previous"
   for id in "${PRUNE_IDS[@]}"; do printf 'image prune: would remove %s (%s)\n' "$id" "${PRUNE_REFS[$id]% }"; done
