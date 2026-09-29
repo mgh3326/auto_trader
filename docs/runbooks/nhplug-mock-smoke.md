@@ -117,4 +117,5 @@ MCP 서버가 `NH_MOCK_MCP_ENABLED=true` 일 때 DEFAULT 프로필에만 아홉 
 
 - `uncertain` 행은 같은 계좌·종목·방향의 새 주문을 **날짜와 무관하게** 막는다(설계 §5.2). reconcile 로 풀리지 않으면 T9h(후보 확인)·T14(위험 인수 종결)는 운영자 역할의 1회용 승인 행이 필요한 운영자 전용 절차이며 MCP 로는 할 수 없다(설계 §4.5–4.6). 이 절차의 운영자 CLI 는 아직 없으므로 행을 그대로 두고 보고한다.
 - 정정·취소가 `order_not_bound_reconcile_first` 면 3단계 reconcile 을 먼저 한다. `order_not_owned` 는 이 레저가 보낸 주문이 아니라는 뜻이다 — HTS 에서 직접 낸 주문은 이 도구로 정정·취소하지 않는다.
+- reconcile 은 전체·미체결·체결 세 조회가 모두 완전하고 결속 행이 전부 재검증된 경우에만 `status=reconciled` 다. 하나라도 불완전하면 `status=unknown`, `success=false` 이며 `incomplete_scopes`·`unverified_row_ids` 에 이름이 남는다. 이것을 정상 완료로 기록하지 않는다.
 - `listing_incomplete`/`order_not_listed` 는 브로커 조회가 그 주문을 미체결로 보여주지 못한 것이다. 없다는 증거가 아니므로 다시 보내지 말고 조회를 반복하거나 중단한다.

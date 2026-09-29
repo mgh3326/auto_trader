@@ -713,6 +713,42 @@ async def bound_open_order(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ("open", "filled"))
+@pytest.mark.parametrize(
+    "listing",
+    (UNKNOWN_LISTINGS["gateway_error"], UNKNOWN_LISTINGS["continuation_without_key"]),
+    ids=("gateway_error", "continuation_without_key"),
+)
+async def test_reconcile_with_an_incomplete_scope_is_never_reported_reconciled(
+    ops_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+    listing: dict[str, Any],
+) -> None:
+    suffix = "rs" + scope[:4] + str(len(json.dumps(listing)))
+    fake = install(monkeypatch, ops_engine, suffix)
+    await bound_open_order(fake, ops_engine, suffix, 1000460)
+    fake.listing_override = {scope: listing}
+    result = await reconcile()
+    assert result["success"] is False
+    assert result["status"] == "unknown"
+    assert scope in result["incomplete_scopes"]
+    rows = await ledger_rows(ops_engine, "MOCK-" + suffix)
+    assert [r["state"] for r in rows] == ["open"]
+    history = await operations.get_order_history()
+    if scope == "open":
+        assert history["success"] is False
+        assert history["status"] == "unknown"
+        assert history["incomplete_scopes"] == ["open"]
+        assert history["open_orders_state"] == "present"  # positive all-scope row
+    if scope == "open":
+        # The bound row was not re-verified, and the answer names it.
+        assert result["unverified_row_ids"] == [rows[0]["id"]]
+        assert result["rows"][0]["result"]["reconcile"] == "skipped"
+    assert fake.orders == [(BUY, fake.orders[0][1])]
+
+
+@pytest.mark.asyncio
 async def test_modify_and_cancel_of_unowned_number_send_nothing(
     ops_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -751,14 +787,41 @@ async def test_other_accounts_order_is_not_owned(
     await bound_open_order(fake, ops_engine, "ownerA", 1000410)
     other = install(monkeypatch, ops_engine, "ownerB")
     other.rows[1000410] = order_row(1000410)
-    result = await operations.cancel_order(
-        order_id="1000410",
-        idempotency_key=key("ownerB"),
-        dry_run=False,
-        confirm=True,
-    )
-    assert result["error"] == "order_not_owned"
+    # Bind account B in the registry first, so the refusal below must come from
+    # the ledger's account_ref scoping and not from a missing binding.
+    history = await operations.get_order_history()
+    assert history["status"] == "ok"
+    key_material = KeyMaterial.from_root_secret(1, KEY_ID, ROOT_SECRET.encode("utf-8"))
+    async with ops_engine.connect() as conn:
+        bound = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM review.nhplug_mock_account_binding "
+                    "WHERE key_version=1 AND binding=:b"
+                ),
+                {"b": key_material.binding("MOCK-ownerB")},
+            )
+        ).scalar_one()
+    assert bound == 1
+    for result in (
+        await operations.cancel_order(
+            order_id="1000410",
+            idempotency_key=key("ownerB"),
+            dry_run=False,
+            confirm=True,
+        ),
+        await operations.modify_order(
+            order_id="1000410",
+            new_price=49000,
+            new_quantity=1,
+            idempotency_key=key("ownerB", 2),
+            dry_run=False,
+            confirm=True,
+        ),
+    ):
+        assert result.get("error") == "order_not_owned"
     assert other.orders == []
+    assert await ledger_rows(ops_engine, "MOCK-ownerB") == []
 
 
 @pytest.mark.asyncio

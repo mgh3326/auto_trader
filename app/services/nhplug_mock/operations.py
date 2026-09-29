@@ -945,10 +945,16 @@ async def get_order_history(*, order_date: object = None) -> dict[str, Any]:
     except NHMockRefusal as refusal:
         return refusal_response(tool, refusal)
     complete = all_listing.complete
+    incomplete_scopes = [
+        name
+        for name, listing in (("all", all_listing), ("open", open_listing))
+        if not listing.complete
+    ]
     return {
         **_base(tool),
-        "success": complete,
-        "status": "ok" if complete else "unknown",
+        "success": not incomplete_scopes,
+        "status": "ok" if not incomplete_scopes else "unknown",
+        "incomplete_scopes": incomplete_scopes,
         "order_date": day.strftime("%Y%m%d"),
         "orders_state": "complete" if complete else "unknown",
         "orders": [row.evidence() for row in all_listing.rows] if complete else [],
@@ -1103,34 +1109,62 @@ async def reconcile_orders(
                     }
             except (LedgerConflict, Stage2Disabled) as exc:
                 results[row["id"]] = {"action": "error", "error": exc.code}
-        if open_listing.complete:
-            rows = await session.ledger.rows_for_day(account_ref, day)
-            for row in rows:
-                if row["state"] not in {"accepted", "open", "partially_filled"}:
-                    continue
-                try:
-                    outcome = await session.ledger.reconcile_bound(
-                        row["id"],
-                        all_listing,
-                        open_listing,
-                        filled_listing,
-                        readiness=readiness,
-                    )
-                    results[row["id"]] = {
-                        **results.get(row["id"], {}),
-                        "reconcile": outcome,
-                    }
-                except (LedgerConflict, Stage2Disabled) as exc:
-                    results[row["id"]] = {
-                        **results.get(row["id"], {}),
-                        "reconcile_error": exc.code,
-                    }
+        rows = await session.ledger.rows_for_day(account_ref, day)
+        for row in rows:
+            if row["state"] not in {"accepted", "open", "partially_filled"}:
+                continue
+            if not open_listing.complete:
+                # Skipped is not verified: the response below cannot say reconciled.
+                results[row["id"]] = {
+                    **results.get(row["id"], {}),
+                    "reconcile": "skipped",
+                    "reason": "open_scope_incomplete",
+                }
+                continue
+            try:
+                outcome = await session.ledger.reconcile_bound(
+                    row["id"],
+                    all_listing,
+                    open_listing,
+                    filled_listing,
+                    readiness=readiness,
+                )
+                results[row["id"]] = {
+                    **results.get(row["id"], {}),
+                    "reconcile": outcome,
+                }
+            except (LedgerConflict, Stage2Disabled) as exc:
+                results[row["id"]] = {
+                    **results.get(row["id"], {}),
+                    "reconcile_error": exc.code,
+                }
     final_rows = await session.ledger.rows_for_day(account_ref, day)
     unresolved = [r for r in final_rows if r["state"] in _SEND_UNKNOWN_STATES]
+    # A bound row counts as verified only when reconcile_bound returned a state;
+    # "unknown", "skipped", or an error leaves the broker picture unverified.
+    unverified = sorted(
+        row_id
+        for row_id, result in results.items()
+        if "reconcile_error" in result
+        or result.get("reconcile") in {"unknown", "skipped"}
+        or result.get("action") == "error"
+    )
+    incomplete_scopes = [
+        name
+        for name, listing in (
+            ("all", all_listing),
+            ("open", open_listing),
+            ("filled", filled_listing),
+        )
+        if not listing.complete
+    ]
+    status = "unknown" if incomplete_scopes or unverified else "reconciled"
     return {
         **base,
-        "success": all_listing.complete and not unresolved,
-        "status": "reconciled" if all_listing.complete else "unknown",
+        "success": status == "reconciled" and not unresolved,
+        "status": status,
+        "incomplete_scopes": incomplete_scopes,
+        "unverified_row_ids": unverified,
         "recovered": None
         if recovered is None
         else {
