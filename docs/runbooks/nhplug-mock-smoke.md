@@ -116,9 +116,10 @@ reconcile 응답 상태 표(확정 실행 `status`, dry run 은 같은 단어를
 | `partial` (`success=false`) | 일부 행은 해결(`resolved_row_ids`), 나머지는 여전히 `uncertain`/`sending`(`unresolved_row_ids`) | **멈추고 보고**. 새 주문·정정·취소 금지 |
 | `uncertain` (`success=false`) | 대상 행 중 해결된 것이 하나도 없음. `unresolved_row_ids` 의 행이 그대로 미확정 | **멈추고 보고**. 새 주문·정정·취소 금지 |
 | `unknown` (`success=false`) | 조회 하나 이상이 불완전(`incomplete_scopes`)하거나 결속 행 재검증 실패(`unverified_row_ids`). 미해결 행이 있어도 이 값이 우선 | 정상 완료로 기록하지 않는다. 조회 반복 또는 중단·보고 |
-| `verification_pending` (dry run 전용) | 미해결로 남을 것으로 예측되는 행은 없고, `verification_pending_row_ids` 의 행은 확정 실행의 레저 검사로만 판정됨 | 확정 실행. 결과는 `reconciled` 또는 `unknown` 이며 dry run 만으로 `reconciled` 를 기록하지 않는다 |
+| `verification_pending` (dry run 전용) | 미해결로 남을 것으로 예측되는 행은 없고, `verification_pending_row_ids` 의 행은 확정 실행의 레저 검사로만 판정됨 | 확정 실행. 결과는 `reconciled`·`unknown`·`error` 중 하나이며 dry run 만으로 `reconciled` 를 기록하지 않는다 |
+| `error` (`error=internal_error`, `sent=false`) | 도구가 예외를 삼킨 정제된 실패. 알려진 경우: 결속된 `open`/`partially_filled` 행의 번호가 완전한 전체·미체결 목록에서 사라지면 #711 트리거가 레저의 `reconcile_state=unknown` 기록을 거부한다(기존 결함, 별도 후속). 레저 쓰기·송신 없음 | **멈추고 보고**. 정상 완료로 기록하지 않는다 |
 
-dry run 예측은 같은 조회·레저 상태에서 확정 실행보다 **좋게** 나오지 않는다(`partial`/`uncertain` 예측은 확정 실행에서 같은 값이거나 `unknown`).
+dry run 예측은 같은 조회·레저 상태에서 확정 실행보다 **좋게** 나오지 않는다(`partial`/`uncertain` 예측은 확정 실행에서 같은 값이거나 `unknown`, 위 `error` 경우 포함).
 7. **"빈 배열 ≠ 미체결 없음" 실증**: 마지막으로 `nh_mock_get_order_history()` → 미체결 목록이 비었을 때 `open_orders_state` 는 **`unknown`** 이어야 하며(`"none"` 같은 값은 존재하지 않는다) 사유에 `empty_open_listing_is_not_evidence_of_no_open_orders` 가 있어야 한다. 운영자가 HTS/앱에서 미체결이 실제로 없음을 눈으로 확인하고 기록한다.
 
 ### 결과 기록
